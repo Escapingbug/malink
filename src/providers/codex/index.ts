@@ -5,12 +5,15 @@
  * The Agent Client Protocol codex-acp adapter as a stdio ACP agent.
  */
 
+import { accessSync, constants } from 'node:fs'
+import { delimiter, join } from 'node:path'
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process'
 import { AcpProvider } from '@/providers/acp'
 import type { ModelEntry } from '@/providers/provider'
 
 const CODEX_ACP_COMMAND = 'npx'
 const CODEX_ACP_ARGS = ['-y', '@agentclientprotocol/codex-acp']
+const INSTALLED_CODEX_ACP_COMMAND = 'codex-acp'
 const CODEX_MODELS_COMMAND = 'codex'
 const CODEX_MODELS_ARGS = ['debug', 'models']
 const CODEX_MODEL_PROVIDER = 'openai'
@@ -43,10 +46,11 @@ export class CodexProvider extends AcpProvider {
     private readonly cwd?: string
 
     constructor(options: CodexProviderOptions = {}) {
+        const defaultLaunch = resolveDefaultCodexAcpLaunch(options.env)
         super({
             name: options.name ?? 'codex',
-            command: options.command ?? CODEX_ACP_COMMAND,
-            args: options.args ?? CODEX_ACP_ARGS,
+            command: options.command ?? defaultLaunch.command,
+            args: options.args ?? (options.command ? [] : defaultLaunch.args),
             ...(options.env ? { env: options.env } : {}),
             ...(options.cwd ? { cwd: options.cwd } : {}),
         })
@@ -70,6 +74,27 @@ export class CodexProvider extends AcpProvider {
             return []
         }
     }
+}
+
+export function resolveDefaultCodexAcpLaunch(env?: Record<string, string>): { command: string; args: string[] } {
+    const mergedEnv = mergeProcessEnv(env)
+    if (findExecutableOnPath(INSTALLED_CODEX_ACP_COMMAND, mergedEnv.PATH)) {
+        return { command: INSTALLED_CODEX_ACP_COMMAND, args: [] }
+    }
+    return { command: CODEX_ACP_COMMAND, args: [...CODEX_ACP_ARGS] }
+}
+
+function findExecutableOnPath(command: string, pathValue: string | undefined): boolean {
+    if (!pathValue) return false
+    return pathValue.split(delimiter).some(directory => {
+        if (!directory) return false
+        try {
+            accessSync(join(directory, command), constants.X_OK)
+            return true
+        } catch {
+            return false
+        }
+    })
 }
 
 function mergeProcessEnv(env?: Record<string, string>): NodeJS.ProcessEnv {

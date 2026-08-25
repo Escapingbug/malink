@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseCodexModels } from '../index'
 
 const { acpProviderConfigs } = vi.hoisted(() => ({
@@ -29,10 +32,19 @@ vi.mock('@/providers/acp', () => ({
 }))
 
 describe('CodexProvider', () => {
-    it('launches Codex through the ACP adapter over stdio', async () => {
+    const temporaryDirectories: string[] = []
+
+    afterEach(() => {
+        for (const directory of temporaryDirectories.splice(0)) {
+            rmSync(directory, { recursive: true, force: true })
+        }
+        acpProviderConfigs.splice(0, acpProviderConfigs.length)
+    })
+
+    it('falls back to npx when codex-acp is not installed on PATH', async () => {
         const { CodexProvider } = await import('../index')
 
-        const provider = new CodexProvider()
+        const provider = new CodexProvider({ env: { PATH: '' } })
 
         expect(provider.name).toBe('codex')
         expect(acpProviderConfigs).toEqual([
@@ -40,6 +52,41 @@ describe('CodexProvider', () => {
                 name: 'codex',
                 command: 'npx',
                 args: ['-y', '@agentclientprotocol/codex-acp'],
+                env: { PATH: '' },
+            },
+        ])
+    })
+
+    it('launches an installed codex-acp directly', async () => {
+        const { CodexProvider } = await import('../index')
+        const directory = mkdtempSync(join(tmpdir(), 'malink-codex-acp-'))
+        temporaryDirectories.push(directory)
+        const command = join(directory, 'codex-acp')
+        writeFileSync(command, '#!/bin/sh\n')
+        chmodSync(command, 0o755)
+
+        new CodexProvider({ env: { PATH: directory } })
+
+        expect(acpProviderConfigs).toEqual([
+            {
+                name: 'codex',
+                command: 'codex-acp',
+                args: [],
+                env: { PATH: directory },
+            },
+        ])
+    })
+
+    it('supports overriding the ACP command without inheriting npx arguments', async () => {
+        const { CodexProvider } = await import('../index')
+
+        new CodexProvider({ command: '/opt/malink/bin/custom-codex-acp' })
+
+        expect(acpProviderConfigs).toEqual([
+            {
+                name: 'codex',
+                command: '/opt/malink/bin/custom-codex-acp',
+                args: [],
             },
         ])
     })

@@ -70,6 +70,30 @@ Run the PWA locally:
 pnpm --dir apps/pwa dev
 ```
 
+## Provider configuration
+
+Provider launch commands are configurable in `~/.config/malink/providers.json`.
+For example, a packaged Codex ACP adapter can be selected without `npx`:
+
+```json
+{
+  "defaultProvider": "codex",
+  "providers": [
+    {
+      "id": "codex",
+      "type": "codex",
+      "command": "/absolute/path/to/codex-acp",
+      "args": [],
+      "modelsCommand": "/absolute/path/to/codex",
+      "modelsArgs": ["debug", "models"]
+    }
+  ]
+}
+```
+
+When no command is configured, Malink uses `codex-acp` from `PATH` when
+available and falls back to `npx -y @agentclientprotocol/codex-acp` otherwise.
+
 The local Matrix environment and Gateway require generated development
 credentials. Follow [the local Matrix guide](dev/matrix/README.md), then run:
 
