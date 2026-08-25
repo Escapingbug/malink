@@ -602,6 +602,7 @@ export async function connectMatrixMlp3(
       createMatrixPairingTransport(
         client,
         sdk.RoomEvent.Timeline,
+        sdk.MatrixEventEvent.Decrypted,
         sdk.MsgType.Notice,
         config.roomId,
         detail => handlers.onStatus("securing", detail),

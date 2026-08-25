@@ -1588,6 +1588,7 @@ export async function connectMatrix(
     const transport = createMatrixPairingTransport(
       client,
       sdk.RoomEvent.Timeline,
+      sdk.MatrixEventEvent.Decrypted,
       sdk.MsgType.Notice,
       config.roomId,
       (detail) => handlers.onStatus("connected", detail),
@@ -2613,6 +2614,7 @@ export async function connectMatrix(
 export function createMatrixPairingTransport(
   client: MatrixClient,
   timelineEvent: string,
+  decryptedEvent: string,
   noticeType: MsgType.Notice,
   roomId: string,
   onProgress?: (detail: string) => void,
@@ -2622,10 +2624,12 @@ export function createMatrixPairingTransport(
       const response = waitForPairingResponse(
         client,
         timelineEvent,
+        decryptedEvent,
         roomId,
         request,
         offer,
         signal,
+        onProgress,
       );
       try {
         const content = {
@@ -2660,11 +2664,13 @@ export function createMatrixPairingTransport(
 function waitForPairingResponse(
   client: MatrixClient,
   timelineEvent: string,
+  decryptedEvent: string,
   roomId: string,
   request: SignedPairingRequest,
   offer: SignedPairingOffer,
   signal?: AbortSignal,
-  timeoutMs = 45_000,
+  onProgress?: (detail: string) => void,
+  progressDelayMs = 45_000,
 ): {
   promise: Promise<SignedPairingResponse>;
   cancel(): void;
@@ -2679,7 +2685,8 @@ function waitForPairingResponse(
     ) => {
       if (settled) return;
       settled = true;
-      window.clearTimeout(timeout);
+      window.clearTimeout(progressTimer);
+      window.clearTimeout(expiryTimer);
       client.off(timelineEvent as never, listener as never);
       signal?.removeEventListener("abort", abort);
       if ("response" in outcome) resolve(outcome.response);
@@ -2693,76 +2700,97 @@ function waitForPairingResponse(
       toStartOfTimeline: boolean | undefined,
     ) => {
       if (toStartOfTimeline || room?.roomId !== roomId) return;
-      void (async () => {
-        if (event.getType() === "m.room.encrypted" || event.isEncrypted()) {
-          await client.decryptEventIfNeeded(event);
-        }
-        if (event.isDecryptionFailure() || event.getType() !== "m.room.message") {
-          return;
-        }
-        const content = asRecord(event.getContent());
-        const extension = asRecord(content?.["io.malink"]);
-        if (extension?.kind === "pairing_rejection") {
-          const candidate = extension.pairing_rejection;
-          if (!candidate) return;
-          try {
-            const parsed = signedPairingRejectionSchema.parse(candidate);
-            if (
-              parsed.rejection.offerId !== offer.offer.offerId ||
-              parsed.rejection.requestId !== request.request.requestId
-            ) {
-              return;
-            }
-            const rejection = await verifyPairingRejection(
-              parsed,
-              offer,
-              request,
-            );
-            finish({
-              error: new PairingRejectedError(
-                rejection.message,
-                rejection.code,
-                rejection.retryable,
-              ),
-            });
-          } catch {
-            // Only the pinned Gateway application key may reject pairing.
+      void processMatrixEventWithDecryptionRetry(
+        event,
+        decryptedEvent,
+        async (candidate) => {
+          if (
+            candidate.getType() === "m.room.encrypted" ||
+            candidate.isEncrypted()
+          ) {
+            await client.decryptEventIfNeeded(candidate);
           }
-          return;
-        }
-        const candidate = extension?.pairing_response;
-        if (extension?.kind !== "pairing_response" || !candidate) return;
-        const parsed = candidate as SignedPairingResponse;
-        if (
-          parsed.response?.offerId !== offer.offer.offerId ||
-          parsed.response?.requestId !== request.request.requestId
-        ) {
-          return;
-        }
-        // The response signature, hidden challenge, exact request hash and
-        // certificate are the pairing authority. Allow Matrix to relay that
-        // opaque response after a Gateway transport-device restart; the
-        // homeserver cannot forge it with a substituted sender/device.
-        try {
-          await verifyPairingResponse(parsed, offer, request);
-        } catch {
-          // Untrusted room members may send lookalike responses. Ignore them
-          // and keep waiting for the Gateway application-key signature.
-          return;
-        }
-        finish({ response: parsed });
-      })().catch((error) => {
-        finish({ error: new Error(formatError(error)) });
-      });
+          if (
+            candidate.isDecryptionFailure() ||
+            candidate.getType() !== "m.room.message"
+          ) {
+            return;
+          }
+          const content = asRecord(candidate.getContent());
+          const extension = asRecord(content?.["io.malink"]);
+          if (extension?.kind === "pairing_rejection") {
+            const candidate = extension.pairing_rejection;
+            if (!candidate) return;
+            try {
+              const parsed = signedPairingRejectionSchema.parse(candidate);
+              if (
+                parsed.rejection.offerId !== offer.offer.offerId ||
+                parsed.rejection.requestId !== request.request.requestId
+              ) {
+                return;
+              }
+              const rejection = await verifyPairingRejection(
+                parsed,
+                offer,
+                request,
+              );
+              finish({
+                error: new PairingRejectedError(
+                  rejection.message,
+                  rejection.code,
+                  rejection.retryable,
+                ),
+              });
+            } catch {
+              // Only the pinned Gateway application key may reject pairing.
+            }
+            return;
+          }
+          const candidateResponse = extension?.pairing_response;
+          if (
+            extension?.kind !== "pairing_response" ||
+            !candidateResponse
+          ) {
+            return;
+          }
+          const parsed = candidateResponse as SignedPairingResponse;
+          if (
+            parsed.response?.offerId !== offer.offer.offerId ||
+            parsed.response?.requestId !== request.request.requestId
+          ) {
+            return;
+          }
+          // The response signature, hidden challenge, exact request hash and
+          // certificate are the pairing authority. Allow Matrix to relay that
+          // opaque response after a Gateway transport-device restart; the
+          // homeserver cannot forge it with a substituted sender/device.
+          try {
+            await verifyPairingResponse(parsed, offer, request);
+          } catch {
+            // Untrusted room members may send lookalike responses. Ignore them
+            // and keep waiting for the Gateway application-key signature.
+            return;
+          }
+          finish({ response: parsed });
+        },
+        (error) => finish({ error: new Error(formatError(error)) }),
+        Math.max(0, request.request.expiresAt - Date.now()),
+      ).catch((error) => finish({ error: new Error(formatError(error)) }));
     };
-    const timeout = window.setTimeout(
+    const progressTimer = window.setTimeout(() =>
+      onProgress?.(
+        "The Gateway is still preparing this device. Malink will keep waiting safely…",
+      ),
+      progressDelayMs,
+    );
+    const expiryTimer = window.setTimeout(
       () =>
         finish({
           error: new Error(
-            "The Gateway did not approve this pairing request in time.",
+            "The pairing request expired before its signed response arrived. Create a new invitation and try again.",
           ),
         }),
-      timeoutMs,
+      Math.max(0, request.request.expiresAt - Date.now()),
     );
     cancel = () =>
       finish({ error: new DOMException("Pairing was cancelled.", "AbortError") });

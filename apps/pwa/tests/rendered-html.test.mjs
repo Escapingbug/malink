@@ -715,6 +715,17 @@ test("pairs a Gateway without exposing Matrix fingerprints and signs strict comm
   assert.match(matrix, /error instanceof SecurityError && error\.code === "replay"/);
   assert.match(matrix, /Refusing to send to an unencrypted Matrix room/);
   assert.match(matrix, /kind: "pairing_request"/);
+  const pairingResponseWaiter = matrix.slice(
+    matrix.indexOf("function waitForPairingResponse"),
+    matrix.indexOf("export async function verifyAndPinGatewayDevice"),
+  );
+  assert.match(pairingResponseWaiter, /processMatrixEventWithDecryptionRetry/);
+  assert.match(pairingResponseWaiter, /request\.request\.expiresAt - Date\.now\(\)/);
+  assert.match(pairingResponseWaiter, /Malink will keep waiting safely/);
+  assert.doesNotMatch(
+    pairingResponseWaiter,
+    /did not approve this pairing request in time/,
+  );
   assert.match(matrix, /applyGatewayDeviceRotation/);
   assert.match(pairing, /verifyGatewayDeviceRotation/);
   assert.match(matrix, /MALINK_GATEWAY_TRANSPORT_PROFILE_FIELD/);
