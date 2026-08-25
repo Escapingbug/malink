@@ -861,6 +861,15 @@ test("pairs a Gateway without exposing Matrix fingerprints and signs strict comm
   assert.match(app, /clearGatewayUiCache\(window\.localStorage\)/);
   assert.match(
     app,
+    /operation: "gateway\.enrollment\.invite"[\s\S]{0,200}autoRetryRevisionConflict: true/,
+  );
+  assert.match(
+    app,
+    /operation: "gateway\.enrollment\.approve"[\s\S]{0,200}autoRetryRevisionConflict: true/,
+  );
+  assert.doesNotMatch(app, /Gateway setup request is waiting for review/);
+  assert.match(
+    app,
     /setActiveDeviceCount\(state\.gatewayState\.activeDeviceCount\)/,
   );
   assert.doesNotMatch(app, /setActiveDeviceCount\(incoming\.activeDeviceCount\)/);

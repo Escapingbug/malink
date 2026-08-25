@@ -137,6 +137,7 @@ import {
   createCancelCommandPayload,
   createPromptCommandPayload,
 } from "./commandPayloads";
+import { retryMatchingCommandRevisionConflict } from "./commandRevisionRetry";
 import { deriveComposerState } from "./composerState";
 import {
   connectionRepairReasonForDetail,
@@ -289,6 +290,10 @@ type RevisionConflictNotice = {
 
 type NativeCommandReviewNotice = MalinkCommandReview & {
   busy: boolean;
+};
+
+type SendRealCommandOptions = {
+  autoRetryRevisionConflict?: boolean;
 };
 
 type TurnHistoryLoadState = {
@@ -4037,8 +4042,12 @@ function MalinkAppRuntime() {
       const sent = await sendRealCommand({
         operation: "gateway.enrollment.invite",
         lifetimeMs: 5 * 60_000,
-      });
-      if (!sent) throw new Error("The Gateway setup request is waiting for review.");
+      }, undefined, { autoRetryRevisionConflict: true });
+      if (!sent) {
+        throw new Error(
+          "The Workspace is still synchronizing. Try creating the Gateway setup link again.",
+        );
+      }
       commandId = sent.commandId;
       const completion = await waitForCommandCompletion(
         sent.completion,
@@ -4082,10 +4091,10 @@ function MalinkAppRuntime() {
       const sent = await sendRealCommand({
         operation: "gateway.enrollment.approve",
         enrollmentId,
-      }, approverProjectId);
+      }, approverProjectId, { autoRetryRevisionConflict: true });
       if (!sent) {
         throw new Error(
-          "The approval could not be sent. Review any pending action or try again.",
+          "The Workspace is still synchronizing. Try approving this Gateway again.",
         );
       }
       commandId = sent.commandId;
@@ -4292,6 +4301,7 @@ function MalinkAppRuntime() {
   async function sendRealCommand(
     payload: CommandPayload,
     targetProjectId: string | undefined = activeWorkspace?.projectId,
+    options: SendRealCommandOptions = {},
   ): Promise<MalinkCommandSendResult | null> {
     const notice = commandNoticeFor(payload);
     const connection = malinkClientRef.current;
@@ -4314,7 +4324,33 @@ function MalinkAppRuntime() {
       revisionConflictRef.current = null;
       recoverUiNotice(notice.key);
       return result;
-    } catch (error) {
+    } catch (caughtError) {
+      let error = caughtError;
+      if (options.autoRetryRevisionConflict) {
+        try {
+          const result = await retryMatchingCommandRevisionConflict(
+            error,
+            payload.operation,
+            async (commandId) => {
+              if (nativeCommandReviewRef.current?.commandId === commandId) {
+                nativeCommandReviewRef.current = null;
+                setNativeCommandReview(null);
+              }
+              if (revisionConflictRef.current?.commandId === commandId) {
+                revisionConflictRef.current = null;
+                setRevisionConflict(null);
+              }
+              return connection.confirmRevisionRetry(commandId);
+            },
+          );
+          revisionConflictRef.current = null;
+          setRevisionConflict(null);
+          recoverUiNotice(notice.key);
+          return result;
+        } catch (retryError) {
+          error = retryError;
+        }
+      }
       if (error instanceof CommandAcknowledgementTimeoutError) throw error;
       if (error instanceof CommandReviewRequiredError) {
         const review: NativeCommandReviewNotice = {
