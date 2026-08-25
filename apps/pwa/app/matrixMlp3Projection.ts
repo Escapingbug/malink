@@ -4,6 +4,7 @@ import type {
   Mlp3SessionProjection,
   MatrixGatewayCapabilities,
   NativeClientRelease,
+  GatewayEnrollmentPending,
   SessionExtensionBinding,
   SessionExtensionDescriptor,
   SignedWorkspaceGatewayDirectory,
@@ -15,6 +16,7 @@ import {
   sessionExtensionBindingSchema,
   sessionExtensionDescriptorSchema,
   signedWorkspaceGatewayDirectorySchema,
+  gatewayEnrollmentPendingSchema,
 } from "@malink/protocol";
 
 export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 6 as const;
@@ -85,6 +87,7 @@ export type V3WorkspaceProjection = {
   capabilities: MatrixGatewayCapabilities;
   clientReleases: NativeClientRelease[];
   gatewayDirectory?: SignedWorkspaceGatewayDirectory;
+  pendingGatewayEnrollments: GatewayEnrollmentPending[];
 };
 
 export type MatrixMlp3ProjectionState = {
@@ -228,16 +231,22 @@ export class MatrixMlp3Projection {
         this.workspace?.clientReleases ?? [],
         payload.clientReleases ?? [],
       );
+      const pendingGatewayEnrollments = structuredClone(
+        payload.pendingGatewayEnrollments ?? [],
+      );
       if (this.workspace && payload.snapshotVersion <= this.workspace.snapshotVersion) {
         const gatewayDirectory = payload.gatewayDirectory ?? this.workspace.gatewayDirectory;
         if (
           clientReleases === this.workspace.clientReleases &&
-          gatewayDirectory === this.workspace.gatewayDirectory
+          gatewayDirectory === this.workspace.gatewayDirectory &&
+          JSON.stringify(pendingGatewayEnrollments) ===
+            JSON.stringify(this.workspace.pendingGatewayEnrollments)
         ) return false;
         this.seenLogicalEvents.add(event.eventId);
         this.workspace = {
           ...this.workspace,
           clientReleases,
+          pendingGatewayEnrollments,
           ...(gatewayDirectory ? { gatewayDirectory } : {}),
         };
         return true;
@@ -248,6 +257,7 @@ export class MatrixMlp3Projection {
         gatewayKeyId: payload.gatewayKeyId,
         capabilities: structuredClone(payload.capabilities),
         clientReleases,
+        pendingGatewayEnrollments,
         ...(payload.gatewayDirectory ? { gatewayDirectory: payload.gatewayDirectory } : {}),
       };
       return true;
@@ -734,6 +744,10 @@ function validateWorkspaceProjection(input: unknown): V3WorkspaceProjection {
       [],
       Array.isArray(workspace.clientReleases) ? workspace.clientReleases : [],
     ),
+    pendingGatewayEnrollments: Array.isArray(workspace.pendingGatewayEnrollments)
+      ? workspace.pendingGatewayEnrollments.map(value =>
+          gatewayEnrollmentPendingSchema.parse(value))
+      : [],
     ...(workspace.gatewayDirectory
       ? { gatewayDirectory: signedWorkspaceGatewayDirectorySchema.parse(workspace.gatewayDirectory) }
       : {}),
@@ -834,6 +848,8 @@ function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
     case "extension.interaction.resolved":
     case "project.snapshot":
     case "device.invitation.created":
+    case "gateway.enrollment.invitation.created":
+    case "gateway.enrollment.approved":
     case "notification.subscription.changed":
     case "provider.sessions.listed":
     case "provider.session.inspected":

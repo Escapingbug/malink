@@ -12,6 +12,7 @@ import {
   type MatrixGatewayCapabilities,
   type NativeClientRelease,
   type ProviderCommand,
+  type GatewayEnrollmentPending,
 } from '@malink/protocol'
 import {
   AGENT_PERMISSION_MODES,
@@ -106,6 +107,17 @@ export interface MatrixMlp3GatewayDependencies {
     commandId: string
     lifetimeMs?: number
   }) => Promise<{ pairingLink: string; expiresAt: number }>
+  createGatewayEnrollmentInvitation?: (input: {
+    requestedByDeviceId: string
+    commandId: string
+    lifetimeMs?: number
+  }) => Promise<{ enrollmentLink: string; expiresAt: number }>
+  approveGatewayEnrollment?: (input: {
+    requestedByDeviceId: string
+    commandId: string
+    enrollmentId: string
+  }) => Promise<{ gatewayNodeId: string; gatewayName: string }>
+  pendingGatewayEnrollments?: () => Promise<readonly GatewayEnrollmentPending[]>
   privilegeExecutor?: PrivilegeExecutor
   webPushService?: GatewayWebPushService
   workspaceGatewayDirectory?: () => Promise<import('@malink/protocol').SignedWorkspaceGatewayDirectory | undefined>
@@ -160,6 +172,7 @@ export class MatrixMlp3GatewayRunner {
   private state: MatrixMlp3GatewayState = 'stopped'
   private publishedClientReleases: NativeClientRelease[] = []
   private readonly publishedGatewayDirectoryRevisions = new Map<string, number>()
+  private readonly publishedGatewayEnrollmentFingerprints = new Map<string, string>()
   private readonly runtimeEpoch = randomUUID()
 
   constructor(
@@ -509,6 +522,12 @@ export class MatrixMlp3GatewayRunner {
         return
       case 'device.invitation.create':
         await this.createInvitation(project, command)
+        return
+      case 'gateway.enrollment.invitation.create':
+        await this.createGatewayEnrollmentInvitation(project, command)
+        return
+      case 'gateway.enrollment.approve':
+        await this.approveGatewayEnrollment(project, command)
         return
       case 'notification.subscribe':
         await this.subscribeNotifications(project, command)
@@ -957,6 +976,50 @@ export class MatrixMlp3GatewayRunner {
       pairingLink: invitation.pairingLink,
       expiresAt: invitation.expiresAt,
     })
+  }
+
+  private async createGatewayEnrollmentInvitation(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.enrollment.invitation.create'>,
+  ): Promise<void> {
+    if (!this.dependencies.createGatewayEnrollmentInvitation) {
+      throw new Error('This Gateway host does not support Gateway enrollment')
+    }
+    const invitation = await this.dependencies.createGatewayEnrollmentInvitation({
+      requestedByDeviceId: command.deviceId,
+      commandId: command.commandId,
+      ...(command.payload.lifetimeMs === undefined
+        ? {}
+        : { lifetimeMs: command.payload.lifetimeMs }),
+    })
+    const event = this.eventFor(project, undefined, command, 'gateway-enrollment-invitation', {
+      type: 'gateway.enrollment.invitation.created',
+      enrollmentLink: invitation.enrollmentLink,
+      expiresAt: invitation.expiresAt,
+    })
+    await this.settleAndDeliver(project, command, event, 'succeeded', invitation)
+  }
+
+  private async approveGatewayEnrollment(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.enrollment.approve'>,
+  ): Promise<void> {
+    if (!this.dependencies.approveGatewayEnrollment) {
+      throw new Error('This Gateway host does not support Gateway enrollment approval')
+    }
+    const approved = await this.dependencies.approveGatewayEnrollment({
+      requestedByDeviceId: command.deviceId,
+      commandId: command.commandId,
+      enrollmentId: command.payload.enrollmentId,
+    })
+    const event = this.eventFor(project, undefined, command, 'gateway-enrollment-approved', {
+      type: 'gateway.enrollment.approved',
+      enrollmentId: command.payload.enrollmentId,
+      gatewayNodeId: approved.gatewayNodeId,
+      gatewayName: approved.gatewayName,
+    })
+    await this.settleAndDeliver(project, command, event, 'succeeded', approved)
+    await this.syncState()
   }
 
   private async updateProject(
@@ -1623,10 +1686,23 @@ export class MatrixMlp3GatewayRunner {
   private async publishWorkspaceSnapshot(project: V3ProjectRuntime): Promise<void> {
     const capabilities = this.discoverCapabilities(project)
     const gatewayDirectory = await this.dependencies.workspaceGatewayDirectory?.()
+    const pendingGatewayEnrollments = [
+      ...(await this.dependencies.pendingGatewayEnrollments?.() ?? []),
+    ].map(enrollment => ({
+      ...enrollment,
+      approverProjectId: project.project.projectId,
+    }))
+    const enrollmentFingerprint = JSON.stringify(pendingGatewayEnrollments)
     const directoryChanged = gatewayDirectory !== undefined &&
       gatewayDirectory.directory.revision !==
         this.publishedGatewayDirectoryRevisions.get(project.project.projectId)
-    if (JSON.stringify(project.project.capabilities) !== JSON.stringify(capabilities) || directoryChanged) {
+    const enrollmentsChanged = enrollmentFingerprint !==
+      this.publishedGatewayEnrollmentFingerprints.get(project.project.projectId)
+    if (
+      JSON.stringify(project.project.capabilities) !== JSON.stringify(capabilities)
+      || directoryChanged
+      || enrollmentsChanged
+    ) {
       project.project.capabilities = capabilities
       project.project.capabilitySnapshotVersion += 1
       if (gatewayDirectory) {
@@ -1635,6 +1711,10 @@ export class MatrixMlp3GatewayRunner {
           gatewayDirectory.directory.revision,
         )
       }
+      this.publishedGatewayEnrollmentFingerprints.set(
+        project.project.projectId,
+        enrollmentFingerprint,
+      )
       await this.persist(project)
     }
     if (project.project.capabilitySnapshotVersion < 1 || !project.project.capabilities) {
@@ -1662,6 +1742,7 @@ export class MatrixMlp3GatewayRunner {
           ? { clientReleases: structuredClone(this.publishedClientReleases) }
           : {}),
         ...(gatewayDirectory ? { gatewayDirectory } : {}),
+        ...(pendingGatewayEnrollments.length > 0 ? { pendingGatewayEnrollments } : {}),
         snapshotVersion: project.project.capabilitySnapshotVersion,
       },
     }

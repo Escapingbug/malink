@@ -1204,6 +1204,15 @@ function toLegacyCompletion(
     ...(completion.sessionId ? { sessionId: completion.sessionId } : {}),
     ...(payload.type === "device.invitation.created"
       ? { result: { pairingLink: payload.pairingLink, expiresAt: payload.expiresAt } }
+      : payload.type === "gateway.enrollment.invitation.created"
+        ? { result: { enrollmentLink: payload.enrollmentLink, expiresAt: payload.expiresAt } }
+      : payload.type === "gateway.enrollment.approved"
+        ? {
+            result: {
+              gatewayNodeId: payload.gatewayNodeId,
+              gatewayName: payload.gatewayName,
+            },
+          }
       : payload.type === "provider.sessions.listed" || payload.type === "provider.session.inspected"
         ? { result: payload }
       : {}),
@@ -1300,6 +1309,8 @@ function gatewayState(
     ...(protocol.projection.workspace?.gatewayDirectory
       ? { gatewayDirectory: protocol.projection.workspace.gatewayDirectory }
       : {}),
+    pendingGatewayEnrollments:
+      protocol.projection.workspace?.pendingGatewayEnrollments ?? [],
   };
 }
 
@@ -1314,6 +1325,12 @@ function aggregateGatewayState(
     .map(value => value.projection.workspace?.gatewayDirectory)
     .filter((value): value is NonNullable<typeof value> => Boolean(value))
     .sort((left, right) => right.directory.revision - left.directory.revision)[0];
+  const pendingGatewayEnrollments = states
+    .flatMap(value => value.pendingGatewayEnrollments ?? [])
+    .filter((value, index, all) =>
+      all.findIndex(candidate => candidate.enrollmentId === value.enrollmentId) === index
+    )
+    .sort((left, right) => left.requestedAt - right.requestedAt);
   return {
     ...first,
     stateVersion: Math.max(...states.map(value => value.stateVersion)),
@@ -1328,6 +1345,7 @@ function aggregateGatewayState(
     nativeClientReleases: states.flatMap(value => value.nativeClientReleases ?? [])
       .filter((value, index, all) => all.findIndex(candidate => candidate.buildId === value.buildId) === index),
     ...(directory ? { gatewayDirectory: directory } : {}),
+    pendingGatewayEnrollments,
   };
 }
 

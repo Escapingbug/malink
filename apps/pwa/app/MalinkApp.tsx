@@ -120,6 +120,7 @@ import {
   hasShortDeviceInvitation,
   resolveShortDeviceInvitation,
   shortenDeviceInvitation,
+  shortenEncryptedInvitation,
 } from "./invitationRelay";
 import {
   compareChatMessages,
@@ -1023,6 +1024,12 @@ function MalinkAppRuntime() {
   const [invitationError, setInvitationError] = useState<string | null>(null);
   const [invitationReauthRequired, setInvitationReauthRequired] =
     useState(false);
+  const [gatewayEnrollmentInvitation, setGatewayEnrollmentInvitation] = useState<{
+    link: string;
+    expiresAt: number;
+  } | null>(null);
+  const [gatewayEnrollmentBusy, setGatewayEnrollmentBusy] = useState(false);
+  const [gatewayEnrollmentError, setGatewayEnrollmentError] = useState<string | null>(null);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [providerHistoryOpen, setProviderHistoryOpen] = useState(false);
   const [providerHistoryProjectId, setProviderHistoryProjectId] = useState("");
@@ -3582,6 +3589,9 @@ function MalinkAppRuntime() {
     setDeviceInvitation(null);
     setInvitationBusy(false);
     setInvitationError(null);
+    setGatewayEnrollmentInvitation(null);
+    setGatewayEnrollmentBusy(false);
+    setGatewayEnrollmentError(null);
   }
 
   function detachClientForNativeBootstrap() {
@@ -4011,6 +4021,94 @@ function MalinkAppRuntime() {
       setDeviceInvitation(null);
       setInvitationError("This device invitation expired. Create a new one.");
     }, Math.max(0, invitation.expiresAt - Date.now()));
+  }
+
+  async function createGatewayEnrollment(): Promise<void> {
+    if (!trustedGateway || !malinkClientRef.current) {
+      setGatewayEnrollmentError(
+        "Connect to the Workspace before adding a Gateway.",
+      );
+      return;
+    }
+    setGatewayEnrollmentBusy(true);
+    setGatewayEnrollmentError(null);
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand({
+        operation: "gateway.enrollment.invite",
+        lifetimeMs: 5 * 60_000,
+      });
+      if (!sent) throw new Error("The Gateway setup request is waiting for review.");
+      commandId = sent.commandId;
+      const completion = await waitForCommandCompletion(
+        sent.completion,
+        DEVICE_INVITATION_RESULT_TIMEOUT_MS,
+      );
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message
+            ?? "The connected Gateway could not create a setup link.",
+        );
+      }
+      const enrollment = parseGatewayEnrollmentInvitationResult(completion.result);
+      const link = await shortenEncryptedInvitation(
+        enrollment.enrollmentLink,
+        enrollment.expiresAt,
+        window.location.href,
+      );
+      setGatewayEnrollmentInvitation({ link, expiresAt: enrollment.expiresAt });
+    } catch (error) {
+      setGatewayEnrollmentError(formatUiError(error));
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+      setGatewayEnrollmentBusy(false);
+    }
+  }
+
+  async function approveGatewayEnrollment(
+    enrollmentId: string,
+    approverProjectId?: string,
+  ): Promise<void> {
+    setGatewayEnrollmentBusy(true);
+    setGatewayEnrollmentError(null);
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand({
+        operation: "gateway.enrollment.approve",
+        enrollmentId,
+      }, approverProjectId);
+      if (!sent) throw new Error("The approval is waiting for command review.");
+      commandId = sent.commandId;
+      const completion = await waitForCommandCompletion(
+        sent.completion,
+        DEVICE_INVITATION_RESULT_TIMEOUT_MS,
+      );
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message
+            ?? "The connected Gateway could not approve this request.",
+        );
+      }
+      setGatewayEnrollmentInvitation(null);
+      showUiNotice(
+        `gateway-enrollment:${enrollmentId}`,
+        "connection",
+        "success",
+        "Gateway approved. It will appear here automatically after its first sync.",
+        6_000,
+      );
+    } catch (error) {
+      setGatewayEnrollmentError(formatUiError(error));
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+      setGatewayEnrollmentBusy(false);
+    }
   }
 
   async function confirmPairing(
@@ -7317,6 +7415,10 @@ function MalinkAppRuntime() {
         invitationBusy={invitationBusy}
         invitationError={invitationError}
         invitationReauthRequired={invitationReauthRequired}
+        gatewayEnrollmentInvitation={gatewayEnrollmentInvitation}
+        pendingGatewayEnrollments={gatewayState?.pendingGatewayEnrollments ?? []}
+        gatewayEnrollmentBusy={gatewayEnrollmentBusy}
+        gatewayEnrollmentError={gatewayEnrollmentError}
         updateState={pwaUpdateState}
         nativeUpdateState={nativeUpdateState}
         nativeUpdateBusy={nativeUpdateBusy}
@@ -7358,6 +7460,14 @@ function MalinkAppRuntime() {
           setDeviceInvitation(null);
           setInvitationReauthRequired(false);
           setInvitationError(null);
+        }}
+        onCreateGatewayEnrollment={() => void createGatewayEnrollment()}
+        onApproveGatewayEnrollment={(enrollmentId, approverProjectId) =>
+          void approveGatewayEnrollment(enrollmentId, approverProjectId)
+        }
+        onClearGatewayEnrollment={() => {
+          setGatewayEnrollmentInvitation(null);
+          setGatewayEnrollmentError(null);
         }}
         onCheckForUpdates={() => void pwaUpdateRef.current?.checkNow()}
         onUpdateNativeApp={() => void recoverNativeAppUpdate(true)}
@@ -7407,8 +7517,11 @@ function commandNoticeFor(payload: CommandPayload): {
   key: string;
   scope: "session" | "composer" | "pairing";
 } {
-  if (payload.operation === "device.invite") {
-    return { key: "pairing:device-invite", scope: "pairing" };
+  if (
+    payload.operation === "device.invite" ||
+    payload.operation.startsWith("gateway.enrollment.")
+  ) {
+    return { key: `pairing:${payload.operation}`, scope: "pairing" };
   }
   if (payload.operation === "prompt") {
     return { key: "composer:send", scope: "composer" };
@@ -7636,6 +7749,12 @@ function describeConflictedAction(payload: CommandPayload): string {
       return "The session settings change";
     case "session.create":
       return "The new session request";
+    case "project.settings":
+      return "The project settings request";
+    case "provider.sessions.list":
+      return "The provider history request";
+    case "provider.session.inspect":
+      return "The provider session request";
     case "session.archive":
       return "The archive request";
     case "session.restore":
@@ -7644,6 +7763,10 @@ function describeConflictedAction(payload: CommandPayload): string {
       return "The delete request";
     case "device.invite":
       return "The device invitation request";
+    case "gateway.enrollment.invite":
+      return "The Gateway setup-link request";
+    case "gateway.enrollment.approve":
+      return "The Gateway approval request";
   }
 }
 
@@ -7669,6 +7792,10 @@ function nativeCommandReviewTitle(
       return "A cancel action needs review";
     case "device.invite":
       return "A device invitation needs review";
+    case "gateway.enrollment.invite":
+      return "A Gateway setup link needs review";
+    case "gateway.enrollment.approve":
+      return "A Gateway approval needs review";
     default:
       return "A previous action needs review";
   }
@@ -7697,6 +7824,10 @@ function nativeCommandReviewDescription(
         return "cancel action";
       case "device.invite":
         return "device invitation";
+      case "gateway.enrollment.invite":
+        return "Gateway setup link";
+      case "gateway.enrollment.approve":
+        return "Gateway approval";
       default:
         return "action";
     }
@@ -7752,6 +7883,29 @@ function parseGatewayInvitationResult(input: unknown): {
   }
   return {
     pairingLink: result.pairingLink,
+    expiresAt: result.expiresAt,
+  };
+}
+
+function parseGatewayEnrollmentInvitationResult(input: unknown): {
+  enrollmentLink: string;
+  expiresAt: number;
+} {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("The connected Gateway returned an invalid setup link.");
+  }
+  const result = input as Record<string, unknown>;
+  if (
+    typeof result.enrollmentLink !== "string" ||
+    !result.enrollmentLink.startsWith("malink://gateway-enroll#data=") ||
+    typeof result.expiresAt !== "number" ||
+    !Number.isSafeInteger(result.expiresAt) ||
+    result.expiresAt <= Date.now()
+  ) {
+    throw new Error("The connected Gateway returned an invalid setup link.");
+  }
+  return {
+    enrollmentLink: result.enrollmentLink,
     expiresAt: result.expiresAt,
   };
 }

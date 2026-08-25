@@ -2,7 +2,7 @@ import { parseArgs } from 'node:util'
 import { spawn } from 'node:child_process'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import { chmodSync, existsSync, readdirSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, hostname } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import QRCode from 'qrcode'
@@ -17,6 +17,7 @@ import {
     FileWorkspaceDeviceAuthorization,
     FileWorkspaceGatewayDirectory,
     ensurePortableWorkspaceGrant,
+    joinWorkspaceThroughGatewayEnrollment,
 } from './gateway/pairing/index'
 import { loadProviderProfiles } from './providers/configured'
 import { resolveNodePath } from './utils/nodePath'
@@ -78,6 +79,7 @@ async function main() {
             'idempotency-key': { type: 'string' },
             'privilege-approval': { type: 'boolean', default: false },
             'gateway-data-dir': { type: 'string' },
+            'gateway-name': { type: 'string' },
             'allow-executable': { type: 'string', multiple: true },
             'allow-arbitrary-root-executables': { type: 'boolean', default: false },
             'target-uid': { type: 'string' },
@@ -484,7 +486,7 @@ async function handleGatewayCommand(
       [--privilege-approval]
       [--qr terminal|png|none] [--output PATH] [--json]
   malink gateway invite-gateway --gateway-data-dir PATH
-  malink gateway join <invitation-link> --gateway-data-dir PATH
+  malink gateway join <invitation-link> --gateway-data-dir PATH [--gateway-name NAME]
   malink gateway remove-gateway <gateway-node-id> --gateway-data-dir PATH
   malink gateway devices [--socket PATH] [--json]
   malink gateway cancel <invitation-id> [--socket PATH]
@@ -553,6 +555,29 @@ async function handleGatewayCommand(
         const link = positionals[1]
         if (!link) throw new Error('Usage: malink gateway join <invitation-link> --gateway-data-dir PATH')
         const dataDirectory = gatewayDataDirectory(values)
+        if (link.startsWith('malink://gateway-enroll#data=') || /^https?:\/\//u.test(link)) {
+            const gatewayName = stringOption(values['gateway-name'])
+                ?? process.env.MALINK_GATEWAY_NAME
+                ?? hostname()
+            const joined = await joinWorkspaceThroughGatewayEnrollment({
+                invitationLink: link,
+                dataDirectory,
+                gatewayName,
+                onProgress: progress => {
+                    if (progress.phase === 'waiting') {
+                        console.log('Gateway enrollment request sent.')
+                        console.log(`Verification code: ${progress.verificationCode}`)
+                        console.log('Approve this Gateway from an existing Malink client.')
+                    }
+                },
+            })
+            console.log(`Joined Workspace ${joined.workspaceId}.`)
+            console.log(`Gateway node ID: ${joined.gatewayNodeId}`)
+            console.log(`Created encrypted project room: ${joined.projectRoomId}`)
+            console.log(`Gateway configuration: ${joined.fixturePath}`)
+            console.log('Start the Gateway with MALINK_MATRIX_DATA_DIR set to this data directory.')
+            return
+        }
         const identityStore = new FileGatewayIdentityStore(
             join(dataDirectory, 'gateway-identity.json'),
         )

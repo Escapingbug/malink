@@ -7,6 +7,8 @@ import {
     MLP3_MATRIX_WORKSPACE_DEVICE_GRANT_EVENT_TYPE,
     MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE,
     MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
+    MLP3_MATRIX_GATEWAY_ENROLLMENT_REQUEST_EVENT_TYPE,
+    MLP3_MATRIX_GATEWAY_ENROLLMENT_RESPONSE_EVENT_TYPE,
     pairingOperationSchema,
     type PairingOperation,
     type SignedWorkspaceGatewayDirectory,
@@ -27,6 +29,8 @@ import {
     ensurePortableWorkspaceGrant,
     trustedDeviceFromRecord,
     trustedDeviceFromWorkspaceGrant,
+    FileGatewayEnrollmentCoordinator,
+    createGatewayJoinInvitation,
 } from '../src/gateway/pairing/index.js'
 import {
     FileMatrixLoginTokenIssuer,
@@ -58,9 +62,14 @@ interface LocalMatrixFixture {
     gateway: { userId: string }
 }
 
+const dataDirectory = process.env.MALINK_MATRIX_DATA_DIR
+    ?? join(process.cwd(), 'dev', 'matrix', 'gateway-data')
+const enrolledFixturePath = join(dataDirectory, 'matrix-fixture.json')
 const fixture = await readJson<LocalMatrixFixture>(
     process.env.MALINK_MATRIX_FIXTURE
-        ?? join(process.cwd(), 'dev', 'matrix', 'local-test.json'),
+        ?? (existsSync(enrolledFixturePath)
+            ? enrolledFixturePath
+            : join(process.cwd(), 'dev', 'matrix', 'local-test.json')),
 )
 assertAllowedHomeserver(fixture.homeserver)
 
@@ -87,8 +96,6 @@ if (deterministicE2eProvider) {
 }
 const cwd = process.env.MALINK_CWD ?? process.cwd()
 const sessionExtensionRegistry = await createSessionExtensionRegistryFromEnvironment()
-const dataDirectory = process.env.MALINK_MATRIX_DATA_DIR
-    ?? join(process.cwd(), 'dev', 'matrix', 'gateway-data')
 const adminSocketPath = process.env.MALINK_GATEWAY_ADMIN_SOCKET
     ?? join(dataDirectory, 'admin.sock')
 process.env.MALINK_GATEWAY_ADMIN_SOCKET = adminSocketPath
@@ -102,6 +109,8 @@ if (privilegeExecutor) process.env.MALINK_PRIVILEGE_AVAILABLE = '1'
 const runId = Date.now().toString(36).toUpperCase()
 const loginUser = process.env.MALINK_MATRIX_GATEWAY_USER ?? 'gateway'
 const gatewayMatrixDeviceId = `MALINK_GATEWAY_${runId}`
+const gatewaySessionPath = process.env.MALINK_MATRIX_GATEWAY_SESSION_FILE
+    ?? join(dataDirectory, 'matrix-session.json')
 const login = await loadOrLoginMatrixGateway({
     homeserver: fixture.homeserver,
     loginUser,
@@ -109,8 +118,7 @@ const login = await loadOrLoginMatrixGateway({
     deviceDisplayName: `${
         process.env.MALINK_GATEWAY_NAME ?? 'Malink local Gateway'
     } ${gatewayMatrixDeviceId}`,
-    sessionPath: process.env.MALINK_MATRIX_GATEWAY_SESSION_FILE
-        ?? join(dataDirectory, 'matrix-session.json'),
+    sessionPath: gatewaySessionPath,
     readPassword: async () => process.env.MALINK_MATRIX_GATEWAY_PASSWORD
         ?? await readPasswordFile(process.env.MALINK_MATRIX_GATEWAY_PASSWORD_FILE)
         ?? (isLoopbackHomeserver(fixture.homeserver) ? 'malink-gateway-local' : undefined),
@@ -177,6 +185,15 @@ const workspaceAuthorization = new FileWorkspaceDeviceAuthorization(
     join(dataDirectory, 'workspace-device-authorization.json'),
     identity,
 )
+const gatewayEnrollmentCoordinator = new FileGatewayEnrollmentCoordinator(
+    join(dataDirectory, 'gateway-enrollments.json'),
+    identity,
+)
+const gatewayLoginTokenIssuer = new FileMatrixLoginTokenIssuer({
+    credentialsPath: gatewaySessionPath,
+    readPassword: async () => process.env.MALINK_MATRIX_GATEWAY_PASSWORD
+        ?? await readPasswordFile(process.env.MALINK_MATRIX_GATEWAY_PASSWORD_FILE),
+})
 pairingService.setWorkspaceDirectoryProvider(() => workspaceDirectory.load())
 const pwaLoginPath = process.env.MALINK_PWA_LOGIN_FILE
     ?? join(dirname(dataDirectory), 'pwa-login.json')
@@ -381,6 +398,23 @@ async function publishWorkspaceState(
 
 const stopWorkspaceControl = client.onRoomEvent(event => {
     if (event.encrypted) return
+    if (
+        event.roomId === currentTransport.roomId
+        && event.eventType === MLP3_MATRIX_GATEWAY_ENROLLMENT_REQUEST_EVENT_TYPE
+    ) {
+        void gatewayEnrollmentCoordinator.registerRequest(event.content)
+            .then(async pending => {
+                process.stdout.write(
+                    `Gateway ${pending.gatewayName} requested Workspace enrollment; `
+                    + `verification=${pending.verificationCode}.\n`,
+                )
+                await runner?.syncState()
+            })
+            .catch(error => {
+                process.stderr.write(`[gateway-enrollment] rejected request: ${formatError(error)}\n`)
+            })
+        return
+    }
     let merge: (() => Promise<void>) | undefined
     if (event.eventType === MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE) {
         merge = async () => { await workspaceDirectory.merge(event.content) }
@@ -487,6 +521,58 @@ runner = new MatrixMlp3GatewayRunner(config, {
             expiresAt: created.expiresAt,
         }
     },
+    createGatewayEnrollmentInvitation: async ({ requestedByDeviceId, lifetimeMs }) => {
+        const now = Date.now()
+        const expiresAt = now + (lifetimeMs ?? 5 * 60_000)
+        const loginResult = await gatewayLoginTokenIssuer.issue({
+            homeserver: currentTransport.homeserver,
+            offerExpiresAt: expiresAt,
+        })
+        if (loginResult.status !== 'ready') {
+            throw new Error(
+                `The Matrix Gateway account cannot issue a one-time login token (${loginResult.status})`,
+            )
+        }
+        const invitation = await gatewayEnrollmentCoordinator.createInvitation(
+            currentTransport,
+            loginResult.invitation,
+            now,
+            lifetimeMs,
+        )
+        process.stdout.write(
+            `Device ${requestedByDeviceId} authorized Gateway enrollment ${invitation.enrollmentId}.\n`,
+        )
+        return { enrollmentLink: invitation.link, expiresAt: invitation.expiresAt }
+    },
+    approveGatewayEnrollment: async ({ requestedByDeviceId, enrollmentId }) => {
+        const joinInvitation = createGatewayJoinInvitation(
+            identity,
+            undefined,
+            Date.now(),
+            2 * 60_000,
+        )
+        const approved = await gatewayEnrollmentCoordinator.approve(
+            enrollmentId,
+            joinInvitation.link,
+        )
+        if (!client.setApplicationRoomState) {
+            throw new Error('Matrix transport cannot publish Gateway enrollment responses')
+        }
+        await client.setApplicationRoomState({
+            roomId: currentTransport.roomId,
+            eventType: MLP3_MATRIX_GATEWAY_ENROLLMENT_RESPONSE_EVENT_TYPE,
+            stateKey: enrollmentId,
+            content: approved.response,
+        })
+        process.stdout.write(
+            `Device ${requestedByDeviceId} approved Gateway ${approved.gatewayName}.\n`,
+        )
+        return {
+            gatewayNodeId: approved.gatewayNodeId,
+            gatewayName: approved.gatewayName,
+        }
+    },
+    pendingGatewayEnrollments: () => gatewayEnrollmentCoordinator.pending(),
     workspaceGatewayDirectory: () => workspaceDirectory.load(),
     onRejected: (event, error) => {
         process.stderr.write(

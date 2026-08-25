@@ -1352,6 +1352,9 @@ export class MatrixGatewayRunner {
                     },
                 }
             }
+            case 'gateway.enrollment.invite':
+            case 'gateway.enrollment.approve':
+                throw new Error('Gateway enrollment requires the MLP/3 Gateway runtime')
         }
     }
 
@@ -2264,6 +2267,8 @@ function commandSessionId(command: MalinkCommand): string | null {
     switch (command.payload.operation) {
         case 'session.create':
         case 'device.invite':
+        case 'gateway.enrollment.invite':
+        case 'gateway.enrollment.approve':
         case 'project.settings':
         case 'provider.sessions.list':
         case 'provider.session.inspect':

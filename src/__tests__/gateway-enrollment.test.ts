@@ -1,0 +1,140 @@
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import {
+  exportPairingPublicKey,
+  gatewayEnrollmentVerificationCode,
+  generateDeviceKeyPair,
+  InMemoryReplayStore,
+  openSecureEnvelope,
+  signGatewayEnrollmentRequest,
+  verifyGatewayEnrollmentInvitation,
+} from '@malink/security'
+import {
+  FileGatewayEnrollmentCoordinator,
+  FileGatewayIdentityStore,
+  createGatewayJoinInvitation,
+  decodeGatewayEnrollmentInvitationLink,
+} from '@/gateway/pairing'
+
+describe('Gateway enrollment rendezvous', () => {
+  it('requires client approval before releasing the Workspace grant', async () => {
+    const now = 1_800_000_000_000
+    const directory = await mkdtemp(join(tmpdir(), 'malink-gateway-enrollment-'))
+    const identity = await new FileGatewayIdentityStore(
+      join(directory, 'gateway-identity.json'),
+    ).loadOrCreate('workspace-1', now)
+    const coordinator = new FileGatewayEnrollmentCoordinator(
+      join(directory, 'gateway-enrollments.json'),
+      identity,
+    )
+    const created = await coordinator.createInvitation({
+      homeserver: 'https://matrix.example.org',
+      roomId: '!project:example.org',
+      userId: '@gateway:example.org',
+      deviceId: 'OLDGATEWAY',
+      ed25519: 'old-gateway-ed25519-key',
+    }, {
+      homeserver: 'https://matrix.example.org',
+      userId: '@gateway:example.org',
+      loginToken: 'one-time-login-token',
+      expiresAt: now + 120_000,
+    }, now, 120_000)
+
+    const signedInvitation = decodeGatewayEnrollmentInvitationLink(created.link)
+    const invitation = await verifyGatewayEnrollmentInvitation(signedInvitation, now)
+    expect(JSON.stringify(invitation)).not.toContain(identity.serialized.privateKey.d)
+    expect(await coordinator.pending(now)).toEqual([])
+
+    const requestKeys = await generateDeviceKeyPair()
+    const gatewayNodeId = 'new-gateway-node'
+    const request = await signGatewayEnrollmentRequest({
+      kind: 'malink.gateway.enrollment-request',
+      version: 1,
+      enrollmentId: invitation.enrollmentId,
+      workspaceId: invitation.workspaceId,
+      gatewayNodeId,
+      gatewayName: 'Office Gateway',
+      gatewayKey: await exportPairingPublicKey(requestKeys.publicKey),
+      challenge: invitation.challenge,
+      issuedAt: now + 1,
+      expiresAt: now + 119_000,
+    }, requestKeys.privateKey, requestKeys.keyId)
+    const pending = await coordinator.registerRequest(request, now + 1)
+    expect(pending).toMatchObject({
+      gatewayNodeId,
+      gatewayName: 'Office Gateway',
+      verificationCode: await gatewayEnrollmentVerificationCode(request.request),
+    })
+
+    const bearer = createGatewayJoinInvitation(identity, undefined, now + 2, 60_000)
+    const approved = await coordinator.approve(
+      invitation.enrollmentId,
+      bearer.link,
+      now + 2,
+    )
+    expect(JSON.stringify(approved.response)).not.toContain('workspaceKeyPair')
+    const opened = await openSecureEnvelope(approved.response.sealedInvitation, {
+      recipientPrivateKey: requestKeys.privateKey,
+      senderPublicKey: identity.keys.publicKey,
+      expected: {
+        gatewayId: identity.workspaceId,
+        conversationId: invitation.enrollmentId,
+        direction: 'gateway_to_device',
+        senderDeviceId: identity.gatewayNodeId,
+        recipientDeviceId: gatewayNodeId,
+        senderKeyId: identity.keys.keyId,
+        recipientKeyId: requestKeys.keyId,
+      },
+      replayStore: new InMemoryReplayStore(),
+      now: now + 3,
+    })
+    expect(opened.plaintext).toEqual({ kind: 'gateway_join', link: bearer.link })
+    expect(await coordinator.pending(now + 3)).toEqual([])
+  })
+
+  it('rejects a request that does not carry the invitation challenge', async () => {
+    const now = 1_800_000_000_000
+    const directory = await mkdtemp(join(tmpdir(), 'malink-gateway-enrollment-reject-'))
+    const identity = await new FileGatewayIdentityStore(
+      join(directory, 'gateway-identity.json'),
+    ).loadOrCreate('workspace-2', now)
+    const coordinator = new FileGatewayEnrollmentCoordinator(
+      join(directory, 'gateway-enrollments.json'),
+      identity,
+    )
+    const created = await coordinator.createInvitation({
+      homeserver: 'https://matrix.example.org',
+      roomId: '!project:example.org',
+      userId: '@gateway:example.org',
+      deviceId: 'OLDGATEWAY',
+      ed25519: 'old-gateway-ed25519-key',
+    }, {
+      homeserver: 'https://matrix.example.org',
+      userId: '@gateway:example.org',
+      loginToken: 'one-time-login-token',
+      expiresAt: now + 60_000,
+    }, now, 60_000)
+    const invitation = await verifyGatewayEnrollmentInvitation(
+      decodeGatewayEnrollmentInvitationLink(created.link),
+      now,
+    )
+    const requestKeys = await generateDeviceKeyPair()
+    const request = await signGatewayEnrollmentRequest({
+      kind: 'malink.gateway.enrollment-request',
+      version: 1,
+      enrollmentId: invitation.enrollmentId,
+      workspaceId: invitation.workspaceId,
+      gatewayNodeId: 'attacker-node',
+      gatewayName: 'Wrong Gateway',
+      gatewayKey: await exportPairingPublicKey(requestKeys.publicKey),
+      challenge: 'A'.repeat(43),
+      issuedAt: now + 1,
+      expiresAt: now + 59_000,
+    }, requestKeys.privateKey, requestKeys.keyId)
+    await expect(coordinator.registerRequest(request, now + 1)).rejects.toThrow(
+      /binding is invalid/u,
+    )
+  })
+})

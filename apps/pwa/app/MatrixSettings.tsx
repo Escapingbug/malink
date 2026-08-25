@@ -24,6 +24,11 @@ import {
   type ConnectionRepairReason,
 } from "./connectionPresentation";
 import type { WebPushNotificationState } from "./webPushNotifications";
+import type { GatewayEnrollmentPending } from "@malink/protocol";
+import {
+  GatewayEnrollmentPanel,
+  type GeneratedGatewayEnrollment,
+} from "./GatewayEnrollmentPanel";
 
 type Props = {
   open: boolean;
@@ -40,6 +45,10 @@ type Props = {
   invitationBusy: boolean;
   invitationError: string | null;
   invitationReauthRequired: boolean;
+  gatewayEnrollmentInvitation: GeneratedGatewayEnrollment | null;
+  pendingGatewayEnrollments: GatewayEnrollmentPending[];
+  gatewayEnrollmentBusy: boolean;
+  gatewayEnrollmentError: string | null;
   updateState: PwaUpdateState;
   nativeUpdateState: NativeUpdateStatus | null;
   nativeUpdateBusy: boolean;
@@ -56,6 +65,9 @@ type Props = {
   onPasswordLogin(userId: string, password: string): void;
   onCreateInvitation(password?: string): void;
   onClearInvitation(): void;
+  onCreateGatewayEnrollment(): void;
+  onApproveGatewayEnrollment(enrollmentId: string, approverProjectId?: string): void;
+  onClearGatewayEnrollment(): void;
   onCheckForUpdates(): void;
   onUpdateNativeApp(): void;
   onRestartApp(): void;
@@ -87,6 +99,10 @@ function MatrixSettingsDialog({
   invitationBusy,
   invitationError,
   invitationReauthRequired,
+  gatewayEnrollmentInvitation,
+  pendingGatewayEnrollments,
+  gatewayEnrollmentBusy,
+  gatewayEnrollmentError,
   updateState,
   nativeUpdateState,
   nativeUpdateBusy,
@@ -103,6 +119,9 @@ function MatrixSettingsDialog({
   onPasswordLogin,
   onCreateInvitation,
   onClearInvitation,
+  onCreateGatewayEnrollment,
+  onApproveGatewayEnrollment,
+  onClearGatewayEnrollment,
   onCheckForUpdates,
   onUpdateNativeApp,
   onRestartApp,
@@ -128,6 +147,7 @@ function MatrixSettingsDialog({
     status === "securing" ||
     pairingBusy ||
     invitationBusy ||
+    gatewayEnrollmentBusy ||
     webPushBusy;
   const needsAccount =
     Boolean(pairingPreview) && (!trustedGateway || repairRequired);
@@ -219,8 +239,9 @@ function MatrixSettingsDialog({
         <div className="settings-security-note">
           <span>✓</span>
           <p>
-            Scan a one-time code from Malink on your computer. Only devices
-            you approve can see or send messages.
+            {addingGateway
+              ? "The setup link only tells the new Gateway where to request access. It joins only after you approve the matching code."
+              : "Scan a one-time code from Malink on your computer. Only devices you approve can see or send messages."}
           </p>
         </div>
 
@@ -228,15 +249,19 @@ function MatrixSettingsDialog({
           <section className="gateway-profile-list" aria-label="Saved computers">
             <header>
               <span>
-                <strong>Computers</strong>
-                <small>{savedGateways.length} saved on this device</small>
+                <strong>Workspace Gateways</strong>
+                <small>{savedGateways.length} available to every authorized client</small>
               </span>
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => setAddingGateway((current) => !current)}
               >
-                {addingGateway ? "Cancel" : "Add computer"}
+                {addingGateway
+                  ? "Close"
+                  : pendingGatewayEnrollments.length > 0
+                    ? `Review request (${pendingGatewayEnrollments.length})`
+                    : "Add Gateway"}
               </button>
             </header>
             <div>
@@ -250,7 +275,7 @@ function MatrixSettingsDialog({
                     <span className="gateway-device-mark" aria-hidden="true">G</span>
                     <span>
                       <strong>{gateway.gatewayName}</strong>
-                      <small>Managed by this Workspace</small>
+                      <small>Online route managed by this Workspace</small>
                     </span>
                     <b>✓</b>
                   </div>
@@ -306,9 +331,24 @@ function MatrixSettingsDialog({
           </section>
         )}
 
-        <PairingWizard
+        {addingGateway && (
+          <GatewayEnrollmentPanel
+            invitation={gatewayEnrollmentInvitation}
+            pending={pendingGatewayEnrollments}
+            busy={gatewayEnrollmentBusy}
+            error={gatewayEnrollmentError}
+            onCreate={onCreateGatewayEnrollment}
+            onApprove={onApproveGatewayEnrollment}
+            onClear={() => {
+              setAddingGateway(false);
+              onClearGatewayEnrollment();
+            }}
+          />
+        )}
+
+        {!addingGateway && <PairingWizard
           preview={pairingPreview}
-          trustedGateway={addingGateway ? null : trustedGateway}
+          trustedGateway={trustedGateway}
           repairReason={effectiveRepairReason}
           busy={busy}
           canConfirm={Boolean(config.accessToken)}
@@ -324,7 +364,7 @@ function MatrixSettingsDialog({
           onConfirm={onConfirmPairing}
           onCreateInvitation={onCreateInvitation}
           onClearInvitation={onClearInvitation}
-        />
+        />}
 
         {(needsAccount || trustedGateway) && (
           <details className="connection-details" open={needsAccount}>

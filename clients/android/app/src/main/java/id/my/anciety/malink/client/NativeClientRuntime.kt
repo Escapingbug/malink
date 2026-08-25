@@ -1555,6 +1555,26 @@ class NativeClientRuntime(
                     raw.long("lifetimeMs")?.let { put("lifetimeMs", it) }
                 }
             }
+            "gateway.enrollment.invite" -> {
+                v3Operation = "gateway.enrollment.invitation.create"
+                v3SessionId = null
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    raw.long("lifetimeMs")?.let { put("lifetimeMs", it) }
+                }
+            }
+            "gateway.enrollment.approve" -> {
+                v3Operation = "gateway.enrollment.approve"
+                v3SessionId = null
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    put(
+                        "enrollmentId",
+                        raw.string("enrollmentId")
+                            ?: throw IllegalArgumentException("Gateway enrollment ID is missing."),
+                    )
+                }
+            }
             else -> throw IllegalArgumentException("Unsupported MLP/3 command operation.")
         }
         val command = buildJsonObject {
@@ -3000,6 +3020,8 @@ internal fun shouldAutomaticallyRetryRevisionConflict(operation: CommandOperatio
         CommandOperation.SESSION_ARCHIVE,
         CommandOperation.SESSION_RESTORE,
         CommandOperation.SESSION_DELETE,
+        CommandOperation.GATEWAY_ENROLLMENT_INVITE,
+        CommandOperation.GATEWAY_ENROLLMENT_APPROVE,
         -> true
         else -> false
     }

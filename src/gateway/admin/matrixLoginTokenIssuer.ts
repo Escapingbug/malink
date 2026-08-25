@@ -13,6 +13,7 @@ export interface FileMatrixLoginTokenIssuerOptions {
   credentialsPath: string
   fetch?: typeof globalThis.fetch
   now?: () => number
+  readPassword?: () => Promise<string | undefined>
 }
 
 export class FileMatrixLoginTokenIssuer implements MatrixLoginTokenIssuer {
@@ -43,7 +44,7 @@ export class FileMatrixLoginTokenIssuer implements MatrixLoginTokenIssuer {
     if (!accessToken || !userId) return { status: 'unavailable' }
 
     const homeserver = new URL(input.homeserver).origin
-    const response = await this.fetchImpl(
+    let response = await this.fetchImpl(
       `${homeserver}/_matrix/client/v1/login/get_token`,
       {
         method: 'POST',
@@ -54,7 +55,32 @@ export class FileMatrixLoginTokenIssuer implements MatrixLoginTokenIssuer {
         body: '{}',
       },
     )
-    const body = await readJson(response)
+    let body = await readJson(response)
+    if (response.status === 401 && this.options.readPassword) {
+      const session = typeof body?.session === 'string' ? body.session : ''
+      const password = session ? await this.options.readPassword() : undefined
+      if (password) {
+        response = await this.fetchImpl(
+          `${homeserver}/_matrix/client/v1/login/get_token`,
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${accessToken}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              auth: {
+                type: 'm.login.password',
+                identifier: { type: 'm.id.user', user: userId },
+                password,
+                session,
+              },
+            }),
+          },
+        )
+        body = await readJson(response)
+      }
+    }
     if (response.ok) {
       const loginToken =
         typeof body?.login_token === 'string' ? body.login_token : ''

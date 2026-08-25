@@ -334,6 +334,18 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
       lifetimeMs: z.number().int().min(30_000).max(10 * 60_000).optional(),
     })
     .strict(),
+  z
+    .object({
+      operation: z.literal('gateway.enrollment.invite'),
+      lifetimeMs: z.number().int().min(30_000).max(10 * 60_000).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('gateway.enrollment.approve'),
+      enrollmentId: opaqueId,
+    })
+    .strict(),
 ])
 
 export type CommandPayload = z.infer<typeof commandPayloadSchema>
@@ -366,6 +378,8 @@ export const commandSchema = z
       'session.restore',
       'session.delete',
       'device.invite',
+      'gateway.enrollment.invite',
+      'gateway.enrollment.approve',
     ]),
     issuedAt: timestamp,
     expiresAt: timestamp,

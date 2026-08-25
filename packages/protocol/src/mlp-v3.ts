@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { matrixGatewayCapabilitiesSchema } from './matrix-native.js'
 import { signedWorkspaceGatewayDirectorySchema } from './workspace-authorization.js'
+import { gatewayEnrollmentPendingSchema } from './gateway-enrollment.js'
 import {
   attachmentSchema,
   jsonValueSchema,
@@ -40,6 +41,11 @@ export const MLP3_MATRIX_WORKSPACE_DEVICE_GRANT_EVENT_TYPE =
   'io.malink.workspace.device_grant.v1' as const
 export const MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE =
   'io.malink.workspace.device_revocation.v1' as const
+/** Cleartext rendezvous metadata. Authority remains in Malink signatures and sealed responses. */
+export const MLP3_MATRIX_GATEWAY_ENROLLMENT_REQUEST_EVENT_TYPE =
+  'io.malink.gateway.enrollment_request.v1' as const
+export const MLP3_MATRIX_GATEWAY_ENROLLMENT_RESPONSE_EVENT_TYPE =
+  'io.malink.gateway.enrollment_response.v1' as const
 
 const opaqueId = z.string().min(1).max(256)
 const requiredProjectId = z.string({ error: 'Project is required' }).min(1).max(256)
@@ -242,6 +248,18 @@ const deviceInvitationPayloadSchema = z
     lifetimeMs: z.number().int().min(30_000).max(10 * 60_000).optional(),
   })
   .strict()
+const gatewayEnrollmentInvitationPayloadSchema = z
+  .object({
+    operation: z.literal('gateway.enrollment.invitation.create'),
+    lifetimeMs: z.number().int().min(30_000).max(10 * 60_000).optional(),
+  })
+  .strict()
+const gatewayEnrollmentApprovePayloadSchema = z
+  .object({
+    operation: z.literal('gateway.enrollment.approve'),
+    enrollmentId: opaqueId,
+  })
+  .strict()
 const projectUpdatePayloadSchema = z
   .object({
     operation: z.literal('project.update'),
@@ -295,6 +313,8 @@ export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   providerSessionsListPayloadSchema,
   providerSessionInspectPayloadSchema,
   deviceInvitationPayloadSchema,
+  gatewayEnrollmentInvitationPayloadSchema,
+  gatewayEnrollmentApprovePayloadSchema,
   notificationSubscribePayloadSchema,
   notificationUnsubscribePayloadSchema,
 ])
@@ -376,6 +396,20 @@ export const mlp3CommandSchema = z.union([
     payload: deviceInvitationPayloadSchema,
   }).strict(),
   z.object({
+    ...commandCommon,
+    projectId: opaqueId.optional(),
+    sessionId: opaqueId.optional(),
+    operation: z.literal('gateway.enrollment.invitation.create'),
+    payload: gatewayEnrollmentInvitationPayloadSchema,
+  }).strict(),
+  z.object({
+    ...commandCommon,
+    projectId: opaqueId.optional(),
+    sessionId: opaqueId.optional(),
+    operation: z.literal('gateway.enrollment.approve'),
+    payload: gatewayEnrollmentApprovePayloadSchema,
+  }).strict(),
+  z.object({
     ...projectCommandCommon,
     sessionId: z.undefined().optional(),
     operation: z.literal('notification.subscribe'),
@@ -428,6 +462,7 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       capabilities: matrixGatewayCapabilitiesSchema,
       clientReleases: z.array(nativeClientReleaseSchema).max(8).optional(),
       gatewayDirectory: signedWorkspaceGatewayDirectorySchema.optional(),
+      pendingGatewayEnrollments: z.array(gatewayEnrollmentPendingSchema).max(32).optional(),
       snapshotVersion: z.number().int().positive(),
     })
     .strict(),
@@ -656,6 +691,21 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       type: z.literal('device.invitation.created'),
       pairingLink: z.string().min(1).max(128 * 1024),
       expiresAt: timestamp,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('gateway.enrollment.invitation.created'),
+      enrollmentLink: z.string().min(1).max(128 * 1024),
+      expiresAt: timestamp,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('gateway.enrollment.approved'),
+      enrollmentId: opaqueId,
+      gatewayNodeId: opaqueId,
+      gatewayName: z.string().min(1).max(128),
     })
     .strict(),
   z

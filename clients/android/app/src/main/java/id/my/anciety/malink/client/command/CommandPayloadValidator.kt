@@ -20,6 +20,8 @@ enum class CommandOperation(val wireName: String) {
     SESSION_RESTORE("session.restore"),
     SESSION_DELETE("session.delete"),
     DEVICE_INVITE("device.invite"),
+    GATEWAY_ENROLLMENT_INVITE("gateway.enrollment.invite"),
+    GATEWAY_ENROLLMENT_APPROVE("gateway.enrollment.approve"),
     ;
 
     companion object {
@@ -191,6 +193,20 @@ data class DeviceInviteCommandPayload(
     override val sessionId: String? = null
 }
 
+data class GatewayEnrollmentInviteCommandPayload(
+    val lifetimeMs: Long?,
+) : ValidatedCommandPayload {
+    override val operation = CommandOperation.GATEWAY_ENROLLMENT_INVITE
+    override val sessionId: String? = null
+}
+
+data class GatewayEnrollmentApproveCommandPayload(
+    val enrollmentId: String,
+) : ValidatedCommandPayload {
+    override val operation = CommandOperation.GATEWAY_ENROLLMENT_APPROVE
+    override val sessionId: String? = null
+}
+
 object CommandPayloadValidator {
     const val MAX_ATTACHMENT_BYTES = 50L * 1024 * 1024
     const val MAX_ATTACHMENTS = 10
@@ -212,6 +228,8 @@ object CommandPayloadValidator {
             CommandOperation.SESSION_DELETE,
             -> validateSessionLifecycle(value, operation)
             CommandOperation.DEVICE_INVITE -> validateDeviceInvite(value)
+            CommandOperation.GATEWAY_ENROLLMENT_INVITE -> validateGatewayEnrollmentInvite(value)
+            CommandOperation.GATEWAY_ENROLLMENT_APPROVE -> validateGatewayEnrollmentApprove(value)
         }
     }
 
@@ -396,6 +414,20 @@ object CommandPayloadValidator {
         return DeviceInviteCommandPayload(lifetime)
     }
 
+    private fun validateGatewayEnrollmentInvite(value: JsonObject): GatewayEnrollmentInviteCommandPayload {
+        value.requireExactKeys(required = setOf("operation"), optional = setOf("lifetimeMs"))
+        val lifetime = value.optionalLong("lifetimeMs")
+        require(lifetime == null || lifetime in 30_000..600_000) {
+            "Gateway enrollment lifetime is invalid."
+        }
+        return GatewayEnrollmentInviteCommandPayload(lifetime)
+    }
+
+    private fun validateGatewayEnrollmentApprove(value: JsonObject): GatewayEnrollmentApproveCommandPayload {
+        value.requireExactKeys(setOf("operation", "enrollmentId"))
+        return GatewayEnrollmentApproveCommandPayload(value.requiredOpaqueId("enrollmentId"))
+    }
+
     private fun validateAttachment(element: JsonElement): CommandAttachmentPayload {
         val value = element.asObject("Command attachment")
         value.requireExactKeys(setOf("id", "name", "mimeType", "size", "sha256", "media"))
@@ -531,7 +563,13 @@ object CommandAuthorizationPolicy {
         operation: CommandOperation,
         certificateGrants: Collection<PairingOperation>,
     ): CommandAuthorizationDecision {
-        val granted = certificateGrants.any { grant -> grant.wireName == operation.wireName }
+        val authorizedWireName = when (operation) {
+            CommandOperation.GATEWAY_ENROLLMENT_INVITE,
+            CommandOperation.GATEWAY_ENROLLMENT_APPROVE,
+            -> PairingOperation.DEVICE_INVITE.wireName
+            else -> operation.wireName
+        }
+        val granted = certificateGrants.any { grant -> grant.wireName == authorizedWireName }
         return if (granted) {
             CommandAuthorizationDecision(true, CommandAuthorizationSource.CERTIFICATE_GRANT)
         } else {

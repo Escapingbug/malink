@@ -741,6 +741,24 @@ function toMlp3Command(
           ...(payload.lifetimeMs ? { lifetimeMs: payload.lifetimeMs } : {}),
         },
       };
+    case "gateway.enrollment.invite":
+      return {
+        ...common,
+        operation: "gateway.enrollment.invitation.create",
+        payload: {
+          operation: "gateway.enrollment.invitation.create",
+          ...(payload.lifetimeMs ? { lifetimeMs: payload.lifetimeMs } : {}),
+        },
+      };
+    case "gateway.enrollment.approve":
+      return {
+        ...common,
+        operation: "gateway.enrollment.approve",
+        payload: {
+          operation: "gateway.enrollment.approve",
+          enrollmentId: payload.enrollmentId,
+        },
+      };
   }
 }
 

@@ -35,25 +35,48 @@ PWA and Android parse and persist the same authorization and project-routing
 documents; their difference is only lifecycle ownership and durable native
 storage. There is no active-Gateway switch in the product model.
 
-Adding a trusted Gateway is an owner-local operation:
+Adding a trusted Gateway is normally an in-product enrollment:
 
-1. On an existing node, run
-   `malink gateway invite-gateway --gateway-data-dir PATH`.
-2. Move the resulting short-lived `malink://gateway-join` bearer link directly
-   to the new trusted machine. It contains the Workspace private identity and
-   must never be posted to Matrix, a public URL, logs, or chat.
-3. On the new node, run
-   `malink gateway join LINK --gateway-data-dir PATH`, then configure and start
-   its Matrix Gateway normally.
-4. The new node publishes its descriptor into the signed Gateway Directory.
+1. An authorized client sends `gateway.enrollment.invitation.create` to an
+   existing Gateway. The returned short-lived setup link contains the Matrix
+   rendezvous, a one-time login token, the public Workspace key, and a random
+   challenge; it does not contain the Workspace private identity.
+2. The new node opens the setup link, creates a temporary application key and
+   a stable `gatewayNodeId`, logs the new Matrix device into the Workspace-owned
+   Gateway account, and publishes a signed enrollment request into the
+   rendezvous project room.
+3. Every authorized client receives the pending request inside the encrypted
+   Workspace snapshot. The user compares the six-digit verification code shown
+   by the client and the new node, then sends `gateway.enrollment.approve` to
+   the Gateway node that issued the setup link.
+4. Approval seals the high-authority `malink://gateway-join` material directly
+   to the temporary key from that request and publishes the sealed response
+   through Matrix. Matrix never receives the Workspace private identity in
+   plaintext, and possession of a setup link alone cannot approve a node.
+5. The new node decrypts the response, commits its Workspace identity, then
+   reuses its new Matrix device session when the normal Gateway service starts.
+   Signed directory, device-grant, and revocation state converges from the
+   rendezvous room instead of inflating the approval event beyond Matrix's
+   event-size limit.
+6. The new node publishes its descriptor into the signed Gateway Directory.
    Each Gateway mirrors that root-signed directory and the portable device
    grants into every project room. Authorized clients are invited to new rooms,
    verify the directory signature, join automatically, and add the route to
    their existing Matrix session. No Gateway switch is exposed to the user.
-5. To retire a node, run
+7. To retire a node, run
    `malink gateway remove-gateway NODE_ID --gateway-data-dir PATH` on another
    active node. The signed tombstone removes its project routes from every
    client; the retired process stops when it observes the directory update.
+
+Issuing the one-time Matrix login token may require homeserver UIAA. The
+existing Gateway service therefore keeps its Matrix account password available
+through `MALINK_MATRIX_GATEWAY_PASSWORD` or
+`MALINK_MATRIX_GATEWAY_PASSWORD_FILE`; that password is used locally for the
+token request and is never placed in the setup link.
+
+The original `invite-gateway` bearer command remains an offline recovery tool.
+Its output contains the Workspace private identity and must never be posted to
+Matrix, a public URL, logs, or chat.
 
 Gateway nodes currently use the same Workspace-owned Matrix user account with
 distinct Matrix device IDs. This lets a newly joined node publish the signed

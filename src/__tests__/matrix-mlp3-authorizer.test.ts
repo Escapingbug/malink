@@ -74,4 +74,49 @@ describe('MatrixMlp3CommandAuthorizer', () => {
       'project-1',
     )).resolves.toMatchObject({ claim: { kind: 'duplicate' } })
   })
+
+  it('uses the existing device-invite grant for Gateway enrollment', async () => {
+    const keys = await generateDeviceKeyPair()
+    const journal = new FileMlp3CommandJournal(
+      join(await mkdtemp(join(tmpdir(), 'malink-v3-gateway-auth-')), 'journal.jsonl'),
+    )
+    await journal.initialize()
+    const authorizer = new MatrixMlp3CommandAuthorizer('workspace-1', journal)
+    const command = await signMlp3Command({
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'gateway-enrollment-command-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      deviceId: 'device-1',
+      certificateId: 'certificate-1',
+      createdAt: 1,
+      operation: 'gateway.enrollment.invitation.create',
+      payload: {
+        operation: 'gateway.enrollment.invitation.create',
+        lifetimeMs: 300_000,
+      },
+    }, keys.privateKey, keys.keyId)
+    const policy = {
+      deviceId: 'device-1',
+      publicKey: keys.publicJwk,
+      allowedRoomIds: ['!project:example.org'],
+      allowedOperations: ['device.invite'] as Array<'device.invite'>,
+      matrixUserId: '@owner:example.org',
+      matrixDeviceId: 'PHONE',
+      matrixDeviceKeys: ['matrix-phone-key'],
+      certificateExpiresAt: Date.now() + 60_000,
+      sequenceEpoch: 'certificate-1',
+    }
+
+    await expect(authorizer.authorize(
+      command,
+      policy,
+      '!project:example.org',
+      'project-1',
+    )).resolves.toMatchObject({
+      command: { operation: 'gateway.enrollment.invitation.create' },
+      claim: { kind: 'accepted' },
+    })
+  })
 })

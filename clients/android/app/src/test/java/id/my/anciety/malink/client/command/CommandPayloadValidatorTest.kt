@@ -63,6 +63,14 @@ class CommandPayloadValidatorTest {
                 put("operation", "device.invite")
                 put("lifetimeMs", 30_000)
             },
+            buildJsonObject {
+                put("operation", "gateway.enrollment.invite")
+                put("lifetimeMs", 30_000)
+            },
+            buildJsonObject {
+                put("operation", "gateway.enrollment.approve")
+                put("enrollmentId", "enrollment-1")
+            },
         )
 
         assertEquals(CommandOperation.entries, payloads.map { CommandPayloadValidator.validate(it).operation })

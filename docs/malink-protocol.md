@@ -203,6 +203,34 @@ it legitimately decrypted earlier but cannot decrypt later events. Pairing
 responses/rejections and signed Gateway Matrix-device rotation remain
 pairwise control messages; they do not carry application session state.
 
+Gateway enrollment is a separate, short-lived control exchange. An existing
+authorized device sends `gateway.enrollment.invitation.create` under the same
+certificate authority as `device.invitation.create`. The resulting signed
+setup document contains only the public Workspace key, Matrix rendezvous room,
+random challenge, and a one-time login token for the Workspace-owned Gateway
+Matrix account. It MUST NOT contain the Workspace private signing key.
+
+The enrolling node creates a fresh `gatewayNodeId` and temporary ES256 key,
+then publishes a signed `io.malink.gateway.enrollment_request.v1` state event.
+Clients display the verification code derived from the invitation challenge,
+node ID, and temporary key. `gateway.enrollment.approve` is accepted only for a
+persisted pending request. The issuer Gateway seals the high-authority
+Workspace join bearer directly to that temporary key and publishes
+`io.malink.gateway.enrollment_response.v1`; the private Workspace identity is
+therefore never plaintext Matrix state. The enrolling node durably preserves
+its request key until approval, verifies and opens the response, imports the
+current root-signed Gateway directory and portable device grants from the
+rendezvous room, creates one encrypted project room, and then deletes the
+one-shot recovery material. Interrupted installation resumes the same request
+and MUST NOT create a second project room.
+
+All Gateway nodes share the Workspace authorization identity but retain unique
+node IDs, Matrix device IDs, project rooms, working directories, and runtime
+lifecycle. Clients verify one portable Workspace grant and consume the signed
+Gateway directory; they do not pair with or switch between individual nodes.
+The legacy `malink://gateway-join` bearer may be emitted only for offline
+recovery because it directly contains the Workspace private identity.
+
 Large attachments are encrypted before Matrix media upload and referenced by
 signed metadata. Large visible text is split into deterministic bounded parts
 with one logical message identity so recovery never depends on an oversized

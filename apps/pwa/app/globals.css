@@ -4921,6 +4921,106 @@ select:focus-visible {
   flex: 1;
 }
 
+.gateway-profile-list > div > div {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #d9dce6;
+  border-radius: 10px;
+  background: white;
+}
+
+.gateway-profile-list > div > div > span:nth-child(2) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.gateway-enrollment-panel {
+  display: grid;
+  gap: 14px;
+  margin: 0 22px 16px;
+  padding: 15px;
+  border: 1px solid #dfdafa;
+  border-radius: 14px;
+  background: #fbfaff;
+}
+
+.gateway-enrollment-panel > header,
+.gateway-enrollment-panel > header > span,
+.gateway-enrollment-empty,
+.gateway-enrollment-request,
+.gateway-enrollment-request > span:nth-child(2) {
+  display: flex;
+}
+
+.gateway-enrollment-panel > header {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gateway-enrollment-panel > header > span,
+.gateway-enrollment-empty,
+.gateway-enrollment-request > span:nth-child(2) {
+  flex-direction: column;
+  gap: 5px;
+}
+
+.gateway-enrollment-panel small,
+.gateway-enrollment-empty p {
+  margin: 0;
+  color: #747d8f;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.gateway-enrollment-request {
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d9dce6;
+  border-radius: 12px;
+  background: white;
+}
+
+.gateway-enrollment-request > span:nth-child(2) {
+  flex: 1;
+}
+
+.gateway-enrollment-request code {
+  color: var(--violet);
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.gateway-enrollment-panel .generated-device-invitation {
+  margin: 0;
+  padding: 12px;
+  border-color: #e7e3f3;
+  background: white;
+}
+
+.gateway-enrollment-panel .generated-device-invitation strong {
+  font-size: 13px;
+}
+
+.gateway-enrollment-panel .generated-device-invitation p,
+.gateway-enrollment-panel .generated-device-invitation label {
+  font-size: 12px;
+}
+
+.gateway-enrollment-panel .generated-device-invitation textarea {
+  font-size: 11px;
+}
+
+.gateway-enrollment-panel .generated-device-invitation > small {
+  font-size: 10px;
+}
+
 .pairing-start,
 .pairing-confirmation,
 .paired-gateway-card {
@@ -7948,7 +8048,8 @@ body {
 
   .pairing-start,
   .pairing-confirmation,
-  .paired-gateway-card {
+  .paired-gateway-card,
+  .gateway-enrollment-panel {
     margin-inline: 15px;
   }
 

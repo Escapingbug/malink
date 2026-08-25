@@ -5419,6 +5419,10 @@ function fallbackBody(payload: CommandPayload): string {
       return "Delete an agent session from Malink";
     case "device.invite":
       return "Authorize a new Malink device";
+    case "gateway.enrollment.invite":
+      return "Create a Gateway enrollment";
+    case "gateway.enrollment.approve":
+      return "Approve a Gateway enrollment";
   }
 }
 

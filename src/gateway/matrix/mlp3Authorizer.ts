@@ -78,7 +78,11 @@ function v3AllowedOperations(
       case 'session.delete':
         result.add('session.set_lifecycle')
         break
-      case 'device.invite': result.add('device.invitation.create'); break
+      case 'device.invite':
+        result.add('device.invitation.create')
+        result.add('gateway.enrollment.invitation.create')
+        result.add('gateway.enrollment.approve')
+        break
       case 'privilege.approve': break
     }
   }

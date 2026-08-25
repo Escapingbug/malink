@@ -20,12 +20,27 @@ export async function shortenDeviceInvitation(
   appUrl: string,
   client: InvitationRelayClient = browserRelayClient(),
 ): Promise<GeneratedDeviceInvitation> {
+  const link = await shortenEncryptedInvitation(
+    invitation.link,
+    invitation.expiresAt,
+    appUrl,
+    client,
+  );
+  return { ...invitation, link };
+}
+
+export async function shortenEncryptedInvitation(
+  invitationLink: string,
+  expiresAt: number,
+  appUrl: string,
+  client: InvitationRelayClient = browserRelayClient(),
+): Promise<string> {
   const url = normalizedHttpUrl(appUrl);
   const keyBytes = randomBytes(client.crypto, INVITATION_KEY_BYTES);
   const key = await importInvitationKey(client.crypto, keyBytes, [
     "encrypt",
   ]);
-  const plaintext = new TextEncoder().encode(invitation.link);
+  const plaintext = new TextEncoder().encode(invitationLink);
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const id = encodeBase64Url(
@@ -41,7 +56,7 @@ export async function shortenDeviceInvitation(
             invitationAdditionalData(
               url.origin,
               id,
-              invitation.expiresAt,
+              expiresAt,
             ),
           ),
         },
@@ -60,7 +75,7 @@ export async function shortenDeviceInvitation(
           id,
           ciphertext: encodeBase64Url(ciphertext),
           iv: encodeBase64Url(iv),
-          expiresAt: invitation.expiresAt,
+          expiresAt,
         }),
       },
     );
@@ -73,7 +88,7 @@ export async function shortenDeviceInvitation(
       i: id,
       k: encodeBase64Url(keyBytes),
     }).toString();
-    return { ...invitation, link: url.toString() };
+    return url.toString();
   }
 
   throw new Error("The invitation relay could not allocate a unique ID.");

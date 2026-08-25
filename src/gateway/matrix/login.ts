@@ -26,6 +26,64 @@ export interface MatrixGatewayLoginOptions {
     onLog?: (message: string) => void
 }
 
+export interface MatrixGatewayTokenLoginOptions {
+    homeserver: string
+    loginToken: string
+    expectedUserId: string
+    loginUser: string
+    deviceId: string
+    deviceDisplayName?: string
+    sessionPath: string
+    fetch?: typeof fetch
+}
+
+/** Consumes a one-time Matrix login token and persists the resulting Gateway device session. */
+export async function loginMatrixGatewayWithToken(
+    options: MatrixGatewayTokenLoginOptions,
+): Promise<MatrixGatewayLogin> {
+    const homeserver = normalizeHomeserver(options.homeserver)
+    const fetchImpl = options.fetch ?? fetch
+    const persisted = await readPersistedLogin(options.sessionPath)
+    if (persisted) {
+        if (
+            persisted.homeserver !== homeserver
+            || persisted.loginUser !== options.loginUser
+            || persisted.user_id !== options.expectedUserId
+        ) {
+            throw new Error(
+                'Persisted Matrix Gateway login does not match the enrollment invitation',
+            )
+        }
+        if (await validatePersistedLogin(persisted, fetchImpl, wait, undefined)) {
+            return publicLogin(persisted)
+        }
+    }
+    const response = await fetchImpl(`${homeserver}/_matrix/client/v3/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+            type: 'm.login.token',
+            token: options.loginToken,
+            device_id: options.deviceId,
+            initial_device_display_name: options.deviceDisplayName ?? options.deviceId,
+        }),
+    })
+    if (!response.ok) {
+        throw new Error(`Gateway Matrix token login failed: HTTP ${response.status}`)
+    }
+    const login = validateLoginResponse(await response.json())
+    if (login.user_id !== options.expectedUserId) {
+        throw new Error('Gateway Matrix token logged in to a different account')
+    }
+    await writePersistedLogin(options.sessionPath, {
+        version: 1,
+        homeserver,
+        loginUser: options.loginUser,
+        ...login,
+    })
+    return login
+}
+
 /**
  * Reuses the Gateway's Matrix access token across supervisor restarts.
  *

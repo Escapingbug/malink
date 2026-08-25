@@ -69,9 +69,7 @@ export class StrictMatrixCommandAuthorizer {
             throw new MatrixAuthorizationError('certificate-expired', 'Pairing certificate has expired')
         }
 
-        const allowedCommandOperations = policy.allowedOperations?.filter(
-            (operation): operation is MalinkCommand['operation'] => operation !== 'privilege.approve',
-        )
+        const allowedCommandOperations = legacyAllowedCommandOperations(policy.allowedOperations)
 
         const command = await verifyCommand(signed, policy.publicKey, {
             gatewayId: this.gatewayId,
@@ -109,6 +107,22 @@ export class StrictMatrixCommandAuthorizer {
             ...(claim.terminal ? { terminal: claim.terminal } : {}),
         }
     }
+}
+
+function legacyAllowedCommandOperations(
+    operations: MatrixGatewayTrustedDevice['allowedOperations'],
+): MalinkCommand['operation'][] | undefined {
+    if (!operations) return undefined
+    const allowed = new Set<MalinkCommand['operation']>()
+    for (const operation of operations) {
+        if (operation === 'privilege.approve') continue
+        allowed.add(operation)
+        if (operation === 'device.invite') {
+            allowed.add('gateway.enrollment.invite')
+            allowed.add('gateway.enrollment.approve')
+        }
+    }
+    return [...allowed]
 }
 
 export type MatrixAuthorizationErrorCode =

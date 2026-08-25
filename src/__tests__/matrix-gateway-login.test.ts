@@ -2,7 +2,10 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { loadOrLoginMatrixGateway } from '@/gateway/matrix/login'
+import {
+    loadOrLoginMatrixGateway,
+    loginMatrixGatewayWithToken,
+} from '@/gateway/matrix/login'
 
 const temporaryDirectories: string[] = []
 
@@ -13,6 +16,48 @@ afterEach(async () => {
 })
 
 describe('Matrix Gateway login persistence', () => {
+    it('does not consume the one-time enrollment token again after a restart', async () => {
+        const directory = await temporaryDirectory()
+        const sessionPath = join(directory, 'matrix-session.json')
+        const requests: Array<{ url: string; method: string }> = []
+        const fetchImpl: typeof fetch = async (input, init) => {
+            const url = String(input)
+            requests.push({ url, method: init?.method ?? 'GET' })
+            if (url.endsWith('/login')) {
+                return jsonResponse({
+                    user_id: '@gateway:example.org',
+                    access_token: 'enrollment-access-token',
+                    device_id: 'GATEWAY_ENROLLING',
+                })
+            }
+            return jsonResponse({
+                user_id: '@gateway:example.org',
+                device_id: 'GATEWAY_ENROLLING',
+            })
+        }
+        const options = {
+            homeserver: 'https://example.org',
+            loginToken: 'single-use-token',
+            expectedUserId: '@gateway:example.org',
+            loginUser: 'gateway',
+            deviceId: 'GATEWAY_ENROLLING',
+            sessionPath,
+            fetch: fetchImpl,
+        }
+
+        const first = await loginMatrixGatewayWithToken(options)
+        const resumed = await loginMatrixGatewayWithToken({
+            ...options,
+            deviceId: 'GATEWAY_SHOULD_NOT_BE_CREATED',
+        })
+
+        expect(resumed).toEqual(first)
+        expect(requests).toEqual([
+            { url: 'https://example.org/_matrix/client/v3/login', method: 'POST' },
+            { url: 'https://example.org/_matrix/client/v3/account/whoami', method: 'GET' },
+        ])
+    })
+
     it('persists the first password login and reuses it after a supervisor restart', async () => {
         const directory = await temporaryDirectory()
         const sessionPath = join(directory, 'matrix-session.json')

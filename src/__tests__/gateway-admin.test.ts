@@ -399,6 +399,60 @@ describe('Gateway local admin', () => {
     })
   })
 
+  it('completes password reauthentication when the Gateway account requires UIAA', async () => {
+    const directory = await temporaryDirectory()
+    const credentialsPath = join(directory, 'gateway-login.json')
+    await writeFile(credentialsPath, JSON.stringify({
+      user_id: '@gateway:example',
+      access_token: 'gateway-access-token',
+    }))
+    const requests: unknown[] = []
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as unknown
+      requests.push(body)
+      if (requests.length === 1) {
+        return new Response(JSON.stringify({
+          session: 'uiaa-session',
+          flows: [{ stages: ['m.login.password'] }],
+        }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({
+        login_token: 'approved-one-time-token',
+        expires_in_ms: 90_000,
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    const readPassword = vi.fn(async () => 'gateway-password')
+    const issuer = new FileMatrixLoginTokenIssuer({
+      credentialsPath,
+      fetch,
+      readPassword,
+      now: () => now,
+    })
+
+    await expect(issuer.issue({
+      homeserver: 'https://matrix.example',
+      offerExpiresAt: now + 5 * 60_000,
+    })).resolves.toMatchObject({
+      status: 'ready',
+      invitation: { loginToken: 'approved-one-time-token' },
+    })
+    expect(readPassword).toHaveBeenCalledOnce()
+    expect(requests[1]).toEqual({
+      auth: {
+        type: 'm.login.password',
+        identifier: { type: 'm.id.user', user: '@gateway:example' },
+        password: 'gateway-password',
+        session: 'uiaa-session',
+      },
+    })
+  })
+
   it('expires and prunes abandoned pairing offers', async () => {
     const fixture = await gatewayFixture()
     await fixture.service.createOffer({

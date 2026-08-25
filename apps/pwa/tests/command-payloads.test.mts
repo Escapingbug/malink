@@ -87,6 +87,23 @@ test("creates project defaults and provider-history commands", () => {
   });
 });
 
+test("creates Gateway enrollment commands under the existing device-invite authority", () => {
+  assert.deepEqual(commandPayloadSchema.parse({
+    operation: "gateway.enrollment.invite",
+    lifetimeMs: 300_000,
+  }), {
+    operation: "gateway.enrollment.invite",
+    lifetimeMs: 300_000,
+  });
+  assert.deepEqual(commandPayloadSchema.parse({
+    operation: "gateway.enrollment.approve",
+    enrollmentId: "enrollment-1",
+  }), {
+    operation: "gateway.enrollment.approve",
+    enrollmentId: "enrollment-1",
+  });
+});
+
 test("provider is fixed after session creation", () => {
   assert.throws(() => commandPayloadSchema.parse({
     operation: "session.settings",

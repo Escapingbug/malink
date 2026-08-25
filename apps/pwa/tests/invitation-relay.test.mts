@@ -18,6 +18,7 @@ import {
 } from "../app/api/invitations/relayStore.ts";
 import {
   resolveShortDeviceInvitation,
+  shortenEncryptedInvitation,
   shortenDeviceInvitation,
   type InvitationRelayClient,
 } from "../app/invitationRelay.ts";
@@ -73,6 +74,29 @@ test("round-trips an encrypted invitation through a short fragment URL", async (
     ),
     invitation.link,
   );
+});
+
+test("shortens a Gateway setup link without exposing it to the relay", async () => {
+  const setupLink = `malink://gateway-enroll#data=${"sensitive-setup-material".repeat(30)}`;
+  const expiresAt = Date.now() + 5 * 60_000;
+  const shortened = await shortenEncryptedInvitation(
+    setupLink,
+    expiresAt,
+    "https://pwa.malink.example/settings",
+    relayClient,
+  );
+  const shortUrl = new URL(shortened);
+  const shortHash = new URLSearchParams(shortUrl.hash.slice(1));
+  const storedResponse = await POST(
+    new Request("https://pwa.malink.example/api/invitations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "resolve", id: shortHash.get("i") }),
+    }),
+  );
+
+  assert.ok(shortened.length < setupLink.length);
+  assert.doesNotMatch(await storedResponse.text(), /sensitive-setup-material/u);
 });
 
 test("rejects a short invitation when its fragment key is changed", async () => {

@@ -30,12 +30,16 @@ import {
     MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
     MLP3_MATRIX_WORKSPACE_DEVICE_GRANT_EVENT_TYPE,
     MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE,
+    MLP3_MATRIX_GATEWAY_ENROLLMENT_REQUEST_EVENT_TYPE,
+    MLP3_MATRIX_GATEWAY_ENROLLMENT_RESPONSE_EVENT_TYPE,
     mlp3CurrentPointerSchema,
     mlp3ProjectKeyGrantStateSchema,
     mlp3TimelineContentSchema,
     signedWorkspaceDeviceGrantSchema,
     signedWorkspaceDeviceRevocationSchema,
     signedWorkspaceGatewayDirectorySchema,
+    signedGatewayEnrollmentRequestSchema,
+    gatewayEnrollmentResponseSchema,
     canonicalJson,
 } from '@malink/protocol'
 import { toArrayBuffer } from '@malink/security'
@@ -1016,6 +1020,14 @@ function assertSecureApplicationStateContent(request: MatrixApplicationStateEven
     }
     if (request.eventType === MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE) {
         signedWorkspaceDeviceRevocationSchema.parse(content)
+        return
+    }
+    if (request.eventType === MLP3_MATRIX_GATEWAY_ENROLLMENT_REQUEST_EVENT_TYPE) {
+        signedGatewayEnrollmentRequestSchema.parse(content)
+        return
+    }
+    if (request.eventType === MLP3_MATRIX_GATEWAY_ENROLLMENT_RESPONSE_EVENT_TYPE) {
+        gatewayEnrollmentResponseSchema.parse(content)
         return
     }
     if (request.eventType === MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE) {

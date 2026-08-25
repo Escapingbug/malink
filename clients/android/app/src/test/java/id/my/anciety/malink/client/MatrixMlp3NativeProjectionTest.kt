@@ -414,6 +414,54 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `pending Gateway requests survive other Gateway snapshots and durable restore`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project-a", null)
+        projection.applyGatewayEvent(
+            projectSnapshot("project-2", "Project Two", "/workspace/two"),
+            "\$project-b",
+            null,
+        )
+        val pending = buildJsonArray {
+            add(buildJsonObject {
+                put("enrollmentId", "enrollment-1")
+                put("gatewayNodeId", "gateway-node-new")
+                put("gatewayName", "Studio Gateway")
+                put("verificationCode", "123-456")
+                put("requestedAt", 100)
+                put("expiresAt", 10_000)
+                put("approverProjectId", "project-1")
+            })
+        }
+        projection.applyGatewayEvent(
+            workspaceSnapshot(2, "project-a-model", pending = pending),
+            "\$workspace-a",
+            null,
+        )
+        projection.applyGatewayEvent(
+            workspaceSnapshot(2, "project-b-model", projectId = "project-2"),
+            "\$workspace-b",
+            null,
+        )
+
+        assertEquals("enrollment-1", projection.pendingGatewayEnrollments().single()
+            .jsonObject.getValue("enrollmentId").jsonPrimitive.content)
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        assertEquals(1, restored.pendingGatewayEnrollments().size)
+
+        restored.applyGatewayEvent(
+            workspaceSnapshot(3, "project-a-model"),
+            "\$workspace-a-cleared",
+            null,
+        )
+        assertTrue(restored.pendingGatewayEnrollments().isEmpty())
+    }
+
+    @Test
     fun `projects extension capabilities defaults and declarative interactions`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
@@ -533,6 +581,7 @@ class MatrixMlp3NativeProjectionTest {
         model: String,
         releaseVersion: Long = 42,
         projectId: String = "project-1",
+        pending: JsonArray = JsonArray(emptyList()),
     ) = event(
         eventId = "workspace-snapshot-$projectId-$snapshotVersion",
         projectId = projectId,
@@ -542,6 +591,7 @@ class MatrixMlp3NativeProjectionTest {
             put("protocolMax", 3)
             put("gatewayKeyId", "gateway-key-1")
             put("snapshotVersion", snapshotVersion)
+            put("pendingGatewayEnrollments", pending)
             put("clientReleases", buildJsonArray {
                 add(buildJsonObject {
                     put("platform", "android")
