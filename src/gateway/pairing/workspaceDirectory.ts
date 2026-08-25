@@ -4,6 +4,7 @@ import {
   type MatrixTransportBinding,
   type SignedWorkspaceGatewayDirectory,
   type WorkspaceGatewayDescriptor,
+  type WorkspaceProjectRoute,
 } from '@malink/protocol'
 import {
   exportPairingPublicKey,
@@ -36,6 +37,7 @@ export class FileWorkspaceGatewayDirectory {
     gatewayName: string,
     transport: MatrixTransportBinding,
     now = Date.now(),
+    projects: readonly WorkspaceProjectRoute[] = [],
   ): Promise<SignedWorkspaceGatewayDirectory> {
     const publicKey = await exportPairingPublicKey(this.identity.keys.publicKey)
     const result = await this.file.transaction(
@@ -48,6 +50,7 @@ export class FileWorkspaceGatewayDirectory {
           gatewayName,
           transport,
           publicKey,
+          ...(projects.length > 0 ? { projects: structuredClone([...projects]) } : {}),
           issuedAt: now,
         }
         const previous = state.gateways[descriptor.gatewayNodeId]

@@ -168,6 +168,18 @@ export type MatrixConnectionConfig = {
   gatewayMatrixUserId: string;
   gatewayMatrixDeviceId: string;
   gatewayMatrixEd25519: string;
+  /** All project rooms concurrently managed by this Workspace Matrix session. */
+  workspaceRoutes?: MatrixWorkspaceRoute[];
+};
+
+export type MatrixWorkspaceRoute = {
+  projectId: string;
+  gatewayNodeId: string;
+  roomId: string;
+  conversationId: string;
+  gatewayMatrixUserId: string;
+  gatewayMatrixDeviceId: string;
+  gatewayMatrixEd25519: string;
 };
 
 export type DeviceIdentity = {
@@ -381,6 +393,7 @@ export function normalizeMatrixConfig(
     gatewayMatrixUserId: input.gatewayMatrixUserId?.trim() ?? "",
     gatewayMatrixDeviceId: input.gatewayMatrixDeviceId?.trim() ?? "",
     gatewayMatrixEd25519: input.gatewayMatrixEd25519?.trim() ?? "",
+    workspaceRoutes: normalizeWorkspaceRoutes(input.workspaceRoutes ?? []),
   };
   const requiredFields: Array<keyof MatrixConnectionConfig> = [
     "homeserver",
@@ -403,6 +416,30 @@ export function normalizeMatrixConfig(
   }
   gatewayPin(config);
   return config;
+}
+
+function normalizeWorkspaceRoutes(routes: readonly MatrixWorkspaceRoute[]): MatrixWorkspaceRoute[] {
+  const normalized = routes.map(route => ({
+    projectId: route.projectId.trim(),
+    gatewayNodeId: route.gatewayNodeId.trim(),
+    roomId: route.roomId.trim(),
+    conversationId: route.conversationId.trim(),
+    gatewayMatrixUserId: route.gatewayMatrixUserId.trim(),
+    gatewayMatrixDeviceId: route.gatewayMatrixDeviceId.trim(),
+    gatewayMatrixEd25519: route.gatewayMatrixEd25519.trim(),
+  }));
+  for (const route of normalized) {
+    if (!route.projectId || !route.gatewayNodeId || !route.roomId.startsWith("!") ||
+        !route.conversationId || !route.gatewayMatrixUserId.startsWith("@") ||
+        !route.gatewayMatrixDeviceId || !route.gatewayMatrixEd25519) {
+      throw new Error("Workspace project route is invalid.");
+    }
+  }
+  if (new Set(normalized.map(route => route.projectId)).size !== normalized.length ||
+      new Set(normalized.map(route => route.roomId)).size !== normalized.length) {
+    throw new Error("Workspace project routes must be unique by project and room.");
+  }
+  return normalized.sort((left, right) => left.projectId.localeCompare(right.projectId));
 }
 
 export function normalizeHomeserver(value: string): string {

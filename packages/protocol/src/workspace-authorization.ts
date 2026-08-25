@@ -54,6 +54,11 @@ export const workspaceGatewayDescriptorSchema = z.object({
   gatewayName: z.string().min(1).max(128),
   transport: matrixTransportBindingSchema,
   publicKey: pairingPublicKeySchema,
+  projects: z.array(z.object({
+    projectId: opaqueId,
+    roomId: z.string().min(1).max(512),
+    conversationId: opaqueId,
+  }).strict()).max(256).optional(),
   issuedAt: timestamp,
 }).strict()
 
@@ -73,6 +78,17 @@ export const workspaceGatewayDirectorySchema = z.object({
   if (value.gateways.some(gateway => gateway.workspaceId !== value.workspaceId)) {
     context.addIssue({ code: 'custom', path: ['gateways'], message: 'Gateway belongs to another workspace' })
   }
+  const projects = value.gateways.flatMap(gateway =>
+    (gateway.projects ?? []).map(project => ({ ...project, gatewayNodeId: gateway.gatewayNodeId })))
+  for (const field of ['projectId', 'roomId'] as const) {
+    const values = projects.map(project => project[field])
+    if (new Set(values).size !== values.length) {
+      context.addIssue({
+        code: 'custom', path: ['gateways'],
+        message: `Workspace project routes must have unique ${field} values`,
+      })
+    }
+  }
 })
 
 export const signedWorkspaceGatewayDirectorySchema = z.object({
@@ -85,5 +101,6 @@ export type SignedWorkspaceDeviceGrant = z.infer<typeof signedWorkspaceDeviceGra
 export type WorkspaceDeviceRevocation = z.infer<typeof workspaceDeviceRevocationSchema>
 export type SignedWorkspaceDeviceRevocation = z.infer<typeof signedWorkspaceDeviceRevocationSchema>
 export type WorkspaceGatewayDescriptor = z.infer<typeof workspaceGatewayDescriptorSchema>
+export type WorkspaceProjectRoute = NonNullable<WorkspaceGatewayDescriptor['projects']>[number]
 export type WorkspaceGatewayDirectory = z.infer<typeof workspaceGatewayDirectorySchema>
 export type SignedWorkspaceGatewayDirectory = z.infer<typeof signedWorkspaceGatewayDirectorySchema>

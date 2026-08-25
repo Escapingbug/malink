@@ -53,7 +53,6 @@ type Props = {
   onClose(): void;
   onDisconnect(): void;
   onForget(): void;
-  onSwitchGateway(gatewayId: string): void;
   onPasswordLogin(userId: string, password: string): void;
   onCreateInvitation(password?: string): void;
   onClearInvitation(): void;
@@ -244,25 +243,18 @@ function MatrixSettingsDialog({
             <div>
               {savedGateways.map((gateway) => {
                 const gatewayProfileId = gateway.gatewayNodeId ?? gateway.gatewayId;
-                const active = gatewayProfileId === (
-                  trustedGateway?.gatewayNodeId ?? trustedGateway?.gatewayId
-                );
                 return (
-                  <button
-                    type="button"
+                  <div
                     key={gatewayProfileId}
-                    className={active ? "active" : ""}
-                    aria-pressed={active}
-                    disabled={busy || active}
-                    onClick={() => onSwitchGateway(gatewayProfileId)}
+                    className="active"
                   >
                     <span className="gateway-device-mark" aria-hidden="true">G</span>
                     <span>
                       <strong>{gateway.gatewayName}</strong>
-                      <small>{active ? "Active" : "Switch to this computer"}</small>
+                      <small>Managed by this Workspace</small>
                     </span>
-                    <b>{active ? "✓" : "›"}</b>
-                  </button>
+                    <b>✓</b>
+                  </div>
                 );
               })}
             </div>

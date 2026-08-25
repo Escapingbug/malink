@@ -399,6 +399,36 @@ class MatrixConnectionRuntime(
 
     fun publicSession(): PublicMatrixSession? = secrets?.session?.toPublic()
 
+    suspend fun updateRoomBindings(bindings: List<MatrixRoomBinding>): PublicMatrixSession =
+        mutex.withLock {
+            val normalized = bindings.map(MatrixIdentifiers::validateRoomBinding)
+                .distinctBy(MatrixRoomBinding::roomId)
+            require(normalized.isNotEmpty()) { "At least one Workspace room is required." }
+            val currentSecrets = secrets
+                ?: throw IllegalStateException("The native Matrix session is not available.")
+            require(normalized.all { it.gatewayId == normalized.first().gatewayId }) {
+                "All Matrix rooms must belong to one Workspace authorization."
+            }
+            if (currentSecrets.session.roomBindings == normalized) {
+                return@withLock currentSecrets.session.toPublic()
+            }
+            val currentDriver = driver
+            stopApplicationControlReceiverLocked()
+            driver = null
+            driverGeneration += 1
+            applicationControlTransportIdentity = null
+            if (currentDriver != null) stopDriver(currentDriver)
+            val updated = PersistedMatrixSecrets(
+                currentSecrets.sdkStoreKey,
+                currentSecrets.session.withRoomBindings(normalized),
+            )
+            val currentFiles = files ?: accountStorage.forSession(updated.session).also { files = it }
+            currentFiles.sessionStore.save(updated)
+            secrets = updated
+            if (started.get() && networkAvailable) connectLocked()
+            updated.session.toPublic()
+        }
+
     suspend fun refreshApplicationProjection() {
         val session = secrets?.session
             ?: throw MatrixOfflineException("The Matrix session is unavailable.")
@@ -1330,7 +1360,7 @@ class MatrixConnectionRuntime(
         homeserver = homeserverUrl,
         userId = userId,
         matrixDeviceId = deviceId,
-        roomBinding = roomBinding,
+        roomBindings = roomBindings,
     )
 
     private companion object {

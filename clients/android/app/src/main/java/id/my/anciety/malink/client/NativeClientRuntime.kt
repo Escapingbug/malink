@@ -81,6 +81,8 @@ import id.my.anciety.malink.security.malink.SecureEnvelopeBindings
 import id.my.anciety.malink.security.malink.SecureEnvelopeCodec
 import id.my.anciety.malink.security.malink.SecureEnvelopeDirection
 import id.my.anciety.malink.security.malink.SecureEnvelopes
+import id.my.anciety.malink.security.malink.requiredObject
+import id.my.anciety.malink.security.malink.requiredOpaqueId
 import java.security.SecureRandom
 import java.security.MessageDigest
 import java.util.ArrayDeque
@@ -812,6 +814,11 @@ class NativeClientRuntime(
             eventHub.publish(ClientEventType.TRUST_CHANGED, PublicClientJson.encodeTrust(public), nextSnapshot)
             public
         }
+        val workspaceBindings = workspaceRoomBindings(
+            signedResponse,
+            matrix.publicSession()?.roomBinding,
+        )
+        if (workspaceBindings.size > 1) matrix.updateRoomBindings(workspaceBindings)
         // Pairing commits trust before state convergence. The Gateway publishes
         // a key bundle addressed to this device before acknowledging a new
         // pairing, but Matrix delivery and a retry of an already accepted
@@ -820,6 +827,42 @@ class NativeClientRuntime(
         // make the WebView stay foreground merely to wait for that round trip.
         startMatrixMlp3ProjectionRefresh(recoverTransport = false)
         return mutex.withLock { public to snapshot() }
+    }
+
+    private fun workspaceRoomBindings(
+        response: SignedPairingResponse,
+        current: id.my.anciety.malink.matrix.MatrixRoomBinding?,
+    ): List<id.my.anciety.malink.matrix.MatrixRoomBinding> {
+        val output = linkedMapOf<String, id.my.anciety.malink.matrix.MatrixRoomBinding>()
+        current?.let { output[it.roomId] = it }
+        val signedDirectory = response.response.gatewayDirectory ?: return output.values.toList()
+        val directory = signedDirectory.requiredObject("directory")
+        require(directory.requiredOpaqueId("workspaceId") == response.response.gatewayId) {
+            "Gateway Directory belongs to another Workspace."
+        }
+        val gateways = directory["gateways"] as? JsonArray
+            ?: throw IllegalArgumentException("Gateway Directory gateways are invalid.")
+        for (gatewayElement in gateways) {
+            val gateway = gatewayElement as? JsonObject
+                ?: throw IllegalArgumentException("Gateway Directory entry is invalid.")
+            require(gateway.requiredOpaqueId("workspaceId") == response.response.gatewayId)
+            val transport = PairingCodec.parseTransport(gateway.requiredObject("transport"))
+            val projects = gateway["projects"] as? JsonArray ?: continue
+            for (projectElement in projects) {
+                val project = projectElement as? JsonObject
+                    ?: throw IllegalArgumentException("Workspace project route is invalid.")
+                val roomId = project.requiredOpaqueId("roomId")
+                output[roomId] = id.my.anciety.malink.matrix.MatrixRoomBinding(
+                    roomId = roomId,
+                    gatewayId = response.response.gatewayId,
+                    conversationId = project.requiredOpaqueId("conversationId"),
+                    gatewayUserId = transport.userId,
+                    gatewayDeviceId = transport.deviceId,
+                    gatewayDeviceEd25519 = transport.ed25519,
+                )
+            }
+        }
+        return output.values.toList()
     }
 
     suspend fun cancelPairing(pairingId: String): Boolean = mutex.withLock {

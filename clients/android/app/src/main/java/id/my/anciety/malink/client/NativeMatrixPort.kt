@@ -10,6 +10,7 @@ import id.my.anciety.malink.matrix.MatrixThreadHistoryBatch
 import id.my.anciety.malink.matrix.MatrixRuntimeStatus
 import id.my.anciety.malink.matrix.MatrixTransportIdentity
 import id.my.anciety.malink.matrix.PublicMatrixSession
+import id.my.anciety.malink.matrix.MatrixRoomBinding
 import kotlinx.serialization.json.JsonObject
 
 interface NativeMatrixObserver {
@@ -29,6 +30,8 @@ interface NativeMatrixPort {
     fun start()
     fun onSystemWake(reason: String) = Unit
     fun publicSession(): PublicMatrixSession?
+    suspend fun updateRoomBindings(bindings: List<MatrixRoomBinding>): PublicMatrixSession =
+        throw UnsupportedOperationException("Workspace multi-room routing is unavailable.")
     suspend fun bootstrap(input: MatrixBootstrap): PublicMatrixSession
     suspend fun issueLoginToken(password: String?): MatrixLoginTokenIssueResult
     suspend fun sendPairingMessage(contentJson: String)
@@ -78,6 +81,8 @@ class MatrixNativePort(context: Context) : NativeMatrixPort {
     override fun start() = runtime.start()
     override fun onSystemWake(reason: String) = runtime.onSystemWake(reason)
     override fun publicSession(): PublicMatrixSession? = runtime.publicSession()
+    override suspend fun updateRoomBindings(bindings: List<MatrixRoomBinding>): PublicMatrixSession =
+        runtime.updateRoomBindings(bindings)
     override suspend fun bootstrap(input: MatrixBootstrap): PublicMatrixSession = runtime.bootstrap(input)
     override suspend fun issueLoginToken(password: String?): MatrixLoginTokenIssueResult =
         runtime.issueLoginToken(password)

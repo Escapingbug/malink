@@ -136,7 +136,7 @@ class OfficialMatrixSdkDriver(
 
             override fun saveSessionInKeychain(session: org.matrix.rustcomponents.sdk.Session) {
                 if (!active.get()) return
-                val updated = StoredMatrixSession.fromSdkSession(session, activeSession.roomBinding)
+                val updated = StoredMatrixSession.fromSdkSession(session, activeSession.roomBindings)
                 files.sessionStore.save(PersistedMatrixSecrets(secrets.sdkStoreKey, updated))
                 activeSession = updated
                 onSessionUpdated(updated)
@@ -192,7 +192,7 @@ class OfficialMatrixSdkDriver(
                 throw MatrixSyncServiceBuildException(error)
             }
             val roomList = service.roomListService()
-            roomList.subscribeToRooms(listOf(activeSession.roomBinding.roomId))
+            roomList.subscribeToRooms(activeSession.roomBindings.map(MatrixRoomBinding::roomId))
             diagnostics.record("matrix.driver.room_subscription_ready")
             val lifecycle = MatrixSyncServiceLifecycle(
                 onRoomListProgress = {

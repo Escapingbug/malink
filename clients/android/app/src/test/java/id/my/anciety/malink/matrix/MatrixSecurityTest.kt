@@ -32,7 +32,17 @@ class MatrixSecurityTest {
 
     @Test
     fun `session codec round trips and encrypted envelope contains no plaintext token`() {
-        val source = PersistedMatrixSecrets(ByteArray(32) { it.toByte() }, session())
+        val secondBinding = binding().copy(
+            roomId = "!room-two:example.org",
+            conversationId = "conversation-2",
+            gatewayUserId = "@gateway-two:example.org",
+            gatewayDeviceId = "GATEWAY-DEVICE-TWO",
+            gatewayDeviceEd25519 = "B".repeat(43),
+        )
+        val source = PersistedMatrixSecrets(
+            ByteArray(32) { it.toByte() },
+            session().withRoomBindings(listOf(binding(), secondBinding)),
+        )
         val plaintext = MatrixSecretCodec.encode(source)
         val cipher = JvmAesGcmCipher()
         val aad = "account-and-purpose".toByteArray()
@@ -48,6 +58,8 @@ class MatrixSecurityTest {
         assertEquals(ACCESS_TOKEN, restored.session.accessToken)
         assertEquals(REFRESH_TOKEN, restored.session.refreshToken)
         assertEquals("!room:example.org", restored.session.roomBinding.roomId)
+        assertEquals(listOf("!room:example.org", "!room-two:example.org"),
+            restored.session.roomBindings.map(MatrixRoomBinding::roomId))
         assertEquals(SlidingSyncVersion.NATIVE, restored.session.slidingSyncVersion)
         assertTrue(source.sdkStoreKey.contentEquals(restored.sdkStoreKey))
         plaintext.fill(0)

@@ -27,6 +27,7 @@ import {
     MatrixNodeSdkGatewayClient,
     loadOrCreateMatrixCryptoPassphrase,
     loadOrLoginMatrixGateway,
+    gatewayProjectIdentity,
     type MatrixGatewayConfig,
 } from '../src/gateway/matrix/index.js'
 import { registerConfiguredProviders } from '../src/providers/configured.js'
@@ -154,6 +155,12 @@ const workspaceDirectory = new FileWorkspaceGatewayDirectory(
 await workspaceDirectory.publishLocal(
     process.env.MALINK_GATEWAY_NAME ?? 'Malink local Gateway',
     currentTransport,
+    Date.now(),
+    [{
+        projectId: gatewayProjectIdentity(cwd).id,
+        roomId: fixture.roomId,
+        conversationId: fixture.roomId,
+    }],
 )
 pairingService.setWorkspaceDirectoryProvider(() => workspaceDirectory.load())
 const pwaLoginPath = process.env.MALINK_PWA_LOGIN_FILE

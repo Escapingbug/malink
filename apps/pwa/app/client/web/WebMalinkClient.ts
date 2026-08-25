@@ -251,7 +251,18 @@ function saveWorkspaceMatrixConfigs(
   base: MatrixConnectionConfig,
   trust: TrustedGateway,
 ): void {
-  saveMatrixConfig({ ...base, ...trustedGatewayConfig(trust) });
+  const workspaceRoutes = (trust.gatewayDirectory?.directory.gateways ?? []).flatMap(
+    gateway => (gateway.projects ?? []).map(project => ({
+      projectId: project.projectId,
+      gatewayNodeId: gateway.gatewayNodeId,
+      roomId: project.roomId,
+      conversationId: project.conversationId,
+      gatewayMatrixUserId: gateway.transport.userId,
+      gatewayMatrixDeviceId: gateway.transport.deviceId,
+      gatewayMatrixEd25519: gateway.transport.ed25519,
+    })),
+  );
+  saveMatrixConfig({ ...base, ...trustedGatewayConfig(trust), workspaceRoutes });
   for (const gateway of trust.gatewayDirectory?.directory.gateways ?? []) {
     saveMatrixConfig({
       ...base,
@@ -263,10 +274,11 @@ function saveWorkspaceMatrixConfigs(
       gatewayMatrixUserId: gateway.transport.userId,
       gatewayMatrixDeviceId: gateway.transport.deviceId,
       gatewayMatrixEd25519: gateway.transport.ed25519,
+      workspaceRoutes,
     });
   }
   // The issuer remains active after directory profiles are written.
-  saveMatrixConfig({ ...base, ...trustedGatewayConfig(trust) });
+  saveMatrixConfig({ ...base, ...trustedGatewayConfig(trust), workspaceRoutes });
 }
 
 export function publicTrustFromWeb(trust: TrustedGateway): MalinkPublicTrust {

@@ -3627,41 +3627,6 @@ function MalinkAppRuntime() {
     setSettingsOpen(true);
   }
 
-  async function switchGateway(gatewayId: string): Promise<void> {
-    if (
-      gatewayId === (trustedGateway?.gatewayNodeId ?? trustedGateway?.gatewayId) ||
-      pairingBusy
-    ) return;
-    setConnectionError(null);
-    setPairingError(null);
-    try {
-      if (isNativeManagedMatrixConfig(matrixConfig)) {
-        throw new Error(
-          "This Android native session is currently bound to one Gateway node. Native node rebinding must be completed before switching here.",
-        );
-      }
-      const identity = await getOrCreateDeviceIdentity();
-      const trust = await loadTrustedGateway(identity, gatewayId);
-      if (!trust) throw new Error("The saved Gateway trust could not be verified.");
-      const config = selectMatrixConfigGateway(gatewayId);
-      selectTrustedGateway(gatewayId);
-      setTrustedGateway(publicTrustFromWeb(trust));
-      setActiveDeviceCount(trust.activeDeviceCount ?? null);
-      setMatrixConfig(config);
-      await connectMalinkClient(config, false);
-      setSettingsOpen(false);
-      showUiNotice(
-        "connection:gateway-switched",
-        "session",
-        "success",
-        `Switched to ${trust.gatewayName}.`,
-        4_000,
-      );
-    } catch (error) {
-      setConnectionError(formatUiError(error));
-    }
-  }
-
   async function openPairingLink(link: string) {
     setConnectionError(null);
     setPairingError(null);
@@ -7301,7 +7266,6 @@ function MalinkAppRuntime() {
         onClose={() => setSettingsOpen(false)}
         onDisconnect={() => disconnectClient()}
         onForget={() => setForgetDialogOpen(true)}
-        onSwitchGateway={(gatewayId) => void switchGateway(gatewayId)}
         onPasswordLogin={(userId, password) =>
           void signInForPairing(userId, password)
         }

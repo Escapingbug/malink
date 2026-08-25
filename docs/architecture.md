@@ -29,13 +29,11 @@ device grant, and may select any node in the signed Gateway Directory without
 pairing again.
 
 Android does not contain or run a Gateway. “Multiple Gateways on Android” means
-that the native Matrix service and its PWA presentation refer to external
-Gateway nodes using the same Workspace grant. Browser PWA and Android parse and
-persist the same authorization documents; their difference is lifecycle
-ownership and durable native storage. The current native Matrix session remains
-bound to one node and rejects an in-place UI switch until native room rebinding
-is implemented, avoiding a misleading switch while commands still target the
-old node.
+that one native Matrix account session subscribes to every authorized project
+room and routes each command to the Gateway node that owns that project. Browser
+PWA and Android parse and persist the same authorization and project-routing
+documents; their difference is only lifecycle ownership and durable native
+storage. There is no active-Gateway switch in the product model.
 
 Adding a trusted Gateway is an owner-local operation:
 

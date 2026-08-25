@@ -43,7 +43,12 @@ describe('workspace authorization', () => {
       directoryId: 'directory-2', workspaceId: 'workspace-1', revision: 2,
       gateways: [{
         gatewayNodeId: 'node-a', workspaceId: 'workspace-1', gatewayName: 'Studio',
-        transport, publicKey: await exportPairingPublicKey(workspace.publicKey), issuedAt: now,
+        transport, publicKey: await exportPairingPublicKey(workspace.publicKey),
+        projects: [{
+          projectId: 'project-a', roomId: transport.roomId,
+          conversationId: transport.roomId,
+        }],
+        issuedAt: now,
       }],
       issuedAt: now,
     }
