@@ -63,10 +63,12 @@ export function nativeCapabilityVersions(
 ): number[] {
   // history.page v2 separates local projection reads from explicit Matrix
   // pagination. commands.durable v2 adds project settings and provider-history
-  // operations. Request v1 as a negotiation fallback only so an older APK can
-  // return an actionable update requirement instead of failing the hello
-  // handshake.
-  return name === "history.page" || name === "commands.durable" ? [2, 1] : [1];
+  // operations; v3 adds explicit project routing for simultaneous multi-Gateway
+  // management. Request older versions as negotiation fallbacks only so an old
+  // APK can return an actionable update requirement instead of failing hello.
+  if (name === "commands.durable") return [3, 2, 1];
+  if (name === "history.page") return [2, 1];
+  return [1];
 }
 
 export function hasCurrentNativeCapability(
@@ -74,7 +76,7 @@ export function hasCurrentNativeCapability(
   name: (typeof REQUIRED_NATIVE_CAPABILITIES)[number],
 ): boolean {
   return hello.capabilities[name]?.version ===
-    (name === "history.page" || name === "commands.durable" ? 2 : 1);
+    (name === "commands.durable" ? 3 : name === "history.page" ? 2 : 1);
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 24 * 60 * 60_000;

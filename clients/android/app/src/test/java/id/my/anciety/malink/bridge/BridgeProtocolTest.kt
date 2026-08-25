@@ -80,7 +80,7 @@ class BridgeProtocolTest {
                         [
                           {"name":"background.foreground-service","versions":[1]},
                           {"name":"trust.native","versions":[1]},
-                          {"name":"commands.durable","versions":[1,2]},
+                          {"name":"commands.durable","versions":[1,2,3]},
                           {"name":"history.page","versions":[1,2]}
                         ]
                     """.trimIndent(),
@@ -104,7 +104,7 @@ class BridgeProtocolTest {
                 .getValue("version").jsonPrimitive.int,
         )
         assertEquals(
-            2,
+            3,
             capabilities.getValue("commands.durable").jsonObject
                 .getValue("version").jsonPrimitive.int,
         )

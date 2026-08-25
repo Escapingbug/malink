@@ -159,8 +159,8 @@ test("fails closed when a native-owned Matrix session loses its host", async () 
   assert.equal(webCreates, 0);
 });
 
-test("fails closed before command submission when the native durable command set is outdated", async () => {
-  const outdated = new BootstrapPort(1);
+test("fails closed before command submission when the native host only supports commands.durable v2", async () => {
+  const outdated = new BootstrapPort(2);
   await assert.rejects(
     createMalinkClient(
       { ...config, accessToken: NATIVE_MANAGED_ACCESS_TOKEN },
@@ -247,7 +247,7 @@ class BootstrapPort implements NativeBridgePort {
   onmessage: NativeBridgePort["onmessage"] = null;
   bootstrapToken = "";
 
-  constructor(private readonly commandsDurableVersion = 2) {}
+  constructor(private readonly commandsDurableVersion = 3) {}
 
   postMessage(message: string): void {
     const request = JSON.parse(message) as {

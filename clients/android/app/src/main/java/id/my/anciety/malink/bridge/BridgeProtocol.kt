@@ -1364,7 +1364,8 @@ class BridgeDispatcher(
             NATIVE_UPDATE_CAPABILITY,
         )
         fun supportedCapabilityVersions(name: String): Set<Int> = when {
-            name == "history.page" || name == "commands.durable" -> setOf(1, 2)
+            name == "history.page" -> setOf(1, 2)
+            name == "commands.durable" -> setOf(1, 2, 3)
             name in SUPPORTED_CAPABILITIES -> setOf(1)
             else -> emptySet()
         }
