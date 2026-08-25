@@ -227,6 +227,23 @@ async function ensureSynapse(input: {
         )
         configChanged = true
     }
+    if (!config.includes('# malink-local-test-login-token')) {
+        await appendFile(
+            input.homeserverConfig,
+            [
+                '',
+                '# malink-local-test-login-token',
+                '# Mirror the private Malink deployment used for Gateway enrollment.',
+                'login_via_existing_session:',
+                '  enabled: true',
+                '  require_ui_auth: false',
+                '  token_timeout: 5m',
+                '',
+            ].join('\n'),
+            'utf8',
+        )
+        configChanged = true
+    }
 
     await docker([...input.compose, 'up', '-d', 'synapse'])
     if (configChanged) await docker([...input.compose, 'restart', 'synapse'])

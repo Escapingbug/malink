@@ -68,9 +68,10 @@ Adding a trusted Gateway is normally an in-product enrollment:
    active node. The signed tombstone removes its project routes from every
    client; the retired process stops when it observes the directory update.
 
-Issuing the one-time Matrix login token may require homeserver UIAA. The
-existing Gateway service therefore keeps its Matrix account password available
-through `MALINK_MATRIX_GATEWAY_PASSWORD` or
+The private Malink Synapse deployment enables `login_via_existing_session`
+without an additional UIAA round trip for this owner-authorized operation. On
+a compatible homeserver that does require UIAA, the existing Gateway can read
+its Matrix account password through `MALINK_MATRIX_GATEWAY_PASSWORD` or
 `MALINK_MATRIX_GATEWAY_PASSWORD_FILE`; that password is used locally for the
 token request and is never placed in the setup link.
 
