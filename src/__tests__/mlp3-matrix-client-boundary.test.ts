@@ -130,7 +130,9 @@ describe('MLP/3 Matrix transport boundary', () => {
         expect(web).toContain('room.fetchRoomThreads()')
         expect(web).toContain('client.relations(')
         expect(web).not.toContain('client.paginateEventTimeline(thread.liveTimeline')
-        expect(android).toContain('matrix.loadThreadHistory(threadRoot, from, maxOf(30, limit))')
+        expect(android).toMatch(
+            /matrix\.loadThreadHistory\(\s*threadRoot,\s*from,\s*maxOf\(30, limit\),\s*roomId,/u,
+        )
         expect(malinkApp).not.toContain('loadRecentHistory')
         expect(malinkApp).not.toContain('history:cross-device-sync')
         expect(malinkApp).not.toContain('shouldReconcileRecentHistory')

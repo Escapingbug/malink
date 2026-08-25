@@ -590,6 +590,14 @@ export async function applyWorkspaceGatewayDirectory(
   input: unknown,
 ): Promise<TrustedGateway> {
   const signed = signedWorkspaceGatewayDirectorySchema.parse(input);
+  if (
+    trust.gatewayDirectory?.directory.revision === signed.directory.revision
+  ) {
+    if (canonicalJson(trust.gatewayDirectory) !== canonicalJson(signed)) {
+      throw new Error("Workspace Gateway Directory revision is immutable.");
+    }
+    return trust;
+  }
   const directory = await verifyWorkspaceGatewayDirectory(
     signed,
     trust.gatewayKey.publicKey,

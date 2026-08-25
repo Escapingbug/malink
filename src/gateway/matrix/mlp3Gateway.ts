@@ -154,7 +154,7 @@ export class MatrixMlp3GatewayRunner {
   private unsubscribe: (() => void) | null = null
   private state: MatrixMlp3GatewayState = 'stopped'
   private publishedClientReleases: NativeClientRelease[] = []
-  private publishedGatewayDirectoryRevision = -1
+  private readonly publishedGatewayDirectoryRevisions = new Map<string, number>()
   private readonly runtimeEpoch = randomUUID()
 
   constructor(
@@ -1619,12 +1619,16 @@ export class MatrixMlp3GatewayRunner {
     const capabilities = this.discoverCapabilities(project)
     const gatewayDirectory = await this.dependencies.workspaceGatewayDirectory?.()
     const directoryChanged = gatewayDirectory !== undefined &&
-      gatewayDirectory.directory.revision !== this.publishedGatewayDirectoryRevision
+      gatewayDirectory.directory.revision !==
+        this.publishedGatewayDirectoryRevisions.get(project.project.projectId)
     if (JSON.stringify(project.project.capabilities) !== JSON.stringify(capabilities) || directoryChanged) {
       project.project.capabilities = capabilities
       project.project.capabilitySnapshotVersion += 1
       if (gatewayDirectory) {
-        this.publishedGatewayDirectoryRevision = gatewayDirectory.directory.revision
+        this.publishedGatewayDirectoryRevisions.set(
+          project.project.projectId,
+          gatewayDirectory.directory.revision,
+        )
       }
       await this.persist(project)
     }

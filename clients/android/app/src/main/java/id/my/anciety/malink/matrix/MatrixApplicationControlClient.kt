@@ -3,6 +3,7 @@ package id.my.anciety.malink.matrix
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_KEY_GRANT_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
+import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URI
@@ -12,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -47,6 +49,9 @@ internal fun isMalinkApplicationControlEvent(rawJson: String): Boolean = runCatc
         MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE ->
             root["state_key"]?.jsonPrimitive?.contentOrNull?.isNotBlank() == true &&
                 content["document"] is JsonObject && content["signature"] is JsonObject
+        MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE ->
+            root["state_key"]?.jsonPrimitive?.contentOrNull?.isNotBlank() == true &&
+                content["directory"] is JsonObject && content["signature"] is JsonObject
         "m.room.message" -> {
             val extension = content["io.malink"] as? JsonObject ?: return@runCatching false
             extension["version"]?.jsonPrimitive?.intOrNull == 3 &&
@@ -87,6 +92,8 @@ internal fun malinkApplicationEventKind(rawJson: String): String = runCatching {
             return@runCatching "v3_project_pointer"
         MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE ->
             return@runCatching "v3_workspace_pointer"
+        MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE ->
+            return@runCatching "workspace_gateway_directory"
     }
     val extension = root["content"]
         ?.jsonObject
@@ -223,6 +230,7 @@ data class MatrixApplicationControlSyncBatch(
     val events: List<MatrixDecryptedEvent>,
     val candidateEventCount: Int,
     val limited: Boolean,
+    val roomGaps: List<MatrixSyncGap> = emptyList(),
 )
 
 data class MatrixApplicationTimelinePage(
@@ -278,6 +286,7 @@ class MatrixApplicationTimelineClient(
         session: StoredMatrixSession,
         from: String,
         to: String,
+        roomId: String? = null,
         limit: Int = 32,
     ): MatrixApplicationTimelinePage {
         require(from.isNotBlank() && from.length <= 4_096)
@@ -285,21 +294,23 @@ class MatrixApplicationTimelineClient(
         require(from != to)
         require(limit in 1..32)
         val homeserver = MatrixIdentifiers.normalizeHomeserver(session.homeserverUrl)
-        val roomId = MatrixIdentifiers.validateRoomBinding(session.roomBinding).roomId
+        val bindings = session.roomBindings.map(MatrixIdentifiers::validateRoomBinding)
+        val binding = roomId?.let { targetRoomId ->
+            bindings.singleOrNull { it.roomId == targetRoomId }
+                ?: throw IllegalArgumentException("Unknown Matrix project room: $targetRoomId")
+        } ?: MatrixIdentifiers.validateRoomBinding(session.roomBinding)
         val filter = buildJsonObject {
-            put("senders", buildJsonArray {
-                add(JsonPrimitive(session.roomBinding.gatewayUserId))
-            })
             put("types", buildJsonArray {
                 add(JsonPrimitive("m.room.message"))
                 add(JsonPrimitive(MALINK_MATRIX_APPLICATION_CONTROL_EVENT_TYPE))
                 add(JsonPrimitive(MLP3_MATRIX_KEY_GRANT_EVENT_TYPE))
                 add(JsonPrimitive(MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE))
                 add(JsonPrimitive(MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE))
+                add(JsonPrimitive(MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE))
             })
         }.toString()
         val endpoint = URI(
-            "$homeserver/_matrix/client/v3/rooms/${encode(roomId)}/messages?" +
+            "$homeserver/_matrix/client/v3/rooms/${encode(binding.roomId)}/messages?" +
                 listOf(
                     "dir=f",
                     "from=${encode(from)}",
@@ -324,12 +335,14 @@ class MatrixApplicationTimelineClient(
             val candidates = root["chunk"].let { it as? JsonArray }.orEmpty()
             val events = candidates.mapNotNull { element ->
                 val event = element as? JsonObject ?: return@mapNotNull null
+                val eventType = event["type"]?.jsonPrimitive?.contentOrNull
                 if (
-                    event["sender"]?.jsonPrimitive?.contentOrNull !=
-                    session.roomBinding.gatewayUserId ||
+                    (eventType != MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE &&
+                        event["sender"]?.jsonPrimitive?.contentOrNull !=
+                        binding.gatewayUserId) ||
                     !isMalinkApplicationControlEvent(event.toString())
                 ) return@mapNotNull null
-                matrixApplicationEvent(roomId, event)
+                matrixApplicationEvent(binding.roomId, event)
             }
             val end = root["end"]
                 .let { it as? JsonPrimitive }
@@ -361,12 +374,17 @@ class MatrixThreadDirectoryClient(
     suspend fun page(
         session: StoredMatrixSession,
         from: String?,
+        roomId: String? = null,
         limit: Int = 100,
     ): MatrixThreadDirectoryBatch {
         require(from == null || (from.isNotBlank() && from.length <= 4_096))
         require(limit in 1..100)
         val homeserver = MatrixIdentifiers.normalizeHomeserver(session.homeserverUrl)
-        val roomId = MatrixIdentifiers.validateRoomBinding(session.roomBinding).roomId
+        val bindings = session.roomBindings.map(MatrixIdentifiers::validateRoomBinding)
+        val binding = roomId?.let { targetRoomId ->
+            bindings.singleOrNull { it.roomId == targetRoomId }
+                ?: throw IllegalArgumentException("Unknown Matrix project room: $targetRoomId")
+        } ?: MatrixIdentifiers.validateRoomBinding(session.roomBinding)
         val query = buildList {
             add("dir=b")
             add("include=all")
@@ -375,7 +393,7 @@ class MatrixThreadDirectoryClient(
         }.joinToString("&")
         val response = transport.getJson(
             URI(
-                "$homeserver/_matrix/client/v1/rooms/${encode(roomId)}/threads?$query",
+                "$homeserver/_matrix/client/v1/rooms/${encode(binding.roomId)}/threads?$query",
             ),
             session.accessToken,
         )
@@ -401,10 +419,10 @@ class MatrixThreadDirectoryClient(
                 val latest = thread["latest_event"] as? JsonObject ?: return@mapNotNull null
                 if (
                     latest["sender"]?.jsonPrimitive?.contentOrNull !=
-                    session.roomBinding.gatewayUserId ||
+                    binding.gatewayUserId ||
                     !isMalinkApplicationControlEvent(latest.toString())
                 ) return@mapNotNull null
-                matrixApplicationEvent(roomId, latest)
+                matrixApplicationEvent(binding.roomId, latest)
             }
             val next = root["next_batch"]
                 .let { it as? JsonPrimitive }
@@ -539,12 +557,20 @@ class MatrixApplicationEventClient(
     private val transport: MatrixApplicationControlSyncTransport =
         RestrictedHttpsMatrixApplicationControlSyncTransport(),
 ) {
-    suspend fun event(session: StoredMatrixSession, eventId: String): MatrixDecryptedEvent {
+    suspend fun event(
+        session: StoredMatrixSession,
+        eventId: String,
+        roomId: String? = null,
+    ): MatrixDecryptedEvent {
         require(eventId.isNotBlank() && eventId.length <= 512 && eventId.startsWith("$")) {
             "Matrix event ID is invalid."
         }
         val homeserver = MatrixIdentifiers.normalizeHomeserver(session.homeserverUrl)
-        val binding = MatrixIdentifiers.validateRoomBinding(session.roomBinding)
+        val bindings = session.roomBindings.map(MatrixIdentifiers::validateRoomBinding)
+        val binding = roomId?.let { targetRoomId ->
+            bindings.singleOrNull { it.roomId == targetRoomId }
+                ?: throw IllegalArgumentException("Unknown Matrix project room: $targetRoomId")
+        } ?: MatrixIdentifiers.validateRoomBinding(session.roomBinding)
         val response = transport.getJson(
             URI(
                 "$homeserver/_matrix/client/v3/rooms/${encode(binding.roomId)}/event/" +
@@ -596,13 +622,18 @@ class MatrixThreadHistoryClient(
         threadRootEventId: String,
         from: String?,
         limit: Int,
+        roomId: String? = null,
     ): MatrixThreadHistoryBatch {
         require(threadRootEventId.isNotBlank() && threadRootEventId.length <= 512)
         require(from == null || (from.isNotBlank() && from.length <= 4_096))
         require(limit in 1..100)
         val boundedLimit = minOf(limit, MAX_RELATION_PAGE_EVENTS)
         val homeserver = MatrixIdentifiers.normalizeHomeserver(session.homeserverUrl)
-        val roomId = MatrixIdentifiers.validateRoomBinding(session.roomBinding).roomId
+        val bindings = session.roomBindings.map(MatrixIdentifiers::validateRoomBinding)
+        val binding = roomId?.let { targetRoomId ->
+            bindings.singleOrNull { it.roomId == targetRoomId }
+                ?: throw IllegalArgumentException("Unknown Matrix project room: $targetRoomId")
+        } ?: MatrixIdentifiers.validateRoomBinding(session.roomBinding)
         val query = buildList {
             add("dir=b")
             add("limit=$boundedLimit")
@@ -611,7 +642,7 @@ class MatrixThreadHistoryClient(
         }.joinToString("&")
         val response = transport.getJson(
             URI(
-                "$homeserver/_matrix/client/v1/rooms/${encode(roomId)}/relations/" +
+                "$homeserver/_matrix/client/v1/rooms/${encode(binding.roomId)}/relations/" +
                     "${encode(threadRootEventId)}/${encode("m.thread")}?$query",
             ),
             session.accessToken,
@@ -636,10 +667,10 @@ class MatrixThreadHistoryClient(
                 .mapNotNull { it as? JsonObject }
                 .filter { event ->
                     event["sender"]?.jsonPrimitive?.contentOrNull ==
-                        session.roomBinding.gatewayUserId &&
+                        binding.gatewayUserId &&
                         isMalinkApplicationControlEvent(event.toString())
                 }
-                .mapNotNull { event -> matrixApplicationEvent(roomId, event) }
+                .mapNotNull { event -> matrixApplicationEvent(binding.roomId, event) }
             val nextBatch = root["next_batch"]
                 .let { it as? JsonPrimitive }
                 ?.contentOrNull
@@ -676,31 +707,28 @@ class MatrixApplicationControlSyncClient(
             "Matrix control sync token is invalid."
         }
         val homeserver = MatrixIdentifiers.normalizeHomeserver(session.homeserverUrl)
-        val roomId = MatrixIdentifiers.validateRoomBinding(session.roomBinding).roomId
+        val bindings = session.roomBindings.map(MatrixIdentifiers::validateRoomBinding)
         val filter = buildJsonObject {
             put("presence", buildJsonObject { put("types", JsonArray(emptyList())) })
             put("account_data", buildJsonObject { put("types", JsonArray(emptyList())) })
             put("room", buildJsonObject {
-                put("rooms", buildJsonArray { add(JsonPrimitive(roomId)) })
+                put("rooms", buildJsonArray {
+                    bindings.forEach { add(JsonPrimitive(it.roomId)) }
+                })
                 put("state", buildJsonObject {
                     // MLP/3 has only bounded discovery/key state. Session
                     // inventory is a timeline/thread projection and therefore
                     // never needs a paged custom Room State directory.
-                    put("senders", buildJsonArray {
-                        add(JsonPrimitive(session.roomBinding.gatewayUserId))
-                    })
                     put("types", buildJsonArray {
                         add(JsonPrimitive(MLP3_MATRIX_KEY_GRANT_EVENT_TYPE))
                         add(JsonPrimitive(MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE))
                         add(JsonPrimitive(MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE))
+                        add(JsonPrimitive(MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE))
                     })
                 })
                 put("ephemeral", buildJsonObject { put("types", JsonArray(emptyList())) })
                 put("account_data", buildJsonObject { put("types", JsonArray(emptyList())) })
                 put("timeline", buildJsonObject {
-                    put("senders", buildJsonArray {
-                        add(JsonPrimitive(session.roomBinding.gatewayUserId))
-                    })
                     put("types", buildJsonArray {
                         add(JsonPrimitive("m.room.message"))
                         add(JsonPrimitive(MALINK_MATRIX_APPLICATION_CONTROL_EVENT_TYPE))
@@ -709,6 +737,7 @@ class MatrixApplicationControlSyncClient(
                         add(JsonPrimitive(MLP3_MATRIX_KEY_GRANT_EVENT_TYPE))
                         add(JsonPrimitive(MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE))
                         add(JsonPrimitive(MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE))
+                        add(JsonPrimitive(MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE))
                     })
                     put(
                         "limit",
@@ -751,62 +780,48 @@ class MatrixApplicationControlSyncClient(
                 ?: throw MatrixApplicationControlPayloadException(
                     "Matrix control sync response is incomplete.",
                 )
-            val joinedRoom = (root["rooms"] as? JsonObject)
-                ?.get("join")
-                .let { it as? JsonObject }
-                ?.get(roomId)
-                .let { it as? JsonObject }
-            val timeline = joinedRoom?.get("timeline")
-                .let { it as? JsonObject }
-            val limited = timeline
-                ?.get("limited")
-                .let { it as? JsonPrimitive }
-                ?.booleanOrNull
-                ?: false
-            val prevBatch = timeline
-                ?.get("prev_batch")
-                .let { it as? JsonPrimitive }
-                ?.contentOrNull
-                ?.takeIf { it.isNotBlank() && it.length <= 4_096 }
-            if (limited && since != null && prevBatch == null) {
-                throw MatrixApplicationControlPayloadException(
-                    "Limited Matrix control sync has no gap boundary.",
-                )
-            }
-            val stateEvents = joinedRoom
-                ?.get("state")
-                .let { it as? JsonObject }
-                ?.get("events")
-                .let { it as? JsonArray }
-                .orEmpty()
-                .sortedBy { event ->
-                    when (
+            val joined = (root["rooms"] as? JsonObject)?.get("join") as? JsonObject
+            val roomGaps = mutableListOf<MatrixSyncGap>()
+            val candidateEvents = mutableListOf<Pair<MatrixRoomBinding, JsonElement>>()
+            for (binding in bindings) {
+                val joinedRoom = joined?.get(binding.roomId) as? JsonObject
+                val timeline = joinedRoom?.get("timeline") as? JsonObject
+                val limited = (timeline?.get("limited") as? JsonPrimitive)?.booleanOrNull ?: false
+                val prev = (timeline?.get("prev_batch") as? JsonPrimitive)?.contentOrNull
+                    ?.takeIf { it.isNotBlank() && it.length <= 4_096 }
+                if (limited && since != null) {
+                    if (prev == null) throw MatrixApplicationControlPayloadException(
+                        "Limited Matrix control sync has no gap boundary.",
+                    )
+                    roomGaps += MatrixSyncGap(since, prev, roomId = binding.roomId)
+                }
+                val stateEvents = ((joinedRoom?.get("state") as? JsonObject)?.get("events") as? JsonArray)
+                    .orEmpty().sortedBy { event -> when (
                         ((event as? JsonObject)?.get("type") as? JsonPrimitive)?.contentOrNull
                     ) {
                         MALINK_MATRIX_GATEWAY_STATE_EVENT_TYPE -> 0
                         MALINK_MATRIX_SESSION_STATE_EVENT_TYPE -> 1
                         else -> 2
-                    }
-                }
-            val timelineEvents = timeline
-                ?.get("events")
-                .let { it as? JsonArray }
-                .orEmpty()
-            val candidateEvents = stateEvents + timelineEvents
-            val events = candidateEvents
-                .mapNotNull { element ->
-                    val event = element as? JsonObject ?: return@mapNotNull null
-                    if (!isMalinkApplicationControlEvent(event.toString())) {
-                        return@mapNotNull null
-                    }
-                    matrixApplicationEvent(roomId, event)
-                }
+                    } }
+                val timelineEvents = (timeline?.get("events") as? JsonArray).orEmpty()
+                candidateEvents += (stateEvents + timelineEvents).map { binding to it }
+            }
+            val events = candidateEvents.mapNotNull { (binding, element) ->
+                val event = element as? JsonObject ?: return@mapNotNull null
+                val eventType = (event["type"] as? JsonPrimitive)?.contentOrNull
+                val sender = (event["sender"] as? JsonPrimitive)?.contentOrNull
+                if ((eventType != MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE &&
+                        sender != binding.gatewayUserId) ||
+                    !isMalinkApplicationControlEvent(event.toString())) return@mapNotNull null
+                matrixApplicationEvent(binding.roomId, event)
+            }
             MatrixApplicationControlSyncBatch(
                 nextBatch = nextBatch,
-                prevBatch = prevBatch,
+                prevBatch = roomGaps.firstOrNull()?.to,
                 events = events,
                 candidateEventCount = candidateEvents.size,
-                limited = limited,
+                limited = roomGaps.isNotEmpty(),
+                roomGaps = roomGaps,
             )
         } finally {
             response.body.fill(0)
@@ -870,6 +885,7 @@ class MatrixApplicationControlClient(
         session: StoredMatrixSession,
         contentJson: String,
         transactionId: String,
+        roomId: String? = null,
     ): String {
         require(transactionId.isNotBlank() && transactionId.length <= 512) {
             "Matrix control transaction ID is invalid."
@@ -880,9 +896,13 @@ class MatrixApplicationControlClient(
         val content = Json.parseToJsonElement(contentJson).jsonObject
         val eventType = requireApplicationControlEnvelope(content)
         val homeserver = MatrixIdentifiers.normalizeHomeserver(session.homeserverUrl)
-        val roomId = MatrixIdentifiers.validateRoomBinding(session.roomBinding).roomId
+        val bindings = session.roomBindings.map(MatrixIdentifiers::validateRoomBinding)
+        val binding = roomId?.let { targetRoomId ->
+            bindings.singleOrNull { it.roomId == targetRoomId }
+                ?: throw IllegalArgumentException("Unknown Matrix project room: $targetRoomId")
+        } ?: MatrixIdentifiers.validateRoomBinding(session.roomBinding)
         val endpoint = URI(
-            "$homeserver/_matrix/client/v3/rooms/${encode(roomId)}/send/" +
+            "$homeserver/_matrix/client/v3/rooms/${encode(binding.roomId)}/send/" +
                 "${encode(eventType)}/${encode(transactionId)}",
         )
         val requestBytes = content.toString().toByteArray(Charsets.UTF_8)

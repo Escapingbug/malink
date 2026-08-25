@@ -5,12 +5,75 @@ import {
   generateDeviceKeyPair,
   signGatewayDeviceRotation,
   signGatewayTransportSnapshot,
+  signWorkspaceGatewayDirectory,
 } from "@malink/security";
 import {
   applyGatewayDeviceRotation,
   applyGatewayTransportSnapshot,
+  applyWorkspaceGatewayDirectory,
   type TrustedGateway,
 } from "../app/pairing.ts";
+
+test("Workspace Gateway directory advances monotonically and equal revisions are immutable", async () => {
+  const keys = await generateDeviceKeyPair();
+  const descriptor = {
+    gatewayNodeId: "node-a",
+    workspaceId: "workspace-1",
+    gatewayName: "Gateway A",
+    transport: originalTransport,
+    publicKey: await exportPairingPublicKey(keys.publicKey),
+    projects: [{
+      projectId: "project-a",
+      roomId: originalTransport.roomId,
+      conversationId: originalTransport.roomId,
+    }],
+    issuedAt: now,
+  };
+  const signed = await signWorkspaceGatewayDirectory({
+    kind: "malink.workspace.gateway-directory",
+    version: 1,
+    directoryId: "directory-1",
+    workspaceId: "workspace-1",
+    revision: 1,
+    gateways: [descriptor],
+    issuedAt: now,
+  }, keys.privateKey, keys.keyId);
+  const trust = {
+    gatewayId: "workspace-1",
+    gatewayNodeId: "node-a",
+    gatewayName: "Gateway A",
+    gatewayKey: await exportPairingPublicKey(keys.publicKey),
+    gatewayTransport: originalTransport,
+    certificate: { certificate: { issuedAt: now - 10_000 } },
+    rotations: [],
+    transportSnapshots: [],
+  } as unknown as TrustedGateway;
+
+  const accepted = await applyWorkspaceGatewayDirectory(trust, signed);
+  assert.equal(accepted.gatewayDirectory?.directory.revision, 1);
+  assert.strictEqual(await applyWorkspaceGatewayDirectory(accepted, signed), accepted);
+
+  const conflict = await signWorkspaceGatewayDirectory({
+    ...signed.directory,
+    directoryId: "directory-conflict",
+    gateways: [{ ...descriptor, gatewayName: "Conflicting name" }],
+  }, keys.privateKey, keys.keyId);
+  await assert.rejects(
+    applyWorkspaceGatewayDirectory(accepted, conflict),
+    /revision is immutable/,
+  );
+
+  const removed = await signWorkspaceGatewayDirectory({
+    ...signed.directory,
+    directoryId: "directory-2",
+    revision: 2,
+    gateways: [],
+    removedGatewayNodeIds: ["node-a"],
+    issuedAt: now + 1,
+  }, keys.privateKey, keys.keyId);
+  const advanced = await applyWorkspaceGatewayDirectory(accepted, removed);
+  assert.deepEqual(advanced.gatewayDirectory?.directory.gateways, []);
+});
 
 const now = 1_800_000_000_000;
 const originalTransport = {

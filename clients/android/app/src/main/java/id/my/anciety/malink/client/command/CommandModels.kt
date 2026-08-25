@@ -137,6 +137,7 @@ data class CommandTransmission(
     val operationId: String,
     val commandId: String,
     val idempotencyKey: String,
+    val projectId: String?,
     val sequence: Long,
     val baseRevision: Long,
     val revisionEpoch: String?,
@@ -150,6 +151,7 @@ data class CommandTransmission(
         requireOpaqueId(operationId, "operationId")
         requireOpaqueId(commandId, "commandId")
         requireUuid(idempotencyKey)
+        projectId?.let { requireOpaqueId(it, "projectId") }
         requirePositiveJsonInteger(sequence, "Command sequence")
         requireNonnegativeJsonInteger(baseRevision, "Command base revision")
         require((revisionEpoch == null) == (revisionEpochGeneration == null)) {

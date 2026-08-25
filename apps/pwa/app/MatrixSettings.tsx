@@ -100,7 +100,6 @@ function MatrixSettingsDialog({
   onClose,
   onDisconnect,
   onForget,
-  onSwitchGateway,
   onPasswordLogin,
   onCreateInvitation,
   onClearInvitation,

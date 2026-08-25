@@ -56,15 +56,17 @@ class DurableCommandOutbox internal constructor(
         idempotencyKey: String,
         payload: JsonObject,
         sessionId: String? = null,
+        projectId: String? = null,
     ): CommandReceipt {
         requireUuid(idempotencyKey)
         sessionId?.let { requireOpaqueId(it, "sessionId") }
+        projectId?.let { requireOpaqueId(it, "projectId") }
         val validatedPayload = CommandPayloadValidator.validate(payload)
         require(sessionId == null || sessionId == validatedPayload.sessionId) {
             "The command session id does not match its payload."
         }
         val effectiveSessionId = validatedPayload.sessionId
-        val fingerprint = requestFingerprint(payload, effectiveSessionId)
+        val fingerprint = requestFingerprint(payload, effectiveSessionId, projectId)
         snapshot.commands.firstOrNull { it.idempotencyKey == idempotencyKey }?.let { existing ->
             if (existing.requestFingerprint != fingerprint) {
                 throw CommandIdempotencyConflictException(
@@ -98,6 +100,7 @@ class DurableCommandOutbox internal constructor(
             submittedAt = now,
             updatedAt = now,
             sessionId = effectiveSessionId,
+            projectId = projectId,
             // Retained only as a bridge compatibility field. It is allocated
             // locally and is not part of MLP/3 authorization or serialization.
             sequence = Math.addExact(
@@ -652,6 +655,7 @@ private fun PersistedCommand.toTransmission(recovery: Boolean) = CommandTransmis
     operationId = operationId,
     commandId = commandId,
     idempotencyKey = idempotencyKey,
+    projectId = projectId,
     sequence = sequence,
     baseRevision = baseRevision,
     revisionEpoch = revisionEpoch,
@@ -670,11 +674,12 @@ private fun PersistedCommand.belongsTo(snapshot: CommandOutboxSnapshot): Boolean
 private fun PersistedCommand.belongsTo(epoch: String?, generation: Long?): Boolean =
     revisionEpoch == epoch && revisionEpochGeneration == generation
 
-private fun requestFingerprint(payload: JsonObject, sessionId: String?): String {
+private fun requestFingerprint(payload: JsonObject, sessionId: String?, projectId: String?): String {
     val canonical = JsonObject(
         buildMap {
             put("payload", canonicalize(payload))
             put("sessionId", sessionId?.let(::JsonPrimitive) ?: JsonNull)
+            put("projectId", projectId?.let(::JsonPrimitive) ?: JsonNull)
         },
     ).toString().toByteArray(Charsets.UTF_8)
     return try {

@@ -85,18 +85,19 @@ export class WebMalinkClient implements MalinkClient {
     return publicTrustFromWeb(trust);
   }
 
-  async send(payload: CommandPayload): Promise<MalinkCommandSendResult> {
-    return commandResultFromWeb(await this.transport.send(payload));
+  async send(payload: CommandPayload, projectId?: string): Promise<MalinkCommandSendResult> {
+    return commandResultFromWeb(await this.transport.send(payload, projectId));
   }
 
   async updateProjectExtensions(
     extensions: SessionExtensionBinding[],
+    projectId?: string,
   ): Promise<MalinkCommandSendResult> {
     if (!this.transport.updateProjectExtensions) {
       throw new Error("This connection cannot update project extension defaults.");
     }
     return commandResultFromWeb(
-      await this.transport.updateProjectExtensions(extensions),
+      await this.transport.updateProjectExtensions(extensions, projectId),
     );
   }
 

@@ -17,6 +17,8 @@ import kotlinx.serialization.json.put
 const val MLP3_MATRIX_KEY_GRANT_EVENT_TYPE = "io.malink.project.key_grant.v3"
 const val MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE = "io.malink.project.current.v3"
 const val MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE = "io.malink.workspace.current.v3"
+const val MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE =
+    "io.malink.workspace.gateway_directory.v1"
 
 data class MatrixMlp3ProjectKey(
     val keyId: String,
@@ -286,6 +288,40 @@ object MatrixMlp3Protocol {
         document.opaque("logicalEventId")
         document.nonnegative("updatedAt")
         return document
+    }
+
+    fun verifyWorkspaceGatewayDirectory(
+        signed: JsonObject,
+        gatewayKey: PairingPublicKey,
+        workspaceId: String,
+        minimumRevision: Long = 0,
+    ): JsonObject {
+        signed.requireExactKeys(setOf("directory", "signature"), "Workspace Gateway Directory")
+        val directory = signed.objectValue("directory")
+        verifySignature(
+            signed.objectValue("signature"),
+            gatewayKey,
+            buildJsonObject {
+                put("domain", "malink.workspace.gateway-directory.v1")
+                put("document", directory)
+            },
+        )
+        require(directory.string("kind") == "malink.workspace.gateway-directory")
+        require(directory.long("version") == 1L)
+        require(directory.opaque("workspaceId") == workspaceId)
+        val revision = directory.nonnegative("revision")
+        require(revision >= minimumRevision) { "Workspace Gateway Directory rolled back." }
+        val gateways = directory["gateways"] as? JsonArray
+            ?: throw IllegalArgumentException("Workspace Gateway Directory gateways are invalid.")
+        require(gateways.size <= 256)
+        val ids = gateways.map { element ->
+            val gateway = element as? JsonObject
+                ?: throw IllegalArgumentException("Workspace Gateway Directory entry is invalid.")
+            require(gateway.opaque("workspaceId") == workspaceId)
+            gateway.opaque("gatewayNodeId")
+        }
+        require(ids.distinct().size == ids.size)
+        return directory
     }
 
     fun sealSignedCommand(

@@ -354,9 +354,10 @@ export type MatrixConnection = {
     deviceName: string,
     signal?: AbortSignal,
   ): Promise<TrustedGateway>;
-  send(payload: CommandPayload): Promise<CommandSendResult>;
+  send(payload: CommandPayload, projectId?: string): Promise<CommandSendResult>;
   updateProjectExtensions?(
     extensions: SessionExtensionBinding[],
+    projectId?: string,
   ): Promise<CommandSendResult>;
   updateWebPushSubscription?(
     subscription: Mlp3WebPushSubscription | null,

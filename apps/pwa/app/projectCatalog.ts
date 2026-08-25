@@ -13,8 +13,12 @@ export type GatewayProjectSource = {
 export function canonicalGatewayProjects(
   workspace: GatewayProjectSource | null | undefined,
   sessions: readonly GatewayProjectSource[],
+  knownProjects: readonly GatewayProjectSource[] = [],
 ): GatewayProjectSource[] {
   const projects = new Map<string, GatewayProjectSource>();
+  for (const project of [...knownProjects].sort(compareProjectSources)) {
+    projects.set(project.projectId, copyProject(project));
+  }
   const orderedSessions = [...sessions].sort(compareProjectSources);
   for (const session of orderedSessions) {
     if (!projects.has(session.projectId)) {

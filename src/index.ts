@@ -13,7 +13,10 @@ import {
     acceptGatewayJoinInvitation,
     createGatewayJoinInvitation,
     FileGatewayIdentityStore,
+    FileTrustedDeviceRegistry,
+    FileWorkspaceDeviceAuthorization,
     FileWorkspaceGatewayDirectory,
+    ensurePortableWorkspaceGrant,
 } from './gateway/pairing/index'
 import { loadProviderProfiles } from './providers/configured'
 import { resolveNodePath } from './utils/nodePath'
@@ -482,6 +485,7 @@ async function handleGatewayCommand(
       [--qr terminal|png|none] [--output PATH] [--json]
   malink gateway invite-gateway --gateway-data-dir PATH
   malink gateway join <invitation-link> --gateway-data-dir PATH
+  malink gateway remove-gateway <gateway-node-id> --gateway-data-dir PATH
   malink gateway devices [--socket PATH] [--json]
   malink gateway cancel <invitation-id> [--socket PATH]
   malink gateway revoke <device-id> [--reason TEXT] [--socket PATH]
@@ -509,12 +513,31 @@ async function handleGatewayCommand(
             join(dataDirectory, 'workspace-gateways.json'),
             identity,
         ).load()
+        const authorization = new FileWorkspaceDeviceAuthorization(
+            join(dataDirectory, 'workspace-device-authorization.json'),
+            identity,
+        )
+        const registry = new FileTrustedDeviceRegistry(
+            join(dataDirectory, 'trusted-devices.json'),
+        )
+        for (const record of await registry.listActive()) {
+            const grant = await ensurePortableWorkspaceGrant(
+                identity,
+                registry,
+                record.certificate.certificate.deviceId,
+            )
+            await authorization.mergeGrant(grant)
+        }
         const lifetimeMs = parseLifetimeMs(values.lifetime)
         const invitation = createGatewayJoinInvitation(
             identity,
             directory,
             Date.now(),
             lifetimeMs,
+            {
+                grants: await authorization.activeGrants(),
+                revocations: await authorization.revocations(),
+            },
         )
         if (values.json) {
             console.log(JSON.stringify(invitation, null, 2))
@@ -540,8 +563,39 @@ async function handleGatewayCommand(
                 joined.identity,
             ).merge(joined.directory)
         }
+        const authorization = new FileWorkspaceDeviceAuthorization(
+            join(dataDirectory, 'workspace-device-authorization.json'),
+            joined.identity,
+        )
+        for (const grant of joined.deviceGrants) await authorization.mergeGrant(grant)
+        for (const revocation of joined.deviceRevocations) {
+            await authorization.mergeRevocation(revocation)
+        }
         console.log(`Joined Workspace ${joined.identity.workspaceId}.`)
         console.log(`Gateway node ID: ${joined.identity.gatewayNodeId}`)
+        return
+    }
+
+    if (subcommand === 'remove-gateway') {
+        const gatewayNodeId = positionals[1]
+        if (!gatewayNodeId) {
+            throw new Error(
+                'Usage: malink gateway remove-gateway <gateway-node-id> --gateway-data-dir PATH',
+            )
+        }
+        const dataDirectory = gatewayDataDirectory(values)
+        const identity = await new FileGatewayIdentityStore(
+            join(dataDirectory, 'gateway-identity.json'),
+        ).loadExisting()
+        const directory = await new FileWorkspaceGatewayDirectory(
+            join(dataDirectory, 'workspace-gateways.json'),
+            identity,
+        ).remove(gatewayNodeId)
+        console.log(
+            `Removed Gateway node ${gatewayNodeId} at Workspace directory revision `
+            + `${directory.directory.revision}.`,
+        )
+        console.log('The running Gateway will publish this change automatically.')
         return
     }
 

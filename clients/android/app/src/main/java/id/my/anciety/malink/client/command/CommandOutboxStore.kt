@@ -15,6 +15,7 @@ internal data class PersistedCommand(
     val submittedAt: Long,
     val updatedAt: Long,
     val sessionId: String?,
+    val projectId: String?,
     val sequence: Long,
     val baseRevision: Long,
     val revisionEpoch: String?,
@@ -31,7 +32,7 @@ internal data class PersistedCommand(
         "PersistedCommand(operationId=$operationId, commandId=$commandId, " +
             "retiredCommandIds=$retiredCommandIds, idempotencyKey=$idempotencyKey, " +
             "requestFingerprint=$requestFingerprint, state=$state, submittedAt=$submittedAt, " +
-            "updatedAt=$updatedAt, sessionId=$sessionId, sequence=$sequence, " +
+            "updatedAt=$updatedAt, sessionId=$sessionId, projectId=$projectId, sequence=$sequence, " +
             "baseRevision=$baseRevision, revisionEpoch=<redacted>, " +
             "revisionEpochGeneration=$revisionEpochGeneration, " +
             "authenticationIssuedAt=$authenticationIssuedAt, " +

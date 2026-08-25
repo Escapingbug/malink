@@ -2,6 +2,7 @@ import {
   MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
   MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
   MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
+  MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
   MAX_MALINK_ATTACHMENT_BYTES,
   attachmentSchema,
   mlp3ProjectKeyGrantStateSchema,
@@ -45,9 +46,11 @@ import {
   type MatrixConnectionConfig,
   type MatrixConnectionStatus,
   type MatrixHistoryPage,
+  type MatrixWorkspaceRoute,
 } from "./matrix";
 import {
   completePairing,
+  applyWorkspaceGatewayDirectory,
   loadTrustedGateway,
   type PairingPreview,
   type TrustedGateway,
@@ -106,10 +109,19 @@ export async function connectMatrixMlp3(
   let room: Room | null = null;
   let protocol: MatrixMlp3ProtocolClient | null = null;
   let projectId: string | null = null;
+  const secondaryProtocols = new Map<string, {
+    route: MatrixWorkspaceRoute;
+    room: Room;
+    protocol: MatrixMlp3ProtocolClient;
+  }>();
+  const commandProjects = new Map<string, MatrixMlp3ProtocolClient>();
+  const pendingSecondaryProjects = new Set<string>();
   let matrixDeviceKeys: { ed25519: string; curve25519: string } | null = null;
   const readiness = new MatrixMlp3Readiness(Boolean(trust));
   let authoritativeProjectionPrepared = false;
+  let workspaceRoutesReady = !trust;
   let cachedProjectionPublished = false;
+  let reconcileWorkspaceRoutes = () => undefined;
   const deliveredMessages = new Map<string, { version: number; physicalEventId: string }>();
   const emittedCompletions = new Set<string>();
   const deliveredHistory = new Map<string, Set<string>>();
@@ -133,10 +145,38 @@ export async function connectMatrixMlp3(
     rejectReady(error);
   };
 
+  const activeWorkspaceProtocols = (): MatrixMlp3ProtocolClient[] => {
+    const routes = trust ? workspaceRoutesFromTrust(trust) : [];
+    const routeDirectoryAvailable = routes.length > 0;
+    const active: MatrixMlp3ProtocolClient[] = [];
+    if (
+      protocol
+      && (!routeDirectoryAvailable || routes.some(route =>
+        route.projectId === projectId && route.roomId === config.roomId))
+    ) active.push(protocol);
+    for (const context of secondaryProtocols.values()) {
+      if (!routeDirectoryAvailable || routes.some(route =>
+        route.projectId === context.route.projectId && route.roomId === context.route.roomId)) {
+        active.push(context.protocol);
+      }
+    }
+    return active;
+  };
+
+  const protocolForProject = (
+    targetProjectId?: string,
+  ): MatrixMlp3ProtocolClient | null => {
+    const active = activeWorkspaceProtocols();
+    if (!targetProjectId) return active.length === 1 ? active[0]! : null;
+    if (targetProjectId === projectId && protocol && active.includes(protocol)) return protocol;
+    const secondary = secondaryProtocols.get(targetProjectId)?.protocol;
+    return secondary && active.includes(secondary) ? secondary : null;
+  };
+
   const publishProjection = () => {
-    const active = protocol;
-    if (!active) return;
-    for (const message of active.projection.messages.values()) {
+    const activeProtocols = activeWorkspaceProtocols();
+    if (activeProtocols.length === 0) return;
+    for (const message of activeProtocols.flatMap(value => [...value.projection.messages.values()])) {
       const previous = deliveredMessages.get(message.logicalId);
       if (
         previous
@@ -149,7 +189,7 @@ export async function connectMatrixMlp3(
       });
       handlers.onMessage(toIncomingMessage(message, previous?.physicalEventId));
     }
-    for (const completion of active.projection.completions.values()) {
+    for (const completion of activeProtocols.flatMap(value => [...value.projection.completions.values()])) {
       if (emittedCompletions.has(completion.commandId)) continue;
       emittedCompletions.add(completion.commandId);
       handlers.onCommandResult?.(toLegacyCompletion(completion));
@@ -157,8 +197,9 @@ export async function connectMatrixMlp3(
     handlers.onCollaborationState?.({
       activeDeviceCount: trust?.activeDeviceCount,
       revision: 0,
-      gatewayState: gatewayState(active, config, trust),
+      gatewayState: aggregateGatewayState(activeProtocols, config, trust),
     });
+    reconcileWorkspaceRoutes();
   };
 
   const publishProjectionIfAuthoritative = () => {
@@ -243,6 +284,153 @@ export async function connectMatrixMlp3(
       publishCachedProjectionIfAvailable();
     }
     return true;
+  };
+
+  const createSecondaryProtocol = async (route: MatrixWorkspaceRoute): Promise<void> => {
+    if (!trust || route.roomId === config.roomId || secondaryProtocols.has(route.projectId) ||
+        pendingSecondaryProjects.has(route.projectId)) return;
+    pendingSecondaryProjects.add(route.projectId);
+    try {
+      const routeRoom = client.getRoom(route.roomId) ?? await client.joinRoom(route.roomId);
+      if (!client.isRoomEncrypted(route.roomId)) {
+        throw new Error(`Workspace project room ${route.roomId} is not encrypted.`);
+      }
+      const content = await client.getStateEvent(
+        route.roomId,
+        MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
+        `${route.projectId}.${identity.keyId}`,
+      );
+      const resolution = resolveAuthoritativeProjectKeyGrant(content, {
+        workspaceId: config.gatewayId,
+        projectId: route.projectId,
+        roomId: route.roomId,
+        deviceId: identity.keyId,
+        certificateId: trust.certificate.certificate.certificateId,
+      });
+      if (resolution.kind === "reauthorization-required") {
+        throw new Error(`Project ${route.projectId} has not granted this Workspace device access.`);
+      }
+      const routeProtocol = new MatrixMlp3ProtocolClient(
+      { workspaceId: config.gatewayId, roomId: route.roomId, projectId: route.projectId },
+      identity,
+      trust,
+      {
+        async sendMessage(request) {
+          return { eventId: await sendMatrixMlp3ApplicationEvent(
+            client, request.roomId,
+            request.content as unknown as RoomMessageEventContent,
+            request.transactionId,
+          ) };
+        },
+      },
+      new IndexedDbMatrixMlp3ClientStore([
+        config.gatewayId, route.roomId, route.projectId, identity.keyId,
+        trust.certificate.certificate.certificateId,
+      ].join("\u0000")),
+      publishProjection,
+      (_event, error) => console.error("[mlp3/matrix] quarantined project event", error),
+    );
+      await routeProtocol.initialize();
+      await routeProtocol.acceptKeyGrant(resolution.grant);
+      secondaryProtocols.set(route.projectId, { route, room: routeRoom, protocol: routeProtocol });
+      routeRoom.on(sdk.RoomStateEvent.Events, onRoomState);
+      await recoverSecondaryProject(route.projectId);
+    } finally {
+      pendingSecondaryProjects.delete(route.projectId);
+    }
+  };
+
+  const recoverSecondaryProject = async (targetProjectId: string): Promise<void> => {
+    const context = secondaryProtocols.get(targetProjectId);
+    if (!context || !trust) return;
+    for (const [eventType, stateKey] of [
+      [MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE, config.gatewayId],
+      [MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE, targetProjectId],
+    ] as const) {
+      const content = await client.getStateEvent(context.route.roomId, eventType, stateKey);
+      const pointer = await verifyMlp3Pointer(content, trust.gatewayKey.publicKey);
+      if (pointer.workspaceId !== config.gatewayId || pointer.projectId !== targetProjectId ||
+          pointer.roomId !== context.route.roomId || pointer.gatewayKeyId !== trust.gatewayKey.keyId) {
+        throw new Error("The MLP/3 pointer is bound to another Workspace project.");
+      }
+      const raw = await client.fetchRoomEvent(context.route.roomId, pointer.eventId);
+      await ingestSecondaryEvent(context, new sdk.MatrixEvent(raw));
+    }
+    for (const event of context.room.getLiveTimeline().getEvents()) {
+      await ingestSecondaryEvent(context, event);
+    }
+    await context.protocol.retryPending();
+    publishProjection();
+  };
+
+  const ingestSecondaryEvent = async (
+    context: { route: MatrixWorkspaceRoute; protocol: MatrixMlp3ProtocolClient },
+    event: MatrixEvent,
+  ): Promise<void> => {
+    if (event.isEncrypted() || event.getType() === "m.room.encrypted") {
+      await client.decryptEventIfNeeded(event);
+    }
+    if (event.isDecryptionFailure() || event.getType() !== "m.room.message") return;
+    const eventId = event.getId();
+    const sender = event.getSender();
+    if (!eventId || !sender) return;
+    await context.protocol.ingest({
+      roomId: context.route.roomId,
+      eventId,
+      sender,
+      timestamp: event.getTs(),
+      content: event.getContent() as Record<string, unknown>,
+    });
+  };
+
+  const acceptWorkspaceDirectory = async (input: unknown): Promise<void> => {
+    if (!trust) return;
+    trust = await applyWorkspaceGatewayDirectory(trust, input);
+    config.workspaceRoutes = workspaceRoutesFromTrust(trust);
+    handlers.onTrustUpdated?.(trust);
+    publishProjection();
+    reconcileWorkspaceRoutes();
+  };
+
+  const recoverWorkspaceDirectoryState = async (): Promise<void> => {
+    if (!trust) return;
+    try {
+      await acceptWorkspaceDirectory(await client.getStateEvent(
+        config.roomId,
+        MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
+        config.gatewayId,
+      ));
+    } catch (error) {
+      if (!isMatrixNotFound(error)) throw error;
+    }
+  };
+
+  let routeReconciliationChain = Promise.resolve();
+  reconcileWorkspaceRoutes = () => {
+    if (!trust || stopped) return;
+    const activeProtocols = activeWorkspaceProtocols();
+    const trustedRoutes = workspaceRoutesFromTrust(trust);
+    const discovered = workspaceRoutesFromProtocols(activeProtocols);
+    const routes = trustedRoutes.length > 0
+      ? trustedRoutes
+      : discovered.length > 0 ? discovered : config.workspaceRoutes ?? [];
+    routeReconciliationChain = routeReconciliationChain.then(async () => {
+      const desired = new Map(routes
+        .filter(route => route.roomId !== config.roomId)
+        .map(route => [route.projectId, route]));
+      for (const [secondaryProjectId, context] of secondaryProtocols) {
+        const next = desired.get(secondaryProjectId);
+        if (next?.roomId === context.route.roomId) continue;
+        context.room.off(sdk.RoomStateEvent.Events, onRoomState);
+        secondaryProtocols.delete(secondaryProjectId);
+        for (const [commandId, owner] of commandProjects) {
+          if (owner === context.protocol) commandProjects.delete(commandId);
+        }
+      }
+      for (const route of desired.values()) await createSecondaryProtocol(route);
+    }).catch(error => {
+      reportRecoveryFailure("Workspace project routes could not be reconciled", error);
+    });
   };
 
   const scanGrantState = async (): Promise<boolean> => {
@@ -399,10 +587,42 @@ export async function connectMatrixMlp3(
     // room listener when the root is outside its active window. ClientEvent
     // delivers every event seen by /sync; the durable inbox then deduplicates
     // main-timeline, thread, and explicit-history copies by physical event ID.
-    if (stopped || event.getRoomId() !== config.roomId) return;
+    if (stopped) return;
+    const secondary = [...secondaryProtocols.values()].find(
+      value => value.route.roomId === event.getRoomId(),
+    );
+    if (secondary) {
+      inboundChain = inboundChain.then(() => ingestSecondaryEvent(secondary, event)).catch(error => {
+        console.error("[mlp3/matrix] a secondary project event could not be ingested", error);
+      });
+      return;
+    }
+    if (event.getRoomId() !== config.roomId) return;
     enqueue(event);
   };
   const onRoomState = (event: MatrixEvent) => {
+    if (event.getType() === MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE) {
+      void acceptWorkspaceDirectory(event.getContent()).catch(error =>
+        reportRecoveryFailure("A Workspace Gateway directory update was rejected", error));
+      return;
+    }
+    const secondary = [...secondaryProtocols.values()].find(
+      value => value.route.roomId === event.getRoomId(),
+    );
+    if (secondary) {
+      if (event.getType() === MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE) {
+        void secondary.protocol.acceptKeyGrant(event.getContent())
+          .then(() => recoverSecondaryProject(secondary.route.projectId))
+          .catch(error => reportRecoveryFailure("A project key grant could not be opened", error));
+      } else if (
+        event.getType() === MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE ||
+        event.getType() === MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
+      ) {
+        void recoverSecondaryProject(secondary.route.projectId)
+          .catch(error => reportRecoveryFailure("A project snapshot could not be recovered", error));
+      }
+      return;
+    }
     if (event.getType() === MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE) {
       void createProtocol(event.getContent())
         .then(opened => opened ? recoverAuthoritativeState() : undefined)
@@ -501,7 +721,7 @@ export async function connectMatrixMlp3(
       readiness.completeRecovery();
       publishProjection();
       handlers.onStatus("connected");
-      completeReady();
+      if (workspaceRoutesReady) completeReady();
     });
     recoveryChain = operation;
     await operation;
@@ -553,6 +773,10 @@ export async function connectMatrixMlp3(
       return;
     }
     await recoverAuthoritativeState();
+    await recoverWorkspaceDirectoryState();
+    await Promise.all((config.workspaceRoutes ?? []).map(createSecondaryProtocol));
+    workspaceRoutesReady = true;
+    completeReady();
   });
   void initialRecovery.catch(error => {
     reportRecoveryFailure("The current MLP/3 state could not be recovered", error);
@@ -615,6 +839,10 @@ export async function connectMatrixMlp3(
     try {
       await waitForGrant(signal);
       await recoverAuthoritativeState();
+      await recoverWorkspaceDirectoryState();
+      await Promise.all((trust ? workspaceRoutesFromTrust(trust) : []).map(createSecondaryProtocol));
+      workspaceRoutesReady = true;
+      completeReady();
     } catch (error) {
       reportRecoveryFailure("The paired Gateway state could not be recovered", error);
       throw error;
@@ -622,16 +850,33 @@ export async function connectMatrixMlp3(
     return paired;
   };
 
+  const protocolForSession = (sessionId: string): {
+    protocol: MatrixMlp3ProtocolClient;
+    roomId: string;
+  } | null => {
+    const active = activeWorkspaceProtocols();
+    if (protocol && active.includes(protocol) && protocol.projection.sessions.has(sessionId)) {
+      return { protocol, roomId: config.roomId };
+    }
+    for (const value of secondaryProtocols.values()) {
+      if (active.includes(value.protocol) && value.protocol.projection.sessions.has(sessionId)) {
+        return { protocol: value.protocol, roomId: value.route.roomId };
+      }
+    }
+    return null;
+  };
+
   const loadHistory = async (sessionId: string, limit = 30): Promise<MatrixHistoryPage> => {
     await ready;
-    const active = protocol;
-    if (!active) throw new Error("The MLP/3 project is not initialized.");
+    const context = protocolForSession(sessionId);
+    if (!context) throw new Error("The MLP/3 project is not initialized.");
+    const active = context.protocol;
     const session = active.projection.sessions.get(sessionId);
     if (!session?.threadRootEventId) return { messages: [], hasMore: false };
     const pageLimit = Math.max(1, Math.min(limit, 100));
     const from = historyInitialized.has(sessionId) ? historyTokens.get(sessionId) ?? undefined : undefined;
     const page = await client.relations(
-      config.roomId,
+      context.roomId,
       session.threadRootEventId,
       sdk.RelationType.Thread,
       null,
@@ -645,7 +890,15 @@ export async function connectMatrixMlp3(
     historyInitialized.add(sessionId);
     historyTokens.set(sessionId, page.nextBatch ?? null);
     for (const event of [page.originalEvent, ...page.events]) {
-      if (event) await ingestEvent(event);
+      if (!event) continue;
+      if (active === protocol) {
+        await ingestEvent(event);
+      } else {
+        const secondary = [...secondaryProtocols.values()].find(
+          value => value.protocol === active,
+        );
+        if (secondary) await ingestSecondaryEvent(secondary, event);
+      }
     }
     const delivered = deliveredHistory.get(sessionId) ?? new Set<string>();
     deliveredHistory.set(sessionId, delivered);
@@ -664,7 +917,7 @@ export async function connectMatrixMlp3(
 
   const loadLocalHistory = async (sessionId: string): Promise<MatrixHistoryPage> => {
     await ready;
-    const active = protocol;
+    const active = protocolForSession(sessionId)?.protocol;
     if (!active) throw new Error("The MLP/3 project is not initialized.");
     const delivered = deliveredHistory.get(sessionId) ?? new Set<string>();
     deliveredHistory.set(sessionId, delivered);
@@ -740,10 +993,12 @@ export async function connectMatrixMlp3(
       };
     },
     pair,
-    async send(payload) {
+    async send(payload, targetProjectId) {
       await ready;
-      if (!protocol) throw new Error("The MLP/3 project is not initialized.");
-      const sent = await protocol.send(payload);
+      const target = protocolForProject(targetProjectId);
+      if (!target) throw new Error("The target Workspace project is not initialized.");
+      const sent = await target.send(payload);
+      commandProjects.set(sent.commandId, target);
       return {
         eventId: sent.eventId ?? `$malink.queued.${sent.commandId}`,
         commandId: sent.commandId,
@@ -752,10 +1007,12 @@ export async function connectMatrixMlp3(
         completion: sent.completion.then(toLegacyCompletion),
       };
     },
-    async updateProjectExtensions(extensions) {
+    async updateProjectExtensions(extensions, targetProjectId) {
       await ready;
-      if (!protocol) throw new Error("The Malink v3 project is not initialized.");
-      const sent = await protocol.updateProjectExtensions(extensions);
+      const target = protocolForProject(targetProjectId);
+      if (!target) throw new Error("The target Workspace project is not initialized.");
+      const sent = await target.updateProjectExtensions(extensions);
+      commandProjects.set(sent.commandId, target);
       return {
         eventId: sent.eventId ?? `$malink.queued.${sent.commandId}`,
         commandId: sent.commandId,
@@ -766,20 +1023,35 @@ export async function connectMatrixMlp3(
     },
     async updateWebPushSubscription(subscription) {
       await ready;
-      if (!protocol) throw new Error("The Malink v3 project is not initialized.");
-      const sent = await protocol.updateWebPushSubscription(subscription);
+      const targets = activeWorkspaceProtocols();
+      if (targets.length === 0) throw new Error("The Malink v3 projects are not initialized.");
+      const sentCommands = await Promise.all(
+        targets.map(target => target.updateWebPushSubscription(subscription)),
+      );
+      sentCommands.forEach((sent, index) => commandProjects.set(sent.commandId, targets[index]!));
+      const sent = sentCommands[0]!;
       return {
         eventId: sent.eventId ?? `$malink.queued.${sent.commandId}`,
         commandId: sent.commandId,
         sequence: 1,
         revision: 0,
-        completion: sent.completion.then(toLegacyCompletion),
+        completion: Promise.all(sentCommands.map(value => value.completion)).then(completions => {
+          const failed = completions.find(value => value.outcome !== "succeeded");
+          return toLegacyCompletion(failed ?? completions[0]!);
+        }),
       };
     },
     async recoverCommand(commandId) {
       await ready;
-      if (!protocol) throw new Error("The MLP/3 project is not initialized.");
-      const sent = await protocol.recover(commandId);
+      const candidates = commandProjects.has(commandId)
+        ? [commandProjects.get(commandId)!]
+        : activeWorkspaceProtocols();
+      let sent: Awaited<ReturnType<MatrixMlp3ProtocolClient["recover"]>> | undefined;
+      for (const candidate of candidates) {
+        try { sent = await candidate.recover(commandId); commandProjects.set(commandId, candidate); break; }
+        catch (error) { if (!String(error).includes("unavailable")) throw error; }
+      }
+      if (!sent) throw new Error(`The durable command ${commandId} is unavailable.`);
       return {
         eventId: sent.eventId ?? `$malink.queued.${sent.commandId}`,
         commandId: sent.commandId,
@@ -802,8 +1074,9 @@ export async function connectMatrixMlp3(
     loadLocalHistory,
     loadHistoryPage: loadHistory,
     async observeCommandCompletion(commandId, timeoutMs) {
-      if (!protocol) throw new Error("The MLP/3 project is not initialized.");
-      return toLegacyCompletion(await protocol.observeCompletion(commandId, timeoutMs));
+      const target = commandProjects.get(commandId) ?? activeWorkspaceProtocols()[0];
+      if (!target) throw new Error("The MLP/3 project is not initialized.");
+      return toLegacyCompletion(await target.observeCompletion(commandId, timeoutMs));
     },
     releaseCommand: async () => undefined,
     stop() {
@@ -811,6 +1084,9 @@ export async function connectMatrixMlp3(
       stopped = true;
       client.off(sdk.ClientEvent.Event, onMatrixEvent);
       room?.off(sdk.RoomStateEvent.Events, onRoomState);
+      for (const value of secondaryProtocols.values()) {
+        value.room.off(sdk.RoomStateEvent.Events, onRoomState);
+      }
       client.off(sdk.ClientEvent.Sync, onSync);
       client.stopClient();
       handlers.onStatus("offline");
@@ -946,6 +1222,18 @@ function gatewayState(
   const project = protocol.projection.project;
   const sessions = protocol.projection.visibleSessions();
   const inboxFiles = protocol.projection.visibleInboxFiles();
+  const capabilities = protocol.projection.workspace
+    ? parseGatewayCapabilities(protocol.projection.workspace.capabilities)
+    : {
+        models: [],
+        providers: [],
+        permissionModes: [{ id: "default", name: "Default" }],
+        canCreateSession: true,
+        canSelectSession: false,
+        canArchiveSession: true,
+        canDeleteSession: false,
+        sessionExtensions: project?.installedExtensions ?? [],
+      };
   return {
     stateVersion: Math.max(1, ...sessions.map(session => session.stateVersion)),
     revision: 0,
@@ -1004,24 +1292,77 @@ function gatewayState(
       permissionMode: project?.permissionMode ?? "default",
       defaultExtensions: project?.defaultExtensions ?? [],
       extensionDefaultsRevision: project?.extensionDefaultsRevision ?? 1,
+      capabilities,
     },
-    capabilities: protocol.projection.workspace
-      ? parseGatewayCapabilities(protocol.projection.workspace.capabilities)
-      : {
-          models: [],
-          providers: [],
-          permissionModes: [{ id: "default", name: "Default" }],
-          canCreateSession: true,
-          canSelectSession: false,
-          canArchiveSession: true,
-          canDeleteSession: false,
-          sessionExtensions: project?.installedExtensions ?? [],
-        },
+    capabilities,
     nativeClientReleases: protocol.projection.workspace?.clientReleases ?? [],
     ...(protocol.projection.workspace?.gatewayDirectory
       ? { gatewayDirectory: protocol.projection.workspace.gatewayDirectory }
       : {}),
   };
+}
+
+function aggregateGatewayState(
+  protocols: readonly MatrixMlp3ProtocolClient[],
+  config: MatrixConnectionConfig,
+  trust: TrustedGateway | null,
+): GatewayStateSnapshot {
+  const states = protocols.map(value => gatewayState(value, config, trust));
+  const first = states[0]!;
+  const directory = protocols
+    .map(value => value.projection.workspace?.gatewayDirectory)
+    .filter((value): value is NonNullable<typeof value> => Boolean(value))
+    .sort((left, right) => right.directory.revision - left.directory.revision)[0];
+  return {
+    ...first,
+    stateVersion: Math.max(...states.map(value => value.stateVersion)),
+    updatedAt: Math.max(...states.map(value => value.updatedAt ?? 0)),
+    activeDeviceCount: Math.max(...states.map(value => value.activeDeviceCount)),
+    sessions: states.flatMap(value => value.sessions),
+    projects: states.map(value => value.workspace)
+      .filter((value, index, all) =>
+        all.findIndex(candidate => candidate.projectId === value.projectId) === index
+      ),
+    inboxFiles: states.flatMap(value => value.inboxFiles ?? []),
+    nativeClientReleases: states.flatMap(value => value.nativeClientReleases ?? [])
+      .filter((value, index, all) => all.findIndex(candidate => candidate.buildId === value.buildId) === index),
+    ...(directory ? { gatewayDirectory: directory } : {}),
+  };
+}
+
+function workspaceRoutesFromTrust(trust: TrustedGateway): MatrixWorkspaceRoute[] {
+  return (trust.gatewayDirectory?.directory.gateways ?? []).flatMap(gateway =>
+    (gateway.projects ?? []).map(project => ({
+      projectId: project.projectId,
+      gatewayNodeId: gateway.gatewayNodeId,
+      roomId: project.roomId,
+      conversationId: project.conversationId,
+      gatewayMatrixUserId: gateway.transport.userId,
+      gatewayMatrixDeviceId: gateway.transport.deviceId,
+      gatewayMatrixEd25519: gateway.transport.ed25519,
+    })),
+  );
+}
+
+function workspaceRoutesFromProtocols(
+  protocols: readonly MatrixMlp3ProtocolClient[],
+): MatrixWorkspaceRoute[] {
+  const directory = protocols
+    .map(value => value.projection.workspace?.gatewayDirectory)
+    .filter((value): value is NonNullable<typeof value> => Boolean(value))
+    .sort((left, right) => right.directory.revision - left.directory.revision)[0];
+  if (!directory) return [];
+  return directory.directory.gateways.flatMap(gateway =>
+    (gateway.projects ?? []).map(project => ({
+      projectId: project.projectId,
+      gatewayNodeId: gateway.gatewayNodeId,
+      roomId: project.roomId,
+      conversationId: project.conversationId,
+      gatewayMatrixUserId: gateway.transport.userId,
+      gatewayMatrixDeviceId: gateway.transport.deviceId,
+      gatewayMatrixEd25519: gateway.transport.ed25519,
+    })),
+  );
 }
 
 function isMatrixNotFound(error: unknown): boolean {

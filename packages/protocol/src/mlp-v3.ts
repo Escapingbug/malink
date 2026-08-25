@@ -33,6 +33,13 @@ export const MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE =
   'io.malink.workspace.current.v3' as const
 export const MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE =
   'io.malink.project.key_grant.v3' as const
+/** Signed Workspace control state replicated to every authorized project room. */
+export const MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE =
+  'io.malink.workspace.gateway_directory.v1' as const
+export const MLP3_MATRIX_WORKSPACE_DEVICE_GRANT_EVENT_TYPE =
+  'io.malink.workspace.device_grant.v1' as const
+export const MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE =
+  'io.malink.workspace.device_revocation.v1' as const
 
 const opaqueId = z.string().min(1).max(256)
 const requiredProjectId = z.string({ error: 'Project is required' }).min(1).max(256)

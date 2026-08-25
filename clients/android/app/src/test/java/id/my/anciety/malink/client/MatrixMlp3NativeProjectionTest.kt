@@ -19,6 +19,61 @@ import org.junit.Test
 
 class MatrixMlp3NativeProjectionTest {
     @Test
+    fun `two Gateway projects remain distinct across durable restore and route removal`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project-a", null)
+        projection.applyGatewayEvent(
+            projectSnapshot("project-2", "Project Two", "/workspace/two"),
+            "\$project-b",
+            null,
+        )
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$root-a",
+            "\$root-a",
+        )
+        projection.applyGatewayEvent(
+            sessionReady(
+                "session-b", 1, "Session B", 200,
+                cwd = "/workspace/two", projectId = "project-2",
+            ),
+            "\$root-b",
+            "\$root-b",
+        )
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        val snapshot = restored.snapshot()!!
+        assertEquals(
+            listOf("project-1", "project-2"),
+            snapshot.getValue("projects").jsonArray.map {
+                it.jsonObject.getValue("project_id").jsonPrimitive.content
+            },
+        )
+        val sessions = snapshot.getValue("sessions").jsonArray.associateBy {
+            it.jsonObject.getValue("id").jsonPrimitive.content
+        }
+        assertEquals(
+            "Project Two",
+            sessions.getValue("session-b").jsonObject
+                .getValue("project_name").jsonPrimitive.content,
+        )
+        assertEquals("project-2", restored.projectId("session-b"))
+
+        restored.retainProjects(setOf("project-2"))
+        assertNull(restored.projectId("session-a"))
+        assertEquals(
+            listOf("project-2"),
+            restored.snapshot()!!.getValue("projects").jsonArray.map {
+                it.jsonObject.getValue("project_id").jsonPrimitive.content
+            },
+        )
+    }
+
+    @Test
     fun `out of order state converges and a tombstone removes only its session`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
@@ -300,12 +355,17 @@ class MatrixMlp3NativeProjectionTest {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
         projection.applyGatewayEvent(
+            projectSnapshot("project-2", "Project Two", "/workspace/two"),
+            "\$project-2",
+            null,
+        )
+        projection.applyGatewayEvent(
             workspaceSnapshot(10, "project-a-model", 42),
             "\$workspace-a",
             null,
         )
         projection.applyGatewayEvent(
-            workspaceSnapshot(1, "project-b-model", 43),
+            workspaceSnapshot(1, "project-b-model", 43, "project-2"),
             "\$workspace-b",
             null,
         )
@@ -317,11 +377,40 @@ class MatrixMlp3NativeProjectionTest {
                 .getValue("models").jsonArray.single().jsonObject
                 .getValue("id").jsonPrimitive.content,
         )
+        val projectModels = snapshot.getValue("projects").jsonArray.associate { element ->
+            val project = element.jsonObject
+            project.getValue("project_id").jsonPrimitive.content to
+                project.getValue("capabilities").jsonObject
+                    .getValue("models").jsonArray.single().jsonObject
+                    .getValue("id").jsonPrimitive.content
+        }
+        assertEquals(
+            mapOf(
+                "project-1" to "project-a-model",
+                "project-2" to "project-b-model",
+            ),
+            projectModels,
+        )
         assertEquals(
             43L,
             snapshot.getValue("native_client_releases").jsonArray.single().jsonObject
                 .getValue("versionCode").jsonPrimitive.content.toLong(),
         )
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        val restoredProjectModels = restored.snapshot()!!
+            .getValue("projects").jsonArray.associate { element ->
+                val project = element.jsonObject
+                project.getValue("project_id").jsonPrimitive.content to
+                    project.getValue("capabilities").jsonObject
+                        .getValue("models").jsonArray.single().jsonObject
+                        .getValue("id").jsonPrimitive.content
+            }
+        assertEquals(projectModels, restoredProjectModels)
     }
 
     @Test
@@ -409,14 +498,18 @@ class MatrixMlp3NativeProjectionTest {
         activeDeviceCount = { 2 },
     )
 
-    private fun projectSnapshot() = event(
-        eventId = "project-snapshot-1",
-        projectId = "project-1",
+    private fun projectSnapshot(
+        projectId: String = "project-1",
+        name: String = "Project",
+        cwd: String = "/workspace/project",
+    ) = event(
+        eventId = "project-snapshot-$projectId",
+        projectId = projectId,
         payload = buildJsonObject {
             put("type", "project.snapshot")
             put("snapshotVersion", 1)
-            put("name", "Project")
-            put("cwd", "/workspace/project")
+            put("name", name)
+            put("cwd", cwd)
             put("provider", "codex")
             put("permissionMode", "default")
             put("installedExtensions", buildJsonArray {
@@ -439,9 +532,10 @@ class MatrixMlp3NativeProjectionTest {
         snapshotVersion: Long,
         model: String,
         releaseVersion: Long = 42,
+        projectId: String = "project-1",
     ) = event(
-        eventId = "workspace-snapshot-$snapshotVersion",
-        projectId = "project-1",
+        eventId = "workspace-snapshot-$projectId-$snapshotVersion",
+        projectId = projectId,
         payload = buildJsonObject {
             put("type", "workspace.snapshot")
             put("protocolMin", 3)
@@ -508,9 +602,10 @@ class MatrixMlp3NativeProjectionTest {
         updatedAt: Long,
         scope: String = "project",
         cwd: String = "/workspace/project",
+        projectId: String = "project-1",
     ) = event(
         eventId = "ready-$sessionId-$stateVersion",
-        projectId = "project-1",
+        projectId = projectId,
         sessionId = sessionId,
         causationCommandId = "create-$sessionId",
         payload = buildJsonObject {

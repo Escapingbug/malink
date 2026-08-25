@@ -99,8 +99,9 @@ internal class MatrixMlp3NativeProjection(
         val attachment: JsonObject,
     )
 
-    private var project: Project? = null
-    private var workspaceCapabilities: WorkspaceCapabilities? = null
+    private val projects = linkedMapOf<String, Project>()
+    private val projectCapabilities = linkedMapOf<String, WorkspaceCapabilities>()
+    private var workspaceGatewayDirectory: JsonObject? = null
     private val sessions = linkedMapOf<String, Session>()
     private val inboxFiles = linkedMapOf<String, InboxFile>()
     private val seenEvents = mutableSetOf<String>()
@@ -128,17 +129,18 @@ internal class MatrixMlp3NativeProjection(
         return when (operation) {
             "session.create" -> {
                 val sessionId = command.requiredString("sessionId", 256)
+                val projectId = command.requiredString("projectId", 256)
                 val initial = payload["initialPrompt"] as? JsonObject
                 sessions[sessionId] = Session(
                     id = sessionId,
-                    projectId = command.requiredString("projectId", 256),
+                    projectId = projectId,
                     threadRootEventId = physicalEventId,
                     title = payload.optionalString("title", 512)
                         ?: titleFromPrompt(initial?.optionalString("text", Int.MAX_VALUE).orEmpty()),
                     scope = payload.optionalString("scope", 32)?.also {
                         require(it == "project" || it == "scratch")
                     } ?: "project",
-                    cwd = project?.cwd.orEmpty(),
+                    cwd = projects[projectId]?.cwd.orEmpty(),
                     lifecycle = "active",
                     activity = if (initial == null) "idle" else "queued",
                     updatedAt = timestamp,
@@ -197,8 +199,11 @@ internal class MatrixMlp3NativeProjection(
         val type = payload.requiredString("type", 128)
 
         if (type == "workspace.snapshot") {
+            val capabilityProjectId = requireNotNull(projectId) {
+                "The Matrix workspace snapshot does not identify its project."
+            }
             val version = payload.requiredPositiveLong("snapshotVersion")
-            val current = workspaceCapabilities
+            val current = projectCapabilities[capabilityProjectId]
             val incomingReleases = payload["clientReleases"] as? JsonArray
                 ?: JsonArray(emptyList())
             val clientReleases = mergeNativeClientReleases(
@@ -210,7 +215,9 @@ internal class MatrixMlp3NativeProjection(
                     return MatrixMlp3NativeProjectionResult()
                 }
                 seenEvents.add(eventId)
-                workspaceCapabilities = current.copy(clientReleases = clientReleases)
+                projectCapabilities[capabilityProjectId] = current.copy(
+                    clientReleases = clientReleases,
+                )
                 return MatrixMlp3NativeProjectionResult(changed = true)
             }
             val protocolMin = payload.requiredPositiveLong("protocolMin")
@@ -222,7 +229,11 @@ internal class MatrixMlp3NativeProjection(
             val capabilities = payload.requiredObject("capabilities")
             validateCapabilities(capabilities)
             seenEvents.add(eventId)
-            workspaceCapabilities = WorkspaceCapabilities(version, capabilities, clientReleases)
+            projectCapabilities[capabilityProjectId] = WorkspaceCapabilities(
+                version,
+                capabilities,
+                clientReleases,
+            )
             return MatrixMlp3NativeProjectionResult(changed = true)
         }
 
@@ -230,9 +241,9 @@ internal class MatrixMlp3NativeProjection(
 
         if (type == "project.snapshot" && projectId != null) {
             val version = payload.requiredPositiveLong("snapshotVersion")
-            val current = project
+            val current = projects[projectId]
             if (current == null || version >= current.snapshotVersion) {
-                project = Project(
+                projects[projectId] = Project(
                     id = projectId,
                     snapshotVersion = version,
                     name = payload.requiredString("name", 256),
@@ -438,7 +449,7 @@ internal class MatrixMlp3NativeProjection(
 
     @Synchronized
     fun snapshot(): JsonObject? {
-        val activeProject = project ?: return null
+        val activeProject = projects.values.firstOrNull() ?: return null
         val visible = sessions.values
             .filter { it.lifecycle == "active" }
             .sortedWith(compareByDescending<Session> { it.updatedAt }.thenBy { it.id })
@@ -459,7 +470,9 @@ internal class MatrixMlp3NativeProjection(
             put("command_sequences", JsonArray(emptyList()))
             put("current_session_id", JsonNull)
             put("sessions", buildJsonArray {
-                visible.forEach { session -> add(publicSession(session, activeProject)) }
+                visible.forEach { session ->
+                    add(publicSession(session, projects[session.projectId] ?: activeProject))
+                }
             })
             put("inbox_files", buildJsonArray {
                 inboxFiles.values.sortedByDescending { it.receivedAt }.forEach { file ->
@@ -472,26 +485,44 @@ internal class MatrixMlp3NativeProjection(
                     })
                 }
             })
-            put("workspace", buildJsonObject {
-                put("project_id", activeProject.id)
-                put("project_name", activeProject.name)
-                put("cwd", activeProject.cwd)
-                put("provider", activeProject.provider)
-                activeProject.model?.let { put("model", it) }
-                activeProject.reasoningEffort?.let { put("reasoning_effort", it) }
-                put("permission_mode", activeProject.permissionMode)
-                put("default_extensions", activeProject.defaultExtensions)
-                put("extension_defaults_revision", activeProject.extensionDefaultsRevision)
+            put("workspace", publicProject(activeProject))
+            put("projects", buildJsonArray {
+                projects.values.sortedBy(Project::id).forEach { add(publicProject(it)) }
             })
             put(
                 "capabilities",
-                workspaceCapabilities?.value ?: defaultCapabilities(activeProject.installedExtensions),
+                projectCapabilities[activeProject.id]?.value
+                    ?: defaultCapabilities(activeProject.installedExtensions),
             )
             put(
                 "native_client_releases",
-                workspaceCapabilities?.clientReleases ?: JsonArray(emptyList()),
+                mergedNativeClientReleases(),
             )
+            workspaceGatewayDirectory?.let { put("gateway_directory", it) }
         }
+    }
+
+    private fun publicProject(project: Project): JsonObject = buildJsonObject {
+        put("project_id", project.id)
+        put("project_name", project.name)
+        put("cwd", project.cwd)
+        put("provider", project.provider)
+        project.model?.let { put("model", it) }
+        project.reasoningEffort?.let { put("reasoning_effort", it) }
+        put("permission_mode", project.permissionMode)
+        put("default_extensions", project.defaultExtensions)
+        put("extension_defaults_revision", project.extensionDefaultsRevision)
+        put(
+            "capabilities",
+            projectCapabilities[project.id]?.value
+                ?: defaultCapabilities(project.installedExtensions),
+        )
+    }
+
+    private fun mergedNativeClientReleases(): JsonArray = projectCapabilities.values.fold(
+        JsonArray(emptyList()),
+    ) { releases, capabilities ->
+        mergeNativeClientReleases(releases, capabilities.clientReleases)
     }
 
     @Synchronized
@@ -501,9 +532,50 @@ internal class MatrixMlp3NativeProjection(
         ?.takeIf { it.isNotBlank() }
 
     @Synchronized
+    fun projectId(sessionId: String): String? = sessions[sessionId]
+        ?.takeIf { it.lifecycle != "deleted" }
+        ?.projectId
+        ?.takeIf { it.isNotBlank() }
+
+    @Synchronized
+    fun workspaceGatewayDirectoryRevision(): Long = workspaceGatewayDirectory
+        ?.requiredObject("directory")
+        ?.requiredLong("revision")
+        ?: 0
+
+    @Synchronized
+    fun workspaceGatewayDirectory(): JsonObject? = workspaceGatewayDirectory
+
+    @Synchronized
+    fun applyWorkspaceGatewayDirectory(signed: JsonObject): Boolean {
+        val revision = signed.requiredObject("directory").requiredLong("revision")
+        require(revision >= 0)
+        val currentRevision = workspaceGatewayDirectoryRevision()
+        if (revision < currentRevision) {
+            throw IllegalArgumentException("Workspace Gateway Directory rolled back.")
+        }
+        if (revision == currentRevision && workspaceGatewayDirectory != null) {
+            require(workspaceGatewayDirectory == signed) {
+                "Workspace Gateway Directory revision is immutable."
+            }
+            return false
+        }
+        workspaceGatewayDirectory = signed
+        return true
+    }
+
+    @Synchronized
+    fun retainProjects(projectIds: Set<String>) {
+        projects.keys.retainAll(projectIds)
+        projectCapabilities.keys.retainAll(projectIds)
+        sessions.entries.removeAll { it.value.projectId !in projectIds }
+    }
+
+    @Synchronized
     fun clear() {
-        project = null
-        workspaceCapabilities = null
+        projects.clear()
+        projectCapabilities.clear()
+        workspaceGatewayDirectory = null
         sessions.clear()
         inboxFiles.clear()
         seenEvents.clear()
@@ -513,35 +585,35 @@ internal class MatrixMlp3NativeProjection(
 
     @Synchronized
     fun durableState(): JsonObject = buildJsonObject {
-        put("schemaVersion", 6)
-        val activeCapabilities = workspaceCapabilities
-        if (activeCapabilities == null) {
-            put("workspaceCapabilities", JsonNull)
-        } else {
-            put("workspaceCapabilities", buildJsonObject {
-                put("snapshotVersion", activeCapabilities.snapshotVersion)
-                put("value", activeCapabilities.value)
-                put("clientReleases", activeCapabilities.clientReleases)
-            })
-        }
-        val activeProject = project
-        if (activeProject == null) {
-            put("project", JsonNull)
-        } else {
-            put("project", buildJsonObject {
-                put("id", activeProject.id)
-                put("snapshotVersion", activeProject.snapshotVersion)
-                put("name", activeProject.name)
-                put("cwd", activeProject.cwd)
-                put("provider", activeProject.provider)
-                activeProject.model?.let { put("model", it) }
-                activeProject.reasoningEffort?.let { put("reasoningEffort", it) }
-                put("permissionMode", activeProject.permissionMode)
-                put("installedExtensions", activeProject.installedExtensions)
-                put("defaultExtensions", activeProject.defaultExtensions)
-                put("extensionDefaultsRevision", activeProject.extensionDefaultsRevision)
-            })
-        }
+        put("schemaVersion", 9)
+        put("projectCapabilities", buildJsonArray {
+            projectCapabilities.entries.sortedBy { it.key }.forEach { (projectId, capabilities) ->
+                add(buildJsonObject {
+                    put("projectId", projectId)
+                    put("snapshotVersion", capabilities.snapshotVersion)
+                    put("value", capabilities.value)
+                    put("clientReleases", capabilities.clientReleases)
+                })
+            }
+        })
+        put("workspaceGatewayDirectory", workspaceGatewayDirectory ?: JsonNull)
+        put("projects", buildJsonArray {
+            projects.values.sortedBy(Project::id).forEach { activeProject ->
+                add(buildJsonObject {
+                    put("id", activeProject.id)
+                    put("snapshotVersion", activeProject.snapshotVersion)
+                    put("name", activeProject.name)
+                    put("cwd", activeProject.cwd)
+                    put("provider", activeProject.provider)
+                    activeProject.model?.let { put("model", it) }
+                    activeProject.reasoningEffort?.let { put("reasoningEffort", it) }
+                    put("permissionMode", activeProject.permissionMode)
+                    put("installedExtensions", activeProject.installedExtensions)
+                    put("defaultExtensions", activeProject.defaultExtensions)
+                    put("extensionDefaultsRevision", activeProject.extensionDefaultsRevision)
+                })
+            }
+        })
         put("sessions", buildJsonArray {
             sessions.values.forEach { session ->
                 add(buildJsonObject {
@@ -593,8 +665,8 @@ internal class MatrixMlp3NativeProjection(
 
     private fun restore(value: JsonObject) {
         val schemaVersion = value.requiredLong("schemaVersion")
-        require(schemaVersion in 1L..6L)
-        workspaceCapabilities = if (schemaVersion == 1L) {
+        require(schemaVersion in 1L..9L)
+        val legacyWorkspaceCapabilities = if (schemaVersion == 1L || schemaVersion >= 9L) {
             null
         } else {
             (value["workspaceCapabilities"] as? JsonObject)?.let {
@@ -617,9 +689,47 @@ internal class MatrixMlp3NativeProjection(
                 )
             }
         }
-        val restoredProject = value["project"] as? JsonObject
-        project = restoredProject?.let {
-            Project(
+        if (schemaVersion >= 9L) {
+            val restoredCapabilities = value["projectCapabilities"] as? JsonArray
+                ?: throw IllegalArgumentException("The MLP/3 project capabilities are invalid.")
+            require(restoredCapabilities.size <= 256)
+            restoredCapabilities.forEach { element ->
+                val entry = element as? JsonObject
+                    ?: throw IllegalArgumentException("The MLP/3 project capabilities are invalid.")
+                val projectId = entry.requiredString("projectId", 256)
+                val capabilities = entry.requiredObject("value")
+                validateCapabilities(capabilities)
+                val clientReleases = entry["clientReleases"] as? JsonArray
+                    ?: throw IllegalArgumentException("The native release projection is invalid.")
+                val restored = WorkspaceCapabilities(
+                    snapshotVersion = entry.requiredPositiveLong("snapshotVersion"),
+                    value = capabilities,
+                    clientReleases = mergeNativeClientReleases(
+                        JsonArray(emptyList()),
+                        clientReleases,
+                    ),
+                )
+                require(projectCapabilities.put(projectId, restored) == null) {
+                    "The MLP/3 project capabilities are duplicated."
+                }
+            }
+        }
+        workspaceGatewayDirectory = if (schemaVersion >= 8L) {
+            value["workspaceGatewayDirectory"] as? JsonObject
+        } else {
+            null
+        }
+        val restoredProjects = if (schemaVersion >= 7L) {
+            value["projects"] as? JsonArray
+                ?: throw IllegalArgumentException("The MLP/3 project projection is invalid.")
+        } else {
+            JsonArray(listOfNotNull(value["project"] as? JsonObject))
+        }
+        require(restoredProjects.size <= 256)
+        restoredProjects.forEach { element ->
+            val it = element as? JsonObject
+                ?: throw IllegalArgumentException("The MLP/3 project projection is invalid.")
+            val restored = Project(
                 id = it.requiredString("id", 256),
                 snapshotVersion = it.requiredPositiveLong("snapshotVersion"),
                 name = it.requiredString("name", 256),
@@ -636,6 +746,17 @@ internal class MatrixMlp3NativeProjection(
                     ?.takeIf { version -> version > 0 }
                     ?: 1,
             )
+            require(projects.put(restored.id, restored) == null) {
+                "The MLP/3 project projection is duplicated."
+            }
+        }
+        if (legacyWorkspaceCapabilities != null) {
+            projects.keys.firstOrNull()?.let { projectId ->
+                projectCapabilities[projectId] = legacyWorkspaceCapabilities
+            }
+        }
+        require(projectCapabilities.keys.all(projects::containsKey)) {
+            "The MLP/3 project capabilities name an unknown project."
         }
         val restoredSessions = value["sessions"] as? JsonArray
             ?: throw IllegalArgumentException("The MLP/3 session projection is invalid.")
@@ -652,7 +773,8 @@ internal class MatrixMlp3NativeProjection(
                 scope = session.optionalString("scope", 32)?.also {
                     require(it == "project" || it == "scratch")
                 } ?: "project",
-                cwd = session.optionalString("cwd", 8_192) ?: project?.cwd.orEmpty(),
+                cwd = session.optionalString("cwd", 8_192)
+                    ?: projects[session.requiredString("projectId", 256)]?.cwd.orEmpty(),
                 lifecycle = session.requiredOneOf("lifecycle", setOf("active", "archived", "deleted")),
                 activity = session.requiredOneOf(
                     "activity",
@@ -804,7 +926,7 @@ internal class MatrixMlp3NativeProjection(
         } ?: sessions[sessionId]?.scope ?: "project",
         cwd = projection.optionalString("cwd", 8_192)
             ?: sessions[sessionId]?.cwd
-            ?: project?.cwd.orEmpty(),
+            ?: projects[projectId]?.cwd.orEmpty(),
         lifecycle = projection.requiredOneOf("lifecycle", setOf("active", "archived", "deleted")),
         activity = projection.requiredOneOf(
             "activity",

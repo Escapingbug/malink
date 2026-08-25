@@ -506,11 +506,15 @@ class BridgeDispatcher(
                 buildJsonObject { put("subscriptionId", id); put("unsubscribed", true) }
             }
             "malink.command.send" -> {
-                requireContext(request.params, true, requiredExtra = setOf("payload"))
+                requireContext(
+                    request.params, true, requiredExtra = setOf("payload"),
+                    optionalExtra = setOf("projectId"),
+                )
                 mutationResult(request) {
                     commandReceiptToJson(runtime.client().sendCommand(
                         requiredString(request.params, "idempotencyKey", 64),
                         requiredObject(request.params, "payload"),
+                        optionalString(request.params, "projectId", 512),
                     ))
                 }
             }

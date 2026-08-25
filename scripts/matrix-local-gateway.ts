@@ -1,22 +1,32 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import QRCode from 'qrcode'
-import { pairingOperationSchema, type PairingOperation } from '@malink/protocol'
-import { PairingOfferGuard } from '@malink/security'
+import {
+    MLP3_MATRIX_WORKSPACE_DEVICE_GRANT_EVENT_TYPE,
+    MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE,
+    MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
+    pairingOperationSchema,
+    type PairingOperation,
+    type SignedWorkspaceGatewayDirectory,
+} from '@malink/protocol'
+import { PairingOfferGuard, signWorkspaceDeviceRevocation } from '@malink/security'
 import { FileReplayStore } from '@malink/security/node'
 import {
     FileGatewayIdentityStore,
     FileTrustedDeviceRegistry,
     FileWorkspaceGatewayDirectory,
+    FileWorkspaceDeviceAuthorization,
     DeviceInvitationCoordinator,
     GatewayPairingService,
     listenForMatrixPairingRequests,
     announceMatrixDeviceRotation,
     publishMatrixTransportSnapshot,
     pairingVerificationCode,
+    ensurePortableWorkspaceGrant,
     trustedDeviceFromRecord,
+    trustedDeviceFromWorkspaceGrant,
 } from '../src/gateway/pairing/index.js'
 import {
     FileMatrixLoginTokenIssuer,
@@ -29,6 +39,7 @@ import {
     loadOrLoginMatrixGateway,
     gatewayProjectIdentity,
     type MatrixGatewayConfig,
+    type MatrixGatewayTrustedDevice,
 } from '../src/gateway/matrix/index.js'
 import { registerConfiguredProviders } from '../src/providers/configured.js'
 import { registerProvider } from '../src/providers/registry.js'
@@ -162,6 +173,10 @@ await workspaceDirectory.publishLocal(
         conversationId: fixture.roomId,
     }],
 )
+const workspaceAuthorization = new FileWorkspaceDeviceAuthorization(
+    join(dataDirectory, 'workspace-device-authorization.json'),
+    identity,
+)
 pairingService.setWorkspaceDirectoryProvider(() => workspaceDirectory.load())
 const pwaLoginPath = process.env.MALINK_PWA_LOGIN_FILE
     ?? join(dirname(dataDirectory), 'pwa-login.json')
@@ -191,6 +206,14 @@ const invitationCoordinator = new DeviceInvitationCoordinator(
 )
 
 const active = await registry.listActive()
+for (const record of active) {
+    const grant = await ensurePortableWorkspaceGrant(
+        identity,
+        registry,
+        record.certificate.certificate.deviceId,
+    )
+    await workspaceAuthorization.mergeGrant(grant)
+}
 let startupPairing: {
     link: string
     expiresAt: number
@@ -253,8 +276,124 @@ if (active.length === 0) {
     }
 }
 
-const trustedDevices = active.map(trustedDeviceFromRecord)
+const localRoomIds = [fixture.roomId]
+const portableTrustedDevices = async () =>
+    (await workspaceAuthorization.activeGrants()).map(grant =>
+        trustedDeviceFromWorkspaceGrant(grant, localRoomIds))
+const trustedDevices = deduplicateTrustedDevices([
+    ...active.map(record => trustedDeviceFromRecord(record, localRoomIds)),
+    ...await portableTrustedDevices(),
+])
 let runner: MatrixMlp3GatewayRunner | null = null
+let requestWorkspaceShutdown: ((failure: Error) => void) | null = null
+let workspaceControlChain = Promise.resolve()
+const publishedWorkspaceState = new Map<string, string>()
+let provisionedAuthorizationFingerprint = ''
+let synchronizedDirectoryRevision = -1
+
+async function performWorkspaceControlSync(): Promise<void> {
+    const directory = await workspaceDirectory.load()
+    if (!directory) throw new Error('Workspace Gateway directory is unavailable')
+    if (!directory.directory.gateways.some(gateway =>
+        gateway.gatewayNodeId === identity.gatewayNodeId)) {
+        const failure = new Error(
+            `Gateway node ${identity.gatewayNodeId} was removed from the Workspace`,
+        )
+        if (requestWorkspaceShutdown) {
+            requestWorkspaceShutdown(failure)
+            return
+        }
+        throw failure
+    }
+    const roomIds = workspaceDirectoryRoomIds(directory)
+    const grants = await workspaceAuthorization.activeGrants()
+    if (!client.ensureRoomInvitation) {
+        throw new Error('Matrix transport cannot invite authorized Workspace devices')
+    }
+    for (const grant of grants) {
+        for (const roomId of roomIds) {
+            await client.ensureRoomInvitation(roomId, grant.grant.deviceTransport.userId)
+        }
+    }
+    await publishWorkspaceState(
+        roomIds,
+        MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
+        identity.workspaceId,
+        directory,
+    )
+    for (const grant of grants) {
+        await publishWorkspaceState(
+            roomIds,
+            MLP3_MATRIX_WORKSPACE_DEVICE_GRANT_EVENT_TYPE,
+            `${grant.grant.deviceId}.${grant.grant.certificateId}`,
+            grant,
+        )
+    }
+    for (const revocation of await workspaceAuthorization.revocations()) {
+        await publishWorkspaceState(
+            roomIds,
+            MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE,
+            `${revocation.revocation.deviceId}.${revocation.revocation.certificateId}`,
+            revocation,
+        )
+    }
+    const authorizationFingerprint = grants
+        .map(value => `${value.grant.deviceId}:${value.grant.certificateId}`)
+        .sort()
+        .join('|')
+    if (runner?.getState() === 'running' &&
+        authorizationFingerprint !== provisionedAuthorizationFingerprint) {
+        await runner.provisionCurrentState()
+        provisionedAuthorizationFingerprint = authorizationFingerprint
+    }
+    if (runner?.getState() === 'running' &&
+        directory.directory.revision !== synchronizedDirectoryRevision) {
+        await runner.syncState()
+        synchronizedDirectoryRevision = directory.directory.revision
+    }
+}
+
+function synchronizeWorkspaceControl(
+    before: () => Promise<void> = async () => undefined,
+): Promise<void> {
+    const operation = workspaceControlChain.then(before).then(performWorkspaceControlSync)
+    workspaceControlChain = operation.catch(() => undefined)
+    return operation
+}
+
+async function publishWorkspaceState(
+    roomIds: readonly string[],
+    eventType: string,
+    stateKey: string,
+    content: Record<string, unknown>,
+): Promise<void> {
+    if (!client.setApplicationRoomState) {
+        throw new Error('Matrix transport cannot publish signed Workspace control state')
+    }
+    const digest = createHash('sha256').update(JSON.stringify(content)).digest('hex')
+    for (const roomId of roomIds) {
+        const key = `${roomId}\u0000${eventType}\u0000${stateKey}`
+        if (publishedWorkspaceState.get(key) === digest) continue
+        await client.setApplicationRoomState({ roomId, eventType, stateKey, content })
+        publishedWorkspaceState.set(key, digest)
+    }
+}
+
+const stopWorkspaceControl = client.onRoomEvent(event => {
+    if (event.encrypted) return
+    let merge: (() => Promise<void>) | undefined
+    if (event.eventType === MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE) {
+        merge = async () => { await workspaceDirectory.merge(event.content) }
+    } else if (event.eventType === MLP3_MATRIX_WORKSPACE_DEVICE_GRANT_EVENT_TYPE) {
+        merge = async () => { await workspaceAuthorization.mergeGrant(event.content) }
+    } else if (event.eventType === MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE) {
+        merge = async () => { await workspaceAuthorization.mergeRevocation(event.content) }
+    }
+    if (!merge) return
+    void synchronizeWorkspaceControl(merge).catch(error => {
+        process.stderr.write(`[workspace-control] rejected update: ${formatError(error)}\n`)
+    })
+})
 const stopPairingRecovery = listenForMatrixPairingRequests({
     client,
     service: pairingService,
@@ -270,6 +409,11 @@ const stopPairingRecovery = listenForMatrixPairingRequests({
         await runner.provisionCurrentState()
     },
     onAccepted: async record => {
+        if (record.workspaceGrant) {
+            await synchronizeWorkspaceControl(async () => {
+                await workspaceAuthorization.mergeGrant(record.workspaceGrant)
+            })
+        }
         process.stdout.write(`Device ${record.certificate.certificate.deviceName} is now active.\n`)
         process.stdout.write(
             `Gateway ready with ${(await registry.listActive()).length} trusted device(s).\n`,
@@ -315,9 +459,16 @@ runner = new MatrixMlp3GatewayRunner(config, {
         ? { providerFactory: () => e2eProvider(providerName) }
         : {}),
     listTrustedDevices: async () =>
-        (await registry.listActive()).map(trustedDeviceFromRecord),
-    isTrustedDeviceActive: async deviceId =>
-        (await registry.get(deviceId))?.status === 'active',
+        deduplicateTrustedDevices([
+            ...(await registry.listActive()).map(record =>
+                trustedDeviceFromRecord(record, localRoomIds)),
+            ...await portableTrustedDevices(),
+        ]),
+    isTrustedDeviceActive: async deviceId => {
+        const local = await registry.get(deviceId)
+        if (local?.workspaceGrant) return workspaceAuthorization.isActive(deviceId)
+        return local?.status === 'active' || await workspaceAuthorization.isActive(deviceId)
+    },
     createDeviceInvitation: async ({ requestedByDeviceId, commandId, lifetimeMs }) => {
         const created = await invitationCoordinator.create({
             source: {
@@ -348,6 +499,12 @@ runner = new MatrixMlp3GatewayRunner(config, {
 })
 
 await runner.start()
+await synchronizeWorkspaceControl()
+const workspaceControlTimer = setInterval(() => {
+    void synchronizeWorkspaceControl().catch(error => {
+        process.stderr.write(`[workspace-control] synchronization failed: ${formatError(error)}\n`)
+    })
+}, config.gatewayHeartbeatIntervalMs ?? 30_000)
 const adminServer = await startGatewayAdminServer({
     socketPath: adminSocketPath,
     gatewayId: identity.gatewayId,
@@ -357,6 +514,27 @@ const adminServer = await startGatewayAdminServer({
     getGatewayState: () => runner?.getState() ?? 'starting',
     syncGatewayState: async () => {
         await runner?.syncState()
+    },
+    onDeviceRevoked: async (deviceId, reason, revokedAt) => {
+        const record = await registry.get(deviceId)
+        const certificateId = record?.workspaceGrant?.grant.certificateId
+            ?? record?.certificate.certificate.certificateId
+        if (!certificateId) throw new Error(`Device ${deviceId} has no portable authorization`)
+        if (await workspaceAuthorization.findRevocation(deviceId, certificateId)) return
+        const issuedAt = await registry.reserveGatewayIssuedAt(revokedAt)
+        const signed = await signWorkspaceDeviceRevocation({
+            kind: 'malink.workspace.device-revocation',
+            version: 1,
+            revocationId: randomUUID(),
+            workspaceId: identity.workspaceId,
+            deviceId,
+            certificateId,
+            ...(reason ? { reason } : {}),
+            issuedAt,
+        }, identity.keys.privateKey, identity.keys.keyId)
+        await synchronizeWorkspaceControl(async () => {
+            await workspaceAuthorization.mergeRevocation(signed)
+        })
     },
     receiveWorkspaceFile: async input => {
         if (!runner) throw new Error('Gateway runtime is unavailable')
@@ -412,6 +590,7 @@ const stopped = new Promise<{ failure: Error | null; forced: boolean }>(resolve 
     requestStop = (failure?: Error): void => {
         if (stopping) return
         stopping = true
+        clearInterval(workspaceControlTimer)
         const shutdown = adminServer.stop()
             .catch(error => {
                 process.stderr.write(
@@ -436,6 +615,7 @@ const stopped = new Promise<{ failure: Error | null; forced: boolean }>(resolve 
     process.once('SIGINT', () => requestStop())
     process.once('SIGTERM', () => requestStop())
 })
+requestWorkspaceShutdown = requestStop
 let stopSyncWatchdog = (): void => undefined
 const armSyncWatchdog = (): void => {
     stopSyncWatchdog = client.watchSyncHealth({
@@ -474,6 +654,7 @@ armSyncWatchdog()
 const stopResult = await stopped
 stopSyncWatchdog()
 stopPairingRecovery()
+stopWorkspaceControl()
 const exitCode = stopResult.failure ? 1 : 0
 if (stopResult.forced) process.exit(exitCode)
 if (stopResult.failure) process.exitCode = exitCode
@@ -485,6 +666,22 @@ async function readJson<T>(path: string): Promise<T> {
     } catch (error) {
         throw new Error(`Could not read ${path}: ${formatError(error)}`)
     }
+}
+
+function workspaceDirectoryRoomIds(directory: SignedWorkspaceGatewayDirectory): string[] {
+    const rooms = new Set<string>([fixture.roomId])
+    for (const gateway of directory.directory.gateways) {
+        for (const project of gateway.projects ?? []) rooms.add(project.roomId)
+    }
+    return [...rooms]
+}
+
+function deduplicateTrustedDevices(
+    devices: readonly MatrixGatewayTrustedDevice[],
+): MatrixGatewayTrustedDevice[] {
+    const result = new Map<string, MatrixGatewayTrustedDevice>()
+    for (const device of devices) result.set(device.deviceId, device)
+    return [...result.values()]
 }
 
 function positiveDurationFromEnvironment(name: string, fallbackMs: number): number {

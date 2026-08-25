@@ -69,11 +69,19 @@ export const workspaceGatewayDirectorySchema = z.object({
   workspaceId: opaqueId,
   revision: z.number().int().nonnegative(),
   gateways: z.array(workspaceGatewayDescriptorSchema).max(256),
+  removedGatewayNodeIds: z.array(opaqueId).max(256).optional(),
   issuedAt: timestamp,
 }).strict().superRefine((value, context) => {
   const ids = value.gateways.map(gateway => gateway.gatewayNodeId)
   if (new Set(ids).size !== ids.length) {
     context.addIssue({ code: 'custom', path: ['gateways'], message: 'Gateway node IDs must be unique' })
+  }
+  const removed = value.removedGatewayNodeIds ?? []
+  if (new Set(removed).size !== removed.length) {
+    context.addIssue({ code: 'custom', path: ['removedGatewayNodeIds'], message: 'Removed Gateway node IDs must be unique' })
+  }
+  if (removed.some(id => ids.includes(id))) {
+    context.addIssue({ code: 'custom', path: ['removedGatewayNodeIds'], message: 'A removed Gateway cannot remain in the directory' })
   }
   if (value.gateways.some(gateway => gateway.workspaceId !== value.workspaceId)) {
     context.addIssue({ code: 'custom', path: ['gateways'], message: 'Gateway belongs to another workspace' })

@@ -621,6 +621,7 @@ export type BridgeMethodParams = {
   "malink.events.ack": EventsAckParams;
   "malink.events.unsubscribe": ContextParams & { subscriptionId: string };
   "malink.command.send": IdempotentMutationParams & {
+    projectId?: string;
     payload: JsonObject & { operation: string };
   };
   "malink.command.cancel": IdempotentMutationParams & {

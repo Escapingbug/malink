@@ -16,6 +16,42 @@ afterEach(async () => {
 })
 
 describe('MatrixNodeSdkGatewayClient', () => {
+    it('invites an authorized Workspace device after checking current membership', async () => {
+        const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+            const url = String(input)
+            if (url.includes(encodeURIComponent('@joined:example.test'))) {
+                return new Response(JSON.stringify({ membership: 'join' }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                })
+            }
+            if (init?.method === 'GET') {
+                return new Response(JSON.stringify({ errcode: 'M_NOT_FOUND' }), {
+                    status: 404,
+                    headers: { 'content-type': 'application/json' },
+                })
+            }
+            return new Response('{}', {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            })
+        })
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test',
+            accessToken: 'token',
+            userId: '@gateway:example.test',
+            deviceId: 'STABLE_DEVICE',
+        }, 1_000, undefined, fetchMock as unknown as typeof fetch)
+
+        await client.ensureRoomInvitation('!room:example.test', '@joined:example.test')
+        await client.ensureRoomInvitation('!room:example.test', '@new:example.test')
+
+        expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+        const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')
+        expect(String(post?.[0])).toContain('/invite')
+        expect(post?.[1]?.body).toBe(JSON.stringify({ user_id: '@new:example.test' }))
+    })
+
     it('reopens the same Olm identity for a persisted Matrix device', async () => {
         const directory = await temporaryDirectory()
         const fetchMock = vi.fn(async () => new Response(JSON.stringify({

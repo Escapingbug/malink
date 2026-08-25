@@ -69,6 +69,7 @@ import id.my.anciety.malink.security.malink.MatrixTransportBinding
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_KEY_GRANT_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
+import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MatrixMlp3Protocol
 import id.my.anciety.malink.security.malink.PairingCodec
 import id.my.anciety.malink.security.malink.PairingOperation
@@ -327,6 +328,7 @@ class NativeClientRuntime(
     @Volatile private var gatewayStateSynchronized = false
     @Volatile private var authoritativeStateRefreshJob: Job? = null
     @Volatile private var gatewayConvergenceFallbackJob: Job? = null
+    @Volatile private var workspaceDirectoryConvergenceJob: Job? = null
     @Volatile private var gatewayConvergenceMinimumRevision: Long? = null
     @Volatile private var pendingPairing: PendingPairing? = restoredPairing.getOrNull()?.let {
         PendingPairing(
@@ -472,6 +474,15 @@ class NativeClientRuntime(
                     )
                     return@withLock local
                 }
+                val projectId = matrixMlp3Projection.projectId(sessionId)
+                    ?: throw IllegalStateException("The session has no project route.")
+                val projectKeys = matrixMlp3ProjectKeys.value(projectId)
+                    ?: throw IllegalStateException("The session project key is unavailable.")
+                val roomId = try {
+                    projectKeys.roomId
+                } finally {
+                    projectKeys.wipe()
+                }
                 var from = if (needsOlderPage) historyRelationTokens[sessionId] else null
                 var imported = 0
                 val visitedTokens = mutableSetOf<String?>()
@@ -479,7 +490,12 @@ class NativeClientRuntime(
                     check(visitedTokens.add(from)) {
                         "Matrix thread history repeated a pagination token."
                     }
-                    val remote = matrix.loadThreadHistory(threadRoot, from, maxOf(30, limit))
+                    val remote = matrix.loadThreadHistory(
+                        threadRoot,
+                        from,
+                        maxOf(30, limit),
+                        roomId,
+                    )
                     val historicalMessages = mutableListOf<ClientMessage>()
                     mutex.withLock {
                         for (event in remote.events) {
@@ -818,7 +834,9 @@ class NativeClientRuntime(
             signedResponse,
             matrix.publicSession()?.roomBinding,
         )
-        if (workspaceBindings.size > 1) matrix.updateRoomBindings(workspaceBindings)
+        if (matrix.publicSession()?.roomBindings != workspaceBindings) {
+            matrix.updateRoomBindings(workspaceBindings)
+        }
         // Pairing commits trust before state convergence. The Gateway publishes
         // a key bundle addressed to this device before acknowledging a new
         // pairing, but Matrix delivery and a retry of an already accepted
@@ -833,11 +851,22 @@ class NativeClientRuntime(
         response: SignedPairingResponse,
         current: id.my.anciety.malink.matrix.MatrixRoomBinding?,
     ): List<id.my.anciety.malink.matrix.MatrixRoomBinding> {
+        val signedDirectory = response.response.gatewayDirectory
+            ?: return listOfNotNull(current)
+        return workspaceRoomBindingsFromDirectory(
+            signedDirectory,
+            response.response.gatewayId,
+        )
+    }
+
+    private fun workspaceRoomBindingsFromDirectory(
+        signedDirectory: JsonObject,
+        workspaceId: String,
+    ): List<id.my.anciety.malink.matrix.MatrixRoomBinding> {
         val output = linkedMapOf<String, id.my.anciety.malink.matrix.MatrixRoomBinding>()
-        current?.let { output[it.roomId] = it }
-        val signedDirectory = response.response.gatewayDirectory ?: return output.values.toList()
+        val projectIds = mutableSetOf<String>()
         val directory = signedDirectory.requiredObject("directory")
-        require(directory.requiredOpaqueId("workspaceId") == response.response.gatewayId) {
+        require(directory.requiredOpaqueId("workspaceId") == workspaceId) {
             "Gateway Directory belongs to another Workspace."
         }
         val gateways = directory["gateways"] as? JsonArray
@@ -845,16 +874,19 @@ class NativeClientRuntime(
         for (gatewayElement in gateways) {
             val gateway = gatewayElement as? JsonObject
                 ?: throw IllegalArgumentException("Gateway Directory entry is invalid.")
-            require(gateway.requiredOpaqueId("workspaceId") == response.response.gatewayId)
+            require(gateway.requiredOpaqueId("workspaceId") == workspaceId)
             val transport = PairingCodec.parseTransport(gateway.requiredObject("transport"))
             val projects = gateway["projects"] as? JsonArray ?: continue
             for (projectElement in projects) {
                 val project = projectElement as? JsonObject
                     ?: throw IllegalArgumentException("Workspace project route is invalid.")
+                val projectId = project.requiredOpaqueId("projectId")
+                require(projectIds.add(projectId)) { "Workspace project route is duplicated." }
                 val roomId = project.requiredOpaqueId("roomId")
+                require(roomId !in output) { "Workspace project room is duplicated." }
                 output[roomId] = id.my.anciety.malink.matrix.MatrixRoomBinding(
                     roomId = roomId,
-                    gatewayId = response.response.gatewayId,
+                    gatewayId = workspaceId,
                     conversationId = project.requiredOpaqueId("conversationId"),
                     gatewayUserId = transport.userId,
                     gatewayDeviceId = transport.deviceId,
@@ -862,6 +894,7 @@ class NativeClientRuntime(
                 )
             }
         }
+        require(output.isNotEmpty()) { "Workspace Gateway Directory contains no project rooms." }
         return output.values.toList()
     }
 
@@ -884,7 +917,11 @@ class NativeClientRuntime(
         true
     }
 
-    suspend fun sendCommand(idempotencyKey: String, payload: JsonObject): DurableReceipt {
+    suspend fun sendCommand(
+        idempotencyKey: String,
+        payload: JsonObject,
+        projectId: String? = null,
+    ): DurableReceipt {
         val validatedPayload = CommandPayloadValidator.validate(payload)
         ensureCommandCapability(validatedPayload.operation)
         return mutex.withLock {
@@ -903,6 +940,7 @@ class NativeClientRuntime(
                 idempotencyKey,
                 payload,
                 payload.string("sessionId"),
+                projectId,
             )
             val current = outbox.get(receipt.commandId) ?: error("Durable command disappeared.")
             if (current.state == DurableState.QUEUED) {
@@ -1037,6 +1075,8 @@ class NativeClientRuntime(
         authoritativeStateRefreshJob?.cancel()
         authoritativeStateRefreshJob = null
         cancelGatewayConvergenceFallback()
+        workspaceDirectoryConvergenceJob?.cancel()
+        workspaceDirectoryConvergenceJob = null
         gatewayStateSynchronized = false
         if (revoke) {
             trustStore.clear()
@@ -1073,6 +1113,8 @@ class NativeClientRuntime(
         authoritativeStateRefreshJob?.cancel()
         authoritativeStateRefreshJob = null
         cancelGatewayConvergenceFallback()
+        workspaceDirectoryConvergenceJob?.cancel()
+        workspaceDirectoryConvergenceJob = null
         transfers.clear()
         matrix.close()
         scope.cancel()
@@ -1093,10 +1135,11 @@ class NativeClientRuntime(
     override fun onTransportReady(identity: MatrixTransportIdentity) {
         transportIdentity = identity
         gatewayStateSynchronized = trust != null &&
-            matrixMlp3ProjectKeys.value() != null &&
+            matrixMlp3ProjectKeys.values().isNotEmpty() &&
             matrixMlp3Projection.snapshot() != null
         refreshSnapshot(publishLifecycle = true)
         if (trust != null) {
+            scheduleWorkspaceDirectoryConvergence()
             scope.launch {
                 runCatching { matrix.refreshThreadDirectory() }
                     .onFailure { error ->
@@ -1247,12 +1290,14 @@ class NativeClientRuntime(
         } ?: return
         try {
             val content = signedCommandContent(transmission)
+            val roomId = commandRoomId(transmission)
             val matrixEventId = sendTrustedControlMessage(
                 content.toString(),
                 "malink.v3.command.${transmission.commandId}",
+                roomId,
             )
             mutex.withLock {
-                applyOwnMatrixMlp3Command(content, matrixEventId, transmission.issuedAt)
+                applyOwnMatrixMlp3Command(content, matrixEventId, transmission.issuedAt, roomId)
             }
         } catch (error: Exception) {
             val remainsCurrent = mutex.withLock {
@@ -1379,10 +1424,15 @@ class NativeClientRuntime(
     private fun signedCommandContent(transmission: CommandTransmission): JsonObject {
         matrixMlp3CommandContent.get(transmission.commandId)?.let { return it }
         val activeTrust = trust ?: throw NativeTrustRequiredException("Pair the Gateway before sending commands.")
-        val roomId = matrix.publicSession()?.roomBinding?.roomId
-            ?: throw IllegalStateException("Matrix room binding is unavailable.")
-        val keys = matrixMlp3ProjectKeys.value()
+        val targetProjectId = transmission.projectId
+            ?: matrixMlp3ProjectKeys.values().singleOrNull()?.projectId
+            ?: throw IllegalStateException("A target project is required for this command.")
+        val keys = matrixMlp3ProjectKeys.value(targetProjectId)
             ?: throw IllegalStateException("The MLP/3 project key grant is unavailable.")
+        val roomId = keys.roomId
+        require(matrix.publicSession()?.roomBindings?.any { it.roomId == roomId } == true) {
+            "The target project room is not bound to this Matrix session."
+        }
         val raw = transmission.payload
         val operation = raw.string("operation")
             ?: throw IllegalArgumentException("Command operation is invalid.")
@@ -1557,6 +1607,19 @@ class NativeClientRuntime(
         return matrixMlp3CommandContent.putIfAbsent(transmission.commandId, content)
     }
 
+    private fun commandRoomId(transmission: CommandTransmission): String {
+        val targetProjectId = transmission.projectId
+            ?: matrixMlp3ProjectKeys.values().singleOrNull()?.projectId
+            ?: throw IllegalStateException("A target project is required for this command.")
+        val keys = matrixMlp3ProjectKeys.value(targetProjectId)
+            ?: throw IllegalStateException("The MLP/3 project key grant is unavailable.")
+        return try {
+            keys.roomId
+        } finally {
+            keys.wipe()
+        }
+    }
+
     private fun startMatrixMlp3ProjectionRefresh(
         recoverTransport: Boolean,
     ) {
@@ -1617,8 +1680,16 @@ class NativeClientRuntime(
      * Malink. Sending it as an application control event avoids coupling
      * command and recovery traffic to Matrix Megolm device-key distribution.
      */
-    private suspend fun sendTrustedControlMessage(contentJson: String, transactionId: String): String {
-        val eventId = matrix.sendApplicationControlEvent(contentJson, transactionId)
+    private suspend fun sendTrustedControlMessage(
+        contentJson: String,
+        transactionId: String,
+        roomId: String? = null,
+    ): String {
+        val eventId = if (roomId == null) {
+            matrix.sendApplicationControlEvent(contentJson, transactionId)
+        } else {
+            matrix.sendApplicationControlEvent(contentJson, transactionId, roomId)
+        }
         diagnostics.record("matrix.application_control.sent")
         return eventId
     }
@@ -1809,10 +1880,14 @@ class NativeClientRuntime(
     }
 
     private suspend fun processMatrixEvent(event: MatrixDecryptedEvent) {
-        if (event.roomId != matrix.publicSession()?.roomBinding?.roomId) return
+        if (matrix.publicSession()?.roomBindings?.none { it.roomId == event.roomId } != false) return
         val root = json.parseToJsonElement(event.rawJson).jsonObject
         val content = (root["content"] as? JsonObject) ?: return
         val eventType = root.string("type") ?: return
+        if (eventType == MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE) {
+            acceptWorkspaceGatewayDirectory(content)
+            return
+        }
         if (processMatrixMlp3Event(event, root, content, eventType)) return
         val extension = content["io.malink"] as? JsonObject ?: return
         val kind = extension.string("kind") ?: return
@@ -1864,13 +1939,15 @@ class NativeClientRuntime(
                 (content["io.malink"] as? JsonObject)?.long("version") == 3L)
         ) return false
         val activeTrust = trust ?: throw MatrixMlp3EventDeferredException("gateway_trust_pending")
-        if (event.sender != activeTrust.transportTrust.currentTransport.userId) {
+        val binding = matrix.publicSession()?.roomBindings?.singleOrNull {
+            it.roomId == event.roomId
+        } ?: throw MatrixMlp3EventDeferredException("matrix_room_pending")
+        if (event.sender != binding.gatewayUserId) {
             // The application /sync lane accepts Gateway output only. A local
             // command is projected optimistically at the durable send boundary.
             return true
         }
-        val roomId = matrix.publicSession()?.roomBinding?.roomId
-            ?: throw MatrixMlp3EventDeferredException("matrix_room_pending")
+        val roomId = event.roomId
         if (eventType == MLP3_MATRIX_KEY_GRANT_EVENT_TYPE) {
             // Key grants are directly addressed Room State. Matrix sync sends
             // every state key in the room, including grants for other paired
@@ -1921,7 +1998,7 @@ class NativeClientRuntime(
                     roomId,
                 )
             }
-            val keys = matrixMlp3ProjectKeys.value()
+            val keys = matrixMlp3ProjectKeys.values().firstOrNull { it.roomId == roomId }
                 ?: throw MatrixMlp3EventDeferredException("project_key_grant_pending")
             try {
                 require(pointer.string("projectId") == keys.projectId) {
@@ -1933,6 +2010,7 @@ class NativeClientRuntime(
             val snapshotEvent = matrix.fetchApplicationEvent(
                 pointer.string("eventId")
                     ?: throw IllegalArgumentException("The MLP/3 pointer event ID is missing."),
+                roomId,
             )
             val inserted = matrixMlp3Inbox.put(snapshotEvent)
             if (inserted) {
@@ -1948,7 +2026,7 @@ class NativeClientRuntime(
             }
             return true
         }
-        val keys = matrixMlp3ProjectKeys.value()
+        val keys = matrixMlp3ProjectKeys.values().firstOrNull { it.roomId == roomId }
             ?: throw MatrixMlp3EventDeferredException("project_key_grant_pending")
         val extension = content["io.malink"] as? JsonObject
             ?: throw IllegalArgumentException("The MLP/3 extension is missing.")
@@ -1970,6 +2048,9 @@ class NativeClientRuntime(
         if (protocolPayload.string("type") == "workspace.snapshot") {
             require(protocolPayload.string("gatewayKeyId") == activeTrust.gatewayKey.keyId) {
                 "The MLP/3 workspace snapshot names another Gateway key."
+            }
+            (protocolPayload["gatewayDirectory"] as? JsonObject)?.let {
+                acceptWorkspaceGatewayDirectory(it)
             }
         }
         require(opened.logicalEventId == protocolEvent.string("eventId")) {
@@ -2007,14 +2088,87 @@ class NativeClientRuntime(
         return true
     }
 
+    private fun acceptWorkspaceGatewayDirectory(signed: JsonObject) {
+        val activeTrust = trust
+            ?: throw MatrixMlp3EventDeferredException("gateway_trust_pending")
+        MatrixMlp3Protocol.verifyWorkspaceGatewayDirectory(
+            signed,
+            activeTrust.gatewayKey,
+            activeTrust.gatewayId,
+            matrixMlp3Projection.workspaceGatewayDirectoryRevision(),
+        )
+        if (!matrixMlp3Projection.applyWorkspaceGatewayDirectory(signed)) return
+        val bindings = workspaceRoomBindingsFromDirectory(signed, activeTrust.gatewayId)
+        val gateways = signed.requiredObject("directory")["gateways"] as? JsonArray
+            ?: throw IllegalArgumentException("Gateway Directory gateways are invalid.")
+        val projectIds = gateways.flatMap { gateway ->
+            val projects = (gateway as? JsonObject)?.get("projects") as? JsonArray
+                ?: throw IllegalArgumentException("Gateway Directory entry is invalid.")
+            projects.map { project ->
+                (project as? JsonObject)
+                    ?.requiredOpaqueId("projectId")
+                    ?: throw IllegalArgumentException("Workspace project route is invalid.")
+            }
+        }.toSet()
+        matrixMlp3ProjectKeys.retain(projectIds)
+        matrixMlp3Projection.retainProjects(projectIds)
+        matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
+        matrixMlp3ProjectionStore.save(matrixMlp3Projection.durableState())
+        diagnostics.record(
+            "matrix.workspace_directory.accepted",
+            mapOf(
+                "revision" to matrixMlp3Projection.workspaceGatewayDirectoryRevision().toString(),
+                "rooms" to bindings.size.toString(),
+            ),
+        )
+        scheduleWorkspaceDirectoryConvergence(bindings)
+    }
+
+    private fun scheduleWorkspaceDirectoryConvergence(
+        initialBindings: List<id.my.anciety.malink.matrix.MatrixRoomBinding>? = null,
+    ) {
+        if (workspaceDirectoryConvergenceJob?.isActive == true) return
+        workspaceDirectoryConvergenceJob = scope.launch {
+            var bindings = initialBindings
+            val retryDelays = longArrayOf(1_000L, 5_000L, 15_000L, 30_000L)
+            for (attempt in 0..retryDelays.size) {
+                val result = runCatching {
+                    val next = bindings ?: mutex.withLock {
+                        val activeTrust = trust
+                            ?: throw IllegalStateException("Workspace trust is unavailable.")
+                        val directory = matrixMlp3Projection.workspaceGatewayDirectory()
+                            ?: return@withLock null
+                        workspaceRoomBindingsFromDirectory(directory, activeTrust.gatewayId)
+                    }
+                    if (next == null) return@launch
+                    bindings = null
+                    if (matrix.publicSession()?.roomBindings != next) {
+                        matrix.updateRoomBindings(next)
+                    }
+                    matrix.refreshApplicationProjection()
+                }
+                if (result.isSuccess) return@launch
+                diagnostics.record(
+                    "matrix.workspace_directory.convergence_failure",
+                    mapOf(
+                        "attempt" to (attempt + 1).toString(),
+                        "error" to diagnosticErrorName(result.exceptionOrNull()!!),
+                    ),
+                )
+                if (attempt < retryDelays.size) delay(retryDelays[attempt])
+            }
+        }
+    }
+
     private suspend fun applyOwnMatrixMlp3Command(
         content: JsonObject,
         matrixEventId: String,
         timestamp: Long,
+        roomId: String,
     ) {
         val activeTrust = trust ?: return
-        val roomId = matrix.publicSession()?.roomBinding?.roomId ?: return
-        val keys = matrixMlp3ProjectKeys.value() ?: return
+        if (matrix.publicSession()?.roomBindings?.none { it.roomId == roomId } != false) return
+        val keys = matrixMlp3ProjectKeys.values().firstOrNull { it.roomId == roomId } ?: return
         val opened = try {
             MatrixMlp3Protocol.openContent(
                 content.objectValue("io.malink"),
@@ -2077,7 +2231,7 @@ class NativeClientRuntime(
         if (snapshot.toString().toByteArray().size > MAX_BRIDGE_EVENT_PAYLOAD_BYTES) return
         val changed = gatewayState != snapshot
         gatewayState = snapshot
-        gatewayStateSynchronized = trust != null && matrixMlp3ProjectKeys.value() != null
+        gatewayStateSynchronized = trust != null && matrixMlp3ProjectKeys.values().isNotEmpty()
         acceptPublishedNativeRelease(snapshot)
         if (changed) {
             eventHub.publish(
@@ -2141,7 +2295,9 @@ class NativeClientRuntime(
         event: MatrixDecryptedEvent,
         expectedSessionId: String,
     ): ClientMessage? {
-        if (event.roomId != matrix.publicSession()?.roomBinding?.roomId) return null
+        val binding = matrix.publicSession()?.roomBindings?.singleOrNull {
+            it.roomId == event.roomId
+        } ?: return null
         val root = json.parseToJsonElement(event.rawJson).jsonObject
         val content = root["content"] as? JsonObject ?: return null
         val eventType = root.string("type") ?: return null
@@ -2149,8 +2305,9 @@ class NativeClientRuntime(
         val extension = content["io.malink"] as? JsonObject ?: return null
         if (extension.long("version") == 3L) {
             val activeTrust = trust ?: return null
-            if (event.sender != activeTrust.transportTrust.currentTransport.userId) return null
-            val keys = matrixMlp3ProjectKeys.value() ?: return null
+            if (event.sender != binding.gatewayUserId) return null
+            val keys = matrixMlp3ProjectKeys.values().firstOrNull { it.roomId == event.roomId }
+                ?: return null
             val opened = try {
                 MatrixMlp3Protocol.openContent(extension, event.roomId, keys.projectId, keys)
             } finally {
@@ -2811,6 +2968,7 @@ private fun isMatrixMlp3RawEvent(rawJson: String): Boolean = runCatching {
         MLP3_MATRIX_KEY_GRANT_EVENT_TYPE,
         MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
         MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
+        MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
         -> true
         "m.room.message" ->
             (root["content"] as? JsonObject)

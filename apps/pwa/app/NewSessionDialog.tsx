@@ -13,6 +13,7 @@ import {
 } from "./gatewayState";
 
 type NewSessionInput = {
+  projectId?: string;
   scope?: "project" | "scratch";
   cwd: string;
   projectName: string;
@@ -31,6 +32,7 @@ type Props = {
   busy: boolean;
   gatewayName: string;
   workspace: GatewayWorkspaceState;
+  workspaces?: GatewayWorkspaceState[];
   models: GatewayModelCapability[];
   providers: Array<{
     id: string;
@@ -54,25 +56,35 @@ function NewSessionDialogContent({
   busy,
   gatewayName,
   workspace,
-  models,
-  providers,
-  extensions,
+  workspaces = [workspace],
+  models: fallbackModels,
+  providers: fallbackProviders,
+  extensions: fallbackExtensions,
   defaultExtensions = [],
   canUpdateProjectDefaults = false,
   onClose,
   onCreate,
 }: Props) {
-  const [provider, setProvider] = useState(workspace.provider);
+  const availableWorkspaces = workspaces.length > 0 ? workspaces : [workspace];
+  const [projectId, setProjectId] = useState(workspace.projectId);
+  const selectedWorkspace = availableWorkspaces.find(
+    candidate => candidate.projectId === projectId,
+  ) ?? workspace;
+  const models = selectedWorkspace.capabilities?.models ?? fallbackModels;
+  const providers = selectedWorkspace.capabilities?.providers ?? fallbackProviders;
+  const extensions = selectedWorkspace.capabilities?.sessionExtensions ?? fallbackExtensions;
+  const [provider, setProvider] = useState(selectedWorkspace.provider);
   const providerModels = providers.find(entry => entry.id === provider)?.models ?? models;
-  const [model, setModel] = useState(workspace.model ?? "");
+  const [model, setModel] = useState(selectedWorkspace.model ?? "");
   const [reasoningEffort, setReasoningEffort] = useState(
-    workspace.reasoningEffort ??
-      providerModels.find((entry) => entry.id === workspace.model)
+    selectedWorkspace.reasoningEffort ??
+      providerModels.find((entry) => entry.id === selectedWorkspace.model)
         ?.defaultReasoningLevel ??
       "",
   );
+  const initialDefaultExtensions = selectedWorkspace.defaultExtensions ?? defaultExtensions;
   const [enabledExtensions, setEnabledExtensions] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(defaultExtensions.map(binding => [binding.id, true])),
+    Object.fromEntries(initialDefaultExtensions.map(binding => [binding.id, true])),
   );
   const [setAsProjectDefault, setSetAsProjectDefault] = useState(false);
   const [scope, setScope] = useState<"project" | "scratch">("project");
@@ -81,7 +93,7 @@ function NewSessionDialogContent({
   >(() =>
     Object.fromEntries(
       extensions.map((extension) => {
-        const inherited = defaultExtensions.find(binding => binding.id === extension.id);
+        const inherited = initialDefaultExtensions.find(binding => binding.id === extension.id);
         return [
           extension.id,
           {
@@ -138,9 +150,10 @@ function NewSessionDialogContent({
     event.preventDefault();
     if (busy) return;
     onCreate({
+      projectId: selectedWorkspace.projectId,
       scope,
-      cwd: workspace.cwd,
-      projectName: workspace.projectName,
+      cwd: selectedWorkspace.cwd,
+      projectName: selectedWorkspace.projectName,
       provider,
       ...(model ? { model } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
@@ -211,16 +224,73 @@ function NewSessionDialogContent({
           <div className="new-session-grid">
             <label>
               <span>Project</span>
-              <input value={workspace.projectName} disabled readOnly />
+              {availableWorkspaces.length > 1 ? (
+                <select
+                  value={selectedWorkspace.projectId}
+                  disabled={busy}
+                  onChange={(event) => {
+                    const next = availableWorkspaces.find(
+                      candidate => candidate.projectId === event.target.value,
+                    );
+                    if (!next) return;
+                    const nextCapabilities = next.capabilities;
+                    const nextProviders = nextCapabilities?.providers ?? fallbackProviders;
+                    const nextModels = nextCapabilities?.models ?? fallbackModels;
+                    const nextExtensions = nextCapabilities?.sessionExtensions ?? fallbackExtensions;
+                    const nextProviderModels = nextProviders.find(
+                      entry => entry.id === next.provider,
+                    )?.models ?? nextModels;
+                    setProjectId(next.projectId);
+                    setProvider(next.provider);
+                    setModel(next.model ?? "");
+                    setReasoningEffort(
+                      next.reasoningEffort ??
+                        nextProviderModels.find(entry => entry.id === next.model)
+                          ?.defaultReasoningLevel ??
+                        "",
+                    );
+                    setSetAsProjectDefault(false);
+                    setEnabledExtensions(Object.fromEntries(
+                      (next.defaultExtensions ?? []).map(binding => [binding.id, true]),
+                    ));
+                    setExtensionConfig(Object.fromEntries(
+                      nextExtensions.map(extension => {
+                        const inherited = (next.defaultExtensions ?? []).find(
+                          binding => binding.id === extension.id,
+                        );
+                        return [
+                          extension.id,
+                          {
+                            ...Object.fromEntries(extension.settings.flatMap(setting =>
+                              setting.defaultValue === undefined
+                                ? []
+                                : [[setting.id, setting.defaultValue]],
+                            )),
+                            ...(inherited?.config ?? {}),
+                          },
+                        ];
+                      }),
+                    ));
+                  }}
+                >
+                  {availableWorkspaces.map(candidate => (
+                    <option key={candidate.projectId} value={candidate.projectId}>
+                      {candidate.projectName}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input value={selectedWorkspace.projectName} disabled readOnly />
+              )}
             </label>
             <label>
               <span>Working directory</span>
-              <input value={workspace.cwd} disabled readOnly />
+              <input value={selectedWorkspace.cwd} disabled readOnly />
             </label>
           </div>
           <small className="project-identity-note">
-            This Matrix room is the durable home for this project. Switch
-            project rooms before creating a session for another directory.
+            Each project keeps its own durable Matrix room; all listed projects
+            remain connected and manageable at the same time.
           </small>
           </> : (
             <small className="project-identity-note scratch-identity-note">
@@ -239,13 +309,13 @@ function NewSessionDialogContent({
                   setProvider(nextProvider);
                   setModel("");
                   setReasoningEffort("");
-                  if (nextProvider !== workspace.provider) setSetAsProjectDefault(false);
+                  if (nextProvider !== selectedWorkspace.provider) setSetAsProjectDefault(false);
                 }}
                 disabled={busy || providers.length === 0}
               >
                 {(providers.length > 0
                   ? providers
-                  : [{ id: workspace.provider, name: workspace.provider, models }]
+                  : [{ id: selectedWorkspace.provider, name: selectedWorkspace.provider, models }]
                 ).map(entry => (
                   <option key={entry.id} value={entry.id}>{entry.name}</option>
                 ))}
@@ -373,7 +443,7 @@ function NewSessionDialogContent({
             </fieldset>
           )}
 
-          {canUpdateProjectDefaults && scope === "project" && provider === workspace.provider && (
+          {canUpdateProjectDefaults && scope === "project" && provider === selectedWorkspace.provider && (
             <label className="session-extension-boolean project-default-toggle">
               <input
                 type="checkbox"
