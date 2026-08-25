@@ -283,17 +283,30 @@ describe('AcpProvider tail drain', () => {
                     { modelId: 'model-b', name: 'Model B' },
                 ],
             },
-            configOptions: [{
-                type: 'select',
-                id: 'reasoning_effort',
-                name: 'Reasoning effort',
-                category: 'thought_level',
-                currentValue: 'medium',
-                options: [
-                    { value: 'medium', name: 'Medium' },
-                    { value: 'high', name: 'High' },
-                ],
-            }],
+            configOptions: [
+                {
+                    type: 'select',
+                    id: 'mode',
+                    name: 'Mode',
+                    category: 'mode',
+                    currentValue: 'agent',
+                    options: [
+                        { value: 'agent', name: 'Agent' },
+                        { value: 'agent-full-access', name: 'Agent (full access)' },
+                    ],
+                },
+                {
+                    type: 'select',
+                    id: 'reasoning_effort',
+                    name: 'Reasoning effort',
+                    category: 'thought_level',
+                    currentValue: 'medium',
+                    options: [
+                        { value: 'medium', name: 'Medium' },
+                        { value: 'high', name: 'High' },
+                    ],
+                },
+            ],
         }
         ;(provider as any).clientManager = clientManager
         ;(provider as any).initialized = true
@@ -301,7 +314,10 @@ describe('AcpProvider tail drain', () => {
         const handle = provider.startQuery('hi', {
             cwd: '/repo',
             model: 'model-b',
-            providerSettings: { reasoningEffort: 'high' },
+            providerSettings: {
+                permissionMode: 'bypassPermissions',
+                reasoningEffort: 'high',
+            },
             signal: new AbortController().signal,
         })
         for await (const _event of handle.events) {
@@ -312,8 +328,41 @@ describe('AcpProvider tail drain', () => {
             { sessionId: 'session-1', modelId: 'model-b' },
         ])
         expect(clientManager.setSessionConfigOptionCalls).toEqual([
+            { sessionId: 'session-1', configId: 'mode', value: 'agent-full-access' },
             { sessionId: 'session-1', configId: 'reasoning_effort', value: 'high' },
         ])
+    })
+
+    it('preserves the ACP agent configured mode for Malink default permissions', async () => {
+        const provider = new AcpProvider({ name: 'test-acp', command: 'fake', args: [] })
+        const clientManager = new FakeAcpClientManager()
+        clientManager.newSessionResponse = {
+            sessionId: 'session-1',
+            configOptions: [{
+                type: 'select',
+                id: 'mode',
+                name: 'Mode',
+                category: 'mode',
+                currentValue: 'agent-full-access',
+                options: [
+                    { value: 'agent', name: 'Agent' },
+                    { value: 'agent-full-access', name: 'Agent (full access)' },
+                ],
+            }],
+        }
+        ;(provider as any).clientManager = clientManager
+        ;(provider as any).initialized = true
+
+        const handle = provider.startQuery('hi', {
+            cwd: '/repo',
+            providerSettings: { permissionMode: 'default' },
+            signal: new AbortController().signal,
+        })
+        for await (const _event of handle.events) {
+            // Consume the query so session configuration finishes.
+        }
+
+        expect(clientManager.setSessionConfigOptionCalls).toEqual([])
     })
 
     it('lists and inspects provider-owned ACP sessions without adopting them', async () => {

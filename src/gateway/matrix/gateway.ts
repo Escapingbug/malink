@@ -18,7 +18,11 @@ import {
     type SessionExtensionBinding,
     type SessionExtensionSummary,
 } from '@malink/protocol'
-import type { AgentProvider } from '@/providers/provider'
+import {
+    AGENT_PERMISSION_MODES,
+    isAgentPermissionMode,
+    type AgentProvider,
+} from '@/providers/provider'
 import { createProviderInstance, getProvider, listProviders } from '@/providers/registry'
 import {
     ChannelDeliveryQueuedError,
@@ -570,9 +574,7 @@ export class MatrixGatewayRunner {
                         canInspectSessions: typeof provider.getSessionHistory === 'function',
                     }
                 }),
-                // The runtime currently always asks for permission. Do not
-                // advertise modes whose policy is not actually enforced.
-                permissionModes: [{ id: 'default', name: 'Default' }],
+                permissionModes: AGENT_PERMISSION_MODES.map(mode => ({ ...mode })),
                 canCreateSession: true,
                 canSelectSession: false,
                 canArchiveSession: true,
@@ -1402,7 +1404,7 @@ export class MatrixGatewayRunner {
             }
         }
         const permissionMode = settings.permissionMode ?? current.permissionMode
-        if (permissionMode !== 'default') {
+        if (!isAgentPermissionMode(permissionMode)) {
             throw new Error(`Permission mode ${permissionMode} is not currently available`)
         }
 
@@ -2704,7 +2706,7 @@ async function resolveWorkspaceSettings(
         }
     }
     const permissionMode = settings.permissionMode ?? current.permissionMode
-    if (permissionMode !== 'default') {
+    if (!isAgentPermissionMode(permissionMode)) {
         throw new Error(`Permission mode ${permissionMode} is not currently available`)
     }
     let project = {

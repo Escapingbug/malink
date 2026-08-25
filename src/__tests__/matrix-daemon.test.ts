@@ -1170,7 +1170,11 @@ describe('MatrixGatewayRunner', () => {
             },
             capabilities: {
                 models: [],
-                permission_modes: [{ id: 'default', name: 'Default' }],
+                permission_modes: [
+                    { id: 'default', name: 'Default' },
+                    { id: 'acceptEdits', name: 'Accept edits' },
+                    { id: 'bypassPermissions', name: 'Full access' },
+                ],
                 can_create_session: true,
                 can_select_session: false,
             },

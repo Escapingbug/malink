@@ -924,6 +924,37 @@ describe('Semantic runtime integration chain', () => {
         expect(channel.sent.map(m => m.text)).toContain('permission:allow')
     })
 
+    it('permanently allows ACP permission requests without prompting in bypass mode', async () => {
+        const permissionResults: Array<{ behavior: string; permanent?: boolean }> = []
+        const provider = createProvider([], {
+            startQuery: vi.fn((_prompt: string, config: AgentQueryConfig): AgentQueryHandle => ({
+                events: (async function* () {
+                    permissionResults.push(await config.permissionHandler!.handleToolCall(
+                        'Bash',
+                        { command: 'git status' },
+                        { signal: config.signal },
+                    ))
+                    yield { kind: 'result', status: 'success' } as AgentEvent
+                })(),
+                interrupt: vi.fn(),
+            })),
+        })
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            providerSettings: { permissionMode: 'bypassPermissions' },
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'run autonomously', source: 'channel' })
+
+        expect(permissionResults).toEqual([{ behavior: 'allow', permanent: true }])
+        expect(channel.decisions).toEqual([])
+    })
+
     it('applies model, timeout, and permission mode as runtime config commands', async () => {
         const provider = createProvider([])
         const channel = createChannel()

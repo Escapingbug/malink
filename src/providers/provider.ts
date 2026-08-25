@@ -16,6 +16,16 @@ export interface AgentPermissionResult {
     permanent?: boolean
 }
 
+export const AGENT_PERMISSION_MODES = [
+    { id: 'default', name: 'Default' },
+    { id: 'acceptEdits', name: 'Accept edits' },
+    { id: 'bypassPermissions', name: 'Full access' },
+] as const
+
+export function isAgentPermissionMode(value: string): boolean {
+    return AGENT_PERMISSION_MODES.some(mode => mode.id === value)
+}
+
 export interface ToolCallRecord {
     name: string
     input: unknown

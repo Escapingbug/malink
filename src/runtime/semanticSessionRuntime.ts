@@ -1550,8 +1550,12 @@ export class SemanticSessionRuntime {
     }
 
     private createPermissionHandler(): AgentPermissionHandler {
+        const permissionMode = this.config.providerSettings?.permissionMode
         return {
             handleToolCall: async (toolName, input, options) => {
+                if (permissionMode === 'bypassPermissions') {
+                    return { behavior: 'allow', permanent: true }
+                }
                 const response = await this.config.channelPort.requestDecision({
                     type: 'permission',
                     title: `Allow ${toolName}?`,

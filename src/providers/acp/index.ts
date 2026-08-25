@@ -482,6 +482,35 @@ export class AcpProvider implements AgentProvider {
         config: AgentQueryConfig,
         configOptions: readonly SessionConfigOption[] = [],
     ): Promise<void> {
+        const permissionMode = typeof config.providerSettings?.permissionMode === 'string'
+            ? config.providerSettings.permissionMode.trim()
+            : ''
+        // "default" deliberately preserves the agent's configured initial
+        // mode (for codex-acp, INITIAL_AGENT_MODE) instead of overriding it.
+        if (permissionMode && permissionMode !== 'default') {
+            const option = configOptions.find(candidate =>
+                candidate.id === 'mode' || candidate.category === 'mode'
+            )
+            if (option?.type === 'select') {
+                const value = permissionMode === 'bypassPermissions'
+                    ? 'agent-full-access'
+                    : 'agent'
+                const supportsValue = option.options.some(candidate =>
+                    'value' in candidate
+                        ? candidate.value === value
+                        : candidate.options.some(grouped => grouped.value === value)
+                )
+                if (supportsValue) {
+                    await this.clientManager.setSessionConfigOption({
+                        sessionId,
+                        configId: option.id,
+                        value,
+                    })
+                    console.error(`[acp:${this.name}] Set permission mode ${permissionMode} as ACP mode ${value}`)
+                }
+            }
+        }
+
         const reasoningEffort = typeof config.providerSettings?.reasoningEffort === 'string'
             ? config.providerSettings.reasoningEffort.trim()
             : ''

@@ -84,6 +84,11 @@ For example, a packaged Codex ACP adapter can be selected without `npx`:
       "type": "codex",
       "command": "/absolute/path/to/codex-acp",
       "args": [],
+      "env": {
+        "CODEX_PATH": "/absolute/path/to/codex",
+        "INITIAL_AGENT_MODE": "agent-full-access",
+        "CODEX_CONFIG": "{\"approval_policy\":\"never\",\"sandbox_mode\":\"danger-full-access\"}"
+      },
       "modelsCommand": "/absolute/path/to/codex",
       "modelsArgs": ["debug", "models"]
     }
@@ -93,6 +98,13 @@ For example, a packaged Codex ACP adapter can be selected without `npx`:
 
 When no command is configured, Malink uses `codex-acp` from `PATH` when
 available and falls back to `npx -y @agentclientprotocol/codex-acp` otherwise.
+
+`codex-acp` owns an ACP session mode in addition to Codex's user configuration.
+Set `INITIAL_AGENT_MODE=agent-full-access` when Malink's Full access permission
+mode must match `approval_policy=never` and `sandbox_mode=danger-full-access` in
+`~/.codex/config.toml`. `CODEX_PATH` selects the same Codex executable used by
+the terminal, while `CODEX_CONFIG` explicitly mirrors those settings into the
+adapter's Codex session configuration.
 
 The local Matrix environment and Gateway require generated development
 credentials. Follow [the local Matrix guide](dev/matrix/README.md), then run:

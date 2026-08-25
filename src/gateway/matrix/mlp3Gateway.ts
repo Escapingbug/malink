@@ -13,7 +13,12 @@ import {
   type NativeClientRelease,
   type ProviderCommand,
 } from '@malink/protocol'
-import type { AgentProvider, ModelEntry } from '@/providers/provider'
+import {
+  AGENT_PERMISSION_MODES,
+  isAgentPermissionMode,
+  type AgentProvider,
+  type ModelEntry,
+} from '@/providers/provider'
 import { createProviderInstance, getProvider, listProviders } from '@/providers/registry'
 import type { AgentActivityPhase, TopicSession } from '@/bridge/channelPort'
 import { createTopicSession, createTopicSessionRecord } from '@/bridge/topicSession'
@@ -842,7 +847,7 @@ export class MatrixMlp3GatewayRunner {
       : patch.reasoningEffort
     if (catalog) validateReasoningEffort(selectedModel, reasoningEffort)
     const permissionMode = patch.permissionMode ?? runtime.record.permissionMode
-    if (permissionMode !== 'default') {
+    if (!isAgentPermissionMode(permissionMode)) {
       throw new Error(`Permission mode ${permissionMode} is not currently available`)
     }
     if (patch.model !== undefined || modelChanged) {
@@ -1493,7 +1498,7 @@ export class MatrixMlp3GatewayRunner {
         : selectedModel?.defaultReasoningLevel ?? null
     if (catalog) validateReasoningEffort(selectedModel, reasoningEffort)
     const permissionMode = command.payload.permissionMode ?? project.project.permissionMode
-    if (permissionMode !== 'default') {
+    if (!isAgentPermissionMode(permissionMode)) {
       throw new Error(`Permission mode ${permissionMode} is not currently available`)
     }
     return {
@@ -1702,7 +1707,7 @@ export class MatrixMlp3GatewayRunner {
     return matrixGatewayCapabilitiesSchema.parse({
       models,
       providers,
-      permission_modes: [{ id: 'default', name: 'Default' }],
+      permission_modes: AGENT_PERMISSION_MODES.map(mode => ({ ...mode })),
       can_create_session: true,
       can_select_session: false,
       can_archive_session: true,
