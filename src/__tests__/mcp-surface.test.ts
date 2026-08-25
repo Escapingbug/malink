@@ -1,0 +1,166 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { registerMalinkMcpSurface } from '@/mcp/register'
+import { SessionManager } from '@/bridge/sessionManager'
+import { createTopicSessionRecord } from '@/bridge/topicSession'
+import type { AgentProvider } from '@/providers/provider'
+
+const existsSync = vi.fn()
+const readFileSync = vi.fn()
+
+vi.mock('node:os', () => ({ homedir: () => '/home/tester' }))
+vi.mock('node:fs', () => ({
+    existsSync: (...args: unknown[]) => existsSync(...args),
+    readFileSync: (...args: unknown[]) => readFileSync(...args),
+}))
+
+function createServerRecorder() {
+    const tools = new Map<string, (args: any) => Promise<any>>()
+    const resources = new Map<string, unknown>()
+    return {
+        tools,
+        resources,
+        server: {
+            tool: vi.fn((name: string, _description: string, _schema: unknown, handler: (args: any) => Promise<any>) => {
+                tools.set(name, handler)
+            }),
+            resource: vi.fn((name: string, uri: string, description: string, handler: unknown) => {
+                resources.set(name, { uri, description, handler })
+            }),
+        },
+    }
+}
+
+function createProvider(): AgentProvider {
+    return {
+        name: 'mock-provider',
+        startQuery: vi.fn(),
+        isReady: vi.fn(() => true),
+        getInitError: vi.fn(() => null),
+        getAvailableModels: vi.fn(() => []),
+        getAvailablePermissionModes: vi.fn(() => []),
+        listSessions: vi.fn(async () => []),
+    }
+}
+
+describe('MCP active surface registration', () => {
+    beforeEach(() => {
+        existsSync.mockReturnValue(true)
+        readFileSync.mockReturnValue('3737')
+        process.env.MALINK_CONVERSATION_ID = 'provider-session-1'
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
+            ok: true,
+            json: async () => {
+                if (url.endsWith('/api/send-file')) return { ok: true, result: { status: 'queued', deliveryId: 'delivery-1' } }
+                if (url.endsWith('/api/delivery-status')) return { deliveries: [] }
+                if (url.endsWith('/api/retry-delivery')) return { status: 'sent', deliveryId: 'delivery-2', retryOf: 'delivery-1' }
+                if (url.endsWith('/api/reminders')) return { reminders: [] }
+                if (url.endsWith('/api/cancel')) return { ok: true, cancelledCount: 1, taskIds: ['task-1'] }
+                return { taskId: 'task-1' }
+            },
+            text: async () => '',
+        })))
+    })
+
+    afterEach(() => {
+        vi.unstubAllGlobals()
+        vi.restoreAllMocks()
+        delete process.env.MALINK_CONVERSATION_ID
+    })
+
+    it('registers active stdio resources and tools through one surface', async () => {
+        const { server, tools, resources } = createServerRecorder()
+
+        registerMalinkMcpSurface(server)
+
+        expect(resources.has('Malink Environment')).toBe(true)
+        expect(tools.has('get_malink_context')).toBe(true)
+        expect(tools.has('schedule_reminder')).toBe(true)
+        expect(tools.has('list_reminders')).toBe(true)
+        expect(tools.has('cancel_reminder')).toBe(true)
+        expect(tools.has('send_message')).toBe(true)
+        expect(tools.has('send_file')).toBe(true)
+        expect(tools.has('get_delivery_status')).toBe(true)
+        expect(tools.has('retry_delivery')).toBe(true)
+        expect(tools.has('list_sessions')).toBe(false)
+
+        const context = await tools.get('get_malink_context')!({ topic: 'channel' })
+        expect(context.content[0].text).toContain('Channel: Telegram')
+
+        await tools.get('schedule_reminder')!({ delayMs: 1000, message: 'later' })
+        expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:3737/api/schedule', expect.objectContaining({
+            method: 'POST',
+        }))
+
+        await tools.get('list_reminders')!({})
+        expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:3737/api/reminders', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ sessionId: 'provider-session-1' }),
+        }))
+
+        await tools.get('send_message')!({ message: 'now' })
+        expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:3737/api/send', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ sessionId: 'provider-session-1', message: 'now' }),
+        }))
+
+        await tools.get('send_file')!({ path: '/repo/report.md', caption: 'report', type: 'markdown' })
+        expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:3737/api/send-file', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ sessionId: 'provider-session-1', path: '/repo/report.md', caption: 'report', type: 'markdown' }),
+        }))
+
+        await tools.get('get_delivery_status')!({ deliveryId: 'delivery-1' })
+        expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:3737/api/delivery-status', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ sessionId: 'provider-session-1', deliveryId: 'delivery-1' }),
+        }))
+
+        await tools.get('retry_delivery')!({ deliveryId: 'delivery-1' })
+        expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:3737/api/retry-delivery', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ sessionId: 'provider-session-1', deliveryId: 'delivery-1' }),
+        }))
+    })
+
+    it('registers only context tools when session identity is unavailable', () => {
+        delete process.env.MALINK_CONVERSATION_ID
+        const { server, tools, resources } = createServerRecorder()
+
+        registerMalinkMcpSurface(server)
+
+        expect(resources.has('Malink Environment')).toBe(true)
+        expect(tools.has('get_malink_context')).toBe(true)
+        expect(tools.has('schedule_reminder')).toBe(false)
+        expect(tools.has('list_reminders')).toBe(false)
+        expect(tools.has('cancel_reminder')).toBe(false)
+        expect(tools.has('send_message')).toBe(false)
+        expect(tools.has('send_file')).toBe(false)
+        expect(tools.has('get_delivery_status')).toBe(false)
+        expect(tools.has('retry_delivery')).toBe(false)
+        expect(tools.has('list_sessions')).toBe(false)
+    })
+
+    it('adds session tools only when daemon session context is supplied', () => {
+        const { server, tools } = createServerRecorder()
+        const provider = createProvider()
+        const session = createTopicSessionRecord({
+            cwd: '/repo',
+            providerName: provider.name,
+            groupChatId: -100,
+            conversationId: 'provider-session-1',
+        })
+
+        registerMalinkMcpSurface(server, {
+            sessionTools: {
+                sessionManager: new SessionManager(),
+                getProvider: () => provider,
+                getCwd: () => session.cwd,
+                getSession: () => session,
+            },
+        })
+
+        expect(tools.has('list_sessions')).toBe(true)
+        expect(tools.has('switch_session')).toBe(true)
+        expect(tools.has('get_malink_status')).toBe(true)
+    })
+})

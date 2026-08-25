@@ -1,0 +1,29 @@
+{
+  "name": "@malink/security",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "browser": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./node": {
+      "types": "./src/node/index.ts",
+      "default": "./src/node/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.browser.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@malink/protocol": "file:../protocol"
+  },
+  "devDependencies": {
+    "@types/node": ">=20",
+    "typescript": "^5.3.0",
+    "vitest": "^4.1.4"
+  }
+}

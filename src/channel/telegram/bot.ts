@@ -1,0 +1,57 @@
+import { Bot } from 'grammy'
+import { HttpsProxyAgent } from 'https-proxy-agent'
+import { config } from '@/config'
+import { pairing } from '@/channel/telegram/pairing'
+import type { SessionManager } from '@/bridge/sessionManager'
+import { registerDmHandlers } from '@/channel/telegram/handlers/dm'
+import { registerGroupHandlers } from '@/channel/telegram/handlers/groupCommands'
+import { registerSettingsHandlers } from '@/channel/telegram/handlers/settings'
+import { registerCallbackHandlers } from '@/channel/telegram/handlers/callbacks'
+import { registerMessageRouter } from '@/channel/telegram/handlers/messageRouter'
+import type { GroupLogger } from '@/utils/groupLogger'
+import { LongInputBuffer } from '@/channel/telegram/longInputBuffer'
+
+export interface CreateBotOptions {
+    sessionManager: SessionManager
+    processCwd: string
+    logger?: GroupLogger
+    restart?: (chatId?: number, messageThreadId?: number, progressMessageId?: number) => Promise<void>
+}
+
+export function createBot(options: CreateBotOptions): Bot {
+    const { sessionManager, logger } = options
+    const token = config.getBotToken()
+    if (!token) throw new Error('Bot token not configured. Run: malink config set-bot-token <token>')
+
+    const proxyUrl = process.env.https_proxy || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.HTTP_PROXY
+    const bot = proxyUrl
+        ? new Bot(token, {
+            client: {
+                apiRoot: 'https://api.telegram.org',
+                buildUrl: (root, token, method) => `${root}/bot${token}/${method}`,
+                baseFetchConfig: {
+                    agent: new HttpsProxyAgent(proxyUrl),
+                },
+            },
+        })
+        : new Bot(token)
+    const topicSessions = sessionManager.getTopicSessionsMap()
+    const longInputBuffer = new LongInputBuffer()
+
+    // Register all handlers
+    registerDmHandlers(bot, sessionManager, options.restart)
+    registerGroupHandlers(bot, { sessionManager, topicSessions, restart: options.restart, longInputBuffer })
+    registerSettingsHandlers(bot, { sessionManager, topicSessions })
+    registerCallbackHandlers(bot, { sessionManager, topicSessions })
+    registerMessageRouter(bot, { sessionManager, topicSessions, bot, logger, longInputBuffer })
+
+    // Error handling
+    bot.catch((err) => {
+        const e = (err as any).error
+        if (e instanceof Error) {
+            console.error('[bot error]', e.message)
+        }
+    })
+
+    return bot
+}

@@ -1,0 +1,11 @@
+packages:
+  - apps/*
+  - packages/*
+allowBuilds:
+  '@matrix-org/matrix-sdk-crypto-nodejs': true
+  esbuild: true
+  sharp: true
+  unrs-resolver: true
+  workerd: true
+
+# Optional session extensions under extensions/ are intentionally not product workspaces.

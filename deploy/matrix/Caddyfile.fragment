@@ -1,0 +1,4 @@
+@malink_matrix path /_matrix/* /_synapse/client/*
+handle @malink_matrix {
+    reverse_proxy 127.0.0.1:8008
+}

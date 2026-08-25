@@ -1,0 +1,521 @@
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { MALINK_MATRIX_EXTENSION, mlp3ProjectKeyGrantStateSchema } from '@malink/protocol'
+import {
+  base64UrlDecode,
+  exportDeviceKeyPair,
+  generateDeviceKeyPair,
+  openMlp3Envelope,
+  openMlp3ProjectKeyGrant,
+} from '@malink/security'
+import { InMemoryMatrixTransport, MatrixMlp3Port } from '@/channel/matrix'
+import {
+  GatewayMlp3ContentLayer,
+  MAX_MLP3_MATRIX_TIMELINE_CONTENT_BYTES,
+} from '@/gateway/matrix/mlp3Content'
+import { gatewayProjectIdentity } from '@/gateway/matrix/project'
+import { ChannelProjector } from '@/runtime/channelProjector'
+import { MatrixMlp3Projection } from '../../apps/pwa/app/matrixMlp3Projection'
+import { toIncomingMessage } from '../../apps/pwa/app/matrixMlp3Connection'
+
+describe('MatrixMlp3Port', () => {
+  it('projects logical message versions while treating Matrix replacement as an optional hint', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-port-'))
+    const gateway = await generateDeviceKeyPair()
+    const phone = await generateDeviceKeyPair()
+    const room = {
+      roomId: '!project:example.org',
+      conversationId: 'unused-v3',
+      cwd: '/repo',
+      providerName: 'test',
+    }
+    const contentLayer = new GatewayMlp3ContentLayer('workspace-1', {
+      gatewayDeviceId: 'workspace-1',
+      gatewayKeyPair: await exportDeviceKeyPair(gateway),
+      envelopeReplayLedgerPath: join(directory, 'security'),
+    }, [{
+      deviceId: 'phone-1',
+      publicKey: phone.publicJwk,
+      allowedRoomIds: [room.roomId],
+      allowedOperations: ['prompt'],
+      matrixUserId: '@owner:example.org',
+      matrixDeviceId: 'PHONE',
+      matrixDeviceKeys: ['matrix-phone-key'],
+      certificateExpiresAt: Date.now() + 60_000,
+      sequenceEpoch: 'certificate-1',
+    }])
+    await contentLayer.initialize()
+    const transport = new InMemoryMatrixTransport()
+    await contentLayer.provisionProject(room, transport)
+    const grantState = [...transport.state.values()][0]
+    const grant = mlp3ProjectKeyGrantStateSchema.parse(grantState?.content)
+    const keyGrant = await openMlp3ProjectKeyGrant(grant.sealedGrant, {
+      expected: {
+        grantId: grant.grantId,
+        workspaceId: grant.workspaceId,
+        projectId: grant.projectId,
+        roomId: grant.roomId,
+        deviceId: grant.deviceId,
+        certificateId: grant.certificateId,
+        senderKeyId: grant.sealedGrant.envelope.senderKeyId,
+        recipientKeyId: grant.sealedGrant.envelope.recipientKeyId,
+      },
+      recipientPrivateKey: phone.privateKey,
+      senderPublicKey: gateway.publicKey,
+    })
+    const projectKey = keyGrant.keys.find(key => key.keyId === keyGrant.activeKeyId)!
+    const port = new MatrixMlp3Port({
+      contentLayer,
+      transport,
+      room,
+      workspaceId: 'workspace-1',
+      projectId: gatewayProjectIdentity(room.cwd).id,
+      sessionId: 'session-1',
+      threadRootEventId: '$root:example.org',
+      projection: () => ({
+        title: 'Session',
+        lifecycle: 'active',
+        activity: 'working',
+        updatedAt: 1,
+        stateVersion: 1,
+      }),
+      now: () => 1,
+    })
+    expect(port.streamAssistantText).toBe(false)
+
+    const sent = await port.send({
+      text: 'first',
+      format: 'markdown',
+      replyMarkup: { idempotencyKey: 'logical-message-1' },
+    })
+    expect(sent.messageId).toBe('logical-message-1')
+    await port.edit('logical-message-1', {
+      text: 'updated',
+      format: 'markdown',
+      replyMarkup: { idempotencyKey: 'logical-update-1' },
+    }, { terminal: true })
+    await waitFor(() => transport.delivered.length >= 2)
+
+    const opened = await Promise.all(transport.delivered.map(async delivery => {
+      const extension = delivery.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
+      return openMlp3Envelope(extension.envelope, {
+        projectKey: base64UrlDecode(projectKey.key),
+        roomId: room.roomId,
+        projectId: grant.projectId,
+        keyId: projectKey.keyId,
+      })
+    }))
+    const assistantEvents = opened.map(item => {
+      if (item.plaintext.kind !== 'signed_event') throw new Error('expected event')
+      return item.plaintext.value.event
+    })
+    expect(assistantEvents.map(event => event.payload)).toMatchObject([
+      { type: 'assistant.message', messageId: 'logical-message-1', messageVersion: 1, body: 'first' },
+      { type: 'assistant.message', messageId: 'logical-message-1', messageVersion: 2, body: 'updated' },
+    ])
+    expect(assistantEvents.map(event => event.occurredAt)).toEqual([1, 1])
+    expect(transport.delivered[0]?.content['m.relates_to']).toMatchObject({
+      rel_type: 'm.thread',
+      event_id: '$root:example.org',
+    })
+    expect(transport.delivered[1]?.content['m.relates_to']).toMatchObject({
+      rel_type: 'm.thread',
+      event_id: '$root:example.org',
+    })
+
+    const assistantProjection = new MatrixMlp3Projection()
+    for (const [index, event] of assistantEvents.entries()) {
+      assistantProjection.applyEvent(event, transport.delivered[index]!.eventId)
+    }
+    expect(assistantProjection.sessionMessages('session-1')).toHaveLength(1)
+    expect(assistantProjection.sessionMessages('session-1')[0]).toMatchObject({
+      body: 'updated',
+      version: 2,
+    })
+
+    const response = port.requestExtensionInteraction({
+      extension: { id: 'prefix-transform', name: 'Prefix transform', version: '1' },
+      cancelActionId: 'cancel',
+      view: {
+        version: 1,
+        title: 'Review transformed input',
+        elements: [{ type: 'readonly_textarea', label: 'Agent input', value: 'SAFE: hello' }],
+        actions: [
+          { id: 'continue', label: 'Continue', style: 'primary' },
+          { id: 'cancel', label: 'Cancel', style: 'secondary' },
+        ],
+      },
+    })
+    await waitFor(() => transport.delivered.length === 3)
+    const interactionExtension = transport.delivered[2]
+      ?.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
+    const interaction = await openMlp3Envelope(interactionExtension.envelope, {
+      projectKey: base64UrlDecode(projectKey.key),
+      roomId: room.roomId,
+      projectId: grant.projectId,
+      keyId: projectKey.keyId,
+    })
+    if (interaction.plaintext.kind !== 'signed_event') throw new Error('expected event')
+    expect(interaction.plaintext.value.event.payload).toMatchObject({
+      type: 'extension.interaction.requested',
+      extension: { id: 'prefix-transform' },
+      cancelActionId: 'cancel',
+    })
+    const requestId = interaction.plaintext.value.event.payload.type === 'extension.interaction.requested'
+      ? interaction.plaintext.value.event.payload.requestId
+      : ''
+    expect(port.resolveDecision(requestId, 'continue')).toEqual({
+      kind: 'extension',
+      extensionId: 'prefix-transform',
+    })
+    await expect(response).resolves.toEqual({ value: 'continue' })
+
+    const privilegeResponse = port.requestDecision({
+      type: 'privilege',
+      title: 'Allow remote administrator execution?',
+      details: 'Command:\n/usr/bin/id -u',
+      options: [
+        { label: 'Unlock and allow once', value: 'allow_once' },
+        { label: 'Deny', value: 'deny' },
+      ],
+    })
+    await waitFor(() => transport.delivered.length === 4)
+    const privilegeExtension = transport.delivered[3]
+      ?.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
+    const privilegeEvent = await openMlp3Envelope(privilegeExtension.envelope, {
+      projectKey: base64UrlDecode(projectKey.key),
+      roomId: room.roomId,
+      projectId: grant.projectId,
+      keyId: projectKey.keyId,
+    })
+    if (privilegeEvent.plaintext.kind !== 'signed_event') throw new Error('expected event')
+    expect(privilegeEvent.plaintext.value.event.payload).toMatchObject({
+      type: 'decision.requested',
+      decisionType: 'privilege',
+      details: 'Command:\n/usr/bin/id -u',
+      options: [
+        { label: 'Unlock and allow once', value: 'allow_once' },
+        { label: 'Deny', value: 'deny' },
+      ],
+    })
+    const privilegeRequestId = privilegeEvent.plaintext.value.event.payload.type
+      === 'decision.requested'
+      ? privilegeEvent.plaintext.value.event.payload.requestId
+      : ''
+    expect(port.decisionType(privilegeRequestId)).toBe('privilege')
+    expect(port.resolveDecision(privilegeRequestId, 'allow')).toBeNull()
+    expect(port.resolveDecision(privilegeRequestId, 'allow_once')).toBeNull()
+    expect(port.resolveDecision(privilegeRequestId, 'allow_once', '123456')).toEqual({
+      kind: 'decision',
+      decisionType: 'privilege',
+    })
+    await expect(privilegeResponse).resolves.toEqual({ value: 'allow_once', totp: '123456' })
+
+    const expiredPrivilegeResponse = port.requestDecision({
+      type: 'privilege',
+      title: 'Expiring root request',
+      options: [
+        { label: 'Allow once', value: 'allow_once' },
+        { label: 'Deny', value: 'deny' },
+      ],
+      expiresAt: Date.now() + 10,
+    })
+    await expect(expiredPrivilegeResponse).resolves.toEqual({ value: 'deny' })
+    await waitFor(() => transport.delivered.length === 6)
+    const expiredExtension = transport.delivered[5]
+      ?.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
+    const expiredEvent = await openMlp3Envelope(expiredExtension.envelope, {
+      projectKey: base64UrlDecode(projectKey.key),
+      roomId: room.roomId,
+      projectId: grant.projectId,
+      keyId: projectKey.keyId,
+    })
+    if (expiredEvent.plaintext.kind !== 'signed_event') throw new Error('expected event')
+    expect(expiredEvent.plaintext.value.event.payload).toMatchObject({
+      type: 'decision.resolved',
+      decision: 'deny',
+    })
+
+    const projector = new ChannelProjector()
+    const [projectedTool] = projector.project({
+      kind: 'tool',
+      meta: {
+        id: 'turn-1:tool:read-1:1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        provider: 'acp',
+        seq: 1,
+        timestamp: 1,
+        sourcePhase: 'live',
+      },
+      phase: 'completed',
+      toolCallId: 'read-1',
+      toolName: 'Read',
+      category: 'read',
+      input: { file_path: '/repo/src/index.ts' },
+    }, { verboseLevel: 2 })
+    await port.send({
+      ...projectedTool!.message,
+      replyMarkup: { idempotencyKey: 'tool-message-1' },
+    })
+    await waitFor(() => transport.delivered.length >= 7)
+    const toolDelivery = transport.delivered[6]!
+    const toolExtension = toolDelivery.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
+    const toolEnvelope = await openMlp3Envelope(toolExtension.envelope, {
+      projectKey: base64UrlDecode(projectKey.key),
+      roomId: room.roomId,
+      projectId: grant.projectId,
+      keyId: projectKey.keyId,
+    })
+    if (toolEnvelope.plaintext.kind !== 'signed_event') throw new Error('expected event')
+    expect(toolEnvelope.plaintext.value.event.occurredAt).toBeGreaterThan(
+      assistantEvents[0]!.occurredAt,
+    )
+    const pwaProjection = new MatrixMlp3Projection()
+    pwaProjection.applyEvent(toolEnvelope.plaintext.value.event, toolDelivery.eventId)
+    const pwaMessage = pwaProjection.messages.get('assistant:tool-message-1:0')
+    expect(pwaMessage).toBeDefined()
+    expect(toIncomingMessage(pwaMessage!)).toMatchObject({
+      kind: 'tool',
+      toolGroup: {
+        groupId: 'read-1',
+        tools: [{ name: 'Read', category: 'read', phase: 'completed' }],
+      },
+    })
+
+    const completeOutput = `first line\n${'visible output '.repeat(80)}\nimportant final line`
+    const outputProjector = new ChannelProjector()
+    const [projectedOutputTool] = outputProjector.project({
+      kind: 'tool',
+      meta: {
+        id: 'turn-1:tool:bash-output:1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        provider: 'acp',
+        seq: 2,
+        timestamp: 2,
+        sourcePhase: 'live',
+      },
+      phase: 'completed',
+      toolCallId: 'bash-output',
+      toolName: 'Bash',
+      category: 'execute',
+      input: { command: 'pnpm test' },
+      output: completeOutput,
+    }, { verboseLevel: 2 })
+    const completeOutputStart = transport.delivered.length
+    await port.send({
+      ...projectedOutputTool!.message,
+      replyMarkup: { idempotencyKey: 'tool-output-message-1' },
+    })
+    await waitFor(() => transport.delivered.length > completeOutputStart)
+    const completeOutputDelivery = transport.delivered[completeOutputStart]!
+    const completeOutputExtension = completeOutputDelivery
+      .content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
+    const completeOutputEnvelope = await openMlp3Envelope(completeOutputExtension.envelope, {
+      projectKey: base64UrlDecode(projectKey.key),
+      roomId: room.roomId,
+      projectId: grant.projectId,
+      keyId: projectKey.keyId,
+    })
+    if (completeOutputEnvelope.plaintext.kind !== 'signed_event') throw new Error('expected event')
+    expect(completeOutputEnvelope.plaintext.value.event.payload).toMatchObject({
+      type: 'assistant.message',
+      body: expect.stringContaining('important final line'),
+      ui: {
+        kind: 'tool_group',
+        tools: [{ result: completeOutput }],
+      },
+    })
+
+    const longToolStart = transport.delivered.length
+    await port.send({
+      ...projectedTool!.message,
+      text: `${'x'.repeat(8 * 1024)}尾`,
+      format: 'plain',
+      replyMarkup: { idempotencyKey: 'long-tool-message-1' },
+    })
+    const longToolPayloads = await Promise.all(
+      transport.delivered.slice(longToolStart).map(async delivery => {
+        const extension = delivery.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
+        const envelope = await openMlp3Envelope(extension.envelope, {
+          projectKey: base64UrlDecode(projectKey.key),
+          roomId: room.roomId,
+          projectId: grant.projectId,
+          keyId: projectKey.keyId,
+        })
+        if (envelope.plaintext.kind !== 'signed_event') throw new Error('expected event')
+        return envelope.plaintext.value.event.payload
+      }),
+    )
+    expect(longToolPayloads).toHaveLength(2)
+    expect(longToolPayloads).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'assistant.message',
+        partIndex: 0,
+        partCount: 2,
+        ui: expect.objectContaining({ kind: 'tool_group', groupId: 'read-1' }),
+      }),
+      expect.objectContaining({
+        type: 'assistant.message',
+        partIndex: 1,
+        partCount: 2,
+        body: '尾',
+        ui: expect.objectContaining({ kind: 'tool_group', groupId: 'read-1' }),
+      }),
+    ]))
+
+    const largeOutput = `${'complete output '.repeat(700)}important large-output tail`
+    const largeOutputProjector = new ChannelProjector()
+    const [projectedLargeOutputTool] = largeOutputProjector.project({
+      kind: 'tool',
+      meta: {
+        id: 'turn-1:tool:large-output:1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        provider: 'acp',
+        seq: 3,
+        timestamp: 3,
+        sourcePhase: 'live',
+      },
+      phase: 'completed',
+      toolCallId: 'large-output',
+      toolName: 'Bash',
+      category: 'execute',
+      input: { command: 'long-running-command' },
+      output: largeOutput,
+    }, { verboseLevel: 2 })
+    const largeOutputStart = transport.delivered.length
+    await port.send({
+      ...projectedLargeOutputTool!.message,
+      replyMarkup: { idempotencyKey: 'large-tool-output-message' },
+    })
+    const largeOutputPayloads = await Promise.all(
+      transport.delivered.slice(largeOutputStart).map(async delivery => {
+        const extension = delivery.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
+        const envelope = await openMlp3Envelope(extension.envelope, {
+          projectKey: base64UrlDecode(projectKey.key),
+          roomId: room.roomId,
+          projectId: grant.projectId,
+          keyId: projectKey.keyId,
+        })
+        if (envelope.plaintext.kind !== 'signed_event') throw new Error('expected event')
+        return envelope.plaintext.value.event.payload
+      }),
+    )
+    expect(largeOutputPayloads.length).toBeGreaterThan(1)
+    expect(largeOutputPayloads.map(payload =>
+      payload.type === 'assistant.message' ? payload.body : '',
+    ).join('')).toContain('important large-output tail')
+    expect(largeOutputPayloads).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'assistant.message',
+        ui: expect.objectContaining({
+          kind: 'tool_group',
+          tools: [expect.not.objectContaining({ result: expect.anything() })],
+        }),
+      }),
+    ]))
+
+    await port.send({
+      text: 'short',
+      format: 'markdown',
+      replyMarkup: { idempotencyKey: 'growing-agent-message' },
+    })
+    const growingStart = transport.delivered.length
+    await port.edit('growing-agent-message', {
+      text: `${'A'.repeat(8 * 1024)}Markdown tail`,
+      format: 'markdown',
+      replyMarkup: { idempotencyKey: 'growing-agent-message' },
+    }, { terminal: true })
+    const growingPayloads = await Promise.all(
+      transport.delivered.slice(growingStart).map(async delivery => {
+        const extension = delivery.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
+        const envelope = await openMlp3Envelope(extension.envelope, {
+          projectKey: base64UrlDecode(projectKey.key),
+          roomId: room.roomId,
+          projectId: grant.projectId,
+          keyId: projectKey.keyId,
+        })
+        if (envelope.plaintext.kind !== 'signed_event') throw new Error('expected event')
+        return envelope.plaintext.value.event.payload
+      }),
+    )
+    expect(growingPayloads).toMatchObject([
+      {
+        type: 'assistant.message',
+        messageId: 'growing-agent-message',
+        messageVersion: 2,
+        partIndex: 0,
+        partCount: 2,
+      },
+      {
+        type: 'assistant.message',
+        messageId: 'growing-agent-message',
+        messageVersion: 1,
+        partIndex: 1,
+        partCount: 2,
+        body: 'Markdown tail',
+      },
+    ])
+    const growingEvents = await Promise.all(
+      transport.delivered.slice(growingStart).map(async delivery => {
+        const extension = delivery.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
+        const envelope = await openMlp3Envelope(extension.envelope, {
+          projectKey: base64UrlDecode(projectKey.key),
+          roomId: room.roomId,
+          projectId: grant.projectId,
+          keyId: projectKey.keyId,
+        })
+        if (envelope.plaintext.kind !== 'signed_event') throw new Error('expected event')
+        return envelope.plaintext.value.event
+      }),
+    )
+    expect(growingEvents.map(event => event.occurredAt)).toEqual([
+      growingEvents[0]!.occurredAt,
+      growingEvents[0]!.occurredAt,
+    ])
+
+    const oversizedPresentationStart = transport.delivered.length
+    await port.send({
+      text: 'Complete textual fallback remains visible',
+      format: 'plain',
+      replyMarkup: {
+        idempotencyKey: 'oversized-presentation-message',
+        ui: { blob: 'x'.repeat(MAX_MLP3_MATRIX_TIMELINE_CONTENT_BYTES) },
+      },
+    })
+    await waitFor(() => transport.delivered.length === oversizedPresentationStart + 1)
+    const oversizedPresentationDelivery = transport.delivered.at(-1)!
+    const oversizedPresentationExtension = oversizedPresentationDelivery
+      .content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
+    const oversizedPresentationEnvelope = await openMlp3Envelope(
+      oversizedPresentationExtension.envelope,
+      {
+        projectKey: base64UrlDecode(projectKey.key),
+        roomId: room.roomId,
+        projectId: grant.projectId,
+        keyId: projectKey.keyId,
+      },
+    )
+    if (oversizedPresentationEnvelope.plaintext.kind !== 'signed_event') {
+      throw new Error('expected event')
+    }
+    expect(oversizedPresentationEnvelope.plaintext.value.event.payload).toMatchObject({
+      type: 'assistant.message',
+      body: 'Complete textual fallback remains visible',
+    })
+    expect(oversizedPresentationEnvelope.plaintext.value.event.payload).not.toHaveProperty('ui')
+  })
+})
+
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  throw new Error(`Condition was not met within ${timeoutMs}ms`)
+}

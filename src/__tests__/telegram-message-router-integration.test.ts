@@ -1,0 +1,499 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { registerMessageRouter } from '@/channel/telegram/handlers/messageRouter'
+
+const mocks = vi.hoisted(() => ({
+    createTopicSessionRecord: vi.fn(),
+    createTopicSession: vi.fn(),
+    getProvider: vi.fn((_name?: string): { name: string } | undefined => ({ name: 'mock-provider' })),
+    createProviderInstance: vi.fn(() => ({ name: 'mock-provider' })),
+    getDefaultProvider: vi.fn(() => 'mock-acp'),
+    getTopicState: vi.fn((): any => undefined),
+    clearTopicQueryInProgress: vi.fn(),
+    getBotToken: vi.fn(() => 'token'),
+    buildRichInputFromTelegramMessage: vi.fn(async () => ({
+        text: 'caption',
+        richInput: {
+            parts: [
+                { type: 'text', text: 'caption' },
+                { type: 'image', mimeType: 'image/jpeg', data: 'AQID', source: 'telegram:photo-1', filename: 'photo.jpg', sizeBytes: 3 },
+            ],
+        },
+    })),
+}))
+
+vi.mock('@/channel/telegram/pairing', () => ({
+    pairing: { isAuthorized: vi.fn(() => true) },
+}))
+
+vi.mock('@/config', () => ({
+    config: {
+        getDefaultProvider: mocks.getDefaultProvider,
+        getTopicState: mocks.getTopicState,
+        clearTopicQueryInProgress: mocks.clearTopicQueryInProgress,
+        getBotToken: mocks.getBotToken,
+    },
+}))
+
+vi.mock('@/providers/registry', () => ({
+    getProvider: mocks.getProvider,
+    createProviderInstance: mocks.createProviderInstance,
+}))
+
+vi.mock('@/bridge/topicSession', () => ({
+    createTopicSessionRecord: mocks.createTopicSessionRecord,
+    createTopicSession: mocks.createTopicSession,
+}))
+
+vi.mock('@/channel/telegram/uploadInput', () => ({
+    buildRichInputFromTelegramMessage: mocks.buildRichInputFromTelegramMessage,
+}))
+
+vi.mock('@/channel/telegram/telegramPort', () => ({
+    TelegramPort: vi.fn(function TelegramPort() {
+        return {
+            sendChatAction: vi.fn(),
+            send: vi.fn(),
+            edit: vi.fn(),
+        }
+    }),
+}))
+
+function createBot() {
+    const handlers = new Map<string, (ctx: any) => Promise<void>>()
+    return {
+        api: {
+            sendChatAction: vi.fn(async () => {}),
+            sendMessage: vi.fn(async () => {}),
+        },
+        on(name: string, handler: (ctx: any) => Promise<void>) {
+            handlers.set(name, handler)
+        },
+        command(name: string, handler: (ctx: any) => Promise<void>) {
+            handlers.set(`command:${name}`, handler)
+        },
+        async emitCommand(name: string, ctx: any) {
+            const handler = handlers.get(`command:${name}`)
+            if (!handler) throw new Error(`${name} command handler was not registered`)
+            await handler(ctx)
+        },
+        async emitMessage(ctx: any) {
+            const handler = handlers.get('message:text')
+            if (!handler) throw new Error('message:text handler was not registered')
+            await handler(ctx)
+        },
+        async emitPhoto(ctx: any) {
+            const handler = handlers.get('message:photo')
+            if (!handler) throw new Error('message:photo handler was not registered')
+            await handler(ctx)
+        },
+        async emitMyChatMember(ctx: any) {
+            const handler = handlers.get('my_chat_member')
+            if (!handler) throw new Error('my_chat_member handler was not registered')
+            await handler(ctx)
+        },
+    }
+}
+
+function createSessionRecord() {
+    const listeners: Record<string, Array<(event: any) => void>> = {}
+    return {
+        id: 'session-record-1',
+        providerName: 'mock-acp',
+        timeoutSeconds: 180,
+        groupChatId: null,
+        messageThreadId: null,
+        bus: {
+            on: vi.fn((eventName: string, handler: (event: any) => void) => {
+                listeners[eventName] ??= []
+                listeners[eventName].push(handler)
+            }),
+            emit: vi.fn((event: any) => {
+                for (const handler of listeners[event.type] ?? []) handler(event)
+            }),
+        },
+        onTimeoutSecondsChange: undefined as ((seconds: number) => void) | undefined,
+        onLog: undefined as ((message: string) => void) | undefined,
+    }
+}
+
+function createTopicSession() {
+    return {
+        receiveInput: vi.fn(),
+        dispatch: vi.fn(async () => {}),
+        destroy: vi.fn(async () => {}),
+        state: 'idle',
+        sessionRecord: createSessionRecord(),
+        channelPort: {},
+        getProgress: vi.fn(() => null),
+    }
+}
+
+function createSessionManager(overrides: Partial<any> = {}) {
+    return {
+        isGroupArchived: vi.fn(() => false),
+        isGroupInCooldown: vi.fn(() => false),
+        getGroupCwd: vi.fn(() => '/repo'),
+        tryAcquireCreationLock: vi.fn(() => true),
+        releaseCreationLock: vi.fn(),
+        getGroupSettings: vi.fn(() => ({ providerName: 'mock-acp', model: 'sonnet', timeoutSeconds: 240 })),
+        registerSession: vi.fn(),
+        registerTopicSession: vi.fn(),
+        removeTopicSession: vi.fn(),
+        removeSession: vi.fn(),
+        clearGroupFailures: vi.fn(),
+        hasSessionInGroup: vi.fn(() => false),
+        ...overrides,
+    } as any
+}
+
+function createMessageContext(text = 'hello malink', threadId = 10) {
+    const replies: Array<{ text: string; options?: unknown }> = []
+    return {
+        chat: { id: -100, type: 'supergroup', title: 'dev' },
+        from: { id: 1, username: 'alice', first_name: 'Alice' },
+        message: { text, message_thread_id: threadId },
+        replies,
+        reply: vi.fn(async (replyText: string, options?: unknown) => {
+            replies.push({ text: replyText, options })
+        }),
+    }
+}
+
+function createPhotoContext(caption = 'caption', threadId = 10) {
+    const ctx = createMessageContext(caption, threadId)
+    ctx.message = {
+        caption,
+        message_thread_id: threadId,
+        photo: [{ file_id: 'photo-1', file_size: 3 }],
+    } as any
+    return ctx
+}
+
+describe('Telegram message router integration', () => {
+    beforeEach(() => {
+        vi.clearAllMocks()
+        mocks.getDefaultProvider.mockReturnValue('mock-acp')
+        mocks.getTopicState.mockReturnValue(undefined)
+        mocks.getBotToken.mockReturnValue('token')
+        mocks.getProvider.mockImplementation((_name?: string) => ({ name: 'mock-provider' }))
+        mocks.createProviderInstance.mockImplementation(() => ({ name: 'mock-provider' }))
+        mocks.createTopicSessionRecord.mockImplementation(createSessionRecord)
+        mocks.createTopicSession.mockImplementation(() => createTopicSession())
+        mocks.buildRichInputFromTelegramMessage.mockClear()
+    })
+
+    it('creates a topic session on the first authorized group message and forwards user input', async () => {
+        const bot = createBot()
+        const topicSessions = new Map<string, any>()
+        const sessionManager = createSessionManager({
+            registerTopicSession: vi.fn((topicKey: string, session: any) => topicSessions.set(topicKey, session)),
+        })
+        registerMessageRouter(bot, { sessionManager, topicSessions, bot: bot as any })
+
+        await bot.emitMessage(createMessageContext('please inspect tests'))
+
+        expect(mocks.createTopicSessionRecord).toHaveBeenCalledWith(expect.objectContaining({
+            cwd: '/repo',
+            providerName: 'mock-acp',
+            groupChatId: -100,
+            messageThreadId: 10,
+            model: 'sonnet',
+            timeoutSeconds: 240,
+        }))
+        expect(mocks.createTopicSession).toHaveBeenCalled()
+        expect(sessionManager.registerTopicSession).toHaveBeenCalledWith('-100:10', expect.any(Object))
+        expect(topicSessions.get('-100:10').receiveInput).toHaveBeenCalledWith({
+            text: 'please inspect tests',
+            username: 'alice',
+        })
+        expect(bot.api.sendChatAction).toHaveBeenCalledWith(-100, 'typing')
+    })
+
+    it('collects long input chunks and submits them as one prompt on /done', async () => {
+        const bot = createBot()
+        const topicSessions = new Map<string, any>()
+        const sessionManager = createSessionManager({
+            registerTopicSession: vi.fn((topicKey: string, session: any) => topicSessions.set(topicKey, session)),
+        })
+        registerMessageRouter(bot, { sessionManager, topicSessions, bot: bot as any })
+
+        const pasteCtx = createMessageContext('/paste')
+        await bot.emitCommand('paste', pasteCtx)
+        await bot.emitMessage(createMessageContext('first chunk '))
+        await bot.emitMessage(createMessageContext('second chunk'))
+        expect(mocks.createTopicSessionRecord).not.toHaveBeenCalled()
+
+        await bot.emitCommand('done', createMessageContext('/done'))
+
+        expect(mocks.createTopicSessionRecord).toHaveBeenCalledTimes(1)
+        expect(topicSessions.get('-100:10').receiveInput).toHaveBeenCalledWith({
+            text: 'first chunk second chunk',
+            username: 'alice',
+        })
+        expect(bot.api.sendChatAction).toHaveBeenCalledWith(-100, 'typing')
+    })
+
+    it('uses topic settings when creating the first session in a new topic', async () => {
+        mocks.getTopicState.mockReturnValue({
+            settings: {
+                providerName: 'topic-provider',
+                model: 'topic-model',
+                permissionMode: 'approve-all',
+                timeoutSeconds: 90,
+            },
+        })
+        const bot = createBot()
+        const topicSessions = new Map<string, any>()
+        const sessionManager = createSessionManager({
+            registerTopicSession: vi.fn((topicKey: string, session: any) => topicSessions.set(topicKey, session)),
+        })
+        registerMessageRouter(bot, { sessionManager, topicSessions, bot: bot as any })
+
+        await bot.emitMessage(createMessageContext('start with topic settings'))
+
+        expect(mocks.createTopicSessionRecord).toHaveBeenCalledWith(expect.objectContaining({
+            providerName: 'topic-provider',
+            model: 'topic-model',
+            timeoutSeconds: 90,
+            providerSettings: { permissionMode: 'approve-all' },
+        }))
+    })
+
+    it('reuses an existing topic session for later messages in the same topic', async () => {
+        const bot = createBot()
+        const existing = createTopicSession()
+        const topicSessions = new Map<string, any>([['-100:10', existing]])
+        registerMessageRouter(bot, { sessionManager: createSessionManager(), topicSessions, bot: bot as any })
+
+        await bot.emitMessage(createMessageContext('second message'))
+
+        expect(mocks.createTopicSessionRecord).not.toHaveBeenCalled()
+        expect(existing.receiveInput).toHaveBeenCalledWith({ text: 'second message', username: 'alice' })
+    })
+
+    it('stages photo uploads without creating or dispatching a session', async () => {
+        const bot = createBot()
+        const topicSessions = new Map<string, any>()
+        const sessionManager = createSessionManager()
+        registerMessageRouter(bot, { sessionManager, topicSessions, bot: bot as any })
+        const ctx = createPhotoContext('')
+
+        await bot.emitPhoto(ctx)
+
+        expect(mocks.buildRichInputFromTelegramMessage).toHaveBeenCalledWith(expect.objectContaining({
+            botToken: 'token',
+            topicKey: '-100:10',
+        }))
+        expect(ctx.reply).toHaveBeenCalledWith('Attachment received. Send a text message to use it in the next prompt.')
+        expect(mocks.createTopicSessionRecord).not.toHaveBeenCalled()
+        expect(sessionManager.tryAcquireCreationLock).not.toHaveBeenCalled()
+    })
+
+    it('attaches staged photo uploads to the next text prompt', async () => {
+        const bot = createBot()
+        const existing = createTopicSession()
+        const topicSessions = new Map<string, any>([['-100:10', existing]])
+        registerMessageRouter(bot, { sessionManager: createSessionManager(), topicSessions, bot: bot as any })
+
+        await bot.emitPhoto(createPhotoContext('caption'))
+        await bot.emitMessage(createMessageContext('please inspect this image'))
+
+        expect(mocks.buildRichInputFromTelegramMessage).toHaveBeenCalledWith(expect.objectContaining({
+            botToken: 'token',
+            topicKey: '-100:10',
+        }))
+        expect(existing.receiveInput).toHaveBeenCalledWith({
+            text: 'please inspect this image',
+            username: 'alice',
+            richInput: {
+                parts: [
+                    { type: 'text', text: 'please inspect this image' },
+                    { type: 'image', mimeType: 'image/jpeg', data: 'AQID', source: 'telegram:photo-1', filename: 'photo.jpg', sizeBytes: 3 },
+                ],
+            },
+        })
+    })
+
+    it('does not create a session from a plain message in the general topic', async () => {
+        const bot = createBot()
+        const sessionManager = createSessionManager()
+        registerMessageRouter(bot, { sessionManager, topicSessions: new Map(), bot: bot as any })
+        const ctx = createMessageContext('plain general message')
+        ;(ctx.message as { message_thread_id?: number }).message_thread_id = undefined
+
+        await bot.emitMessage(ctx)
+
+        expect(ctx.reply).toHaveBeenCalledWith(expect.stringContaining('Please create or use a topic'))
+        expect(mocks.createTopicSessionRecord).not.toHaveBeenCalled()
+        expect(sessionManager.tryAcquireCreationLock).not.toHaveBeenCalled()
+    })
+
+    it('does not forward a plain general-topic message to an existing main session', async () => {
+        const bot = createBot()
+        const existing = createTopicSession()
+        const topicSessions = new Map<string, any>([['-100:main', existing]])
+        registerMessageRouter(bot, { sessionManager: createSessionManager(), topicSessions, bot: bot as any })
+        const ctx = createMessageContext('plain general message', 1)
+
+        await bot.emitMessage(ctx)
+
+        expect(ctx.reply).toHaveBeenCalledWith(expect.stringContaining('Please create or use a topic'))
+        expect(existing.receiveInput).not.toHaveBeenCalled()
+    })
+
+    it('routes /file_<id> messages to the runtime file command instead of the agent prompt', async () => {
+        const bot = createBot()
+        const existing = createTopicSession()
+        const topicSessions = new Map<string, any>([['-100:10', existing]])
+        registerMessageRouter(bot, { sessionManager: createSessionManager(), topicSessions, bot: bot as any })
+
+        await bot.emitMessage(createMessageContext('/file_f1'))
+
+        expect(existing.dispatch).toHaveBeenCalledWith({ kind: 'command', name: 'file', args: 'f1', source: 'channel' })
+        expect(existing.receiveInput).not.toHaveBeenCalled()
+    })
+
+    it('keeps different Telegram topics isolated in the same group', async () => {
+        const bot = createBot()
+        const topicSessions = new Map<string, any>()
+        const firstProvider = { name: 'mock-acp', instanceId: 'provider-1' }
+        const secondProvider = { name: 'mock-acp', instanceId: 'provider-2' }
+        mocks.createProviderInstance
+            .mockReturnValueOnce(firstProvider)
+            .mockReturnValueOnce(secondProvider)
+        const sessionManager = createSessionManager({
+            registerTopicSession: vi.fn((topicKey: string, session: any) => topicSessions.set(topicKey, session)),
+        })
+        registerMessageRouter(bot, { sessionManager, topicSessions, bot: bot as any })
+
+        await bot.emitMessage(createMessageContext('topic 10', 10))
+        await bot.emitMessage(createMessageContext('topic 20', 20))
+
+        expect(sessionManager.registerTopicSession).toHaveBeenCalledWith('-100:10', expect.any(Object))
+        expect(sessionManager.registerTopicSession).toHaveBeenCalledWith('-100:20', expect.any(Object))
+        expect(mocks.createTopicSession).toHaveBeenNthCalledWith(1, expect.objectContaining({ provider: firstProvider }))
+        expect(mocks.createTopicSession).toHaveBeenNthCalledWith(2, expect.objectContaining({ provider: secondProvider }))
+        expect(topicSessions.get('-100:10')).not.toBe(topicSessions.get('-100:20'))
+        expect(topicSessions.get('-100:10').receiveInput).toHaveBeenCalledWith({ text: 'topic 10', username: 'alice' })
+        expect(topicSessions.get('-100:20').receiveInput).toHaveBeenCalledWith({ text: 'topic 20', username: 'alice' })
+    })
+
+    it('surfaces creation-lock contention instead of creating duplicate sessions', async () => {
+        const bot = createBot()
+        const sessionManager = createSessionManager({ tryAcquireCreationLock: vi.fn(() => false) })
+        registerMessageRouter(bot, { sessionManager, topicSessions: new Map(), bot: bot as any })
+        const ctx = createMessageContext('race')
+
+        await bot.emitMessage(ctx)
+
+        expect(ctx.reply).toHaveBeenCalledWith('⚠️ Session creation in progress. Please wait a moment and try again.')
+        expect(mocks.createTopicSessionRecord).not.toHaveBeenCalled()
+    })
+
+    it('does not create a session when the group has no cwd', async () => {
+        const bot = createBot()
+        const sessionManager = createSessionManager({ getGroupCwd: vi.fn(() => undefined) })
+        registerMessageRouter(bot, { sessionManager, topicSessions: new Map(), bot: bot as any })
+        const ctx = createMessageContext()
+
+        await bot.emitMessage(ctx)
+
+        expect(ctx.reply).toHaveBeenCalledWith('Please set working directory first: /cwd &lt;path&gt;', { parse_mode: 'HTML' })
+        expect(mocks.createTopicSessionRecord).not.toHaveBeenCalled()
+    })
+
+    it('does not recreate an archived topic session until /cwd unarchives it', async () => {
+        const bot = createBot()
+        const sessionManager = createSessionManager({ isGroupArchived: vi.fn(() => true) })
+        registerMessageRouter(bot, { sessionManager, topicSessions: new Map(), bot: bot as any })
+        const ctx = createMessageContext()
+
+        await bot.emitMessage(ctx)
+
+        expect(ctx.reply).toHaveBeenCalledWith('📦 Session was archived. Use /cwd to set up a new session.')
+        expect(mocks.createTopicSessionRecord).not.toHaveBeenCalled()
+    })
+
+    it('restores a persisted conversation with its original provider after daemon restart', async () => {
+        mocks.getDefaultProvider.mockReturnValue('opencode')
+        mocks.getTopicState.mockReturnValue({
+            conversationId: 'provider-session-1',
+            providerName: 'codex',
+            queryInProgress: true,
+        })
+        const bot = createBot()
+        const topicSessions = new Map<string, any>()
+        const sessionManager = createSessionManager({
+            getGroupSettings: vi.fn(() => ({ providerName: 'opencode', model: 'opencode-model', timeoutSeconds: 240 })),
+            registerTopicSession: vi.fn((topicKey: string, session: any) => topicSessions.set(topicKey, session)),
+        })
+        registerMessageRouter(bot, { sessionManager, topicSessions, bot: bot as any })
+
+        await bot.emitMessage(createMessageContext('resume after restart'))
+
+        expect(mocks.clearTopicQueryInProgress).toHaveBeenCalledWith('-100:10')
+        expect(mocks.createTopicSessionRecord).toHaveBeenCalledWith(expect.objectContaining({
+            providerName: 'codex',
+            conversationId: 'provider-session-1',
+        }))
+        expect(mocks.createProviderInstance).toHaveBeenCalledWith('codex')
+    })
+
+    it('does not attach a persisted conversation id to the default provider when its provider is unavailable', async () => {
+        mocks.getDefaultProvider.mockReturnValue('opencode')
+        mocks.getTopicState.mockReturnValue({
+            conversationId: 'provider-session-1',
+            providerName: 'removed-provider',
+        })
+        mocks.getProvider.mockImplementation((name?: string) => name === 'removed-provider' ? undefined : { name: name ?? 'mock-provider' })
+        const bot = createBot()
+        const sessionManager = createSessionManager()
+        registerMessageRouter(bot, { sessionManager, topicSessions: new Map(), bot: bot as any })
+        const ctx = createMessageContext('resume after provider removal')
+
+        await bot.emitMessage(ctx)
+
+        expect(ctx.reply).toHaveBeenCalledWith(expect.stringContaining('removed-provider'))
+        expect(mocks.createTopicSessionRecord).not.toHaveBeenCalled()
+        expect(mocks.createProviderInstance).not.toHaveBeenCalled()
+        expect(sessionManager.releaseCreationLock).toHaveBeenCalledWith('-100:10')
+    })
+
+    it('cleans up session maps when the created runtime reaches dead state', async () => {
+        const sessionRecord = createSessionRecord()
+        mocks.createTopicSessionRecord.mockReturnValue(sessionRecord)
+        const bot = createBot()
+        const topicSessions = new Map<string, any>()
+        const sessionManager = createSessionManager({
+            registerTopicSession: vi.fn((topicKey: string, session: any) => topicSessions.set(topicKey, session)),
+        })
+        registerMessageRouter(bot, { sessionManager, topicSessions, bot: bot as any })
+
+        await bot.emitMessage(createMessageContext('start'))
+        sessionRecord.bus.emit({ type: 'session.state_changed', sessionId: sessionRecord.id, from: 'querying', to: 'dead' })
+
+        expect(sessionManager.removeTopicSession).toHaveBeenCalledWith('-100:10')
+        expect(sessionManager.removeSession).toHaveBeenCalledWith(sessionRecord.id)
+        expect(sessionManager.releaseCreationLock).toHaveBeenCalledWith('-100:10')
+    })
+
+    it('sends setup guidance when the bot is added to an authorized group with no existing session', async () => {
+        const bot = createBot()
+        registerMessageRouter(bot, { sessionManager: createSessionManager(), topicSessions: new Map(), bot: bot as any })
+
+        await bot.emitMyChatMember({
+            myChatMember: {
+                chat: { id: -100, type: 'supergroup', title: 'dev' },
+                from: { id: 1 },
+                new_chat_member: { status: 'member' },
+            },
+            api: bot.api,
+        })
+
+        expect(bot.api.sendMessage).toHaveBeenCalledWith(
+            -100,
+            expect.stringContaining('Use /cwd &lt;path&gt;'),
+            { parse_mode: 'HTML' },
+        )
+    })
+})

@@ -1,0 +1,1590 @@
+import { describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { createTopicSession, createTopicSessionRecord } from '@/bridge/topicSession'
+import { TelegramPort } from '@/channel/telegram/telegramPort'
+import { SemanticSessionRuntime } from '@/runtime/semanticSessionRuntime'
+import type { AgentEvent } from '@/providers/types'
+import type { AgentProvider, AgentQueryConfig, AgentQueryHandle } from '@/providers/provider'
+import type { ChannelMessage, ChannelPort, DecisionRequest, DecisionResponse, SessionStatus } from '@/bridge/channelPort'
+import { registerProvider } from '@/providers/registry'
+
+function delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function createProvider(events: AgentEvent[], overrides: Partial<AgentProvider> = {}): AgentProvider {
+    return {
+        name: 'mock-acp',
+        startQuery: vi.fn((_prompt: string, _config: AgentQueryConfig): AgentQueryHandle => ({
+            events: (async function* () {
+                for (const event of events) yield event
+            })(),
+            interrupt: vi.fn(),
+        })),
+        isReady: vi.fn(() => true),
+        getInitError: vi.fn(() => null),
+        getAvailableModels: vi.fn(() => []),
+        getAvailablePermissionModes: vi.fn(() => []),
+        ...overrides,
+    }
+}
+
+function createChannel(): ChannelPort & {
+    sent: ChannelMessage[]
+    statuses: SessionStatus[]
+    decisions: DecisionRequest[]
+} {
+    const sent: ChannelMessage[] = []
+    const statuses: SessionStatus[] = []
+    const decisions: DecisionRequest[] = []
+    return {
+        sent,
+        statuses,
+        decisions,
+        send: vi.fn(async (message) => {
+            sent.push(message)
+            return { messageId: sent.length }
+        }),
+        edit: vi.fn(async (_messageId, message) => {
+            sent.push({ ...message, text: `EDIT:${message.text}` })
+        }),
+        requestDecision: vi.fn(async (request): Promise<DecisionResponse> => {
+            decisions.push(request)
+            return { value: request.options[0]?.value ?? '' }
+        }),
+        notifyStatus: vi.fn((status) => {
+            statuses.push(status)
+        }),
+    }
+}
+
+function createTopicHarness(events: AgentEvent[]) {
+    const provider = createProvider(events)
+    const channel = createChannel()
+    const sessionRecord = createTopicSessionRecord({
+        cwd: '/repo',
+        providerName: provider.name,
+        groupChatId: -100,
+        messageThreadId: 10,
+    })
+
+    const topicSession = createTopicSession({
+        sessionRecord,
+        provider,
+        channelPort: channel,
+    })
+
+    return { topicSession, provider, channel, sessionRecord }
+}
+
+describe('Semantic runtime integration chain', () => {
+    it('routes TopicSession input through the semantic runtime path', async () => {
+        const { topicSession, provider, channel, sessionRecord } = createTopicHarness([
+            { kind: 'session_init', sessionId: 'provider-session' },
+            { kind: 'text', text: 'integrated response' },
+            { kind: 'result', status: 'success' },
+        ])
+
+        topicSession.receiveInput({ text: 'hello', username: 'alice' })
+        await delay(30)
+
+        expect(provider.startQuery).toHaveBeenCalledWith('hello', expect.objectContaining({
+            cwd: '/repo',
+        }))
+        expect(sessionRecord.conversationId).toBe('provider-session')
+        expect(channel.sent.map(m => m.text)).toEqual(['integrated response'])
+        expect(channel.statuses.map(s => s.state)).toEqual(['querying', 'idle'])
+    })
+
+    it('does not register file:// references from ordinary assistant text', async () => {
+        const tempDir = mkdtempSync(join(tmpdir(), 'malink-file-ref-'))
+        try {
+            const planPath = join(tempDir, 'plan.md')
+            writeFileSync(planPath, '# Plan\n\nRead this on demand.', 'utf8')
+            const planUri = pathToFileURL(planPath).href
+            const provider = createProvider([
+                { kind: 'text', text: `Plan saved to ${planUri}` },
+                { kind: 'result', status: 'success' },
+            ])
+            const channel = createChannel()
+            const runtime = new SemanticSessionRuntime({
+                sessionId: 'session-1',
+                cwd: tempDir,
+                provider,
+                providerName: 'mock-acp',
+                channelPort: channel,
+            })
+
+            await runtime.dispatch({ kind: 'user_message', text: 'create a plan', source: 'channel' })
+
+            expect(channel.sent.map(message => message.text).join('\n')).toContain(planUri)
+            expect(channel.sent.map(message => message.text).join('\n')).not.toContain('/file_')
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true })
+        }
+    })
+
+    it('registers file:// references from tool update content and reads them only after an explicit file command', async () => {
+        const tempDir = mkdtempSync(join(tmpdir(), 'malink-file-ref-'))
+        try {
+            const planPath = join(tempDir, 'plan.md')
+            writeFileSync(planPath, '# Plan\n\nRead this on demand.', 'utf8')
+            const planUri = pathToFileURL(planPath).href
+            const provider = createProvider([
+                {
+                    kind: 'tool_use',
+                    toolName: 'tool_call',
+                    toolUseId: 'create-plan',
+                    input: {},
+                    status: 'running',
+                    displayTitle: 'Create Plan',
+                    content: [{ type: 'content', contentType: 'text', text: `Plan file: ${planUri}` }],
+                },
+                { kind: 'result', status: 'success' },
+            ])
+            const channel = createChannel()
+            const runtime = new SemanticSessionRuntime({
+                sessionId: 'session-1',
+                cwd: tempDir,
+                provider,
+                providerName: 'mock-acp',
+                channelPort: channel,
+            })
+
+            await runtime.dispatch({ kind: 'user_message', text: 'create a plan', source: 'channel' })
+
+            const promptMessage = channel.sent.find(message => message.text.includes('/file_'))
+            expect(promptMessage?.text).toContain('File reference')
+            const id = promptMessage?.text.match(/\/file_([A-Za-z0-9_-]+)/)?.[1]
+            expect(id).toBeTruthy()
+            expect(channel.sent.map(message => message.text).join('\n')).not.toContain('Read this on demand.')
+            expect(channel.sent.map(message => message.text).join('\n')).not.toContain(planUri)
+
+            await runtime.dispatch({ kind: 'command', name: 'file', args: id, source: 'channel' })
+
+            expect(channel.sent.at(-1)?.text).toContain('Read this on demand.')
+            expect(channel.sent.at(-1)?.format).toBe('markdown')
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true })
+        }
+    })
+
+    it('does not add Telegram /file commands for first-party structured clients', async () => {
+        const tempDir = mkdtempSync(join(tmpdir(), 'malink-pwa-file-ref-'))
+        try {
+            const planPath = join(tempDir, 'plan.md')
+            const planUri = pathToFileURL(planPath).href
+            writeFileSync(planPath, '# Plan', 'utf8')
+            const provider = createProvider([
+                {
+                    kind: 'tool_use',
+                    toolName: 'tool_call',
+                    toolUseId: 'create-plan',
+                    input: {},
+                    status: 'running',
+                    displayTitle: 'Create Plan',
+                    content: [{ type: 'content', contentType: 'text', text: `Plan file: ${planUri}` }],
+                },
+                { kind: 'result', status: 'success' },
+            ])
+            const channel = Object.assign(createChannel(), { fileReferenceHints: false as const })
+            const runtime = new SemanticSessionRuntime({
+                sessionId: 'session-1',
+                cwd: tempDir,
+                provider,
+                providerName: 'mock-acp',
+                channelPort: channel,
+            })
+
+            await runtime.dispatch({ kind: 'user_message', text: 'create a plan', source: 'channel' })
+
+            expect(channel.sent.map(message => message.text).join('\n')).not.toContain('/file_')
+            expect(channel.sent.every(message => message.replyMarkup === undefined)).toBe(true)
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true })
+        }
+    })
+
+    it('keeps file reference hints when a later tool completion edit reuses merged content', async () => {
+        const tempDir = mkdtempSync(join(tmpdir(), 'malink-file-ref-edit-'))
+        try {
+            const planPath = join(tempDir, 'plan.md')
+            writeFileSync(planPath, '# Plan\n\nRead this after edit.', 'utf8')
+            const planUri = pathToFileURL(planPath).href
+            const provider = createProvider([
+                {
+                    kind: 'tool_use',
+                    toolName: 'tool_call',
+                    toolUseId: 'create-plan',
+                    input: { _toolName: 'createPlan' },
+                    status: 'running',
+                    displayTitle: 'Create Plan',
+                    content: [{ type: 'content', contentType: 'text', text: `Plan saved to ${planUri}` }],
+                },
+                {
+                    kind: 'tool_result',
+                    toolUseId: 'create-plan',
+                    output: '',
+                    isError: false,
+                },
+                { kind: 'result', status: 'success' },
+            ])
+            const channel = createChannel()
+            const runtime = new SemanticSessionRuntime({
+                sessionId: 'session-1',
+                cwd: tempDir,
+                provider,
+                providerName: 'mock-acp',
+                channelPort: channel,
+            })
+
+            await runtime.dispatch({ kind: 'user_message', text: 'create a plan', source: 'channel' })
+
+            const finalToolMessage = [...channel.sent].reverse().find((message) => message.text.startsWith('EDIT:'))
+            expect(finalToolMessage?.text).toContain('/file_f1')
+            expect(finalToolMessage?.text).not.toContain('Plan saved to')
+            expect(finalToolMessage?.text).not.toContain(planUri)
+            expect(finalToolMessage?.replyMarkup).toEqual(expect.objectContaining({
+                inline_keyboard: expect.any(Array),
+            }))
+
+            await runtime.dispatch({ kind: 'command', name: 'file', args: 'f1', source: 'channel' })
+
+            expect(channel.sent.at(-1)?.text).toContain('Read this after edit.')
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true })
+        }
+    })
+
+    it('strips markdown backticks from registered file:// references before reading files', async () => {
+        const tempDir = mkdtempSync(join(tmpdir(), 'malink-file-ref-backtick-'))
+        try {
+            const firstPath = join(tempDir, 'toolBubble.ts')
+            const secondPath = join(tempDir, 'semanticSessionRuntime.ts')
+            writeFileSync(firstPath, 'tool bubble content', 'utf8')
+            writeFileSync(secondPath, 'runtime content', 'utf8')
+            const firstUri = pathToFileURL(firstPath).href
+            const secondUri = pathToFileURL(secondPath).href
+            const provider = createProvider([
+                {
+                    kind: 'tool_use',
+                    toolName: 'tool_call',
+                    toolUseId: 'write-files',
+                    input: {},
+                    status: 'running',
+                    displayTitle: 'Write Files',
+                    content: [{ type: 'content', contentType: 'text', text: `Wrote files: \`${firstUri}\`, \`${secondUri}\`` }],
+                },
+                { kind: 'result', status: 'success' },
+            ])
+            const channel = createChannel()
+            const runtime = new SemanticSessionRuntime({
+                sessionId: 'session-1',
+                cwd: tempDir,
+                provider,
+                providerName: 'mock-acp',
+                channelPort: channel,
+            })
+
+            await runtime.dispatch({ kind: 'user_message', text: 'write files', source: 'channel' })
+
+            const promptMessage = channel.sent.find(message => message.text.includes('/file_f1') && message.text.includes('/file_f2'))
+            expect(promptMessage?.text).toContain('File reference')
+            expect(promptMessage?.text).not.toContain(firstUri)
+            expect(promptMessage?.text).not.toContain(secondUri)
+
+            await runtime.dispatch({ kind: 'command', name: 'file', args: 'f1', source: 'channel' })
+            expect(channel.sent.at(-1)?.text).toContain('tool bubble content')
+
+            await runtime.dispatch({ kind: 'command', name: 'file', args: 'f2', source: 'channel' })
+            expect(channel.sent.at(-1)?.text).toContain('runtime content')
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true })
+        }
+    })
+
+    it('sends a Telegram start acknowledgement with provider, cwd, and selected model through TopicSession', async () => {
+        const provider = createProvider([{ kind: 'result', status: 'success' }])
+        const bot = {
+            api: {
+                sendMessage: vi.fn(async () => ({ message_id: 1 })),
+            },
+        } as any
+        const channelPort = new TelegramPort(bot, -100, 10)
+        const sessionRecord = createTopicSessionRecord({
+            cwd: '/repo/<project>',
+            providerName: 'mock&acp',
+            model: 'sonnet<4>',
+            groupChatId: -100,
+            messageThreadId: 10,
+        })
+
+        const topicSession = createTopicSession({
+            sessionRecord,
+            provider,
+            channelPort,
+        })
+
+        topicSession.receiveInput({ text: 'hello', username: 'alice' })
+        await delay(30)
+
+        expect(bot.api.sendMessage).toHaveBeenCalledWith(-100, [
+            '🔄 Agent started working...',
+            'Provider: <code>mock&amp;acp</code>',
+            'Cwd: <code>/repo/&lt;project&gt;</code>',
+            'Model: <code>sonnet&lt;4&gt;</code>',
+        ].join('\n'), expect.objectContaining({
+            parse_mode: 'HTML',
+            message_thread_id: 10,
+        }))
+    })
+
+    it('shows provider error results even when the agent emits no text', async () => {
+        const { topicSession, channel } = createTopicHarness([
+            { kind: 'result', status: 'error', summary: 'ProviderModelNotFoundError: missing <model>' },
+        ])
+
+        topicSession.receiveInput({ text: 'hello', username: 'alice' })
+        await delay(30)
+
+        expect(channel.sent).toHaveLength(1)
+        expect(channel.sent[0]).toMatchObject({
+            format: 'html',
+        })
+        expect(channel.sent[0].text).toContain('Agent error')
+        expect(channel.sent[0].text).toContain('ProviderModelNotFoundError: missing &lt;model&gt;')
+    })
+
+    it('projects ACP plan updates into channel decision UI without Telegram/ACP e2e', async () => {
+        const channel = createChannel()
+        const provider = createProvider([
+            {
+                kind: 'raw',
+                providerName: 'acp',
+                rawMessage: {
+                    sessionUpdate: 'plan',
+                    id: 'plan-1',
+                    title: 'Apply plan?',
+                    content: 'Create runtime boundary',
+                    options: [
+                        { id: 'accept', label: 'Accept', value: 'accept', style: 'primary' },
+                        { id: 'reject', label: 'Reject', value: 'reject', style: 'danger' },
+                    ],
+                },
+            },
+            { kind: 'result', status: 'success' },
+        ])
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'plan please', source: 'channel' })
+
+        expect(runtime.journal.list().some(e => e.kind === 'decision_request')).toBe(true)
+        expect(channel.sent).toHaveLength(1)
+        expect(channel.sent[0].text).toContain('Apply plan?')
+        expect(channel.sent[0].replyMarkup).toEqual(expect.objectContaining({
+            inline_keyboard: expect.any(Array),
+        }))
+    })
+
+    it('recovers a crashed provider through mocked reinit before running the same input', async () => {
+        let ready = false
+        const provider = createProvider([{ kind: 'result', status: 'success' }], {
+            isReady: vi.fn(() => ready),
+            wasReady: vi.fn(() => true),
+            reinit: vi.fn(async () => {
+                ready = true
+            }),
+        })
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'hello', source: 'channel' })
+
+        expect(provider.reinit).toHaveBeenCalled()
+        expect(channel.sent.map(m => m.text)).toEqual([
+            '⚠️ Agent process crashed, reconnecting...',
+            '✅ Agent reconnected',
+        ])
+        expect(provider.startQuery).toHaveBeenCalledWith('hello', expect.any(Object))
+    })
+
+    it('initializes a fresh session-scoped provider before running the first input', async () => {
+        let ready = false
+        const provider = createProvider([{ kind: 'text', text: 'started' }, { kind: 'result', status: 'success' }], {
+            isReady: vi.fn(() => ready),
+            init: vi.fn(async () => {
+                ready = true
+            }),
+        } as Partial<AgentProvider>)
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'first prompt', source: 'channel' })
+
+        expect((provider as AgentProvider & { init: ReturnType<typeof vi.fn> }).init).toHaveBeenCalled()
+        expect(provider.startQuery).toHaveBeenCalledWith('first prompt', expect.any(Object))
+        expect(channel.sent.map(m => m.text)).toEqual(['started'])
+        expect(channel.statuses[0]).toMatchObject({ state: 'idle', activity: 'starting' })
+        expect(channel.statuses.map(status => status.state)).toEqual(['idle', 'querying', 'idle'])
+    })
+
+    it('clears startup activity and emits only the provider error when initialization fails', async () => {
+        const provider = createProvider([], {
+            isReady: vi.fn(() => false),
+            init: vi.fn(async () => {
+                throw new Error('missing executable')
+            }),
+        } as Partial<AgentProvider>)
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'first prompt', source: 'channel' })
+
+        expect(provider.startQuery).not.toHaveBeenCalled()
+        expect(channel.statuses.map(status => status.activity ?? status.state))
+            .toEqual(['starting', 'idle'])
+        expect(channel.sent.map(message => message.text)).toEqual([
+            '❌ Provider "mock-acp" is not available: missing executable',
+        ])
+    })
+
+    it('interrupts an active provider turn when cancel is dispatched through the semantic runtime', async () => {
+        let release!: () => void
+        const hold = new Promise<void>(resolve => {
+            release = resolve
+        })
+        const interrupt = vi.fn(async () => {
+            release()
+        })
+        const provider = createProvider([], {
+            startQuery: vi.fn((): AgentQueryHandle => ({
+                events: (async function* () {
+                    yield { kind: 'text', text: 'working' } as AgentEvent
+                    await hold
+                    yield { kind: 'result', status: 'success' } as AgentEvent
+                })(),
+                interrupt,
+            })),
+        })
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        const running = runtime.dispatch({ kind: 'user_message', text: 'long task', source: 'channel' })
+        await delay(10)
+
+        try {
+            void runtime.dispatch({ kind: 'cancel', reason: 'user', source: 'channel' })
+            await delay(20)
+            expect(interrupt).toHaveBeenCalled()
+            expect(channel.statuses.map(status => status.state)).toContain('canceling')
+        } finally {
+            release()
+            await running
+        }
+    })
+
+    it('handles /new immediately during an active provider turn and restarts the provider', async () => {
+        let release!: () => void
+        const hold = new Promise<void>(resolve => {
+            release = resolve
+        })
+        const interrupt = vi.fn(async () => {
+            release()
+        })
+        const destroy = vi.fn(async () => {})
+        const provider = createProvider([], {
+            destroy,
+            startQuery: vi.fn((prompt: string, config: AgentQueryConfig): AgentQueryHandle => ({
+                events: (async function* () {
+                    yield { kind: 'session_init', sessionId: `${prompt}-session` } as AgentEvent
+                    if (prompt === 'first') await hold
+                    yield { kind: 'result', status: 'success' } as AgentEvent
+                })(),
+                interrupt,
+                onActivity: undefined,
+                setPermissionMode: undefined,
+            })),
+        })
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: createChannel(),
+            providerSessionId: 'old-provider-session',
+        })
+
+        const running = runtime.dispatch({ kind: 'user_message', text: 'first', source: 'channel' })
+        await delay(10)
+
+        await runtime.dispatch({ kind: 'command', name: 'new', source: 'channel' })
+        await running
+        await runtime.dispatch({ kind: 'user_message', text: 'fresh', source: 'channel' })
+
+        expect(interrupt).toHaveBeenCalled()
+        expect(destroy).toHaveBeenCalled()
+        expect(provider.startQuery).toHaveBeenLastCalledWith('fresh', expect.objectContaining({
+            sessionId: undefined,
+        }))
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'command_result', command: 'new' }),
+        ]))
+    })
+
+    it('does not abort the next queued provider turn when cancelling the current turn', async () => {
+        let releaseFirst!: () => void
+        const firstHold = new Promise<void>(resolve => {
+            releaseFirst = resolve
+        })
+        let secondSignalAborted = false
+        const interrupt = vi.fn(async () => {
+            releaseFirst()
+            await delay(20)
+        })
+        const provider = createProvider([], {
+            startQuery: vi.fn((prompt: string, config: AgentQueryConfig): AgentQueryHandle => {
+                if (prompt === 'second') {
+                    config.signal.addEventListener('abort', () => {
+                        secondSignalAborted = true
+                    })
+                }
+                return {
+                    events: (async function* () {
+                        if (prompt === 'first') await firstHold
+                        yield { kind: 'result', status: 'success' } as AgentEvent
+                    })(),
+                    interrupt,
+                }
+            }),
+        })
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: createChannel(),
+        })
+
+        const first = runtime.dispatch({ kind: 'user_message', text: 'first', source: 'channel' })
+        await delay(10)
+        const second = runtime.dispatch({ kind: 'user_message', text: 'second', source: 'channel' })
+        await delay(10)
+        await runtime.dispatch({ kind: 'cancel', reason: 'user', source: 'channel' })
+        await first
+        await second
+
+        expect(provider.startQuery).toHaveBeenCalledTimes(2)
+        expect(secondSignalAborted).toBe(false)
+    })
+
+    it('notifies the channel immediately when user input arrives during an active turn', async () => {
+        let release!: () => void
+        const hold = new Promise<void>(resolve => {
+            release = resolve
+        })
+        const provider = createProvider([], {
+            startQuery: vi.fn((prompt: string): AgentQueryHandle => ({
+                events: (async function* () {
+                    yield { kind: 'text', text: `response:${prompt}` } as AgentEvent
+                    if (prompt === 'first') await hold
+                    yield { kind: 'result', status: 'success' } as AgentEvent
+                })(),
+                interrupt: vi.fn(),
+            })),
+        })
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        const first = runtime.dispatch({ kind: 'user_message', text: 'first', source: 'channel' })
+        await delay(10)
+        void runtime.dispatch({ kind: 'user_message', text: 'second', source: 'channel' })
+        await delay(10)
+
+        try {
+            expect(channel.sent.some(m => m.text.includes('queued'))).toBe(true)
+            expect(provider.startQuery).toHaveBeenCalledTimes(1)
+        } finally {
+            release()
+            await first
+        }
+    })
+
+    it('cancels the latest queued user input before it starts', async () => {
+        let release!: () => void
+        const hold = new Promise<void>(resolve => {
+            release = resolve
+        })
+        const provider = createProvider([], {
+            startQuery: vi.fn((prompt: string): AgentQueryHandle => ({
+                events: (async function* () {
+                    if (prompt === 'first') await hold
+                    yield { kind: 'text', text: `done:${prompt}` } as AgentEvent
+                    yield { kind: 'result', status: 'success' } as AgentEvent
+                })(),
+                interrupt: vi.fn(),
+            })),
+        })
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        const first = runtime.dispatch({ kind: 'user_message', text: 'first', source: 'channel' })
+        await delay(10)
+        const second = runtime.dispatch({ kind: 'user_message', text: 'second', source: 'channel' })
+        await delay(10)
+
+        const result = await runtime.dispatch({ kind: 'command', name: 'cancel_queued', source: 'channel' })
+        release()
+        await Promise.all([first, second])
+
+        expect(result).toEqual({ status: 'cancelled', cancelledCount: 1, remainingQueued: 0 })
+        expect(provider.startQuery).toHaveBeenCalledTimes(1)
+        expect(provider.startQuery).toHaveBeenCalledWith('first', expect.any(Object))
+        expect(channel.sent.some(m => m.text.includes('/cancel'))).toBe(true)
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'command_result', command: 'cancel_queued' }),
+        ]))
+    })
+
+    it('passes decision responses back through the runtime instead of emitting placeholder channel text', async () => {
+        const provider = createProvider([
+            {
+                kind: 'raw',
+                providerName: 'acp',
+                rawMessage: {
+                    sessionUpdate: 'plan',
+                    id: 'plan-1',
+                    title: 'Approve?',
+                    options: [{ id: 'accept', label: 'Accept', value: 'accept' }],
+                },
+            },
+            { kind: 'result', status: 'success' },
+        ])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'make a plan', source: 'channel' })
+        await runtime.dispatch({ kind: 'decision_response', decisionId: 'plan-1', value: 'accept', source: 'channel' })
+
+        expect(channel.sent.map(m => m.text)).not.toContain('Decision received: accept')
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                kind: 'command_result',
+                command: 'decision_response',
+                output: expect.objectContaining({ decisionId: 'plan-1', value: 'accept' }),
+            }),
+        ]))
+    })
+
+    it('preserves queued user inputs and runs them as separate provider turns in order', async () => {
+        let release!: () => void
+        const hold = new Promise<void>(resolve => {
+            release = resolve
+        })
+        const provider = createProvider([], {
+            startQuery: vi.fn((prompt: string): AgentQueryHandle => ({
+                events: (async function* () {
+                    if (prompt === 'first') await hold
+                    yield { kind: 'text', text: `done:${prompt}` } as AgentEvent
+                    yield { kind: 'result', status: 'success' } as AgentEvent
+                })(),
+                interrupt: vi.fn(),
+            })),
+        })
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        const first = runtime.dispatch({ kind: 'user_message', text: 'first', source: 'channel' })
+        const second = runtime.dispatch({ kind: 'user_message', text: 'second', source: 'channel' })
+        await delay(10)
+        release()
+        await Promise.all([first, second])
+
+        expect(provider.startQuery).toHaveBeenNthCalledWith(1, 'first', expect.any(Object))
+        expect(provider.startQuery).toHaveBeenNthCalledWith(2, 'second', expect.any(Object))
+        expect(channel.sent.map(m => m.text)).toEqual(expect.arrayContaining(['done:first', 'done:second']))
+    })
+
+    it('marks prompt tail updates that arrive after the provider result as late instead of dropping them silently', async () => {
+        const provider = createProvider([
+            { kind: 'result', status: 'success' },
+            { kind: 'text', text: 'late tail text' },
+        ])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'tail', source: 'channel' })
+
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                kind: 'assistant_text_delta',
+                text: 'late tail text',
+                meta: expect.objectContaining({ sourcePhase: 'tailDrain' }),
+            }),
+        ]))
+        expect(channel.sent.map(m => m.text)).toContain('late tail text')
+    })
+
+    it('keeps provider switch as a runtime command instead of mutating session metadata directly', async () => {
+        const provider = createProvider([])
+        const nextProvider = createProvider([], { name: 'opencode' })
+        registerProvider(nextProvider, () => nextProvider)
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'command', name: 'provider', args: 'opencode', source: 'channel' })
+
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                kind: 'command_result',
+                command: 'provider',
+                output: expect.objectContaining({ providerName: 'opencode' }),
+            }),
+        ]))
+        expect(channel.sent.map(m => m.text)).not.toContain('Command handling is not implemented: provider')
+    })
+
+    it('clears the selected model when switching providers', async () => {
+        const provider = createProvider([], {
+            getAvailableModels: vi.fn(() => [{ id: 'opencode-model', name: 'opencode-model' }]),
+        })
+        const nextProvider = createProvider([], {
+            name: 'agent',
+            getAvailableModels: vi.fn(() => [{ id: 'cursor-model', name: 'cursor-model' }]),
+        })
+        registerProvider(nextProvider, () => nextProvider)
+        const channel = createChannel()
+        const onModelChanged = vi.fn()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'opencode',
+            model: 'opencode-model',
+            channelPort: channel,
+            onModelChanged,
+        })
+
+        await runtime.dispatch({ kind: 'command', name: 'provider', args: 'agent', source: 'channel' })
+        await runtime.dispatch({ kind: 'user_message', text: 'after switch', source: 'channel' })
+
+        expect(onModelChanged).toHaveBeenCalledWith(null)
+        expect(nextProvider.startQuery).toHaveBeenCalledWith('after switch', expect.not.objectContaining({
+            model: expect.any(String),
+        }))
+    })
+
+    it('does not pass a persisted model that is unavailable for the active provider', async () => {
+        const provider = createProvider([{ kind: 'result', status: 'success' }], {
+            getAvailableModels: vi.fn(() => [{ id: 'cursor-model', name: 'cursor-model' }]),
+        })
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'agent',
+            model: 'opencode-model',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'start cursor', source: 'channel' })
+
+        expect(provider.startQuery).toHaveBeenCalledWith('start cursor', expect.not.objectContaining({
+            model: 'opencode-model',
+        }))
+        expect(channel.statuses[0]).not.toHaveProperty('model')
+    })
+
+    it('uses resumed provider session id on the next turn and updates it from session_init', async () => {
+        const provider = createProvider([
+            { kind: 'session_init', sessionId: 'new-session-id' },
+            { kind: 'result', status: 'success' },
+        ])
+        const channel = createChannel()
+        const onProviderSessionId = vi.fn()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            providerSessionId: 'resumed-session-id',
+            channelPort: channel,
+            onProviderSessionId,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'resume turn', source: 'channel' })
+
+        expect(provider.startQuery).toHaveBeenCalledWith('resume turn', expect.objectContaining({
+            sessionId: 'resumed-session-id',
+        }))
+        expect(onProviderSessionId).toHaveBeenCalledWith('new-session-id')
+    })
+
+    it('bridges provider permission requests to channel decisions through runtime config', async () => {
+        const provider = createProvider([], {
+            startQuery: vi.fn((_prompt: string, config: AgentQueryConfig): AgentQueryHandle => ({
+                events: (async function* () {
+                    const result = await config.permissionHandler!.handleToolCall(
+                        'Bash',
+                        { command: 'rm -rf tmp' },
+                        { signal: config.signal },
+                    )
+                    yield { kind: 'text', text: `permission:${result.behavior}` } as AgentEvent
+                    yield { kind: 'result', status: 'success' } as AgentEvent
+                })(),
+                interrupt: vi.fn(),
+            })),
+        })
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'needs permission', source: 'channel' })
+
+        expect(channel.decisions).toEqual([
+            expect.objectContaining({
+                type: 'permission',
+                title: expect.stringContaining('Bash'),
+            }),
+        ])
+        expect(channel.sent.map(m => m.text)).toContain('permission:allow')
+    })
+
+    it('applies model, timeout, and permission mode as runtime config commands', async () => {
+        const provider = createProvider([])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'command', name: 'model', args: 'sonnet', source: 'channel' })
+        await runtime.dispatch({ kind: 'command', name: 'timeout', args: '240', source: 'channel' })
+        await runtime.dispatch({ kind: 'command', name: 'permissionMode', args: 'acceptEdits', source: 'channel' })
+        await runtime.dispatch({ kind: 'user_message', text: 'configured turn', source: 'channel' })
+
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'command_result', command: 'model', output: expect.objectContaining({ model: 'sonnet' }) }),
+            expect.objectContaining({ kind: 'command_result', command: 'timeout', output: expect.objectContaining({ timeoutSeconds: 240 }) }),
+            expect.objectContaining({ kind: 'command_result', command: 'permissionMode', output: expect.objectContaining({ permissionMode: 'acceptEdits' }) }),
+        ]))
+        expect(provider.startQuery).toHaveBeenCalledWith('configured turn', expect.objectContaining({
+            model: 'sonnet',
+            providerSettings: expect.objectContaining({ permissionMode: 'acceptEdits' }),
+        }))
+    })
+
+    it('keeps independent topic sessions isolated with mocked providers and channels', async () => {
+        const first = createTopicHarness([
+            { kind: 'text', text: 'topic-a' },
+            { kind: 'result', status: 'success' },
+        ])
+        const second = createTopicHarness([
+            { kind: 'text', text: 'topic-b' },
+            { kind: 'result', status: 'success' },
+        ])
+
+        first.topicSession.receiveInput({ text: 'hello a', username: 'alice' })
+        second.topicSession.receiveInput({ text: 'hello b', username: 'bob' })
+        await delay(30)
+
+        expect(first.channel.sent.map(m => m.text)).toEqual(['topic-a'])
+        expect(second.channel.sent.map(m => m.text)).toEqual(['topic-b'])
+        expect(first.provider.startQuery).toHaveBeenCalledWith('hello a', expect.any(Object))
+        expect(second.provider.startQuery).toHaveBeenCalledWith('hello b', expect.any(Object))
+    })
+
+    it('records delivery failures in the journal and exposes them to the channel layer', async () => {
+        const provider = createProvider([
+            { kind: 'text', text: 'will fail delivery' },
+            { kind: 'result', status: 'success' },
+        ])
+        const channel = createChannel()
+        channel.send = vi.fn(async () => {
+            throw new Error('telegram unavailable')
+        })
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'delivery failure', source: 'channel' })
+
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                kind: 'command_result',
+                command: 'delivery_failed',
+                output: expect.objectContaining({ message: expect.stringContaining('telegram unavailable') }),
+            }),
+        ]))
+    })
+
+    it('drops replayed provider history while still delivering live updates', async () => {
+        const provider = createProvider([
+            {
+                kind: 'raw',
+                providerName: 'acp',
+                rawMessage: { sessionUpdate: 'agent_message_chunk', replay: true, content: { type: 'text', text: 'old history' } },
+            },
+            { kind: 'text', text: 'new response' },
+            { kind: 'result', status: 'success' },
+        ])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'resume safely', source: 'channel' })
+
+        expect(runtime.journal.list()).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'assistant_text_delta', text: 'old history' }),
+        ]))
+        expect(channel.sent.map(m => m.text)).toEqual(['new response'])
+    })
+
+    it('runs scheduler proactive messages through the same provider and channel path', async () => {
+        const provider = createProvider([
+            { kind: 'text', text: 'scheduled response' },
+            { kind: 'result', status: 'success' },
+        ])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'scheduled_message', text: 'check tests', context: 'timer', source: 'scheduler' })
+
+        expect(provider.startQuery).toHaveBeenCalledWith('check tests', expect.any(Object))
+        expect(channel.sent.map(m => m.text)).toEqual(['scheduled response'])
+    })
+
+    it('supports MCP send_message as an immediate channel notification with journal visibility', async () => {
+        const provider = createProvider([])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'command', name: 'send_message', args: 'build finished', source: 'mcp' })
+
+        expect(channel.sent.map(m => m.text)).toContain('build finished')
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'command_result', command: 'send_message' }),
+        ]))
+        expect(provider.startQuery).not.toHaveBeenCalled()
+    })
+
+    it('supports MCP send_file as an immediate channel file attachment with journal visibility', async () => {
+        const tempDir = mkdtempSync(join(tmpdir(), 'malink-send-file-'))
+        try {
+            const reportPath = join(tempDir, 'report.txt')
+            writeFileSync(reportPath, 'build passed', 'utf8')
+            const provider = createProvider([])
+            const channel = createChannel()
+            const runtime = new SemanticSessionRuntime({
+                sessionId: 'session-1',
+                cwd: tempDir,
+                provider,
+                providerName: 'mock-acp',
+                channelPort: channel,
+            })
+
+            await runtime.dispatch({
+                kind: 'command',
+                name: 'send_file',
+                args: JSON.stringify({ path: reportPath, caption: 'latest report' }),
+                source: 'mcp',
+            })
+
+            expect(channel.sent).toHaveLength(1)
+            expect(channel.sent[0]).toMatchObject({
+                text: 'latest report',
+                format: 'plain',
+                attachments: [{ type: 'document', path: realpathSync(reportPath), filename: 'report.txt' }],
+            })
+            expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+                expect.objectContaining({ kind: 'command_result', command: 'send_file' }),
+            ]))
+            expect(provider.startQuery).not.toHaveBeenCalled()
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true })
+        }
+    })
+
+    it('routes malink MCP send_file through the runtime when the MCP subprocess lacks session identity', async () => {
+        const tempDir = mkdtempSync(join(tmpdir(), 'malink-send-file-identity-'))
+        try {
+            const apkPath = join(tempDir, 'app-release.apk')
+            writeFileSync(apkPath, 'apk bytes', 'utf8')
+            const provider = createProvider([
+                {
+                    kind: 'tool_use',
+                    toolUseId: 'send-file-1',
+                    toolName: 'tool_call',
+                    input: {
+                        server: 'malink',
+                        tool: 'send_file',
+                        arguments: {
+                            path: apkPath,
+                            filename: 'falapk-release.apk',
+                            type: 'document',
+                            caption: 'Release APK',
+                        },
+                    },
+                    status: 'running',
+                },
+                {
+                    kind: 'tool_result',
+                    toolUseId: 'send-file-1',
+                    output: 'Session identity not available yet. Send_file requires a session context.',
+                    isError: true,
+                },
+                { kind: 'result', status: 'success' },
+            ])
+            const channel = createChannel()
+            const runtime = new SemanticSessionRuntime({
+                sessionId: 'topic-session-1',
+                cwd: tempDir,
+                provider,
+                providerName: 'codex',
+                providerSessionId: '019eb9c2-03bb-7b31-8e10-a1f254d2eb50',
+                channelPort: channel,
+            })
+
+            await runtime.dispatch({ kind: 'user_message', text: 'send apk', source: 'channel' })
+
+            expect(channel.sent).toEqual([
+                expect.objectContaining({
+                    text: 'Release APK',
+                    format: 'plain',
+                    attachments: [{ type: 'document', path: realpathSync(apkPath), filename: 'falapk-release.apk' }],
+                }),
+            ])
+            expect(channel.sent.map(message => message.text).join('\n')).not.toContain('Session identity not available yet')
+            expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+                expect.objectContaining({ kind: 'command_result', command: 'send_file' }),
+            ]))
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true })
+        }
+    })
+
+    it('renders MCP send_file markdown files as markdown channel messages', async () => {
+        const tempDir = mkdtempSync(join(tmpdir(), 'malink-send-file-md-'))
+        try {
+            const reportPath = join(tempDir, 'report.md')
+            writeFileSync(reportPath, '# Report\n\n| Status | Value |\n|---|---|\n| Build | Passed |', 'utf8')
+            const provider = createProvider([])
+            const channel = createChannel()
+            const runtime = new SemanticSessionRuntime({
+                sessionId: 'session-1',
+                cwd: tempDir,
+                provider,
+                providerName: 'mock-acp',
+                channelPort: channel,
+            })
+
+            await runtime.dispatch({
+                kind: 'command',
+                name: 'send_file',
+                args: JSON.stringify({ path: reportPath, caption: 'latest report', type: 'markdown' }),
+                source: 'mcp',
+            })
+
+            expect(channel.sent).toHaveLength(1)
+            expect(channel.sent[0]).toMatchObject({
+                text: 'latest report\n\n# Report\n\n| Status | Value |\n|---|---|\n| Build | Passed |',
+                format: 'markdown',
+            })
+            expect(channel.sent[0].attachments).toBeUndefined()
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true })
+        }
+    })
+
+    it('renders MCP send_file code files as fenced markdown code blocks', async () => {
+        const tempDir = mkdtempSync(join(tmpdir(), 'malink-send-file-code-'))
+        try {
+            const sourcePath = join(tempDir, 'hello.ts')
+            writeFileSync(sourcePath, 'export const hello = "world"\n', 'utf8')
+            const provider = createProvider([])
+            const channel = createChannel()
+            const runtime = new SemanticSessionRuntime({
+                sessionId: 'session-1',
+                cwd: tempDir,
+                provider,
+                providerName: 'mock-acp',
+                channelPort: channel,
+            })
+
+            await runtime.dispatch({
+                kind: 'command',
+                name: 'send_file',
+                args: JSON.stringify({ path: sourcePath, caption: 'source', type: 'code' }),
+                source: 'mcp',
+            })
+
+            expect(channel.sent).toHaveLength(1)
+            expect(channel.sent[0]).toMatchObject({
+                text: 'source\n\n```ts\nexport const hello = "world"\n```',
+                format: 'markdown',
+            })
+            expect(channel.sent[0].attachments).toBeUndefined()
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true })
+        }
+    })
+
+    it('sends MCP send_file image files as image attachments', async () => {
+        const tempDir = mkdtempSync(join(tmpdir(), 'malink-send-file-image-'))
+        try {
+            const imagePath = join(tempDir, 'plot.png')
+            writeFileSync(imagePath, Buffer.from([137, 80, 78, 71]), 'binary')
+            const provider = createProvider([])
+            const channel = createChannel()
+            const runtime = new SemanticSessionRuntime({
+                sessionId: 'session-1',
+                cwd: tempDir,
+                provider,
+                providerName: 'mock-acp',
+                channelPort: channel,
+            })
+
+            await runtime.dispatch({
+                kind: 'command',
+                name: 'send_file',
+                args: JSON.stringify({ path: imagePath, caption: 'latest plot', type: 'image' }),
+                source: 'mcp',
+            })
+
+            expect(channel.sent).toHaveLength(1)
+            expect(channel.sent[0]).toMatchObject({
+                text: 'latest plot',
+                format: 'plain',
+                attachments: [{ type: 'photo', path: realpathSync(imagePath), filename: 'plot.png' }],
+            })
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true })
+        }
+    })
+
+    it('handles provider available command updates as semantic command results', async () => {
+        const provider = createProvider([
+            {
+                kind: 'commands_update',
+                commands: [{ name: 'compact', description: 'Compact context', inputHint: null }],
+            },
+            { kind: 'result', status: 'success' },
+        ])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'list commands', source: 'channel' })
+
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                kind: 'command_result',
+                command: 'available_commands_update',
+                output: expect.arrayContaining([expect.objectContaining({ name: 'compact' })]),
+            }),
+        ]))
+    })
+
+    it('projects provider mode and usage updates without a real ACP process', async () => {
+        const provider = createProvider([
+            { kind: 'raw', providerName: 'acp', rawMessage: { sessionUpdate: 'current_mode_update', mode: 'plan' } },
+            { kind: 'raw', providerName: 'acp', rawMessage: { sessionUpdate: 'usage_update', tokens: 1234, costUsd: 0.01 } },
+            { kind: 'result', status: 'success' },
+        ])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'mode update', source: 'channel' })
+
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'mode_change', mode: 'plan' }),
+            expect.objectContaining({ kind: 'command_result', command: 'usage_update' }),
+        ]))
+        expect(channel.sent.map(m => m.text).join('\n')).toContain('Mode:')
+    })
+
+    it('applies resume as a runtime command before the next provider turn', async () => {
+        const provider = createProvider([{ kind: 'result', status: 'success' }])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'command', name: 'resume', args: 'session-xyz', source: 'channel' })
+        await runtime.dispatch({ kind: 'user_message', text: 'resume now', source: 'channel' })
+
+        expect(provider.startQuery).toHaveBeenCalledWith('resume now', expect.objectContaining({
+            sessionId: 'session-xyz',
+        }))
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'command_result', command: 'resume' }),
+        ]))
+    })
+
+    it('applies cwd as a runtime command before the next provider turn', async () => {
+        const provider = createProvider([{ kind: 'result', status: 'success' }])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'command', name: 'cwd', args: '/new/repo', source: 'channel' })
+        await runtime.dispatch({ kind: 'user_message', text: 'use new cwd', source: 'channel' })
+
+        expect(provider.startQuery).toHaveBeenCalledWith('use new cwd', expect.objectContaining({
+            cwd: '/new/repo',
+        }))
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'command_result', command: 'cwd' }),
+        ]))
+    })
+
+    it('archives/destroys a runtime session and ignores later channel input', async () => {
+        const provider = createProvider([{ kind: 'result', status: 'success' }])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'command', name: 'archive', source: 'channel' })
+        await runtime.dispatch({ kind: 'user_message', text: 'should not run', source: 'channel' })
+
+        expect(provider.startQuery).not.toHaveBeenCalled()
+        expect(runtime.getState()).toBe('dead')
+    })
+
+    it('reports runtime progress from an active turn without consulting legacy timeout middleware', async () => {
+        let release!: () => void
+        const hold = new Promise<void>(resolve => {
+            release = resolve
+        })
+        const provider = createProvider([], {
+            startQuery: vi.fn((): AgentQueryHandle => ({
+                events: (async function* () {
+                    yield { kind: 'tool_use', toolUseId: 'tool-1', toolName: 'Bash', input: { command: 'npm test' }, status: 'running' } as AgentEvent
+                    await hold
+                    yield { kind: 'result', status: 'success' } as AgentEvent
+                })(),
+                interrupt: vi.fn(),
+            })),
+        })
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        const running = runtime.dispatch({ kind: 'user_message', text: 'long', source: 'channel' })
+        await delay(10)
+        void runtime.dispatch({ kind: 'command', name: 'progress', source: 'channel' })
+        await delay(20)
+
+        try {
+            expect(channel.sent.map(m => m.text).join('\n')).toContain('npm test')
+        } finally {
+            release()
+            await running
+        }
+    })
+
+    it('replies to /progress while the current turn is still running', async () => {
+        let release!: () => void
+        const hold = new Promise<void>(resolve => {
+            release = resolve
+        })
+        const provider = createProvider([], {
+            startQuery: vi.fn((): AgentQueryHandle => ({
+                events: (async function* () {
+                    await hold
+                    yield { kind: 'result', status: 'success' } as AgentEvent
+                })(),
+                interrupt: vi.fn(),
+            })),
+        })
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        const running = runtime.dispatch({ kind: 'user_message', text: 'long', source: 'channel' })
+        await delay(10)
+        const progress = runtime.dispatch({ kind: 'command', name: 'progress', source: 'channel' })
+        await delay(20)
+
+        try {
+            expect(channel.sent.map(m => m.text).join('\n')).toContain('Task in progress')
+        } finally {
+            release()
+            await running
+            await progress
+        }
+    })
+
+    it('tracks rendered tables so /tables can return raw markdown after a mock channel turn', async () => {
+        const provider = createProvider([
+            { kind: 'text', text: '| A | B |\n|---|---|\n| 1 | 2 |\n' },
+            { kind: 'result', status: 'success' },
+        ])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'table please', source: 'channel' })
+        await runtime.dispatch({ kind: 'command', name: 'tables', source: 'channel' })
+
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                kind: 'command_result',
+                command: 'tables',
+                output: expect.objectContaining({ tables: expect.arrayContaining([expect.stringContaining('| A | B |')]) }),
+            }),
+        ]))
+    })
+
+    it('falls back visibly when editing a tool bubble fails', async () => {
+        const provider = createProvider([
+            { kind: 'tool_use', toolUseId: 'tool-1', toolName: 'Bash', input: { command: 'npm test' }, status: 'running' },
+            { kind: 'tool_result', toolUseId: 'tool-1', toolName: 'Bash', output: 'done', isError: false },
+            { kind: 'result', status: 'success' },
+        ])
+        const channel = createChannel()
+        channel.edit = vi.fn(async () => {
+            throw new Error('edit unavailable')
+        })
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'tool', source: 'channel' })
+
+        expect(channel.sent.length).toBeGreaterThanOrEqual(2)
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'command_result', command: 'delivery_edit_failed' }),
+        ]))
+    })
+
+    it('handles /new as a runtime reset before the next provider turn', async () => {
+        const provider = createProvider([{ kind: 'result', status: 'success' }])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+            providerSessionId: 'old-provider-session',
+        })
+
+        await runtime.dispatch({ kind: 'command', name: 'new', source: 'channel' })
+        await runtime.dispatch({ kind: 'user_message', text: 'fresh turn', source: 'channel' })
+
+        expect(provider.startQuery).toHaveBeenCalledWith('fresh turn', expect.objectContaining({
+            sessionId: undefined,
+        }))
+        expect(channel.sent.map(m => m.text).join('\n')).not.toContain('Command handling is not implemented')
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'command_result', command: 'new' }),
+        ]))
+    })
+
+    it('handles timeout_continue as a runtime command without using timeout middleware bus events', async () => {
+        const provider = createProvider([])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'command', name: 'timeout_continue', source: 'channel' })
+
+        expect(channel.sent.map(m => m.text).join('\n')).not.toContain('Command handling is not implemented')
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'command_result', command: 'timeout_continue' }),
+        ]))
+        expect(provider.startQuery).not.toHaveBeenCalled()
+    })
+
+    it('applies verbose level as runtime configuration for subsequent provider turns', async () => {
+        const provider = createProvider([{ kind: 'result', status: 'success' }])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'command', name: 'verbose', args: '2', source: 'channel' })
+        await runtime.dispatch({ kind: 'user_message', text: 'verbose turn', source: 'channel' })
+
+        expect(provider.startQuery).toHaveBeenCalledWith('verbose turn', expect.objectContaining({
+            providerSettings: expect.objectContaining({ verboseLevel: 2 }),
+        }))
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'command_result', command: 'verbose' }),
+        ]))
+    })
+
+    it('applies reasoning effort as runtime provider settings for subsequent provider turns', async () => {
+        const provider = createProvider([{ kind: 'result', status: 'success' }])
+        const channel = createChannel()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'codex',
+            channelPort: channel,
+        })
+
+        await runtime.dispatch({ kind: 'command', name: 'reasoningEffort', args: 'high', source: 'channel' })
+        await runtime.dispatch({ kind: 'user_message', text: 'reason deeply', source: 'channel' })
+
+        expect(provider.startQuery).toHaveBeenCalledWith('reason deeply', expect.objectContaining({
+            providerSettings: expect.objectContaining({ reasoningEffort: 'high' }),
+        }))
+        expect(runtime.journal.list()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'command_result', command: 'reasoningEffort' }),
+        ]))
+    })
+})

@@ -1,0 +1,729 @@
+package id.my.anciety.malink.matrix
+
+import java.net.URI
+import java.net.URLDecoder
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.matrix.rustcomponents.sdk.SlidingSyncVersion
+
+class MatrixApplicationControlClientTest {
+    @Test
+    fun `sends only a MLP3 project envelope as a room message with a stable transaction id`() =
+        runBlocking {
+            lateinit var endpoint: URI
+            lateinit var requestReference: ByteArray
+            lateinit var requestCopy: ByteArray
+            var receivedToken: String? = null
+            val responseBody = """{"event_id":"${'$'}control-event"}""".toByteArray()
+            val client = MatrixApplicationControlClient(
+                MatrixApplicationControlTransport { target, accessToken, body ->
+                    endpoint = target
+                    receivedToken = accessToken
+                    requestReference = body
+                    requestCopy = body.copyOf()
+                    MatrixHttpResponse(200, responseBody)
+                },
+            )
+
+            val eventId = client.send(
+                storedSession(),
+                secureContent(),
+                "malink.command.ack/command-1",
+            )
+
+            assertEquals("\$control-event", eventId)
+            assertEquals("secret-access-token", receivedToken)
+            assertEquals(
+                "https://matrix.example.org/_matrix/client/v3/rooms/" +
+                    "%21room%3Aexample.org/send/m.room.message/" +
+                    "malink.command.ack%2Fcommand-1",
+                endpoint.toASCIIString(),
+            )
+            assertEquals(
+                3,
+                Json.parseToJsonElement(requestCopy.toString(Charsets.UTF_8))
+                    .jsonObject.getValue("io.malink").jsonObject
+                    .getValue("version").jsonPrimitive.content.toInt(),
+            )
+            assertTrue(requestReference.all { it == 0.toByte() })
+            assertTrue(responseBody.all { it == 0.toByte() })
+        }
+
+    @Test
+    fun `rejects plaintext control content before transport`() = runBlocking {
+        var called = false
+        val client = MatrixApplicationControlClient(
+            MatrixApplicationControlTransport { _, _, _ ->
+                called = true
+                MatrixHttpResponse(200, "{}".toByteArray())
+            },
+        )
+
+        val error = runCatching {
+            client.send(
+                storedSession(),
+                """{"msgtype":"m.text","body":"plaintext"}""",
+                "rejected-control",
+            )
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalArgumentException)
+        assertFalse(called)
+    }
+
+    @Test
+    fun `sends signed permission renewal through the secure control event type`() = runBlocking {
+        lateinit var endpoint: URI
+        val responseBody = """{"event_id":"${'$'}renewal-event"}""".toByteArray()
+        val client = MatrixApplicationControlClient(
+            MatrixApplicationControlTransport { target, _, _ ->
+                endpoint = target
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        val eventId = client.send(
+            storedSession(),
+            secureControlContent(),
+            "malink.capability-renewal.request-1",
+        )
+
+        assertEquals("\$renewal-event", eventId)
+        assertTrue(
+            endpoint.toASCIIString().contains(
+                "/send/io.malink.secure_control.v1/",
+            ),
+        )
+    }
+
+    @Test
+    fun `recognizes only MLP3 project state and encrypted room messages`() {
+        val event = """
+            {
+              "type":"m.room.message",
+              "content":${secureContent()}
+            }
+        """.trimIndent()
+
+        assertTrue(isMalinkApplicationControlEvent(event))
+        assertTrue(isMalinkApplicationControlEvent("""
+            {
+              "type":"m.room.message",
+              "content":${timelineContent()}
+            }
+        """.trimIndent()))
+        assertFalse(isMalinkApplicationControlEvent(secureContent()))
+        assertTrue(isMalinkApplicationControlEvent("""
+            {
+              "type":"m.room.message",
+              "content":${secureContent()}
+            }
+        """.trimIndent()))
+        assertFalse(isMalinkApplicationControlEvent("""
+            {
+              "type":"io.malink.secure_control.v1",
+              "content":{"io.malink":{"version":1,"kind":"history_page"}}
+            }
+        """.trimIndent()))
+        assertTrue(isMalinkApplicationControlEvent("""
+            {
+              "type":"io.malink.secure_control.v1",
+              "content":${secureControlContent()}
+            }
+        """.trimIndent()))
+    }
+
+    @Test
+    fun `pairing bootstrap timeline accepts only signed response shaped events`() {
+        assertTrue(isMalinkPairingResponseEvent("""
+            {
+              "type":"m.room.message",
+              "content":{"io.malink":{
+                "version":1,
+                "kind":"pairing_response",
+                "pairing_response":{}
+              }}
+            }
+        """.trimIndent()))
+        assertTrue(isMalinkPairingResponseEvent("""
+            {
+              "type":"m.room.message",
+              "content":{"io.malink":{
+                "version":1,
+                "kind":"pairing_rejection",
+                "pairing_rejection":{}
+              }}
+            }
+        """.trimIndent()))
+        assertFalse(isMalinkPairingResponseEvent("""
+            {
+              "type":"m.room.message",
+              "content":${timelineContent()}
+            }
+        """.trimIndent()))
+        assertFalse(isMalinkPairingResponseEvent("""
+            {
+              "type":"m.room.message",
+              "content":{"io.malink":{
+                "version":1,
+                "kind":"pairing_request",
+                "pairing_request":{}
+              }}
+            }
+        """.trimIndent()))
+    }
+
+    @Test
+    fun `diagnostics expose only the bounded application event kind`() {
+        assertEquals(
+            "v3_project_envelope",
+            malinkApplicationEventKind("""
+                {
+                  "type":"m.room.message",
+                  "content":${secureContent()}
+                }
+            """.trimIndent()),
+        )
+        assertEquals(
+            "unknown",
+            malinkApplicationEventKind("""
+                {"content":{"io.malink":{"kind":"Secret value must not become a diagnostic"}}}
+            """.trimIndent()),
+        )
+        assertEquals("unknown", malinkApplicationEventKind("not-json"))
+    }
+
+    @Test
+    fun `thread directory pages latest gateway events for complete session discovery`() =
+        runBlocking {
+            lateinit var endpoint: URI
+            val response = """
+                {
+                  "chunk":[{
+                    "event_id":"${'$'}root-1",
+                    "sender":"@device:example.org",
+                    "unsigned":{"m.relations":{"m.thread":{"latest_event":{
+                      "event_id":"${'$'}latest-1",
+                      "type":"m.room.message",
+                      "sender":"@gateway:example.org",
+                      "origin_server_ts":9,
+                      "content":${secureContent()}
+                    }}}}
+                  }],
+                  "next_batch":"thread-page-2"
+                }
+            """.trimIndent().toByteArray()
+            val client = MatrixThreadDirectoryClient(
+                MatrixApplicationControlSyncTransport { target, _ ->
+                    endpoint = target
+                    MatrixHttpResponse(200, response)
+                },
+            )
+
+            val page = client.page(storedSession(), "thread-page-1")
+
+            assertEquals(1, page.candidateThreadCount)
+            assertEquals("thread-page-2", page.nextBatch)
+            assertEquals(listOf("\$latest-1"), page.latestEvents.map { it.eventId })
+            assertTrue(
+                endpoint.toASCIIString().contains(
+                    "/_matrix/client/v1/rooms/%21room%3Aexample.org/threads?",
+                ),
+            )
+            assertTrue(endpoint.toASCIIString().contains("include=all"))
+            assertTrue(endpoint.toASCIIString().contains("from=thread-page-1"))
+        }
+
+    @Test
+    fun `sync receives raw application control events for the bound room`() = runBlocking {
+        lateinit var endpoint: URI
+        val responseBody = """
+            {
+              "next_batch":"s-next",
+              "rooms":{"join":{"!room:example.org":{"timeline":{"limited":true,"prev_batch":"s-gap-start","events":[
+                {
+                  "type":"m.room.message",
+                  "event_id":"${'$'}control-response",
+                  "sender":"@gateway:example.org",
+                  "origin_server_ts":1234,
+                  "content":${secureContent()}
+                },
+                {
+                  "type":"m.room.message",
+                  "event_id":"${'$'}timeline-response",
+                  "sender":"@gateway:example.org",
+                  "origin_server_ts":1235,
+                  "content":${timelineContent()}
+                },
+                {
+                  "type":"io.malink.project.key_grant.v3",
+                  "state_key":"device-key-1",
+                  "event_id":"${'$'}project-key-grant",
+                  "sender":"@gateway:example.org",
+                  "origin_server_ts":1236,
+                  "content":{"version":3,"kind":"project.key_grant","sealedGrant":{}}
+                }
+              ]}}}}
+            }
+        """.trimIndent().toByteArray()
+        val client = MatrixApplicationControlSyncClient(
+            MatrixApplicationControlSyncTransport { target, accessToken ->
+                endpoint = target
+                assertEquals("secret-access-token", accessToken)
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        val batch = client.sync(storedSession(), "s-current")
+
+        assertEquals("s-next", batch.nextBatch)
+        assertEquals(
+            listOf("\$control-response", "\$timeline-response", "\$project-key-grant"),
+            batch.events.map { it.eventId },
+        )
+        assertEquals("@gateway:example.org", batch.events.first().sender)
+        assertEquals(1234L, batch.events.first().timestamp)
+        assertTrue(batch.limited)
+        assertEquals("s-gap-start", batch.prevBatch)
+        assertTrue(endpoint.rawQuery.contains("since=s-current"))
+        assertTrue(endpoint.rawQuery.contains("filter="))
+        val encodedFilter = endpoint.rawQuery
+            .split("&")
+            .single { it.startsWith("filter=") }
+            .substringAfter("filter=")
+        val filter = Json.parseToJsonElement(
+            URLDecoder.decode(encodedFilter, Charsets.UTF_8.name()),
+        ).jsonObject
+        val timeline = filter.getValue("room").jsonObject
+            .getValue("timeline").jsonObject
+        assertEquals(
+            "@gateway:example.org",
+            timeline.getValue("senders").jsonArray.single().jsonPrimitive.content,
+        )
+        assertEquals(
+            setOf(
+                "m.room.message",
+                "io.malink.secure_control.v1",
+                "io.malink.project.key_grant.v3",
+                "io.malink.project.current.v3",
+                "io.malink.workspace.current.v3",
+            ),
+            timeline.getValue("types").jsonArray.map { it.jsonPrimitive.content }.toSet(),
+        )
+        assertEquals(32, timeline.getValue("limit").jsonPrimitive.content.toInt())
+        assertEquals(
+            setOf(
+                "io.malink.project.key_grant.v3",
+                "io.malink.project.current.v3",
+                "io.malink.workspace.current.v3",
+            ),
+            filter.getValue("room").jsonObject
+                .getValue("state").jsonObject
+                .getValue("types").jsonArray.map { it.jsonPrimitive.content }.toSet(),
+        )
+        assertTrue(responseBody.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun `cursor failures never discard an unproven offline boundary`() {
+        assertEquals(
+            null,
+            applicationControlCursorResetReason(
+                MatrixApplicationControlResponseTooLargeException(2 * 1024 * 1024),
+                "s-stale",
+            ),
+        )
+        assertEquals(
+            "server_rejected_after_authoritative_rebuild",
+            applicationControlCursorResetReason(
+                MatrixApplicationControlSyncException(400, null),
+                "s-invalid",
+            ),
+        )
+        assertEquals(
+            null,
+            applicationControlCursorResetReason(
+                MatrixApplicationControlResponseTooLargeException(2 * 1024 * 1024),
+                since = null,
+            ),
+        )
+    }
+
+    @Test
+    fun `limited incremental sync without prev batch is rejected before cursor commit`() = runBlocking {
+        val responseBody = """
+            {
+              "next_batch":"s-next",
+              "rooms":{"join":{"!room:example.org":{"timeline":{"limited":true,"events":[]}}}}
+            }
+        """.trimIndent().toByteArray()
+        val client = MatrixApplicationControlSyncClient(
+            MatrixApplicationControlSyncTransport { _, _ ->
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        val error = runCatching {
+            client.sync(storedSession(), since = "s-current")
+        }.exceptionOrNull()
+
+        assertTrue(error is MatrixApplicationControlPayloadException)
+        assertTrue(error?.message?.contains("gap boundary") == true)
+        assertTrue(responseBody.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun `gap page uses sync boundaries and returns a resumable cursor`() = runBlocking {
+        lateinit var endpoint: URI
+        val responseBody = """
+            {
+              "start":"s-before",
+              "end":"s-page-2",
+              "chunk":[
+                {
+                  "type":"m.room.message",
+                  "event_id":"${'$'}gap-event",
+                  "sender":"@gateway:example.org",
+                  "origin_server_ts":1235,
+                  "content":${timelineContent()}
+                },
+                {
+                  "type":"m.room.message",
+                  "event_id":"${'$'}untrusted-gap-event",
+                  "sender":"@attacker:example.org",
+                  "origin_server_ts":1236,
+                  "content":${timelineContent()}
+                }
+              ]
+            }
+        """.trimIndent().toByteArray()
+        val client = MatrixApplicationTimelineClient(
+            MatrixApplicationControlSyncTransport { target, _ ->
+                endpoint = target
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        val page = client.page(storedSession(), "s-before", "s-gap-end")
+
+        assertEquals(listOf("\$gap-event"), page.events.map { it.eventId })
+        assertEquals("s-page-2", page.nextFrom)
+        assertEquals(2, page.candidateEventCount)
+        assertEquals(
+            "/_matrix/client/v3/rooms/%21room%3Aexample.org/messages",
+            endpoint.rawPath,
+        )
+        val query = endpoint.rawQuery.split("&").associate { part ->
+            val (key, value) = part.split("=", limit = 2)
+            key to URLDecoder.decode(value, Charsets.UTF_8.name())
+        }
+        assertEquals("f", query["dir"])
+        assertEquals("s-before", query["from"])
+        assertEquals("s-gap-end", query["to"])
+        assertEquals("32", query["limit"])
+        assertTrue(responseBody.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun `initial sync establishes a live cursor without room-wide history catchup`() = runBlocking {
+        lateinit var endpoint: URI
+        val responseBody = """
+            {
+              "next_batch":"s-catchup",
+              "rooms":{"join":{"!room:example.org":{"timeline":{"events":[]}}}}
+            }
+        """.trimIndent().toByteArray()
+        val client = MatrixApplicationControlSyncClient(
+            MatrixApplicationControlSyncTransport { target, _ ->
+                endpoint = target
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        val batch = client.sync(storedSession(), since = null)
+
+        assertTrue(batch.events.isEmpty())
+        assertFalse(batch.limited)
+        assertFalse(endpoint.rawQuery.contains("since="))
+        assertTrue(endpoint.rawQuery.contains("timeout=0"))
+        val encodedFilter = endpoint.rawQuery
+            .split("&")
+            .single { it.startsWith("filter=") }
+            .substringAfter("filter=")
+        val timeline = Json.parseToJsonElement(
+            URLDecoder.decode(encodedFilter, Charsets.UTF_8.name()),
+        ).jsonObject.getValue("room").jsonObject
+            .getValue("timeline").jsonObject
+        assertEquals(32, timeline.getValue("limit").jsonPrimitive.content.toInt())
+    }
+
+    @Test
+    fun `project pointer fetches one exact trusted MLP3 event without scanning history`() = runBlocking {
+        lateinit var endpoint: URI
+        val responseBody = """
+            {
+              "type":"m.room.message",
+              "event_id":"${'$'}snapshot-event",
+              "sender":"@gateway:example.org",
+              "origin_server_ts":1234,
+              "content":${secureContent()}
+            }
+        """.trimIndent().toByteArray()
+        val client = MatrixApplicationEventClient(
+            MatrixApplicationControlSyncTransport { target, token ->
+                endpoint = target
+                assertEquals("secret-access-token", token)
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        val event = client.event(storedSession(), "${'$'}snapshot-event")
+
+        assertEquals("${'$'}snapshot-event", event.eventId)
+        assertEquals(
+            "/_matrix/client/v3/rooms/%21room%3Aexample.org/event/%24snapshot-event",
+            endpoint.rawPath,
+        )
+        assertTrue(responseBody.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun `thread history pages only one session relation and filters untrusted senders`() =
+        runBlocking {
+            lateinit var endpoint: URI
+            val responseBody = """
+                {
+                  "chunk":[
+                    {
+                      "type":"m.room.message",
+                      "event_id":"${'$'}trusted-history",
+                      "sender":"@gateway:example.org",
+                      "origin_server_ts":1235,
+                      "content":${timelineContent()}
+                    },
+                    {
+                      "type":"m.room.message",
+                      "event_id":"${'$'}attacker-history",
+                      "sender":"@attacker:example.org",
+                      "origin_server_ts":1236,
+                      "content":${timelineContent()}
+                    }
+                  ],
+                  "next_batch":"relations-next"
+                }
+            """.trimIndent().toByteArray()
+            val client = MatrixThreadHistoryClient(
+                MatrixApplicationControlSyncTransport { target, token ->
+                    endpoint = target
+                    assertEquals("secret-access-token", token)
+                    MatrixHttpResponse(200, responseBody)
+                },
+            )
+
+            val batch = client.page(
+                storedSession(),
+                threadRootEventId = "\$thread/root",
+                from = "relations/current",
+                limit = 37,
+            )
+
+            assertEquals(listOf("\$trusted-history"), batch.events.map { it.eventId })
+            assertEquals("relations-next", batch.nextBatch)
+            assertEquals(
+                "/_matrix/client/v1/rooms/%21room%3Aexample.org/relations/" +
+                    "%24thread%2Froot/m.thread",
+                endpoint.rawPath,
+            )
+            val query = endpoint.rawQuery.split("&").associate { part ->
+                val (key, value) = part.split("=", limit = 2)
+                key to URLDecoder.decode(value, Charsets.UTF_8.name())
+            }
+            assertFalse(query.containsKey("rel_type"))
+            assertEquals("b", query["dir"])
+            assertEquals("true", query["recurse"])
+            assertEquals("32", query["limit"])
+            assertEquals("relations/current", query["from"])
+            assertTrue(responseBody.all { it == 0.toByte() })
+        }
+
+    @Test
+    fun `receiver readiness check does not long poll a persisted cursor`() = runBlocking {
+        lateinit var endpoint: URI
+        val responseBody = """
+            {"next_batch":"s-ready","rooms":{"join":{}}}
+        """.trimIndent().toByteArray()
+        val client = MatrixApplicationControlSyncClient(
+            MatrixApplicationControlSyncTransport { target, _ ->
+                endpoint = target
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        client.sync(storedSession(), since = "s-current", longPoll = false)
+
+        assertTrue(endpoint.rawQuery.contains("since=s-current"))
+        assertTrue(endpoint.rawQuery.contains("timeout=0"))
+    }
+
+    @Test
+    fun `sync tolerates null optional room sections without poisoning its cursor`() = runBlocking {
+        val responseBody = """
+            {
+              "next_batch":"s-after-null-sections",
+              "rooms":{"join":{"!room:example.org":{
+                "state":null,
+                "timeline":{"limited":null,"events":null}
+              }}}
+            }
+        """.trimIndent().toByteArray()
+        val client = MatrixApplicationControlSyncClient(
+            MatrixApplicationControlSyncTransport { _, _ ->
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        val batch = client.sync(storedSession(), since = "s-before-null-sections")
+
+        assertEquals("s-after-null-sections", batch.nextBatch)
+        assertTrue(batch.events.isEmpty())
+        assertEquals(0, batch.candidateEventCount)
+        assertFalse(batch.limited)
+        assertTrue(responseBody.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun `sync isolates malformed optional candidates and still advances its cursor`() = runBlocking {
+        val responseBody = """
+            {
+              "next_batch":"s-after-malformed-candidates",
+              "rooms":{"join":{"!room:example.org":{"state":{"events":[
+                null,
+                {"type":null,"sender":{"unexpected":true}},
+                {
+                  "type":"m.room.message",
+                  "event_id":"${'$'}trusted-after-malformed",
+                  "sender":"@gateway:example.org",
+                  "origin_server_ts":2345,
+                  "content":${timelineContent()}
+                }
+              ]},"timeline":{"events":[]}}}}
+            }
+        """.trimIndent().toByteArray()
+        val client = MatrixApplicationControlSyncClient(
+            MatrixApplicationControlSyncTransport { _, _ ->
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        val batch = client.sync(storedSession(), since = "s-before-malformed-candidates")
+
+        assertEquals("s-after-malformed-candidates", batch.nextBatch)
+        assertEquals(listOf("\$trusted-after-malformed"), batch.events.map { it.eventId })
+        assertEquals(3, batch.candidateEventCount)
+    }
+
+    @Test
+    fun `sync reports a malformed envelope as a bounded protocol failure`() = runBlocking {
+        val responseBody = "[]".toByteArray()
+        val client = MatrixApplicationControlSyncClient(
+            MatrixApplicationControlSyncTransport { _, _ ->
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        val error = runCatching {
+            client.sync(storedSession(), since = "s-before-invalid-envelope")
+        }.exceptionOrNull()
+
+        assertTrue(error is MatrixApplicationControlPayloadException)
+        assertTrue(responseBody.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun `sync reports invalid JSON as a bounded protocol failure`() = runBlocking {
+        val responseBody = "{".toByteArray()
+        val client = MatrixApplicationControlSyncClient(
+            MatrixApplicationControlSyncTransport { _, _ ->
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        val error = runCatching {
+            client.sync(storedSession(), since = "s-before-invalid-json")
+        }.exceptionOrNull()
+
+        assertTrue(error is MatrixApplicationControlPayloadException)
+        assertTrue(responseBody.all { it == 0.toByte() })
+    }
+
+    private fun secureContent() = """
+        {
+          "msgtype":"m.notice",
+          "body":"Encrypted Malink command",
+          "io.malink":{
+            "version":3,
+            "envelope":{
+              "version":3,
+              "projectId":"project-1",
+              "keyId":"key-1",
+              "nonce":"AAAAAAAAAAAAAAAA",
+              "ciphertext":"AA"
+            }
+          }
+        }
+    """.trimIndent()
+
+    private fun timelineContent() = """
+        {
+          "msgtype":"m.notice",
+          "body":"Encrypted Malink timeline event",
+          "io.malink":{
+            "version":3,
+            "envelope":{
+              "version":3,
+              "projectId":"project-1",
+              "keyId":"key-1",
+              "nonce":"AAAAAAAAAAAAAAAA",
+              "ciphertext":"AQ"
+            }
+          }
+        }
+    """.trimIndent()
+
+    private fun secureControlContent() = """
+        {
+          "msgtype":"m.notice",
+          "body":"Encrypted Malink device permission renewal",
+          "io.malink":{
+            "version":1,
+            "kind":"secure_envelope",
+            "secure_envelope":{}
+          }
+        }
+    """.trimIndent()
+
+    private fun storedSession() = StoredMatrixSession(
+        accessToken = "secret-access-token",
+        refreshToken = null,
+        userId = "@alice:example.org",
+        deviceId = "MATRIX-DEVICE",
+        homeserverUrl = "https://matrix.example.org",
+        oauthData = null,
+        slidingSyncVersion = SlidingSyncVersion.NATIVE,
+        roomBinding = MatrixRoomBinding(
+            roomId = "!room:example.org",
+            gatewayId = "gateway-1",
+            conversationId = "conversation-1",
+            gatewayUserId = "@gateway:example.org",
+            gatewayDeviceId = "GATEWAY-DEVICE",
+            gatewayDeviceEd25519 = "A".repeat(43),
+        ),
+    )
+}

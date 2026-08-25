@@ -1,0 +1,174 @@
+/**
+ * Scheduler — Timer-based task scheduling for malink sessions.
+ *
+ * Design decisions:
+ * - Supports both one-shot and recurring tasks.
+ * - Persisted to config — survives malink restart.
+ * - Triggers via onTrigger callback (typically TopicSession.receiveInput()).
+ * - One-shot tasks are automatically deleted after firing.
+ * - Recurring tasks re-register themselves after each firing.
+ */
+
+import { randomUUID } from 'node:crypto'
+
+export interface ScheduledTask {
+    id: string
+    /** The topic key identifying which session/bridge topic this task belongs to */
+    topicKey: string
+    triggerAt: number
+    message: string
+    context?: string
+    /** If set, re-schedule with this interval after firing (in ms) */
+    recurringMs?: number
+}
+
+export interface SchedulerConfig {
+    onTrigger: (task: ScheduledTask) => void
+    onTasksChanged?: (tasks: ScheduledTask[]) => void
+}
+
+type ScheduleInput = Omit<ScheduledTask, 'id'> & { id?: string }
+
+export class Scheduler {
+    private tasks = new Map<string, { task: ScheduledTask; timer: ReturnType<typeof setTimeout> }>()
+    private onTrigger: (task: ScheduledTask) => void
+    private onTasksChanged?: (tasks: ScheduledTask[]) => void
+
+    constructor(config: SchedulerConfig) {
+        this.onTrigger = config.onTrigger
+        this.onTasksChanged = config.onTasksChanged
+    }
+
+    /**
+     * Schedule a task. One-shot by default; set recurringMs for repeating.
+     */
+    schedule(input: ScheduleInput): ScheduledTask {
+        const { id, ...taskInput } = input
+        const task: ScheduledTask = {
+            id: id ?? randomUUID(),
+            ...taskInput,
+        }
+
+        const delay = Math.max(0, task.triggerAt - Date.now())
+
+        const timer = setTimeout(() => {
+            this.triggerTask(task.id)
+        }, delay)
+
+        this.tasks.set(task.id, { task, timer })
+        this.notifyTasksChanged()
+        return task
+    }
+
+    /**
+     * Cancel a scheduled task.
+     */
+    cancel(taskId: string): boolean {
+        const entry = this.tasks.get(taskId)
+        if (!entry) return false
+
+        clearTimeout(entry.timer)
+        this.tasks.delete(taskId)
+        this.notifyTasksChanged()
+        return true
+    }
+
+    /**
+     * Cancel all tasks matching a predicate.
+     */
+    cancelWhere(predicate: (task: ScheduledTask) => boolean): ScheduledTask[] {
+        const cancelled: ScheduledTask[] = []
+        for (const [taskId, entry] of this.tasks.entries()) {
+            if (!predicate(entry.task)) continue
+            clearTimeout(entry.timer)
+            this.tasks.delete(taskId)
+            cancelled.push({ ...entry.task })
+        }
+
+        if (cancelled.length > 0) {
+            this.notifyTasksChanged()
+        }
+        return cancelled
+    }
+
+    /**
+     * Get a specific task by id.
+     */
+    getTask(taskId: string): ScheduledTask | undefined {
+        return this.tasks.get(taskId)?.task
+    }
+
+    /**
+     * List all pending (not yet triggered) tasks.
+     */
+    listPending(): ScheduledTask[] {
+        return Array.from(this.tasks.values()).map(entry => entry.task)
+    }
+
+    /**
+     * Cancel all scheduled tasks.
+     */
+    stopAll(): void {
+        for (const entry of this.tasks.values()) {
+            clearTimeout(entry.timer)
+        }
+        this.tasks.clear()
+    }
+
+    /**
+     * Save all tasks to a serializable format for persistence.
+     */
+    saveTasks(): ScheduledTask[] {
+        return Array.from(this.tasks.values()).map(entry => ({ ...entry.task }))
+    }
+
+    /**
+     * Load tasks from persisted data. Past-due tasks are triggered immediately.
+     */
+    loadTasks(saved: ScheduledTask[]): void {
+        for (const task of saved) {
+            const delay = Math.max(0, task.triggerAt - Date.now())
+
+            const timer = setTimeout(() => {
+                this.triggerTask(task.id)
+            }, delay)
+
+            this.tasks.set(task.id, { task, timer })
+        }
+    }
+
+    private triggerTask(taskId: string): void {
+        const entry = this.tasks.get(taskId)
+        if (!entry) return
+
+        const task = entry.task
+        this.tasks.delete(taskId)
+
+        let triggerError: unknown
+        try {
+            this.onTrigger(task)
+        } catch (e) {
+            triggerError = e
+        }
+
+        // Re-schedule if recurring
+        if (task.recurringMs) {
+            this.schedule({
+                id: task.id,
+                topicKey: task.topicKey,
+                triggerAt: Date.now() + task.recurringMs,
+                message: task.message,
+                context: task.context,
+                recurringMs: task.recurringMs,
+            })
+        } else {
+            this.notifyTasksChanged()
+        }
+
+        if (triggerError) throw triggerError
+    }
+
+    private notifyTasksChanged(): void {
+        this.onTasksChanged?.(this.saveTasks())
+    }
+}

@@ -1,0 +1,183 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+    createCancelReminderHandler,
+    createGetDeliveryStatusHandler,
+    createListRemindersHandler,
+    createRetryDeliveryHandler,
+    createScheduleReminderHandler,
+    createSendFileHandler,
+    createSendMessageHandler,
+} from '@/mcp/tools/notify'
+
+const existsSync = vi.fn()
+const readFileSync = vi.fn()
+
+vi.mock('node:os', () => ({ homedir: () => '/home/tester' }))
+vi.mock('node:fs', () => ({
+    existsSync: (...args: unknown[]) => existsSync(...args),
+    readFileSync: (...args: unknown[]) => readFileSync(...args),
+}))
+
+describe('MCP notify tool integration with daemon API', () => {
+    beforeEach(() => {
+        existsSync.mockReturnValue(true)
+        readFileSync.mockReturnValue('3737')
+        process.env.MALINK_CONVERSATION_ID = 'provider-session-1'
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
+            ok: true,
+            json: async () => {
+                if (url.endsWith('/api/send-file')) return { ok: true, result: { status: 'queued', deliveryId: 'delivery-1' } }
+                if (url.endsWith('/api/delivery-status')) return { deliveries: [{ id: 'delivery-1', kind: 'send', status: 'pending', createdAt: 1, textChars: 6, text: 'answer', format: 'plain' }] }
+                if (url.endsWith('/api/retry-delivery')) return { status: 'sent', deliveryId: 'delivery-2', retryOf: 'delivery-1', messageId: 42 }
+                if (url.endsWith('/api/reminders')) return { reminders: [{ taskId: 'task-1', triggerAt: 1_800_000_000_000, message: 'standup', context: 'test', recurringMs: 2_000 }] }
+                if (url.endsWith('/api/cancel')) return { ok: true, cancelledCount: 1, taskIds: ['task-1'] }
+                return { taskId: 'task-1' }
+            },
+            text: async () => '',
+        })))
+    })
+
+    afterEach(() => {
+        vi.unstubAllGlobals()
+        vi.restoreAllMocks()
+        delete process.env.MALINK_CONVERSATION_ID
+    })
+
+    it('schedule_reminder posts a session-scoped schedule request to daemon API', async () => {
+        const handler = createScheduleReminderHandler()
+
+        const result = await handler({ delayMs: 1_000, recurringMs: 2_000, message: 'standup', context: 'test' })
+
+        expect(result.isError).toBeUndefined()
+        expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:3737/api/schedule', expect.objectContaining({
+            method: 'POST',
+            body: expect.any(String),
+        }))
+        expect(JSON.parse((fetch as any).mock.calls[0][1].body)).toMatchObject({
+            sessionId: 'provider-session-1',
+            message: 'standup',
+            context: 'test',
+            recurringMs: 2_000,
+        })
+    })
+
+    it('send_message posts an immediate session-scoped channel message to daemon API', async () => {
+        const handler = createSendMessageHandler()
+
+        const result = await handler({ message: 'ping user now' })
+
+        expect(result.isError).toBeUndefined()
+        expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:3737/api/send', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ sessionId: 'provider-session-1', message: 'ping user now' }),
+        }))
+    })
+
+    it('send_file posts a session-scoped file request with rendering type to daemon API', async () => {
+        const handler = createSendFileHandler()
+
+        const result = await handler({ path: '/repo/report.md', caption: 'latest report', type: 'markdown' })
+
+        expect(result.isError).toBeUndefined()
+        expect(result.content[0].text).toContain('File delivery queued')
+        expect(result.content[0].text).toContain('delivery-1')
+        expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:3737/api/send-file', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({
+                sessionId: 'provider-session-1',
+                path: '/repo/report.md',
+                caption: 'latest report',
+                type: 'markdown',
+            }),
+        }))
+    })
+
+    it('get_delivery_status posts a session-scoped delivery status request to daemon API', async () => {
+        const handler = createGetDeliveryStatusHandler()
+
+        const result = await handler({ deliveryId: 'delivery-1', includeText: true })
+
+        expect(result.isError).toBeUndefined()
+        expect(result.content[0].text).toContain('delivery-1: pending')
+        expect(result.content[0].text).toContain('text:\nanswer')
+        expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:3737/api/delivery-status', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ sessionId: 'provider-session-1', deliveryId: 'delivery-1', includeText: true }),
+        }))
+    })
+
+    it('retry_delivery posts a session-scoped retry request to daemon API', async () => {
+        const handler = createRetryDeliveryHandler()
+
+        const result = await handler({ deliveryId: 'delivery-1' })
+
+        expect(result.isError).toBeUndefined()
+        expect(result.content[0].text).toContain('Delivery resent')
+        expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:3737/api/retry-delivery', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ sessionId: 'provider-session-1', deliveryId: 'delivery-1' }),
+        }))
+    })
+
+    it('list_reminders posts a session-scoped reminder list request to daemon API', async () => {
+        const handler = createListRemindersHandler()
+
+        const result = await handler()
+
+        expect(result.isError).toBeUndefined()
+        expect(result.content[0].text).toContain('task-1')
+        expect(result.content[0].text).toContain('standup')
+        expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:3737/api/reminders', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ sessionId: 'provider-session-1' }),
+        }))
+    })
+
+    it('cancel_reminder posts a cancel request without requiring session identity', async () => {
+        delete process.env.MALINK_CONVERSATION_ID
+        const handler = createCancelReminderHandler()
+
+        const result = await handler({ taskId: 'task-1' })
+
+        expect(result.isError).toBeUndefined()
+        expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:3737/api/cancel', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ taskId: 'task-1' }),
+        }))
+    })
+
+    it('cancel_reminder can cancel all reminders for the current session', async () => {
+        const handler = createCancelReminderHandler()
+
+        const result = await handler({ all: true })
+
+        expect(result.isError).toBeUndefined()
+        expect(result.content[0].text).toContain('Cancelled 1 reminder')
+        expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:3737/api/cancel', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ sessionId: 'provider-session-1', all: true }),
+        }))
+    })
+
+    it('returns a visible error when daemon API port is unavailable', async () => {
+        existsSync.mockReturnValue(false)
+        const handler = createSendMessageHandler()
+
+        const result = await handler({ message: 'hello' })
+
+        expect(result.isError).toBe(true)
+        expect(result.content[0].text).toContain('Daemon API not available')
+        expect(fetch).not.toHaveBeenCalled()
+    })
+
+    it('returns a retryable session identity error on first-turn session-scoped calls', async () => {
+        delete process.env.MALINK_CONVERSATION_ID
+        const handler = createScheduleReminderHandler()
+
+        const result = await handler({ delayMs: 1_000, message: 'later' })
+
+        expect(result.isError).toBe(true)
+        expect(result.content[0].text).toContain('Session identity not available yet')
+        expect(fetch).not.toHaveBeenCalled()
+    })
+})

@@ -1,0 +1,844 @@
+import { z } from 'zod'
+import { matrixGatewayCapabilitiesSchema } from './matrix-native.js'
+import {
+  attachmentSchema,
+  jsonValueSchema,
+  sessionExtensionActionIdSchema,
+  sessionExtensionBindingSchema,
+  sessionExtensionDescriptorSchema,
+  sessionExtensionSummarySchema,
+  sessionExtensionViewSchema,
+  signatureSchema,
+} from './schema.js'
+
+/**
+ * Malink Protocol version 3 (MLP/3).
+ *
+ * MLP owns execution authorization, business semantics and project-content
+ * encryption. Matrix is the current durable transport and owns rooms,
+ * threads, history, relations and incremental sync; it is not the protocol
+ * named by this version number.
+ */
+export const MALINK_PROTOCOL_NAME = 'Malink Protocol' as const
+export const MALINK_PROTOCOL_ACRONYM = 'MLP' as const
+export const MALINK_PROTOCOL_VERSION = 3 as const
+export const MALINK_PROTOCOL_LABEL = 'MLP/3' as const
+
+export const MLP3_MATRIX_TIMELINE_EVENT_TYPE = 'm.room.message' as const
+export const MALINK_MATRIX_EXTENSION = 'io.malink' as const
+export const MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE =
+  'io.malink.project.current.v3' as const
+export const MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE =
+  'io.malink.workspace.current.v3' as const
+export const MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE =
+  'io.malink.project.key_grant.v3' as const
+
+const opaqueId = z.string().min(1).max(256)
+const requiredProjectId = z.string({ error: 'Project is required' }).min(1).max(256)
+const requiredSessionId = z.string({ error: 'Session is required' }).min(1).max(256)
+const matrixRoomId = z.string().min(1).max(512)
+const matrixEventId = z.string().min(1).max(512)
+const timestamp = z.number().int().nonnegative()
+const base64Url = z.string().regex(/^[A-Za-z0-9_-]+$/)
+
+export const providerCommandSchema = z
+  .object({
+    name: z.string().min(1).max(256),
+    description: z.string().max(4_096),
+    inputHint: z.string().max(1_024).nullable(),
+  })
+  .strict()
+
+export type ProviderCommand = z.infer<typeof providerCommandSchema>
+
+export const providerSessionEntrySchema = z
+  .object({
+    sessionId: opaqueId,
+    title: z.string().min(1).max(512),
+    updatedAt: timestamp,
+    cwd: z.string().min(1).max(8_192).optional(),
+    managedSessionId: opaqueId.optional(),
+  })
+  .strict()
+
+export type ProviderSessionEntry = z.infer<typeof providerSessionEntrySchema>
+
+export const providerHistoryMessageSchema = z
+  .object({
+    id: opaqueId,
+    role: z.enum(['user', 'assistant']),
+    text: z.string().max(16 * 1024),
+  })
+  .strict()
+
+export type ProviderHistoryMessage = z.infer<typeof providerHistoryMessageSchema>
+
+export const webPushSubscriptionSchema = z
+  .object({
+    endpoint: z.string().url().max(4_096).refine(value => {
+      try {
+        const endpoint = new URL(value)
+        return endpoint.protocol === 'https:'
+          && !endpoint.username
+          && !endpoint.password
+          && !endpoint.hash
+      } catch {
+        return false
+      }
+    }, 'Web Push endpoint must be a credential-free HTTPS URL'),
+    expirationTime: timestamp.nullable().optional(),
+    keys: z
+      .object({
+        p256dh: base64Url.min(32).max(256),
+        auth: base64Url.min(16).max(128),
+      })
+      .strict(),
+  })
+  .strict()
+
+export type WebPushSubscription = z.infer<typeof webPushSubscriptionSchema>
+
+export const nativeClientReleaseSchema = z
+  .object({
+    platform: z.literal('android'),
+    channel: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
+    architecture: z.literal('arm64-v8a'),
+    packageName: z.string().min(1).max(256),
+    versionCode: z.number().int().positive().max(2_100_000_000),
+    versionName: z.string().min(1).max(256),
+    buildId: opaqueId,
+    publishedAt: z.number().int().positive(),
+    minimumAndroid: z.number().int().min(21).max(10_000),
+    nativeBridgeMinimum: z.number().int().positive().max(1_000),
+    nativeBridgeMaximum: z.number().int().positive().max(1_000),
+    importance: z.enum(['recommended', 'required']),
+    releaseNotes: z.array(z.string().min(1).max(500)).max(20),
+    artifact: z
+      .object({
+        url: z.url().max(2_048).refine(value => {
+          const url = new URL(value)
+          const trustedScheme = url.protocol === 'https:'
+            || (
+              url.protocol === 'http:'
+              && url.hostname === '127.0.0.1'
+              && Number(url.port) >= 1
+              && Number(url.port) <= 65_535
+            )
+          return trustedScheme
+            && !url.username
+            && !url.password
+            && !url.search
+            && !url.hash
+        }, 'Native release artifacts must use credential-free HTTPS URLs'),
+        size: z.number().int().positive().max(100 * 1024 * 1024),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        signingCertificateSha256: z.string().regex(/^[0-9a-f]{64}$/),
+      })
+      .strict(),
+  })
+  .strict()
+  .refine(value => value.nativeBridgeMinimum <= value.nativeBridgeMaximum, {
+    message: 'Native bridge minimum cannot exceed its maximum',
+  })
+
+export type NativeClientRelease = z.infer<typeof nativeClientReleaseSchema>
+
+export const mlp3SessionExtensionBindingSchema = sessionExtensionBindingSchema
+
+const sessionSettingsPatchSchema = z
+  .object({
+    title: z.string().min(1).max(512).optional(),
+    model: z.string().min(1).max(256).nullable().optional(),
+    reasoningEffort: z.string().min(1).max(64).nullable().optional(),
+    permissionMode: z
+      .enum(['default', 'accept_edits', 'plan', 'bypass_permissions'])
+      .optional(),
+    extensions: z.array(mlp3SessionExtensionBindingSchema).max(8).optional(),
+  })
+  .strict()
+  .refine(value => Object.values(value).some(field => field !== undefined), {
+    message: 'A session update requires at least one changed field',
+  })
+
+const sessionCreatePayloadSchema = z
+  .object({
+    operation: z.literal('session.create'),
+    scope: z.enum(['project', 'scratch']).optional(),
+    title: z.string().min(1).max(512).optional(),
+    model: z.string().min(1).max(256).optional(),
+    provider: z.string().min(1).max(256).optional(),
+    providerSessionId: opaqueId.optional(),
+    reasoningEffort: z.string().min(1).max(64).optional(),
+    permissionMode: z
+      .enum(['default', 'accept_edits', 'plan', 'bypass_permissions'])
+      .optional(),
+    extensions: z.array(mlp3SessionExtensionBindingSchema).max(8).optional(),
+    initialPrompt: z
+      .object({
+        text: z.string(),
+        attachments: z.array(attachmentSchema).max(10).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.initialPrompt
+      && value.initialPrompt.text.length === 0
+      && (value.initialPrompt.attachments?.length ?? 0) === 0
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['initialPrompt'],
+        message: 'An initial prompt requires text or an attachment',
+      })
+    }
+  })
+
+const promptSubmitPayloadSchema = z
+  .object({
+    operation: z.literal('prompt.submit'),
+    text: z.string(),
+    attachments: z.array(attachmentSchema).max(10).optional(),
+  })
+  .strict()
+  .refine(
+    value => value.text.length > 0 || (value.attachments?.length ?? 0) > 0,
+    { message: 'A prompt requires text or an attachment' },
+  )
+
+const turnCancelPayloadSchema = z
+  .object({ operation: z.literal('turn.cancel'), turnId: opaqueId })
+  .strict()
+const decisionAnswerPayloadSchema = z
+  .object({
+    operation: z.literal('decision.answer'),
+    requestId: opaqueId,
+    decision: z.string().min(1).max(256),
+    totp: z.string().regex(/^\d{6}$/u).optional(),
+  })
+  .strict()
+const sessionUpdatePayloadSchema = z
+  .object({ operation: z.literal('session.update'), patch: sessionSettingsPatchSchema })
+  .strict()
+const sessionLifecyclePayloadSchema = z
+  .object({
+    operation: z.literal('session.set_lifecycle'),
+    state: z.enum(['active', 'archived', 'deleted']),
+  })
+  .strict()
+const deviceInvitationPayloadSchema = z
+  .object({
+    operation: z.literal('device.invitation.create'),
+    lifetimeMs: z.number().int().min(30_000).max(10 * 60_000).optional(),
+  })
+  .strict()
+const projectUpdatePayloadSchema = z
+  .object({
+    operation: z.literal('project.update'),
+    patch: z
+      .object({
+        model: z.string().min(1).max(256).nullable().optional(),
+        reasoningEffort: z.string().min(1).max(64).nullable().optional(),
+        defaultExtensions: z.array(mlp3SessionExtensionBindingSchema).max(8).optional(),
+      })
+      .strict()
+      .refine(value => Object.values(value).some(field => field !== undefined), {
+        message: 'A project update requires at least one changed field',
+      }),
+  })
+  .strict()
+const providerSessionsListPayloadSchema = z
+  .object({
+    operation: z.literal('provider.sessions.list'),
+    provider: z.string().min(1).max(256),
+    cursor: z.string().min(1).max(4_096).optional(),
+  })
+  .strict()
+const providerSessionInspectPayloadSchema = z
+  .object({
+    operation: z.literal('provider.session.inspect'),
+    provider: z.string().min(1).max(256),
+    providerSessionId: opaqueId,
+  })
+  .strict()
+const notificationSubscribePayloadSchema = z
+  .object({
+    operation: z.literal('notification.subscribe'),
+    subscription: webPushSubscriptionSchema,
+  })
+  .strict()
+const notificationUnsubscribePayloadSchema = z
+  .object({
+    operation: z.literal('notification.unsubscribe'),
+    endpoint: z.string().url().max(4_096).optional(),
+  })
+  .strict()
+
+export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
+  sessionCreatePayloadSchema,
+  promptSubmitPayloadSchema,
+  turnCancelPayloadSchema,
+  decisionAnswerPayloadSchema,
+  sessionUpdatePayloadSchema,
+  sessionLifecyclePayloadSchema,
+  projectUpdatePayloadSchema,
+  providerSessionsListPayloadSchema,
+  providerSessionInspectPayloadSchema,
+  deviceInvitationPayloadSchema,
+  notificationSubscribePayloadSchema,
+  notificationUnsubscribePayloadSchema,
+])
+
+export type Mlp3CommandPayload = z.infer<
+  typeof mlp3CommandPayloadSchema
+>
+export type Mlp3CommandOperation = Mlp3CommandPayload['operation']
+
+const commandCommon = {
+  kind: z.literal('malink.command'),
+  version: z.literal(MALINK_PROTOCOL_VERSION),
+  commandId: opaqueId,
+  workspaceId: opaqueId,
+  deviceId: opaqueId,
+  certificateId: opaqueId,
+  createdAt: timestamp,
+}
+
+const projectCommandCommon = { ...commandCommon, projectId: requiredProjectId }
+const sessionCommandCommon = { ...projectCommandCommon, sessionId: requiredSessionId }
+
+/** The whole command is a discriminated union, not merely its payload. */
+export const mlp3CommandSchema = z.union([
+  z.object({
+    ...projectCommandCommon,
+    sessionId: requiredSessionId,
+    operation: z.literal('session.create'),
+    payload: sessionCreatePayloadSchema,
+  }).strict(),
+  z.object({
+    ...sessionCommandCommon,
+    operation: z.literal('prompt.submit'),
+    payload: promptSubmitPayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('project.update'),
+    payload: projectUpdatePayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('provider.sessions.list'),
+    payload: providerSessionsListPayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('provider.session.inspect'),
+    payload: providerSessionInspectPayloadSchema,
+  }).strict(),
+  z.object({
+    ...sessionCommandCommon,
+    operation: z.literal('turn.cancel'),
+    payload: turnCancelPayloadSchema,
+  }).strict(),
+  z.object({
+    ...sessionCommandCommon,
+    operation: z.literal('decision.answer'),
+    payload: decisionAnswerPayloadSchema,
+  }).strict(),
+  z.object({
+    ...sessionCommandCommon,
+    operation: z.literal('session.update'),
+    payload: sessionUpdatePayloadSchema,
+  }).strict(),
+  z.object({
+    ...sessionCommandCommon,
+    operation: z.literal('session.set_lifecycle'),
+    payload: sessionLifecyclePayloadSchema,
+  }).strict(),
+  z.object({
+    ...commandCommon,
+    projectId: opaqueId.optional(),
+    sessionId: opaqueId.optional(),
+    operation: z.literal('device.invitation.create'),
+    payload: deviceInvitationPayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('notification.subscribe'),
+    payload: notificationSubscribePayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('notification.unsubscribe'),
+    payload: notificationUnsubscribePayloadSchema,
+  }).strict(),
+])
+
+export type Mlp3Command = z.infer<typeof mlp3CommandSchema>
+
+export const signedMlp3CommandSchema = z
+  .object({ command: mlp3CommandSchema, signature: signatureSchema })
+  .strict()
+
+export type SignedMlp3Command = z.infer<
+  typeof signedMlp3CommandSchema
+>
+
+const sessionProjectionSchema = z
+  .object({
+    title: z.string().min(1).max(512),
+    scope: z.enum(['project', 'scratch']).optional(),
+    cwd: z.string().min(1).max(8_192).optional(),
+    lifecycle: z.enum(['active', 'archived', 'deleted']),
+    activity: z.enum(['idle', 'queued', 'working', 'attention', 'failed']),
+    updatedAt: timestamp,
+    stateVersion: z.number().int().positive(),
+    extensions: z.array(sessionExtensionSummarySchema).max(8).optional(),
+    availableCommands: z.array(providerCommandSchema).max(256).optional(),
+    extensionRevision: z.number().int().positive().optional(),
+  })
+  .strict()
+
+export type Mlp3SessionProjection = z.infer<
+  typeof sessionProjectionSchema
+>
+
+export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('workspace.snapshot'),
+      protocolMin: z.number().int().positive(),
+      protocolMax: z.number().int().positive(),
+      gatewayKeyId: opaqueId,
+      capabilities: matrixGatewayCapabilitiesSchema,
+      clientReleases: z.array(nativeClientReleaseSchema).max(8).optional(),
+      snapshotVersion: z.number().int().positive(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('project.snapshot'),
+      name: z.string().min(1).max(256),
+      cwd: z.string().min(1).max(8_192),
+      provider: z.string().min(1).max(256),
+      model: z.string().min(1).max(256).optional(),
+      reasoningEffort: z.string().min(1).max(64).optional(),
+      permissionMode: z.string().min(1).max(128),
+      installedExtensions: z.array(sessionExtensionDescriptorSchema).max(64).optional(),
+      defaultExtensions: z.array(mlp3SessionExtensionBindingSchema).max(8).optional(),
+      extensionDefaultsRevision: z.number().int().positive().optional(),
+      snapshotVersion: z.number().int().positive(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('session.ready'),
+      rootCommandId: opaqueId.optional(),
+      originDeviceId: opaqueId.optional(),
+      initialPrompt: z
+        .object({
+          text: z.string(),
+          attachments: z.array(attachmentSchema).max(10).optional(),
+        })
+        .strict()
+        .optional(),
+      projection: sessionProjectionSchema,
+      provider: z.string().min(1).max(256),
+      model: z.string().min(1).max(256).optional(),
+      reasoningEffort: z.string().min(1).max(64).optional(),
+      permissionMode: z.string().min(1).max(128),
+      extensionBindings: z.array(mlp3SessionExtensionBindingSchema).max(8).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('session.updated'),
+      projection: sessionProjectionSchema,
+      patch: sessionSettingsPatchSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('session.lifecycle'),
+      projection: sessionProjectionSchema,
+      state: z.enum(['active', 'archived', 'deleted']),
+      alreadyApplied: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('turn.queued'),
+      turnId: opaqueId,
+      originDeviceId: opaqueId,
+      text: z.string(),
+      attachments: z.array(attachmentSchema).max(10).optional(),
+      projection: sessionProjectionSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('turn.started'),
+      turnId: opaqueId,
+      projection: sessionProjectionSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('turn.completed'),
+      turnId: opaqueId,
+      projection: sessionProjectionSchema,
+      outcome: z.enum(['succeeded', 'cancelled']),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('turn.failed'),
+      turnId: opaqueId,
+      projection: sessionProjectionSchema,
+      code: z.string().min(1).max(128),
+      message: z.string().min(1).max(8_192),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('assistant.message'),
+      messageId: opaqueId,
+      messageVersion: z.number().int().positive(),
+      body: z.string(),
+      format: z.enum(['plain', 'markdown']).default('markdown'),
+      final: z.boolean(),
+      partIndex: z.number().int().nonnegative().optional(),
+      partCount: z.number().int().positive().optional(),
+      projection: sessionProjectionSchema,
+      ui: jsonValueSchema.optional(),
+      attachments: z.array(attachmentSchema).max(10).optional(),
+    })
+    .strict()
+    .superRefine((value, context) => {
+      if ((value.partIndex === undefined) !== (value.partCount === undefined)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['partIndex'],
+          message: 'Message part index and count must be provided together',
+        })
+      } else if (
+        value.partIndex !== undefined
+        && value.partCount !== undefined
+        && value.partIndex >= value.partCount
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['partIndex'],
+          message: 'Message part index must be smaller than part count',
+        })
+      }
+    }),
+  z
+    .object({
+      type: z.literal('inbox.file.received'),
+      fileId: opaqueId,
+      caption: z.string().max(8_192).optional(),
+      source: z
+        .object({
+          kind: z.literal('local-cli'),
+          label: z.string().min(1).max(256).optional(),
+        })
+        .strict(),
+      attachment: attachmentSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('tool.activity'),
+      toolCallId: opaqueId,
+      toolVersion: z.number().int().positive(),
+      name: z.string().min(1).max(256),
+      phase: z.enum(['started', 'updated', 'completed', 'failed']),
+      input: jsonValueSchema.optional(),
+      output: jsonValueSchema.optional(),
+      projection: sessionProjectionSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('decision.requested'),
+      decisionType: z.enum(['permission', 'question', 'privilege']).default('permission'),
+      requestId: opaqueId,
+      title: z.string().min(1).max(1_024),
+      details: jsonValueSchema.optional(),
+      options: z
+        .array(z.object({ label: z.string(), value: z.string() }).strict())
+        .min(1)
+        .max(16),
+      expiresAt: timestamp.optional(),
+      projection: sessionProjectionSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('extension.interaction.requested'),
+      requestId: opaqueId,
+      extension: sessionExtensionSummarySchema,
+      view: sessionExtensionViewSchema,
+      cancelActionId: sessionExtensionActionIdSchema,
+      projection: sessionProjectionSchema,
+    })
+    .strict()
+    .refine(
+      value => value.view.actions.some(action => action.id === value.cancelActionId),
+      { message: 'Extension interaction cancel action must be present in the view' },
+    ),
+  z
+    .object({
+      type: z.literal('decision.resolved'),
+      requestId: opaqueId,
+      decision: z.string().min(1).max(128),
+      projection: sessionProjectionSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('extension.interaction.resolved'),
+      requestId: opaqueId,
+      extensionId: opaqueId,
+      actionId: sessionExtensionActionIdSchema,
+      projection: sessionProjectionSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('command.rejected'),
+      commandId: opaqueId,
+      code: z.string().min(1).max(128),
+      message: z.string().min(1).max(8_192),
+      retryable: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('provider.sessions.listed'),
+      provider: z.string().min(1).max(256),
+      sessions: z.array(providerSessionEntrySchema).max(256),
+      nextCursor: z.string().min(1).max(4_096).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('provider.session.inspected'),
+      provider: z.string().min(1).max(256),
+      providerSessionId: opaqueId,
+      title: z.string().min(1).max(512),
+      managedSessionId: opaqueId.optional(),
+      messages: z.array(providerHistoryMessageSchema).max(256),
+    })
+    .strict()
+    .refine(value => JSON.stringify(value.messages).length <= 96 * 1024, {
+      message: 'Provider session history is too large',
+    }),
+  z
+    .object({
+      type: z.literal('device.invitation.created'),
+      pairingLink: z.string().min(1).max(128 * 1024),
+      expiresAt: timestamp,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('notification.subscription.changed'),
+      enabled: z.boolean(),
+    })
+    .strict(),
+])
+
+export type Mlp3EventPayload = z.infer<typeof mlp3EventPayloadSchema>
+
+export const mlp3EventSchema = z
+  .object({
+    kind: z.literal('malink.event'),
+    version: z.literal(MALINK_PROTOCOL_VERSION),
+    eventId: opaqueId,
+    workspaceId: opaqueId,
+    projectId: opaqueId.optional(),
+    sessionId: opaqueId.optional(),
+    occurredAt: timestamp,
+    causationCommandId: opaqueId.optional(),
+    payload: mlp3EventPayloadSchema,
+  })
+  .strict()
+
+export type Mlp3Event = z.infer<typeof mlp3EventSchema>
+
+export const signedMlp3EventSchema = z
+  .object({ event: mlp3EventSchema, signature: signatureSchema })
+  .strict()
+
+export type SignedMlp3Event = z.infer<typeof signedMlp3EventSchema>
+
+export const mlp3PlaintextSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('signed_command'),
+      value: signedMlp3CommandSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('signed_event'),
+      value: signedMlp3EventSchema,
+    })
+    .strict(),
+])
+
+export type Mlp3Plaintext = z.infer<typeof mlp3PlaintextSchema>
+
+/** One content envelope is used for commands, events, edits and snapshots. */
+export const mlp3ContentEnvelopeSchema = z
+  .object({
+    kind: z.literal('malink.project-envelope'),
+    version: z.literal(MALINK_PROTOCOL_VERSION),
+    roomId: matrixRoomId,
+    projectId: opaqueId,
+    keyId: opaqueId,
+    logicalEventId: opaqueId,
+    nonce: base64Url.length(16),
+    ciphertext: base64Url.min(22).max(128 * 1024),
+  })
+  .strict()
+
+export type Mlp3ContentEnvelope = z.infer<
+  typeof mlp3ContentEnvelopeSchema
+>
+
+export const mlp3TimelineContentSchema = z
+  .object({
+    msgtype: z.literal('m.notice'),
+    body: z.literal('Encrypted Malink event'),
+    'm.relates_to': z.record(z.string(), jsonValueSchema).optional(),
+    [MALINK_MATRIX_EXTENSION]: z
+      .object({
+        version: z.literal(MALINK_PROTOCOL_VERSION),
+        envelope: mlp3ContentEnvelopeSchema,
+      })
+      .strict(),
+  })
+  .strict()
+
+export const mlp3CurrentPointerDocumentSchema = z
+  .object({
+    kind: z.enum(['workspace.current', 'project.current']),
+    version: z.literal(MALINK_PROTOCOL_VERSION),
+    workspaceId: opaqueId,
+    projectId: opaqueId.optional(),
+    roomId: matrixRoomId,
+    eventId: matrixEventId,
+    logicalEventId: opaqueId,
+    snapshotVersion: z.number().int().positive(),
+    gatewayKeyId: opaqueId,
+    updatedAt: timestamp,
+  })
+  .strict()
+
+export const mlp3CurrentPointerSchema = z
+  .object({
+    document: mlp3CurrentPointerDocumentSchema,
+    signature: signatureSchema,
+  })
+  .strict()
+
+export type Mlp3CurrentPointer = z.infer<
+  typeof mlp3CurrentPointerSchema
+>
+
+/**
+ * Key grants are the only pairwise application envelope in MLP/3. They are
+ * directly addressable Matrix state and are never repeated on timeline data.
+ */
+export const mlp3ProjectKeyGrantStateSchema = z
+  .object({
+    kind: z.literal('project.key_grant'),
+    version: z.literal(MALINK_PROTOCOL_VERSION),
+    workspaceId: opaqueId,
+    projectId: opaqueId,
+    roomId: matrixRoomId,
+    deviceId: opaqueId,
+    certificateId: opaqueId,
+    grantId: opaqueId,
+    sealedGrant: z
+      .object({
+        envelope: z
+          .object({
+            kind: z.literal('malink.project-key-grant-envelope'),
+            version: z.literal(MALINK_PROTOCOL_VERSION),
+            grantId: opaqueId,
+            workspaceId: opaqueId,
+            projectId: opaqueId,
+            roomId: matrixRoomId,
+            deviceId: opaqueId,
+            certificateId: opaqueId,
+            senderKeyId: base64Url.length(43),
+            recipientKeyId: base64Url.length(43),
+            nonce: base64Url.length(16),
+            ciphertext: base64Url.min(22).max(64 * 1024),
+          })
+          .strict(),
+        signature: signatureSchema,
+      })
+      .strict(),
+  })
+  .strict()
+
+export const mlp3ProjectKeyGrantPlaintextSchema = z
+  .object({
+    kind: z.literal('project.key_grant'),
+    version: z.literal(MALINK_PROTOCOL_VERSION),
+    workspaceId: opaqueId,
+    projectId: opaqueId,
+    roomId: matrixRoomId,
+    deviceId: opaqueId,
+    certificateId: opaqueId,
+    activeKeyId: opaqueId,
+    keys: z
+      .array(
+        z
+          .object({
+            keyId: opaqueId,
+            key: base64Url.length(43),
+            createdAt: timestamp,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(64),
+  })
+  .strict()
+  .superRefine((grant, context) => {
+    const ids = grant.keys.map(key => key.keyId)
+    if (new Set(ids).size !== ids.length) {
+      context.addIssue({ code: 'custom', path: ['keys'], message: 'Key IDs must be unique' })
+    }
+    if (!ids.includes(grant.activeKeyId)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['activeKeyId'],
+        message: 'The active key must be included in the grant',
+      })
+    }
+  })
+
+export type Mlp3ProjectKeyGrantPlaintext = z.infer<
+  typeof mlp3ProjectKeyGrantPlaintextSchema
+>
+
+export const mlp3ProjectKeyGrantEnvelopeSchema =
+  mlp3ProjectKeyGrantStateSchema.shape.sealedGrant
+
+export type Mlp3ProjectKeyGrantEnvelope = z.infer<
+  typeof mlp3ProjectKeyGrantEnvelopeSchema
+>

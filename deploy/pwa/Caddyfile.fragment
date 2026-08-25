@@ -1,0 +1,4 @@
+encode zstd gzip
+
+@malink_service_worker path /sw.js
+header @malink_service_worker Cache-Control "no-cache, no-store, must-revalidate"
