@@ -103,6 +103,7 @@ export interface MatrixMlp3GatewayDependencies {
   }) => Promise<{ pairingLink: string; expiresAt: number }>
   privilegeExecutor?: PrivilegeExecutor
   webPushService?: GatewayWebPushService
+  workspaceGatewayDirectory?: () => Promise<import('@malink/protocol').SignedWorkspaceGatewayDirectory | undefined>
 }
 
 export type MatrixMlp3GatewayState = 'stopped' | 'starting' | 'running' | 'stopping'
@@ -153,6 +154,7 @@ export class MatrixMlp3GatewayRunner {
   private unsubscribe: (() => void) | null = null
   private state: MatrixMlp3GatewayState = 'stopped'
   private publishedClientReleases: NativeClientRelease[] = []
+  private publishedGatewayDirectoryRevision = -1
   private readonly runtimeEpoch = randomUUID()
 
   constructor(
@@ -1615,9 +1617,15 @@ export class MatrixMlp3GatewayRunner {
 
   private async publishWorkspaceSnapshot(project: V3ProjectRuntime): Promise<void> {
     const capabilities = this.discoverCapabilities(project)
-    if (JSON.stringify(project.project.capabilities) !== JSON.stringify(capabilities)) {
+    const gatewayDirectory = await this.dependencies.workspaceGatewayDirectory?.()
+    const directoryChanged = gatewayDirectory !== undefined &&
+      gatewayDirectory.directory.revision !== this.publishedGatewayDirectoryRevision
+    if (JSON.stringify(project.project.capabilities) !== JSON.stringify(capabilities) || directoryChanged) {
       project.project.capabilities = capabilities
       project.project.capabilitySnapshotVersion += 1
+      if (gatewayDirectory) {
+        this.publishedGatewayDirectoryRevision = gatewayDirectory.directory.revision
+      }
       await this.persist(project)
     }
     if (project.project.capabilitySnapshotVersion < 1 || !project.project.capabilities) {
@@ -1644,6 +1652,7 @@ export class MatrixMlp3GatewayRunner {
         ...(this.publishedClientReleases.length > 0
           ? { clientReleases: structuredClone(this.publishedClientReleases) }
           : {}),
+        ...(gatewayDirectory ? { gatewayDirectory } : {}),
         snapshotVersion: project.project.capabilitySnapshotVersion,
       },
     }

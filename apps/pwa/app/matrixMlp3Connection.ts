@@ -87,7 +87,7 @@ export async function connectMatrixMlp3(
   const config = normalizeMatrixConfig(configInput);
   handlers.onStatus("connecting", "Opening the durable MLP/3 client…");
   const identity = await getOrCreateDeviceIdentity();
-  let trust = await loadTrustedGateway(identity);
+  let trust = await loadTrustedGateway(identity, config.gatewayId || undefined);
   const sdk = await import("matrix-js-sdk");
   const syncDatabase = await matrixSyncDatabaseName(config);
   await waitForMatrixSyncStoreClose(syncDatabase);
@@ -1018,6 +1018,9 @@ function gatewayState(
           sessionExtensions: project?.installedExtensions ?? [],
         },
     nativeClientReleases: protocol.projection.workspace?.clientReleases ?? [],
+    ...(protocol.projection.workspace?.gatewayDirectory
+      ? { gatewayDirectory: protocol.projection.workspace.gatewayDirectory }
+      : {}),
   };
 }
 

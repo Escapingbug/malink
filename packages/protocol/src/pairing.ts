@@ -94,6 +94,8 @@ export const pairingOfferSchema = z
     version: z.literal(PROTOCOL_VERSION),
     offerId: opaqueId,
     gatewayId: opaqueId,
+    /** Distinguishes one execution node inside the shared Gateway/Workspace trust domain. */
+    gatewayNodeId: opaqueId.optional(),
     gatewayName: z.string().min(1).max(128),
     gatewayKey: pairingPublicKeySchema,
     gatewayTransport: matrixTransportBindingSchema,
@@ -273,6 +275,10 @@ export const pairingResponseSchema = z
     /** Signed snapshot after this certificate becomes active. */
     activeDeviceCount: z.number().int().positive().optional(),
     certificate: signedPairingCertificateSchema,
+    /** Signed portable authorization; validated by the Workspace security layer. */
+    workspaceGrant: z.unknown().optional(),
+    /** Signed discovery snapshot for every Gateway node in this Workspace. */
+    gatewayDirectory: z.unknown().optional(),
     issuedAt: timestamp,
     expiresAt: timestamp,
   })

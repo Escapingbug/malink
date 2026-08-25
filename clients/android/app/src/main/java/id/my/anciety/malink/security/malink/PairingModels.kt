@@ -115,12 +115,14 @@ data class PairingOffer(
     val allowedOperations: List<PairingOperation>,
     val issuedAt: Long,
     val expiresAt: Long,
+    val gatewayNodeId: String? = null,
 ) {
     fun toJson(): JsonObject = buildJsonObject {
         put("kind", "malink.pairing.offer")
         put("version", 1)
         put("offerId", offerId)
         put("gatewayId", gatewayId)
+        gatewayNodeId?.let { put("gatewayNodeId", it) }
         put("gatewayName", gatewayName)
         put("gatewayKey", gatewayKey.toJson())
         put("gatewayTransport", gatewayTransport.toJson())
@@ -230,6 +232,8 @@ data class PairingResponse(
     val gatewayId: String,
     val activeDeviceCount: Int?,
     val certificate: SignedPairingCertificate,
+    val workspaceGrant: JsonObject? = null,
+    val gatewayDirectory: JsonObject? = null,
     val issuedAt: Long,
     val expiresAt: Long,
 ) {
@@ -242,6 +246,8 @@ data class PairingResponse(
         put("gatewayId", gatewayId)
         activeDeviceCount?.let { put("activeDeviceCount", it) }
         put("certificate", certificate.toJson())
+        workspaceGrant?.let { put("workspaceGrant", it) }
+        gatewayDirectory?.let { put("gatewayDirectory", it) }
         put("issuedAt", issuedAt)
         put("expiresAt", expiresAt)
     }

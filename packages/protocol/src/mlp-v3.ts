@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { matrixGatewayCapabilitiesSchema } from './matrix-native.js'
+import { signedWorkspaceGatewayDirectorySchema } from './workspace-authorization.js'
 import {
   attachmentSchema,
   jsonValueSchema,
@@ -419,6 +420,7 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       gatewayKeyId: opaqueId,
       capabilities: matrixGatewayCapabilitiesSchema,
       clientReleases: z.array(nativeClientReleaseSchema).max(8).optional(),
+      gatewayDirectory: signedWorkspaceGatewayDirectorySchema.optional(),
       snapshotVersion: z.number().int().positive(),
     })
     .strict(),

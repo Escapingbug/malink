@@ -18,6 +18,45 @@ it is not execution authority and is not used as an application RPC queue.
 - Future desktop shells may reuse the PWA and native-service boundary without
   moving the web application into a separately updated offline bundle.
 
+## Workspace authorization and multiple Gateways
+
+`gatewayId` is the stable Workspace authorization identifier retained on the
+MLP/3 wire for compatibility. `gatewayNodeId` identifies one execution node.
+Every Gateway node in a Workspace holds the same Workspace signing identity,
+while its Matrix transport binding and working directories remain node-local.
+Consequently a client is paired once with the Workspace, receives one portable
+device grant, and may select any node in the signed Gateway Directory without
+pairing again.
+
+Android does not contain or run a Gateway. “Multiple Gateways on Android” means
+that the native Matrix service and its PWA presentation refer to external
+Gateway nodes using the same Workspace grant. Browser PWA and Android parse and
+persist the same authorization documents; their difference is lifecycle
+ownership and durable native storage. The current native Matrix session remains
+bound to one node and rejects an in-place UI switch until native room rebinding
+is implemented, avoiding a misleading switch while commands still target the
+old node.
+
+Adding a trusted Gateway is an owner-local operation:
+
+1. On an existing node, run
+   `malink gateway invite-gateway --gateway-data-dir PATH`.
+2. Move the resulting short-lived `malink://gateway-join` bearer link directly
+   to the new trusted machine. It contains the Workspace private identity and
+   must never be posted to Matrix, a public URL, logs, or chat.
+3. On the new node, run
+   `malink gateway join LINK --gateway-data-dir PATH`, then configure and start
+   its Matrix Gateway normally.
+4. The new node publishes its descriptor into the signed Gateway Directory.
+   Clients learn that directory through pairing responses and signed
+   `workspace.snapshot` updates; selecting a node changes transport/projection
+   scope but not the Workspace grant.
+
+Gateway compromise and hostile Gateway nodes are outside this deployment's
+threat model. Matrix remains untrusted transport: it cannot forge grants,
+directories, commands, or snapshots, and a homeserver compromise does not
+expose a direct control endpoint on a Gateway.
+
 ## Runtime shape
 
 ```text

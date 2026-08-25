@@ -9,6 +9,12 @@ import QRCode from 'qrcode'
 import { config, getDaemonLogPath, getDaemonBaseDir } from './config'
 import { pairing } from './channel/telegram/pairing'
 import { GatewayAdminClient } from './gateway/admin/client'
+import {
+    acceptGatewayJoinInvitation,
+    createGatewayJoinInvitation,
+    FileGatewayIdentityStore,
+    FileWorkspaceGatewayDirectory,
+} from './gateway/pairing/index'
 import { loadProviderProfiles } from './providers/configured'
 import { resolveNodePath } from './utils/nodePath'
 import { isDaemonRunning, startDaemon, stopDaemon } from './daemon/process'
@@ -474,6 +480,8 @@ async function handleGatewayCommand(
       [--lifetime SECONDS] [--matrix-login required|preferred|disabled]
       [--privilege-approval]
       [--qr terminal|png|none] [--output PATH] [--json]
+  malink gateway invite-gateway --gateway-data-dir PATH
+  malink gateway join <invitation-link> --gateway-data-dir PATH
   malink gateway devices [--socket PATH] [--json]
   malink gateway cancel <invitation-id> [--socket PATH]
   malink gateway revoke <device-id> [--reason TEXT] [--socket PATH]
@@ -491,6 +499,51 @@ async function handleGatewayCommand(
         socketPath,
         timeoutMs: subcommand === 'send-file' ? 120_000 : 5_000,
     })
+
+    if (subcommand === 'invite-gateway') {
+        const dataDirectory = gatewayDataDirectory(values)
+        const identity = await new FileGatewayIdentityStore(
+            join(dataDirectory, 'gateway-identity.json'),
+        ).loadExisting()
+        const directory = await new FileWorkspaceGatewayDirectory(
+            join(dataDirectory, 'workspace-gateways.json'),
+            identity,
+        ).load()
+        const lifetimeMs = parseLifetimeMs(values.lifetime)
+        const invitation = createGatewayJoinInvitation(
+            identity,
+            directory,
+            Date.now(),
+            lifetimeMs,
+        )
+        if (values.json) {
+            console.log(JSON.stringify(invitation, null, 2))
+            return
+        }
+        console.log('Gateway join invitation (contains the Workspace authorization key):')
+        console.log(invitation.link)
+        console.log(`Expires: ${new Date(invitation.invitation.expiresAt).toISOString()}`)
+        return
+    }
+
+    if (subcommand === 'join') {
+        const link = positionals[1]
+        if (!link) throw new Error('Usage: malink gateway join <invitation-link> --gateway-data-dir PATH')
+        const dataDirectory = gatewayDataDirectory(values)
+        const identityStore = new FileGatewayIdentityStore(
+            join(dataDirectory, 'gateway-identity.json'),
+        )
+        const joined = await acceptGatewayJoinInvitation(identityStore, link)
+        if (joined.directory) {
+            await new FileWorkspaceGatewayDirectory(
+                join(dataDirectory, 'workspace-gateways.json'),
+                joined.identity,
+            ).merge(joined.directory)
+        }
+        console.log(`Joined Workspace ${joined.identity.workspaceId}.`)
+        console.log(`Gateway node ID: ${joined.identity.gatewayNodeId}`)
+        return
+    }
 
     if (subcommand === 'status') {
         const status = await client.status()
@@ -623,6 +676,14 @@ async function handleGatewayCommand(
 
     throw new Error(
         'Usage: malink gateway [status | invite | devices | send-file <path> | cancel <offer> | revoke <device>]',
+    )
+}
+
+function gatewayDataDirectory(values: Record<string, unknown>): string {
+    return resolve(
+        stringOption(values['gateway-data-dir'])
+        ?? process.env.MALINK_MATRIX_DATA_DIR
+        ?? join(homedir(), '.config', 'malink-rewrite-pwa', 'gateway-data'),
     )
 }
 

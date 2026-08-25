@@ -249,6 +249,7 @@ import {
   normalizeMatrixConfig,
   resolveMatrixSession,
   saveMatrixConfig,
+  selectMatrixConfigGateway,
   type IncomingMalinkMessage,
   type GatewayStateSnapshot,
   type MatrixConnectionConfig,
@@ -262,7 +263,9 @@ import {
   inspectPairingLink,
   loadPendingPairingRecovery,
   loadTrustedGateway,
+  loadTrustedGateways,
   pairingLinkFromDeviceInvitation,
+  selectTrustedGateway,
   trustedGatewayConfig,
   type GeneratedDeviceInvitation,
   type PairingPreview,
@@ -1012,6 +1015,7 @@ function MalinkAppRuntime() {
     useState<PairingPreview | null>(null);
   const [trustedGateway, setTrustedGateway] =
     useState<MalinkPublicTrust | null>(null);
+  const [savedGateways, setSavedGateways] = useState<MalinkPublicTrust[]>([]);
   const [pairingBusy, setPairingBusy] = useState(false);
   const [deviceInvitation, setDeviceInvitation] =
     useState<GeneratedDeviceInvitation | null>(null);
@@ -1960,7 +1964,9 @@ function MalinkAppRuntime() {
       if (deferStoredStartupForPairing) return;
       const identity = await getOrCreateDeviceIdentity();
       const trust = await loadTrustedGateway(identity);
-      const stored = loadMatrixConfig() ?? emptyMatrixConfig;
+      const savedTrusts = await loadTrustedGateways(identity);
+      setSavedGateways(savedTrusts.map(publicTrustFromWeb));
+      const stored = loadMatrixConfig(trust?.gatewayId) ?? loadMatrixConfig() ?? emptyMatrixConfig;
       if (trust) {
         clearPendingPairing();
         setTrustedGateway(publicTrustFromWeb(trust));
@@ -2016,6 +2022,7 @@ function MalinkAppRuntime() {
         ...bindCredentialsToHomeserver(stored, transport.homeserver),
         roomId: transport.roomId,
         gatewayId: preview.gatewayId,
+        gatewayNodeId: preview.gatewayNodeId,
         conversationId: transport.roomId,
         gatewayMatrixUserId: transport.userId,
         gatewayMatrixDeviceId: transport.deviceId,
@@ -3223,6 +3230,15 @@ function MalinkAppRuntime() {
         onTrustUpdated(trust) {
           if (!isCurrentStartup()) return;
           setTrustedGateway(trust);
+          if (trust) {
+            setSavedGateways((current) => [
+              trust,
+              ...current.filter((gateway) =>
+                (gateway.gatewayNodeId ?? gateway.gatewayId) !==
+                (trust.gatewayNodeId ?? trust.gatewayId)
+              ),
+            ]);
+          }
           setActiveDeviceCount(trust?.activeDeviceCount ?? null);
           if (trust) {
             setPairingPreview(null);
@@ -3233,6 +3249,20 @@ function MalinkAppRuntime() {
         },
         onCollaborationState(state) {
           if (!isCurrentStartup()) return;
+          if (state.gatewayState?.gatewayDirectory) {
+            void getOrCreateDeviceIdentity()
+              .then(identity => loadTrustedGateways(identity))
+              .then(gateways => {
+                if (isCurrentStartup()) setSavedGateways(gateways.map(publicTrustFromWeb));
+              })
+              .catch(error => {
+                if (isCurrentStartup()) {
+                  setConnectionError(
+                    `Workspace Gateway directory could not be loaded: ${formatUiError(error)}`,
+                  );
+                }
+              });
+          }
           if (state.gatewayState) {
             setActiveDeviceCount(state.gatewayState.activeDeviceCount);
             setGatewayRevision(state.gatewayState.revision);
@@ -3556,12 +3586,20 @@ function MalinkAppRuntime() {
       forgetPendingSessionCreate(queuedSessionCreate.commandId);
       clearPendingSessionCreateUi();
     }
-    clearMatrixConfig();
+    const removedGatewayId = matrixConfig.gatewayNodeId || matrixConfig.gatewayId || undefined;
+    clearMatrixConfig(removedGatewayId);
     clearGatewayUiCache(window.localStorage);
     clearPendingPairing();
-    clearTrustedGateway();
+    clearTrustedGateway(removedGatewayId);
     setMatrixConfig(emptyMatrixConfig);
     setTrustedGateway(null);
+    setSavedGateways((current) =>
+      removedGatewayId
+        ? current.filter((gateway) =>
+            (gateway.gatewayNodeId ?? gateway.gatewayId) !== removedGatewayId
+          )
+        : current,
+    );
     setActiveDeviceCount(null);
     setGatewayRevision(null);
     setGatewayState(null);
@@ -3587,6 +3625,41 @@ function MalinkAppRuntime() {
       });
     }
     setSettingsOpen(true);
+  }
+
+  async function switchGateway(gatewayId: string): Promise<void> {
+    if (
+      gatewayId === (trustedGateway?.gatewayNodeId ?? trustedGateway?.gatewayId) ||
+      pairingBusy
+    ) return;
+    setConnectionError(null);
+    setPairingError(null);
+    try {
+      if (isNativeManagedMatrixConfig(matrixConfig)) {
+        throw new Error(
+          "This Android native session is currently bound to one Gateway node. Native node rebinding must be completed before switching here.",
+        );
+      }
+      const identity = await getOrCreateDeviceIdentity();
+      const trust = await loadTrustedGateway(identity, gatewayId);
+      if (!trust) throw new Error("The saved Gateway trust could not be verified.");
+      const config = selectMatrixConfigGateway(gatewayId);
+      selectTrustedGateway(gatewayId);
+      setTrustedGateway(publicTrustFromWeb(trust));
+      setActiveDeviceCount(trust.activeDeviceCount ?? null);
+      setMatrixConfig(config);
+      await connectMalinkClient(config, false);
+      setSettingsOpen(false);
+      showUiNotice(
+        "connection:gateway-switched",
+        "session",
+        "success",
+        `Switched to ${trust.gatewayName}.`,
+        4_000,
+      );
+    } catch (error) {
+      setConnectionError(formatUiError(error));
+    }
   }
 
   async function openPairingLink(link: string) {
@@ -3619,6 +3692,7 @@ function MalinkAppRuntime() {
         ...bindCredentialsToHomeserver(current, transport.homeserver),
         roomId: transport.roomId,
         gatewayId: preview.gatewayId,
+        gatewayNodeId: preview.gatewayNodeId,
         conversationId: transport.roomId,
         gatewayMatrixUserId: transport.userId,
         gatewayMatrixDeviceId: transport.deviceId,
@@ -3643,6 +3717,7 @@ function MalinkAppRuntime() {
         ...bindCredentialsToHomeserver(matrixConfig, transport.homeserver),
         roomId: transport.roomId,
         gatewayId: preview.gatewayId,
+        gatewayNodeId: preview.gatewayNodeId,
         conversationId: transport.roomId,
         gatewayMatrixUserId: transport.userId,
         gatewayMatrixDeviceId: transport.deviceId,
@@ -3675,6 +3750,7 @@ function MalinkAppRuntime() {
           roomBinding: {
             roomId: transport.roomId,
             gatewayId: preview.gatewayId,
+            gatewayNodeId: preview.gatewayNodeId,
             conversationId: transport.roomId,
             gatewayUserId: transport.userId,
             gatewayDeviceId: transport.deviceId,
@@ -3729,6 +3805,7 @@ function MalinkAppRuntime() {
             roomBinding: {
               roomId: preview.transport.roomId,
               gatewayId: preview.gatewayId,
+              gatewayNodeId: preview.gatewayNodeId,
               conversationId: preview.transport.roomId,
               gatewayUserId: preview.transport.userId,
               gatewayDeviceId: preview.transport.deviceId,
@@ -3959,6 +4036,7 @@ function MalinkAppRuntime() {
         homeserver: transport.homeserver,
         roomId: transport.roomId,
         gatewayId: previewOverride.gatewayId,
+        gatewayNodeId: previewOverride.gatewayNodeId,
         conversationId: transport.roomId,
         gatewayMatrixUserId: transport.userId,
         gatewayMatrixDeviceId: transport.deviceId,
@@ -3977,6 +4055,13 @@ function MalinkAppRuntime() {
       );
       saveMatrixConfig(configForPairing);
       setTrustedGateway(trust);
+      setSavedGateways((current) => [
+        trust,
+        ...current.filter((gateway) =>
+          (gateway.gatewayNodeId ?? gateway.gatewayId) !==
+          (trust.gatewayNodeId ?? trust.gatewayId)
+        ),
+      ]);
       setActiveDeviceCount(trust.activeDeviceCount ?? null);
       setMatrixConfig(configForPairing);
       setPairingPreview(null);
@@ -7192,6 +7277,7 @@ function MalinkAppRuntime() {
         error={pairingError ?? connectionError}
         pairingPreview={pairingPreview}
         trustedGateway={trustedGateway}
+        savedGateways={savedGateways}
         pairingBusy={pairingBusy}
         deviceInvitation={deviceInvitation}
         invitationBusy={invitationBusy}
@@ -7215,6 +7301,7 @@ function MalinkAppRuntime() {
         onClose={() => setSettingsOpen(false)}
         onDisconnect={() => disconnectClient()}
         onForget={() => setForgetDialogOpen(true)}
+        onSwitchGateway={(gatewayId) => void switchGateway(gatewayId)}
         onPasswordLogin={(userId, password) =>
           void signInForPairing(userId, password)
         }

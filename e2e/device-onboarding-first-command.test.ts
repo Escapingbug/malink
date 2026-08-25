@@ -121,6 +121,7 @@ describe('device invitation to first Gateway command', () => {
         })
         expect(trustedGatewayConfig(trust)).toEqual({
             gatewayId: 'gateway-onboarding-e2e',
+            gatewayNodeId: 'gateway-onboarding-e2e',
             homeserver: 'https://matrix.example',
             roomId: '!malink:example',
             gatewayMatrixUserId: '@gateway:example',

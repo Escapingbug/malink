@@ -16,6 +16,7 @@ import {
   signMlp3Command,
   verifyMlp3Command,
   verifyMlp3Event,
+  verifyWorkspaceGatewayDirectory,
 } from "@malink/security";
 import type { DeviceIdentity } from "./matrix";
 import type { TrustedGateway } from "./pairing";
@@ -443,6 +444,16 @@ export class MatrixMlp3ProtocolClient {
       && event.payload.gatewayKeyId !== this.trust.gatewayKey.keyId
     ) {
       throw new Error("The MLP/3 workspace capability snapshot names another Gateway key.");
+    }
+    if (
+      event.payload.type === "workspace.snapshot" &&
+      event.payload.gatewayDirectory
+    ) {
+      await verifyWorkspaceGatewayDirectory(
+        event.payload.gatewayDirectory,
+        this.trust.gatewayKey.publicKey,
+        { workspaceId: this.config.workspaceId },
+      );
     }
     if (opened.envelope.logicalEventId !== event.eventId) {
       throw new Error("The MLP/3 event envelope logical ID is invalid.");

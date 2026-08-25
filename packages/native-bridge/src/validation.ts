@@ -772,6 +772,7 @@ export function parsePublicTrustState(
         [
           "state",
           "gatewayId",
+          "gatewayNodeId",
           "gatewayName",
           "certificateId",
           "pairedAt",
@@ -782,6 +783,9 @@ export function parsePublicTrustState(
       return {
         state: "trusted",
         gatewayId: opaqueId(stateValue.gatewayId, `${label}.gatewayId`),
+        ...(stateValue.gatewayNodeId === undefined
+          ? {}
+          : { gatewayNodeId: opaqueId(stateValue.gatewayNodeId, `${label}.gatewayNodeId`) }),
         gatewayName: requiredString(stateValue.gatewayName, `${label}.gatewayName`, 256),
         certificateId: opaqueId(
           stateValue.certificateId,

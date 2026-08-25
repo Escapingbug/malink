@@ -39,12 +39,13 @@ object PairingCodec {
     internal fun parseOffer(value: JsonObject): SignedPairingOffer {
         value.requireExactKeys(setOf("offer", "signature"), "signed pairing offer")
         val offerObject = value.requiredObject("offer")
-        offerObject.requireExactKeys(
-            setOf(
+        offerObject.requireAllowedKeys(
+            required = setOf(
                 "kind", "version", "offerId", "gatewayId", "gatewayName", "gatewayKey",
                 "gatewayTransport", "challenge", "allowedOperations", "issuedAt", "expiresAt",
             ),
-            "pairing offer",
+            optional = setOf("gatewayNodeId"),
+            label = "pairing offer",
         )
         require(offerObject.requiredString("kind") == "malink.pairing.offer")
         require(offerObject.requiredLong("version") == 1L)
@@ -55,6 +56,7 @@ object PairingCodec {
             offer = PairingOffer(
                 offerId = offerObject.requiredOpaqueId("offerId"),
                 gatewayId = offerObject.requiredOpaqueId("gatewayId"),
+                gatewayNodeId = offerObject["gatewayNodeId"]?.jsonPrimitive?.content,
                 gatewayName = offerObject.requiredString("gatewayName", 128),
                 gatewayKey = parsePublicKey(offerObject.requiredObject("gatewayKey")),
                 gatewayTransport = parseTransport(offerObject.requiredObject("gatewayTransport")),
@@ -109,7 +111,7 @@ object PairingCodec {
                 "kind", "version", "offerId", "requestId", "requestDigest", "gatewayId",
                 "certificate", "issuedAt", "expiresAt",
             ),
-            optional = setOf("activeDeviceCount"),
+            optional = setOf("activeDeviceCount", "workspaceGrant", "gatewayDirectory"),
             label = "pairing response",
         )
         require(response.requiredString("kind") == "malink.pairing.response")
@@ -127,6 +129,8 @@ object PairingCodec {
                 gatewayId = response.requiredOpaqueId("gatewayId"),
                 activeDeviceCount = activeDeviceCount,
                 certificate = parseCertificate(response.requiredObject("certificate")),
+                workspaceGrant = response["workspaceGrant"]?.jsonObject,
+                gatewayDirectory = response["gatewayDirectory"]?.jsonObject,
                 issuedAt = issuedAt,
                 expiresAt = expiresAt,
             ),

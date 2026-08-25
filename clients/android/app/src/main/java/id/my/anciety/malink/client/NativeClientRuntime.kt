@@ -2667,6 +2667,7 @@ class NativeClientRuntime(
         val active = trust ?: return PublicTrustState.Unpaired
         return PublicTrustState.Trusted(
             gatewayId = active.gatewayId,
+            gatewayNodeId = active.offer.offer.gatewayNodeId ?: active.gatewayId,
             gatewayName = active.offer.offer.gatewayName,
             certificateId = active.certificate.certificateId,
             pairedAt = active.certificate.issuedAt,

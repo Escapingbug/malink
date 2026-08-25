@@ -173,6 +173,7 @@ export type PublicTrustState =
   | {
       state: "trusted";
       gatewayId: string;
+      gatewayNodeId?: string;
       gatewayName: string;
       certificateId: string;
       pairedAt: number;

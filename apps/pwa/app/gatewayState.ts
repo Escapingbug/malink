@@ -97,6 +97,7 @@ export type GatewayStateSnapshot = {
   workspace: GatewayWorkspaceState;
   capabilities: GatewayCapabilities;
   nativeClientReleases?: NativeClientRelease[];
+  gatewayDirectory?: import('@malink/protocol').SignedWorkspaceGatewayDirectory;
 };
 
 export type GatewayStateCacheBinding = {

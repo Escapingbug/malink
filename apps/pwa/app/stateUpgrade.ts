@@ -7,8 +7,12 @@ import {
 } from "@malink/protocol";
 import { NATIVE_BRIDGE_PROTOCOL_VERSION } from "@malink/native-bridge";
 import { MALINK_BUILD_VERSION } from "./buildInfo";
-import { MATRIX_CONFIG_STORAGE_KEY } from "./matrix";
 import {
+  MATRIX_CONFIG_PROFILES_STORAGE_KEY,
+  MATRIX_CONFIG_STORAGE_KEY,
+} from "./matrix";
+import {
+  PAIRING_TRUST_PROFILES_STORAGE_KEY,
   PAIRING_TRUST_STORAGE_KEY,
   PENDING_PAIRING_STORAGE_KEY,
 } from "./pairing";
@@ -98,6 +102,15 @@ export const PWA_STATE_CATALOG: readonly PwaStateCatalogEntry[] = Object.freeze(
     validate: jsonObjectValidator(MATRIX_CONFIG_STORAGE_KEY),
   },
   {
+    id: "matrix-connections",
+    key: MATRIX_CONFIG_PROFILES_STORAGE_KEY,
+    prefix: false,
+    stateClass: "security-critical",
+    schemaVersion: 1,
+    legacySchemaVersion: 1,
+    validate: versionedJsonValidator(MATRIX_CONFIG_PROFILES_STORAGE_KEY, 1),
+  },
+  {
     id: "gateway-trust",
     key: PAIRING_TRUST_STORAGE_KEY,
     prefix: false,
@@ -105,6 +118,15 @@ export const PWA_STATE_CATALOG: readonly PwaStateCatalogEntry[] = Object.freeze(
     schemaVersion: 1,
     legacySchemaVersion: 1,
     validate: jsonObjectValidator(PAIRING_TRUST_STORAGE_KEY),
+  },
+  {
+    id: "gateway-trust-profiles",
+    key: PAIRING_TRUST_PROFILES_STORAGE_KEY,
+    prefix: false,
+    stateClass: "security-critical",
+    schemaVersion: 1,
+    legacySchemaVersion: 1,
+    validate: versionedJsonValidator(PAIRING_TRUST_PROFILES_STORAGE_KEY, 1),
   },
   {
     id: "pending-pairing",

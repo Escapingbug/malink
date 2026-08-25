@@ -5,6 +5,7 @@ import type {
   SignedPairingOffer,
   SignedPairingRequest,
   SignedPairingResponse,
+  SignedWorkspaceDeviceGrant,
 } from '@malink/protocol'
 import { canonicalJson } from '@malink/protocol'
 
@@ -43,6 +44,7 @@ export interface StoredPendingPairing {
 export interface TrustedDeviceRecord {
   status: 'active' | 'revoked'
   certificate: SignedPairingCertificate
+  workspaceGrant?: SignedWorkspaceDeviceGrant
   /** Last Gateway Matrix device acknowledged by this PWA. */
   gatewayTransport: MatrixTransportBinding
   activatedAt: number
@@ -254,6 +256,7 @@ export class FileTrustedDeviceRegistry {
     certificate: SignedPairingCertificate,
     response: SignedPairingResponse,
     now: number,
+    workspaceGrant?: SignedWorkspaceDeviceGrant,
   ): Promise<TrustedDeviceRecord> {
     return this.file.transaction(initialState, (state) => {
       validateState(state)
@@ -281,6 +284,7 @@ export class FileTrustedDeviceRegistry {
       const record: TrustedDeviceRecord = {
         status: 'active',
         certificate: structuredClone(certificate),
+        ...(workspaceGrant ? { workspaceGrant: structuredClone(workspaceGrant) } : {}),
         gatewayTransport: structuredClone(certificate.certificate.gatewayTransport),
         activatedAt: now,
       }

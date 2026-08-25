@@ -9,6 +9,7 @@ import { FileReplayStore } from '@malink/security/node'
 import {
     FileGatewayIdentityStore,
     FileTrustedDeviceRegistry,
+    FileWorkspaceGatewayDirectory,
     DeviceInvitationCoordinator,
     GatewayPairingService,
     listenForMatrixPairingRequests,
@@ -146,6 +147,15 @@ const currentTransport = {
     deviceId: login.device_id,
     ed25519: ownKeys.ed25519,
 }
+const workspaceDirectory = new FileWorkspaceGatewayDirectory(
+    join(dataDirectory, 'workspace-gateways.json'),
+    identity,
+)
+await workspaceDirectory.publishLocal(
+    process.env.MALINK_GATEWAY_NAME ?? 'Malink local Gateway',
+    currentTransport,
+)
+pairingService.setWorkspaceDirectoryProvider(() => workspaceDirectory.load())
 const pwaLoginPath = process.env.MALINK_PWA_LOGIN_FILE
     ?? join(dirname(dataDirectory), 'pwa-login.json')
 const invitationCoordinator = new DeviceInvitationCoordinator(
@@ -319,6 +329,7 @@ runner = new MatrixMlp3GatewayRunner(config, {
             expiresAt: created.expiresAt,
         }
     },
+    workspaceGatewayDirectory: () => workspaceDirectory.load(),
     onRejected: (event, error) => {
         process.stderr.write(
             `[matrix-gateway] rejected ${event.eventId}: ${formatError(error)}\n`,

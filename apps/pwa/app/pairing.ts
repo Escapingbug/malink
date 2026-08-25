@@ -10,6 +10,8 @@ import {
   signedPairingOfferSchema,
   signedPairingRequestSchema,
   signedPairingResponseSchema,
+  signedWorkspaceDeviceGrantSchema,
+  signedWorkspaceGatewayDirectorySchema,
   type MatrixTransportBinding,
   type DeviceInvitation,
   type GeneratedDeviceInvitation,
@@ -21,6 +23,8 @@ import {
   type SignedPairingOffer,
   type SignedPairingRequest,
   type SignedPairingResponse,
+  type SignedWorkspaceDeviceGrant,
+  type SignedWorkspaceGatewayDirectory,
 } from "@malink/protocol";
 import {
   exportPairingPublicKey,
@@ -32,10 +36,12 @@ import {
   verifyPairingOffer,
   verifyPairingRequest,
   verifyPairingResponse,
+  verifyWorkspaceGatewayDirectory,
 } from "@malink/security";
 import type { DeviceIdentity } from "./matrix";
 
 export const PAIRING_TRUST_STORAGE_KEY = "malink.pairing.trust.v1";
+export const PAIRING_TRUST_PROFILES_STORAGE_KEY = "malink.pairing.trust.profiles.v1";
 export const PENDING_PAIRING_STORAGE_KEY = "malink.pairing.pending.v1";
 const PAIRING_REQUEST_TTL_MS = 2 * 60_000;
 // Once signed, this is a durable authorization transaction rather than an
@@ -48,6 +54,7 @@ export type PairingPreview = {
   signedOffer: SignedPairingOffer;
   gatewayName: string;
   gatewayId: string;
+  gatewayNodeId: string;
   verificationCode: string;
   expiresAt: number;
   transport: MatrixTransportBinding;
@@ -62,6 +69,7 @@ export type {
 export type TrustedGateway = {
   version: 1;
   gatewayId: string;
+  gatewayNodeId: string;
   gatewayName: string;
   activeDeviceCount?: number;
   gatewayKey: PairingPublicKey;
@@ -69,9 +77,17 @@ export type TrustedGateway = {
   offer: SignedPairingOffer;
   request: SignedPairingRequest;
   certificate: SignedPairingCertificate;
+  workspaceGrant?: SignedWorkspaceDeviceGrant;
+  gatewayDirectory?: SignedWorkspaceGatewayDirectory;
   rotations: SignedGatewayDeviceRotation[];
   transportSnapshots: SignedGatewayTransportSnapshot[];
   pairedAt: number;
+};
+
+type TrustedGatewayProfiles = {
+  version: 1;
+  activeGatewayId: string | null;
+  gateways: Record<string, TrustedGateway>;
 };
 
 type PendingPairing = {
@@ -118,6 +134,7 @@ export async function inspectPairingLink(
     signedOffer,
     gatewayName: offer.gatewayName,
     gatewayId: offer.gatewayId,
+    gatewayNodeId: offer.gatewayNodeId ?? offer.gatewayId,
     verificationCode: await verificationCode(signedOffer),
     expiresAt: offer.expiresAt,
     transport: offer.gatewayTransport,
@@ -230,6 +247,7 @@ export async function completePairing(
   const trust: TrustedGateway = {
     version: 1,
     gatewayId: preview.gatewayId,
+    gatewayNodeId: preview.gatewayNodeId,
     gatewayName: preview.gatewayName,
     ...activeDeviceCountField(signedResponse.response),
     gatewayKey: preview.signedOffer.offer.gatewayKey,
@@ -237,12 +255,19 @@ export async function completePairing(
     offer: preview.signedOffer,
     request: signedRequest,
     certificate,
+    ...(response.workspaceGrant === undefined
+      ? {}
+      : { workspaceGrant: signedWorkspaceDeviceGrantSchema.parse(response.workspaceGrant) }),
+    ...(response.gatewayDirectory === undefined
+      ? {}
+      : { gatewayDirectory: signedWorkspaceGatewayDirectorySchema.parse(response.gatewayDirectory) }),
     rotations: [],
     transportSnapshots: [],
     pairedAt: Date.now(),
   };
   clearPendingPairing();
   saveTrustedGateway(trust);
+  if (trust.gatewayDirectory) saveGatewayDirectoryProfiles(trust, trust.gatewayDirectory);
   return trust;
 }
 
@@ -298,9 +323,19 @@ export async function loadPendingPairingRecovery(
 
 export async function loadTrustedGateway(
   identity?: DeviceIdentity,
+  gatewayId?: string,
 ): Promise<TrustedGateway | null> {
   if (typeof localStorage === "undefined") return null;
-  const value = localStorage.getItem(PAIRING_TRUST_STORAGE_KEY);
+  const profiles = readTrustedGatewayProfiles();
+  const selectedGatewayId = gatewayId ?? profiles.activeGatewayId;
+  const selected = selectedGatewayId
+    ? profiles.gateways[selectedGatewayId]
+    : undefined;
+  const value = selected
+    ? JSON.stringify(selected)
+    : gatewayId
+      ? null
+      : localStorage.getItem(PAIRING_TRUST_STORAGE_KEY);
   if (!value) return null;
   try {
     const parsed = JSON.parse(value) as TrustedGateway;
@@ -327,7 +362,19 @@ export async function loadTrustedGateway(
     const transportSnapshots = (parsed.transportSnapshots ?? []).map(
       (snapshot) => signedGatewayTransportSnapshotSchema.parse(snapshot),
     );
-    let expectedTransport = certificate.certificate.gatewayTransport;
+    const gatewayNodeId = parsed.gatewayNodeId ?? parsed.gatewayId;
+    const gatewayDirectory = parsed.gatewayDirectory
+      ? signedWorkspaceGatewayDirectorySchema.parse(parsed.gatewayDirectory)
+      : undefined;
+    const directory = gatewayDirectory
+      ? await verifyWorkspaceGatewayDirectory(gatewayDirectory, parsed.gatewayKey.publicKey, {
+          workspaceId: parsed.gatewayId,
+        })
+      : undefined;
+    const directoryGateway = directory?.gateways.find(
+      gateway => gateway.gatewayNodeId === gatewayNodeId,
+    );
+    let expectedTransport = directoryGateway?.transport ?? certificate.certificate.gatewayTransport;
     let previousIssuedAt = certificate.certificate.issuedAt;
     const rotationIds = new Set<string>();
     const snapshotIds = new Set<string>();
@@ -393,6 +440,8 @@ export async function loadTrustedGateway(
     }
     return {
       ...parsed,
+      gatewayNodeId: parsed.gatewayNodeId ?? parsed.gatewayId,
+      ...(gatewayDirectory ? { gatewayDirectory } : {}),
       offer,
       request,
       certificate,
@@ -402,6 +451,62 @@ export async function loadTrustedGateway(
   } catch {
     return null;
   }
+}
+
+function saveGatewayDirectoryProfiles(
+  base: TrustedGateway,
+  signed: SignedWorkspaceGatewayDirectory,
+): void {
+  if (typeof localStorage === "undefined") return;
+  const profiles = readTrustedGatewayProfiles();
+  const gateways = { ...profiles.gateways };
+  for (const descriptor of signed.directory.gateways) {
+    gateways[descriptor.gatewayNodeId] = {
+      ...base,
+      gatewayNodeId: descriptor.gatewayNodeId,
+      gatewayName: descriptor.gatewayName,
+      gatewayTransport: descriptor.transport,
+      gatewayDirectory: signed,
+      rotations: [],
+      transportSnapshots: [],
+    };
+  }
+  writeTrustedGatewayProfiles({
+    version: 1,
+    activeGatewayId: base.gatewayNodeId,
+    gateways,
+  });
+}
+
+export async function loadTrustedGateways(
+  identity?: DeviceIdentity,
+): Promise<TrustedGateway[]> {
+  if (typeof localStorage === "undefined") return [];
+  migrateLegacyTrustedGateway();
+  const profiles = readTrustedGatewayProfiles();
+  const gateways = await Promise.all(
+    Object.keys(profiles.gateways).map((gatewayId) =>
+      loadTrustedGateway(identity, gatewayId),
+    ),
+  );
+  return gateways
+    .filter((gateway): gateway is TrustedGateway => gateway !== null)
+    .sort((left, right) => right.pairedAt - left.pairedAt);
+}
+
+export function activeTrustedGatewayId(): string | null {
+  if (typeof localStorage === "undefined") return null;
+  migrateLegacyTrustedGateway();
+  return readTrustedGatewayProfiles().activeGatewayId;
+}
+
+export function selectTrustedGateway(gatewayId: string): void {
+  if (typeof localStorage === "undefined") return;
+  const profiles = readTrustedGatewayProfiles();
+  if (!profiles.gateways[gatewayId]) {
+    throw new Error(`Gateway ${gatewayId} is not saved on this device.`);
+  }
+  writeTrustedGatewayProfiles({ ...profiles, activeGatewayId: gatewayId });
 }
 
 export function latestGatewayTransportIssuedAt(trust: TrustedGateway): number {
@@ -480,14 +585,121 @@ export async function applyGatewayTransportSnapshot(
   };
 }
 
+export async function applyWorkspaceGatewayDirectory(
+  trust: TrustedGateway,
+  input: unknown,
+): Promise<TrustedGateway> {
+  const signed = signedWorkspaceGatewayDirectorySchema.parse(input);
+  const directory = await verifyWorkspaceGatewayDirectory(
+    signed,
+    trust.gatewayKey.publicKey,
+    {
+      workspaceId: trust.gatewayId,
+      minimumRevision: trust.gatewayDirectory?.directory.revision,
+    },
+  );
+  const descriptor = directory.gateways.find(
+    gateway => gateway.gatewayNodeId === trust.gatewayNodeId,
+  );
+  const next: TrustedGateway = {
+    ...trust,
+    gatewayDirectory: signed,
+    ...(descriptor
+      ? {
+          gatewayName: descriptor.gatewayName,
+          gatewayTransport: descriptor.transport,
+        }
+      : {}),
+  };
+  saveTrustedGateway(next);
+  saveGatewayDirectoryProfiles(next, signed);
+  return next;
+}
+
 export function saveTrustedGateway(trust: TrustedGateway): void {
   if (typeof localStorage === "undefined") return;
+  const profiles = readTrustedGatewayProfiles();
+  const gatewayNodeId = trust.gatewayNodeId ?? trust.gatewayId;
+  writeTrustedGatewayProfiles({
+    version: 1,
+    activeGatewayId: gatewayNodeId,
+    gateways: { ...profiles.gateways, [gatewayNodeId]: { ...trust, gatewayNodeId } },
+  });
+  // Keep the legacy active record during the rolling migration. Older PWA
+  // builds can still reconnect to the last selected Gateway without learning
+  // about or deleting the other profiles.
   localStorage.setItem(PAIRING_TRUST_STORAGE_KEY, JSON.stringify(trust));
 }
 
-export function clearTrustedGateway(): void {
+export function clearTrustedGateway(gatewayId?: string): void {
   if (typeof localStorage === "undefined") return;
-  localStorage.removeItem(PAIRING_TRUST_STORAGE_KEY);
+  migrateLegacyTrustedGateway();
+  const profiles = readTrustedGatewayProfiles();
+  const target = gatewayId ?? profiles.activeGatewayId;
+  if (!target) {
+    localStorage.removeItem(PAIRING_TRUST_STORAGE_KEY);
+    return;
+  }
+  const gateways = { ...profiles.gateways };
+  delete gateways[target];
+  const activeGatewayId =
+    profiles.activeGatewayId === target
+      ? Object.keys(gateways)[0] ?? null
+      : profiles.activeGatewayId;
+  writeTrustedGatewayProfiles({ version: 1, activeGatewayId, gateways });
+  const active = activeGatewayId ? gateways[activeGatewayId] : undefined;
+  if (active) {
+    localStorage.setItem(PAIRING_TRUST_STORAGE_KEY, JSON.stringify(active));
+  } else {
+    localStorage.removeItem(PAIRING_TRUST_STORAGE_KEY);
+  }
+}
+
+function readTrustedGatewayProfiles(): TrustedGatewayProfiles {
+  migrateLegacyTrustedGateway();
+  const value = localStorage.getItem(PAIRING_TRUST_PROFILES_STORAGE_KEY);
+  if (!value) return { version: 1, activeGatewayId: null, gateways: {} };
+  try {
+    const parsed = JSON.parse(value) as Partial<TrustedGatewayProfiles>;
+    if (parsed.version !== 1 || !parsed.gateways || typeof parsed.gateways !== "object") {
+      throw new Error("Invalid Gateway profile registry");
+    }
+    return {
+      version: 1,
+      activeGatewayId:
+        typeof parsed.activeGatewayId === "string" ? parsed.activeGatewayId : null,
+      gateways: parsed.gateways,
+    };
+  } catch (error) {
+    throw new Error("Saved Gateway profiles are invalid and require explicit repair.", {
+      cause: error,
+    });
+  }
+}
+
+function writeTrustedGatewayProfiles(profiles: TrustedGatewayProfiles): void {
+  localStorage.setItem(
+    PAIRING_TRUST_PROFILES_STORAGE_KEY,
+    JSON.stringify(profiles),
+  );
+}
+
+function migrateLegacyTrustedGateway(): void {
+  if (localStorage.getItem(PAIRING_TRUST_PROFILES_STORAGE_KEY)) return;
+  const legacy = localStorage.getItem(PAIRING_TRUST_STORAGE_KEY);
+  if (!legacy) return;
+  try {
+    const trust = JSON.parse(legacy) as TrustedGateway;
+    if (!trust.gatewayId) return;
+    const gatewayNodeId = trust.gatewayNodeId ?? trust.gatewayId;
+    writeTrustedGatewayProfiles({
+      version: 1,
+      activeGatewayId: gatewayNodeId,
+      gateways: { [gatewayNodeId]: { ...trust, gatewayNodeId } },
+    });
+  } catch {
+    // Existing validation remains the authority for malformed legacy trust.
+  }
 }
 
 export function clearPendingPairing(): void {
@@ -497,6 +709,7 @@ export function clearPendingPairing(): void {
 
 export function trustedGatewayConfig(trust: TrustedGateway): {
   gatewayId: string;
+  gatewayNodeId: string;
   homeserver: string;
   roomId: string;
   gatewayMatrixUserId: string;
@@ -505,6 +718,7 @@ export function trustedGatewayConfig(trust: TrustedGateway): {
 } {
   return {
     gatewayId: trust.gatewayId,
+    gatewayNodeId: trust.gatewayNodeId ?? trust.gatewayId,
     homeserver: trust.gatewayTransport.homeserver,
     roomId: trust.gatewayTransport.roomId,
     gatewayMatrixUserId: trust.gatewayTransport.userId,
@@ -618,6 +832,7 @@ async function previewFromOffer(
     signedOffer,
     gatewayName: offer.gatewayName,
     gatewayId: offer.gatewayId,
+    gatewayNodeId: offer.gatewayNodeId ?? offer.gatewayId,
     verificationCode: await verificationCode(signedOffer),
     expiresAt,
     transport: offer.gatewayTransport,

@@ -34,6 +34,7 @@ type Props = {
   error: string | null;
   pairingPreview: PairingPreview | null;
   trustedGateway: MalinkPublicTrust | null;
+  savedGateways: MalinkPublicTrust[];
   pairingBusy: boolean;
   deviceInvitation: GeneratedDeviceInvitation | null;
   invitationBusy: boolean;
@@ -52,6 +53,7 @@ type Props = {
   onClose(): void;
   onDisconnect(): void;
   onForget(): void;
+  onSwitchGateway(gatewayId: string): void;
   onPasswordLogin(userId: string, password: string): void;
   onCreateInvitation(password?: string): void;
   onClearInvitation(): void;
@@ -79,6 +81,7 @@ function MatrixSettingsDialog({
   error,
   pairingPreview,
   trustedGateway,
+  savedGateways,
   repairReason,
   pairingBusy,
   deviceInvitation,
@@ -98,6 +101,7 @@ function MatrixSettingsDialog({
   onClose,
   onDisconnect,
   onForget,
+  onSwitchGateway,
   onPasswordLogin,
   onCreateInvitation,
   onClearInvitation,
@@ -116,6 +120,7 @@ function MatrixSettingsDialog({
   const effectiveRepairReason = repairReason ?? manualRepairReason;
   const repairRequired = effectiveRepairReason !== null;
   const [loginPassword, setLoginPassword] = useState("");
+  const [addingGateway, setAddingGateway] = useState(false);
   const connected =
     status === "connected" ||
     status === "securing" ||
@@ -221,6 +226,49 @@ function MatrixSettingsDialog({
           </p>
         </div>
 
+        {savedGateways.length > 0 && !pairingPreview && !repairRequired && (
+          <section className="gateway-profile-list" aria-label="Saved computers">
+            <header>
+              <span>
+                <strong>Computers</strong>
+                <small>{savedGateways.length} saved on this device</small>
+              </span>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setAddingGateway((current) => !current)}
+              >
+                {addingGateway ? "Cancel" : "Add computer"}
+              </button>
+            </header>
+            <div>
+              {savedGateways.map((gateway) => {
+                const gatewayProfileId = gateway.gatewayNodeId ?? gateway.gatewayId;
+                const active = gatewayProfileId === (
+                  trustedGateway?.gatewayNodeId ?? trustedGateway?.gatewayId
+                );
+                return (
+                  <button
+                    type="button"
+                    key={gatewayProfileId}
+                    className={active ? "active" : ""}
+                    aria-pressed={active}
+                    disabled={busy || active}
+                    onClick={() => onSwitchGateway(gatewayProfileId)}
+                  >
+                    <span className="gateway-device-mark" aria-hidden="true">G</span>
+                    <span>
+                      <strong>{gateway.gatewayName}</strong>
+                      <small>{active ? "Active" : "Switch to this computer"}</small>
+                    </span>
+                    <b>{active ? "✓" : "›"}</b>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         {recoveryPlan && !repairRequired && (
           <section className="connection-recovery-panel" aria-live="polite">
             <div>
@@ -269,7 +317,7 @@ function MatrixSettingsDialog({
 
         <PairingWizard
           preview={pairingPreview}
-          trustedGateway={trustedGateway}
+          trustedGateway={addingGateway ? null : trustedGateway}
           repairReason={effectiveRepairReason}
           busy={busy}
           canConfirm={Boolean(config.accessToken)}
@@ -278,7 +326,10 @@ function MatrixSettingsDialog({
           invitationError={invitationError}
           invitationReauthRequired={invitationReauthRequired}
           onLink={onPairingLink}
-          onClear={onClearPairing}
+          onClear={() => {
+            setAddingGateway(false);
+            onClearPairing();
+          }}
           onConfirm={onConfirmPairing}
           onCreateInvitation={onCreateInvitation}
           onClearInvitation={onClearInvitation}
