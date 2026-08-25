@@ -134,6 +134,13 @@ export {
 } from "./gatewayState";
 
 export const MATRIX_CONFIG_STORAGE_KEY = "malink.matrix.connection.v1";
+export const MATRIX_CONFIG_PROFILES_STORAGE_KEY = "malink.matrix.connections.v1";
+
+type MatrixConfigProfiles = {
+  version: 1;
+  activeGatewayId: string | null;
+  configs: Record<string, MatrixConnectionConfig>;
+};
 export const MATRIX_IDENTITY_DATABASE_NAME = "malink-pwa-identity";
 const DEVICE_STORE = "keys";
 const DEVICE_KEY = "p256-v1";
@@ -155,6 +162,20 @@ export type MatrixConnectionConfig = {
   matrixDeviceId: string;
   roomId: string;
   gatewayId: string;
+  /** Execution node inside the shared Workspace authorization domain. */
+  gatewayNodeId?: string;
+  conversationId: string;
+  gatewayMatrixUserId: string;
+  gatewayMatrixDeviceId: string;
+  gatewayMatrixEd25519: string;
+  /** All project rooms concurrently managed by this Workspace Matrix session. */
+  workspaceRoutes?: MatrixWorkspaceRoute[];
+};
+
+export type MatrixWorkspaceRoute = {
+  projectId: string;
+  gatewayNodeId: string;
+  roomId: string;
   conversationId: string;
   gatewayMatrixUserId: string;
   gatewayMatrixDeviceId: string;
@@ -333,9 +354,10 @@ export type MatrixConnection = {
     deviceName: string,
     signal?: AbortSignal,
   ): Promise<TrustedGateway>;
-  send(payload: CommandPayload): Promise<CommandSendResult>;
+  send(payload: CommandPayload, projectId?: string): Promise<CommandSendResult>;
   updateProjectExtensions?(
     extensions: SessionExtensionBinding[],
+    projectId?: string,
   ): Promise<CommandSendResult>;
   updateWebPushSubscription?(
     subscription: Mlp3WebPushSubscription | null,
@@ -367,10 +389,12 @@ export function normalizeMatrixConfig(
     matrixDeviceId: input.matrixDeviceId.trim(),
     roomId: input.roomId.trim(),
     gatewayId: input.gatewayId.trim(),
+    gatewayNodeId: input.gatewayNodeId?.trim() || input.gatewayId.trim(),
     conversationId: input.conversationId.trim() || input.roomId.trim(),
     gatewayMatrixUserId: input.gatewayMatrixUserId?.trim() ?? "",
     gatewayMatrixDeviceId: input.gatewayMatrixDeviceId?.trim() ?? "",
     gatewayMatrixEd25519: input.gatewayMatrixEd25519?.trim() ?? "",
+    workspaceRoutes: normalizeWorkspaceRoutes(input.workspaceRoutes ?? []),
   };
   const requiredFields: Array<keyof MatrixConnectionConfig> = [
     "homeserver",
@@ -393,6 +417,30 @@ export function normalizeMatrixConfig(
   }
   gatewayPin(config);
   return config;
+}
+
+function normalizeWorkspaceRoutes(routes: readonly MatrixWorkspaceRoute[]): MatrixWorkspaceRoute[] {
+  const normalized = routes.map(route => ({
+    projectId: route.projectId.trim(),
+    gatewayNodeId: route.gatewayNodeId.trim(),
+    roomId: route.roomId.trim(),
+    conversationId: route.conversationId.trim(),
+    gatewayMatrixUserId: route.gatewayMatrixUserId.trim(),
+    gatewayMatrixDeviceId: route.gatewayMatrixDeviceId.trim(),
+    gatewayMatrixEd25519: route.gatewayMatrixEd25519.trim(),
+  }));
+  for (const route of normalized) {
+    if (!route.projectId || !route.gatewayNodeId || !route.roomId.startsWith("!") ||
+        !route.conversationId || !route.gatewayMatrixUserId.startsWith("@") ||
+        !route.gatewayMatrixDeviceId || !route.gatewayMatrixEd25519) {
+      throw new Error("Workspace project route is invalid.");
+    }
+  }
+  if (new Set(normalized.map(route => route.projectId)).size !== normalized.length ||
+      new Set(normalized.map(route => route.roomId)).size !== normalized.length) {
+    throw new Error("Workspace project routes must be unique by project and room.");
+  }
+  return normalized.sort((left, right) => left.projectId.localeCompare(right.projectId));
 }
 
 export function normalizeHomeserver(value: string): string {
@@ -452,14 +500,31 @@ export async function resolveMatrixSession(
 
 export function saveMatrixConfig(config: MatrixConnectionConfig): void {
   if (typeof localStorage === "undefined") return;
+  const normalized = normalizeMatrixConfig(config);
+  if (normalized.gatewayId) {
+    const profileId = normalized.gatewayNodeId || normalized.gatewayId;
+    const profiles = readMatrixConfigProfiles();
+    writeMatrixConfigProfiles({
+      version: 1,
+      activeGatewayId: profileId,
+      configs: { ...profiles.configs, [profileId]: normalized },
+    });
+  }
   localStorage.setItem(
     MATRIX_CONFIG_STORAGE_KEY,
-    JSON.stringify(normalizeMatrixConfig(config)),
+    JSON.stringify(normalized),
   );
 }
 
-export function loadMatrixConfig(): MatrixConnectionConfig | null {
+export function loadMatrixConfig(gatewayId?: string): MatrixConnectionConfig | null {
   if (typeof localStorage === "undefined") return null;
+  migrateLegacyMatrixConfig();
+  const profiles = readMatrixConfigProfiles();
+  const selectedGatewayId = gatewayId ?? profiles.activeGatewayId;
+  if (selectedGatewayId && profiles.configs[selectedGatewayId]) {
+    return normalizeMatrixConfig(profiles.configs[selectedGatewayId]);
+  }
+  if (gatewayId) return null;
   const stored = localStorage.getItem(MATRIX_CONFIG_STORAGE_KEY);
   if (!stored) return null;
   try {
@@ -469,9 +534,85 @@ export function loadMatrixConfig(): MatrixConnectionConfig | null {
   }
 }
 
-export function clearMatrixConfig(): void {
+export function selectMatrixConfigGateway(gatewayId: string): MatrixConnectionConfig {
+  if (typeof localStorage === "undefined") {
+    throw new Error("Gateway profiles require browser storage.");
+  }
+  const profiles = readMatrixConfigProfiles();
+  const config = profiles.configs[gatewayId];
+  if (!config) throw new Error(`Gateway ${gatewayId} has no saved Matrix connection.`);
+  const normalized = normalizeMatrixConfig(config);
+  writeMatrixConfigProfiles({ ...profiles, activeGatewayId: gatewayId });
+  localStorage.setItem(MATRIX_CONFIG_STORAGE_KEY, JSON.stringify(normalized));
+  return normalized;
+}
+
+export function clearMatrixConfig(gatewayId?: string): void {
   if (typeof localStorage === "undefined") return;
-  localStorage.removeItem(MATRIX_CONFIG_STORAGE_KEY);
+  migrateLegacyMatrixConfig();
+  const profiles = readMatrixConfigProfiles();
+  const target = gatewayId ?? profiles.activeGatewayId;
+  if (!target) {
+    localStorage.removeItem(MATRIX_CONFIG_STORAGE_KEY);
+    return;
+  }
+  const configs = { ...profiles.configs };
+  delete configs[target];
+  const activeGatewayId =
+    profiles.activeGatewayId === target
+      ? Object.keys(configs)[0] ?? null
+      : profiles.activeGatewayId;
+  writeMatrixConfigProfiles({ version: 1, activeGatewayId, configs });
+  const active = activeGatewayId ? configs[activeGatewayId] : undefined;
+  if (active) {
+    localStorage.setItem(MATRIX_CONFIG_STORAGE_KEY, JSON.stringify(active));
+  } else {
+    localStorage.removeItem(MATRIX_CONFIG_STORAGE_KEY);
+  }
+}
+
+function readMatrixConfigProfiles(): MatrixConfigProfiles {
+  migrateLegacyMatrixConfig();
+  const value = localStorage.getItem(MATRIX_CONFIG_PROFILES_STORAGE_KEY);
+  if (!value) return { version: 1, activeGatewayId: null, configs: {} };
+  try {
+    const parsed = JSON.parse(value) as Partial<MatrixConfigProfiles>;
+    if (parsed.version !== 1 || !parsed.configs || typeof parsed.configs !== "object") {
+      throw new Error("Invalid Matrix connection registry");
+    }
+    return {
+      version: 1,
+      activeGatewayId:
+        typeof parsed.activeGatewayId === "string" ? parsed.activeGatewayId : null,
+      configs: parsed.configs,
+    };
+  } catch (error) {
+    throw new Error("Saved Matrix connection profiles are invalid and require explicit repair.", {
+      cause: error,
+    });
+  }
+}
+
+function writeMatrixConfigProfiles(profiles: MatrixConfigProfiles): void {
+  localStorage.setItem(MATRIX_CONFIG_PROFILES_STORAGE_KEY, JSON.stringify(profiles));
+}
+
+function migrateLegacyMatrixConfig(): void {
+  if (localStorage.getItem(MATRIX_CONFIG_PROFILES_STORAGE_KEY)) return;
+  const legacy = localStorage.getItem(MATRIX_CONFIG_STORAGE_KEY);
+  if (!legacy) return;
+  try {
+    const config = normalizeMatrixConfig(JSON.parse(legacy) as MatrixConnectionConfig);
+    if (!config.gatewayId) return;
+    const profileId = config.gatewayNodeId || config.gatewayId;
+    writeMatrixConfigProfiles({
+      version: 1,
+      activeGatewayId: profileId,
+      configs: { [profileId]: config },
+    });
+  } catch {
+    // The legacy loader will continue to report an unusable record as absent.
+  }
 }
 
 export async function getOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
@@ -543,7 +684,7 @@ export async function connectMatrix(
     LOCAL_STORE_TIMEOUT_MS,
     "The browser device identity store did not open in time.",
   );
-  let activeTrust = await loadTrustedGateway(identity);
+  let activeTrust = await loadTrustedGateway(identity, config.gatewayId || undefined);
   const replayStore = new IndexedDbReplayStore();
   const historyReplayStore = new DisplayOnlyReplayStore();
   const sdk = await import("matrix-js-sdk");
@@ -3743,7 +3884,9 @@ async function acceptGatewayDeviceRotation(
   identity?: DeviceIdentity,
   getTrust?: () => TrustedGateway | null,
 ): Promise<void> {
-  const trust = getTrust?.() ?? (await loadTrustedGateway(identity));
+  const trust = getTrust?.() ?? (
+    await loadTrustedGateway(identity, config.gatewayId || undefined)
+  );
   if (!trust) return;
   const signedRotation = signedGatewayDeviceRotationSchema.parse(input);
   const nextTrust = await applyGatewayDeviceRotation(trust, signedRotation);

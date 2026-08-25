@@ -18,9 +18,15 @@ import {
     MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
     MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
     MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
+    MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
+    MLP3_MATRIX_WORKSPACE_DEVICE_GRANT_EVENT_TYPE,
+    MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE,
     mlp3CurrentPointerSchema,
     mlp3ProjectKeyGrantStateSchema,
     mlp3TimelineContentSchema,
+    signedWorkspaceDeviceGrantSchema,
+    signedWorkspaceDeviceRevocationSchema,
+    signedWorkspaceGatewayDirectorySchema,
     canonicalJson,
 } from '@malink/protocol'
 import { toArrayBuffer } from '@malink/security'
@@ -70,6 +76,7 @@ export interface MatrixGatewayClient extends MatrixTransport {
     start(): Promise<void>
     waitUntilReady(timeoutMs?: number): Promise<void>
     assertRoomEncrypted(roomId: string): Promise<void>
+    ensureRoomInvitation?(roomId: string, userId: string): Promise<void>
     pinTrustedDevices?(devices: MatrixGatewayPinnedTransportDevice[]): Promise<void>
     prepareRoomThread?(roomId: string, rootEventId: string, timeoutMs?: number): Promise<void>
     setExtendedProfileProperty?(key: string, value: unknown): Promise<void>
@@ -245,6 +252,12 @@ export class MatrixJsSdkGatewayClient implements MatrixGatewayClient {
         if (!await crypto.isEncryptionEnabledInRoom(roomId)) {
             throw new Error(`Matrix room ${roomId} is not encrypted`)
         }
+    }
+
+    async ensureRoomInvitation(roomId: string, userId: string): Promise<void> {
+        const membership = this.client.getRoom(roomId)?.getMember(userId)?.membership
+        if (membership === 'join' || membership === 'invite') return
+        await this.client.invite(roomId, userId)
     }
 
     async pinTrustedDevices(devices: MatrixGatewayPinnedTransportDevice[]): Promise<void> {
@@ -531,6 +544,18 @@ function assertSecureApplicationControlContent(content: Record<string, unknown>)
 
 function assertSecureApplicationStateContent(request: MatrixApplicationStateEventRequest): void {
     const content = request.content
+    if (request.eventType === MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE) {
+        signedWorkspaceGatewayDirectorySchema.parse(content)
+        return
+    }
+    if (request.eventType === MLP3_MATRIX_WORKSPACE_DEVICE_GRANT_EVENT_TYPE) {
+        signedWorkspaceDeviceGrantSchema.parse(content)
+        return
+    }
+    if (request.eventType === MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE) {
+        signedWorkspaceDeviceRevocationSchema.parse(content)
+        return
+    }
     if (request.eventType === MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE) {
         mlp3ProjectKeyGrantStateSchema.parse(content)
         return

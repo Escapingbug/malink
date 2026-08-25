@@ -160,6 +160,7 @@ object PublicClientJson {
         is PublicTrustState.Trusted -> buildJsonObject {
             put("state", "trusted")
             put("gatewayId", value.gatewayId)
+            value.gatewayNodeId?.let { put("gatewayNodeId", it) }
             put("gatewayName", value.gatewayName)
             put("certificateId", value.certificateId)
             put("pairedAt", value.pairedAt)
@@ -367,12 +368,13 @@ object PublicClientJson {
                     "public trust",
                     setOf(
                         "state", "gatewayId", "gatewayName", "certificateId", "pairedAt",
-                        "activeDeviceCount",
+                        "activeDeviceCount", "gatewayNodeId",
                     ),
                     setOf("state", "gatewayId", "gatewayName", "certificateId", "pairedAt"),
                 )
                 PublicTrustState.Trusted(
                     gatewayId = value.requiredString("gatewayId", 512),
+                    gatewayNodeId = value.optionalString("gatewayNodeId", 512),
                     gatewayName = value.requiredString("gatewayName", 256),
                     certificateId = value.requiredString("certificateId", 512),
                     pairedAt = value.requiredLong("pairedAt"),

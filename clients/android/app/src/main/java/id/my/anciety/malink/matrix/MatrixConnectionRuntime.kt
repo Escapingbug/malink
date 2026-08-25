@@ -46,6 +46,7 @@ class MatrixConnectionRuntime(
     private val applicationEventClient: MatrixApplicationEventClient =
         MatrixApplicationEventClient(),
     private val threadHistoryClient: MatrixThreadHistoryClient = MatrixThreadHistoryClient(),
+    private val roomMembershipClient: MatrixRoomMembershipClient = MatrixRoomMembershipClient(),
     private val networkMonitor: NetworkMonitor = AndroidNetworkMonitor(context),
     private val accountStorage: MatrixAccountStorage = MatrixAccountStorage(
         context,
@@ -259,7 +260,11 @@ class MatrixConnectionRuntime(
         }
     }.await()
 
-    suspend fun sendApplicationControlEvent(contentJson: String, transactionId: String): String = scope.async {
+    suspend fun sendApplicationControlEvent(
+        contentJson: String,
+        transactionId: String,
+        roomId: String? = null,
+    ): String = scope.async {
         val session = mutex.withLock {
             check(started.get()) { "The native Matrix runtime is stopped." }
             if (!networkAvailable) throw MatrixOfflineException()
@@ -274,7 +279,7 @@ class MatrixConnectionRuntime(
         // synchronized Gateway state by NativeClientRuntime; persisted recovery
         // commands must remain able to retry during an inbound-sync restart.
         withTimeout(SEND_OPERATION_TIMEOUT_MS) {
-            applicationControlClient.send(session, contentJson, transactionId)
+            applicationControlClient.send(session, contentJson, transactionId, roomId)
         }
     }.await()
 
@@ -399,6 +404,52 @@ class MatrixConnectionRuntime(
 
     fun publicSession(): PublicMatrixSession? = secrets?.session?.toPublic()
 
+    suspend fun updateRoomBindings(bindings: List<MatrixRoomBinding>): PublicMatrixSession {
+        val normalized = bindings.map(MatrixIdentifiers::validateRoomBinding)
+            .distinctBy(MatrixRoomBinding::roomId)
+        require(normalized.isNotEmpty()) { "At least one Workspace room is required." }
+        require(normalized.all { it.gatewayId == normalized.first().gatewayId }) {
+            "All Matrix rooms must belong to one Workspace authorization."
+        }
+        val previousSession = mutex.withLock {
+            check(started.get()) { "The native Matrix runtime is stopped." }
+            if (!networkAvailable) throw MatrixOfflineException()
+            secrets?.session
+                ?: throw IllegalStateException("The native Matrix session is not available.")
+        }
+        if (previousSession.roomBindings == normalized) return previousSession.toPublic()
+        val existingRoomIds = previousSession.roomBindings.mapTo(mutableSetOf()) { it.roomId }
+        for (binding in normalized) {
+            if (binding.roomId !in existingRoomIds) {
+                withTimeout(SEND_OPERATION_TIMEOUT_MS) {
+                    roomMembershipClient.join(previousSession, binding.roomId)
+                }
+            }
+        }
+        return mutex.withLock {
+            val currentSecrets = secrets
+                ?: throw IllegalStateException("The native Matrix session is not available.")
+            if (currentSecrets.session.roomBindings == normalized) {
+                return@withLock currentSecrets.session.toPublic()
+            }
+            val currentDriver = driver
+            stopApplicationControlReceiverLocked()
+            driver = null
+            driverGeneration += 1
+            applicationControlTransportIdentity = null
+            if (currentDriver != null) stopDriver(currentDriver)
+            val updated = PersistedMatrixSecrets(
+                currentSecrets.sdkStoreKey,
+                currentSecrets.session.withRoomBindings(normalized),
+            )
+            val currentFiles = files ?: accountStorage.forSession(updated.session).also { files = it }
+            currentFiles.sessionStore.save(updated)
+            secrets = updated
+            if (started.get() && networkAvailable) connectLocked()
+            updated.session.toPublic()
+        }
+    }
+
     suspend fun refreshApplicationProjection() {
         val session = secrets?.session
             ?: throw MatrixOfflineException("The Matrix session is unavailable.")
@@ -422,14 +473,17 @@ class MatrixConnectionRuntime(
         return refreshThreadDirectory(session)
     }
 
-    suspend fun fetchApplicationEvent(eventId: String): MatrixDecryptedEvent {
+    suspend fun fetchApplicationEvent(
+        eventId: String,
+        roomId: String? = null,
+    ): MatrixDecryptedEvent {
         val session = mutex.withLock {
             check(started.get()) { "The native Matrix runtime is stopped." }
             if (!networkAvailable) throw MatrixOfflineException()
             secrets?.session ?: throw MatrixOfflineException("The Matrix session is unavailable.")
         }
         return withTimeout(HISTORY_OPERATION_TIMEOUT_MS) {
-            applicationEventClient.event(session, eventId)
+            applicationEventClient.event(session, eventId, roomId)
         }
     }
 
@@ -437,6 +491,7 @@ class MatrixConnectionRuntime(
         threadRootEventId: String,
         from: String?,
         limit: Int,
+        roomId: String? = null,
     ): MatrixThreadHistoryBatch {
         val session = mutex.withLock {
             check(started.get()) { "The native Matrix runtime is stopped." }
@@ -449,7 +504,7 @@ class MatrixConnectionRuntime(
         )
         return try {
             withTimeout(HISTORY_OPERATION_TIMEOUT_MS) {
-                threadHistoryClient.page(session, threadRootEventId, from, limit)
+                threadHistoryClient.page(session, threadRootEventId, from, limit, roomId)
             }.also { batch ->
                 diagnostics.record(
                     "matrix.thread_history.received",
@@ -973,13 +1028,18 @@ class MatrixConnectionRuntime(
                 consecutiveFailures = 0
                 val establishingCursor = since == null
                 if (batch.limited && since != null) {
-                    val boundary = checkNotNull(batch.prevBatch) {
-                        "Limited Matrix control sync has no previous-batch boundary."
+                    val gaps = batch.roomGaps.ifEmpty {
+                        listOf(MatrixSyncGap(
+                            from = since,
+                            to = checkNotNull(batch.prevBatch) {
+                                "Limited Matrix control sync has no previous-batch boundary."
+                            },
+                            roomId = session.roomBinding.roomId,
+                        ))
                     }
-                    enqueueApplicationControlGap(
-                        currentFiles.applicationControlGaps,
-                        MatrixSyncGap(from = since, to = boundary),
-                    )
+                    gaps.forEach { gap ->
+                        enqueueApplicationControlGap(currentFiles.applicationControlGaps, gap)
+                    }
                     diagnostics.record("matrix.application_control.gap_persisted")
                     startApplicationControlGapRecovery(
                         session = session,
@@ -1076,34 +1136,41 @@ class MatrixConnectionRuntime(
     private suspend fun refreshThreadDirectory(session: StoredMatrixSession): Int =
         threadDirectoryMutex.withLock {
             withTimeout(THREAD_DIRECTORY_OPERATION_TIMEOUT_MS) {
-                var from: String? = null
-                val seenTokens = mutableSetOf<String>()
                 var accepted = 0
-                repeat(MAX_THREAD_DIRECTORY_PAGES) {
-                    val page = threadDirectoryClient.page(session, from)
-                    val processed = processMatrixApplicationEventBatch(
-                        events = page.latestEvents,
-                        onEvent = onDecryptedEvent,
-                        onQuarantined = { event, error ->
-                            diagnostics.record(
-                                "matrix.thread_directory.event_quarantined",
-                                mapOf(
-                                    "kind" to malinkApplicationEventKind(event.rawJson),
-                                    "error" to error.javaClass.simpleName.take(160),
-                                ),
+                for (binding in session.roomBindings) {
+                    var from: String? = null
+                    val seenTokens = mutableSetOf<String>()
+                    var pages = 0
+                    while (true) {
+                        if (pages >= MAX_THREAD_DIRECTORY_PAGES) {
+                            throw MatrixApplicationControlPayloadException(
+                                "The Matrix thread directory exceeded the session safety limit.",
                             )
-                        },
-                    )
-                    accepted += processed.committed
-                    val next = page.nextBatch ?: return@withTimeout accepted
-                    require(seenTokens.add(next)) {
-                        "The Matrix thread directory repeated a pagination token."
+                        }
+                        pages += 1
+                        val page = threadDirectoryClient.page(session, from, binding.roomId)
+                        val processed = processMatrixApplicationEventBatch(
+                            events = page.latestEvents,
+                            onEvent = onDecryptedEvent,
+                            onQuarantined = { event, error ->
+                                diagnostics.record(
+                                    "matrix.thread_directory.event_quarantined",
+                                    mapOf(
+                                        "kind" to malinkApplicationEventKind(event.rawJson),
+                                        "error" to error.javaClass.simpleName.take(160),
+                                    ),
+                                )
+                            },
+                        )
+                        accepted += processed.committed
+                        val next = page.nextBatch ?: break
+                        require(seenTokens.add(next)) {
+                            "The Matrix thread directory repeated a pagination token."
+                        }
+                        from = next
                     }
-                    from = next
                 }
-                throw MatrixApplicationControlPayloadException(
-                    "The Matrix thread directory exceeded the session safety limit.",
-                )
+                accepted
             }
         }
 
@@ -1134,6 +1201,7 @@ class MatrixConnectionRuntime(
                         session = session,
                         from = gap.cursor,
                         to = gap.to,
+                        roomId = gap.roomId,
                     )
                     applicationControlLastProgressAt = elapsedRealtime()
                     diagnostics.record(
@@ -1166,7 +1234,8 @@ class MatrixConnectionRuntime(
                     applicationControlGapStoreMutex.withLock {
                         val queue = currentFiles.applicationControlGaps.load()
                         val currentIndex = queue.indexOfFirst {
-                            it.from == gap.from && it.to == gap.to
+                            it.from == gap.from && it.to == gap.to &&
+                                it.roomId == gap.roomId
                         }
                         if (currentIndex >= 0) {
                             val next = queue.toMutableList()
@@ -1330,7 +1399,7 @@ class MatrixConnectionRuntime(
         homeserver = homeserverUrl,
         userId = userId,
         matrixDeviceId = deviceId,
-        roomBinding = roomBinding,
+        roomBindings = roomBindings,
     )
 
     private companion object {

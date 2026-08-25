@@ -40,6 +40,11 @@ export interface GatewayAdminServerOptions {
   registry: FileTrustedDeviceRegistry
   getGatewayState: () => string
   syncGatewayState?: () => Promise<void>
+  onDeviceRevoked?: (
+    deviceId: string,
+    reason: string | undefined,
+    revokedAt: number,
+  ) => Promise<void>
   receiveWorkspaceFile?: (
     input: ReceiveWorkspaceFileRequest & { requestId: string },
   ) => Promise<ReceiveWorkspaceFileResponse>
@@ -282,7 +287,9 @@ export async function startGatewayAdminServer(
       if (request.method === 'POST' && revokeMatch) {
         const deviceId = decodeURIComponent(revokeMatch[1]!)
         const data = revokeDeviceRequestSchema.parse(await readJsonBody(request))
-        await options.pairingService.revoke(deviceId, data.reason, now())
+        const revokedAt = now()
+        await options.onDeviceRevoked?.(deviceId, data.reason, revokedAt)
+        await options.pairingService.revoke(deviceId, data.reason, revokedAt)
         await options.syncGatewayState?.()
         options.onLog?.(`[gateway-admin] revoked device ${deviceId}`)
         sendJson(response, 200, { ok: true, deviceId })

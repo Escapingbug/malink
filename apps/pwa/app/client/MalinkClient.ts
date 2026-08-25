@@ -95,9 +95,10 @@ export interface MalinkClient {
     invitationId: string,
     password?: string,
   ): Promise<MatrixLoginTokenResult>;
-  send(payload: CommandPayload): Promise<MalinkCommandSendResult>;
+  send(payload: CommandPayload, projectId?: string): Promise<MalinkCommandSendResult>;
   updateProjectExtensions?(
     extensions: SessionExtensionBinding[],
+    projectId?: string,
   ): Promise<MalinkCommandSendResult>;
   updateWebPushSubscription?(
     subscription: Mlp3WebPushSubscription | null,

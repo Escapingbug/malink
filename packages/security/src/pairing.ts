@@ -44,6 +44,8 @@ import {
 import { exportPublicDeviceKey, importPublicDeviceKey } from './device-keys.js'
 import { SecurityError } from './errors.js'
 import type { ReplayStore } from './replay.js'
+import { verifyWorkspaceDeviceGrant } from './workspace-authorization.js'
+import { verifyWorkspaceGatewayDirectory } from './workspace-authorization.js'
 
 const algorithm: EcdsaParams = { name: 'ECDSA', hash: 'SHA-256' }
 const DEFAULT_FUTURE_SKEW_MS = 30_000
@@ -467,6 +469,28 @@ export async function verifyPairingResponse(
   }
   assertWindow(signed.response, clock, DEFAULT_RESPONSE_LIFETIME_MS)
   await verifyPairingCertificate(signed.response.certificate, offer, request, clock)
+  if (signed.response.workspaceGrant !== undefined) {
+    const grant = await verifyWorkspaceDeviceGrant(
+      signed.response.workspaceGrant,
+      gatewayKey,
+      { workspaceId: offer.offer.gatewayId, now: clock.now },
+    )
+    const certificate = signed.response.certificate.certificate
+    if (
+      grant.certificateId !== certificate.certificateId ||
+      grant.deviceId !== certificate.deviceId ||
+      grant.deviceKey.keyId !== certificate.deviceKey.keyId
+    ) {
+      throw new SecurityError('binding_mismatch', 'Workspace grant is not bound to the pairing certificate')
+    }
+  }
+  if (signed.response.gatewayDirectory !== undefined) {
+    await verifyWorkspaceGatewayDirectory(
+      signed.response.gatewayDirectory,
+      gatewayKey,
+      { workspaceId: offer.offer.gatewayId },
+    )
+  }
   return signed.response
 }
 

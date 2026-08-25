@@ -5,8 +5,9 @@ import type {
   SignedPairingOffer,
   SignedPairingRequest,
   SignedPairingResponse,
+  SignedWorkspaceDeviceGrant,
 } from '@malink/protocol'
-import { canonicalJson } from '@malink/protocol'
+import { canonicalJson, signedWorkspaceDeviceGrantSchema } from '@malink/protocol'
 
 export interface StoredPairingOffer {
   signedOffer: SignedPairingOffer
@@ -43,6 +44,7 @@ export interface StoredPendingPairing {
 export interface TrustedDeviceRecord {
   status: 'active' | 'revoked'
   certificate: SignedPairingCertificate
+  workspaceGrant?: SignedWorkspaceDeviceGrant
   /** Last Gateway Matrix device acknowledged by this PWA. */
   gatewayTransport: MatrixTransportBinding
   activatedAt: number
@@ -254,6 +256,7 @@ export class FileTrustedDeviceRegistry {
     certificate: SignedPairingCertificate,
     response: SignedPairingResponse,
     now: number,
+    workspaceGrant?: SignedWorkspaceDeviceGrant,
   ): Promise<TrustedDeviceRecord> {
     return this.file.transaction(initialState, (state) => {
       validateState(state)
@@ -281,6 +284,7 @@ export class FileTrustedDeviceRegistry {
       const record: TrustedDeviceRecord = {
         status: 'active',
         certificate: structuredClone(certificate),
+        ...(workspaceGrant ? { workspaceGrant: structuredClone(workspaceGrant) } : {}),
         gatewayTransport: structuredClone(certificate.certificate.gatewayTransport),
         activatedAt: now,
       }
@@ -315,6 +319,40 @@ export class FileTrustedDeviceRegistry {
       record.revokedAt = now
       if (reason) record.revocationReason = reason
       return { result: undefined, changed: true }
+    })
+  }
+
+  async attachWorkspaceGrant(
+    deviceId: string,
+    input: SignedWorkspaceDeviceGrant,
+  ): Promise<SignedWorkspaceDeviceGrant> {
+    const signed = signedWorkspaceDeviceGrantSchema.parse(input)
+    return this.file.transaction(initialState, (state) => {
+      validateState(state)
+      const record = state.trustedDevices[deviceId]
+      if (!record || record.status !== 'active') {
+        throw new Error(`Active trusted device is unavailable: ${deviceId}`)
+      }
+      const certificate = record.certificate.certificate
+      const grant = signed.grant
+      if (
+        grant.deviceId !== certificate.deviceId ||
+        grant.certificateId !== certificate.certificateId ||
+        grant.deviceName !== certificate.deviceName ||
+        canonicalJson(grant.deviceKey) !== canonicalJson(certificate.deviceKey) ||
+        canonicalJson(grant.deviceTransport) !== canonicalJson(certificate.deviceTransport) ||
+        canonicalJson(grant.allowedOperations) !== canonicalJson(certificate.allowedOperations) ||
+        grant.issuedAt !== certificate.issuedAt ||
+        grant.expiresAt !== certificate.expiresAt
+      ) throw new Error('Workspace grant does not preserve the pairing certificate authority')
+      if (record.workspaceGrant) {
+        if (canonicalJson(record.workspaceGrant) !== canonicalJson(signed)) {
+          throw new Error('Trusted device Workspace grant is immutable')
+        }
+        return { result: structuredClone(record.workspaceGrant), changed: false }
+      }
+      record.workspaceGrant = structuredClone(signed)
+      return { result: structuredClone(signed), changed: true }
     })
   }
 

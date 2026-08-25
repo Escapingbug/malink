@@ -18,6 +18,8 @@ import {
   type SignedPairingRejection,
   type SignedPairingRequest,
   type SignedPairingResponse,
+  type WorkspaceDeviceGrant,
+  type SignedWorkspaceGatewayDirectory,
 } from '@malink/protocol'
 import {
   base64UrlDecode,
@@ -34,6 +36,7 @@ import {
   signPairingRejection,
   signPairingRequest,
   signPairingResponse,
+  signWorkspaceDeviceGrant,
   verifyPairingOffer,
   type DeviceKeyPair,
 } from '@malink/security'
@@ -93,11 +96,19 @@ export interface PairingGrantPolicy {
 }
 
 export class GatewayPairingService {
+  private workspaceDirectoryProvider?: () => Promise<SignedWorkspaceGatewayDirectory | undefined>
+
   constructor(
     private readonly identity: GatewayPairingIdentity,
     private readonly registry: FileTrustedDeviceRegistry,
     private readonly offerGuard: PairingOfferGuard,
   ) {}
+
+  setWorkspaceDirectoryProvider(
+    provider: () => Promise<SignedWorkspaceGatewayDirectory | undefined>,
+  ): void {
+    this.workspaceDirectoryProvider = provider
+  }
 
   async createOffer(input: CreatePairingOfferInput): Promise<{
     signedOffer: SignedPairingOffer
@@ -118,6 +129,7 @@ export class GatewayPairingService {
       version: 1,
       offerId: randomUUID(),
       gatewayId: this.identity.gatewayId,
+      gatewayNodeId: this.identity.gatewayNodeId,
       gatewayName: requireText(input.gatewayName, 'gatewayName', 128),
       gatewayKey: await exportPairingPublicKey(this.identity.keys.publicKey),
       gatewayTransport: input.gatewayTransport,
@@ -262,6 +274,25 @@ export class GatewayPairingService {
       this.identity.keys.privateKey,
       this.identity.keys.keyId,
     )
+    const workspaceGrantDocument: WorkspaceDeviceGrant = {
+      kind: 'malink.workspace.device-grant',
+      version: 1,
+      grantId: randomUUID(),
+      workspaceId: this.identity.workspaceId,
+      certificateId: certificateDocument.certificateId,
+      deviceId: certificateDocument.deviceId,
+      deviceName: certificateDocument.deviceName,
+      deviceKey: certificateDocument.deviceKey,
+      deviceTransport: certificateDocument.deviceTransport,
+      allowedOperations: certificateDocument.allowedOperations,
+      issuedAt,
+      expiresAt: certificateDocument.expiresAt,
+    }
+    const workspaceGrant = await signWorkspaceDeviceGrant(
+      workspaceGrantDocument,
+      this.identity.keys.privateKey,
+      this.identity.keys.keyId,
+    )
     const existingDevice = await this.registry.get(request.request.deviceId)
     if (
       existingDevice?.status === 'active'
@@ -285,6 +316,10 @@ export class GatewayPairingService {
       gatewayId: this.identity.gatewayId,
       activeDeviceCount: activeDevices.length + (replacesActiveDevice ? 0 : 1),
       certificate,
+      workspaceGrant,
+      ...(this.workspaceDirectoryProvider
+        ? { gatewayDirectory: await this.workspaceDirectoryProvider() }
+        : {}),
       issuedAt,
       // This is the durable commit proof for the same authorization as the
       // certificate, not another short-lived invitation. Keeping both windows
@@ -297,7 +332,7 @@ export class GatewayPairingService {
       this.identity.keys.privateKey,
       this.identity.keys.keyId,
     )
-    await this.registry.approve(requestId, certificate, response, now)
+    await this.registry.approve(requestId, certificate, response, now, workspaceGrant)
     return response
   }
 

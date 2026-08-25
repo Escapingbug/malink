@@ -19,6 +19,7 @@ data class MatrixSyncGap(
     val from: String,
     val to: String,
     val cursor: String = from,
+    val roomId: String? = null,
 )
 
 interface MatrixSyncGapStore {
@@ -112,13 +113,14 @@ class EncryptedMatrixSyncGapStore(
             return
         }
         val plaintext = buildJsonObject {
-            put("version", 1)
+            put("version", 2)
             put("gaps", buildJsonArray {
                 validated.forEach { gap ->
                     add(buildJsonObject {
                         put("from", gap.from)
                         put("to", gap.to)
                         put("cursor", gap.cursor)
+                        gap.roomId?.let { put("roomId", it) }
                     })
                 }
             })
@@ -149,7 +151,8 @@ class EncryptedMatrixSyncGapStore(
         val root = Json.parseToJsonElement(raw) as? JsonObject
             ?: throw IllegalArgumentException("Matrix sync gap state is invalid.")
         require(root.keys == setOf("version", "gaps")) { "Matrix sync gap state is invalid." }
-        require(root["version"]?.jsonPrimitive?.intOrNull == 1) {
+        val version = root["version"]?.jsonPrimitive?.intOrNull
+        require(version == 1 || version == 2) {
             "Unsupported Matrix sync gap state version."
         }
         val gaps = root["gaps"] as? JsonArray
@@ -157,13 +160,18 @@ class EncryptedMatrixSyncGapStore(
         return validate(gaps.map { element ->
             val value = element as? JsonObject
                 ?: throw IllegalArgumentException("Matrix sync gap is invalid.")
-            require(value.keys == setOf("from", "to", "cursor")) {
+            val requiredKeys = setOf("from", "to", "cursor")
+            require(
+                value.keys.containsAll(requiredKeys) &&
+                    value.keys.all { it in requiredKeys || (version == 2 && it == "roomId") },
+            ) {
                 "Matrix sync gap is invalid."
             }
             MatrixSyncGap(
                 from = value.token("from"),
                 to = value.token("to"),
                 cursor = value.token("cursor"),
+                roomId = if (version == 2) value["roomId"]?.jsonPrimitive?.contentOrNull else null,
             )
         })
     }
@@ -175,8 +183,15 @@ class EncryptedMatrixSyncGapStore(
             validateToken(gap.from)
             validateToken(gap.to)
             validateToken(gap.cursor)
+            gap.roomId?.let { roomId ->
+                require(roomId.startsWith("!") && roomId.length <= 512) {
+                    "Matrix sync gap room ID is invalid."
+                }
+            }
             require(gap.from != gap.to) { "Matrix sync gap is empty." }
-            require(identities.add(gap.from to gap.to)) { "Matrix sync gap is duplicated." }
+            require(identities.add("${gap.roomId}\u0000${gap.from}" to gap.to)) {
+                "Matrix sync gap is duplicated."
+            }
         }
         return value.toList()
     }

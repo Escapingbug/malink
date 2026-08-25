@@ -303,10 +303,7 @@ class MatrixApplicationControlClientTest {
         ).jsonObject
         val timeline = filter.getValue("room").jsonObject
             .getValue("timeline").jsonObject
-        assertEquals(
-            "@gateway:example.org",
-            timeline.getValue("senders").jsonArray.single().jsonPrimitive.content,
-        )
+        assertFalse("senders" in timeline)
         assertEquals(
             setOf(
                 "m.room.message",
@@ -314,6 +311,7 @@ class MatrixApplicationControlClientTest {
                 "io.malink.project.key_grant.v3",
                 "io.malink.project.current.v3",
                 "io.malink.workspace.current.v3",
+                "io.malink.workspace.gateway_directory.v1",
             ),
             timeline.getValue("types").jsonArray.map { it.jsonPrimitive.content }.toSet(),
         )
@@ -323,12 +321,101 @@ class MatrixApplicationControlClientTest {
                 "io.malink.project.key_grant.v3",
                 "io.malink.project.current.v3",
                 "io.malink.workspace.current.v3",
+                "io.malink.workspace.gateway_directory.v1",
             ),
             filter.getValue("room").jsonObject
                 .getValue("state").jsonObject
                 .getValue("types").jsonArray.map { it.jsonPrimitive.content }.toSet(),
         )
         assertTrue(responseBody.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun `one sync receives both Gateway rooms and records each limited gap`() = runBlocking {
+        lateinit var endpoint: URI
+        val responseBody = """
+            {
+              "next_batch":"s-multi-next",
+              "rooms":{"join":{
+                "!room:example.org":{"timeline":{"limited":true,"prev_batch":"gap-a","events":[{
+                  "type":"m.room.message","event_id":"${'$'}event-a",
+                  "sender":"@gateway:example.org","origin_server_ts":1,
+                  "content":${timelineContent()}
+                }]}},
+                "!room-b:example.org":{"timeline":{"limited":true,"prev_batch":"gap-b","events":[
+                  {
+                    "type":"m.room.message","event_id":"${'$'}event-b",
+                    "sender":"@gateway-b:example.org","origin_server_ts":2,
+                    "content":${timelineContent()}
+                  },
+                  {
+                    "type":"io.malink.workspace.gateway_directory.v1",
+                    "state_key":"gateway-1","event_id":"${'$'}directory",
+                    "sender":"@gateway:example.org","origin_server_ts":3,
+                    "content":{"directory":{},"signature":{}}
+                  },
+                  {
+                    "type":"m.room.message","event_id":"${'$'}untrusted",
+                    "sender":"@attacker:example.org","origin_server_ts":4,
+                    "content":${timelineContent()}
+                  }
+                ]}}
+              }}
+            }
+        """.trimIndent().toByteArray()
+        val client = MatrixApplicationControlSyncClient(
+            MatrixApplicationControlSyncTransport { target, _ ->
+                endpoint = target
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        val batch = client.sync(multiRoomSession(), since = "s-multi-current")
+
+        assertEquals(
+            listOf("\$event-a", "\$event-b", "\$directory"),
+            batch.events.map { it.eventId },
+        )
+        assertEquals(
+            setOf("!room:example.org", "!room-b:example.org"),
+            batch.events.map { it.roomId }.toSet(),
+        )
+        assertEquals(
+            listOf("!room:example.org", "!room-b:example.org"),
+            batch.roomGaps.map { it.roomId },
+        )
+        val filter = Json.parseToJsonElement(
+            URLDecoder.decode(
+                endpoint.rawQuery.split("&").single { it.startsWith("filter=") }
+                    .substringAfter("filter="),
+                Charsets.UTF_8.name(),
+            ),
+        ).jsonObject
+        assertEquals(
+            setOf("!room:example.org", "!room-b:example.org"),
+            filter.getValue("room").jsonObject.getValue("rooms").jsonArray
+                .map { it.jsonPrimitive.content }.toSet(),
+        )
+    }
+
+    @Test
+    fun `command can target the second Gateway project room`() = runBlocking {
+        lateinit var endpoint: URI
+        val responseBody = """{"event_id":"${'$'}second-room"}""".toByteArray()
+        val client = MatrixApplicationControlClient(
+            MatrixApplicationControlTransport { target, _, _ ->
+                endpoint = target
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        assertEquals(
+            "\$second-room",
+            client.send(
+                multiRoomSession(), secureContent(), "command-second", "!room-b:example.org",
+            ),
+        )
+        assertTrue(endpoint.rawPath.contains("%21room-b%3Aexample.org"))
     }
 
     @Test
@@ -726,4 +813,16 @@ class MatrixApplicationControlClientTest {
             gatewayDeviceEd25519 = "A".repeat(43),
         ),
     )
+
+    private fun multiRoomSession() = storedSession().withRoomBindings(listOf(
+        storedSession().roomBinding,
+        MatrixRoomBinding(
+            roomId = "!room-b:example.org",
+            gatewayId = "gateway-1",
+            conversationId = "conversation-2",
+            gatewayUserId = "@gateway-b:example.org",
+            gatewayDeviceId = "GATEWAY-DEVICE-B",
+            gatewayDeviceEd25519 = "B".repeat(43),
+        ),
+    ))
 }

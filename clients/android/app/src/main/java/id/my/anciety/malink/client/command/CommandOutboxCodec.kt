@@ -26,7 +26,8 @@ internal object CommandOutboxCodec {
     private const val AUTHENTICATION_SCHEMA_VERSION = 3
     private const val RETIRED_COMMAND_IDS_SCHEMA_VERSION = 3
     private const val EPOCH_SCOPE_SCHEMA_VERSION = 4
-    private const val SCHEMA_VERSION = EPOCH_SCOPE_SCHEMA_VERSION
+    private const val PROJECT_ROUTE_SCHEMA_VERSION = 5
+    private const val SCHEMA_VERSION = PROJECT_ROUTE_SCHEMA_VERSION
     private const val MAX_PLAINTEXT_BYTES = 3 * 1024 * 1024
     private const val MAX_COMMANDS = 128
     private const val MAX_TOMBSTONES = 4_096
@@ -112,6 +113,7 @@ internal object CommandOutboxCodec {
         put("submittedAt", value.submittedAt)
         put("updatedAt", value.updatedAt)
         putNullableString("sessionId", value.sessionId)
+        putNullableString("projectId", value.projectId)
         put("sequence", value.sequence)
         put("baseRevision", value.baseRevision)
         putNullableString("revisionEpoch", value.revisionEpoch)
@@ -151,7 +153,7 @@ internal object CommandOutboxCodec {
             setOf("revisionEpoch", "revisionEpochGeneration")
         } else {
             emptySet()
-        }
+        } + if (schemaVersion >= PROJECT_ROUTE_SCHEMA_VERSION) setOf("projectId") else emptySet()
         value.requireExactKeys(
             keys,
         )
@@ -165,6 +167,9 @@ internal object CommandOutboxCodec {
             submittedAt = value.requiredLong("submittedAt"),
             updatedAt = value.requiredLong("updatedAt"),
             sessionId = value.optionalString("sessionId"),
+            projectId = if (schemaVersion >= PROJECT_ROUTE_SCHEMA_VERSION) {
+                value.optionalString("projectId")
+            } else null,
             sequence = value.requiredLong("sequence"),
             baseRevision = value.requiredLong("baseRevision"),
             revisionEpoch = if (schemaVersion >= EPOCH_SCOPE_SCHEMA_VERSION) {

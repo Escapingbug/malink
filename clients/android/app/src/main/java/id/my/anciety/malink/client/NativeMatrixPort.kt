@@ -10,6 +10,7 @@ import id.my.anciety.malink.matrix.MatrixThreadHistoryBatch
 import id.my.anciety.malink.matrix.MatrixRuntimeStatus
 import id.my.anciety.malink.matrix.MatrixTransportIdentity
 import id.my.anciety.malink.matrix.PublicMatrixSession
+import id.my.anciety.malink.matrix.MatrixRoomBinding
 import kotlinx.serialization.json.JsonObject
 
 interface NativeMatrixObserver {
@@ -29,6 +30,8 @@ interface NativeMatrixPort {
     fun start()
     fun onSystemWake(reason: String) = Unit
     fun publicSession(): PublicMatrixSession?
+    suspend fun updateRoomBindings(bindings: List<MatrixRoomBinding>): PublicMatrixSession =
+        throw UnsupportedOperationException("Workspace multi-room routing is unavailable.")
     suspend fun bootstrap(input: MatrixBootstrap): PublicMatrixSession
     suspend fun issueLoginToken(password: String?): MatrixLoginTokenIssueResult
     suspend fun sendPairingMessage(contentJson: String)
@@ -38,9 +41,24 @@ interface NativeMatrixPort {
         from: String?,
         limit: Int,
     ): MatrixThreadHistoryBatch
+    suspend fun loadThreadHistory(
+        threadRootEventId: String,
+        from: String?,
+        limit: Int,
+        roomId: String,
+    ): MatrixThreadHistoryBatch = throw UnsupportedOperationException(
+        "Workspace multi-room history is unavailable.",
+    )
     suspend fun sendApplicationControlEvent(contentJson: String, transactionId: String): String
+    suspend fun sendApplicationControlEvent(
+        contentJson: String,
+        transactionId: String,
+        roomId: String,
+    ): String = throw UnsupportedOperationException("Workspace multi-room routing is unavailable.")
     suspend fun fetchApplicationEvent(eventId: String): MatrixDecryptedEvent =
         throw UnsupportedOperationException("Direct Matrix event recovery is unavailable.")
+    suspend fun fetchApplicationEvent(eventId: String, roomId: String): MatrixDecryptedEvent =
+        throw UnsupportedOperationException("Workspace multi-room recovery is unavailable.")
     suspend fun refreshThreadDirectory(): Int = 0
     suspend fun refreshApplicationProjection()
     suspend fun uploadMedia(mimeType: String, bytes: ByteArray): String
@@ -78,6 +96,8 @@ class MatrixNativePort(context: Context) : NativeMatrixPort {
     override fun start() = runtime.start()
     override fun onSystemWake(reason: String) = runtime.onSystemWake(reason)
     override fun publicSession(): PublicMatrixSession? = runtime.publicSession()
+    override suspend fun updateRoomBindings(bindings: List<MatrixRoomBinding>): PublicMatrixSession =
+        runtime.updateRoomBindings(bindings)
     override suspend fun bootstrap(input: MatrixBootstrap): PublicMatrixSession = runtime.bootstrap(input)
     override suspend fun issueLoginToken(password: String?): MatrixLoginTokenIssueResult =
         runtime.issueLoginToken(password)
@@ -89,10 +109,23 @@ class MatrixNativePort(context: Context) : NativeMatrixPort {
         from: String?,
         limit: Int,
     ): MatrixThreadHistoryBatch = runtime.loadThreadHistory(threadRootEventId, from, limit)
+    override suspend fun loadThreadHistory(
+        threadRootEventId: String,
+        from: String?,
+        limit: Int,
+        roomId: String,
+    ): MatrixThreadHistoryBatch = runtime.loadThreadHistory(threadRootEventId, from, limit, roomId)
     override suspend fun sendApplicationControlEvent(contentJson: String, transactionId: String): String =
         runtime.sendApplicationControlEvent(contentJson, transactionId)
+    override suspend fun sendApplicationControlEvent(
+        contentJson: String,
+        transactionId: String,
+        roomId: String,
+    ): String = runtime.sendApplicationControlEvent(contentJson, transactionId, roomId)
     override suspend fun fetchApplicationEvent(eventId: String): MatrixDecryptedEvent =
         runtime.fetchApplicationEvent(eventId)
+    override suspend fun fetchApplicationEvent(eventId: String, roomId: String): MatrixDecryptedEvent =
+        runtime.fetchApplicationEvent(eventId, roomId)
     override suspend fun refreshThreadDirectory(): Int = runtime.refreshThreadDirectory()
     override suspend fun refreshApplicationProjection() = runtime.refreshApplicationProjection()
     override suspend fun uploadMedia(mimeType: String, bytes: ByteArray): String =

@@ -262,6 +262,7 @@ import {
   inspectPairingLink,
   loadPendingPairingRecovery,
   loadTrustedGateway,
+  loadTrustedGateways,
   pairingLinkFromDeviceInvitation,
   trustedGatewayConfig,
   type GeneratedDeviceInvitation,
@@ -296,6 +297,7 @@ type TurnHistoryLoadState = {
 
 type ProviderHistoryLoadState = {
   id: number;
+  projectId: string;
   provider: string;
   kind: "sessions" | "session";
   providerSessionId?: string;
@@ -303,6 +305,7 @@ type ProviderHistoryLoadState = {
 
 type ProviderHistoryPendingCommand = {
   commandId: string;
+  projectId: string;
   provider: string;
   kind: "sessions" | "session";
   providerSessionId?: string;
@@ -1012,6 +1015,7 @@ function MalinkAppRuntime() {
     useState<PairingPreview | null>(null);
   const [trustedGateway, setTrustedGateway] =
     useState<MalinkPublicTrust | null>(null);
+  const [savedGateways, setSavedGateways] = useState<MalinkPublicTrust[]>([]);
   const [pairingBusy, setPairingBusy] = useState(false);
   const [deviceInvitation, setDeviceInvitation] =
     useState<GeneratedDeviceInvitation | null>(null);
@@ -1021,6 +1025,7 @@ function MalinkAppRuntime() {
     useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [providerHistoryOpen, setProviderHistoryOpen] = useState(false);
+  const [providerHistoryProjectId, setProviderHistoryProjectId] = useState("");
   const [providerHistoryProvider, setProviderHistoryProvider] = useState("");
   const [providerHistorySessions, setProviderHistorySessions] = useState<ProviderSessionEntry[]>([]);
   const [providerHistorySelected, setProviderHistorySelected] = useState<ProviderSessionEntry | null>(null);
@@ -1129,6 +1134,7 @@ function MalinkAppRuntime() {
   const historyGenerationRef = useRef(0);
   const historyLoadingRef = useRef(false);
   const providerHistoryProviderRef = useRef("");
+  const providerHistoryProjectIdRef = useRef("");
   const providerHistoryLoadRef = useRef<ProviderHistoryLoadState | null>(null);
   const providerHistoryLoadIdRef = useRef(0);
   const providerHistoryLoadedProviderRef = useRef<string | null>(null);
@@ -1263,9 +1269,10 @@ function MalinkAppRuntime() {
         canonicalGatewayProjects(
           gatewayState?.workspace,
           visibleGatewaySessions,
+          gatewayState?.projects ?? [],
         ).map((project) => [project.projectId, project]),
       ),
-    [gatewayState?.workspace, visibleGatewaySessions],
+    [gatewayState?.workspace, gatewayState?.projects, visibleGatewaySessions],
   );
   const projectGroups = useMemo(() => {
     const groups = new Map<
@@ -1292,6 +1299,20 @@ function MalinkAppRuntime() {
       group.sessions.push(session);
       groups.set(key, group);
     }
+    if (!search.trim()) {
+      for (const project of canonicalProjectsById.values()) {
+        const key = gatewayProjectKey(matrixConfig.gatewayId, project.projectId);
+        if (!groups.has(key)) {
+          groups.set(key, {
+            key,
+            projectId: project.projectId,
+            projectName: project.projectName,
+            cwd: project.cwd,
+            sessions: [],
+          });
+        }
+      }
+    }
     const projects = [...groups.values()];
     for (const project of projects) {
       project.sessions.sort((left, right) =>
@@ -1310,6 +1331,7 @@ function MalinkAppRuntime() {
     activeFilteredSessions,
     canonicalProjectsById,
     matrixConfig.gatewayId,
+    search,
     sessionReadState,
   ]);
   const scratchSessions = useMemo(
@@ -1416,20 +1438,32 @@ function MalinkAppRuntime() {
       : "Connect a computer");
   const activeProvider =
     selected?.provider ?? gatewayState?.workspace.provider ?? "Agent";
+  const selectedProjectWorkspace = selected
+    ? gatewayState?.projects?.find(project => project.projectId === selected.projectId)
+    : undefined;
   const activeWorkspace = selected
     ? {
+        ...selectedProjectWorkspace,
         projectId: selected.projectId,
         projectName: selected.projectName,
         cwd: selected.cwd,
         provider: selected.provider,
         model: selected.model,
         reasoningEffort: selected.reasoningEffort,
-        permissionMode: "default",
+        permissionMode: selectedProjectWorkspace?.permissionMode ?? "default",
       }
     : gatewayState?.workspace;
-  const activeProviderModels = gatewayState?.capabilities.providers.find(
+  const activeCapabilities = activeWorkspace?.capabilities ?? gatewayState?.capabilities;
+  const canCreateAnySession = (gatewayState?.projects ?? (gatewayState ? [gatewayState.workspace] : []))
+    .some(project => (project.capabilities ?? gatewayState?.capabilities)?.canCreateSession);
+  const providerHistoryWorkspace = gatewayState?.projects?.find(
+    project => project.projectId === providerHistoryProjectId,
+  ) ?? gatewayState?.workspace;
+  const providerHistoryCapabilities = providerHistoryWorkspace?.capabilities
+    ?? gatewayState?.capabilities;
+  const activeProviderModels = activeCapabilities?.providers.find(
     (provider) => provider.id === activeProvider,
-  )?.models ?? gatewayState?.capabilities.models ?? [];
+  )?.models ?? activeCapabilities?.models ?? [];
   const activeModelCapability = activeProviderModels.find(
     (model) => model.id === activeWorkspace?.model,
   );
@@ -1960,7 +1994,9 @@ function MalinkAppRuntime() {
       if (deferStoredStartupForPairing) return;
       const identity = await getOrCreateDeviceIdentity();
       const trust = await loadTrustedGateway(identity);
-      const stored = loadMatrixConfig() ?? emptyMatrixConfig;
+      const savedTrusts = await loadTrustedGateways(identity);
+      setSavedGateways(savedTrusts.map(publicTrustFromWeb));
+      const stored = loadMatrixConfig(trust?.gatewayId) ?? loadMatrixConfig() ?? emptyMatrixConfig;
       if (trust) {
         clearPendingPairing();
         setTrustedGateway(publicTrustFromWeb(trust));
@@ -2016,6 +2052,7 @@ function MalinkAppRuntime() {
         ...bindCredentialsToHomeserver(stored, transport.homeserver),
         roomId: transport.roomId,
         gatewayId: preview.gatewayId,
+        gatewayNodeId: preview.gatewayNodeId,
         conversationId: transport.roomId,
         gatewayMatrixUserId: transport.userId,
         gatewayMatrixDeviceId: transport.deviceId,
@@ -3223,6 +3260,15 @@ function MalinkAppRuntime() {
         onTrustUpdated(trust) {
           if (!isCurrentStartup()) return;
           setTrustedGateway(trust);
+          if (trust) {
+            setSavedGateways((current) => [
+              trust,
+              ...current.filter((gateway) =>
+                (gateway.gatewayNodeId ?? gateway.gatewayId) !==
+                (trust.gatewayNodeId ?? trust.gatewayId)
+              ),
+            ]);
+          }
           setActiveDeviceCount(trust?.activeDeviceCount ?? null);
           if (trust) {
             setPairingPreview(null);
@@ -3233,6 +3279,20 @@ function MalinkAppRuntime() {
         },
         onCollaborationState(state) {
           if (!isCurrentStartup()) return;
+          if (state.gatewayState?.gatewayDirectory) {
+            void getOrCreateDeviceIdentity()
+              .then(identity => loadTrustedGateways(identity))
+              .then(gateways => {
+                if (isCurrentStartup()) setSavedGateways(gateways.map(publicTrustFromWeb));
+              })
+              .catch(error => {
+                if (isCurrentStartup()) {
+                  setConnectionError(
+                    `Workspace Gateway directory could not be loaded: ${formatUiError(error)}`,
+                  );
+                }
+              });
+          }
           if (state.gatewayState) {
             setActiveDeviceCount(state.gatewayState.activeDeviceCount);
             setGatewayRevision(state.gatewayState.revision);
@@ -3556,12 +3616,20 @@ function MalinkAppRuntime() {
       forgetPendingSessionCreate(queuedSessionCreate.commandId);
       clearPendingSessionCreateUi();
     }
-    clearMatrixConfig();
+    const removedGatewayId = matrixConfig.gatewayNodeId || matrixConfig.gatewayId || undefined;
+    clearMatrixConfig(removedGatewayId);
     clearGatewayUiCache(window.localStorage);
     clearPendingPairing();
-    clearTrustedGateway();
+    clearTrustedGateway(removedGatewayId);
     setMatrixConfig(emptyMatrixConfig);
     setTrustedGateway(null);
+    setSavedGateways((current) =>
+      removedGatewayId
+        ? current.filter((gateway) =>
+            (gateway.gatewayNodeId ?? gateway.gatewayId) !== removedGatewayId
+          )
+        : current,
+    );
     setActiveDeviceCount(null);
     setGatewayRevision(null);
     setGatewayState(null);
@@ -3619,6 +3687,7 @@ function MalinkAppRuntime() {
         ...bindCredentialsToHomeserver(current, transport.homeserver),
         roomId: transport.roomId,
         gatewayId: preview.gatewayId,
+        gatewayNodeId: preview.gatewayNodeId,
         conversationId: transport.roomId,
         gatewayMatrixUserId: transport.userId,
         gatewayMatrixDeviceId: transport.deviceId,
@@ -3643,6 +3712,7 @@ function MalinkAppRuntime() {
         ...bindCredentialsToHomeserver(matrixConfig, transport.homeserver),
         roomId: transport.roomId,
         gatewayId: preview.gatewayId,
+        gatewayNodeId: preview.gatewayNodeId,
         conversationId: transport.roomId,
         gatewayMatrixUserId: transport.userId,
         gatewayMatrixDeviceId: transport.deviceId,
@@ -3675,6 +3745,7 @@ function MalinkAppRuntime() {
           roomBinding: {
             roomId: transport.roomId,
             gatewayId: preview.gatewayId,
+            gatewayNodeId: preview.gatewayNodeId,
             conversationId: transport.roomId,
             gatewayUserId: transport.userId,
             gatewayDeviceId: transport.deviceId,
@@ -3729,6 +3800,7 @@ function MalinkAppRuntime() {
             roomBinding: {
               roomId: preview.transport.roomId,
               gatewayId: preview.gatewayId,
+              gatewayNodeId: preview.gatewayNodeId,
               conversationId: preview.transport.roomId,
               gatewayUserId: preview.transport.userId,
               gatewayDeviceId: preview.transport.deviceId,
@@ -3959,6 +4031,7 @@ function MalinkAppRuntime() {
         homeserver: transport.homeserver,
         roomId: transport.roomId,
         gatewayId: previewOverride.gatewayId,
+        gatewayNodeId: previewOverride.gatewayNodeId,
         conversationId: transport.roomId,
         gatewayMatrixUserId: transport.userId,
         gatewayMatrixDeviceId: transport.deviceId,
@@ -3977,6 +4050,13 @@ function MalinkAppRuntime() {
       );
       saveMatrixConfig(configForPairing);
       setTrustedGateway(trust);
+      setSavedGateways((current) => [
+        trust,
+        ...current.filter((gateway) =>
+          (gateway.gatewayNodeId ?? gateway.gatewayId) !==
+          (trust.gatewayNodeId ?? trust.gatewayId)
+        ),
+      ]);
       setActiveDeviceCount(trust.activeDeviceCount ?? null);
       setMatrixConfig(configForPairing);
       setPairingPreview(null);
@@ -4092,6 +4172,7 @@ function MalinkAppRuntime() {
 
   async function sendRealCommand(
     payload: CommandPayload,
+    targetProjectId: string | undefined = activeWorkspace?.projectId,
   ): Promise<MalinkCommandSendResult | null> {
     const notice = commandNoticeFor(payload);
     const connection = malinkClientRef.current;
@@ -4107,7 +4188,7 @@ function MalinkAppRuntime() {
       return null;
     }
     try {
-      const result = await connection.send(payload);
+      const result = await connection.send(payload, targetProjectId);
       revisionConflictRef.current = null;
       recoverUiNotice(notice.key);
       return result;
@@ -4511,7 +4592,8 @@ function MalinkAppRuntime() {
     pending: ProviderHistoryPendingCommand,
     load: ProviderHistoryLoadState,
   ): boolean {
-    return pending.provider === load.provider
+    return pending.projectId === load.projectId
+      && pending.provider === load.provider
       && pending.kind === load.kind
       && pending.providerSessionId === load.providerSessionId;
   }
@@ -4541,7 +4623,7 @@ function MalinkAppRuntime() {
       };
       return recovered;
     }
-    const sent = await sendRealCommand(payload);
+    const sent = await sendRealCommand(payload, load.projectId);
     if (!sent) {
       throw new Error(
         "Provider history could not be sent. Check the connection notice, then retry.",
@@ -4549,6 +4631,7 @@ function MalinkAppRuntime() {
     }
     providerHistoryPendingCommandRef.current = {
       commandId: sent.commandId,
+      projectId: load.projectId,
       provider: load.provider,
       kind: load.kind,
       ...(load.providerSessionId === undefined
@@ -4583,28 +4666,41 @@ function MalinkAppRuntime() {
   }
 
   async function openProviderHistory(requestedProvider?: string) {
+    const projectId = providerHistoryOpen && providerHistoryProjectIdRef.current
+      ? providerHistoryProjectIdRef.current
+      : activeWorkspace?.projectId ?? "";
+    const historyWorkspace = gatewayState?.projects?.find(
+      project => project.projectId === projectId,
+    ) ?? (gatewayState?.workspace.projectId === projectId ? gatewayState.workspace : undefined);
+    const historyCapabilities = historyWorkspace?.capabilities ?? gatewayState?.capabilities;
     const provider = requestedProvider
-      ?? gatewayState?.capabilities.providers.find(candidate =>
-        candidate.id === gatewayState.workspace.provider
+      ?? historyCapabilities?.providers.find(candidate =>
+        candidate.id === historyWorkspace?.provider
         && candidate.canListSessions
         && candidate.canInspectSessions
       )?.id
-      ?? gatewayState?.capabilities.providers.find(candidate =>
+      ?? historyCapabilities?.providers.find(candidate =>
         candidate.canListSessions && candidate.canInspectSessions
       )?.id
       ?? "";
-    if (!provider) return;
+    if (!projectId || !provider) return;
     setProviderHistoryOpen(true);
+    const providerKey = `${projectId}\u0000${provider}`;
     if (
-      providerHistoryProviderRef.current === provider
+      providerHistoryProjectIdRef.current === projectId
+      && providerHistoryProviderRef.current === provider
       && (
-        providerHistoryLoadRef.current?.provider === provider
-        || providerHistoryLoadedProviderRef.current === provider
+        (providerHistoryLoadRef.current?.projectId === projectId
+          && providerHistoryLoadRef.current.provider === provider)
+        || providerHistoryLoadedProviderRef.current === providerKey
       )
     ) {
       return;
     }
-    const providerChanged = providerHistoryProviderRef.current !== provider;
+    const providerChanged = providerHistoryProjectIdRef.current !== projectId
+      || providerHistoryProviderRef.current !== provider;
+    providerHistoryProjectIdRef.current = projectId;
+    setProviderHistoryProjectId(projectId);
     providerHistoryProviderRef.current = provider;
     setProviderHistoryProvider(provider);
     if (providerChanged) {
@@ -4616,6 +4712,7 @@ function MalinkAppRuntime() {
     setProviderHistoryError(null);
     const load: ProviderHistoryLoadState = {
       id: ++providerHistoryLoadIdRef.current,
+      projectId,
       provider,
       kind: "sessions",
     };
@@ -4638,7 +4735,7 @@ function MalinkAppRuntime() {
         ? result.sessions.map(entry => providerSessionEntrySchema.parse(entry))
         : [];
       if (providerHistoryLoadRef.current?.id === load.id) {
-        providerHistoryLoadedProviderRef.current = provider;
+        providerHistoryLoadedProviderRef.current = providerKey;
         setProviderHistorySessions(sessions);
       }
     } catch (error) {
@@ -4661,6 +4758,7 @@ function MalinkAppRuntime() {
     setProviderHistoryError(null);
     const load: ProviderHistoryLoadState = {
       id: ++providerHistoryLoadIdRef.current,
+      projectId: providerHistoryProjectIdRef.current,
       provider,
       kind: "session",
       providerSessionId: session.sessionId,
@@ -4704,32 +4802,44 @@ function MalinkAppRuntime() {
   }
 
   function continueProviderHistorySession(session: ProviderSessionEntry, text: string) {
-    const providerCapability = gatewayState?.capabilities.providers.find(
+    const historyWorkspace = gatewayState?.projects?.find(
+      project => project.projectId === providerHistoryProjectIdRef.current,
+    ) ?? (gatewayState?.workspace.projectId === providerHistoryProjectIdRef.current
+      ? gatewayState.workspace
+      : undefined);
+    const historyCapabilities = historyWorkspace?.capabilities ?? gatewayState?.capabilities;
+    const providerCapability = historyCapabilities?.providers.find(
       candidate => candidate.id === providerHistoryProvider,
     );
+    if (!historyWorkspace) return;
     setProviderHistoryOpen(false);
     void createSession({
+      projectId: historyWorkspace.projectId,
       scope: "project",
-      cwd: gatewayState?.workspace.cwd ?? "",
-      projectName: gatewayState?.workspace.projectName ?? "Project",
+      cwd: historyWorkspace.cwd,
+      projectName: historyWorkspace.projectName,
       provider: providerHistoryProvider,
       providerSessionId: session.sessionId,
       title: session.title,
       initialPrompt: text,
-      ...(providerHistoryProvider === gatewayState?.workspace.provider && gatewayState.workspace.model
-        ? { model: gatewayState.workspace.model }
+      ...(providerHistoryProvider === historyWorkspace.provider && historyWorkspace.model
+        ? { model: historyWorkspace.model }
         : providerCapability?.models[0]
           ? { model: providerCapability.models[0].id }
           : {}),
-      ...(providerHistoryProvider === gatewayState?.workspace.provider && gatewayState.workspace.reasoningEffort
-        ? { reasoningEffort: gatewayState.workspace.reasoningEffort }
+      ...(providerHistoryProvider === historyWorkspace.provider && historyWorkspace.reasoningEffort
+        ? { reasoningEffort: historyWorkspace.reasoningEffort }
         : {}),
-      extensions: gatewayState?.workspace.defaultExtensions ?? [],
+      extensions: historyWorkspace.defaultExtensions ?? [],
     });
   }
 
   async function createSession(input: NewSessionInput) {
-    if (!gatewayState?.capabilities.canCreateSession) {
+    const targetWorkspace = gatewayState?.projects?.find(
+      project => project.projectId === input.projectId,
+    ) ?? gatewayState?.workspace;
+    const targetCapabilities = targetWorkspace?.capabilities ?? gatewayState?.capabilities;
+    if (!targetCapabilities?.canCreateSession) {
       showUiNotice(
         "session:create",
         "session",
@@ -4758,12 +4868,15 @@ function MalinkAppRuntime() {
           operation: "project.settings",
           model: input.model ?? null,
           reasoningEffort: input.reasoningEffort ?? null,
-        });
+        }, input.projectId);
         if (!settingsUpdate || (await settingsUpdate.completion).outcome !== "succeeded") {
           throw new Error("The project model and reasoning defaults could not be updated.");
         }
         if (connection?.updateProjectExtensions) {
-          const update = await connection.updateProjectExtensions(input.extensions ?? []);
+          const update = await connection.updateProjectExtensions(
+            input.extensions ?? [],
+            input.projectId,
+          );
           const completion = await update.completion;
           if (completion.outcome !== "succeeded") {
             throw new Error("The project extension defaults could not be updated.");
@@ -4782,7 +4895,7 @@ function MalinkAppRuntime() {
           ? { reasoningEffort: input.reasoningEffort }
           : {}),
         ...(input.extensions ? { extensions: input.extensions } : {}),
-      });
+      }, input.projectId);
       if (!sent || !connection) return;
       rememberPendingSessionCreate(input, sent.commandId);
       durableCommandRecorded = true;
@@ -4865,7 +4978,12 @@ function MalinkAppRuntime() {
     onSucceeded?: () => void | Promise<void>,
     onFailed?: () => void | Promise<void>,
   ): Promise<boolean> {
-    const capabilities = gatewayState?.capabilities;
+    const sessionProjectId = gatewayState?.sessions.find(session => session.id === sessionId)
+      ?.projectId;
+    const sessionWorkspace = gatewayState?.projects?.find(
+      project => project.projectId === sessionProjectId,
+    );
+    const capabilities = sessionWorkspace?.capabilities ?? gatewayState?.capabilities;
     const supported = capabilities?.canArchiveSession;
     if (!supported) {
       showUiNotice(
@@ -5799,7 +5917,7 @@ function MalinkAppRuntime() {
               onClick={() => void openProviderHistory()}
               disabled={
                 !gatewayAvailable ||
-                !gatewayState?.capabilities.providers.some(provider =>
+                !activeCapabilities?.providers.some(provider =>
                   provider.canListSessions && provider.canInspectSessions
                 )
               }
@@ -5841,7 +5959,7 @@ function MalinkAppRuntime() {
               disabled={
                 newSessionBusy ||
                 !gatewayAvailable ||
-                !gatewayState?.capabilities.canCreateSession
+                !canCreateAnySession
               }
             >
               +
@@ -6325,7 +6443,7 @@ function MalinkAppRuntime() {
                   disabled={
                     selectedLifecycleBusy ||
                     !gatewayAvailable ||
-                    !gatewayState?.capabilities.canArchiveSession
+                    !activeCapabilities?.canArchiveSession
                   }
                   onClick={() => void archiveSession(selected.id)}
                 >
@@ -6995,7 +7113,7 @@ function MalinkAppRuntime() {
                     )}
                   </select>
                 </label>
-                {(gatewayState?.capabilities.permissionModes.length ?? 0) >
+                {(activeCapabilities?.permissionModes.length ?? 0) >
                   1 && (
                   <>
                     <span className="control-divider" />
@@ -7007,11 +7125,11 @@ function MalinkAppRuntime() {
                         title="Permission mode"
                         disabled={
                           !sessionReady ||
-                          gatewayState!.capabilities.permissionModes.length === 0
+                          activeCapabilities!.permissionModes.length === 0
                         }
                       >
                         {!gatewayState && <option value="">Syncing…</option>}
-                        {(gatewayState?.capabilities.permissionModes ?? []).map(
+                        {(activeCapabilities?.permissionModes ?? []).map(
                           (mode) => (
                             <option key={mode.id} value={mode.id}>
                               {mode.name}
@@ -7140,7 +7258,8 @@ function MalinkAppRuntime() {
           open={newSessionOpen}
           busy={newSessionBusy}
           gatewayName={trustedGateway?.gatewayName || "Gateway"}
-          workspace={gatewayState.workspace}
+          workspace={activeWorkspace ?? gatewayState.workspace}
+          workspaces={gatewayState.projects ?? [gatewayState.workspace]}
           models={gatewayState.capabilities.models}
           providers={gatewayState.capabilities.providers}
           extensions={gatewayState.capabilities.sessionExtensions}
@@ -7156,8 +7275,8 @@ function MalinkAppRuntime() {
       {gatewayState && (
         <ProviderHistoryDialog
           open={providerHistoryOpen}
-          provider={providerHistoryProvider || gatewayState.workspace.provider}
-          providers={gatewayState.capabilities.providers.filter(provider =>
+          provider={providerHistoryProvider || providerHistoryWorkspace?.provider || ""}
+          providers={(providerHistoryCapabilities?.providers ?? []).filter(provider =>
             provider.canListSessions && provider.canInspectSessions
           )}
           sessions={providerHistorySessions}
@@ -7192,6 +7311,7 @@ function MalinkAppRuntime() {
         error={pairingError ?? connectionError}
         pairingPreview={pairingPreview}
         trustedGateway={trustedGateway}
+        savedGateways={savedGateways}
         pairingBusy={pairingBusy}
         deviceInvitation={deviceInvitation}
         invitationBusy={invitationBusy}

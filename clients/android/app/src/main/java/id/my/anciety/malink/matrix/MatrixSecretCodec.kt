@@ -1,6 +1,7 @@
 package id.my.anciety.malink.matrix
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -8,12 +9,13 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.matrix.rustcomponents.sdk.SlidingSyncVersion
 
 object MatrixSecretCodec {
-    private const val SCHEMA_VERSION = 1
+    private const val SCHEMA_VERSION = 2
     private val json = Json { explicitNulls = true }
 
     fun encode(value: PersistedMatrixSecrets): ByteArray = buildJsonObject {
@@ -26,14 +28,15 @@ object MatrixSecretCodec {
         require(bytes.size <= 256 * 1024) { "Matrix secret payload is too large." }
         val root = json.parseToJsonElement(bytes.toString(Charsets.UTF_8)).jsonObject
         requireExactKeys(root, setOf("schemaVersion", "sdkStoreKeyHex", "session"))
-        require(root.requiredInt("schemaVersion") == SCHEMA_VERSION) {
+        val schemaVersion = root.requiredInt("schemaVersion")
+        require(schemaVersion in 1..SCHEMA_VERSION) {
             "Matrix secret schema is unsupported."
         }
         val storeKey = Hex.decode(root.requiredString("sdkStoreKeyHex"))
         require(storeKey.size == 32) { "Matrix SDK store key is invalid." }
         return PersistedMatrixSecrets(
             sdkStoreKey = storeKey,
-            session = decodeSession(root.getValue("session").jsonObject),
+            session = decodeSession(root.getValue("session").jsonObject, schemaVersion),
         )
     }
 
@@ -45,10 +48,10 @@ object MatrixSecretCodec {
         put("homeserverUrl", value.homeserverUrl)
         put("oauthData", value.oauthData?.let(::JsonPrimitive) ?: JsonNull)
         put("slidingSyncVersion", value.slidingSyncVersion.name)
-        put("roomBinding", encodeRoomBinding(value.roomBinding))
+        put("roomBindings", JsonArray(value.roomBindings.map(::encodeRoomBinding)))
     }
 
-    private fun decodeSession(value: JsonObject): StoredMatrixSession {
+    private fun decodeSession(value: JsonObject, schemaVersion: Int): StoredMatrixSession {
         requireExactKeys(
             value,
             setOf(
@@ -59,7 +62,7 @@ object MatrixSecretCodec {
                 "homeserverUrl",
                 "oauthData",
                 "slidingSyncVersion",
-                "roomBinding",
+                if (schemaVersion == 1) "roomBinding" else "roomBindings",
             ),
         )
         val session = StoredMatrixSession(
@@ -74,7 +77,11 @@ object MatrixSecretCodec {
             slidingSyncVersion = runCatching {
                 SlidingSyncVersion.valueOf(value.requiredString("slidingSyncVersion", 16))
             }.getOrElse { throw IllegalArgumentException("Sliding sync version is invalid.") },
-            roomBinding = decodeRoomBinding(value.getValue("roomBinding").jsonObject),
+            roomBindings = if (schemaVersion == 1) {
+                listOf(decodeRoomBinding(value.getValue("roomBinding").jsonObject))
+            } else {
+                value.getValue("roomBindings").jsonArray.map { decodeRoomBinding(it.jsonObject) }
+            },
         )
         return session
     }

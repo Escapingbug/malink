@@ -4864,6 +4864,63 @@ select:focus-visible {
   width: min(620px, 100%);
 }
 
+.gateway-profile-list {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #e5e7ee;
+  border-radius: 14px;
+  background: #f8f9fc;
+}
+
+.gateway-profile-list > header,
+.gateway-profile-list > header > span,
+.gateway-profile-list > div,
+.gateway-profile-list > div > button,
+.gateway-profile-list > div > button > span:nth-child(2) {
+  display: flex;
+}
+
+.gateway-profile-list > header {
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gateway-profile-list > header > span,
+.gateway-profile-list > div,
+.gateway-profile-list > div > button > span:nth-child(2) {
+  flex-direction: column;
+}
+
+.gateway-profile-list > header small,
+.gateway-profile-list > div small {
+  color: #7b8496;
+}
+
+.gateway-profile-list > div {
+  gap: 6px;
+}
+
+.gateway-profile-list > div > button {
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+
+.gateway-profile-list > div > button.active {
+  border-color: #d9dce6;
+  background: white;
+}
+
+.gateway-profile-list > div > button > span:nth-child(2) {
+  flex: 1;
+}
+
 .pairing-start,
 .pairing-confirmation,
 .paired-gateway-card {

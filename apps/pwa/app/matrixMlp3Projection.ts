@@ -6,6 +6,7 @@ import type {
   NativeClientRelease,
   SessionExtensionBinding,
   SessionExtensionDescriptor,
+  SignedWorkspaceGatewayDirectory,
 } from "@malink/protocol";
 import {
   mlp3EventSchema,
@@ -13,6 +14,7 @@ import {
   nativeClientReleaseSchema,
   sessionExtensionBindingSchema,
   sessionExtensionDescriptorSchema,
+  signedWorkspaceGatewayDirectorySchema,
 } from "@malink/protocol";
 
 export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 6 as const;
@@ -82,6 +84,7 @@ export type V3WorkspaceProjection = {
   gatewayKeyId: string;
   capabilities: MatrixGatewayCapabilities;
   clientReleases: NativeClientRelease[];
+  gatewayDirectory?: SignedWorkspaceGatewayDirectory;
 };
 
 export type MatrixMlp3ProjectionState = {
@@ -226,9 +229,17 @@ export class MatrixMlp3Projection {
         payload.clientReleases ?? [],
       );
       if (this.workspace && payload.snapshotVersion <= this.workspace.snapshotVersion) {
-        if (clientReleases === this.workspace.clientReleases) return false;
+        const gatewayDirectory = payload.gatewayDirectory ?? this.workspace.gatewayDirectory;
+        if (
+          clientReleases === this.workspace.clientReleases &&
+          gatewayDirectory === this.workspace.gatewayDirectory
+        ) return false;
         this.seenLogicalEvents.add(event.eventId);
-        this.workspace = { ...this.workspace, clientReleases };
+        this.workspace = {
+          ...this.workspace,
+          clientReleases,
+          ...(gatewayDirectory ? { gatewayDirectory } : {}),
+        };
         return true;
       }
       this.seenLogicalEvents.add(event.eventId);
@@ -237,6 +248,7 @@ export class MatrixMlp3Projection {
         gatewayKeyId: payload.gatewayKeyId,
         capabilities: structuredClone(payload.capabilities),
         clientReleases,
+        ...(payload.gatewayDirectory ? { gatewayDirectory: payload.gatewayDirectory } : {}),
       };
       return true;
     }
@@ -722,6 +734,9 @@ function validateWorkspaceProjection(input: unknown): V3WorkspaceProjection {
       [],
       Array.isArray(workspace.clientReleases) ? workspace.clientReleases : [],
     ),
+    ...(workspace.gatewayDirectory
+      ? { gatewayDirectory: signedWorkspaceGatewayDirectorySchema.parse(workspace.gatewayDirectory) }
+      : {}),
   };
 }
 

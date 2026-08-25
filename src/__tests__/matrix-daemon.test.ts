@@ -1872,6 +1872,25 @@ describe('MatrixGatewayRunner', () => {
 })
 
 describe('MatrixJsSdkGatewayClient', () => {
+    it('invites an authorized Workspace device only when it is not already present', async () => {
+        const invite = vi.fn(async () => ({}))
+        const sdk = {
+            getRoom: vi.fn(() => ({
+                getMember: (userId: string) => userId === '@joined:example.org'
+                    ? { membership: 'join' }
+                    : null,
+            })),
+            invite,
+        } as unknown as MatrixClient
+        const client = new MatrixJsSdkGatewayClient(sdk)
+
+        await client.ensureRoomInvitation('!room:example.org', '@joined:example.org')
+        await client.ensureRoomInvitation('!room:example.org', '@new:example.org')
+
+        expect(invite).toHaveBeenCalledOnce()
+        expect(invite).toHaveBeenCalledWith('!room:example.org', '@new:example.org')
+    })
+
     it('leaves delivery ordering to the durable Malink scheduler instead of the SDK message FIFO', () => {
         const message = {
             getType: () => 'm.room.message',

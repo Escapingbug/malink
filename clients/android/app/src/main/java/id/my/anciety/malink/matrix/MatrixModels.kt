@@ -37,13 +37,33 @@ class StoredMatrixSession(
     val homeserverUrl: String,
     val oauthData: String?,
     val slidingSyncVersion: SlidingSyncVersion,
-    val roomBinding: MatrixRoomBinding,
+    val roomBindings: List<MatrixRoomBinding>,
 ) {
     init {
         require(slidingSyncVersion == SlidingSyncVersion.NATIVE) {
             "Only native Matrix sliding sync sessions are supported."
         }
+        require(roomBindings.isNotEmpty()) { "At least one Matrix room binding is required." }
+        require(roomBindings.map(MatrixRoomBinding::roomId).distinct().size == roomBindings.size) {
+            "Matrix room bindings must be unique by room ID."
+        }
     }
+
+    val roomBinding: MatrixRoomBinding get() = roomBindings.first()
+
+    constructor(
+        accessToken: String,
+        refreshToken: String?,
+        userId: String,
+        deviceId: String,
+        homeserverUrl: String,
+        oauthData: String?,
+        slidingSyncVersion: SlidingSyncVersion,
+        roomBinding: MatrixRoomBinding,
+    ) : this(
+        accessToken, refreshToken, userId, deviceId, homeserverUrl, oauthData,
+        slidingSyncVersion, listOf(roomBinding),
+    )
 
     fun toSdkSession(): Session = Session(
         accessToken = accessToken,
@@ -55,16 +75,22 @@ class StoredMatrixSession(
         slidingSyncVersion = slidingSyncVersion,
     )
 
+    fun withRoomBindings(bindings: List<MatrixRoomBinding>): StoredMatrixSession =
+        StoredMatrixSession(
+            accessToken, refreshToken, userId, deviceId, homeserverUrl, oauthData,
+            slidingSyncVersion, bindings,
+        )
+
     override fun toString(): String =
         "StoredMatrixSession(accessToken=<redacted>, refreshToken=" +
             if (refreshToken == null) {
                 "null, userId=$userId, deviceId=$deviceId, homeserverUrl=$homeserverUrl, " +
                     "oauthData=${if (oauthData == null) "null" else "<redacted>"}, " +
-                    "slidingSyncVersion=$slidingSyncVersion, roomBinding=$roomBinding)"
+                "slidingSyncVersion=$slidingSyncVersion, roomBindings=$roomBindings)"
             } else {
                 "<redacted>, userId=$userId, deviceId=$deviceId, homeserverUrl=$homeserverUrl, " +
                     "oauthData=${if (oauthData == null) "null" else "<redacted>"}, " +
-                    "slidingSyncVersion=$slidingSyncVersion, roomBinding=$roomBinding)"
+                    "slidingSyncVersion=$slidingSyncVersion, roomBindings=$roomBindings)"
             }
 
     companion object {
@@ -80,6 +106,20 @@ class StoredMatrixSession(
                 roomBinding = roomBinding,
             )
         }
+
+        fun fromSdkSession(
+            session: Session,
+            roomBindings: List<MatrixRoomBinding>,
+        ): StoredMatrixSession = StoredMatrixSession(
+            accessToken = session.accessToken,
+            refreshToken = session.refreshToken,
+            userId = session.userId,
+            deviceId = session.deviceId,
+            homeserverUrl = session.homeserverUrl,
+            oauthData = session.oauthData,
+            slidingSyncVersion = session.slidingSyncVersion,
+            roomBindings = roomBindings,
+        )
     }
 }
 
@@ -95,8 +135,17 @@ data class PublicMatrixSession(
     val homeserver: String,
     val userId: String,
     val matrixDeviceId: String,
-    val roomBinding: MatrixRoomBinding,
-)
+    val roomBindings: List<MatrixRoomBinding>,
+) {
+    val roomBinding: MatrixRoomBinding get() = roomBindings.first()
+
+    constructor(
+        homeserver: String,
+        userId: String,
+        matrixDeviceId: String,
+        roomBinding: MatrixRoomBinding,
+    ) : this(homeserver, userId, matrixDeviceId, listOf(roomBinding))
+}
 
 object MatrixIdentifiers {
     private val matrixUserIdPattern = Regex("^@[^:\\s]+:[^:\\s]+$")

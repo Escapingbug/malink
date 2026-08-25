@@ -212,7 +212,7 @@ class EncryptedCommandOutboxStoreTest {
         assertEquals(1, migrated.released.size)
         assertEquals(CommandOutboxMigration(2, 1), migrations.single())
         val rewritten = decryptOutbox(checkNotNull(blob.value), cipher, scope)
-        assertTrue(rewritten.toString(Charsets.UTF_8).contains("\"schemaVersion\":4"))
+        assertTrue(rewritten.toString(Charsets.UTF_8).contains("\"schemaVersion\":5"))
         assertTrue(CommandOutboxCodec.decode(rewritten).commands.isEmpty())
     }
 
@@ -245,9 +245,10 @@ class EncryptedCommandOutboxStoreTest {
     }
 
     private fun downgradeOutboxSchema(value: String, targetVersion: Int): String = value
-        .replace("\"schemaVersion\":4", "\"schemaVersion\":$targetVersion")
+        .replace(Regex("\"schemaVersion\":\\d+"), "\"schemaVersion\":$targetVersion")
         .replace(",\"revisionEpoch\":null", "")
         .replace(",\"revisionEpochGeneration\":null", "")
+        .replace(",\"projectId\":null", "")
 
     private class MemoryBlobStore : CommandOutboxBlobStore {
         var value: ByteArray? = null

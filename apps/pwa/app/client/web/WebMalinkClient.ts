@@ -19,6 +19,8 @@ import {
 import { connectMatrixMlp3 } from "../../matrixMlp3Connection";
 import {
   inspectPairingLink,
+  applyWorkspaceGatewayDirectory,
+  loadTrustedGateway,
   saveTrustedGateway,
   trustedGatewayConfig,
   type PairingPreview as WebPairingPreview,
@@ -63,6 +65,13 @@ export class WebMalinkClient implements MalinkClient {
     this.#trustedGateway = trust;
   }
 
+  async updateGatewayDirectory(input: unknown): Promise<void> {
+    if (!this.#trustedGateway) return;
+    const trust = await applyWorkspaceGatewayDirectory(this.#trustedGateway, input);
+    this.updateTrustedGateway(trust);
+    saveWorkspaceMatrixConfigs(this.config, trust);
+  }
+
   async pair(
     pairingLink: string,
     deviceName: string,
@@ -72,22 +81,23 @@ export class WebMalinkClient implements MalinkClient {
     const trust = await this.transport.pair(preview, deviceName, signal);
     this.updateTrustedGateway(trust);
     saveTrustedGateway(trust);
-    saveMatrixConfig({ ...this.config, ...trustedGatewayConfig(trust) });
+    saveWorkspaceMatrixConfigs(this.config, trust);
     return publicTrustFromWeb(trust);
   }
 
-  async send(payload: CommandPayload): Promise<MalinkCommandSendResult> {
-    return commandResultFromWeb(await this.transport.send(payload));
+  async send(payload: CommandPayload, projectId?: string): Promise<MalinkCommandSendResult> {
+    return commandResultFromWeb(await this.transport.send(payload, projectId));
   }
 
   async updateProjectExtensions(
     extensions: SessionExtensionBinding[],
+    projectId?: string,
   ): Promise<MalinkCommandSendResult> {
     if (!this.transport.updateProjectExtensions) {
       throw new Error("This connection cannot update project extension defaults.");
     }
     return commandResultFromWeb(
-      await this.transport.updateProjectExtensions(extensions),
+      await this.transport.updateProjectExtensions(extensions, projectId),
     );
   }
 
@@ -202,10 +212,23 @@ export async function createWebMalinkClient(
     onTrustUpdated(trust) {
       client?.updateTrustedGateway(trust);
       saveTrustedGateway(trust);
-      saveMatrixConfig({ ...config, ...trustedGatewayConfig(trust) });
+      saveWorkspaceMatrixConfigs(config, trust);
       handlers.onTrustUpdated?.(publicTrustFromWeb(trust));
     },
-    onCollaborationState: handlers.onCollaborationState,
+    onCollaborationState(state) {
+      const directory = state.gatewayState?.gatewayDirectory;
+      if (directory && client) {
+        void client.updateGatewayDirectory(directory).then(() => {
+          handlers.onCollaborationState?.(state);
+        }).catch((error) => {
+          handlers.onStatus("error", `Workspace Gateway directory could not be applied: ${
+            error instanceof Error ? error.message : String(error)
+          }`);
+        });
+        return;
+      }
+      handlers.onCollaborationState?.(state);
+    },
     onCommandResult: handlers.onCommandResult,
     onHistoryRecovered(page) {
       handlers.onHistoryRecovered?.({
@@ -217,13 +240,53 @@ export async function createWebMalinkClient(
     onConvergenceRequired: handlers.onConvergenceRequired,
   });
   client = new WebMalinkClient(transport, config);
+  const storedTrust = await loadTrustedGateway(
+    undefined,
+    config.gatewayNodeId || config.gatewayId,
+  );
+  if (storedTrust) client.updateTrustedGateway(storedTrust);
   return client;
+}
+
+function saveWorkspaceMatrixConfigs(
+  base: MatrixConnectionConfig,
+  trust: TrustedGateway,
+): void {
+  const workspaceRoutes = (trust.gatewayDirectory?.directory.gateways ?? []).flatMap(
+    gateway => (gateway.projects ?? []).map(project => ({
+      projectId: project.projectId,
+      gatewayNodeId: gateway.gatewayNodeId,
+      roomId: project.roomId,
+      conversationId: project.conversationId,
+      gatewayMatrixUserId: gateway.transport.userId,
+      gatewayMatrixDeviceId: gateway.transport.deviceId,
+      gatewayMatrixEd25519: gateway.transport.ed25519,
+    })),
+  );
+  saveMatrixConfig({ ...base, ...trustedGatewayConfig(trust), workspaceRoutes });
+  for (const gateway of trust.gatewayDirectory?.directory.gateways ?? []) {
+    saveMatrixConfig({
+      ...base,
+      gatewayId: trust.gatewayId,
+      gatewayNodeId: gateway.gatewayNodeId,
+      homeserver: gateway.transport.homeserver,
+      roomId: gateway.transport.roomId,
+      conversationId: gateway.transport.roomId,
+      gatewayMatrixUserId: gateway.transport.userId,
+      gatewayMatrixDeviceId: gateway.transport.deviceId,
+      gatewayMatrixEd25519: gateway.transport.ed25519,
+      workspaceRoutes,
+    });
+  }
+  // The issuer remains active after directory profiles are written.
+  saveMatrixConfig({ ...base, ...trustedGatewayConfig(trust), workspaceRoutes });
 }
 
 export function publicTrustFromWeb(trust: TrustedGateway): MalinkPublicTrust {
   return {
     state: "trusted",
     gatewayId: trust.gatewayId,
+    gatewayNodeId: trust.gatewayNodeId,
     gatewayName: trust.gatewayName,
     certificateId: trust.certificate.certificate.certificateId,
     pairedAt: trust.pairedAt,

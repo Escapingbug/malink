@@ -1,5 +1,6 @@
 import {
   attachmentSchema,
+  signedWorkspaceGatewayDirectorySchema,
   type MalinkAttachment,
   type JsonValue,
   SessionExtensionBinding,
@@ -65,6 +66,8 @@ export type GatewayWorkspaceState = {
   permissionMode: string;
   defaultExtensions?: SessionExtensionBinding[];
   extensionDefaultsRevision?: number;
+  /** Capabilities advertised by the Gateway that owns this project. */
+  capabilities?: GatewayCapabilities;
 };
 
 export type GatewayCapabilities = {
@@ -95,8 +98,11 @@ export type GatewayStateSnapshot = {
   sessions: GatewaySessionSummary[];
   inboxFiles?: GatewayInboxFile[];
   workspace: GatewayWorkspaceState;
+  /** All concurrently connected Workspace projects. */
+  projects?: GatewayWorkspaceState[];
   capabilities: GatewayCapabilities;
   nativeClientReleases?: NativeClientRelease[];
+  gatewayDirectory?: import('@malink/protocol').SignedWorkspaceGatewayDirectory;
 };
 
 export type GatewayStateCacheBinding = {
@@ -279,40 +285,15 @@ export function parseGatewayStateExtension(
     };
   });
 
-  const workspace = asRecord(extension.workspace);
-  if (
-    !workspace ||
-    typeof workspace.cwd !== "string" ||
-    workspace.cwd.length === 0 ||
-    typeof workspace.provider !== "string" ||
-    !workspace.provider ||
-    typeof workspace.permission_mode !== "string" ||
-    !workspace.permission_mode ||
-    typeof workspace.project_id !== "string" ||
-    workspace.project_id.length === 0 ||
-    typeof workspace.project_name !== "string" ||
-    workspace.project_name.length === 0 ||
-    !(
-      workspace.reasoning_effort === undefined ||
-      (typeof workspace.reasoning_effort === "string" &&
-        workspace.reasoning_effort.length > 0)
-    ) ||
-    !(
-      workspace.model === undefined ||
-      (typeof workspace.model === "string" && workspace.model.length > 0)
-    )
-  ) {
-    throw new Error("The authenticated Gateway workspace state is malformed.");
+  const workspace = parseGatewayWorkspaceState(extension.workspace);
+  const projects = extension.projects === undefined
+    ? undefined
+    : Array.isArray(extension.projects)
+      ? extension.projects.map(parseGatewayWorkspaceState)
+      : (() => { throw new Error("The authenticated Gateway project list is malformed."); })();
+  if (projects && new Set(projects.map(project => project.projectId)).size !== projects.length) {
+    throw new Error("The authenticated Gateway project list contains duplicate IDs.");
   }
-  const workspaceCwd = workspace.cwd as string;
-  const defaultExtensions = workspace.default_extensions === undefined
-    ? undefined
-    : parseSessionExtensionBindings(workspace.default_extensions);
-  const extensionDefaultsRevision = workspace.extension_defaults_revision === undefined
-    ? undefined
-    : isPositiveInteger(workspace.extension_defaults_revision)
-      ? workspace.extension_defaults_revision
-      : (() => { throw new Error("The authenticated Gateway extension defaults revision is malformed."); })();
   const sessions: GatewaySessionSummary[] = parsedSessions.map((session) => {
     return {
       id: session.id,
@@ -360,24 +341,51 @@ export function parseGatewayStateExtension(
     currentSessionId,
     sessions,
     ...(extension.inbox_files === undefined ? {} : { inboxFiles }),
-    workspace: {
-      projectId: workspace.project_id,
-      projectName: workspace.project_name,
-      cwd: workspaceCwd,
-      provider: workspace.provider,
-      ...(typeof workspace.model === "string"
-        ? { model: workspace.model }
-        : {}),
-      ...(typeof workspace.reasoning_effort === "string"
-        ? { reasoningEffort: workspace.reasoning_effort }
-        : {}),
-      permissionMode: workspace.permission_mode,
-      ...(defaultExtensions === undefined ? {} : { defaultExtensions }),
-      ...(extensionDefaultsRevision === undefined
-        ? {}
-        : { extensionDefaultsRevision }),
-    },
+    workspace,
+    ...(projects === undefined ? {} : { projects }),
     capabilities,
+    ...(extension.gateway_directory === undefined
+      ? {}
+      : { gatewayDirectory: signedWorkspaceGatewayDirectorySchema.parse(extension.gateway_directory) }),
+  };
+}
+
+function parseGatewayWorkspaceState(input: unknown): GatewayWorkspaceState {
+  const workspace = asRecord(input);
+  if (
+    !workspace || typeof workspace.cwd !== "string" || workspace.cwd.length === 0 ||
+    typeof workspace.provider !== "string" || !workspace.provider ||
+    typeof workspace.permission_mode !== "string" || !workspace.permission_mode ||
+    typeof workspace.project_id !== "string" || workspace.project_id.length === 0 ||
+    typeof workspace.project_name !== "string" || workspace.project_name.length === 0 ||
+    !(workspace.reasoning_effort === undefined ||
+      (typeof workspace.reasoning_effort === "string" && workspace.reasoning_effort.length > 0)) ||
+    !(workspace.model === undefined ||
+      (typeof workspace.model === "string" && workspace.model.length > 0))
+  ) throw new Error("The authenticated Gateway workspace state is malformed.");
+  const defaultExtensions = workspace.default_extensions === undefined
+    ? undefined
+    : parseSessionExtensionBindings(workspace.default_extensions);
+  const extensionDefaultsRevision = workspace.extension_defaults_revision === undefined
+    ? undefined
+    : isPositiveInteger(workspace.extension_defaults_revision)
+      ? workspace.extension_defaults_revision
+      : (() => { throw new Error("The authenticated Gateway extension defaults revision is malformed."); })();
+  return {
+    projectId: workspace.project_id,
+    projectName: workspace.project_name,
+    cwd: workspace.cwd,
+    provider: workspace.provider,
+    ...(typeof workspace.model === "string" ? { model: workspace.model } : {}),
+    ...(typeof workspace.reasoning_effort === "string"
+      ? { reasoningEffort: workspace.reasoning_effort }
+      : {}),
+    permissionMode: workspace.permission_mode,
+    ...(defaultExtensions === undefined ? {} : { defaultExtensions }),
+    ...(extensionDefaultsRevision === undefined ? {} : { extensionDefaultsRevision }),
+    ...(workspace.capabilities === undefined
+      ? {}
+      : { capabilities: parseGatewayCapabilities(workspace.capabilities) }),
   };
 }
 
@@ -629,25 +637,22 @@ export function gatewayStateExtension(
             attachment: file.attachment,
           })),
         }),
-    workspace: {
-      project_id: state.workspace.projectId,
-      project_name: state.workspace.projectName,
-      cwd: state.workspace.cwd,
-      provider: state.workspace.provider,
-      ...(state.workspace.model ? { model: state.workspace.model } : {}),
-      ...(state.workspace.reasoningEffort
-        ? { reasoning_effort: state.workspace.reasoningEffort }
-        : {}),
-      permission_mode: state.workspace.permissionMode,
-      ...(state.workspace.defaultExtensions === undefined
-        ? {}
-        : { default_extensions: state.workspace.defaultExtensions }),
-      ...(state.workspace.extensionDefaultsRevision === undefined
-        ? {}
-        : { extension_defaults_revision: state.workspace.extensionDefaultsRevision }),
-    },
-    capabilities: {
-      models: state.capabilities.models.map((model) => ({
+    workspace: gatewayWorkspaceExtension(state.workspace),
+    ...(state.projects === undefined
+      ? {}
+      : { projects: state.projects.map(gatewayWorkspaceExtension) }),
+    ...(state.gatewayDirectory === undefined
+      ? {}
+      : { gateway_directory: state.gatewayDirectory }),
+    capabilities: gatewayCapabilitiesExtension(state.capabilities),
+  };
+}
+
+function gatewayCapabilitiesExtension(
+  capabilities: GatewayCapabilities,
+): Record<string, unknown> {
+  return {
+      models: capabilities.models.map((model) => ({
         id: model.id,
         name: model.name,
         ...(model.defaultReasoningLevel
@@ -660,7 +665,7 @@ export function gatewayStateExtension(
           }),
         ),
       })),
-      providers: state.capabilities.providers.map((provider) => ({
+      providers: capabilities.providers.map((provider) => ({
         id: provider.id,
         name: provider.name,
         can_list_sessions: provider.canListSessions,
@@ -677,19 +682,19 @@ export function gatewayStateExtension(
           })),
         })),
       })),
-      permission_modes: state.capabilities.permissionModes.map((mode) => ({
+      permission_modes: capabilities.permissionModes.map((mode) => ({
         id: mode.id,
         name: mode.name,
       })),
-      can_create_session: state.capabilities.canCreateSession,
-      can_select_session: state.capabilities.canSelectSession,
-      ...(state.capabilities.canArchiveSession === undefined
+      can_create_session: capabilities.canCreateSession,
+      can_select_session: capabilities.canSelectSession,
+      ...(capabilities.canArchiveSession === undefined
         ? {}
-        : { can_archive_session: state.capabilities.canArchiveSession }),
-      ...(state.capabilities.canDeleteSession === undefined
+        : { can_archive_session: capabilities.canArchiveSession }),
+      ...(capabilities.canDeleteSession === undefined
         ? {}
-        : { can_delete_session: state.capabilities.canDeleteSession }),
-      session_extensions: state.capabilities.sessionExtensions.map(
+        : { can_delete_session: capabilities.canDeleteSession }),
+      session_extensions: capabilities.sessionExtensions.map(
         (extension) => ({
           id: extension.id,
           name: extension.name,
@@ -714,7 +719,27 @@ export function gatewayStateExtension(
           })),
         }),
       ),
-    },
+  };
+}
+
+function gatewayWorkspaceExtension(state: GatewayWorkspaceState): Record<string, unknown> {
+  return {
+    project_id: state.projectId,
+    project_name: state.projectName,
+    cwd: state.cwd,
+    provider: state.provider,
+    ...(state.model ? { model: state.model } : {}),
+    ...(state.reasoningEffort ? { reasoning_effort: state.reasoningEffort } : {}),
+    permission_mode: state.permissionMode,
+    ...(state.defaultExtensions === undefined
+      ? {}
+      : { default_extensions: state.defaultExtensions }),
+    ...(state.extensionDefaultsRevision === undefined
+      ? {}
+      : { extension_defaults_revision: state.extensionDefaultsRevision }),
+    ...(state.capabilities === undefined
+      ? {}
+      : { capabilities: gatewayCapabilitiesExtension(state.capabilities) }),
   };
 }
 

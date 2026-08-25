@@ -216,10 +216,10 @@ export class NativeBridgeClient implements MalinkClient {
     return result.trust;
   }
 
-  async send(payload: CommandPayload): Promise<MalinkCommandSendResult> {
+  async send(payload: CommandPayload, projectId?: string): Promise<MalinkCommandSendResult> {
     await this.ready;
     const idempotencyKey = crypto.randomUUID();
-    const receipt = await this.#sendWhenOutboxAvailable(payload, idempotencyKey);
+    const receipt = await this.#sendWhenOutboxAvailable(payload, idempotencyKey, projectId);
     return this.#sendResult(receipt);
   }
 
@@ -702,6 +702,7 @@ export class NativeBridgeClient implements MalinkClient {
   async #sendWhenOutboxAvailable(
     payload: CommandPayload,
     idempotencyKey: string,
+    projectId?: string,
   ): Promise<CommandReceipt> {
     const deadline = Date.now() + DEFAULT_BLOCKED_COMMAND_RETRY_WINDOW_MS;
     while (true) {
@@ -709,6 +710,7 @@ export class NativeBridgeClient implements MalinkClient {
         return await this.bridge.request("malink.command.send", {
           context: this.bridge.context(),
           idempotencyKey,
+          ...(projectId ? { projectId } : {}),
           payload: { ...jsonObject(payload), operation: payload.operation },
         });
       } catch (error) {

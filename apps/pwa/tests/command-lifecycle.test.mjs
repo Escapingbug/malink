@@ -17,10 +17,57 @@ import {
 import {
   classifyGatewayStateEpoch,
   createGatewayStateCacheRecord,
+  gatewayStateExtension,
   gatewayProjectKey,
   parseGatewayStateCacheRecord,
   parseGatewayStateExtension,
 } from "../app/gatewayState.ts";
+
+test("authenticated Gateway state preserves every concurrently managed project", () => {
+  const parsed = parseGatewayStateExtension({
+    version: 1,
+    kind: "gateway_state",
+    state_version: 1,
+    revision: 0,
+    revision_epoch: "matrix-native-v3",
+    revision_epoch_generation: 1,
+    active_device_count: 2,
+    current_session_id: null,
+    sessions: [],
+    workspace: {
+      project_id: "project-a", project_name: "Project A", cwd: "/workspace/a",
+      provider: "codex", permission_mode: "default",
+    },
+    projects: [
+      {
+        project_id: "project-a", project_name: "Project A", cwd: "/workspace/a",
+        provider: "codex", permission_mode: "default",
+      },
+      {
+        project_id: "project-b", project_name: "Project B", cwd: "/workspace/b",
+        provider: "codex", permission_mode: "default",
+        capabilities: {
+          models: [{ id: "gateway-b-model", name: "Gateway B model" }],
+          permission_modes: [{ id: "default", name: "Default" }],
+          can_create_session: true, can_select_session: false,
+        },
+      },
+    ],
+    capabilities: {
+      models: [], permission_modes: [{ id: "default", name: "Default" }],
+      can_create_session: true, can_select_session: false,
+    },
+  });
+
+  assert.deepEqual(parsed?.projects?.map(project => project.projectId), [
+    "project-a", "project-b",
+  ]);
+  assert.equal(parsed?.projects?.[1].capabilities?.models[0].id, "gateway-b-model");
+  assert.deepEqual(
+    parseGatewayStateExtension(gatewayStateExtension(parsed)),
+    parsed,
+  );
+});
 
 test("authenticated Gateway state accepts revision zero and real capabilities", () => {
   assert.deepEqual(

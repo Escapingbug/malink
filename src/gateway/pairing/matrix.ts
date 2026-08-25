@@ -48,7 +48,7 @@ export async function announceMatrixDeviceRotation(options: {
     return false
   }
   await options.client.pinTrustedDevices?.(
-    options.trustedDevices.map(trustedDeviceFromRecord),
+    options.trustedDevices.map(record => trustedDeviceFromRecord(record)),
   )
   const signedRotation = await options.service.signMatrixRotation(
     previousTransport,
@@ -244,13 +244,14 @@ function pairingDeliveryTransactionId(
 
 export function trustedDeviceFromRecord(
   record: TrustedDeviceRecord,
+  allowedRoomIds: readonly string[] = [record.certificate.certificate.deviceTransport.roomId],
 ): MatrixGatewayTrustedDevice {
   const certificate = record.certificate.certificate
   return {
     deviceId: certificate.deviceId,
     deviceName: certificate.deviceName,
     publicKey: certificate.deviceKey.publicKey,
-    allowedRoomIds: [certificate.deviceTransport.roomId],
+    allowedRoomIds: [...allowedRoomIds],
     // The signed certificate is the complete authorization policy. There is
     // no local compatibility grant that can silently widen it.
     allowedOperations: certificate.allowedOperations,
@@ -259,6 +260,25 @@ export function trustedDeviceFromRecord(
     matrixDeviceKeys: [certificate.deviceTransport.ed25519],
     certificateExpiresAt: certificate.expiresAt,
     sequenceEpoch: certificate.certificateId,
+  }
+}
+
+export function trustedDeviceFromWorkspaceGrant(
+  signed: import('@malink/protocol').SignedWorkspaceDeviceGrant,
+  allowedRoomIds: readonly string[],
+): MatrixGatewayTrustedDevice {
+  const grant = signed.grant
+  return {
+    deviceId: grant.deviceId,
+    deviceName: grant.deviceName,
+    publicKey: grant.deviceKey.publicKey,
+    allowedRoomIds: [...allowedRoomIds],
+    allowedOperations: grant.allowedOperations,
+    matrixUserId: grant.deviceTransport.userId,
+    matrixDeviceId: grant.deviceTransport.deviceId,
+    matrixDeviceKeys: [grant.deviceTransport.ed25519],
+    certificateExpiresAt: grant.expiresAt,
+    sequenceEpoch: grant.certificateId,
   }
 }
 

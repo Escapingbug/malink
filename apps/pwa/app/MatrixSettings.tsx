@@ -34,6 +34,7 @@ type Props = {
   error: string | null;
   pairingPreview: PairingPreview | null;
   trustedGateway: MalinkPublicTrust | null;
+  savedGateways: MalinkPublicTrust[];
   pairingBusy: boolean;
   deviceInvitation: GeneratedDeviceInvitation | null;
   invitationBusy: boolean;
@@ -79,6 +80,7 @@ function MatrixSettingsDialog({
   error,
   pairingPreview,
   trustedGateway,
+  savedGateways,
   repairReason,
   pairingBusy,
   deviceInvitation,
@@ -116,6 +118,7 @@ function MatrixSettingsDialog({
   const effectiveRepairReason = repairReason ?? manualRepairReason;
   const repairRequired = effectiveRepairReason !== null;
   const [loginPassword, setLoginPassword] = useState("");
+  const [addingGateway, setAddingGateway] = useState(false);
   const connected =
     status === "connected" ||
     status === "securing" ||
@@ -221,6 +224,42 @@ function MatrixSettingsDialog({
           </p>
         </div>
 
+        {savedGateways.length > 0 && !pairingPreview && !repairRequired && (
+          <section className="gateway-profile-list" aria-label="Saved computers">
+            <header>
+              <span>
+                <strong>Computers</strong>
+                <small>{savedGateways.length} saved on this device</small>
+              </span>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setAddingGateway((current) => !current)}
+              >
+                {addingGateway ? "Cancel" : "Add computer"}
+              </button>
+            </header>
+            <div>
+              {savedGateways.map((gateway) => {
+                const gatewayProfileId = gateway.gatewayNodeId ?? gateway.gatewayId;
+                return (
+                  <div
+                    key={gatewayProfileId}
+                    className="active"
+                  >
+                    <span className="gateway-device-mark" aria-hidden="true">G</span>
+                    <span>
+                      <strong>{gateway.gatewayName}</strong>
+                      <small>Managed by this Workspace</small>
+                    </span>
+                    <b>✓</b>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         {recoveryPlan && !repairRequired && (
           <section className="connection-recovery-panel" aria-live="polite">
             <div>
@@ -269,7 +308,7 @@ function MatrixSettingsDialog({
 
         <PairingWizard
           preview={pairingPreview}
-          trustedGateway={trustedGateway}
+          trustedGateway={addingGateway ? null : trustedGateway}
           repairReason={effectiveRepairReason}
           busy={busy}
           canConfirm={Boolean(config.accessToken)}
@@ -278,7 +317,10 @@ function MatrixSettingsDialog({
           invitationError={invitationError}
           invitationReauthRequired={invitationReauthRequired}
           onLink={onPairingLink}
-          onClear={onClearPairing}
+          onClear={() => {
+            setAddingGateway(false);
+            onClearPairing();
+          }}
           onConfirm={onConfirmPairing}
           onCreateInvitation={onCreateInvitation}
           onClearInvitation={onClearInvitation}

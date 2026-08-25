@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -12,12 +12,14 @@ import {
   verifyGatewayDeviceRotation,
   verifyGatewayTransportSnapshot,
   verifyPairingResponse,
+  verifyWorkspaceDeviceGrant,
 } from '@malink/security'
 import {
   createSignedPairingRequest,
   FileGatewayIdentityStore,
   FileTrustedDeviceRegistry,
   GatewayPairingService,
+  ensurePortableWorkspaceGrant,
   trustedDeviceFromRecord,
 } from '@/gateway/pairing'
 
@@ -115,6 +117,52 @@ describe('Gateway pairing', () => {
         { now: now + 20 * 60_000 },
       ),
     ).resolves.toMatchObject({ requestId: request.signedRequest.request.requestId })
+  })
+
+  it('migrates a legacy certificate to the same portable Workspace authority', async () => {
+    const fixture = await pairingFixture()
+    const { signedOffer } = await fixture.service.createOffer({
+      gatewayName: 'Development Gateway',
+      gatewayTransport: gatewayTransport(),
+      now,
+    })
+    const request = await createSignedPairingRequest({
+      signedOffer,
+      deviceId: 'legacy-phone',
+      deviceName: 'Legacy phone',
+      deviceKeys: await generateDeviceKeyPair(),
+      deviceTransport: deviceTransport(),
+      now: now + 1_000,
+    })
+    await fixture.service.receiveRequest(request.signedRequest, now + 2_000)
+
+    const legacyState = JSON.parse(await readFile(fixture.registryPath, 'utf8'))
+    delete legacyState.trustedDevices['legacy-phone'].workspaceGrant
+    await writeFile(fixture.registryPath, `${JSON.stringify(legacyState)}\n`, 'utf8')
+
+    const registry = new FileTrustedDeviceRegistry(fixture.registryPath)
+    const certificate = (await registry.get('legacy-phone'))!.certificate.certificate
+    const migrated = await ensurePortableWorkspaceGrant(
+      fixture.identity,
+      registry,
+      'legacy-phone',
+    )
+    await expect(verifyWorkspaceDeviceGrant(
+      migrated,
+      fixture.identity.keys.publicKey,
+      { workspaceId: fixture.identity.workspaceId, now: now + 2_000 },
+    )).resolves.toMatchObject({
+      certificateId: certificate.certificateId,
+      deviceId: certificate.deviceId,
+      allowedOperations: certificate.allowedOperations,
+      issuedAt: certificate.issuedAt,
+      expiresAt: certificate.expiresAt,
+    })
+    await expect(ensurePortableWorkspaceGrant(
+      fixture.identity,
+      registry,
+      'legacy-phone',
+    )).resolves.toEqual(migrated)
   })
 
   it('completes pairing when the joining device clock is 113ms ahead', async () => {

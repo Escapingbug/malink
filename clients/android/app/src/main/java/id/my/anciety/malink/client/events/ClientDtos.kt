@@ -323,6 +323,7 @@ sealed interface PublicTrustState {
 
     data class Trusted(
         val gatewayId: String,
+        val gatewayNodeId: String? = null,
         val gatewayName: String,
         val certificateId: String,
         val pairedAt: Long,
@@ -330,6 +331,7 @@ sealed interface PublicTrustState {
     ) : PublicTrustState {
         init {
             requireOpaqueId(gatewayId, "gatewayId")
+            gatewayNodeId?.let { requireOpaqueId(it, "gatewayNodeId") }
             require(gatewayName.length in 1..256)
             requireOpaqueId(certificateId, "certificateId")
             require(pairedAt >= 0)

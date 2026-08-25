@@ -34,4 +34,17 @@ describe("canonicalGatewayProjects", () => {
     expect(forward).toEqual(reverse);
     expect(forward).toEqual([{ ...first, projectName: "Alpha" }]);
   });
+
+  it("keeps authorized projects that do not have any sessions yet", () => {
+    const emptyProject = {
+      projectId: "project-empty",
+      projectName: "New Gateway",
+      cwd: "/work/new-gateway",
+    };
+
+    expect(canonicalGatewayProjects(workspace, [], [emptyProject])).toEqual([
+      workspace,
+      emptyProject,
+    ]);
+  });
 });
