@@ -13,6 +13,14 @@ import {
   applyWorkspaceGatewayDirectory,
   type TrustedGateway,
 } from "../app/pairing.ts";
+import { workspaceRouteNeedsJoin } from "../app/matrixWorkspaceRoute.ts";
+
+test("an invited Workspace route is joined even when Matrix already exposes a Room", () => {
+  assert.equal(workspaceRouteNeedsJoin(null), true);
+  assert.equal(workspaceRouteNeedsJoin({ getMyMembership: () => "invite" }), true);
+  assert.equal(workspaceRouteNeedsJoin({ getMyMembership: () => "leave" }), true);
+  assert.equal(workspaceRouteNeedsJoin({ getMyMembership: () => "join" }), false);
+});
 
 test("Workspace Gateway directory advances monotonically and equal revisions are immutable", async () => {
   const keys = await generateDeviceKeyPair();
@@ -73,6 +81,11 @@ test("Workspace Gateway directory advances monotonically and equal revisions are
   }, keys.privateKey, keys.keyId);
   const advanced = await applyWorkspaceGatewayDirectory(accepted, removed);
   assert.deepEqual(advanced.gatewayDirectory?.directory.gateways, []);
+  assert.strictEqual(
+    await applyWorkspaceGatewayDirectory(advanced, signed),
+    advanced,
+    "a verified older mirror from another Gateway room is ignored",
+  );
 });
 
 const now = 1_800_000_000_000;

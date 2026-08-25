@@ -590,8 +590,9 @@ export async function applyWorkspaceGatewayDirectory(
   input: unknown,
 ): Promise<TrustedGateway> {
   const signed = signedWorkspaceGatewayDirectorySchema.parse(input);
+  const currentRevision = trust.gatewayDirectory?.directory.revision;
   if (
-    trust.gatewayDirectory?.directory.revision === signed.directory.revision
+    currentRevision === signed.directory.revision
   ) {
     if (canonicalJson(trust.gatewayDirectory) !== canonicalJson(signed)) {
       throw new Error("Workspace Gateway Directory revision is immutable.");
@@ -603,9 +604,14 @@ export async function applyWorkspaceGatewayDirectory(
     trust.gatewayKey.publicKey,
     {
       workspaceId: trust.gatewayId,
-      minimumRevision: trust.gatewayDirectory?.directory.revision,
     },
   );
+  // The signed directory is mirrored to every Gateway room, whose Matrix
+  // timelines can arrive in different orders. An already verified older copy
+  // is stale delivery, not a rollback attempt against the durable revision.
+  if (currentRevision !== undefined && directory.revision < currentRevision) {
+    return trust;
+  }
   const descriptor = directory.gateways.find(
     gateway => gateway.gatewayNodeId === trust.gatewayNodeId,
   );

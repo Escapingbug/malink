@@ -54,6 +54,9 @@ const temporaryDirectory = await mkdtemp(join(tmpdir(), 'malink-mlp3-live-e2e-')
 const artifactDirectory = join(repositoryRoot, 'artifacts', 'e2e', `matrix-mlp3-${runId}`)
 const gatewayDataDirectory = join(temporaryDirectory, 'gateway-data')
 const gatewayAdminSocket = join(temporaryDirectory, 'gateway-admin.sock')
+const enrolledGatewayDataDirectory = join(temporaryDirectory, 'enrolled-gateway-data')
+const enrolledGatewayAdminSocket = join(temporaryDirectory, 'enrolled-gateway-admin.sock')
+const enrolledGatewayName = `Enrolled Gateway ${runId}`
 const fixturePath = join(temporaryDirectory, 'matrix-fixture.json')
 const pwaPort = await freePort()
 let matrixPort = await freePort()
@@ -63,6 +66,8 @@ const pwaUrl = `http://127.0.0.1:${pwaPort}`
 let fixture: DisposableMatrixFixture | undefined
 let pwa: ManagedProcess | undefined
 let gateway: ManagedProcess | undefined
+let enrollmentJoin: ManagedProcess | undefined
+let enrolledGateway: ManagedProcess | undefined
 let browser: Browser | undefined
 let first: Page | undefined
 let second: Page | undefined
@@ -117,6 +122,9 @@ try {
     await pairBrowser(first, pairing[1]!.trim(), fixture)
     await gateway.waitFor(/Gateway ready with 1 trusted device\(s\)\./u)
     await assertProjectIdentity(first, repositoryRoot)
+
+    process.stdout.write('[3g/7] Enrolling and discovering a second Gateway through the product UI…\n')
+    await exerciseGatewayEnrollment(first, fixture)
 
     process.stdout.write('[4/7] Creating a session and running a real Agent turn…\n')
     const firstSession = await createSession(first, 'malink-e2e-model')
@@ -322,6 +330,11 @@ try {
             redact(`${previousGatewayOutput}${gateway?.output ?? ''}`),
             'utf8',
         ),
+        writeFile(
+            join(artifactDirectory, 'enrolled-gateway.log'),
+            redact(enrolledGateway?.output ?? ''),
+            'utf8',
+        ),
         writeFile(join(artifactDirectory, 'pwa.log'), redact(pwa?.output ?? ''), 'utf8'),
         writeFile(join(artifactDirectory, 'browser.log'), redact(
             [...logs.entries()].map(([page, lines], index) =>
@@ -337,11 +350,17 @@ try {
             recursive: true,
             force: true,
         }).catch(() => undefined),
+        cp(enrolledGatewayDataDirectory, join(artifactDirectory, 'enrolled-gateway-data'), {
+            recursive: true,
+            force: true,
+        }).catch(() => undefined),
     ])
     process.stderr.write(`MLP/3 over Matrix E2E artifacts: ${artifactDirectory}\n`)
     throw error
 } finally {
     await browser?.close().catch(() => undefined)
+    await enrollmentJoin?.stop().catch(() => undefined)
+    await enrolledGateway?.stop().catch(() => undefined)
     await gateway?.stop().catch(() => undefined)
     await pwa?.stop().catch(() => undefined)
     await fixture?.close().catch(() => undefined)
@@ -396,6 +415,80 @@ async function assertProjectIdentity(page: Page, cwd: string): Promise<void> {
         1,
     )
     await dialog.getByRole('button', { name: 'Cancel' }).click()
+}
+
+async function exerciseGatewayEnrollment(
+    page: Page,
+    matrix: DisposableMatrixFixture,
+): Promise<void> {
+    await page.locator('button[aria-label^="Open connection settings,"]').click()
+    const dialog = page.getByRole('dialog', { name: 'Connection' })
+    await dialog.waitFor({ state: 'visible', timeout: STARTUP_TIMEOUT_MS })
+    await dialog.getByRole('button', { name: 'Add Gateway', exact: true }).click()
+    await dialog.getByRole('button', {
+        name: 'Create Gateway setup link',
+        exact: true,
+    }).click()
+    const setupCommand = dialog.getByLabel('One-time setup command')
+    await setupCommand.waitFor({ state: 'visible', timeout: STARTUP_TIMEOUT_MS })
+    const command = await setupCommand.inputValue()
+    const link = command.match(/malink gateway join '([^']+)'/u)?.[1]
+    assert.ok(link, `Gateway setup command did not contain an enrollment link: ${command}`)
+
+    enrollmentJoin = managedProcess(
+        join(repositoryRoot, 'node_modules', '.bin', 'tsx'),
+        [
+            join(repositoryRoot, 'src', 'index.ts'),
+            'gateway',
+            'join',
+            link,
+            '--gateway-data-dir',
+            enrolledGatewayDataDirectory,
+            '--gateway-name',
+            enrolledGatewayName,
+        ],
+        repositoryRoot,
+        process.env,
+    )
+    const verification = await enrollmentJoin.waitFor(
+        /Verification code: (\d{3}-\d{3})/u,
+        STARTUP_TIMEOUT_MS,
+    )
+    assert.ok(verification[1])
+    await dialog.getByText(verification[1], { exact: true }).waitFor({
+        state: 'visible',
+        timeout: STARTUP_TIMEOUT_MS,
+    })
+    await dialog.getByRole('button', { name: 'Approve Gateway', exact: true }).click()
+    await enrollmentJoin.waitFor(/Start the Gateway with MALINK_MATRIX_DATA_DIR/u, STARTUP_TIMEOUT_MS)
+
+    const enrolledFixture = JSON.parse(
+        await readFile(join(enrolledGatewayDataDirectory, 'matrix-fixture.json'), 'utf8'),
+    ) as { homeserver?: unknown; roomId?: unknown; gatewayId?: unknown }
+    assert.equal(enrolledFixture.homeserver, matrix.homeserver)
+    assert.equal(typeof enrolledFixture.roomId, 'string')
+    assert.equal(typeof enrolledFixture.gatewayId, 'string')
+
+    enrolledGateway = launchEnrolledGateway(matrix)
+    await enrolledGateway.waitFor(/Gateway ready with 1 trusted device\(s\)\./u, STARTUP_TIMEOUT_MS)
+    await dialog.getByText('2 available to every authorized client', { exact: true }).waitFor({
+        state: 'visible',
+        timeout: STARTUP_TIMEOUT_MS,
+    })
+    await dialog.getByText(`MLP/3 E2E ${runId}`, { exact: true }).waitFor({
+        state: 'visible',
+        timeout: STARTUP_TIMEOUT_MS,
+    })
+    await dialog.getByText(enrolledGatewayName, { exact: true }).waitFor({
+        state: 'visible',
+        timeout: STARTUP_TIMEOUT_MS,
+    })
+    await page.evaluate(() => {
+        document.querySelector<HTMLButtonElement>(
+            'button[aria-label="Close connection settings"]',
+        )?.click()
+    })
+    await waitForConnected(page)
 }
 
 async function createSession(page: Page, model?: string): Promise<string> {
@@ -1329,6 +1422,24 @@ function launchGateway(matrix: DisposableMatrixFixture): ManagedProcess {
             MALINK_MATRIX_E2E_PROVIDER: '1',
             MALINK_MATRIX_E2E_PROVIDER_DELAY_MS: '4000',
             MALINK_CWD: repositoryRoot,
+        },
+    )
+}
+
+function launchEnrolledGateway(matrix: DisposableMatrixFixture): ManagedProcess {
+    return managedProcess(
+        join(repositoryRoot, 'node_modules', '.bin', 'tsx'),
+        [join(repositoryRoot, 'scripts', 'matrix-local-gateway.ts')],
+        repositoryRoot,
+        {
+            ...process.env,
+            MALINK_MATRIX_DATA_DIR: enrolledGatewayDataDirectory,
+            MALINK_MATRIX_GATEWAY_USER: matrix.gateway.username,
+            MALINK_GATEWAY_NAME: enrolledGatewayName,
+            MALINK_GATEWAY_ADMIN_SOCKET: enrolledGatewayAdminSocket,
+            MALINK_MATRIX_E2E_PROVIDER: '1',
+            MALINK_MATRIX_E2E_PROVIDER_DELAY_MS: '4000',
+            MALINK_CWD: join(repositoryRoot, 'clients', 'android'),
         },
     )
 }

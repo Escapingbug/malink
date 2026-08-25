@@ -4076,11 +4076,18 @@ function MalinkAppRuntime() {
     setGatewayEnrollmentError(null);
     let commandId: string | null = null;
     try {
+      if (!await waitForConnectedCommandWindow()) {
+        throw new Error("The connection is not ready to approve this Gateway.");
+      }
       const sent = await sendRealCommand({
         operation: "gateway.enrollment.approve",
         enrollmentId,
       }, approverProjectId);
-      if (!sent) throw new Error("The approval is waiting for command review.");
+      if (!sent) {
+        throw new Error(
+          "The approval could not be sent. Review any pending action or try again.",
+        );
+      }
       commandId = sent.commandId;
       const completion = await waitForCommandCompletion(
         sent.completion,
@@ -4109,6 +4116,20 @@ function MalinkAppRuntime() {
       }
       setGatewayEnrollmentBusy(false);
     }
+  }
+
+  async function waitForConnectedCommandWindow(timeoutMs = 10_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (connectionStatusRef.current !== "connected") {
+      if (
+        connectionStatusRef.current !== "connecting" &&
+        connectionStatusRef.current !== "securing" &&
+        connectionStatusRef.current !== "reconnecting"
+      ) return false;
+      if (Date.now() >= deadline) return false;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+    }
+    return true;
   }
 
   async function confirmPairing(
@@ -4274,12 +4295,15 @@ function MalinkAppRuntime() {
   ): Promise<MalinkCommandSendResult | null> {
     const notice = commandNoticeFor(payload);
     const connection = malinkClientRef.current;
-    if (!connection || connectionStatus !== "connected") {
+    const currentConnectionStatus = connectionStatusRef.current;
+    if (!connection || currentConnectionStatus !== "connected") {
       showUiNotice(
         notice.key,
         notice.scope,
         "warning",
-        connectionStatus === "reconnecting" || connectionStatus === "connecting"
+        currentConnectionStatus === "reconnecting" ||
+          currentConnectionStatus === "connecting" ||
+          currentConnectionStatus === "securing"
           ? "The connection is still resuming. Try again when your computer is connected."
           : "Your computer is not connected. Open connection settings.",
       );

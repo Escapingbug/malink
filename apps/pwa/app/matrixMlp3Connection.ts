@@ -68,6 +68,7 @@ import {
   MATRIX_PROJECT_AUTHORIZATION_REPAIR_REQUIRED,
   resolveAuthoritativeProjectKeyGrant,
 } from "./projectKeyGrantRecovery";
+import { workspaceRouteNeedsJoin } from "./matrixWorkspaceRoute";
 
 const LOCAL_TIMEOUT_MS = 10_000;
 const INITIAL_SYNC_LIMIT = 32;
@@ -291,7 +292,11 @@ export async function connectMatrixMlp3(
         pendingSecondaryProjects.has(route.projectId)) return;
     pendingSecondaryProjects.add(route.projectId);
     try {
-      const routeRoom = client.getRoom(route.roomId) ?? await client.joinRoom(route.roomId);
+      let routeRoom = client.getRoom(route.roomId);
+      if (workspaceRouteNeedsJoin(routeRoom)) {
+        routeRoom = await client.joinRoom(route.roomId);
+      }
+      if (!routeRoom) throw new Error(`Workspace project room ${route.roomId} is unavailable.`);
       if (!client.isRoomEncrypted(route.roomId)) {
         throw new Error(`Workspace project room ${route.roomId} is not encrypted.`);
       }
