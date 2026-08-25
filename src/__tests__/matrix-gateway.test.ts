@@ -295,6 +295,26 @@ describe('MatrixPort', () => {
         await expect(response).resolves.toEqual({ value: 'allow' })
     })
 
+    it('preserves provider-specific decision values when resolving a request', async () => {
+        const transport = new InMemoryMatrixTransport()
+        const port = createPort(transport)
+        const response = port.requestDecision({
+            type: 'permission',
+            title: 'Allow this command once?',
+            options: [
+                { label: 'Allow once', value: 'allow_once' },
+                { label: 'Reject once', value: 'reject_once' },
+            ],
+        })
+        await vi.waitFor(() => expect(transport.delivered).toHaveLength(1))
+
+        const extension = transport.delivered[0].content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
+        const decisionId = String(extension.decision_id)
+        expect(port.resolveDecision(decisionId, 'allow')).toBe(false)
+        expect(port.resolveDecision(decisionId, 'allow_once')).toBe(true)
+        await expect(response).resolves.toEqual({ value: 'allow_once' })
+    })
+
     it('publishes normalized runtime lifecycle and typing through the transport boundary', async () => {
         const transport = new InMemoryMatrixTransport()
         const observedStates: string[] = []
