@@ -10,6 +10,8 @@ export type MatrixMlp3EventDelivery = {
   transactionId: string
   content: Record<string, unknown>
   createdAt: number
+  priority?: MatrixMlp3DeliveryPriority
+  supersession?: MatrixMlp3Supersession
 }
 
 export type MatrixMlp3StateDelivery = {
@@ -23,6 +25,18 @@ export type MatrixMlp3StateDelivery = {
 }
 
 export type MatrixMlp3Delivery = MatrixMlp3EventDelivery | MatrixMlp3StateDelivery
+
+export type MatrixMlp3DeliveryPriority = 'urgent' | 'control' | 'normal' | 'bulk'
+
+export interface MatrixMlp3Supersession {
+  key: string
+  version: number
+}
+
+export interface MatrixMlp3DeliveryMetadata {
+  priority?: MatrixMlp3DeliveryPriority
+  supersession?: MatrixMlp3Supersession
+}
 
 type PendingEntry = { version: 3; status: 'pending'; delivery: MatrixMlp3Delivery }
 type DeliveredEntry = {
@@ -39,7 +53,14 @@ type SupersededEntry = {
   supersededAt: number
   reason?: string
 }
-type OutboxEntry = PendingEntry | DeliveredEntry | SupersededEntry
+type ClassifiedEntry = {
+  version: 3
+  status: 'classified'
+  deliveryId: string
+  metadata: MatrixMlp3DeliveryMetadata
+  classifiedAt: number
+}
+type OutboxEntry = PendingEntry | DeliveredEntry | SupersededEntry | ClassifiedEntry
 
 /** One WAL for both timeline sends and the few directly-addressed state writes. */
 export class FileMatrixMlp3Outbox {
@@ -66,6 +87,14 @@ export class FileMatrixMlp3Outbox {
           this.deliveries.set(entry.delivery.deliveryId, entry.delivery)
           if (!this.terminal.has(entry.delivery.deliveryId)) {
             this.pendingEntries.set(entry.delivery.deliveryId, entry.delivery)
+          }
+        } else if (entry.status === 'classified') {
+          const delivery = this.deliveries.get(entry.deliveryId)
+          if (!delivery || delivery.kind !== 'event') continue
+          const classified = withMetadata(delivery, entry.metadata)
+          this.deliveries.set(entry.deliveryId, classified)
+          if (this.pendingEntries.has(entry.deliveryId)) {
+            this.pendingEntries.set(entry.deliveryId, classified)
           }
         } else {
           this.pendingEntries.delete(entry.deliveryId)
@@ -96,9 +125,14 @@ export class FileMatrixMlp3Outbox {
     }
   }
 
-  stage(delivery: MatrixMlp3Delivery): Promise<void> {
+  stage(delivery: MatrixMlp3Delivery): Promise<string[]> {
     return this.serial(async () => {
-      if (this.pendingEntries.has(delivery.deliveryId) || this.terminal.has(delivery.deliveryId)) return
+      if (this.pendingEntries.has(delivery.deliveryId) || this.terminal.has(delivery.deliveryId)) {
+        return []
+      }
+      const superseded: string[] = []
+      let obsoleteOnArrival = false
+      let obsoleteSupersessionKey: string | undefined
       if (delivery.kind === 'state') {
         const older = [...this.pendingEntries.values()].filter(candidate =>
           candidate.kind === 'state'
@@ -107,19 +141,103 @@ export class FileMatrixMlp3Outbox {
           && candidate.stateKey === delivery.stateKey,
         )
         for (const candidate of older) {
-          await this.append({
-            version: 3,
-            status: 'superseded',
-            deliveryId: candidate.deliveryId,
-            supersededAt: delivery.createdAt,
-          })
-          this.pendingEntries.delete(candidate.deliveryId)
-          this.terminal.set(candidate.deliveryId, {})
+          await this.supersede(candidate.deliveryId, delivery.createdAt, 'newer_state')
+          superseded.push(candidate.deliveryId)
+        }
+      } else if (delivery.supersession) {
+        const supersession = delivery.supersession
+        obsoleteOnArrival = [...this.pendingEntries.values()].some(candidate =>
+          candidate.kind === 'event'
+          && candidate.roomId === delivery.roomId
+          && candidate.supersession?.key === supersession.key
+          && candidate.supersession.version > supersession.version
+        )
+        if (obsoleteOnArrival) obsoleteSupersessionKey = supersession.key
+        const older = [...this.pendingEntries.values()].filter(
+          (candidate): candidate is MatrixMlp3EventDelivery =>
+            candidate.kind === 'event'
+            && candidate.roomId === delivery.roomId
+            && candidate.supersession?.key === supersession.key
+            && candidate.supersession.version < supersession.version,
+        )
+        for (const candidate of older) {
+          await this.supersede(
+            candidate.deliveryId,
+            delivery.createdAt,
+            `newer_logical_version:${supersession.key}`,
+          )
+          superseded.push(candidate.deliveryId)
         }
       }
       await this.append({ version: 3, status: 'pending', delivery: structuredClone(delivery) })
       this.deliveries.set(delivery.deliveryId, structuredClone(delivery))
       this.pendingEntries.set(delivery.deliveryId, structuredClone(delivery))
+      if (obsoleteOnArrival && obsoleteSupersessionKey) {
+        await this.supersede(
+          delivery.deliveryId,
+          delivery.createdAt,
+          `obsolete_logical_version:${obsoleteSupersessionKey}`,
+        )
+        superseded.push(delivery.deliveryId)
+      }
+      return superseded
+    })
+  }
+
+  classifyMany(
+    classifications: readonly {
+      deliveryId: string
+      metadata: MatrixMlp3DeliveryMetadata
+    }[],
+    now = Date.now(),
+  ): Promise<string[]> {
+    return this.serial(async () => {
+      const entries: OutboxEntry[] = []
+      for (const classification of classifications) {
+        const delivery = this.pendingEntries.get(classification.deliveryId)
+        if (!delivery || delivery.kind !== 'event') continue
+        const classified = withMetadata(delivery, classification.metadata)
+        if (sameMetadata(delivery, classified)) continue
+        entries.push({
+          version: 3,
+          status: 'classified',
+          deliveryId: delivery.deliveryId,
+          metadata: metadataFor(classified),
+          classifiedAt: now,
+        })
+        this.deliveries.set(delivery.deliveryId, classified)
+        this.pendingEntries.set(delivery.deliveryId, classified)
+      }
+
+      const newestVersions = new Map<string, number>()
+      for (const delivery of this.pendingEntries.values()) {
+        if (delivery.kind !== 'event' || !delivery.supersession) continue
+        const current = newestVersions.get(delivery.supersession.key) ?? -1
+        newestVersions.set(
+          delivery.supersession.key,
+          Math.max(current, delivery.supersession.version),
+        )
+      }
+      const superseded: string[] = []
+      for (const delivery of this.pendingEntries.values()) {
+        if (delivery.kind !== 'event' || !delivery.supersession) continue
+        const newest = newestVersions.get(delivery.supersession.key)
+        if (newest === undefined || delivery.supersession.version >= newest) continue
+        entries.push({
+          version: 3,
+          status: 'superseded',
+          deliveryId: delivery.deliveryId,
+          supersededAt: now,
+          reason: `newer_logical_version:${delivery.supersession.key}`.slice(0, 512),
+        })
+        superseded.push(delivery.deliveryId)
+      }
+      await this.appendMany(entries)
+      for (const deliveryId of superseded) {
+        this.pendingEntries.delete(deliveryId)
+        this.terminal.set(deliveryId, {})
+      }
+      return superseded
     })
   }
 
@@ -167,6 +285,10 @@ export class FileMatrixMlp3Outbox {
     return this.terminal.get(deliveryId)?.eventId
   }
 
+  isPending(deliveryId: string): boolean {
+    return this.pendingEntries.has(deliveryId)
+  }
+
   delivery(deliveryId: string): MatrixMlp3Delivery | undefined {
     const delivery = this.deliveries.get(deliveryId)
     return delivery ? structuredClone(delivery) : undefined
@@ -175,7 +297,10 @@ export class FileMatrixMlp3Outbox {
   pending(roomId?: string): MatrixMlp3Delivery[] {
     return [...this.pendingEntries.values()]
       .filter(delivery => roomId === undefined || delivery.roomId === roomId)
-      .sort((left, right) => left.createdAt - right.createdAt)
+      .sort((left, right) =>
+        deliveryPriority(left) - deliveryPriority(right)
+        || left.createdAt - right.createdAt
+      )
       .map(delivery => structuredClone(delivery))
   }
 
@@ -202,15 +327,74 @@ export class FileMatrixMlp3Outbox {
   }
 
   private async append(entry: OutboxEntry): Promise<void> {
+    await this.appendMany([entry])
+  }
+
+  private async appendMany(entries: readonly OutboxEntry[]): Promise<void> {
+    if (entries.length === 0) return
     await mkdir(dirname(this.filePath), { recursive: true })
     const handle = await open(this.filePath, 'a', 0o600)
     try {
-      await handle.writeFile(`${JSON.stringify(entry)}\n`, 'utf8')
+      await handle.writeFile(`${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`, 'utf8')
       await handle.sync()
     } finally {
       await handle.close()
     }
   }
+
+  private async supersede(
+    deliveryId: string,
+    supersededAt: number,
+    reason?: string,
+  ): Promise<void> {
+    await this.append({
+      version: 3,
+      status: 'superseded',
+      deliveryId,
+      supersededAt,
+      ...(reason ? { reason: reason.slice(0, 512) } : {}),
+    })
+    this.pendingEntries.delete(deliveryId)
+    this.terminal.set(deliveryId, {})
+  }
+}
+
+function deliveryPriority(delivery: MatrixMlp3Delivery): number {
+  if (delivery.kind === 'state' || delivery.priority === 'urgent') return 0
+  if (delivery.priority === 'control') return 1
+  if (delivery.priority === 'bulk') return 3
+  return 2
+}
+
+function withMetadata(
+  delivery: MatrixMlp3EventDelivery,
+  metadata: MatrixMlp3DeliveryMetadata,
+): MatrixMlp3EventDelivery {
+  return {
+    ...structuredClone(delivery),
+    ...(metadata.priority ? { priority: metadata.priority } : {}),
+    ...(metadata.supersession
+      ? { supersession: structuredClone(metadata.supersession) }
+      : {}),
+  }
+}
+
+function metadataFor(delivery: MatrixMlp3EventDelivery): MatrixMlp3DeliveryMetadata {
+  return {
+    ...(delivery.priority ? { priority: delivery.priority } : {}),
+    ...(delivery.supersession
+      ? { supersession: structuredClone(delivery.supersession) }
+      : {}),
+  }
+}
+
+function sameMetadata(
+  left: MatrixMlp3EventDelivery,
+  right: MatrixMlp3EventDelivery,
+): boolean {
+  return left.priority === right.priority
+    && left.supersession?.key === right.supersession?.key
+    && left.supersession?.version === right.supersession?.version
 }
 
 function digest(value: unknown): string {
@@ -236,10 +420,24 @@ function parseEntry(value: unknown, line: number): OutboxEntry {
       || typeof delivery.content !== 'object'
       || delivery.content === null
       || !Number.isSafeInteger(delivery.createdAt)
+      || (delivery.kind === 'event'
+        && delivery.priority !== undefined
+        && !isDeliveryPriority(delivery.priority))
+      || (delivery.kind === 'event'
+        && delivery.supersession !== undefined
+        && !isSupersession(delivery.supersession))
     ) {
       throw new Error(`Invalid pending MLP/3 Matrix delivery at line ${line}`)
     }
     return entry as PendingEntry
+  }
+  if (
+    entry.status === 'classified'
+    && typeof entry.deliveryId === 'string'
+    && Number.isSafeInteger(entry.classifiedAt)
+    && isMetadata(entry.metadata)
+  ) {
+    return entry as ClassifiedEntry
   }
   if (
     (entry.status === 'delivered' || entry.status === 'superseded')
@@ -255,6 +453,26 @@ function parseEntry(value: unknown, line: number): OutboxEntry {
     return entry as DeliveredEntry | SupersededEntry
   }
   throw new Error(`Invalid terminal MLP/3 Matrix delivery at line ${line}`)
+}
+
+function isMetadata(value: unknown): value is MatrixMlp3DeliveryMetadata {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const metadata = value as Record<string, unknown>
+  return (metadata.priority === undefined || isDeliveryPriority(metadata.priority))
+    && (metadata.supersession === undefined || isSupersession(metadata.supersession))
+}
+
+function isDeliveryPriority(value: unknown): value is MatrixMlp3DeliveryPriority {
+  return value === 'urgent' || value === 'control' || value === 'normal' || value === 'bulk'
+}
+
+function isSupersession(value: unknown): value is MatrixMlp3Supersession {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const supersession = value as Record<string, unknown>
+  return typeof supersession.key === 'string'
+    && supersession.key.length > 0
+    && Number.isSafeInteger(supersession.version)
+    && (supersession.version as number) >= 0
 }
 
 function isMissingFile(error: unknown): boolean {
