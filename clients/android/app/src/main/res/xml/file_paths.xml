@@ -3,4 +3,7 @@
     <cache-path
         name="diagnostics"
         path="diagnostics/" />
+    <cache-path
+        name="qr_captures"
+        path="qr-captures/" />
 </paths>

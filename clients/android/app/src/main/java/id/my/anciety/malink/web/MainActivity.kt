@@ -2,6 +2,7 @@ package id.my.anciety.malink.web
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ActivityNotFoundException
@@ -21,12 +22,15 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
+import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
@@ -75,6 +79,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
+import java.io.File
 import kotlin.coroutines.resume
 
 class MainActivity : ComponentActivity() {
@@ -103,6 +108,48 @@ class MainActivity : ComponentActivity() {
             .getOrNull()
     }
     private var pendingNativeUpdateInstall = false
+    private var pendingWebPermissionRequest: PermissionRequest? = null
+    private var pendingFileChooser: ValueCallback<Array<Uri>>? = null
+    private var pendingCameraCaptureUri: Uri? = null
+    private var pendingCameraIntent: Intent? = null
+
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val request = pendingWebPermissionRequest.also { pendingWebPermissionRequest = null }
+        if (request != null) {
+            if (
+                granted &&
+                TrustedWebOrigin.isTrustedOrigin(request.origin.toString()) &&
+                request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+            ) {
+                request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+            } else {
+                request.deny()
+            }
+            return@registerForActivityResult
+        }
+
+        val cameraIntent = pendingCameraIntent.also { pendingCameraIntent = null }
+        if (granted && cameraIntent != null) {
+            fileChooserLauncher.launch(cameraIntent)
+        } else {
+            finishFileChooser(null)
+        }
+    }
+
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val cameraUri = pendingCameraCaptureUri.also { pendingCameraCaptureUri = null }
+        val selected = when {
+            result.resultCode != Activity.RESULT_OK -> null
+            result.data?.data != null -> arrayOf(result.data!!.data!!)
+            cameraUri != null -> arrayOf(cameraUri)
+            else -> null
+        }
+        finishFileChooser(selected)
+    }
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -217,6 +264,12 @@ class MainActivity : ComponentActivity() {
         nativeBackDispatchPending = false
         nativeBridge?.close()
         nativeBridge = null
+        pendingWebPermissionRequest?.deny()
+        pendingWebPermissionRequest = null
+        pendingFileChooser?.onReceiveValue(null)
+        pendingFileChooser = null
+        pendingCameraCaptureUri = null
+        pendingCameraIntent = null
         webView?.apply {
             stopLoading()
             loadUrl("about:blank")
@@ -583,6 +636,100 @@ class MainActivity : ComponentActivity() {
                 return true
             }
         }
+        view.webChromeClient = object : WebChromeClient() {
+            override fun onPermissionRequest(request: PermissionRequest) {
+                runOnUiThread {
+                    if (
+                        !TrustedWebOrigin.isTrustedOrigin(request.origin.toString()) ||
+                        !request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                    ) {
+                        request.deny()
+                        return@runOnUiThread
+                    }
+                    pendingWebPermissionRequest?.deny()
+                    if (
+                        ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            Manifest.permission.CAMERA,
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+                    } else {
+                        pendingWebPermissionRequest = request
+                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                    }
+                }
+            }
+
+            override fun onPermissionRequestCanceled(request: PermissionRequest) {
+                if (pendingWebPermissionRequest === request) {
+                    pendingWebPermissionRequest = null
+                }
+            }
+
+            override fun onShowFileChooser(
+                webView: WebView,
+                filePathCallback: ValueCallback<Array<Uri>>,
+                fileChooserParams: FileChooserParams,
+            ): Boolean {
+                if (!TrustedWebOrigin.isTrustedUrl(webView.url.orEmpty())) return false
+
+                pendingFileChooser?.onReceiveValue(null)
+                pendingFileChooser = filePathCallback
+                val intent = if (fileChooserParams.isCaptureEnabled) {
+                    createQrCameraIntent()
+                } else {
+                    Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "image/*"
+                    }
+                }
+                if (intent == null) {
+                    finishFileChooser(null)
+                    return true
+                }
+                if (
+                    fileChooserParams.isCaptureEnabled &&
+                    ContextCompat.checkSelfPermission(
+                        this@MainActivity,
+                        Manifest.permission.CAMERA,
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    pendingCameraIntent = intent
+                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                } else {
+                    fileChooserLauncher.launch(intent)
+                }
+                return true
+            }
+        }
+    }
+
+    private fun finishFileChooser(value: Array<Uri>?) {
+        pendingCameraIntent = null
+        if (value == null) pendingCameraCaptureUri = null
+        pendingFileChooser.also { pendingFileChooser = null }?.onReceiveValue(value)
+    }
+
+    private fun createQrCameraIntent(): Intent? {
+        val captureDirectory = File(cacheDir, "qr-captures").apply { mkdirs() }
+        val captureFile = File.createTempFile("qr-", ".jpg", captureDirectory)
+        val captureUri = FileProvider.getUriForFile(
+            this,
+            "$packageName.fileprovider",
+            captureFile,
+        )
+        val intent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply {
+            putExtra(android.provider.MediaStore.EXTRA_OUTPUT, captureUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            clipData = ClipData.newRawUri("Malink QR capture", captureUri)
+        }
+        if (intent.resolveActivity(packageManager) == null) {
+            captureFile.delete()
+            return null
+        }
+        pendingCameraCaptureUri = captureUri
+        return intent
     }
 
     private fun openExternalUrl(uri: Uri) {
