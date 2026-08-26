@@ -545,13 +545,55 @@ function ProjectFolderIcon({ temporary }: { temporary: boolean }) {
 
 function NewProjectIcon() {
   return (
-    <svg aria-hidden="true" className="new-project-icon" viewBox="0 0 24 24">
-      <path
-        className="new-project-icon-shell"
-        d="M3.25 7V6.35c0-.75.6-1.35 1.35-1.35h4.1l1.9 2.15h8.8c.75 0 1.35.6 1.35 1.35v9.1c0 .75-.6 1.35-1.35 1.35H4.6c-.75 0-1.35-.6-1.35-1.35V7Z"
-      />
-      <path className="new-project-icon-seam" d="M3.6 8.4h16.8" />
-      <path className="new-project-icon-plus" d="M17.25 11.75v5M14.75 14.25h5" />
+    <svg aria-hidden="true" className="toolbar-icon" viewBox="0 0 24 24">
+      <path d="M3.75 7.75V6.6c0-.83.67-1.5 1.5-1.5h4.1l2 2.25h7.4c.83 0 1.5.67 1.5 1.5v9.05c0 .83-.67 1.5-1.5 1.5H5.25c-.83 0-1.5-.67-1.5-1.5V7.75Z" />
+      <path d="M16.75 11.75v5M14.25 14.25h5" />
+    </svg>
+  );
+}
+
+function HistoryIcon() {
+  return (
+    <svg aria-hidden="true" className="toolbar-icon" viewBox="0 0 24 24">
+      <path d="M4.25 8.25V4.8M4.25 8.25H7.7" />
+      <path d="M5.15 7.1a8 8 0 1 1-1 7.15" />
+      <path d="M12 7.75v4.6l3 1.75" />
+    </svg>
+  );
+}
+
+function FileInboxIcon() {
+  return (
+    <svg aria-hidden="true" className="toolbar-icon" viewBox="0 0 24 24">
+      <path d="M4.25 5.25h15.5v13.5H4.25z" />
+      <path d="M8 14.75h1.5l1 1.5h3l1-1.5H16" />
+      <path d="M12 7.75v5M9.75 10.5 12 12.75l2.25-2.25" />
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg aria-hidden="true" className="toolbar-icon" viewBox="0 0 24 24">
+      <circle cx="10.75" cy="10.75" r="5.75" />
+      <path d="m15 15 4 4" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg aria-hidden="true" className="toolbar-icon" viewBox="0 0 24 24">
+      <path d="m7 7 10 10M17 7 7 17" />
+    </svg>
+  );
+}
+
+function NewConversationIcon() {
+  return (
+    <svg aria-hidden="true" className="toolbar-icon" viewBox="0 0 24 24">
+      <path d="M5.25 4.75h13.5c.83 0 1.5.67 1.5 1.5v9.5c0 .83-.67 1.5-1.5 1.5h-7.5l-4.7 3v-3h-1.3c-.83 0-1.5-.67-1.5-1.5v-9.5c0-.83.67-1.5 1.5-1.5Z" />
+      <path d="M12 8v6M9 11h6" />
     </svg>
   );
 }
@@ -6342,7 +6384,7 @@ function MalinkAppRuntime() {
                 )
               }
             >
-              <span aria-hidden="true">↺</span>
+              <HistoryIcon />
             </button>
             <button
               type="button"
@@ -6350,7 +6392,7 @@ function MalinkAppRuntime() {
               aria-label="Open workspace file inbox"
               onClick={() => setPrimaryView("files")}
             >
-              ⇩
+              <FileInboxIcon />
             </button>
             <button
               type="button"
@@ -6370,7 +6412,7 @@ function MalinkAppRuntime() {
                 );
               }}
             >
-              {sessionSearchOpen ? "×" : "⌕"}
+              {sessionSearchOpen ? <CloseIcon /> : <SearchIcon />}
             </button>
             <button
               type="button"
@@ -6396,7 +6438,7 @@ function MalinkAppRuntime() {
                 !canCreateAnySession
               }
             >
-              +
+              <NewConversationIcon />
             </button>
           </div>
         </header>

@@ -101,10 +101,10 @@ test("ships a complete installable offline shell", async () => {
   assert.match(serviceWorker, /notificationclick/);
   assert.match(serviceWorker, /claimPushEvent/);
   assert.match(matrixSettings, /Agent notifications/);
-  assert.match(source, /function NewProjectIcon\(\)[\s\S]*className="new-project-icon"/);
+  assert.match(source, /function NewProjectIcon\(\)[\s\S]*className="toolbar-icon"/);
   assert.match(source, /aria-label="New project"[\s\S]*title="New project"[\s\S]*<NewProjectIcon \/>/);
   assert.doesNotMatch(source, /▱\+/);
-  assert.match(styles, /\.new-project-icon \{[\s\S]*width: 22px;[\s\S]*height: 22px;[\s\S]*stroke: currentColor/);
+  assert.match(styles, /\.toolbar-icon \{[\s\S]*width: 21px;[\s\S]*height: 21px;[\s\S]*stroke: currentColor/);
   assert.match(matrixSettings, /deriveConnectionRecoveryPlan/);
   assert.match(matrixSettings, /runRecoveryAction\(recoveryPlan\.primary\.action\)/);
   assert.match(matrixSettings, /case "update-native-app"[\s\S]*onUpdateNativeApp\(\)/);
@@ -286,11 +286,11 @@ test("ships a complete installable offline shell", async () => {
   );
   assert.match(
     styles,
-    /@media \(max-width: 900px\)[\s\S]*?\.gateway-card\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?right:\s*160px/,
+    /@media \(max-width: 900px\)[\s\S]*?\.gateway-card\s*\{[\s\S]*?position:\s*static;[\s\S]*?width:\s*calc\(100% - 24px\)/,
   );
   assert.match(
     styles,
-    /@media \(max-width: 900px\)[\s\S]*?\.gateway-card\s*\{[\s\S]*?left:\s*92px;[\s\S]*?max-width:\s*none/,
+    /@media \(max-width: 900px\)[\s\S]*?\.gateway-card\s*\{[\s\S]*?margin:\s*0 12px 7px;[\s\S]*?background:\s*#f7f6fc/,
   );
   assert.match(source, /className="gateway-mobile-status-copy"/);
   assert.match(
@@ -301,10 +301,12 @@ test("ships a complete installable offline shell", async () => {
     styles,
     /\.gateway-mobile-status-copy\s*\{[\s\S]*?min-width:\s*0;[\s\S]*?text-overflow:\s*ellipsis/,
   );
-  assert.match(
-    styles,
-    /@media \(max-width: 340px\)[\s\S]*?\.gateway-mobile-status-copy\s*\{\s*display:\s*none/,
-  );
+  assert.match(source, /function HistoryIcon\(/);
+  assert.match(source, /function FileInboxIcon\(/);
+  assert.match(source, /function SearchIcon\(/);
+  assert.match(source, /function NewConversationIcon\(/);
+  assert.doesNotMatch(source, /<span aria-hidden="true">↺<\/span>/);
+  assert.doesNotMatch(source, /className="mobile-files-button"[\s\S]{0,180}>\s*⇩/);
   assert.match(source, /className="conversation-status-copy"/);
   assert.match(
     styles,
