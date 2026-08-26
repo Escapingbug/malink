@@ -206,6 +206,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       },
     }
     const blocked = deferred<void>()
+    const updateDrainBlocked = deferred<void>()
     const dispatched: Array<{ sessionId: string; text: string }> = []
     const generatedImagePath = join(directory, 'generated-image.png')
     await writeFile(generatedImagePath, 'generated image bytes', 'utf8')
@@ -314,6 +315,7 @@ describe('MatrixMlp3GatewayRunner', () => {
             if (input.kind === 'user_message') {
               dispatched.push({ sessionId: session.id, text: input.text })
               if (input.text === 'block A') await blocked.promise
+              if (input.text === 'finish before update') await updateDrainBlocked.promise
               await port.send({
                 text: `reply:${input.text}`,
                 format: 'markdown',
@@ -854,6 +856,17 @@ describe('MatrixMlp3GatewayRunner', () => {
 
     await send({
       ...base,
+      commandId: 'prompt-active-during-update',
+      sessionId: 'session-b',
+      operation: 'prompt.submit',
+      payload: { operation: 'prompt.submit', text: 'finish before update' },
+    }, '$prompt-active-during-update')
+    await waitFor(() => Promise.resolve(
+      dispatched.some(item => item.text === 'finish before update'),
+    ))
+
+    await send({
+      ...base,
       commandId: 'gateway-update-apply-1',
       operation: 'gateway.update.apply',
       payload: {
@@ -863,8 +876,11 @@ describe('MatrixMlp3GatewayRunner', () => {
       },
     }, '$gateway-update-apply-1')
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
-      .some(event => event.causationCommandId === 'gateway-update-apply-1'))
-    expect(gatewayUpdateCalls).toContain('apply:release-2')
+      .some(event =>
+        event.causationCommandId === 'gateway-update-apply-1'
+        && event.payload.type === 'gateway.update.status'
+        && event.payload.status.phase === 'waiting_for_idle'
+      ))
     await send({
       ...base,
       commandId: 'provider-list-during-update-drain',
@@ -875,6 +891,28 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect((await events(client, activeKey.key, roomId, projectId)).some(event =>
       event.causationCommandId === 'provider-list-during-update-drain'
     )).toBe(false)
+    expect(gatewayUpdateCalls).not.toContain('apply:release-2')
+
+    updateDrainBlocked.resolve()
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'gateway-update-apply-1'
+        && event.payload.type === 'gateway.update.status'
+        && event.payload.status.phase === 'scheduled'
+      ))
+    expect(gatewayUpdateCalls).toContain('apply:release-2')
+    const eventsBeforeSwitch = await events(client, activeKey.key, roomId, projectId)
+    const completedIndex = eventsBeforeSwitch.findIndex(event =>
+      event.causationCommandId === 'prompt-active-during-update'
+      && event.payload.type === 'turn.completed'
+    )
+    const scheduledIndex = eventsBeforeSwitch.findIndex(event =>
+      event.causationCommandId === 'gateway-update-apply-1'
+      && event.payload.type === 'gateway.update.status'
+      && event.payload.status.phase === 'scheduled'
+    )
+    expect(completedIndex).toBeGreaterThanOrEqual(0)
+    expect(scheduledIndex).toBeGreaterThan(completedIndex)
     await runner.stop()
 
     const eventIdsBeforeRestart = new Set(
@@ -911,6 +949,10 @@ describe('MatrixMlp3GatewayRunner', () => {
       event.causationCommandId === 'provider-list-during-update-drain'
       && event.payload.type === 'provider.sessions.listed'
     )?.payload).toMatchObject({ sessions: [{ sessionId: 'provider-session-1' }] })
+    expect((await events(client, activeKey.key, roomId, projectId)).filter(event =>
+      event.causationCommandId === 'provider-list-during-update-drain'
+      && event.payload.type === 'provider.sessions.listed'
+    )).toHaveLength(1)
     await waitFor(async () => {
       const recovered = (await events(client, activeKey.key, roomId, projectId)).filter(event =>
         !eventIdsBeforeRestart.has(event.eventId)

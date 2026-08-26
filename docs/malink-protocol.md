@@ -134,7 +134,10 @@ Gateway release control uses three workspace commands:
 - `gateway.update.stage` names an immutable release ID and asks the local
   supervisor to download and verify it.
 - `gateway.update.apply` activates the already staged ID using `when_idle` or
-  the explicitly destructive `force` mode.
+  the explicitly destructive `force` mode. `when_idle` closes the new-command
+  execution gate immediately, drains work that was already active, and leaves
+  later accepted commands queued for restart recovery; it does not wait for a
+  naturally idle moment while continuing to start new work.
 - `gateway.update.status` reads the durable supervisor state.
 
 All three require the `gateway.update` pairing grant. This grant is not an

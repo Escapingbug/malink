@@ -117,6 +117,7 @@ if (privilegeExecutor) process.env.MALINK_PRIVILEGE_AVAILABLE = '1'
 const gatewayUpdateSupervisor = process.env.MALINK_GATEWAY_UPDATE_SOCKET?.trim()
     ? new GatewayUpdateSupervisorClient(process.env.MALINK_GATEWAY_UPDATE_SOCKET.trim())
     : undefined
+const gatewayBuildId = await currentGatewayBuildId()
 const runId = Date.now().toString(36).toUpperCase()
 const loginUser = process.env.MALINK_MATRIX_GATEWAY_USER ?? 'gateway'
 const gatewayMatrixDeviceId = `MALINK_GATEWAY_${runId}`
@@ -217,6 +218,10 @@ async function publishLocalWorkspaceDirectory(): Promise<void> {
             roomId: room.roomId,
             conversationId: room.conversationId,
         })),
+        {
+            buildId: gatewayBuildId,
+            ...(gatewayUpdateSupervisor ? { onlineUpdate: true } : {}),
+        },
     )
 }
 
@@ -739,7 +744,7 @@ const adminServer = await startGatewayAdminServer({
     pairingService,
     registry,
     getGatewayState: () => runner?.getState() ?? 'starting',
-    buildId: await currentGatewayBuildId(),
+    buildId: gatewayBuildId,
     getGatewayDiagnostics: () => runner!.healthSnapshot(),
     syncGatewayState: async () => {
         await runner?.syncState()

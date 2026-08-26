@@ -139,16 +139,41 @@ describe('GatewayUpdateSupervisor', () => {
     await expect(supervisor.status()).resolves.toMatchObject({ phase: 'staged' })
   })
 
-  it('requires a new build identity so health cannot mistake the old process for the target', async () => {
+  it('treats a signed release for the already active build as an idempotent commit', async () => {
     const fixture = await releaseFixture({ reuseActiveBuildId: true })
     const supervisor = new GatewayUpdateSupervisor(fixture.config, {
       fetch: fixture.fetch,
     })
     await supervisor.initialize()
 
-    await expect(supervisor.stage('release-2')).rejects.toThrow(
-      /reuses the active build ID build-1/u,
-    )
+    await expect(supervisor.stage('release-2')).resolves.toMatchObject({
+      phase: 'committed',
+      releaseId: 'release-2',
+      currentBuildId: 'build-1',
+      targetBuildId: 'build-1',
+    })
+  })
+
+  it('deduplicates concurrent PWA attempts after a release is staged or scheduled', async () => {
+    const fixture = await releaseFixture()
+    const supervisor = new GatewayUpdateSupervisor({
+      ...fixture.config,
+      activationDelayMs: 60_000,
+    }, { fetch: fixture.fetch })
+    await supervisor.initialize()
+
+    await supervisor.stage('release-2')
+    await expect(supervisor.stage('release-2')).resolves.toMatchObject({ phase: 'staged' })
+    await supervisor.scheduleApply('release-2')
+    await expect(supervisor.scheduleApply('release-2')).resolves.toMatchObject({
+      phase: 'scheduled',
+      releaseId: 'release-2',
+    })
+    await expect(supervisor.stage('release-2')).resolves.toMatchObject({
+      phase: 'scheduled',
+      releaseId: 'release-2',
+    })
+    await supervisor.stop()
   })
 
   it('rejects a protected state migration that makes automatic rollback unsafe', async () => {

@@ -47,6 +47,9 @@ const CURRENT_WORKSPACE_MEMBER_OPERATIONS = [
   'gateway.enrollment.approve',
   'notification.subscribe',
   'notification.unsubscribe',
+  'gateway.update.stage',
+  'gateway.update.apply',
+  'gateway.update.status',
 ] as const satisfies readonly Mlp3CommandOperation[]
 
 type MissingWorkspaceMemberOperation = Exclude<

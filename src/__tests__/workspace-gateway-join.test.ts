@@ -33,6 +33,7 @@ describe('Workspace Gateway join', () => {
     const signedDirectory = await gatewayDirectory.publishLocal(
       'Gateway A', transport, 1_800_000_000_001,
       [{ projectId: 'project-a', roomId: transport.roomId, conversationId: transport.roomId }],
+      { buildId: 'gateway-build-a', onlineUpdate: true },
     )
     const invitation = createGatewayJoinInvitation(
       first, signedDirectory, 1_800_000_000_002, 60_000,
@@ -48,6 +49,10 @@ describe('Workspace Gateway join', () => {
     expect(second.identity.keys.keyId).toBe(first.keys.keyId)
     expect(second.identity.gatewayNodeId).toBe('gateway-node-b')
     expect(second.directory).toEqual(signedDirectory)
+    expect(signedDirectory.directory.gateways[0]).toMatchObject({
+      buildId: 'gateway-build-a',
+      onlineUpdate: true,
+    })
   })
 
   it('rejects expired invitations and an existing identity from another Workspace', async () => {

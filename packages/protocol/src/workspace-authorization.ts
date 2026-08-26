@@ -52,6 +52,8 @@ export const workspaceGatewayDescriptorSchema = z.object({
   gatewayNodeId: opaqueId,
   workspaceId: opaqueId,
   gatewayName: z.string().min(1).max(128),
+  buildId: z.string().min(1).max(256).optional(),
+  onlineUpdate: z.literal(true).optional(),
   transport: matrixTransportBindingSchema,
   publicKey: pairingPublicKeySchema,
   projects: z.array(z.object({

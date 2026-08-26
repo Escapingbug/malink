@@ -433,6 +433,14 @@ test("publishes an authoritative uncached build version", async () => {
   assert.equal(response.headers.get("cdn-cache-control"), "no-store");
   const body = await response.json();
   assert.match(body.buildVersion, /^[A-Za-z0-9._+-]+$/u);
+  if (process.env.MALINK_GATEWAY_RELEASE_ID && process.env.MALINK_GATEWAY_BUILD_ID) {
+    assert.deepEqual(body.gatewayRelease, {
+      releaseId: process.env.MALINK_GATEWAY_RELEASE_ID,
+      buildId: process.env.MALINK_GATEWAY_BUILD_ID,
+    });
+  } else {
+    assert.equal(body.gatewayRelease, undefined);
+  }
 });
 
 test("keeps conversations inside the viewport with an independently scrollable feed", async () => {

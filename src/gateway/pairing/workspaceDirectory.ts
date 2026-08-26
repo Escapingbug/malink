@@ -41,6 +41,7 @@ export class FileWorkspaceGatewayDirectory {
     transport: MatrixTransportBinding,
     now = Date.now(),
     projects: readonly WorkspaceProjectRoute[] = [],
+    runtime: { buildId?: string; onlineUpdate?: true } = {},
   ): Promise<SignedWorkspaceGatewayDirectory> {
     const publicKey = await exportPairingPublicKey(this.identity.keys.publicKey)
     const result = await this.file.transaction(
@@ -54,6 +55,8 @@ export class FileWorkspaceGatewayDirectory {
           gatewayNodeId: this.identity.gatewayNodeId,
           workspaceId: this.identity.workspaceId,
           gatewayName,
+          ...(runtime.buildId ? { buildId: runtime.buildId } : {}),
+          ...(runtime.onlineUpdate ? { onlineUpdate: true as const } : {}),
           transport,
           publicKey,
           ...(projects.length > 0 ? { projects: structuredClone([...projects]) } : {}),

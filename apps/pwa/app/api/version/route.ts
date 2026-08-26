@@ -1,4 +1,7 @@
-import { MALINK_BUILD_VERSION } from "../../buildInfo";
+import {
+  MALINK_BUILD_VERSION,
+  MALINK_GATEWAY_RELEASE,
+} from "../../buildInfo";
 
 const responseHeaders = {
   "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -11,7 +14,12 @@ const responseHeaders = {
 
 export async function GET(): Promise<Response> {
   return new Response(
-    JSON.stringify({ buildVersion: MALINK_BUILD_VERSION }),
+    JSON.stringify({
+      buildVersion: MALINK_BUILD_VERSION,
+      ...(MALINK_GATEWAY_RELEASE
+        ? { gatewayRelease: MALINK_GATEWAY_RELEASE }
+        : {}),
+    }),
     { status: 200, headers: responseHeaders },
   );
 }

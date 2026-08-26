@@ -295,6 +295,13 @@ state: it stops starting commands, waits for active turns in the default update
 mode, and keeps durably staging new Matrix events. The replacement process
 resumes that inbox before the Matrix sync cursor can skip an accepted event.
 
+There is no release-channel poller. Each node publishes its current build ID
+and supervised-update capability in the root-signed Gateway Directory. A
+manually deployed PWA may embed one exact signed Gateway release and, after it
+connects, send one stage/apply request through a project owned by every older
+capable node. The public website stores immutable files but does not become
+execution or release-signing authority.
+
 Activation requires the expected build ID, a ready and recent Matrix sync, and
 a readable durable inbox throughout probation. Failure restores the previous
 symlink. Protected-state schema changes are refused by automatic activation

@@ -5,16 +5,29 @@ through Malink. The update owner is a separate launchd service, so replacing or
 crashing the Gateway process does not remove the component that can restore the
 previous release.
 
+Publication is intentionally manual. There is no CI requirement, latest-release
+channel, or Gateway polling loop. The operator uploads one immutable signed
+release, then deploys a PWA build containing that exact release ID and build ID.
+The new PWA triggers one authenticated update attempt per older Gateway node.
+
 ## Availability contract
 
-The default `when_idle` mode provides these guarantees:
+The default drain-and-switch mode (named `when_idle` on the wire for protocol
+compatibility) provides these guarantees:
 
 - Matrix `/sync` events are written to the Gateway inbox before its sync cursor
   is committed. A restart may replay an event but cannot skip a cursor-accepted
   command.
+- The Gateway closes its business-command execution gate as soon as apply is
+  accepted. Work that was already running may finish, but later commands are
+  journaled and queued instead of starting, so a continuous stream of new work
+  cannot postpone the switch forever.
 - New Matrix events continue entering the durable inbox while the old Gateway
-  drains. The replacement Gateway resumes them after it owns the Matrix crypto
-  store and sync cursor.
+  drains. The replacement Gateway resumes queued commands exactly once after
+  it owns the Matrix crypto store and sync cursor.
+- The PWA remains connected to Matrix while the Gateway process changes. The
+  affected node is briefly unavailable, but the application connection, queued
+  commands, and verified client projection remain intact.
 - The binary switch is one atomic `current` symlink rename. launchd always
   starts `current/runtime/node current/ops/matrix-local-gateway.js`.
 - A release is committed only after the expected build ID reports `running`,
@@ -29,9 +42,10 @@ The default `when_idle` mode provides these guarantees:
   `current` release as well; the Gateway remains running during that reload.
 
 A coding-agent process cannot migrate an in-flight ACP turn across a binary
-restart. `when_idle` therefore waits until every turn has completed. The
-protocol also defines `force`, which cancels active turns before switching, but
-the product UI intentionally does not offer it as the normal remote path.
+restart. Apply therefore first blocks new work from starting, then waits only
+for turns that were already active to complete. The protocol also defines
+`force`, which cancels active turns before switching, but the product UI
+intentionally does not offer it as the normal remote path.
 
 ## Trust and release format
 
@@ -96,15 +110,16 @@ pnpm release:gateway-update -- \
   --release-id 2026.08.26.1 \
   --version-name 0.2.0 \
   --build-id gateway-2026.08.26.1-arm64 \
-  --base-url https://updates.example.com/gateway/ \
+  --base-url https://rd.anciety.my.id/gateway-updates/ \
   --private-key /secure/malink-gateway-release-private.json
 ```
 
 Upload `dist/gateway-update` without changing its paths or contents. Configure
 the supervisor manifest base as
-`https://updates.example.com/gateway/manifests/`. Re-running the publisher with
-the same release ID succeeds only when every byte and the signed manifest are
-identical.
+`https://rd.anciety.my.id/gateway-updates/manifests/`. Re-running the publisher
+with the same release ID succeeds only when every byte and the signed manifest
+are identical. The Caddy route and manual deployment order are documented in
+`deploy/gateway-update/README.md`.
 
 ## One-time local installation
 
@@ -118,7 +133,7 @@ pnpm install:gateway-update-supervisor -- \
   --gateway-service-label io.malink.gateway \
   --gateway-admin-socket "$HOME/Library/Application Support/Malink/gateway/admin.sock" \
   --current-build-id gateway-initial-arm64 \
-  --manifest-base-url https://updates.example.com/gateway/manifests/ \
+  --manifest-base-url https://rd.anciety.my.id/gateway-updates/manifests/ \
   --signer-file ./release-signer.json
 ```
 
@@ -132,17 +147,30 @@ argument so even the first rollback proves that the intended build returned.
 Changing the pinned signer is deliberately refused; key rotation requires an
 explicit offline migration and recovery plan.
 
-## Remote operation
+## PWA-triggered operation
 
-In the PWA or Android-hosted PWA, open Connection → Advanced diagnostics:
+Build the manually deployed PWA with the immutable Gateway release identity:
 
-1. Enter the immutable release ID.
-2. Select **Download Gateway release**. This downloads, verifies, and stages
-   files without restarting the Gateway.
-3. Confirm the status is `staged` for the intended build.
-4. Select **Update when agent is idle**.
-5. The client may reconnect briefly while launchd changes the process. Refresh
-   Gateway status to observe `committed` or `rolled_back`.
+```sh
+MALINK_BUILD_VERSION=2026.08.26.2 \
+MALINK_GATEWAY_RELEASE_ID=2026.08.26.2 \
+MALINK_GATEWAY_BUILD_ID=gateway-2026.08.26.2-arm64 \
+pnpm --dir apps/pwa build
+```
+
+Both Gateway variables must be present or absent together. A PWA without them
+does not trigger Gateway updates. After the new PWA connects, it reads each
+node's current build and update capability from the root-signed Gateway
+Directory. For every reachable node whose build differs, it sends one stage
+command through a project owned by that node, verifies the staged build ID,
+and schedules drain-and-switch activation (`when_idle` on the wire). Multiple
+PWA devices may observe the new release concurrently; the local supervisor
+deduplicates the same staged or scheduled release.
+
+The browser records its attempt before sending so a bad artifact cannot cause
+an update loop. Failure remains visible in Connection → Advanced diagnostics,
+where the operator can retry the same release manually after correcting the
+problem. Manual status, download, and apply controls remain available there.
 
 The signed/encrypted MLP/3 operations are `gateway.update.stage`,
 `gateway.update.apply`, and `gateway.update.status`. Their certificate grant is

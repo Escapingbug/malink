@@ -128,6 +128,13 @@ export class GatewayUpdateSupervisor {
     requireReleaseId(releaseId)
     const current = await this.readState()
     if (
+      current.status.releaseId === releaseId
+      && ['staged', 'scheduled', 'activating', 'probation', 'committed']
+        .includes(current.status.phase)
+    ) {
+      return structuredClone(current.status)
+    }
+    if (
       current.status.phase === 'scheduled'
       || current.status.phase === 'activating'
       || current.status.phase === 'probation'
@@ -149,9 +156,18 @@ export class GatewayUpdateSupervisor {
     try {
       const signed = await this.fetchAndVerifyManifest(releaseId)
       if (currentBuildId && signed.manifest.buildId === currentBuildId) {
-        throw new Error(
-          `Gateway release ${releaseId} reuses the active build ID ${currentBuildId}`,
-        )
+        return await this.writeState(state => {
+          state.staged = undefined
+          state.status = {
+            version: 1,
+            phase: 'committed',
+            updateId,
+            releaseId,
+            targetBuildId: signed.manifest.buildId,
+            currentBuildId,
+            updatedAt: this.now(),
+          }
+        })
       }
       await this.stageManifest(signed)
       return await this.writeState(state => {
@@ -189,6 +205,13 @@ export class GatewayUpdateSupervisor {
   private async scheduleApplyOnce(releaseId: string): Promise<GatewayUpdateStatus> {
     requireReleaseId(releaseId)
     const stagedState = await this.readState()
+    if (
+      stagedState.status.releaseId === releaseId
+      && ['scheduled', 'activating', 'probation', 'committed']
+        .includes(stagedState.status.phase)
+    ) {
+      return structuredClone(stagedState.status)
+    }
     if (!stagedState.staged || stagedState.staged.manifest.releaseId !== releaseId) {
       throw new Error(`Gateway release ${releaseId} is not staged`)
     }

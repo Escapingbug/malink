@@ -14,7 +14,10 @@ import type {
   GeneratedDeviceInvitation,
   PairingPreview,
 } from "./pairing";
-import { MALINK_BUILD_VERSION } from "./buildInfo";
+import {
+  MALINK_BUILD_VERSION,
+  MALINK_GATEWAY_RELEASE,
+} from "./buildInfo";
 import type { PwaUpdateState } from "./pwaUpdate";
 import type { NativeUpdateStatus } from "@malink/native-bridge";
 import { useDialogFocus } from "./dialogFocus";
@@ -163,7 +166,7 @@ function MatrixSettingsDialog({
   const [loginPassword, setLoginPassword] = useState("");
   const [addingGateway, setAddingGateway] = useState(false);
   const [gatewayReleaseId, setGatewayReleaseId] = useState(
-    gatewayUpdate?.releaseId ?? "",
+    MALINK_GATEWAY_RELEASE?.releaseId ?? gatewayUpdate?.releaseId ?? "",
   );
   const connected =
     status === "connected" ||
@@ -638,6 +641,12 @@ function MatrixSettingsDialog({
                   <small>{nativeUpdateStatusText(nativeUpdateState)}</small>
                 )}
                 <small>{gatewayUpdateStatusText(gatewayUpdate)}</small>
+                {MALINK_GATEWAY_RELEASE && (
+                  <small>
+                    This PWA pairs Gateway release{" "}
+                    <code>{MALINK_GATEWAY_RELEASE.releaseId}</code>
+                  </small>
+                )}
                 {gatewayUpdateError && (
                   <small role="alert">Gateway update: {gatewayUpdateError}</small>
                 )}
@@ -732,7 +741,7 @@ function MatrixSettingsDialog({
                     gatewayUpdate.releaseId !== gatewayReleaseId.trim()
                   }
                 >
-                  Update when agent is idle
+                  Finish current tasks and update
                 </button>
               </div>
             </div>
@@ -817,7 +826,7 @@ function gatewayUpdateStatusText(state: GatewayUpdateStatus | null): string {
     case "staged":
       return `Gateway release${release} is verified and ready`;
     case "waiting_for_idle":
-      return `Gateway release${release} will install after ${state.activeTurns ?? "active"} agent turn(s)`;
+      return `Gateway release${release}: new tasks are queued while ${state.activeTurns ?? "active"} current agent turn(s) finish`;
     case "scheduled":
     case "activating":
     case "probation":

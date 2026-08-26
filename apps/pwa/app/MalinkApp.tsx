@@ -21,6 +21,7 @@ import {
   gatewayUpdateStatusSchema,
   type MalinkAttachment,
   type CommandPayload,
+  type GatewayUpdateStatus,
   type ProviderHistoryMessage,
   type ProviderSessionEntry,
 } from "@malink/protocol";
@@ -86,7 +87,16 @@ import {
   type ExtensionViewDecisionState,
 } from "./ExtensionViewCard";
 import { parseExtensionViewPresentation } from "./presentation";
-import { MALINK_BUILD_VERSION } from "./buildInfo";
+import {
+  MALINK_BUILD_VERSION,
+  MALINK_GATEWAY_RELEASE,
+} from "./buildInfo";
+import {
+  automaticGatewayUpdateTargets as selectAutomaticGatewayUpdateTargets,
+  hasAttemptedAutomaticGatewayUpdate,
+  recordAutomaticGatewayUpdateAttempt,
+  triggerAutomaticGatewayUpdate,
+} from "./gatewayUpdateTrigger";
 import {
   registerPwaUpdates,
   type PwaUpdateHandle,
@@ -1217,6 +1227,15 @@ function MalinkAppRuntime() {
   } | null>(null);
   const pwaUpdateRef = useRef<PwaUpdateHandle | null>(null);
   const pwaReloadBlockedRef = useRef(false);
+  const componentMountedRef = useRef(true);
+  const automaticGatewayUpdateAttemptsRef = useRef(new Set<string>());
+  const executeGatewayUpdateRef = useRef<(
+    payload: Extract<CommandPayload, { operation: `gateway.update.${string}` }>,
+    targetProjectId: string,
+  ) => Promise<GatewayUpdateStatus>>(async () => {
+    throw new Error("Gateway update runtime is not ready.");
+  });
+  executeGatewayUpdateRef.current = executeGatewayUpdate;
   const connectionStatusRef = useRef<MatrixConnectionStatus>("offline");
   const matrixSessionRepairRequiredRef = useRef(false);
   const pendingSessionCreateRecoveryRef =
@@ -1696,6 +1715,15 @@ function MalinkAppRuntime() {
     matrixConfig.gatewayNodeId,
     trustedGateway,
   ]);
+  const automaticGatewayUpdateTargets = useMemo(() =>
+    selectAutomaticGatewayUpdateTargets({
+      directory: gatewayState?.gatewayDirectory,
+      knownProjectIds: new Set(
+        (gatewayState?.projects ?? (gatewayState ? [gatewayState.workspace] : []))
+          .map((project) => project.projectId),
+      ),
+      release: MALINK_GATEWAY_RELEASE,
+    }), [gatewayState]);
   const providerHistoryWorkspace = gatewayState?.projects?.find(
     project => project.projectId === providerHistoryProjectId,
   ) ?? gatewayState?.workspace;
@@ -1968,6 +1996,75 @@ function MalinkAppRuntime() {
       updater.dispose();
     };
   }, []);
+
+  useEffect(() => {
+    componentMountedRef.current = true;
+    return () => {
+      componentMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (connectionStatus !== "connected" || !MALINK_GATEWAY_RELEASE) return;
+    const targets = automaticGatewayUpdateTargets.filter((target) =>
+      !automaticGatewayUpdateAttemptsRef.current.has(target.gatewayNodeId) &&
+      !hasAttemptedAutomaticGatewayUpdate(
+        window.localStorage,
+        target.gatewayNodeId,
+        MALINK_GATEWAY_RELEASE,
+      ),
+    );
+    if (targets.length === 0) return;
+    for (const target of targets) {
+      // This tab must also remain one-shot when localStorage is unavailable.
+      automaticGatewayUpdateAttemptsRef.current.add(target.gatewayNodeId);
+    }
+    void (async () => {
+      setGatewayUpdateBusy(true);
+      setGatewayUpdateError(null);
+      try {
+        for (const target of targets) {
+          recordAutomaticGatewayUpdateAttempt(
+            window.localStorage,
+            target.gatewayNodeId,
+            MALINK_GATEWAY_RELEASE,
+          );
+          try {
+            const status = await triggerAutomaticGatewayUpdate({
+              release: MALINK_GATEWAY_RELEASE,
+              target,
+              send: (command, targetProjectId) =>
+                executeGatewayUpdateRef.current(command, targetProjectId),
+            });
+            if (componentMountedRef.current) {
+              showUiNotice(
+                `gateway-update:${target.gatewayNodeId}`,
+                "connection",
+                "success",
+                status.phase === "committed"
+                  ? `${target.gatewayName} already runs the Gateway release paired with this PWA.`
+                  : `${target.gatewayName} stopped starting new tasks and will switch after its current Agent work finishes.`,
+                8_000,
+              );
+            }
+          } catch (error) {
+            if (componentMountedRef.current) {
+              const detail = formatUiError(error);
+              setGatewayUpdateError(detail);
+              showUiNotice(
+                `gateway-update:${target.gatewayNodeId}`,
+                "connection",
+                "warning",
+                `${target.gatewayName} could not start its paired Gateway update: ${detail}`,
+              );
+            }
+          }
+        }
+      } finally {
+        if (componentMountedRef.current) setGatewayUpdateBusy(false);
+      }
+    })();
+  }, [automaticGatewayUpdateTargets, connectionStatus]);
 
   useEffect(() => {
     let active = true;
@@ -4381,12 +4478,26 @@ function MalinkAppRuntime() {
 
   async function runGatewayUpdate(
     payload: Extract<CommandPayload, { operation: `gateway.update.${string}` }>,
+    targetProjectId: string | undefined = activeWorkspace?.projectId,
   ): Promise<void> {
     setGatewayUpdateBusy(true);
     setGatewayUpdateError(null);
+    try {
+      await executeGatewayUpdate(payload, targetProjectId);
+    } catch (error) {
+      setGatewayUpdateError(formatUiError(error));
+    } finally {
+      setGatewayUpdateBusy(false);
+    }
+  }
+
+  async function executeGatewayUpdate(
+    payload: Extract<CommandPayload, { operation: `gateway.update.${string}` }>,
+    targetProjectId: string | undefined,
+  ) {
     let commandId: string | null = null;
     try {
-      const sent = await sendRealCommand(payload, activeWorkspace?.projectId, {
+      const sent = await sendRealCommand(payload, targetProjectId, {
         autoRetryRevisionConflict: true,
         propagateFailure: true,
       });
@@ -4403,14 +4514,12 @@ function MalinkAppRuntime() {
       }
       const status = gatewayUpdateStatusSchema.parse(completion.result);
       setGatewayState((current) => current ? { ...current, gatewayUpdate: status } : current);
-    } catch (error) {
-      setGatewayUpdateError(formatUiError(error));
+      return status;
     } finally {
       if (commandId) {
         completedCommandResultsRef.current.delete(commandId);
         await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
       }
-      setGatewayUpdateBusy(false);
     }
   }
 

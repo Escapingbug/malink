@@ -732,7 +732,7 @@ export class MatrixMlp3GatewayRunner {
     let scheduled = false
     try {
       if (command.payload.mode === 'force') await this.interruptActiveTurnsForUpdate()
-      await this.waitForGatewayIdle(project, command)
+      await this.drainGatewayForUpdate(project, command)
       // No business command or turn is active at this instant, and the sealed
       // gate synchronously prevents another one from starting before the
       // supervisor records its activation timer.
@@ -798,7 +798,12 @@ export class MatrixMlp3GatewayRunner {
     return count
   }
 
-  private async waitForGatewayIdle(
+  /**
+   * Close the business-command gate first, then drain work that was already
+   * running. Commands accepted after the gate closes remain in the durable
+   * journal for the replacement Gateway to resume after activation.
+   */
+  private async drainGatewayForUpdate(
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'gateway.update.apply'>,
   ): Promise<void> {
