@@ -14,6 +14,7 @@ import {
   type ProviderCommand,
   type ProviderSessionEntry,
   type GatewayEnrollmentPending,
+  type GatewayUpdateStatus,
 } from '@malink/protocol'
 import {
   AGENT_PERMISSION_MODES,
@@ -43,6 +44,10 @@ import {
   type Mlp3CommandJournalRecord,
   type Mlp3CommandTerminal,
 } from './fileMlp3CommandJournal'
+import {
+  FileMatrixEventInbox,
+  matrixEventInboxKey,
+} from './fileMatrixEventInbox'
 import {
   FileMlp3RuntimeStateStore,
   type PersistedMlp3Project,
@@ -139,9 +144,19 @@ export interface MatrixMlp3GatewayDependencies {
     alreadyExisted: boolean
   }>
   onProjectCreated?: (room: MatrixGatewayRoomConfig) => Promise<void>
+  gatewayUpdateSupervisor?: {
+    status(): Promise<GatewayUpdateStatus>
+    stage(releaseId: string): Promise<GatewayUpdateStatus>
+    scheduleApply(releaseId: string): Promise<GatewayUpdateStatus>
+  }
 }
 
-export type MatrixMlp3GatewayState = 'stopped' | 'starting' | 'running' | 'stopping'
+export type MatrixMlp3GatewayState =
+  | 'stopped'
+  | 'starting'
+  | 'running'
+  | 'draining'
+  | 'stopping'
 
 export interface WorkspaceInboxFileInput {
   requestId: string
@@ -180,6 +195,7 @@ export interface PublishNativeClientReleaseResult {
  */
 export class MatrixMlp3GatewayRunner {
   private readonly client: MatrixGatewayClient
+  private readonly inbox: FileMatrixEventInbox
   private readonly journal: FileMlp3CommandJournal
   private readonly runtimeState: FileMlp3RuntimeStateStore
   private readonly nativeClientReleases: FileNativeClientReleaseStore
@@ -191,14 +207,20 @@ export class MatrixMlp3GatewayRunner {
   private readonly sessionChains = new Map<string, Promise<void>>()
   private readonly activeCommands = new Map<string, Promise<void>>()
   private readonly executionTasks = new Set<Promise<void>>()
-  private startupEvents: MatrixIncomingEvent[] = []
-  private startupFailure: Error | null = null
+  private readonly queuedInboxEvents = new Set<string>()
   private eventChain: Promise<void> = Promise.resolve()
   private unsubscribe: (() => void) | null = null
   private state: MatrixMlp3GatewayState = 'stopped'
+  private stopPromise: Promise<void> | null = null
+  private updateDrainState: 'open' | 'waiting' | 'sealed' = 'open'
+  private readonly deferredUpdateCommands = new Map<string, {
+    project: V3ProjectRuntime
+    record: Mlp3CommandJournalRecord
+  }>()
   private publishedClientReleases: NativeClientRelease[] = []
   private readonly publishedGatewayDirectoryRevisions = new Map<string, number>()
   private readonly publishedGatewayEnrollmentFingerprints = new Map<string, string>()
+  private readonly publishedGatewayUpdateFingerprints = new Map<string, string>()
   private readonly runtimeEpoch = randomUUID()
 
   constructor(
@@ -208,6 +230,10 @@ export class MatrixMlp3GatewayRunner {
     validateMatrixGatewayConfig(config)
     this.client = dependencies.client
       ?? createMatrixJsSdkGatewayClient(config.connection, dependencies.onLog)
+    this.inbox = new FileMatrixEventInbox(
+      `${config.replayLedgerPath}.v3-matrix-inbox.json`,
+      config.startupEventQueueLimit ?? 10_000,
+    )
     this.journal = new FileMlp3CommandJournal(`${config.replayLedgerPath}.v3-commands.jsonl`)
     this.runtimeState = new FileMlp3RuntimeStateStore(
       `${config.replayLedgerPath}.v3-runtime-state.json`,
@@ -295,8 +321,8 @@ export class MatrixMlp3GatewayRunner {
     if (this.state === 'running') return
     if (this.state !== 'stopped') throw new Error(`Cannot start MLP/3 Gateway while ${this.state}`)
     this.state = 'starting'
-    this.startupFailure = null
     try {
+      await this.inbox.initialize()
       await this.journal.initialize()
       await this.runtimeState.initialize(this.config.rooms)
       await this.nativeClientReleases.initialize()
@@ -316,12 +342,9 @@ export class MatrixMlp3GatewayRunner {
         await this.publishSessionRecovery(project)
         await this.publishProjectSnapshot(project)
       }
-      if (this.startupFailure) throw this.startupFailure
       this.state = 'running'
       await this.recoverJournal()
-      const queued = this.startupEvents
-      this.startupEvents = []
-      for (const event of queued) this.enqueue(event)
+      await this.drainInbox()
       await this.eventChain
     } catch (error) {
       await this.cleanup()
@@ -330,15 +353,60 @@ export class MatrixMlp3GatewayRunner {
     }
   }
 
-  async stop(): Promise<void> {
-    if (this.state === 'stopped') return
-    this.state = 'stopping'
+  stop(): Promise<void> {
+    if (this.state === 'stopped') return Promise.resolve()
+    if (this.stopPromise) return this.stopPromise
+    const stopping = this.stopOnce().finally(() => {
+      if (this.stopPromise === stopping) this.stopPromise = null
+    })
+    this.stopPromise = stopping
+    return stopping
+  }
+
+  private async stopOnce(): Promise<void> {
+    // While draining, Matrix listeners keep durably staging new events but no
+    // new command execution begins. The replacement process resumes those
+    // records after it owns the Matrix crypto store and sync cursor.
+    this.state = 'draining'
     await this.eventChain
     while (this.executionTasks.size > 0) {
       await Promise.allSettled([...this.executionTasks])
     }
+    this.state = 'stopping'
     await this.cleanup()
     this.state = 'stopped'
+  }
+
+  async inboxCounts(): Promise<{ pending: number; quarantined: number }> {
+    return this.inbox.counts()
+  }
+
+  async healthSnapshot(): Promise<{
+    runtimeEpoch: string
+    activeTurns: number
+    activeCommands: number
+    pendingInboxEvents: number
+    quarantinedInboxEvents: number
+    matrixReady: boolean | null
+    lastMatrixSyncAt: number | null
+  }> {
+    const inbox = await this.inbox.counts()
+    const matrix = this.client.getSyncHealth?.()
+    let activeTurns = 0
+    for (const project of this.projects.values()) {
+      for (const runtime of project.sessions.values()) {
+        if (runtime.activeTurnId !== null) activeTurns += 1
+      }
+    }
+    return {
+      runtimeEpoch: this.runtimeEpoch,
+      activeTurns,
+      activeCommands: this.activeCommands.size,
+      pendingInboxEvents: inbox.pending,
+      quarantinedInboxEvents: inbox.quarantined,
+      matrixReady: matrix?.ready ?? null,
+      lastMatrixSyncAt: matrix?.lastSyncAt ?? null,
+    }
   }
 
   async syncState(roomId?: string): Promise<void> {
@@ -429,26 +497,32 @@ export class MatrixMlp3GatewayRunner {
     throw new Error(`Unknown active Malink session ${sessionId}`)
   }
 
-  private receiveEvent(event: MatrixIncomingEvent): void {
-    if (this.state === 'starting') {
-      const limit = this.config.startupEventQueueLimit ?? 1_000
-      if (this.startupEvents.length >= limit) {
-        this.startupFailure = new Error(`MLP/3 startup event queue exceeded ${limit}`)
-      } else {
-        this.startupEvents.push(event)
-      }
-      return
-    }
+  private async receiveEvent(event: MatrixIncomingEvent): Promise<void> {
+    await this.inbox.stage(event, this.now())
     if (this.state === 'running') this.enqueue(event)
   }
 
   private enqueue(event: MatrixIncomingEvent): void {
-    this.eventChain = this.eventChain
-      .then(() => this.handleEvent(event))
-      .catch(error => {
+    const inboxKey = matrixEventInboxKey(event)
+    if (this.queuedInboxEvents.has(inboxKey)) return
+    this.queuedInboxEvents.add(inboxKey)
+    const processEvent = async (): Promise<void> => {
+      try {
+        await this.handleEvent(event)
+        await this.inbox.complete(event)
+      } catch (error) {
         this.dependencies.onRejected?.(event, error)
         this.log(`[mlp3/matrix] rejected ${event.eventId}: ${formatError(error)}`)
-      })
+        await this.inbox.quarantine(event, error)
+      } finally {
+        this.queuedInboxEvents.delete(inboxKey)
+      }
+    }
+    this.eventChain = this.eventChain.then(processEvent, processEvent)
+  }
+
+  private async drainInbox(): Promise<void> {
+    for (const record of await this.inbox.pending()) this.enqueue(record.event)
   }
 
   private async handleEvent(event: MatrixIncomingEvent): Promise<void> {
@@ -499,7 +573,27 @@ export class MatrixMlp3GatewayRunner {
     }
     const activeKey = commandKey(authorized.command)
     if (record.status === 'dispatched' || this.activeCommands.has(activeKey)) return
+    if (this.shouldDeferForGatewayUpdate(authorized.command)) {
+      this.deferredUpdateCommands.set(activeKey, { project, record })
+      this.log(
+        `[mlp3/matrix] deferred ${authorized.command.commandId} while Gateway update drains`,
+      )
+      return
+    }
     this.scheduleExecution(project, record)
+  }
+
+  private shouldDeferForGatewayUpdate(command: Mlp3Command): boolean {
+    if (this.updateDrainState === 'open') return false
+    if (this.updateDrainState === 'sealed') return true
+    if (command.operation === 'gateway.update.status') return false
+    return command.operation !== 'turn.cancel' && command.operation !== 'decision.answer'
+  }
+
+  private resumeDeferredUpdateCommands(): void {
+    const deferred = [...this.deferredUpdateCommands.values()]
+    this.deferredUpdateCommands.clear()
+    for (const { project, record } of deferred) this.scheduleExecution(project, record)
   }
 
   private scheduleExecution(
@@ -595,6 +689,184 @@ export class MatrixMlp3GatewayRunner {
       case 'notification.unsubscribe':
         await this.unsubscribeNotifications(project, command)
         return
+      case 'gateway.update.stage':
+        await this.stageGatewayUpdate(project, command)
+        return
+      case 'gateway.update.apply':
+        await this.applyGatewayUpdate(project, command)
+        return
+      case 'gateway.update.status':
+        await this.reportGatewayUpdateStatus(project, command)
+        return
+    }
+  }
+
+  private async stageGatewayUpdate(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.update.stage'>,
+  ): Promise<void> {
+    const supervisor = this.requireGatewayUpdateSupervisor()
+    const status = await supervisor.stage(command.payload.releaseId)
+    await this.settleAndDeliver(
+      project,
+      command,
+      this.eventFor(project, undefined, command, 'gateway-update-staged', {
+        type: 'gateway.update.status',
+        status,
+      }),
+      'succeeded',
+      status,
+    )
+    await this.publishGatewayUpdateStatus()
+  }
+
+  private async applyGatewayUpdate(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.update.apply'>,
+  ): Promise<void> {
+    const supervisor = this.requireGatewayUpdateSupervisor()
+    if (this.updateDrainState !== 'open') {
+      throw new Error('Another Gateway update is already draining this runtime')
+    }
+    this.updateDrainState = 'waiting'
+    let scheduled = false
+    try {
+      if (command.payload.mode === 'force') await this.interruptActiveTurnsForUpdate()
+      await this.waitForGatewayIdle(project, command)
+      // No business command or turn is active at this instant, and the sealed
+      // gate synchronously prevents another one from starting before the
+      // supervisor records its activation timer.
+      this.updateDrainState = 'sealed'
+      const status = await supervisor.scheduleApply(command.payload.releaseId)
+      scheduled = true
+      await this.settleAndDeliver(
+        project,
+        command,
+        this.eventFor(project, undefined, command, 'gateway-update-scheduled', {
+          type: 'gateway.update.status',
+          status,
+        }),
+        'succeeded',
+        status,
+      )
+      // The supervisor's activation delay starts only after the local request
+      // returns. Queue the shared snapshot before that independent process
+      // restarts this Gateway.
+      await this.publishGatewayUpdateStatus()
+    } finally {
+      if (!scheduled) {
+        this.updateDrainState = 'open'
+        this.resumeDeferredUpdateCommands()
+      }
+    }
+  }
+
+  private async reportGatewayUpdateStatus(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.update.status'>,
+  ): Promise<void> {
+    const status = await this.requireGatewayUpdateSupervisor().status()
+    await this.settleAndDeliver(
+      project,
+      command,
+      this.eventFor(project, undefined, command, 'gateway-update-status', {
+        type: 'gateway.update.status',
+        status,
+      }),
+      'succeeded',
+      status,
+    )
+  }
+
+  private requireGatewayUpdateSupervisor(): NonNullable<
+    MatrixMlp3GatewayDependencies['gatewayUpdateSupervisor']
+  > {
+    const supervisor = this.dependencies.gatewayUpdateSupervisor
+    if (!supervisor) {
+      throw new Error('Gateway online updates are not installed on this computer')
+    }
+    return supervisor
+  }
+
+  private activeTurnCount(): number {
+    let count = 0
+    for (const project of this.projects.values()) {
+      for (const runtime of project.sessions.values()) {
+        if (runtime.activeTurnId !== null) count += 1
+      }
+    }
+    return count
+  }
+
+  private async waitForGatewayIdle(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.update.apply'>,
+  ): Promise<void> {
+    let published = false
+    while (this.activeTurnCount() > 0 || this.otherActiveCommandCount(command) > 0) {
+      if (!published) {
+        const current = await this.requireGatewayUpdateSupervisor().status()
+        await this.emitBestEffort(project, undefined, this.eventFor(
+          project,
+          undefined,
+          command,
+          'gateway-update-waiting-for-idle',
+          {
+            type: 'gateway.update.status',
+            status: {
+              ...current,
+              phase: 'waiting_for_idle',
+              activeTurns: this.activeTurnCount(),
+              updatedAt: this.now(),
+            },
+          },
+        ))
+        published = true
+      }
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 500))
+      if (this.state !== 'running') {
+        throw new Error('Gateway stopped while waiting to apply its update')
+      }
+    }
+  }
+
+  private otherActiveCommandCount(command: Mlp3Command): number {
+    const currentKey = commandKey(command)
+    let count = 0
+    for (const key of this.activeCommands.keys()) {
+      if (key !== currentKey) count += 1
+    }
+    return count
+  }
+
+  private async interruptActiveTurnsForUpdate(): Promise<void> {
+    const cancellations: Promise<unknown>[] = []
+    for (const project of this.projects.values()) {
+      for (const runtime of project.sessions.values()) {
+        if (runtime.activeTurnId === null) continue
+        cancellations.push(runtime.session.dispatch({
+          kind: 'cancel',
+          reason: 'replace',
+          source: 'channel',
+          user: { id: 'gateway-update', username: 'gateway-update' },
+        }))
+      }
+    }
+    await Promise.allSettled(cancellations)
+    const deadline = this.now() + 10_000
+    while (this.activeTurnCount() > 0 && this.now() < deadline) {
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 100))
+    }
+    if (this.activeTurnCount() > 0) {
+      throw new Error('Active Agent turns did not stop for the forced Gateway update')
+    }
+  }
+
+  private async publishGatewayUpdateStatus(): Promise<void> {
+    for (const project of this.projects.values()) {
+      await this.publishWorkspaceSnapshot(project).catch(error => {
+        this.log(`[mlp3/matrix] Gateway update snapshot failed: ${formatError(error)}`)
+      })
     }
   }
 
@@ -1872,15 +2144,23 @@ export class MatrixMlp3GatewayRunner {
       approverProjectId: project.project.projectId,
     }))
     const enrollmentFingerprint = JSON.stringify(pendingGatewayEnrollments)
+    const gatewayUpdate = await this.dependencies.gatewayUpdateSupervisor?.status().catch(error => {
+      this.log(`[mlp3/matrix] Gateway update status unavailable: ${formatError(error)}`)
+      return undefined
+    })
+    const updateFingerprint = JSON.stringify(gatewayUpdate ?? null)
     const directoryChanged = gatewayDirectory !== undefined &&
       gatewayDirectory.directory.revision !==
         this.publishedGatewayDirectoryRevisions.get(project.project.projectId)
     const enrollmentsChanged = enrollmentFingerprint !==
       this.publishedGatewayEnrollmentFingerprints.get(project.project.projectId)
+    const updateChanged = updateFingerprint !==
+      this.publishedGatewayUpdateFingerprints.get(project.project.projectId)
     if (
       JSON.stringify(project.project.capabilities) !== JSON.stringify(capabilities)
       || directoryChanged
       || enrollmentsChanged
+      || updateChanged
     ) {
       project.project.capabilities = capabilities
       project.project.capabilitySnapshotVersion += 1
@@ -1893,6 +2173,10 @@ export class MatrixMlp3GatewayRunner {
       this.publishedGatewayEnrollmentFingerprints.set(
         project.project.projectId,
         enrollmentFingerprint,
+      )
+      this.publishedGatewayUpdateFingerprints.set(
+        project.project.projectId,
+        updateFingerprint,
       )
       await this.persist(project)
     }
@@ -1922,6 +2206,7 @@ export class MatrixMlp3GatewayRunner {
           : {}),
         ...(gatewayDirectory ? { gatewayDirectory } : {}),
         ...(pendingGatewayEnrollments.length > 0 ? { pendingGatewayEnrollments } : {}),
+        ...(gatewayUpdate ? { gatewayUpdate } : {}),
         snapshotVersion: project.project.capabilitySnapshotVersion,
       },
     }
@@ -2054,11 +2339,16 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private async cleanup(): Promise<void> {
-    this.unsubscribe?.()
-    this.unsubscribe = null
-    this.startupEvents = []
     this.content.stopRetries()
     this.webPush.stop()
+    // Stop /sync before removing the listener. A response already being
+    // processed must finish staging its events before its cursor can commit.
+    await this.client.stop().catch(error => {
+      this.log(`[mlp3/matrix] Matrix client stop failed: ${formatError(error)}`)
+    })
+    this.unsubscribe?.()
+    this.unsubscribe = null
+    this.deferredUpdateCommands.clear()
     const projects = [...this.projects.values()]
     this.projects.clear()
     for (const project of projects) {
@@ -2068,9 +2358,6 @@ export class MatrixMlp3GatewayRunner {
         })
       }
     }
-    await this.client.stop().catch(error => {
-      this.log(`[mlp3/matrix] Matrix client stop failed: ${formatError(error)}`)
-    })
   }
 
   private now(): number {

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { matrixGatewayCapabilitiesSchema } from './matrix-native.js'
 import { signedWorkspaceGatewayDirectorySchema } from './workspace-authorization.js'
 import { gatewayEnrollmentPendingSchema } from './gateway-enrollment.js'
+import { gatewayUpdateStatusSchema } from './gateway-release.js'
 import {
   attachmentSchema,
   jsonValueSchema,
@@ -333,6 +334,22 @@ const notificationUnsubscribePayloadSchema = z
     endpoint: z.string().url().max(4_096).optional(),
   })
   .strict()
+const gatewayUpdateStagePayloadSchema = z
+  .object({
+    operation: z.literal('gateway.update.stage'),
+    releaseId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u),
+  })
+  .strict()
+const gatewayUpdateApplyPayloadSchema = z
+  .object({
+    operation: z.literal('gateway.update.apply'),
+    releaseId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u),
+    mode: z.enum(['when_idle', 'force']).default('when_idle'),
+  })
+  .strict()
+const gatewayUpdateStatusPayloadSchema = z
+  .object({ operation: z.literal('gateway.update.status') })
+  .strict()
 
 export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   sessionCreatePayloadSchema,
@@ -350,6 +367,9 @@ export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   gatewayEnrollmentApprovePayloadSchema,
   notificationSubscribePayloadSchema,
   notificationUnsubscribePayloadSchema,
+  gatewayUpdateStagePayloadSchema,
+  gatewayUpdateApplyPayloadSchema,
+  gatewayUpdateStatusPayloadSchema,
 ])
 
 export type Mlp3CommandPayload = z.infer<
@@ -460,6 +480,24 @@ export const mlp3CommandSchema = z.union([
     operation: z.literal('notification.unsubscribe'),
     payload: notificationUnsubscribePayloadSchema,
   }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('gateway.update.stage'),
+    payload: gatewayUpdateStagePayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('gateway.update.apply'),
+    payload: gatewayUpdateApplyPayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('gateway.update.status'),
+    payload: gatewayUpdateStatusPayloadSchema,
+  }).strict(),
 ])
 
 export type Mlp3Command = z.infer<typeof mlp3CommandSchema>
@@ -502,6 +540,7 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       clientReleases: z.array(nativeClientReleaseSchema).max(8).optional(),
       gatewayDirectory: signedWorkspaceGatewayDirectorySchema.optional(),
       pendingGatewayEnrollments: z.array(gatewayEnrollmentPendingSchema).max(32).optional(),
+      gatewayUpdate: gatewayUpdateStatusSchema.optional(),
       snapshotVersion: z.number().int().positive(),
     })
     .strict(),
@@ -769,6 +808,12 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
     .object({
       type: z.literal('notification.subscription.changed'),
       enabled: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('gateway.update.status'),
+      status: gatewayUpdateStatusSchema,
     })
     .strict(),
 ])

@@ -2,6 +2,7 @@ import {
   attachmentSchema,
   signedWorkspaceGatewayDirectorySchema,
   gatewayEnrollmentPendingSchema,
+  gatewayUpdateStatusSchema,
   type MalinkAttachment,
   type JsonValue,
   SessionExtensionBinding,
@@ -9,6 +10,7 @@ import {
   SessionExtensionSummary,
   ProviderCommand,
   type NativeClientRelease,
+  type GatewayUpdateStatus,
 } from "@malink/protocol";
 
 export type GatewayCapabilityOption = {
@@ -105,6 +107,7 @@ export type GatewayStateSnapshot = {
   nativeClientReleases?: NativeClientRelease[];
   gatewayDirectory?: import('@malink/protocol').SignedWorkspaceGatewayDirectory;
   pendingGatewayEnrollments?: import('@malink/protocol').GatewayEnrollmentPending[];
+  gatewayUpdate?: GatewayUpdateStatus;
 };
 
 export type GatewayStateCacheBinding = {
@@ -357,6 +360,9 @@ export function parseGatewayStateExtension(
                 gatewayEnrollmentPendingSchema.parse(value))
             : (() => { throw new Error("Pending Gateway enrollments are malformed."); })(),
         }),
+    ...(extension.gateway_update === undefined
+      ? {}
+      : { gatewayUpdate: gatewayUpdateStatusSchema.parse(extension.gateway_update) }),
   };
 }
 
@@ -657,6 +663,9 @@ export function gatewayStateExtension(
     ...(state.pendingGatewayEnrollments === undefined
       ? {}
       : { pending_gateway_enrollments: state.pendingGatewayEnrollments }),
+    ...(state.gatewayUpdate === undefined
+      ? {}
+      : { gateway_update: state.gatewayUpdate }),
     capabilities: gatewayCapabilitiesExtension(state.capabilities),
   };
 }

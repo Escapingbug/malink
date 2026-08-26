@@ -78,6 +78,18 @@ class CommandPayloadValidatorTest {
                 put("operation", "gateway.enrollment.approve")
                 put("enrollmentId", "enrollment-1")
             },
+            buildJsonObject {
+                put("operation", "gateway.update.stage")
+                put("releaseId", "release-2")
+            },
+            buildJsonObject {
+                put("operation", "gateway.update.apply")
+                put("releaseId", "release-2")
+                put("mode", "when_idle")
+            },
+            buildJsonObject {
+                put("operation", "gateway.update.status")
+            },
         )
 
         assertEquals(CommandOperation.entries, payloads.map { CommandPayloadValidator.validate(it).operation })

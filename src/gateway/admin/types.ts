@@ -124,6 +124,14 @@ export interface GatewayAdminStatus {
   startedAt: number
   activeDeviceCount: number
   openInvitationCount: number
+  buildId?: string
+  runtimeEpoch?: string
+  activeTurns?: number
+  activeCommands?: number
+  pendingInboxEvents?: number
+  quarantinedInboxEvents?: number
+  matrixReady?: boolean | null
+  lastMatrixSyncAt?: number | null
 }
 
 export interface GatewayAdminDevice {

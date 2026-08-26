@@ -45,6 +45,7 @@ as the control plane that establishes device trust and distributes MLP/3 keys.
 | Agent/tool/status output | ordinary `m.room.message` thread event | Gateway signature and stable logical `event_id` |
 | Current project projection | ordinary signed snapshot event | `io.malink.project.current.v3` points to its physical event ID |
 | Current native client release | account-owned workspace snapshot field | Gateway admin publication, replicated to active project rooms |
+| Gateway release status | account-owned workspace snapshot field plus command result | pinned release signer and local update supervisor |
 | Project key grant | directly addressed Room State | `io.malink.project.key_grant.v3` keyed by device ID |
 | Transcript and audit | thread timeline and relations | append-only signed events |
 
@@ -127,6 +128,21 @@ capability and acknowledges the change with
 `notification.subscription.changed`. Existing `session.settings` certificate
 authority covers this device-local setting, so adding the optional capability
 does not invalidate an already paired device.
+
+Gateway release control uses three workspace commands:
+
+- `gateway.update.stage` names an immutable release ID and asks the local
+  supervisor to download and verify it.
+- `gateway.update.apply` activates the already staged ID using `when_idle` or
+  the explicitly destructive `force` mode.
+- `gateway.update.status` reads the durable supervisor state.
+
+All three require the `gateway.update` pairing grant. This grant is not an
+arbitrary code-install capability: the remote command contains no URL or key,
+and the local supervisor accepts only manifests signed by its pinned release
+signer. Results use `gateway.update.status` and are also carried in subsequent
+`workspace.snapshot` events so another authorized client converges after the
+Gateway restart.
 
 ## Current state and recovery
 

@@ -351,6 +351,42 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `Gateway update status survives durable restore`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(workspaceSnapshot(1, "gpt-5.6-sol"), "\$workspace", null)
+        projection.applyGatewayEvent(
+            event(
+                eventId = "gateway-update-staged-1",
+                projectId = "project-1",
+                causationCommandId = "gateway-update-stage-1",
+                payload = buildJsonObject {
+                    put("type", "gateway.update.status")
+                    put("status", buildJsonObject {
+                        put("version", 1)
+                        put("phase", "staged")
+                        put("releaseId", "release-2")
+                        put("targetBuildId", "build-2")
+                        put("currentBuildId", "build-1")
+                        put("updatedAt", 20)
+                    })
+                },
+            ),
+            "\$gateway-update-staged",
+            null,
+        )
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        val status = restored.snapshot()!!.getValue("gateway_update").jsonObject
+        assertEquals("staged", status.getValue("phase").jsonPrimitive.content)
+        assertEquals("release-2", status.getValue("releaseId").jsonPrimitive.content)
+    }
+
+    @Test
     fun `new account release survives a lower version project capability snapshot`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)

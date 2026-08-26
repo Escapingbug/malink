@@ -182,6 +182,48 @@ describe('MatrixMlp3CommandAuthorizer', () => {
     })
   })
 
+  it('maps the pinned-release grant to every Gateway update command', async () => {
+    const keys = await generateDeviceKeyPair()
+    const journal = new FileMlp3CommandJournal(
+      join(await mkdtemp(join(tmpdir(), 'malink-v3-update-auth-')), 'journal.jsonl'),
+    )
+    await journal.initialize()
+    const authorizer = new MatrixMlp3CommandAuthorizer('workspace-1', journal)
+    const policy = {
+      deviceId: 'device-1',
+      publicKey: keys.publicJwk,
+      allowedRoomIds: ['!project:example.org'],
+      allowedOperations: ['gateway.update'] as Array<'gateway.update'>,
+      matrixUserId: '@owner:example.org',
+      matrixDeviceId: 'PHONE',
+      matrixDeviceKeys: ['matrix-phone-key'],
+      certificateExpiresAt: Date.now() + 60_000,
+      sequenceEpoch: 'certificate-1',
+    }
+    const command = await signMlp3Command({
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'gateway-update-status-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      deviceId: 'device-1',
+      certificateId: 'certificate-1',
+      createdAt: 1,
+      operation: 'gateway.update.status',
+      payload: { operation: 'gateway.update.status' },
+    }, keys.privateKey, keys.keyId)
+
+    await expect(authorizer.authorize(
+      command,
+      policy,
+      '!project:example.org',
+      'project-1',
+    )).resolves.toMatchObject({
+      command: { operation: 'gateway.update.status' },
+      claim: { kind: 'accepted' },
+    })
+  })
+
   it('returns a journaled rejection for a valid but explicitly limited device', async () => {
     const keys = await generateDeviceKeyPair()
     const journal = new FileMlp3CommandJournal(

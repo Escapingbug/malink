@@ -116,3 +116,13 @@ upgrade journal rather than deleting encrypted stores.
 Installing an older PWA/APK/Gateway over newer protected state is also a repair
 condition, not a reverse migration. Explicit reverse migrations may be added
 later, but an ordinary forward migration must never be run backwards.
+
+The online Gateway supervisor consequently accepts automatic activation only
+when every current security-critical and durable-command catalog entry exists
+in the target release with the same class and schema version. Rebuildable and
+ephemeral stores may change under their normal reset/rebuild rules. The target
+also cannot introduce a new protected store unknown to the rollback release:
+it could otherwise accept work during probation that the old release cannot
+resume. A protected schema migration or protected-store addition needs a
+forward-only maintenance release and a recovery plan; it must not be disguised
+as an automatically rollback-capable update.

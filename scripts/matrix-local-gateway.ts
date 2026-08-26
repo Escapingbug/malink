@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, readFile, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { hostname } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import QRCode from 'qrcode'
 import {
     MLP3_MATRIX_WORKSPACE_DEVICE_GRANT_EVENT_TYPE,
@@ -60,6 +61,7 @@ import type {
 } from '../src/providers/provider.js'
 import { createSessionExtensionRegistryFromEnvironment } from '../src/runtime/sessionExtensionConfig.js'
 import { UnixSocketPrivilegeExecutor } from '../src/privilege/index.js'
+import { GatewayUpdateSupervisorClient } from '../src/ops/gatewayUpdateSupervisorServer.js'
 
 interface LocalMatrixFixture {
     homeserver: string
@@ -112,6 +114,9 @@ const privilegeExecutor = privilegeCredentialPath
     ? new UnixSocketPrivilegeExecutor(privilegeCredentialPath)
     : undefined
 if (privilegeExecutor) process.env.MALINK_PRIVILEGE_AVAILABLE = '1'
+const gatewayUpdateSupervisor = process.env.MALINK_GATEWAY_UPDATE_SOCKET?.trim()
+    ? new GatewayUpdateSupervisorClient(process.env.MALINK_GATEWAY_UPDATE_SOCKET.trim())
+    : undefined
 const runId = Date.now().toString(36).toUpperCase()
 const loginUser = process.env.MALINK_MATRIX_GATEWAY_USER ?? 'gateway'
 const gatewayMatrixDeviceId = `MALINK_GATEWAY_${runId}`
@@ -530,6 +535,7 @@ runner = new MatrixMlp3GatewayRunner(config, {
     client,
     sessionExtensionRegistry,
     ...(privilegeExecutor ? { privilegeExecutor } : {}),
+    ...(gatewayUpdateSupervisor ? { gatewayUpdateSupervisor } : {}),
     ...(deterministicE2eProvider
         ? { providerFactory: () => e2eProvider(providerName) }
         : {}),
@@ -733,6 +739,8 @@ const adminServer = await startGatewayAdminServer({
     pairingService,
     registry,
     getGatewayState: () => runner?.getState() ?? 'starting',
+    buildId: await currentGatewayBuildId(),
+    getGatewayDiagnostics: () => runner!.healthSnapshot(),
     syncGatewayState: async () => {
         await runner?.syncState()
     },
@@ -893,6 +901,28 @@ async function readJson<T>(path: string): Promise<T> {
         return JSON.parse(text) as T
     } catch (error) {
         throw new Error(`Could not read ${path}: ${formatError(error)}`)
+    }
+}
+
+async function currentGatewayBuildId(): Promise<string> {
+    const manifestPath = join(
+        dirname(fileURLToPath(import.meta.url)),
+        '..',
+        'release-manifest.json',
+    )
+    try {
+        const value = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+            manifest?: { buildId?: unknown }
+        }
+        if (typeof value.manifest?.buildId !== 'string' || !value.manifest.buildId) {
+            throw new Error('Gateway release manifest has no build ID')
+        }
+        return value.manifest.buildId
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            return process.env.MALINK_GATEWAY_BUILD_ID?.trim() || 'development'
+        }
+        throw error
     }
 }
 

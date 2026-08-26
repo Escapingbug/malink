@@ -268,6 +268,7 @@ the owner-only Gateway socket into the owning `SemanticSessionRuntime`.
 ## Delivery and recovery ownership
 
 - Gateway command journal: deduplication and execution outcome.
+- Gateway raw Matrix inbox: cursor-commit barrier before authorization and execution.
 - Gateway Matrix outbox: exact content, ordering, retry-after, transaction ID.
 - Client durable command outbox: intent and Matrix-send reconciliation.
 - Client raw inbox: crash-safe receipt before verification/projection.
@@ -283,6 +284,22 @@ paths allowed to read remote history.
 No layer substitutes for another. In particular, increasing an in-memory event
 window, publishing a manual checkpoint, or resending an already Matrix-acked
 command is not a recovery strategy.
+
+## Gateway online-update boundary
+
+The Gateway process does not update itself. An independently launched,
+owner-only supervisor downloads a complete signed release, verifies every file
+against a locally pinned release key, switches the stable `current` symlink,
+and asks launchd to restart the Gateway. The old Gateway first enters a drain
+state: it stops starting commands, waits for active turns in the default update
+mode, and keeps durably staging new Matrix events. The replacement process
+resumes that inbox before the Matrix sync cursor can skip an accepted event.
+
+Activation requires the expected build ID, a ready and recent Matrix sync, and
+a readable durable inbox throughout probation. Failure restores the previous
+symlink. Protected-state schema changes are refused by automatic activation
+because binary rollback would be unsafe. The full release and recovery
+procedure is in [`gateway-online-updates.md`](gateway-online-updates.md).
 
 ## Release acceptance
 

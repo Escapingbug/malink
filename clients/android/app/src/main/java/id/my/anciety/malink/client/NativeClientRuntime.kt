@@ -1587,6 +1587,36 @@ class NativeClientRuntime(
                     )
                 }
             }
+            "gateway.update.stage" -> {
+                v3Operation = operation
+                v3SessionId = null
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    put(
+                        "releaseId",
+                        raw.string("releaseId")
+                            ?: throw IllegalArgumentException("Gateway release ID is missing."),
+                    )
+                }
+            }
+            "gateway.update.apply" -> {
+                v3Operation = operation
+                v3SessionId = null
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    put(
+                        "releaseId",
+                        raw.string("releaseId")
+                            ?: throw IllegalArgumentException("Gateway release ID is missing."),
+                    )
+                    put("mode", raw.string("mode") ?: "when_idle")
+                }
+            }
+            "gateway.update.status" -> {
+                v3Operation = operation
+                v3SessionId = null
+                v3Payload = buildJsonObject { put("operation", v3Operation) }
+            }
             else -> throw IllegalArgumentException("Unsupported MLP/3 command operation.")
         }
         val command = buildJsonObject {

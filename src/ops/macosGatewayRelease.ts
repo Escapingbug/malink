@@ -4,12 +4,14 @@ import {
     access,
     chmod,
     mkdir,
+    lstat,
+    open,
     readFile,
     readlink,
+    realpath,
     rename,
     rm,
     symlink,
-    writeFile,
 } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -22,13 +24,19 @@ export interface MacosGatewayReleaseOptions {
     serviceLabel: string
     adminSocketPath: string
     healthTimeoutMs?: number
+    expectedBuildId?: string
+    rollbackBuildId?: string
+    requireDeepHealth?: boolean
+    syncFreshnessMs?: number
+    probationMs?: number
 }
 
 export interface MacosGatewayReleaseDependencies {
     restart?: (reloadLaunchAgent: boolean) => Promise<void>
-    healthCheck?: () => Promise<void>
+    healthCheck?: (expectedBuildId?: string) => Promise<void>
     sleep?: (milliseconds: number) => Promise<void>
     launchctl?: (arguments_: readonly string[]) => Promise<void>
+    onActivated?: () => void | Promise<void>
 }
 
 /**
@@ -44,7 +52,7 @@ export async function activateMacosGatewayRelease(
     const installRoot = resolve(input.installRoot)
     const currentLink = join(installRoot, 'current')
     const launchAgentPath = resolve(input.launchAgentPath)
-    await validateRelease(releaseDirectory)
+    await validateMacosGatewayRelease(releaseDirectory)
     await mkdir(installRoot, { recursive: true })
 
     const previousTarget = await readLinkIfPresent(currentLink)
@@ -66,7 +74,7 @@ export async function activateMacosGatewayRelease(
             dependencies.launchctl ?? runLaunchctl,
             sleep,
         ))
-    const healthCheck = dependencies.healthCheck ?? (() =>
+    const defaultHealthCheck = (expectedBuildId?: string) => () =>
         new GatewayAdminClient({
             socketPath: input.adminSocketPath,
             timeoutMs: 2_000,
@@ -74,19 +82,49 @@ export async function activateMacosGatewayRelease(
             if (status.state !== 'running') {
                 throw new Error(`Gateway reported ${status.state}`)
             }
-        }))
+            if (expectedBuildId && status.buildId !== expectedBuildId) {
+                throw new Error(
+                    `Gateway reported build ${status.buildId ?? '(missing)'}; `
+                    + `expected ${expectedBuildId}`,
+                )
+            }
+            if (input.requireDeepHealth) {
+                if (status.matrixReady !== true || typeof status.lastMatrixSyncAt !== 'number') {
+                    throw new Error('Gateway Matrix synchronization is not ready')
+                }
+                const freshnessMs = input.syncFreshnessMs ?? 120_000
+                if (Date.now() - status.lastMatrixSyncAt > freshnessMs) {
+                    throw new Error('Gateway Matrix synchronization is stale')
+                }
+                if (status.pendingInboxEvents === undefined) {
+                    throw new Error('Gateway durable inbox diagnostics are unavailable')
+                }
+            }
+        })
+    const targetHealthCheck = dependencies.healthCheck
+        ? () => dependencies.healthCheck?.(input.expectedBuildId) ?? Promise.resolve()
+        : defaultHealthCheck(input.expectedBuildId)
+    const rollbackHealthCheck = dependencies.healthCheck
+        ? () => dependencies.healthCheck?.(input.rollbackBuildId) ?? Promise.resolve()
+        : defaultHealthCheck(input.rollbackBuildId)
     if (reloadLaunchAgent) await atomicWrite(launchAgentPath, stablePlist)
     await replaceSymlink(currentLink, releaseDirectory)
     try {
         await restart(reloadLaunchAgent)
-        await waitForHealth(healthCheck, sleep, input.healthTimeoutMs ?? 30_000)
+        await waitForHealth(targetHealthCheck, sleep, input.healthTimeoutMs ?? 30_000)
+        await dependencies.onActivated?.()
+        await verifyProbation(
+            targetHealthCheck,
+            sleep,
+            input.probationMs ?? 0,
+        )
     } catch (activationError) {
         try {
             if (previousTarget) await replaceSymlink(currentLink, previousTarget)
             else await rm(currentLink, { force: true })
             if (reloadLaunchAgent) await atomicWrite(launchAgentPath, originalPlist)
             await restart(reloadLaunchAgent)
-            await waitForHealth(healthCheck, sleep, input.healthTimeoutMs ?? 30_000)
+            await waitForHealth(rollbackHealthCheck, sleep, input.healthTimeoutMs ?? 30_000)
         } catch (rollbackError) {
             throw new Error(
                 `Matrix Gateway activation failed and rollback also failed: ${formatError(rollbackError)}`,
@@ -100,13 +138,26 @@ export async function activateMacosGatewayRelease(
     }
 }
 
-async function validateRelease(releaseDirectory: string): Promise<void> {
-    await access(join(releaseDirectory, 'runtime', 'node'), constants.X_OK)
+export async function validateMacosGatewayRelease(releaseDirectory: string): Promise<void> {
+    const root = await realpath(releaseDirectory)
+    const runtime = join(root, 'runtime', 'node')
+    const entrypoint = join(root, 'ops', 'matrix-local-gateway.js')
+    for (const path of [runtime, entrypoint]) {
+        const metadata = await lstat(path)
+        if (metadata.isSymbolicLink() || !metadata.isFile()) {
+            throw new Error(`Gateway release path is not a regular file: ${path}`)
+        }
+        const resolved = await realpath(path)
+        if (!resolved.startsWith(`${root}/`)) {
+            throw new Error(`Gateway release path escapes its root: ${path}`)
+        }
+    }
+    await access(runtime, constants.X_OK)
         .catch(async () => {
-            await access(join(releaseDirectory, 'runtime', 'node'), constants.F_OK)
-            await chmod(join(releaseDirectory, 'runtime', 'node'), 0o755)
+            await access(runtime, constants.F_OK)
+            await chmod(runtime, 0o755)
         })
-    await access(join(releaseDirectory, 'ops', 'matrix-local-gateway.js'), constants.R_OK)
+    await access(entrypoint, constants.R_OK)
 }
 
 function stableLaunchAgentPlist(
@@ -140,6 +191,7 @@ async function replaceSymlink(path: string, target: string): Promise<void> {
     await symlink(target, temporary)
     try {
         await rename(temporary, path)
+        await syncDirectory(dirname(path))
     } finally {
         await rm(temporary, { force: true })
     }
@@ -148,8 +200,24 @@ async function replaceSymlink(path: string, target: string): Promise<void> {
 async function atomicWrite(path: string, content: string): Promise<void> {
     const temporary = `${path}.next.${process.pid}.${randomUUID()}`
     await mkdir(dirname(path), { recursive: true })
-    await writeFile(temporary, content, { mode: 0o644 })
+    const handle = await open(temporary, 'wx', 0o644)
+    try {
+        await handle.writeFile(content, 'utf8')
+        await handle.sync()
+    } finally {
+        await handle.close()
+    }
     await rename(temporary, path)
+    await syncDirectory(dirname(path))
+}
+
+async function syncDirectory(path: string): Promise<void> {
+    const handle = await open(path, 'r')
+    try {
+        await handle.sync()
+    } finally {
+        await handle.close()
+    }
 }
 
 async function readLinkIfPresent(path: string): Promise<string | null> {
@@ -230,6 +298,22 @@ async function waitForHealth(
         await sleep(Math.min(250, Math.max(0, deadline - Date.now())))
     } while (Date.now() < deadline)
     throw new Error(`Gateway did not become healthy: ${formatError(lastError)}`)
+}
+
+async function verifyProbation(
+    healthCheck: () => Promise<void>,
+    sleep: (milliseconds: number) => Promise<void>,
+    probationMs: number,
+): Promise<void> {
+    if (!Number.isFinite(probationMs) || probationMs < 0) {
+        throw new RangeError('Gateway probation duration must be non-negative')
+    }
+    if (probationMs === 0) return
+    const deadline = Date.now() + probationMs
+    while (Date.now() < deadline) {
+        await sleep(Math.min(1_000, Math.max(0, deadline - Date.now())))
+        await healthCheck()
+    }
 }
 
 function formatError(error: unknown): string {

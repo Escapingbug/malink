@@ -116,6 +116,12 @@ function legacyAllowedCommandOperations(
     const allowed = new Set<MalinkCommand['operation']>()
     for (const operation of operations) {
         if (operation === 'privilege.approve' || operation === 'project.create') continue
+        if (operation === 'gateway.update') {
+            allowed.add('gateway.update.stage')
+            allowed.add('gateway.update.apply')
+            allowed.add('gateway.update.status')
+            continue
+        }
         allowed.add(operation)
         if (operation === 'device.invite') {
             allowed.add('gateway.enrollment.invite')

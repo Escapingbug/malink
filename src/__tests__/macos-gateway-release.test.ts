@@ -89,6 +89,7 @@ describe('macOS Matrix Gateway release activation', () => {
             const plistPath = join(root, 'gateway.plist')
             await writeFile(plistPath, `<string>${join(root, 'current')}</string>`)
             const restart = vi.fn(async () => undefined)
+            const expectedBuilds: Array<string | undefined> = []
 
             await expect(activateMacosGatewayRelease({
                 releaseDirectory: nextRelease,
@@ -97,18 +98,24 @@ describe('macOS Matrix Gateway release activation', () => {
                 serviceLabel: 'com.malink.test-gateway',
                 adminSocketPath: join(root, 'admin.sock'),
                 healthTimeoutMs: 20,
+                expectedBuildId: 'build-next',
+                rollbackBuildId: 'build-old',
             }, {
                 restart,
-                healthCheck: async () => {
+                healthCheck: async expectedBuildId => {
+                    expectedBuilds.push(expectedBuildId)
                     if (await readlink(join(root, 'current')) === nextRelease) {
                         throw new Error('new release is unhealthy')
                     }
+                    expect(expectedBuildId).toBe('build-old')
                 },
                 sleep: async () => undefined,
             })).rejects.toThrow(/rolled back/i)
 
             expect(await readlink(join(root, 'current'))).toBe(oldRelease)
             expect(restart).toHaveBeenCalledTimes(2)
+            expect(expectedBuilds).toContain('build-next')
+            expect(expectedBuilds).toContain('build-old')
             expect(await readFile(plistPath, 'utf8')).toContain(join(root, 'current'))
         } finally {
             await rm(root, { recursive: true, force: true })

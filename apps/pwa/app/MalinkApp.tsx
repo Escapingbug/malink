@@ -18,6 +18,7 @@ import {
   encodePairingLink,
   providerHistoryMessageSchema,
   providerSessionEntrySchema,
+  gatewayUpdateStatusSchema,
   type MalinkAttachment,
   type CommandPayload,
   type ProviderHistoryMessage,
@@ -1128,6 +1129,8 @@ function MalinkAppRuntime() {
   const [gatewayEnrollmentBusy, setGatewayEnrollmentBusy] =
     useState<GatewayEnrollmentBusyState>(null);
   const [gatewayEnrollmentError, setGatewayEnrollmentError] = useState<string | null>(null);
+  const [gatewayUpdateBusy, setGatewayUpdateBusy] = useState(false);
+  const [gatewayUpdateError, setGatewayUpdateError] = useState<string | null>(null);
   const [approvedGatewayEnrollmentIds, setApprovedGatewayEnrollmentIds] =
     useState<Set<string>>(() => new Set());
   const pendingGatewayEnrollments = useMemo(() => {
@@ -4373,6 +4376,41 @@ function MalinkAppRuntime() {
         await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
       }
       setGatewayEnrollmentBusy(null);
+    }
+  }
+
+  async function runGatewayUpdate(
+    payload: Extract<CommandPayload, { operation: `gateway.update.${string}` }>,
+  ): Promise<void> {
+    setGatewayUpdateBusy(true);
+    setGatewayUpdateError(null);
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand(payload, activeWorkspace?.projectId, {
+        autoRetryRevisionConflict: true,
+        propagateFailure: true,
+      });
+      if (!sent) throw new Error("The connected client could not send the Gateway update request.");
+      commandId = sent.commandId;
+      const completion = await waitForCommandCompletion(
+        sent.completion,
+        payload.operation === "gateway.update.status" ? 60_000 : 30 * 60_000,
+      );
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message ?? "The Gateway update request did not complete.",
+        );
+      }
+      const status = gatewayUpdateStatusSchema.parse(completion.result);
+      setGatewayState((current) => current ? { ...current, gatewayUpdate: status } : current);
+    } catch (error) {
+      setGatewayUpdateError(formatUiError(error));
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+      setGatewayUpdateBusy(false);
     }
   }
 
@@ -7894,6 +7932,9 @@ function MalinkAppRuntime() {
         approvedGatewayEnrollmentIds={visibleApprovedGatewayEnrollmentIds}
         gatewayEnrollmentBusy={gatewayEnrollmentBusy}
         gatewayEnrollmentError={gatewayEnrollmentError}
+        gatewayUpdate={gatewayState?.gatewayUpdate ?? null}
+        gatewayUpdateBusy={gatewayUpdateBusy}
+        gatewayUpdateError={gatewayUpdateError}
         updateState={pwaUpdateState}
         nativeUpdateState={nativeUpdateState}
         nativeUpdateBusy={nativeUpdateBusy}
@@ -7945,6 +7986,18 @@ function MalinkAppRuntime() {
           setGatewayEnrollmentInvitation(null);
           setGatewayEnrollmentError(null);
         }}
+        onRefreshGatewayUpdate={() => void runGatewayUpdate({
+          operation: "gateway.update.status",
+        })}
+        onStageGatewayUpdate={(releaseId) => void runGatewayUpdate({
+          operation: "gateway.update.stage",
+          releaseId,
+        })}
+        onApplyGatewayUpdate={(releaseId) => void runGatewayUpdate({
+          operation: "gateway.update.apply",
+          releaseId,
+          mode: "when_idle",
+        })}
         onCheckForUpdates={() => void pwaUpdateRef.current?.checkNow()}
         onUpdateNativeApp={() => void recoverNativeAppUpdate(true)}
         onRestartApp={() => window.location.reload()}
@@ -7995,7 +8048,8 @@ function commandNoticeFor(payload: CommandPayload): {
 } {
   if (
     payload.operation === "device.invite" ||
-    payload.operation.startsWith("gateway.enrollment.")
+    payload.operation.startsWith("gateway.enrollment.") ||
+    payload.operation.startsWith("gateway.update.")
   ) {
     return { key: `pairing:${payload.operation}`, scope: "pairing" };
   }

@@ -2027,7 +2027,9 @@ describe('MatrixJsSdkGatewayClient', () => {
         )
 
         const mapped: MatrixIncomingEvent[] = []
-        client.onRoomEvent(event => mapped.push(event))
+        client.onRoomEvent(event => {
+            mapped.push(event)
+        })
         sdkEventListener?.({
             getRoomId: () => '!room:example.org',
             getId: () => '$incoming',

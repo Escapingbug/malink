@@ -355,6 +355,22 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
       enrollmentId: opaqueId,
     })
     .strict(),
+  z
+    .object({
+      operation: z.literal('gateway.update.stage'),
+      releaseId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('gateway.update.apply'),
+      releaseId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u),
+      mode: z.enum(['when_idle', 'force']).optional(),
+    })
+    .strict(),
+  z
+    .object({ operation: z.literal('gateway.update.status') })
+    .strict(),
 ])
 
 export type CommandPayload = z.infer<typeof commandPayloadSchema>
@@ -389,6 +405,9 @@ export const commandSchema = z
       'device.invite',
       'gateway.enrollment.invite',
       'gateway.enrollment.approve',
+      'gateway.update.stage',
+      'gateway.update.apply',
+      'gateway.update.status',
     ]),
     issuedAt: timestamp,
     expiresAt: timestamp,

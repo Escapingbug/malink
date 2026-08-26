@@ -103,6 +103,7 @@ internal class MatrixMlp3NativeProjection(
     private val projectCapabilities = linkedMapOf<String, WorkspaceCapabilities>()
     private var workspaceGatewayDirectory: JsonObject? = null
     private val workspacePendingGatewayEnrollmentsByProject = linkedMapOf<String, JsonArray>()
+    private var gatewayUpdateStatus: JsonObject? = null
     private val sessions = linkedMapOf<String, Session>()
     private val inboxFiles = linkedMapOf<String, InboxFile>()
     private val seenEvents = mutableSetOf<String>()
@@ -214,19 +215,24 @@ internal class MatrixMlp3NativeProjection(
             val pendingGatewayEnrollments = payload["pendingGatewayEnrollments"] as? JsonArray
                 ?: JsonArray(emptyList())
             validatePendingGatewayEnrollments(pendingGatewayEnrollments)
+            val incomingGatewayUpdate = (payload["gatewayUpdate"] as? JsonObject)
+                ?.also(::validateGatewayUpdateStatus)
+                ?: gatewayUpdateStatus
             val currentPendingGatewayEnrollments =
                 workspacePendingGatewayEnrollmentsByProject[capabilityProjectId]
                     ?: JsonArray(emptyList())
             if (current != null && version <= current.snapshotVersion) {
                 if (
                     clientReleases == current.clientReleases &&
-                    pendingGatewayEnrollments == currentPendingGatewayEnrollments
+                    pendingGatewayEnrollments == currentPendingGatewayEnrollments &&
+                    incomingGatewayUpdate == gatewayUpdateStatus
                 ) {
                     return MatrixMlp3NativeProjectionResult()
                 }
                 seenEvents.add(eventId)
                 workspacePendingGatewayEnrollmentsByProject[capabilityProjectId] =
                     pendingGatewayEnrollments
+                gatewayUpdateStatus = incomingGatewayUpdate
                 projectCapabilities[capabilityProjectId] = current.copy(
                     clientReleases = clientReleases,
                 )
@@ -243,12 +249,26 @@ internal class MatrixMlp3NativeProjection(
             seenEvents.add(eventId)
             workspacePendingGatewayEnrollmentsByProject[capabilityProjectId] =
                 pendingGatewayEnrollments
+            gatewayUpdateStatus = incomingGatewayUpdate
             projectCapabilities[capabilityProjectId] = WorkspaceCapabilities(
                 version,
                 capabilities,
                 clientReleases,
             )
             return MatrixMlp3NativeProjectionResult(changed = true)
+        }
+
+        if (type == "gateway.update.status") {
+            if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
+            val status = payload.requiredObject("status")
+            validateGatewayUpdateStatus(status)
+            val currentUpdatedAt = gatewayUpdateStatus?.requiredLong("updatedAt") ?: -1
+            val incomingUpdatedAt = status.requiredLong("updatedAt")
+            if (incomingUpdatedAt >= currentUpdatedAt) gatewayUpdateStatus = status
+            return MatrixMlp3NativeProjectionResult(
+                terminal = terminal(type, event, payload, causation, sessionId),
+                changed = incomingUpdatedAt >= currentUpdatedAt,
+            )
         }
 
         if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
@@ -471,6 +491,7 @@ internal class MatrixMlp3NativeProjection(
         val latestTimestamp = maxOf(
             visible.maxOfOrNull { it.updatedAt } ?: 0L,
             inboxFiles.values.maxOfOrNull { it.receivedAt } ?: 0L,
+            gatewayUpdateStatus?.requiredLong("updatedAt") ?: 0L,
         )
         return buildJsonObject {
             put("version", 1)
@@ -514,6 +535,7 @@ internal class MatrixMlp3NativeProjection(
             )
             workspaceGatewayDirectory?.let { put("gateway_directory", it) }
             put("pending_gateway_enrollments", mergedPendingGatewayEnrollments())
+            gatewayUpdateStatus?.let { put("gateway_update", it) }
         }
     }
 
@@ -610,6 +632,7 @@ internal class MatrixMlp3NativeProjection(
         projectCapabilities.clear()
         workspaceGatewayDirectory = null
         workspacePendingGatewayEnrollmentsByProject.clear()
+        gatewayUpdateStatus = null
         sessions.clear()
         inboxFiles.clear()
         seenEvents.clear()
@@ -619,7 +642,7 @@ internal class MatrixMlp3NativeProjection(
 
     @Synchronized
     fun durableState(): JsonObject = buildJsonObject {
-        put("schemaVersion", 11)
+        put("schemaVersion", 12)
         put("projectCapabilities", buildJsonArray {
             projectCapabilities.entries.sortedBy { it.key }.forEach { (projectId, capabilities) ->
                 add(buildJsonObject {
@@ -635,6 +658,7 @@ internal class MatrixMlp3NativeProjection(
             workspacePendingGatewayEnrollmentsByProject.entries.sortedBy { it.key }
                 .forEach { (projectId, enrollments) -> put(projectId, enrollments) }
         })
+        put("gatewayUpdateStatus", gatewayUpdateStatus ?: JsonNull)
         put("projects", buildJsonArray {
             projects.values.sortedBy(Project::id).forEach { activeProject ->
                 add(buildJsonObject {
@@ -703,7 +727,7 @@ internal class MatrixMlp3NativeProjection(
 
     private fun restore(value: JsonObject) {
         val schemaVersion = value.requiredLong("schemaVersion")
-        require(schemaVersion in 1L..11L)
+        require(schemaVersion in 1L..12L)
         val legacyWorkspaceCapabilities = if (schemaVersion == 1L || schemaVersion >= 9L) {
             null
         } else {
@@ -775,6 +799,11 @@ internal class MatrixMlp3NativeProjection(
             if (pending.isNotEmpty()) {
                 workspacePendingGatewayEnrollmentsByProject["__legacy__"] = pending
             }
+        }
+        gatewayUpdateStatus = if (schemaVersion >= 12L) {
+            (value["gatewayUpdateStatus"] as? JsonObject)?.also(::validateGatewayUpdateStatus)
+        } else {
+            null
         }
         val restoredProjects = if (schemaVersion >= 7L) {
             value["projects"] as? JsonArray
@@ -1102,8 +1131,52 @@ internal class MatrixMlp3NativeProjection(
                     put("gatewayName", payload.requiredString("gatewayName", 128))
                 },
             )
+            "gateway.update.status" -> MatrixMlp3NativeTerminal(
+                commandId,
+                "succeeded",
+                sessionId,
+                result = payload.requiredObject("status"),
+            )
             else -> null
         }
+    }
+
+    private fun validateGatewayUpdateStatus(value: JsonObject) {
+        value.requireKeys(
+            setOf("version", "phase", "updatedAt"),
+            setOf(
+                "updateId",
+                "releaseId",
+                "targetBuildId",
+                "currentBuildId",
+                "previousReleaseId",
+                "detail",
+                "activeTurns",
+            ),
+            "Gateway update status",
+        )
+        require(value.requiredLong("version") == 1L)
+        require(value.requiredString("phase", 64) in setOf(
+            "idle",
+            "staging",
+            "staged",
+            "waiting_for_idle",
+            "scheduled",
+            "activating",
+            "probation",
+            "committed",
+            "rolled_back",
+            "failed",
+            "repair_required",
+        ))
+        value.optionalString("updateId", 256)
+        value.optionalString("releaseId", 128)
+        value.optionalString("targetBuildId", 256)
+        value.optionalString("currentBuildId", 256)
+        value.optionalString("previousReleaseId", 128)
+        value.optionalString("detail", 4_096)
+        require(value.requiredLong("updatedAt") >= 0)
+        value.optionalLong("activeTurns")?.let { require(it >= 0) }
     }
 
     private fun userMessage(

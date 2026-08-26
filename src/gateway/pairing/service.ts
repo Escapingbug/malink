@@ -69,6 +69,9 @@ export const DEFAULT_PAIRING_OPERATIONS: PairingOperation[] = [
   'session.restore',
   'session.delete',
   'device.invite',
+  // Remote clients may only activate releases signed by the locally pinned
+  // release key. Granting this operation does not authorize arbitrary code.
+  'gateway.update',
 ]
 
 export interface CreatePairingOfferInput {

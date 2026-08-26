@@ -271,6 +271,39 @@ describe("MatrixMlp3Projection", () => {
     });
   });
 
+  it("persists the latest Gateway update status in the workspace projection", () => {
+    const projection = new MatrixMlp3Projection();
+    projection.applyEvent(workspaceSnapshot(1, "gpt-5.6-sol"), "$workspace");
+    projection.applyEvent({
+      kind: "malink.event",
+      version: 3,
+      eventId: "gateway-update-staged-1",
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      causationCommandId: "gateway-update-stage-1",
+      occurredAt: 20,
+      payload: {
+        type: "gateway.update.status",
+        status: {
+          version: 1,
+          phase: "staged",
+          releaseId: "release-2",
+          targetBuildId: "build-2",
+          currentBuildId: "build-1",
+          updatedAt: 20,
+        },
+      },
+    }, "$gateway-update-staged");
+
+    expect(projection.workspace?.gatewayUpdate).toMatchObject({
+      phase: "staged",
+      releaseId: "release-2",
+    });
+    const restored = new MatrixMlp3Projection();
+    restored.restore(projection.durableState());
+    expect(restored.workspace?.gatewayUpdate).toEqual(projection.workspace?.gatewayUpdate);
+  });
+
   it("projects extension defaults and resolves an interaction on every device", () => {
     const projection = new MatrixMlp3Projection();
     projection.applyEvent(projectSnapshot(), "$project");

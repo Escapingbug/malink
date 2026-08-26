@@ -48,6 +48,16 @@ export interface GatewayAdminServerOptions {
   pairingService: GatewayPairingService
   registry: FileTrustedDeviceRegistry
   getGatewayState: () => string
+  buildId?: string
+  getGatewayDiagnostics?: () => Promise<{
+    runtimeEpoch: string
+    activeTurns: number
+    activeCommands: number
+    pendingInboxEvents: number
+    quarantinedInboxEvents: number
+    matrixReady: boolean | null
+    lastMatrixSyncAt: number | null
+  }>
   syncGatewayState?: () => Promise<void>
   onDeviceRevoked?: (
     deviceId: string,
@@ -386,6 +396,7 @@ async function statusResponse(
     options.registry.listActive(now),
     options.registry.listOffers(now),
   ])
+  const diagnostics = await options.getGatewayDiagnostics?.()
   return {
     version: 1,
     gatewayId: options.gatewayId,
@@ -398,6 +409,8 @@ async function statusResponse(
     startedAt,
     activeDeviceCount: activeDevices.length,
     openInvitationCount: offers.filter((offer) => offer.status === 'open').length,
+    ...(options.buildId ? { buildId: options.buildId } : {}),
+    ...(diagnostics ?? {}),
   }
 }
 

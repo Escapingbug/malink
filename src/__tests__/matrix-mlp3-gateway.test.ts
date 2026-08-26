@@ -180,6 +180,7 @@ describe('MatrixMlp3GatewayRunner', () => {
           'provider.sessions.list',
           'provider.session.inspect',
           'device.invite',
+          'gateway.update',
         ],
         matrixUserId: '@phone:example.org',
         matrixDeviceId: 'PHONE',
@@ -215,6 +216,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     const terminalNotifications: string[] = []
     const createdProjectRequests: string[] = []
     let projectCreatedHooks = 0
+    const gatewayUpdateCalls: string[] = []
     const webPushService: GatewayWebPushService = {
       initialize: async () => undefined,
       publicKey: () => 'B'.repeat(87),
@@ -350,6 +352,39 @@ describe('MatrixMlp3GatewayRunner', () => {
           getDeliveryStatus: () => ({ deliveries: [] }),
           retryDelivery: async () => ({ status: 'not_found' as const }),
         } satisfies TopicSession
+      },
+      gatewayUpdateSupervisor: {
+        async status() {
+          gatewayUpdateCalls.push('status')
+          return {
+            version: 1,
+            phase: 'idle',
+            currentBuildId: 'build-1',
+            updatedAt: 10,
+          }
+        },
+        async stage(releaseId) {
+          gatewayUpdateCalls.push(`stage:${releaseId}`)
+          return {
+            version: 1,
+            phase: 'staged',
+            releaseId,
+            targetBuildId: 'build-2',
+            currentBuildId: 'build-1',
+            updatedAt: 11,
+          }
+        },
+        async scheduleApply(releaseId) {
+          gatewayUpdateCalls.push(`apply:${releaseId}`)
+          return {
+            version: 1,
+            phase: 'scheduled',
+            releaseId,
+            targetBuildId: 'build-2',
+            currentBuildId: 'build-1',
+            updatedAt: 12,
+          }
+        },
       },
     })
     await runner.start()
@@ -530,6 +565,21 @@ describe('MatrixMlp3GatewayRunner', () => {
     })
     expect(createdProjectRequests).toEqual(['Created remotely:/srv/created-remotely'])
 
+    await send({
+      ...base,
+      commandId: 'gateway-update-stage-1',
+      operation: 'gateway.update.stage',
+      payload: { operation: 'gateway.update.stage', releaseId: 'release-2' },
+    }, '$gateway-update-stage-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'gateway-update-stage-1'))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'gateway-update-stage-1'
+      && event.payload.type === 'gateway.update.status'
+    )?.payload).toMatchObject({
+      status: { phase: 'staged', releaseId: 'release-2' },
+    })
+    expect(gatewayUpdateCalls).toContain('stage:release-2')
     await send({
       ...base,
       commandId: 'provider-list-1',
@@ -801,6 +851,30 @@ describe('MatrixMlp3GatewayRunner', () => {
     )?.payload).not.toEqual(expect.objectContaining({
       sessions: [expect.objectContaining({ managedSessionId: 'session-a' })],
     }))
+
+    await send({
+      ...base,
+      commandId: 'gateway-update-apply-1',
+      operation: 'gateway.update.apply',
+      payload: {
+        operation: 'gateway.update.apply',
+        releaseId: 'release-2',
+        mode: 'when_idle',
+      },
+    }, '$gateway-update-apply-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'gateway-update-apply-1'))
+    expect(gatewayUpdateCalls).toContain('apply:release-2')
+    await send({
+      ...base,
+      commandId: 'provider-list-during-update-drain',
+      operation: 'provider.sessions.list',
+      payload: { operation: 'provider.sessions.list', provider: 'test' },
+    }, '$provider-list-during-update-drain')
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 25))
+    expect((await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === 'provider-list-during-update-drain'
+    )).toBe(false)
     await runner.stop()
 
     const eventIdsBeforeRestart = new Set(
@@ -831,6 +905,12 @@ describe('MatrixMlp3GatewayRunner', () => {
       },
     })
     await restarted.start()
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'provider-list-during-update-drain'))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'provider-list-during-update-drain'
+      && event.payload.type === 'provider.sessions.listed'
+    )?.payload).toMatchObject({ sessions: [{ sessionId: 'provider-session-1' }] })
     await waitFor(async () => {
       const recovered = (await events(client, activeKey.key, roomId, projectId)).filter(event =>
         !eventIdsBeforeRestart.has(event.eventId)

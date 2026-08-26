@@ -24,6 +24,9 @@ enum class CommandOperation(val wireName: String) {
     DEVICE_INVITE("device.invite"),
     GATEWAY_ENROLLMENT_INVITE("gateway.enrollment.invite"),
     GATEWAY_ENROLLMENT_APPROVE("gateway.enrollment.approve"),
+    GATEWAY_UPDATE_STAGE("gateway.update.stage"),
+    GATEWAY_UPDATE_APPLY("gateway.update.apply"),
+    GATEWAY_UPDATE_STATUS("gateway.update.status"),
     ;
 
     companion object {
@@ -223,6 +226,22 @@ data class GatewayEnrollmentApproveCommandPayload(
     override val sessionId: String? = null
 }
 
+data class GatewayUpdateCommandPayload(
+    override val operation: CommandOperation,
+    val releaseId: String?,
+    val mode: String?,
+) : ValidatedCommandPayload {
+    override val sessionId: String? = null
+
+    init {
+        require(
+            operation == CommandOperation.GATEWAY_UPDATE_STAGE ||
+                operation == CommandOperation.GATEWAY_UPDATE_APPLY ||
+                operation == CommandOperation.GATEWAY_UPDATE_STATUS,
+        ) { "Gateway update operation is invalid." }
+    }
+}
+
 object CommandPayloadValidator {
     const val MAX_ATTACHMENT_BYTES = 50L * 1024 * 1024
     const val MAX_ATTACHMENTS = 10
@@ -247,6 +266,10 @@ object CommandPayloadValidator {
             CommandOperation.DEVICE_INVITE -> validateDeviceInvite(value)
             CommandOperation.GATEWAY_ENROLLMENT_INVITE -> validateGatewayEnrollmentInvite(value)
             CommandOperation.GATEWAY_ENROLLMENT_APPROVE -> validateGatewayEnrollmentApprove(value)
+            CommandOperation.GATEWAY_UPDATE_STAGE,
+            CommandOperation.GATEWAY_UPDATE_APPLY,
+            CommandOperation.GATEWAY_UPDATE_STATUS,
+            -> validateGatewayUpdate(value, operation)
         }
     }
 
@@ -458,6 +481,27 @@ object CommandPayloadValidator {
         return GatewayEnrollmentApproveCommandPayload(value.requiredOpaqueId("enrollmentId"))
     }
 
+    private fun validateGatewayUpdate(
+        value: JsonObject,
+        operation: CommandOperation,
+    ): GatewayUpdateCommandPayload {
+        if (operation == CommandOperation.GATEWAY_UPDATE_STATUS) {
+            value.requireExactKeys(setOf("operation"))
+            return GatewayUpdateCommandPayload(operation, null, null)
+        }
+        value.requireExactKeys(
+            required = setOf("operation", "releaseId"),
+            optional = if (operation == CommandOperation.GATEWAY_UPDATE_APPLY) setOf("mode") else emptySet(),
+        )
+        val releaseId = value.requiredString("releaseId", 128)
+        require(RELEASE_ID.matches(releaseId)) { "Gateway release ID is invalid." }
+        val mode = value.optionalBoundedString("mode", 32)
+        require(mode == null || mode == "when_idle" || mode == "force") {
+            "Gateway update mode is invalid."
+        }
+        return GatewayUpdateCommandPayload(operation, releaseId, mode)
+    }
+
     private fun validateAttachment(element: JsonElement): CommandAttachmentPayload {
         val value = element.asObject("Command attachment")
         value.requireExactKeys(setOf("id", "name", "mimeType", "size", "sha256", "media"))
@@ -491,6 +535,7 @@ object CommandPayloadValidator {
 
     private val BASE64_URL = Regex("^[A-Za-z0-9_-]+$")
     private val ACTION_ID = Regex("^[a-z][a-z0-9._-]*$")
+    private val RELEASE_ID = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     private val TOTP = Regex("^[0-9]{6}$")
 
     private fun isMxcUrl(value: String): Boolean {
@@ -633,5 +678,9 @@ internal fun requiredCertificateOperation(operation: CommandOperation): PairingO
         CommandOperation.GATEWAY_ENROLLMENT_INVITE,
         CommandOperation.GATEWAY_ENROLLMENT_APPROVE,
         -> PairingOperation.DEVICE_INVITE
+        CommandOperation.GATEWAY_UPDATE_STAGE,
+        CommandOperation.GATEWAY_UPDATE_APPLY,
+        CommandOperation.GATEWAY_UPDATE_STATUS,
+        -> PairingOperation.GATEWAY_UPDATE
         else -> PairingOperation.parse(operation.wireName)
     }

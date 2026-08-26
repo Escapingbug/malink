@@ -22,6 +22,7 @@ export const pairingOperationSchema = z.enum([
   'session.delete',
   'device.invite',
   'privilege.approve',
+  'gateway.update',
 ])
 
 export type PairingOperation = z.infer<typeof pairingOperationSchema>

@@ -773,6 +773,31 @@ function toMlp3Command(
           enrollmentId: payload.enrollmentId,
         },
       };
+    case "gateway.update.stage":
+      return {
+        ...common,
+        operation: "gateway.update.stage",
+        payload: {
+          operation: "gateway.update.stage",
+          releaseId: payload.releaseId,
+        },
+      };
+    case "gateway.update.apply":
+      return {
+        ...common,
+        operation: "gateway.update.apply",
+        payload: {
+          operation: "gateway.update.apply",
+          releaseId: payload.releaseId,
+          mode: payload.mode ?? "when_idle",
+        },
+      };
+    case "gateway.update.status":
+      return {
+        ...common,
+        operation: "gateway.update.status",
+        payload: { operation: "gateway.update.status" },
+      };
   }
 }
 

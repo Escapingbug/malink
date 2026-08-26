@@ -1985,7 +1985,7 @@ export async function connectMatrix(
       );
       return trust;
     }
-    const operation = pending.payload.operation as PairingOperation;
+    const operation = requiredPairingOperation(pending.payload.operation);
     if (trust.certificate.certificate.allowedOperations.includes(operation)) {
       return trust;
     }
@@ -2017,13 +2017,14 @@ export async function connectMatrix(
     trust: TrustedGateway,
     operation: CommandOperation,
   ): Promise<TrustedGateway> => {
+    const pairingOperation = requiredPairingOperation(operation);
     const requiresRenewal =
       !trust.certificate.certificate.allowedOperations.includes(
-        operation as PairingOperation,
+        pairingOperation,
       );
     const renewed = await renewCapabilities(
       trust,
-      [operation as PairingOperation],
+      [pairingOperation],
     );
     if (requiresRenewal) {
       await clearCapabilityRenewalMigration(config, identity);
@@ -5428,7 +5429,19 @@ function fallbackBody(payload: CommandPayload): string {
       return "Create a Gateway enrollment";
     case "gateway.enrollment.approve":
       return "Approve a Gateway enrollment";
+    case "gateway.update.stage":
+      return `Stage Gateway release ${payload.releaseId}`;
+    case "gateway.update.apply":
+      return `Apply Gateway release ${payload.releaseId}`;
+    case "gateway.update.status":
+      return "Read Gateway update status";
   }
+}
+
+function requiredPairingOperation(operation: CommandOperation): PairingOperation {
+  if (operation.startsWith("gateway.enrollment.")) return "device.invite";
+  if (operation.startsWith("gateway.update.")) return "gateway.update";
+  return operation as PairingOperation;
 }
 
 function randomNonce(): string {

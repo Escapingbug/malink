@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -255,6 +255,86 @@ describe('MatrixNodeSdkGatewayClient', () => {
         await client.stop()
     })
 
+    it('commits a sync cursor only after async event listeners durably accept the batch', async () => {
+        const directory = await temporaryDirectory()
+        const syncPath = join(directory, 'sync.json')
+        const listenerStarted = deferred<void>()
+        const listenerRelease = deferred<void>()
+        let syncRequests = 0
+        const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+            if (String(input).includes('/_matrix/client/v3/sync')) {
+                syncRequests += 1
+                if (syncRequests === 1) {
+                    return new Response(JSON.stringify({
+                        next_batch: 'after-durable-listener',
+                        to_device: { events: [] },
+                        device_lists: { changed: [], left: [] },
+                        device_one_time_keys_count: {},
+                        rooms: {
+                            join: {
+                                '!project:example.test': {
+                                    timeline: {
+                                        events: [{
+                                            event_id: '$command',
+                                            type: 'm.room.message',
+                                            sender: '@device:example.test',
+                                            origin_server_ts: 42,
+                                            content: { body: 'Malink command' },
+                                        }],
+                                    },
+                                },
+                            },
+                        },
+                    }), {
+                        status: 200,
+                        headers: { 'content-type': 'application/json' },
+                    })
+                }
+                return new Promise<Response>((_resolve, reject) => {
+                    const signal = init?.signal
+                    const rejectAbort = () => reject(
+                        signal?.reason ?? new DOMException('Aborted', 'AbortError'),
+                    )
+                    if (signal?.aborted) rejectAbort()
+                    else signal?.addEventListener('abort', rejectAbort, { once: true })
+                })
+            }
+            return new Response(JSON.stringify({ one_time_key_counts: {} }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            })
+        }) as unknown as typeof fetch
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test',
+            accessToken: 'token',
+            userId: '@gateway:example.test',
+            deviceId: 'STABLE_DEVICE',
+        }, 1_000, undefined, fetchMock)
+        await client.initializeCrypto({
+            backend: 'node-sqlite',
+            storagePath: join(directory, 'crypto'),
+            storagePassword: 'test-only-passphrase',
+            syncTokenPath: syncPath,
+        })
+        client.onRoomEvent(async () => {
+            listenerStarted.resolve()
+            await listenerRelease.promise
+        })
+
+        await client.start()
+        await listenerStarted.promise
+        await expect(readFile(syncPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+
+        listenerRelease.resolve()
+        await vi.waitFor(async () => {
+            expect(JSON.parse(await readFile(syncPath, 'utf8'))).toEqual({
+                version: 1,
+                nextBatch: 'after-durable-listener',
+            })
+        })
+        await client.stop()
+    })
+
     it('serializes account-wide room writes through one 429 retry window', async () => {
         let calls = 0
         let active = 0
@@ -328,4 +408,14 @@ function jsonResponse(value: unknown): Response {
         status: 200,
         headers: { 'content-type': 'application/json' },
     })
+}
+
+function deferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void
+    let reject!: (reason?: unknown) => void
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise
+        reject = rejectPromise
+    })
+    return { promise, resolve, reject }
 }

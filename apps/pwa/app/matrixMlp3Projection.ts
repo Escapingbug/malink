@@ -5,6 +5,7 @@ import type {
   MatrixGatewayCapabilities,
   NativeClientRelease,
   GatewayEnrollmentPending,
+  GatewayUpdateStatus,
   SessionExtensionBinding,
   SessionExtensionDescriptor,
   SignedWorkspaceGatewayDirectory,
@@ -17,6 +18,7 @@ import {
   sessionExtensionDescriptorSchema,
   signedWorkspaceGatewayDirectorySchema,
   gatewayEnrollmentPendingSchema,
+  gatewayUpdateStatusSchema,
 } from "@malink/protocol";
 
 export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 6 as const;
@@ -88,6 +90,7 @@ export type V3WorkspaceProjection = {
   clientReleases: NativeClientRelease[];
   gatewayDirectory?: SignedWorkspaceGatewayDirectory;
   pendingGatewayEnrollments: GatewayEnrollmentPending[];
+  gatewayUpdate?: GatewayUpdateStatus;
 };
 
 export type MatrixMlp3ProjectionState = {
@@ -234,13 +237,15 @@ export class MatrixMlp3Projection {
       const pendingGatewayEnrollments = structuredClone(
         payload.pendingGatewayEnrollments ?? [],
       );
+      const gatewayUpdate = payload.gatewayUpdate ?? this.workspace?.gatewayUpdate;
       if (this.workspace && payload.snapshotVersion <= this.workspace.snapshotVersion) {
         const gatewayDirectory = payload.gatewayDirectory ?? this.workspace.gatewayDirectory;
         if (
           clientReleases === this.workspace.clientReleases &&
           gatewayDirectory === this.workspace.gatewayDirectory &&
           JSON.stringify(pendingGatewayEnrollments) ===
-            JSON.stringify(this.workspace.pendingGatewayEnrollments)
+            JSON.stringify(this.workspace.pendingGatewayEnrollments) &&
+          JSON.stringify(gatewayUpdate) === JSON.stringify(this.workspace.gatewayUpdate)
         ) return false;
         this.seenLogicalEvents.add(event.eventId);
         this.workspace = {
@@ -248,6 +253,7 @@ export class MatrixMlp3Projection {
           clientReleases,
           pendingGatewayEnrollments,
           ...(gatewayDirectory ? { gatewayDirectory } : {}),
+          ...(gatewayUpdate ? { gatewayUpdate } : {}),
         };
         return true;
       }
@@ -259,6 +265,7 @@ export class MatrixMlp3Projection {
         clientReleases,
         pendingGatewayEnrollments,
         ...(payload.gatewayDirectory ? { gatewayDirectory: payload.gatewayDirectory } : {}),
+        ...(gatewayUpdate ? { gatewayUpdate } : {}),
       };
       return true;
     }
@@ -293,6 +300,12 @@ export class MatrixMlp3Projection {
         attachment: payload.attachment,
       });
       return true;
+    }
+    if (payload.type === "gateway.update.status" && this.workspace) {
+      this.workspace = {
+        ...this.workspace,
+        gatewayUpdate: structuredClone(payload.status),
+      };
     }
     if (event.sessionId && "projection" in payload) {
       this.applySessionProjection(event, payload.projection, threadRootHint);
@@ -751,6 +764,9 @@ function validateWorkspaceProjection(input: unknown): V3WorkspaceProjection {
     ...(workspace.gatewayDirectory
       ? { gatewayDirectory: signedWorkspaceGatewayDirectorySchema.parse(workspace.gatewayDirectory) }
       : {}),
+    ...(workspace.gatewayUpdate
+      ? { gatewayUpdate: gatewayUpdateStatusSchema.parse(workspace.gatewayUpdate) }
+      : {}),
   };
 }
 
@@ -852,6 +868,7 @@ function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
     case "gateway.enrollment.invitation.created":
     case "gateway.enrollment.approved":
     case "notification.subscription.changed":
+    case "gateway.update.status":
     case "provider.sessions.listed":
     case "provider.session.inspected":
       return { commandId, outcome: "succeeded", ...(event.sessionId ? { sessionId: event.sessionId } : {}), event };

@@ -60,7 +60,9 @@ import type {
 } from '@/channel/matrix'
 import { downloadMatrixMedia } from '@/channel/matrix/sdkTransport'
 
-export type MatrixGatewayEventListener = (event: MatrixIncomingEvent) => void
+export type MatrixGatewayEventListener = (
+    event: MatrixIncomingEvent,
+) => void | Promise<void>
 
 export interface MatrixGatewayClientOptions {
     /** Bound eventual consistency of Matrix /keys/query after initial sync. */
@@ -79,6 +81,12 @@ export interface MatrixSyncWatchdogOptions {
     now?: () => number
 }
 
+export interface MatrixGatewaySyncHealth {
+    started: boolean
+    ready: boolean
+    lastSyncAt: number | null
+}
+
 export interface MatrixGatewayClient extends MatrixTransport {
     initializeCrypto(config: MatrixGatewayCryptoConfig): Promise<void>
     onRoomEvent(listener: MatrixGatewayEventListener): () => void
@@ -90,6 +98,7 @@ export interface MatrixGatewayClient extends MatrixTransport {
     pinTrustedDevices?(devices: MatrixGatewayPinnedTransportDevice[]): Promise<void>
     prepareRoomThread?(roomId: string, rootEventId: string, timeoutMs?: number): Promise<void>
     setExtendedProfileProperty?(key: string, value: unknown): Promise<void>
+    getSyncHealth?(): MatrixGatewaySyncHealth
     stop(): Promise<void>
 }
 
@@ -184,9 +193,9 @@ export class MatrixJsSdkGatewayClient implements MatrixGatewayClient {
     private started = false
     private readonly sdkEventListener = (event: MatrixEvent): void => {
         void this.mapEvent(event)
-            .then(mapped => {
+            .then(async mapped => {
                 if (!mapped) return
-                for (const listener of this.listeners) listener(mapped)
+                for (const listener of this.listeners) await listener(mapped)
             })
             .catch(error => this.onLog?.(`[matrix-sdk] incoming event failed: ${formatError(error)}`))
     }

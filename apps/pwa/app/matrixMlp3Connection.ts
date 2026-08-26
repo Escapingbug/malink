@@ -1318,6 +1318,9 @@ function gatewayState(
       : {}),
     pendingGatewayEnrollments:
       protocol.projection.workspace?.pendingGatewayEnrollments ?? [],
+    ...(protocol.projection.workspace?.gatewayUpdate
+      ? { gatewayUpdate: protocol.projection.workspace.gatewayUpdate }
+      : {}),
   };
 }
 
@@ -1338,6 +1341,10 @@ function aggregateGatewayState(
       all.findIndex(candidate => candidate.enrollmentId === value.enrollmentId) === index
     )
     .sort((left, right) => left.requestedAt - right.requestedAt);
+  const gatewayUpdate = states
+    .map(value => value.gatewayUpdate)
+    .filter((value): value is NonNullable<typeof value> => Boolean(value))
+    .sort((left, right) => right.updatedAt - left.updatedAt)[0];
   return {
     ...first,
     stateVersion: Math.max(...states.map(value => value.stateVersion)),
@@ -1353,6 +1360,7 @@ function aggregateGatewayState(
       .filter((value, index, all) => all.findIndex(candidate => candidate.buildId === value.buildId) === index),
     ...(directory ? { gatewayDirectory: directory } : {}),
     pendingGatewayEnrollments,
+    ...(gatewayUpdate ? { gatewayUpdate } : {}),
   };
 }
 

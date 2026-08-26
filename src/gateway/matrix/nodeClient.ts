@@ -464,6 +464,14 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
         return () => clearInterval(timer)
     }
 
+    getSyncHealth(): { started: boolean; ready: boolean; lastSyncAt: number | null } {
+        return {
+            started: this.started,
+            ready: this.ready,
+            lastSyncAt: this.lastSyncProgressAt > 0 ? this.lastSyncProgressAt : null,
+        }
+    }
+
     async stop(): Promise<void> {
         if (!this.started && !this.machine) return
         this.started = false
@@ -558,7 +566,10 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                 this.updateRoomState(roomId, event)
                 const mapped = await this.mapIncomingEvent(roomId, event)
                 if (!mapped) continue
-                for (const listener of this.listeners) listener(mapped)
+                // Listener completion is the durable-consumption boundary.
+                // The Gateway persists the raw event before returning, so the
+                // /sync cursor written by runSyncLoop can never overtake it.
+                for (const listener of this.listeners) await listener(mapped)
             }
         }
     }

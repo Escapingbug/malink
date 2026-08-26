@@ -26,6 +26,14 @@ export const GATEWAY_STATE_CATALOG: readonly GatewayStateCatalogEntry[] = Object
         migrationFromVersions: migrationKeys(GATEWAY_RUNTIME_STATE_MIGRATIONS),
     },
     {
+        // Project creation commits Matrix routing authority here. A rollback
+        // release must understand every route accepted during probation.
+        id: 'gateway-project-catalog',
+        stateClass: 'durable-command',
+        schemaVersion: 1,
+        migrationFromVersions: new Set<number>(),
+    },
+    {
         id: 'command-replay-ledger',
         stateClass: 'security-critical',
         schemaVersion: 2,
@@ -65,6 +73,32 @@ export const GATEWAY_STATE_CATALOG: readonly GatewayStateCatalogEntry[] = Object
     {
         id: 'matrix-sync-cursor',
         stateClass: 'rebuildable-projection',
+        schemaVersion: 1,
+        migrationFromVersions: new Set<number>(),
+    },
+    {
+        // This inbox may contain a command after the Matrix cursor advanced
+        // but before authorization claimed it. It is therefore durable-command
+        // state, not a rebuildable transport cache.
+        id: 'matrix-gateway-inbox',
+        stateClass: 'durable-command',
+        schemaVersion: 1,
+        migrationFromVersions: new Set<number>(),
+    },
+    {
+        // Activation intent and the previous symlink target must survive a
+        // supervisor crash so restart recovery can finish or roll back.
+        id: 'gateway-update-supervisor-state',
+        stateClass: 'durable-command',
+        schemaVersion: 1,
+        migrationFromVersions: new Set<number>(),
+    },
+    {
+        // This is the offline trust anchor for every remotely staged release.
+        // Changing it is an explicit local key-rotation procedure, never an
+        // ordinary online update migration.
+        id: 'gateway-release-signer-pin',
+        stateClass: 'security-critical',
         schemaVersion: 1,
         migrationFromVersions: new Set<number>(),
     },

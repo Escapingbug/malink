@@ -2,19 +2,30 @@ import { defineConfig } from 'tsup'
 import path from 'path'
 
 export default defineConfig({
-    entry: [
-      'src/index.ts',
-      'src/daemon.ts',
-      'src/matrix-daemon.ts',
-      'src/mcp/stdio.ts',
-      'src/privilege/helperMain.ts',
-    ],
+  entry: {
+    index: 'src/index.ts',
+    daemon: 'src/daemon.ts',
+    'matrix-daemon': 'src/matrix-daemon.ts',
+    'mcp/stdio': 'src/mcp/stdio.ts',
+    'privilege/helperMain': 'src/privilege/helperMain.ts',
+    'ops/gatewayUpdateSupervisorMain': 'src/ops/gatewayUpdateSupervisorMain.ts',
+    'ops/matrix-local-gateway': 'scripts/matrix-local-gateway.ts',
+  },
   format: ['esm'],
   outDir: 'dist',
   splitting: false,
   sourcemap: true,
   clean: true,
-  noExternal: ['@malink/protocol', '@malink/security', 'zod'],
+  noExternal: [
+    '@malink/protocol',
+    '@malink/security',
+    '@agentclientprotocol/sdk',
+    'conf',
+    'matrix-js-sdk',
+    'qrcode',
+    'web-push',
+    'zod',
+  ],
   esbuildOptions(options) {
     options.alias = {
       '@': path.resolve('./src')

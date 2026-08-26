@@ -153,6 +153,11 @@ function v3AllowedOperations(
         result.add('gateway.enrollment.approve')
         break
       case 'privilege.approve': break
+      case 'gateway.update':
+        result.add('gateway.update.stage')
+        result.add('gateway.update.apply')
+        result.add('gateway.update.status')
+        break
     }
   }
   return [...result]
