@@ -13,6 +13,7 @@ import {
     acceptGatewayJoinInvitation,
     createGatewayJoinInvitation,
     FileGatewayIdentityStore,
+    FileGatewayNodeProfileStore,
     FileTrustedDeviceRegistry,
     FileWorkspaceDeviceAuthorization,
     FileWorkspaceGatewayDirectory,
@@ -487,6 +488,7 @@ async function handleGatewayCommand(
       [--qr terminal|png|none] [--output PATH] [--json]
   malink gateway invite-gateway --gateway-data-dir PATH
   malink gateway join <invitation-link> --gateway-data-dir PATH [--gateway-name NAME]
+  malink gateway rename <name> [--socket PATH] [--json]
   malink gateway remove-gateway <gateway-node-id> --gateway-data-dir PATH
   malink gateway devices [--socket PATH] [--json]
   malink gateway cancel <invitation-id> [--socket PATH]
@@ -571,6 +573,10 @@ async function handleGatewayCommand(
                     }
                 },
             })
+            await new FileGatewayNodeProfileStore(
+                join(dataDirectory, 'gateway-profile.json'),
+                joined.gatewayNodeId,
+            ).loadOrCreate(gatewayName)
             console.log(`Joined Workspace ${joined.workspaceId}.`)
             console.log(`Gateway node ID: ${joined.gatewayNodeId}`)
             console.log(`Created encrypted project room: ${joined.projectRoomId}`)
@@ -582,6 +588,13 @@ async function handleGatewayCommand(
             join(dataDirectory, 'gateway-identity.json'),
         )
         const joined = await acceptGatewayJoinInvitation(identityStore, link)
+        const gatewayName = stringOption(values['gateway-name'])
+            ?? process.env.MALINK_GATEWAY_NAME
+            ?? hostname()
+        await new FileGatewayNodeProfileStore(
+            join(dataDirectory, 'gateway-profile.json'),
+            joined.identity.gatewayNodeId,
+        ).loadOrCreate(gatewayName)
         if (joined.directory) {
             await new FileWorkspaceGatewayDirectory(
                 join(dataDirectory, 'workspace-gateways.json'),
@@ -630,12 +643,31 @@ async function handleGatewayCommand(
             console.log(JSON.stringify(status, null, 2))
             return
         }
-        console.log(`Gateway: ${status.state}`)
-        console.log(`Gateway ID: ${status.gatewayId}`)
+        console.log(
+            `Gateway: ${status.gatewayName} · ${status.gatewayShortId}`,
+        )
+        console.log(`State: ${status.state}`)
+        console.log(`Workspace ID: ${status.workspaceId}`)
+        console.log(`Gateway node ID: ${status.gatewayNodeId}`)
         console.log(`PID: ${status.pid}`)
         console.log(`Active devices: ${status.activeDeviceCount}`)
         console.log(`Open invitations: ${status.openInvitationCount}`)
         console.log(`Admin socket: ${socketPath}`)
+        return
+    }
+
+    if (subcommand === 'rename') {
+        const gatewayName = positionals.slice(1).join(' ').trim()
+        if (!gatewayName) throw new Error('Usage: malink gateway rename <name> [--socket PATH]')
+        const identity = await client.renameGateway(gatewayName)
+        if (values.json) {
+            console.log(JSON.stringify(identity, null, 2))
+            return
+        }
+        console.log(
+            `Gateway renamed to ${identity.gatewayName} · `
+            + `${identity.gatewayShortId}.`,
+        )
         return
     }
 

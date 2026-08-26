@@ -61,7 +61,7 @@ export class DeviceInvitationError extends Error {
 }
 
 export interface DeviceInvitationCoordinatorOptions {
-  gatewayName: string
+  gatewayName: string | (() => string)
   gatewayTransport: () => MatrixTransportBinding
   matrixLoginTokenIssuer?: MatrixLoginTokenIssuer
   maxOpenInvitations?: number
@@ -140,7 +140,9 @@ export class DeviceInvitationCoordinator {
     }
 
     const created = await this.service.createOffer({
-      gatewayName: this.options.gatewayName,
+      gatewayName: typeof this.options.gatewayName === 'function'
+        ? this.options.gatewayName()
+        : this.options.gatewayName,
       gatewayTransport: this.options.gatewayTransport(),
       source: input.source,
       ...(input.lifetimeMs === undefined ? {} : { lifetimeMs: input.lifetimeMs }),

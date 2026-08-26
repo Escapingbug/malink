@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { hostname } from 'node:os'
 import QRCode from 'qrcode'
 import {
     MLP3_MATRIX_WORKSPACE_DEVICE_GRANT_EVENT_TYPE,
@@ -17,6 +18,7 @@ import { PairingOfferGuard, signWorkspaceDeviceRevocation } from '@malink/securi
 import { FileReplayStore } from '@malink/security/node'
 import {
     FileGatewayIdentityStore,
+    FileGatewayNodeProfileStore,
     FileTrustedDeviceRegistry,
     FileWorkspaceGatewayDirectory,
     FileWorkspaceDeviceAuthorization,
@@ -32,6 +34,7 @@ import {
     FileGatewayEnrollmentCoordinator,
     GATEWAY_ENROLLMENT_APPROVAL_LIFETIME_MS,
     createGatewayJoinInvitation,
+    gatewayNodeShortId,
 } from '../src/gateway/pairing/index.js'
 import {
     FileMatrixLoginTokenIssuer,
@@ -114,13 +117,27 @@ const loginUser = process.env.MALINK_MATRIX_GATEWAY_USER ?? 'gateway'
 const gatewayMatrixDeviceId = `MALINK_GATEWAY_${runId}`
 const gatewaySessionPath = process.env.MALINK_MATRIX_GATEWAY_SESSION_FILE
     ?? join(dataDirectory, 'matrix-session.json')
+const identity = await new FileGatewayIdentityStore(
+    join(dataDirectory, 'gateway-identity.json'),
+).loadOrCreate(fixture.gatewayId)
+const gatewayProfileStore = new FileGatewayNodeProfileStore(
+    join(dataDirectory, 'gateway-profile.json'),
+    identity.gatewayNodeId,
+)
+const configuredGatewayName = process.env.MALINK_GATEWAY_NAME?.trim()
+const detectedGatewayName = hostname().trim()
+    || `Gateway ${gatewayNodeShortId(identity.gatewayNodeId)}`
+let gatewayProfile = await gatewayProfileStore.loadOrCreate(
+    configuredGatewayName || detectedGatewayName,
+)
+if (configuredGatewayName && gatewayProfile.gatewayName !== configuredGatewayName) {
+    gatewayProfile = await gatewayProfileStore.rename(configuredGatewayName)
+}
 const login = await loadOrLoginMatrixGateway({
     homeserver: fixture.homeserver,
     loginUser,
     deviceId: gatewayMatrixDeviceId,
-    deviceDisplayName: `${
-        process.env.MALINK_GATEWAY_NAME ?? 'Malink local Gateway'
-    } ${gatewayMatrixDeviceId}`,
+    deviceDisplayName: `${gatewayProfile.gatewayName} ${gatewayMatrixDeviceId}`,
     sessionPath: gatewaySessionPath,
     readPassword: async () => process.env.MALINK_MATRIX_GATEWAY_PASSWORD
         ?? await readPasswordFile(process.env.MALINK_MATRIX_GATEWAY_PASSWORD_FILE)
@@ -136,9 +153,6 @@ const client = new MatrixNodeSdkGatewayClient({
 }, 30_000, message => {
     process.stderr.write(`${message}\n`)
 })
-const identity = await new FileGatewayIdentityStore(
-    join(dataDirectory, 'gateway-identity.json'),
-).loadOrCreate(fixture.gatewayId)
 const registry = new FileTrustedDeviceRegistry(
     join(dataDirectory, 'trusted-devices.json'),
 )
@@ -173,7 +187,6 @@ const workspaceDirectory = new FileWorkspaceGatewayDirectory(
     join(dataDirectory, 'workspace-gateways.json'),
     identity,
 )
-const gatewayName = process.env.MALINK_GATEWAY_NAME ?? 'Malink local Gateway'
 const configuredRootRoom: MatrixGatewayRoomConfig = {
     roomId: fixture.roomId,
     conversationId: fixture.roomId,
@@ -191,7 +204,7 @@ for (const room of configuredRooms) await client.assertRoomEncrypted(room.roomId
 async function publishLocalWorkspaceDirectory(): Promise<void> {
     const rooms = await projectCatalog.list()
     await workspaceDirectory.publishLocal(
-        gatewayName,
+        gatewayProfile.gatewayName,
         currentTransport,
         Date.now(),
         rooms.map(room => ({
@@ -223,7 +236,7 @@ const invitationCoordinator = new DeviceInvitationCoordinator(
     pairingService,
     registry,
     {
-        gatewayName,
+        gatewayName: () => gatewayProfile.gatewayName,
         gatewayTransport: () => currentTransport,
         matrixLoginTokenIssuer: new FileMatrixLoginTokenIssuer({
             credentialsPath: pwaLoginPath,
@@ -260,7 +273,7 @@ let startupPairing: {
 } | null = null
 if (active.length === 0) {
     const created = await pairingService.createOffer({
-        gatewayName: process.env.MALINK_GATEWAY_NAME ?? 'Malink local Gateway',
+        gatewayName: gatewayProfile.gatewayName,
         gatewayTransport: currentTransport,
         ...(e2eStartupPairingOperations
             ? { allowedOperations: e2eStartupPairingOperations }
@@ -710,6 +723,12 @@ const workspaceControlTimer = setInterval(() => {
 const adminServer = await startGatewayAdminServer({
     socketPath: adminSocketPath,
     gatewayId: identity.gatewayId,
+    gatewayNodeId: identity.gatewayNodeId,
+    getGatewayName: () => gatewayProfile.gatewayName,
+    renameGateway: async gatewayName => {
+        gatewayProfile = await gatewayProfileStore.rename(gatewayName)
+        await synchronizeWorkspaceControl(publishLocalWorkspaceDirectory)
+    },
     coordinator: invitationCoordinator,
     pairingService,
     registry,
@@ -759,6 +778,9 @@ const adminServer = await startGatewayAdminServer({
     onLog: message => process.stdout.write(`${message}\n`),
 })
 process.stdout.write(`Gateway ready with ${trustedDevices.length} trusted device(s).\n`)
+process.stdout.write(
+    `Gateway node: ${gatewayProfile.gatewayName} · ${gatewayNodeShortId(identity.gatewayNodeId)}\n`,
+)
 if (startupPairing) {
     process.stdout.write('\nPair this Gateway from Malink:\n\n')
     process.stdout.write(await QRCode.toString(startupPairing.link, {

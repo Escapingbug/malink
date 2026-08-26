@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { canonicalGatewayProjects } from "./projectCatalog";
+import {
+  canonicalGatewayProjects,
+  gatewayNodeShortId,
+  gatewayProjectOwners,
+} from "./projectCatalog";
 
 describe("canonicalGatewayProjects", () => {
   const workspace = {
@@ -46,5 +50,25 @@ describe("canonicalGatewayProjects", () => {
       workspace,
       emptyProject,
     ]);
+  });
+
+  it("maps signed directory project routes to stable Gateway labels", () => {
+    const owners = gatewayProjectOwners([{
+      gatewayNodeId: "c7134bb0-32ee-4861-89cc-b5b6bfab2910",
+      gatewayName: "Office Mac",
+      projects: [{ projectId: "project-root" }],
+    }, {
+      gatewayNodeId: "gateway-nas-87654321",
+      gatewayName: "Home NAS",
+      projects: [{ projectId: "project-other" }],
+    }]);
+
+    expect(owners.get("project-root")).toMatchObject({
+      gatewayName: "Office Mac",
+      shortId: "BFAB2910",
+      label: "Office Mac · BFAB2910",
+    });
+    expect(owners.get("project-other")?.gatewayNodeId).toBe("gateway-nas-87654321");
+    expect(gatewayNodeShortId("gateway-nas-87654321")).toBe("87654321");
   });
 });

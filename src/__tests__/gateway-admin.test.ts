@@ -92,11 +92,12 @@ describe('Gateway local admin', () => {
     const fixture = await gatewayFixture()
     const directory = await temporaryDirectory()
     const socketPath = join(directory, 'admin.sock')
+    let gatewayName = 'Mac Gateway'
     const coordinator = new DeviceInvitationCoordinator(
       fixture.service,
       fixture.registry,
       {
-        gatewayName: 'Mac Gateway',
+        gatewayName: () => gatewayName,
         gatewayTransport,
         now: () => now,
       },
@@ -118,9 +119,15 @@ describe('Gateway local admin', () => {
       release,
       projectCount: 1,
     }))
+    const renameGateway = vi.fn(async (nextGatewayName: string) => {
+      gatewayName = nextGatewayName
+    })
     const server = await startGatewayAdminServer({
       socketPath,
       gatewayId: fixture.identity.gatewayId,
+      gatewayNodeId: fixture.identity.gatewayNodeId,
+      getGatewayName: () => gatewayName,
+      renameGateway,
       coordinator,
       pairingService: fixture.service,
       registry: fixture.registry,
@@ -135,10 +142,22 @@ describe('Gateway local admin', () => {
 
     await expect(client.status()).resolves.toMatchObject({
       version: 1,
+      gatewayId: 'gateway-one',
+      workspaceId: 'gateway-one',
+      gatewayNodeId: 'gateway-one',
+      gatewayShortId: 'TEWAYONE',
+      gatewayName: 'Mac Gateway',
       state: 'running',
       activeDeviceCount: 0,
       openInvitationCount: 0,
     })
+    await expect(client.renameGateway('Office Mac')).resolves.toEqual({
+      workspaceId: 'gateway-one',
+      gatewayNodeId: 'gateway-one',
+      gatewayShortId: 'TEWAYONE',
+      gatewayName: 'Office Mac',
+    })
+    expect(renameGateway).toHaveBeenCalledWith('Office Mac')
     await expect(client.publishNativeClientRelease(nativeRelease(42))).resolves.toMatchObject({
       changed: true,
       release: { platform: 'android', versionCode: 42 },
@@ -184,6 +203,7 @@ describe('Gateway local admin', () => {
       },
       'same-request-key-0001',
     )
+    expect(decodeDeviceInvitationLink(first.url).offer.offer.gatewayName).toBe('Office Mac')
     const retried = await client.createInvitation(
       {
         matrixLogin: 'disabled',
@@ -233,6 +253,8 @@ describe('Gateway local admin', () => {
     const server = await startGatewayAdminServer({
       socketPath,
       gatewayId: fixture.identity.gatewayId,
+      gatewayNodeId: fixture.identity.gatewayNodeId,
+      getGatewayName: () => 'Mac Gateway',
       coordinator: new DeviceInvitationCoordinator(
         fixture.service,
         fixture.registry,
@@ -303,6 +325,8 @@ describe('Gateway local admin', () => {
     const server = await startGatewayAdminServer({
       socketPath,
       gatewayId: fixture.identity.gatewayId,
+      gatewayNodeId: fixture.identity.gatewayNodeId,
+      getGatewayName: () => 'Mac Gateway',
       coordinator: new DeviceInvitationCoordinator(
         fixture.service,
         fixture.registry,
@@ -341,6 +365,8 @@ describe('Gateway local admin', () => {
     const server = await startGatewayAdminServer({
       socketPath,
       gatewayId: fixture.identity.gatewayId,
+      gatewayNodeId: fixture.identity.gatewayNodeId,
+      getGatewayName: () => 'Mac Gateway',
       coordinator: new DeviceInvitationCoordinator(
         fixture.service,
         fixture.registry,

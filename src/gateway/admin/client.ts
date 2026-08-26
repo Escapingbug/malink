@@ -5,6 +5,7 @@ import type {
   GatewayAdminDevice,
   GatewayAdminErrorBody,
   GatewayAdminInvitation,
+  GatewayAdminIdentity,
   GatewayAdminStatus,
   ReceiveWorkspaceFileRequest,
   ReceiveWorkspaceFileResponse,
@@ -14,6 +15,7 @@ import type {
   GatewayPrivilegedExecutionResponse,
   PublishNativeClientReleaseRequest,
   PublishNativeClientReleaseResponse,
+  RenameGatewayRequest,
   RevokeDeviceRequest,
 } from './types.js'
 
@@ -42,6 +44,12 @@ export class GatewayAdminClient {
 
   status(): Promise<GatewayAdminStatus> {
     return this.request('GET', '/v1/status')
+  }
+
+  renameGateway(gatewayName: string): Promise<GatewayAdminIdentity> {
+    return this.request('PUT', '/v1/profile', {
+      gatewayName,
+    } satisfies RenameGatewayRequest)
   }
 
   async devices(): Promise<GatewayAdminDevice[]> {

@@ -2,6 +2,7 @@
 
 import { FormEvent, useRef, useState } from "react";
 import { useDialogFocus } from "./dialogFocus";
+import { gatewayProjectOwner } from "./projectCatalog";
 
 export type ProjectCreationGateway = {
   gatewayNodeId: string;
@@ -37,6 +38,9 @@ function NewProjectDialogContent({ open, busy, gateways, onClose, onCreate }: Pr
   const first = gateways[0];
   const [gatewayNodeId, setGatewayNodeId] = useState(first?.gatewayNodeId ?? "");
   const selected = gateways.find(gateway => gateway.gatewayNodeId === gatewayNodeId) ?? first;
+  const selectedGateway = selected
+    ? gatewayProjectOwner(selected.gatewayNodeId, selected.gatewayName)
+    : null;
   const [name, setName] = useState("");
   const [cwd, setCwd] = useState("");
   const [provider, setProvider] = useState(first?.defaultProvider ?? "");
@@ -107,7 +111,7 @@ function NewProjectDialogContent({ open, busy, gateways, onClose, onCreate }: Pr
               >
                 {gateways.map(gateway => (
                   <option key={gateway.gatewayNodeId} value={gateway.gatewayNodeId}>
-                    {gateway.gatewayName}
+                    {gatewayProjectOwner(gateway.gatewayNodeId, gateway.gatewayName).label}
                   </option>
                 ))}
               </select>
@@ -137,7 +141,7 @@ function NewProjectDialogContent({ open, busy, gateways, onClose, onCreate }: Pr
               />
             </label>
             <p className="project-identity-note">
-              This path is resolved on {selected?.gatewayName ?? "the selected Gateway"}, even when you create the project remotely.
+              This path is resolved on {selectedGateway?.label ?? "the selected Gateway"}, even when you create the project remotely.
             </p>
             {selected && selected.providers.length > 0 && (
               <label>

@@ -3,6 +3,8 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { NewProjectDialog } from "../app/NewProjectDialog.tsx";
+import { NewSessionDialog } from "../app/NewSessionDialog.tsx";
+import { gatewayProjectOwner } from "../app/projectCatalog.ts";
 
 const gateways = [{
   gatewayNodeId: "gateway-a",
@@ -31,9 +33,48 @@ test("creates projects against an explicitly selected Gateway route", () => {
   assert.match(html, /Office Gateway/);
   assert.match(html, /NAS Gateway/);
   assert.match(html, /Working directory on this Gateway/);
-  assert.match(html, /This path is resolved on Office Gateway/);
+  assert.match(html, /Office Gateway · GATEWAYA/);
+  assert.match(html, /This path is resolved on Office Gateway · GATEWAYA/);
   assert.match(html, /Create the directory if it does not exist/);
   assert.match(html, /<button type="submit"[^>]*disabled=""[^>]*>Create project/);
+});
+
+test("shows the owning Gateway for every project session route", () => {
+  const office = gatewayProjectOwner("gateway-a", "Office Gateway");
+  const nas = gatewayProjectOwner("gateway-b", "NAS Gateway");
+  const workspaces = [{
+    projectId: "project-office",
+    projectName: "Malink",
+    cwd: "/work/malink",
+    provider: "codex",
+    permissionMode: "default",
+  }, {
+    projectId: "project-nas",
+    projectName: "Archive",
+    cwd: "/srv/archive",
+    provider: "agent",
+    permissionMode: "default",
+  }];
+  const html = renderToStaticMarkup(createElement(NewSessionDialog, {
+    open: true,
+    busy: false,
+    fallbackGateway: office,
+    projectGateways: new Map([
+      ["project-office", office],
+      ["project-nas", nas],
+    ]),
+    workspace: workspaces[1],
+    workspaces,
+    models: [],
+    providers: [],
+    extensions: [],
+    onClose() {},
+    onCreate() {},
+  }));
+
+  assert.match(html, /NAS Gateway · GATEWAYB/);
+  assert.match(html, /Malink — Office Gateway · GATEWAYA/);
+  assert.match(html, /Archive — NAS Gateway · GATEWAYB/);
 });
 
 test("blocks dismissal while a durable project command is pending", () => {

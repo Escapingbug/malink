@@ -35,6 +35,19 @@ export const revokeDeviceRequestSchema = z
 
 export type RevokeDeviceRequest = z.infer<typeof revokeDeviceRequestSchema>
 
+export const renameGatewayRequestSchema = z.object({
+  gatewayName: z.string().trim().min(1).max(128),
+}).strict()
+
+export type RenameGatewayRequest = z.infer<typeof renameGatewayRequestSchema>
+
+export interface GatewayAdminIdentity {
+  workspaceId: string
+  gatewayNodeId: string
+  gatewayShortId: string
+  gatewayName: string
+}
+
 export const receiveWorkspaceFileRequestSchema = z
   .object({
     path: z.string().min(1).max(8_192),
@@ -100,7 +113,12 @@ export interface PublishNativeClientReleaseResponse {
 
 export interface GatewayAdminStatus {
   version: 1
+  /** Compatibility alias for workspaceId. */
   gatewayId: string
+  workspaceId: string
+  gatewayNodeId: string
+  gatewayShortId: string
+  gatewayName: string
   state: string
   pid: number
   startedAt: number

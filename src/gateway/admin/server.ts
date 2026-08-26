@@ -9,6 +9,7 @@ import {
   DeviceInvitationError,
   FileTrustedDeviceRegistry,
   GatewayPairingService,
+  gatewayNodeShortId,
 } from '@/gateway/pairing'
 import {
   createInvitationRequestSchema,
@@ -16,10 +17,12 @@ import {
   sendSessionFileRequestSchema,
   gatewayPrivilegedExecutionRequestSchema,
   publishNativeClientReleaseRequestSchema,
+  renameGatewayRequestSchema,
   revokeDeviceRequestSchema,
   type GatewayAdminDevice,
   type GatewayAdminErrorBody,
   type GatewayAdminInvitation,
+  type GatewayAdminIdentity,
   type GatewayAdminStatus,
   type ReceiveWorkspaceFileRequest,
   type ReceiveWorkspaceFileResponse,
@@ -38,6 +41,9 @@ const RATE_WINDOW_MS = 60_000
 export interface GatewayAdminServerOptions {
   socketPath: string
   gatewayId: string
+  gatewayNodeId: string
+  getGatewayName: () => string
+  renameGateway?: (gatewayName: string) => Promise<void>
   coordinator: DeviceInvitationCoordinator
   pairingService: GatewayPairingService
   registry: FileTrustedDeviceRegistry
@@ -121,6 +127,26 @@ export async function startGatewayAdminServer(
 
       if (request.method === 'GET' && path === '/v1/status') {
         sendJson(response, 200, await statusResponse(options, startedAt, now()))
+        return
+      }
+      if (request.method === 'PUT' && path === '/v1/profile') {
+        if (!options.renameGateway) {
+          throw new AdminHttpError(
+            503,
+            'gateway_rename_unavailable',
+            'Gateway renaming is unavailable',
+          )
+        }
+        const data = renameGatewayRequestSchema.parse(await readJsonBody(request))
+        await options.renameGateway(data.gatewayName)
+        const identity: GatewayAdminIdentity = {
+          workspaceId: options.gatewayId,
+          gatewayNodeId: options.gatewayNodeId,
+          gatewayShortId: gatewayNodeShortId(options.gatewayNodeId),
+          gatewayName: options.getGatewayName(),
+        }
+        options.onLog?.(`[gateway-admin] renamed Gateway node ${options.gatewayNodeId}`)
+        sendJson(response, 200, identity)
         return
       }
       if (request.method === 'GET' && path === '/v1/devices') {
@@ -363,6 +389,10 @@ async function statusResponse(
   return {
     version: 1,
     gatewayId: options.gatewayId,
+    workspaceId: options.gatewayId,
+    gatewayNodeId: options.gatewayNodeId,
+    gatewayShortId: gatewayNodeShortId(options.gatewayNodeId),
+    gatewayName: options.getGatewayName(),
     state: options.getGatewayState(),
     pid: process.pid,
     startedAt,

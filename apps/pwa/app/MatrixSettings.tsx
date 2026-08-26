@@ -24,12 +24,16 @@ import {
   type ConnectionRepairReason,
 } from "./connectionPresentation";
 import type { WebPushNotificationState } from "./webPushNotifications";
-import type { GatewayEnrollmentPending } from "@malink/protocol";
+import type {
+  GatewayEnrollmentPending,
+  SignedWorkspaceGatewayDirectory,
+} from "@malink/protocol";
 import {
   GatewayEnrollmentPanel,
   type GatewayEnrollmentBusyState,
   type GeneratedGatewayEnrollment,
 } from "./GatewayEnrollmentPanel";
+import { gatewayProjectOwner } from "./projectCatalog";
 
 type Props = {
   open: boolean;
@@ -41,6 +45,7 @@ type Props = {
   pairingPreview: PairingPreview | null;
   trustedGateway: MalinkPublicTrust | null;
   savedGateways: MalinkPublicTrust[];
+  gatewayDirectory: SignedWorkspaceGatewayDirectory | null;
   pairingBusy: boolean;
   deviceInvitation: GeneratedDeviceInvitation | null;
   invitationBusy: boolean;
@@ -96,6 +101,7 @@ function MatrixSettingsDialog({
   pairingPreview,
   trustedGateway,
   savedGateways,
+  gatewayDirectory,
   repairReason,
   pairingBusy,
   deviceInvitation,
@@ -166,8 +172,17 @@ function MatrixSettingsDialog({
       config.accessToken.trim() &&
       config.roomId.trim(),
   );
-  const gatewayProfiles = savedGateways.length > 0
-    ? savedGateways
+  const directoryGatewayProfiles = (gatewayDirectory?.directory.gateways ?? []).map(
+    gateway => ({
+      gatewayId: gateway.workspaceId,
+      gatewayNodeId: gateway.gatewayNodeId,
+      gatewayName: gateway.gatewayName,
+    }),
+  );
+  const gatewayProfiles = directoryGatewayProfiles.length > 0
+    ? directoryGatewayProfiles
+    : savedGateways.length > 0
+      ? savedGateways
     : trustedGateway
       ? [trustedGateway]
       : [];
@@ -300,6 +315,10 @@ function MatrixSettingsDialog({
             <div>
               {gatewayProfiles.map((gateway) => {
                 const gatewayProfileId = gateway.gatewayNodeId ?? gateway.gatewayId;
+                const gatewayIdentity = gatewayProjectOwner(
+                  gatewayProfileId,
+                  gateway.gatewayName,
+                );
                 return (
                   <div
                     key={gatewayProfileId}
@@ -307,8 +326,10 @@ function MatrixSettingsDialog({
                   >
                     <span className="gateway-device-mark" aria-hidden="true">G</span>
                     <span>
-                      <strong>{gateway.gatewayName}</strong>
-                      <small>Online route managed by this Workspace</small>
+                      <strong>
+                        {gatewayIdentity.label}
+                      </strong>
+                      <small title={gatewayProfileId}>Stable Gateway node identity</small>
                     </span>
                     <b>✓</b>
                   </div>

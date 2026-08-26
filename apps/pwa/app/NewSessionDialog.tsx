@@ -11,8 +11,9 @@ import {
   type GatewayModelCapability,
   type GatewayWorkspaceState,
 } from "./gatewayState";
+import type { GatewayProjectOwner } from "./projectCatalog";
 
-type NewSessionInput = {
+export type NewSessionInput = {
   projectId?: string;
   scope?: "project" | "scratch";
   cwd: string;
@@ -30,7 +31,8 @@ type NewSessionInput = {
 type Props = {
   open: boolean;
   busy: boolean;
-  gatewayName: string;
+  fallbackGateway: GatewayProjectOwner;
+  projectGateways: ReadonlyMap<string, GatewayProjectOwner>;
   workspace: GatewayWorkspaceState;
   workspaces?: GatewayWorkspaceState[];
   models: GatewayModelCapability[];
@@ -54,7 +56,8 @@ export function NewSessionDialog(props: Props) {
 function NewSessionDialogContent({
   open,
   busy,
-  gatewayName,
+  fallbackGateway,
+  projectGateways,
   workspace,
   workspaces = [workspace],
   models: fallbackModels,
@@ -70,6 +73,8 @@ function NewSessionDialogContent({
   const selectedWorkspace = availableWorkspaces.find(
     candidate => candidate.projectId === projectId,
   ) ?? workspace;
+  const selectedGateway = projectGateways.get(selectedWorkspace.projectId)
+    ?? fallbackGateway;
   const models = selectedWorkspace.capabilities?.models ?? fallbackModels;
   const providers = selectedWorkspace.capabilities?.providers ?? fallbackProviders;
   const extensions = selectedWorkspace.capabilities?.sessionExtensions ?? fallbackExtensions;
@@ -191,7 +196,7 @@ function NewSessionDialogContent({
               {scope === "scratch" ? "Computer · Temporary" : "Computer · Project"}
             </span>
             <h2 id="new-session-title">Create a session</h2>
-            <p>{gatewayName}</p>
+            <p>{selectedGateway.label}</p>
           </div>
           <button
             type="button"
@@ -275,7 +280,9 @@ function NewSessionDialogContent({
                 >
                   {availableWorkspaces.map(candidate => (
                     <option key={candidate.projectId} value={candidate.projectId}>
-                      {candidate.projectName}
+                      {candidate.projectName} — {
+                        (projectGateways.get(candidate.projectId) ?? fallbackGateway).label
+                      }
                     </option>
                   ))}
                 </select>

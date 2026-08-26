@@ -191,7 +191,11 @@ import {
   summarizeProjectSessions,
   type SessionListSignal,
 } from "./sessionListOrder";
-import { canonicalGatewayProjects } from "./projectCatalog";
+import {
+  canonicalGatewayProjects,
+  gatewayProjectOwner,
+  gatewayProjectOwners,
+} from "./projectCatalog";
 import {
   EMPTY_UI_NOTICE_STATE,
   noticesForScope,
@@ -1387,14 +1391,39 @@ function MalinkAppRuntime() {
     () => gatewayState?.sessions ?? [],
     [gatewayState],
   );
+  const fallbackProjectGateway = useMemo(() => {
+    const expectedGatewayNodeId = matrixConfig.gatewayNodeId
+      ?? trustedGateway?.gatewayNodeId
+      ?? matrixConfig.gatewayId;
+    const directoryGateway = gatewayState?.gatewayDirectory?.directory.gateways.find(
+      gateway => gateway.gatewayNodeId === expectedGatewayNodeId,
+    );
+    return gatewayProjectOwner(
+      directoryGateway?.gatewayNodeId ?? expectedGatewayNodeId,
+      directoryGateway?.gatewayName ?? trustedGateway?.gatewayName ?? "Gateway",
+    );
+  }, [
+    gatewayState?.gatewayDirectory,
+    matrixConfig.gatewayId,
+    matrixConfig.gatewayNodeId,
+    trustedGateway?.gatewayName,
+    trustedGateway?.gatewayNodeId,
+  ]);
+  const projectGatewaysById = useMemo(
+    () => gatewayProjectOwners(
+      gatewayState?.gatewayDirectory?.directory.gateways ?? [],
+    ),
+    [gatewayState?.gatewayDirectory],
+  );
   const filteredSessions = useMemo(
     () =>
-      visibleGatewaySessions.filter((session) =>
-        `${session.title} ${session.projectName} ${session.cwd} ${session.provider} ${session.model ?? ""}`
+      visibleGatewaySessions.filter((session) => {
+        const owner = projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway;
+        return `${session.title} ${session.projectName} ${session.cwd} ${session.provider} ${session.model ?? ""} ${owner.gatewayName} ${owner.gatewayNodeId}`
           .toLowerCase()
-          .includes(search.toLowerCase()),
-      ),
-    [search, visibleGatewaySessions],
+          .includes(search.toLowerCase());
+      }),
+    [fallbackProjectGateway, projectGatewaysById, search, visibleGatewaySessions],
   );
   const activeFilteredSessions = filteredSessions;
   const activeSessionCount = visibleGatewaySessions.length;
@@ -1417,6 +1446,7 @@ function MalinkAppRuntime() {
         projectId: string;
         projectName: string;
         cwd: string;
+        gatewayLabel: string;
         sessions: NonNullable<typeof gatewayState>["sessions"];
       }
     >();
@@ -1424,11 +1454,13 @@ function MalinkAppRuntime() {
       if (session.scope === "scratch") continue;
       const key = gatewayProjectKey(matrixConfig.gatewayId, session.projectId);
       const project = canonicalProjectsById.get(session.projectId) ?? session;
+      const owner = projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway;
       const group = groups.get(key) ?? {
         key,
         projectId: session.projectId,
         projectName: project.projectName,
         cwd: project.cwd,
+        gatewayLabel: owner.label,
         sessions: [],
       };
       group.sessions.push(session);
@@ -1443,6 +1475,9 @@ function MalinkAppRuntime() {
             projectId: project.projectId,
             projectName: project.projectName,
             cwd: project.cwd,
+            gatewayLabel: (
+              projectGatewaysById.get(project.projectId) ?? fallbackProjectGateway
+            ).label,
             sessions: [],
           });
         }
@@ -1465,7 +1500,9 @@ function MalinkAppRuntime() {
   }, [
     activeFilteredSessions,
     canonicalProjectsById,
+    fallbackProjectGateway,
     matrixConfig.gatewayId,
+    projectGatewaysById,
     search,
     sessionReadState,
   ]);
@@ -1482,6 +1519,7 @@ function MalinkAppRuntime() {
           projectId: "scratch",
           projectName: "Temporary",
           cwd: "Isolated workspace · not linked to a project",
+          gatewayLabel: null,
           sessions: scratchSessions,
           temporary: true,
         }]
@@ -1588,6 +1626,22 @@ function MalinkAppRuntime() {
         permissionMode: selectedProjectWorkspace?.permissionMode ?? "default",
       }
     : gatewayState?.workspace;
+  const activeProjectGateway = activeWorkspace
+    ? projectGatewaysById.get(activeWorkspace.projectId) ?? fallbackProjectGateway
+    : fallbackProjectGateway;
+  const workspaceGatewayCount = gatewayState?.gatewayDirectory?.directory.gateways.length
+    ?? (trustedGateway ? 1 : 0);
+  const onlyWorkspaceGateway = gatewayState?.gatewayDirectory?.directory.gateways[0];
+  const workspaceGatewayTitle = workspaceGatewayCount > 1
+    ? `${workspaceGatewayCount} Gateways`
+    : onlyWorkspaceGateway
+      ? gatewayProjectOwner(
+          onlyWorkspaceGateway.gatewayNodeId,
+          onlyWorkspaceGateway.gatewayName,
+        ).label
+      : trustedGateway
+        ? fallbackProjectGateway.label
+      : "Connect a computer";
   const activeCapabilities = activeWorkspace?.capabilities ?? gatewayState?.capabilities;
   const canCreateAnySession = (gatewayState?.projects ?? (gatewayState ? [gatewayState.workspace] : []))
     .some(project => (project.capabilities ?? gatewayState?.capabilities)?.canCreateSession);
@@ -1624,7 +1678,7 @@ function MalinkAppRuntime() {
     const capabilities = gatewayState.workspace.capabilities ?? gatewayState.capabilities;
     return [{
       gatewayNodeId,
-      gatewayName: trustedGateway?.gatewayName ?? "Gateway",
+      gatewayName: fallbackProjectGateway.gatewayName,
       targetProjectId: gatewayState.workspace.projectId,
       providers: capabilities.providers.map(provider => ({
         id: provider.id,
@@ -1632,7 +1686,13 @@ function MalinkAppRuntime() {
       })),
       defaultProvider: gatewayState.workspace.provider,
     }];
-  }, [gatewayState, matrixConfig.gatewayId, matrixConfig.gatewayNodeId, trustedGateway]);
+  }, [
+    fallbackProjectGateway.gatewayName,
+    gatewayState,
+    matrixConfig.gatewayId,
+    matrixConfig.gatewayNodeId,
+    trustedGateway,
+  ]);
   const providerHistoryWorkspace = gatewayState?.projects?.find(
     project => project.projectId === providerHistoryProjectId,
   ) ?? gatewayState?.workspace;
@@ -6473,7 +6533,7 @@ function MalinkAppRuntime() {
           <span className="gateway-icon">G</span>
           <div>
             <strong>
-              {trustedGateway?.gatewayName || "Connect a computer"}
+              {workspaceGatewayTitle}
             </strong>
             <span className="gateway-status-copy">
               <span
@@ -6577,7 +6637,11 @@ function MalinkAppRuntime() {
                 </span>
                 <span className="project-copy">
                   <strong>{project.projectName}</strong>
-                  <small>{project.cwd}</small>
+                  <small>
+                    {project.temporary
+                      ? project.cwd
+                      : `${project.gatewayLabel} · ${project.cwd}`}
+                  </small>
                 </span>
                 <span className="project-indicators" aria-hidden="true">
                   {projectSummary.failed > 0 && (
@@ -7334,10 +7398,10 @@ function MalinkAppRuntime() {
             <div className="context-item">
               <span className="context-icon">▱</span>
               <span>
-                <small>Project · Computer</small>
+                <small>Project · Gateway</small>
                 <b title={activeWorkspace?.cwd}>
                   {activeWorkspace?.projectName || "Syncing conversations…"}
-                  {trustedGateway ? ` · ${trustedGateway.gatewayName}` : ""}
+                  {activeProjectGateway ? ` · ${activeProjectGateway.label}` : ""}
                 </b>
               </span>
             </div>
@@ -7763,7 +7827,8 @@ function MalinkAppRuntime() {
         <NewSessionDialog
           open={newSessionOpen}
           busy={newSessionBusy}
-          gatewayName={trustedGateway?.gatewayName || "Gateway"}
+          fallbackGateway={fallbackProjectGateway}
+          projectGateways={projectGatewaysById}
           workspace={activeWorkspace ?? gatewayState.workspace}
           workspaces={gatewayState.projects ?? [gatewayState.workspace]}
           models={gatewayState.capabilities.models}
@@ -7818,6 +7883,7 @@ function MalinkAppRuntime() {
         pairingPreview={pairingPreview}
         trustedGateway={trustedGateway}
         savedGateways={savedGateways}
+        gatewayDirectory={gatewayState?.gatewayDirectory ?? null}
         pairingBusy={pairingBusy}
         deviceInvitation={deviceInvitation}
         invitationBusy={invitationBusy}
@@ -7892,7 +7958,7 @@ function MalinkAppRuntime() {
 
       <GatewayForgetDialog
         open={forgetDialogOpen}
-        gatewayName={trustedGateway?.gatewayName ?? null}
+        gatewayName={trustedGateway ? workspaceGatewayTitle : null}
         busy={false}
         onClose={() => setForgetDialogOpen(false)}
         onConfirm={() => {
@@ -7909,7 +7975,7 @@ function MalinkAppRuntime() {
         open={privilegeTotpEnrollment !== null}
         busy={privilegeTotpBusy}
         error={privilegeTotpError}
-        gatewayName={trustedGateway?.gatewayName ?? "this computer"}
+        gatewayName={trustedGateway ? activeProjectGateway.label : "this computer"}
         onClose={() => {
           if (privilegeTotpBusy) return;
           setPrivilegeTotpEnrollment(null);

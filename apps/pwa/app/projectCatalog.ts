@@ -4,6 +4,48 @@ export type GatewayProjectSource = {
   cwd: string;
 };
 
+export type GatewayProjectOwner = {
+  gatewayNodeId: string;
+  gatewayName: string;
+  shortId: string;
+  label: string;
+};
+
+type GatewayDirectorySource = {
+  gatewayNodeId: string;
+  gatewayName: string;
+  projects?: readonly { projectId: string }[];
+};
+
+export function gatewayProjectOwners(
+  gateways: readonly GatewayDirectorySource[],
+): Map<string, GatewayProjectOwner> {
+  const owners = new Map<string, GatewayProjectOwner>();
+  for (const gateway of gateways) {
+    const owner = gatewayProjectOwner(gateway.gatewayNodeId, gateway.gatewayName);
+    for (const project of gateway.projects ?? []) owners.set(project.projectId, owner);
+  }
+  return owners;
+}
+
+export function gatewayProjectOwner(
+  gatewayNodeId: string,
+  gatewayName: string,
+): GatewayProjectOwner {
+  const shortId = gatewayNodeShortId(gatewayNodeId);
+  return {
+    gatewayNodeId,
+    gatewayName,
+    shortId,
+    label: `${gatewayName} · ${shortId}`,
+  };
+}
+
+export function gatewayNodeShortId(gatewayNodeId: string): string {
+  const compact = gatewayNodeId.replace(/[^A-Za-z0-9]/gu, "");
+  return (compact || gatewayNodeId || "gateway").slice(-8).toUpperCase();
+}
+
 /**
  * A project is identified by its Gateway project ID (which is derived from
  * the working directory), not by a freely-entered display name. Build one

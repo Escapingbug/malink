@@ -28,6 +28,13 @@ Consequently a client is paired once with the Workspace, receives one portable
 device grant, and manages every project route in the signed Gateway Directory
 at the same time without pairing again.
 
+Each node also has a durable, user-editable `gatewayName`. New installations
+default that name to the machine hostname, while the UI appends a stable short
+form of `gatewayNodeId` so duplicate hostnames remain distinguishable. The
+signed Gateway Directory is the authority for the mapping from every project
+ID to its owning node. Clients derive project labels from that mapping instead
+of treating the Gateway used for initial pairing as a globally active node.
+
 Android does not contain or run a Gateway. “Multiple Gateways on Android” means
 that one native Matrix account session subscribes to every authorized project
 room and routes each command to the Gateway node that owns that project. Browser

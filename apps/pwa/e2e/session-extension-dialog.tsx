@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { NewSessionDialog, type NewSessionInput } from '../app/NewSessionDialog'
+import { gatewayProjectOwner } from '../app/projectCatalog'
 import '../app/globals.css'
 
 const extension = {
@@ -28,13 +29,14 @@ const extension = {
 function Harness() {
   const [open, setOpen] = useState(true)
   const [submission, setSubmission] = useState<NewSessionInput | null>(null)
+  const gateway = gatewayProjectOwner('gateway-e2e', 'Gateway simulator')
   return (
     <>
       <NewSessionDialog
         open={open}
         busy={false}
-        gatewayId="gateway-e2e"
-        gatewayName="Gateway simulator"
+        fallbackGateway={gateway}
+        projectGateways={new Map([['project-e2e', gateway]])}
         workspace={{
           projectId: 'project-e2e',
           projectName: 'Metapp E2E',
@@ -42,8 +44,8 @@ function Harness() {
           provider: 'simulated-agent',
           permissionMode: 'default',
         }}
-        sessions={[]}
         models={[]}
+        providers={[]}
         extensions={[extension]}
         onClose={() => setOpen(false)}
         onCreate={(input) => {
