@@ -36,6 +36,10 @@ import {
     type PrivilegedExecutionInput,
     type PrivilegedExecutionResult,
 } from '@/privilege'
+import {
+    MCP_RUNTIME_FILE_DELIVERY_HANDLED,
+    MCP_RUNTIME_FILE_DELIVERY_UNAVAILABLE,
+} from './mcpFileDelivery'
 
 export type SemanticRuntimeState = 'idle' | 'querying' | 'canceling' | 'finalizing' | 'dead'
 
@@ -225,6 +229,20 @@ export class SemanticSessionRuntime {
 
         if (input.kind === 'command' && input.name === 'progress') {
             return this.handleProgressCommand()
+        }
+
+        // MCP tools execute while the Agent turn owns the normal session
+        // mailbox. Queueing send_file behind that turn would deadlock: the
+        // Agent is waiting for the MCP result while the mailbox is waiting for
+        // the Agent to finish. File delivery is an output-side operation, so it
+        // has its own immediate runtime path just like progress and privilege.
+        if (
+            input.kind === 'command'
+            && input.name === 'send_file'
+            && input.source === 'mcp'
+            && this.isActiveTurnState()
+        ) {
+            return this.handleSendFileCommand(input.args)
         }
 
         let queuedUserInput: QueuedUserInput | null = null
@@ -506,7 +524,7 @@ export class SemanticSessionRuntime {
                 if (providerEvent.kind === 'tool_use') {
                     this.lastToolName = providerEvent.toolName
                 }
-                if (await this.handleMalinkSendFileIdentityFallback(providerEvent)) {
+                if (await this.handleMalinkSendFileRouting(providerEvent)) {
                     continue
                 }
                 const semanticEvents = this.adapter.toConversationEvents(providerEvent, {
@@ -1277,7 +1295,7 @@ export class SemanticSessionRuntime {
         }
     }
 
-    private async handleMalinkSendFileIdentityFallback(event: AgentEvent): Promise<boolean> {
+    private async handleMalinkSendFileRouting(event: AgentEvent): Promise<boolean> {
         if (event.kind === 'tool_use') {
             const request = extractMalinkSendFileRequest(event.input)
             if (!request || !event.toolUseId) return false
@@ -1291,13 +1309,20 @@ export class SemanticSessionRuntime {
         if (!args) return false
         this.pendingMalinkSendFileCalls.delete(event.toolUseId)
 
-        if (event.isError && isSessionIdentityUnavailableOutput(event.output)) {
-            this.log(`[session] MCP send_file lacked session identity; routing through runtime session id=${this.config.sessionId.slice(0, 8)}`)
+        if (event.output.includes(MCP_RUNTIME_FILE_DELIVERY_HANDLED)) {
+            return true
+        }
+
+        if (isRuntimeFileDeliveryUnavailableOutput(event.output)) {
+            this.log(`[session] MCP send_file route unavailable; routing through runtime session id=${this.config.sessionId.slice(0, 8)}`)
             await this.handleSendFileCommand(args)
             return true
         }
 
-        return false
+        // send_file has its own attachment/error message. Suppress the MCP
+        // transport transcript so the client does not render a second orphaned
+        // tool result next to the delivered file.
+        return true
     }
 
     private formatFileReadMessage(id: string, path: string, content: string): ChannelMessage {
@@ -1751,8 +1776,12 @@ function extractMalinkSendFileRequest(input: unknown): { path: string; caption?:
     }
 }
 
-function isSessionIdentityUnavailableOutput(output: string): boolean {
-    return output.toLowerCase().includes('session identity not available yet')
+function isRuntimeFileDeliveryUnavailableOutput(output: string): boolean {
+    const normalized = output.toLowerCase()
+    return normalized.includes(MCP_RUNTIME_FILE_DELIVERY_UNAVAILABLE)
+        || normalized.includes('session identity not available yet')
+        || normalized.includes('daemon api not available')
+        || normalized.includes('failed to connect to daemon')
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

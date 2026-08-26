@@ -1,5 +1,5 @@
 import { registerContextResources, registerContextTools } from './resources'
-import { registerNotifyTools } from './tools/notify'
+import { registerNotifyTools, registerSendFileTool } from './tools/notify'
 import { registerSessionTools, type SessionToolContext } from './tools/session'
 import { registerPrivilegeTools } from './tools/privilege'
 
@@ -15,6 +15,8 @@ export function registerMalinkMcpSurface(server: any, options: MalinkMcpRegistra
     const includeNotifyTools = options.includeNotifyTools ?? hasSessionIdentity()
     if (includeNotifyTools) {
         registerNotifyTools(server)
+    } else if (options.includeNotifyTools === undefined) {
+        registerSendFileTool(server)
     }
 
     if (options.sessionTools) {

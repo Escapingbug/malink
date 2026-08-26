@@ -13,6 +13,7 @@ import {
 import {
   createInvitationRequestSchema,
   receiveWorkspaceFileRequestSchema,
+  sendSessionFileRequestSchema,
   gatewayPrivilegedExecutionRequestSchema,
   publishNativeClientReleaseRequestSchema,
   revokeDeviceRequestSchema,
@@ -22,6 +23,8 @@ import {
   type GatewayAdminStatus,
   type ReceiveWorkspaceFileRequest,
   type ReceiveWorkspaceFileResponse,
+  type SendSessionFileRequest,
+  type SendSessionFileResponse,
   type GatewayPrivilegedExecutionRequest,
   type GatewayPrivilegedExecutionResponse,
   type PublishNativeClientReleaseRequest,
@@ -48,6 +51,9 @@ export interface GatewayAdminServerOptions {
   receiveWorkspaceFile?: (
     input: ReceiveWorkspaceFileRequest & { requestId: string },
   ) => Promise<ReceiveWorkspaceFileResponse>
+  sendSessionFile?: (
+    input: SendSessionFileRequest,
+  ) => Promise<SendSessionFileResponse>
   onPrivilegedExecution?: (
     request: GatewayPrivilegedExecutionRequest,
   ) => Promise<GatewayPrivilegedExecutionResponse>
@@ -159,6 +165,22 @@ export async function startGatewayAdminServer(
           `[gateway-admin] accepted workspace inbox file ${result.fileId} ${result.delivery}`,
         )
         sendJson(response, 201, result)
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/session-files') {
+        if (!options.sendSessionFile) {
+          throw new AdminHttpError(
+            503,
+            'session_file_delivery_unavailable',
+            'Session file delivery is unavailable',
+          )
+        }
+        const data = sendSessionFileRequestSchema.parse(await readJsonBody(request))
+        const result = await options.sendSessionFile(data)
+        options.onLog?.(
+          `[gateway-admin] session file ${data.sessionId} ${result.status}`,
+        )
+        sendJson(response, 200, result)
         return
       }
       if (request.method === 'POST' && path === '/v1/privileged-executions') {

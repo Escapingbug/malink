@@ -44,6 +44,8 @@ function createProvider(): AgentProvider {
 
 describe('MCP active surface registration', () => {
     beforeEach(() => {
+        delete process.env.MALINK_SESSION_ID
+        delete process.env.MALINK_GATEWAY_ADMIN_SOCKET
         existsSync.mockReturnValue(true)
         readFileSync.mockReturnValue('3737')
         process.env.MALINK_CONVERSATION_ID = 'provider-session-1'
@@ -65,6 +67,8 @@ describe('MCP active surface registration', () => {
         vi.unstubAllGlobals()
         vi.restoreAllMocks()
         delete process.env.MALINK_CONVERSATION_ID
+        delete process.env.MALINK_SESSION_ID
+        delete process.env.MALINK_GATEWAY_ADMIN_SOCKET
     })
 
     it('registers active stdio resources and tools through one surface', async () => {
@@ -122,7 +126,7 @@ describe('MCP active surface registration', () => {
         }))
     })
 
-    it('registers only context tools when session identity is unavailable', () => {
+    it('registers first-turn file delivery while other notify tools wait for provider identity', async () => {
         delete process.env.MALINK_CONVERSATION_ID
         const { server, tools, resources } = createServerRecorder()
 
@@ -134,10 +138,14 @@ describe('MCP active surface registration', () => {
         expect(tools.has('list_reminders')).toBe(false)
         expect(tools.has('cancel_reminder')).toBe(false)
         expect(tools.has('send_message')).toBe(false)
-        expect(tools.has('send_file')).toBe(false)
+        expect(tools.has('send_file')).toBe(true)
         expect(tools.has('get_delivery_status')).toBe(false)
         expect(tools.has('retry_delivery')).toBe(false)
         expect(tools.has('list_sessions')).toBe(false)
+
+        const result = await tools.get('send_file')!({ path: '/repo/first-turn.png', type: 'image' })
+        expect(result).toMatchObject({ isError: true })
+        expect(result.content[0].text).toContain('Session identity not available yet')
     })
 
     it('adds session tools only when daemon session context is supplied', () => {
@@ -162,5 +170,15 @@ describe('MCP active surface registration', () => {
         expect(tools.has('list_sessions')).toBe(true)
         expect(tools.has('switch_session')).toBe(true)
         expect(tools.has('get_malink_status')).toBe(true)
+    })
+
+    it('allows embedders to disable every notify tool explicitly', () => {
+        const { server, tools } = createServerRecorder()
+
+        registerMalinkMcpSurface(server, { includeNotifyTools: false })
+
+        expect(tools.has('get_malink_context')).toBe(true)
+        expect(tools.has('send_file')).toBe(false)
+        expect(tools.has('send_message')).toBe(false)
     })
 })

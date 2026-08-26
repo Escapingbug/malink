@@ -1,32 +1,31 @@
 /**
  * MCP Notify Tools — schedule_reminder, cancel_reminder, send_message, send_file
  * 
- * These tools allow the agent to proactively schedule reminders and
- * send messages. They communicate with the daemon process via HTTP
- * (the DaemonApi), since the MCP server runs as a separate subprocess.
- *
- * Session identity is provided via the MALINK_CONVERSATION_ID
- * environment variable, injected by the AcpProvider during loadSession
- * or resumeSession. The flow is:
- *   1. newSession with base MCP config (no sessionId) → get sessionId
- *   2. resumeSession/loadSession with full MCP config + MALINK_CONVERSATION_ID env
- *   3. Agent calls MCP tools → subprocess reads env → passes sessionId to daemon API
+ * These tools allow the agent to proactively schedule reminders and send
+ * messages. Reminder and message identity is provided via
+ * MALINK_CONVERSATION_ID and uses the legacy daemon API. File delivery instead
+ * uses MALINK_SESSION_ID plus the Gateway owner socket, so it is available on
+ * the first turn and routes directly to SemanticSessionRuntime.
  *
  * Some agents (e.g. Cursor's `agent` CLI) don't support resumeSession, and their
  * loadSession only works after the session has been persisted (i.e. after at least
  * one prompt completes). For those agents, the flow is:
- *   1. newSession with base MCP config → get sessionId
- *   2. Skip Phase 2 → prompt directly (session-scoped tools unavailable on first turn)
+ *   1. newSession with base MCP config → get sessionId; send_file is available
+ *   2. Skip Phase 2 → prompt directly (other session-scoped tools are unavailable)
  *   3. After prompt completes → loadSession with full MCP config
  *   4. On next turn, session-scoped tools are available
- * If a session-scoped tool is called before the session identity is available,
- * it returns an error asking the user to retry on the next message.
+ * Other session-scoped tools remain unavailable until provider identity exists.
  */
 
 import { z } from 'zod'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { readFileSync, existsSync } from 'node:fs'
+import { GatewayAdminClient } from '@/gateway/admin/client'
+import {
+    MCP_RUNTIME_FILE_DELIVERY_HANDLED,
+    MCP_RUNTIME_FILE_DELIVERY_UNAVAILABLE,
+} from '@/runtime/mcpFileDelivery'
 
 /** Read the daemon API port from the well-known file */
 function getDaemonApiPort(): number | null {
@@ -323,8 +322,41 @@ interface SendFileApiResponse {
     }
 }
 
-export function createSendFileHandler() {
-    return async (args: { path: string; caption?: string; filename?: string; type?: SendFileType; language?: string }) => {
+interface McpTextToolResult {
+    isError?: boolean
+    content: Array<{ type: 'text'; text: string }>
+}
+
+export function createSendFileHandler(): (
+    args: { path: string; caption?: string; filename?: string; type?: SendFileType; language?: string },
+) => Promise<McpTextToolResult> {
+    return async (args) => {
+        const runtimeSessionId = process.env.MALINK_SESSION_ID?.trim()
+        if (runtimeSessionId) {
+            const socketPath = process.env.MALINK_GATEWAY_ADMIN_SOCKET?.trim()
+            if (socketPath) {
+                try {
+                    const result = await new GatewayAdminClient({ socketPath }).sendSessionFile({
+                        sessionId: runtimeSessionId,
+                        path: args.path,
+                        ...(args.caption ? { caption: args.caption } : {}),
+                        ...(args.filename ? { filename: args.filename } : {}),
+                        ...(args.type ? { type: args.type } : {}),
+                        ...(args.language ? { language: args.language } : {}),
+                    })
+                    return formatRuntimeSendFileResult(args.path, result)
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error)
+                    return runtimeFileDeliveryFallback(
+                        `Gateway-local delivery was unavailable (${message}); the active session runtime will complete the request.`,
+                    )
+                }
+            }
+            return runtimeFileDeliveryFallback(
+                'Gateway-local delivery is not configured; the active session runtime will complete the request.',
+            )
+        }
+
         const apiPort = getDaemonApiPort()
         if (!apiPort) {
             return {
@@ -393,6 +425,42 @@ export function createSendFileHandler() {
                 content: [{ type: 'text' as const, text: `Failed to connect to daemon: ${msg}` }],
             }
         }
+    }
+}
+
+function formatRuntimeSendFileResult(
+    path: string,
+    result: NonNullable<Awaited<ReturnType<GatewayAdminClient['sendSessionFile']>>>,
+): McpTextToolResult {
+    const marker = MCP_RUNTIME_FILE_DELIVERY_HANDLED
+    if (result.status === 'queued') {
+        return {
+            content: [{
+                type: 'text' as const,
+                text: `${marker}\nFile delivery queued: "${path}"${result.deliveryId ? ` (delivery ID: ${result.deliveryId})` : ''}.`,
+            }],
+        }
+    }
+    if (result.status === 'failed') {
+        return {
+            isError: true,
+            content: [{
+                type: 'text' as const,
+                text: `${marker}\nSend file failed: ${result.message ?? 'unknown error'}`,
+            }],
+        }
+    }
+    return {
+        content: [{ type: 'text' as const, text: `${marker}\nFile delivered: "${path}"` }],
+    }
+}
+
+function runtimeFileDeliveryFallback(message: string): McpTextToolResult {
+    return {
+        content: [{
+            type: 'text' as const,
+            text: `${MCP_RUNTIME_FILE_DELIVERY_UNAVAILABLE}\n${message}`,
+        }],
     }
 }
 
@@ -594,18 +662,7 @@ export function registerNotifyTools(server: any): void {
         createSendMessageHandler(),
     )
 
-    server.tool(
-        'send_file',
-        'Send an immediate file attachment to the user via the channel. The path must be readable and inside the session working directory or an allowed Malink directory.',
-        {
-            path: z.string().describe('Local file path to send as an attachment'),
-            caption: z.string().optional().describe('Optional caption to send with the file'),
-            filename: z.string().optional().describe('Optional display filename for the attachment'),
-            type: z.enum(['document', 'file', 'markdown', 'code', 'image']).optional().describe('How to send the file: document/file sends the raw file, markdown renders markdown text, code renders a fenced code block, image sends as a Telegram photo'),
-            language: z.string().optional().describe('Optional language tag for code rendering'),
-        },
-        createSendFileHandler(),
-    )
+    registerSendFileTool(server)
 
     server.tool(
         'get_delivery_status',
@@ -624,5 +681,25 @@ export function registerNotifyTools(server: any): void {
             deliveryId: z.string().describe('Delivery ID to retry, such as delivery-123.'),
         },
         createRetryDeliveryHandler(),
+    )
+}
+
+/**
+ * File delivery is available from the first Agent turn because it can route by
+ * the stable Malink session ID. The other notify tools still require a provider
+ * conversation ID and remain part of registerNotifyTools.
+ */
+export function registerSendFileTool(server: any): void {
+    server.tool(
+        'send_file',
+        'Send an immediate file attachment to the user via the channel. The path must be readable and inside the session working directory or an allowed Malink directory.',
+        {
+            path: z.string().describe('Local file path to send as an attachment'),
+            caption: z.string().optional().describe('Optional caption to send with the file'),
+            filename: z.string().optional().describe('Optional display filename for the attachment'),
+            type: z.enum(['document', 'file', 'markdown', 'code', 'image']).optional().describe('How to send the file: document/file sends the raw file, markdown renders markdown text, code renders a fenced code block, image sends an image attachment that clients can preview'),
+            language: z.string().optional().describe('Optional language tag for code rendering'),
+        },
+        createSendFileHandler(),
     )
 }

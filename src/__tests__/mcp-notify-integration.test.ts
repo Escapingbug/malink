@@ -8,6 +8,8 @@ import {
     createSendFileHandler,
     createSendMessageHandler,
 } from '@/mcp/tools/notify'
+import { GatewayAdminClient } from '@/gateway/admin/client'
+import { MCP_RUNTIME_FILE_DELIVERY_HANDLED } from '@/runtime/mcpFileDelivery'
 
 const existsSync = vi.fn()
 const readFileSync = vi.fn()
@@ -20,6 +22,8 @@ vi.mock('node:fs', () => ({
 
 describe('MCP notify tool integration with daemon API', () => {
     beforeEach(() => {
+        delete process.env.MALINK_SESSION_ID
+        delete process.env.MALINK_GATEWAY_ADMIN_SOCKET
         existsSync.mockReturnValue(true)
         readFileSync.mockReturnValue('3737')
         process.env.MALINK_CONVERSATION_ID = 'provider-session-1'
@@ -41,6 +45,8 @@ describe('MCP notify tool integration with daemon API', () => {
         vi.unstubAllGlobals()
         vi.restoreAllMocks()
         delete process.env.MALINK_CONVERSATION_ID
+        delete process.env.MALINK_SESSION_ID
+        delete process.env.MALINK_GATEWAY_ADMIN_SOCKET
     })
 
     it('schedule_reminder posts a session-scoped schedule request to daemon API', async () => {
@@ -90,6 +96,40 @@ describe('MCP notify tool integration with daemon API', () => {
                 type: 'markdown',
             }),
         }))
+    })
+
+    it('send_file uses the stable Malink session route on the first turn', async () => {
+        delete process.env.MALINK_CONVERSATION_ID
+        process.env.MALINK_SESSION_ID = 'malink-session-1'
+        process.env.MALINK_GATEWAY_ADMIN_SOCKET = '/tmp/malink-admin.sock'
+        const sendSessionFile = vi.spyOn(GatewayAdminClient.prototype, 'sendSessionFile')
+            .mockResolvedValue({
+                status: 'queued',
+                deliveryId: 'delivery-matrix-1',
+                path: '/repo/image.png',
+                filename: 'image.png',
+                type: 'image',
+            })
+        const handler = createSendFileHandler()
+
+        const result = await handler({
+            path: '/repo/image.png',
+            caption: 'Generated image',
+            filename: 'image.png',
+            type: 'image',
+        })
+
+        expect(result.isError).toBeUndefined()
+        expect(result.content[0].text).toContain(MCP_RUNTIME_FILE_DELIVERY_HANDLED)
+        expect(result.content[0].text).toContain('delivery-matrix-1')
+        expect(sendSessionFile).toHaveBeenCalledWith({
+            sessionId: 'malink-session-1',
+            path: '/repo/image.png',
+            caption: 'Generated image',
+            filename: 'image.png',
+            type: 'image',
+        })
+        expect(fetch).not.toHaveBeenCalled()
     })
 
     it('get_delivery_status posts a session-scoped delivery status request to daemon API', async () => {

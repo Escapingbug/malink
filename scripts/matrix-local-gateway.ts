@@ -742,6 +742,10 @@ const adminServer = await startGatewayAdminServer({
         if (!runner) throw new Error('Gateway runtime is unavailable')
         return runner.receiveWorkspaceFile(input)
     },
+    sendSessionFile: async ({ sessionId, ...input }) => {
+        if (!runner) throw new Error('Gateway runtime is unavailable')
+        return runner.sendSessionFile(sessionId, input)
+    },
     publishNativeClientRelease: async release => {
         if (!runner) throw new Error('Gateway runtime is unavailable')
         return runner.publishNativeClientRelease(release)

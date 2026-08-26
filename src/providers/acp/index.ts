@@ -244,20 +244,23 @@ function isMissingToolName(toolName: string | undefined): boolean {
  * Build the malink MCP server config for ACP mcpServers.
  *
  * Two variants:
- * - Base config (no sessionId): used for session/new, where sessionId doesn't exist yet.
- *   Registers context resources/tools only — no notify tools that require session identity.
+ * - Base config (no provider sessionId): used for session/new. Registers context
+ *   resources/tools and send_file, which routes by the stable Malink session ID.
+ *   Other notify tools still require provider session identity.
  * - Full config (with sessionId): used for session/load or session/resume, where sessionId is known.
  *   Injects MALINK_CONVERSATION_ID into env so MCP subprocess can identify its session.
- *   Registers all tools including notify tools (schedule_reminder, cancel_reminder, send_message).
+ *   Registers all tools including the remaining notify tools
+ *   (schedule_reminder, cancel_reminder, send_message).
  *
  * Note: Some agents (e.g. Cursor's `agent` CLI) don't support session/resume, and their
  * session/load only works on persisted sessions (i.e. after at least one prompt completes).
  * For such agents, the flow is:
- *   1. newSession with base MCP config → get sessionId
+ *   1. newSession with base MCP config → get sessionId; send_file is available
  *   2. Skip Phase 2 (no resume/load) → prompt directly
  *   3. After prompt completes, attempt loadSession with full MCP config
  *   4. If loadSession succeeds, MCP tools with session identity become available on next turn
- *   If loadSession fails, the session continues without session-scoped MCP tools.
+ *   If loadSession fails, send_file remains available but the other
+ *   session-scoped MCP tools are unavailable.
  */
 function buildMalinkMcpBaseConfig(config?: AgentQueryConfig): Array<{
     type: 'stdio'

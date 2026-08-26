@@ -243,7 +243,9 @@ AES-256-GCM key before upload and signs the `mxc://` locator, key, IV, hashes,
 name, MIME type, and bounded size inside the application event. The Gateway
 downloads only signed descriptors, enforces limits, authenticates/decrypts the
 bytes, and converts supported media to ACP rich content. Explicit `send_file`
-is the only Agent-to-client local-file delivery authority.
+is the only Agent-to-client local-file delivery authority. Its MCP entry is
+available from the first turn and routes by the fixed Malink session ID through
+the owner-only Gateway socket into the owning `SemanticSessionRuntime`.
 
 ## Delivery and recovery ownership
 

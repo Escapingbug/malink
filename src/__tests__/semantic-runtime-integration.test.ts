@@ -10,6 +10,7 @@ import type { AgentEvent } from '@/providers/types'
 import type { AgentProvider, AgentQueryConfig, AgentQueryHandle } from '@/providers/provider'
 import type { ChannelMessage, ChannelPort, DecisionRequest, DecisionResponse, SessionStatus } from '@/bridge/channelPort'
 import { registerProvider } from '@/providers/registry'
+import { MCP_RUNTIME_FILE_DELIVERY_UNAVAILABLE } from '@/runtime/mcpFileDelivery'
 
 function delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms))
@@ -1134,7 +1135,7 @@ describe('Semantic runtime integration chain', () => {
         }
     })
 
-    it('routes malink MCP send_file through the runtime when the MCP subprocess lacks session identity', async () => {
+    it('routes malink MCP send_file through the runtime when the direct route is unavailable', async () => {
         const tempDir = mkdtempSync(join(tmpdir(), 'malink-send-file-identity-'))
         try {
             const apkPath = join(tempDir, 'app-release.apk')
@@ -1159,8 +1160,8 @@ describe('Semantic runtime integration chain', () => {
                 {
                     kind: 'tool_result',
                     toolUseId: 'send-file-1',
-                    output: 'Session identity not available yet. Send_file requires a session context.',
-                    isError: true,
+                    output: `${MCP_RUNTIME_FILE_DELIVERY_UNAVAILABLE}\nThe active runtime will complete the request.`,
+                    isError: false,
                 },
                 { kind: 'result', status: 'success' },
             ])
@@ -1183,10 +1184,68 @@ describe('Semantic runtime integration chain', () => {
                     attachments: [{ type: 'document', path: realpathSync(apkPath), filename: 'falapk-release.apk' }],
                 }),
             ])
-            expect(channel.sent.map(message => message.text).join('\n')).not.toContain('Session identity not available yet')
+            expect(channel.sent.map(message => message.text).join('\n')).not.toContain(MCP_RUNTIME_FILE_DELIVERY_UNAVAILABLE)
             expect(runtime.journal.list()).toEqual(expect.arrayContaining([
                 expect.objectContaining({ kind: 'command_result', command: 'send_file' }),
             ]))
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true })
+        }
+    })
+
+    it('delivers MCP files immediately while the Agent turn owns the mailbox', async () => {
+        const tempDir = mkdtempSync(join(tmpdir(), 'malink-send-file-active-turn-'))
+        try {
+            const imagePath = join(tempDir, 'generated.png')
+            writeFileSync(imagePath, 'png bytes', 'utf8')
+            let releaseTurn!: () => void
+            let markTurnStarted!: () => void
+            const turnStarted = new Promise<void>(resolve => { markTurnStarted = resolve })
+            const turnRelease = new Promise<void>(resolve => { releaseTurn = resolve })
+            const provider = createProvider([], {
+                startQuery: vi.fn((): AgentQueryHandle => ({
+                    events: (async function* () {
+                        markTurnStarted()
+                        await turnRelease
+                        yield { kind: 'result', status: 'success' } satisfies AgentEvent
+                    })(),
+                    interrupt: vi.fn(),
+                })),
+            })
+            const channel = createChannel()
+            const runtime = new SemanticSessionRuntime({
+                sessionId: 'session-1',
+                cwd: tempDir,
+                provider,
+                providerName: 'mock-acp',
+                channelPort: channel,
+            })
+            const activeTurn = runtime.dispatch({ kind: 'user_message', text: 'generate image', source: 'channel' })
+            await turnStarted
+
+            const result = await Promise.race([
+                runtime.dispatch({
+                    kind: 'command',
+                    name: 'send_file',
+                    args: JSON.stringify({ path: imagePath, type: 'image' }),
+                    source: 'mcp',
+                }),
+                delay(250).then(() => 'timed-out'),
+            ])
+
+            expect(result).toMatchObject({ status: 'queued', type: 'image' })
+            expect(channel.sent).toEqual([
+                expect.objectContaining({
+                    text: 'generated.png',
+                    attachments: [{
+                        type: 'photo',
+                        path: realpathSync(imagePath),
+                        filename: 'generated.png',
+                    }],
+                }),
+            ])
+            releaseTurn()
+            await activeTurn
         } finally {
             rmSync(tempDir, { recursive: true, force: true })
         }

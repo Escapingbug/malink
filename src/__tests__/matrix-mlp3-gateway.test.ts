@@ -195,6 +195,8 @@ describe('MatrixMlp3GatewayRunner', () => {
     }
     const blocked = deferred<void>()
     const dispatched: Array<{ sessionId: string; text: string }> = []
+    const generatedImagePath = join(directory, 'generated-image.png')
+    await writeFile(generatedImagePath, 'generated image bytes', 'utf8')
     const sessionExtensions = new Map<string, readonly { id: string }[]>()
     const sessionCwds = new Map<string, string>()
     const rejected: unknown[] = []
@@ -304,6 +306,29 @@ describe('MatrixMlp3GatewayRunner', () => {
                 format: 'markdown',
                 replyMarkup: { idempotencyKey: `reply-${session.id}-${input.text}` },
               })
+            }
+            if (input.kind === 'command' && input.name === 'send_file') {
+              const request = JSON.parse(input.args ?? '{}') as {
+                path: string
+                filename?: string
+                caption?: string
+                type?: string
+              }
+              await port.send({
+                text: request.caption ?? request.filename ?? 'attachment',
+                format: 'plain',
+                attachments: [{
+                  type: request.type === 'image' ? 'photo' : 'document',
+                  path: request.path,
+                  filename: request.filename,
+                }],
+              })
+              return {
+                status: 'sent' as const,
+                path: request.path,
+                filename: request.filename,
+                type: request.type,
+              }
             }
           },
           async destroy() { dead = true },
@@ -561,6 +586,26 @@ describe('MatrixMlp3GatewayRunner', () => {
       id: 'prefix-transform',
       config: { prefix: 'SAFE:' },
     }])
+    await expect(runner.sendSessionFile('session-a', {
+      path: generatedImagePath,
+      filename: 'generated-image.png',
+      caption: 'Generated image',
+      type: 'image',
+    })).resolves.toMatchObject({ status: 'sent', type: 'image' })
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.payload.type === 'assistant.message'
+        && event.payload.body === 'Generated image'))
+    const generatedImageEvent = (await events(client, activeKey.key, roomId, projectId))
+      .find(event => event.payload.type === 'assistant.message'
+        && event.payload.body === 'Generated image')
+    expect(generatedImageEvent?.payload).toMatchObject({
+      type: 'assistant.message',
+      body: 'Generated image',
+      attachments: [{
+        name: 'generated-image.png',
+        mimeType: 'image/png',
+      }],
+    })
     await send({
       ...base,
       commandId: 'provider-list-managed',

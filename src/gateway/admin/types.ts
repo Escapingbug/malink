@@ -54,6 +54,30 @@ export interface ReceiveWorkspaceFileResponse {
   delivery: 'delivered' | 'queued'
 }
 
+export const sendSessionFileRequestSchema = z
+  .object({
+    sessionId: z.string().min(1).max(256),
+    path: z.string().min(1).max(8_192),
+    filename: z.string().min(1).max(512).optional(),
+    caption: z.string().max(8_192).optional(),
+    type: z.enum(['document', 'file', 'markdown', 'code', 'image']).optional(),
+    language: z.string().min(1).max(128).optional(),
+  })
+  .strict()
+
+export type SendSessionFileRequest = z.infer<
+  typeof sendSessionFileRequestSchema
+>
+
+export interface SendSessionFileResponse {
+  status: 'queued' | 'sent' | 'failed'
+  deliveryId?: string
+  path?: string
+  filename?: string
+  type?: string
+  message?: string
+}
+
 export const gatewayPrivilegedExecutionRequestSchema = privilegedExecutionInputSchema
   .extend({ sessionId: z.string().min(1).max(256) })
   .strict()

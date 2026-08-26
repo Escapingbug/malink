@@ -106,6 +106,13 @@ describe('Gateway local admin', () => {
       eventId: 'workspace-file-event-1',
       delivery: 'delivered' as const,
     }))
+    const sendSessionFile = vi.fn(async () => ({
+      status: 'queued' as const,
+      deliveryId: 'delivery-session-1',
+      path: '/tmp/session-image.png',
+      filename: 'session-image.png',
+      type: 'image',
+    }))
     const publishNativeClientRelease = vi.fn(async (release: ReturnType<typeof nativeRelease>) => ({
       changed: true,
       release,
@@ -119,6 +126,7 @@ describe('Gateway local admin', () => {
       registry: fixture.registry,
       getGatewayState: () => 'running',
       receiveWorkspaceFile,
+      sendSessionFile,
       publishNativeClientRelease,
       now: () => now,
     })
@@ -150,6 +158,21 @@ describe('Gateway local admin', () => {
       delivery: 'delivered',
     })
     expect(receiveWorkspaceFile).toHaveBeenCalledOnce()
+    await expect(client.sendSessionFile({
+      sessionId: 'session-1',
+      path: '/tmp/session-image.png',
+      caption: 'Generated image',
+      type: 'image',
+    })).resolves.toMatchObject({
+      status: 'queued',
+      deliveryId: 'delivery-session-1',
+    })
+    expect(sendSessionFile).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      path: '/tmp/session-image.png',
+      caption: 'Generated image',
+      type: 'image',
+    })
     await expect(client.sendFile(
       { path: '/tmp/other.pdf' },
       'workspace-file-key-0001',

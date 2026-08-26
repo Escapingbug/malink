@@ -8,6 +8,8 @@ import type {
   GatewayAdminStatus,
   ReceiveWorkspaceFileRequest,
   ReceiveWorkspaceFileResponse,
+  SendSessionFileRequest,
+  SendSessionFileResponse,
   GatewayPrivilegedExecutionRequest,
   GatewayPrivilegedExecutionResponse,
   PublishNativeClientReleaseRequest,
@@ -92,6 +94,12 @@ export class GatewayAdminClient {
       input,
       { 'idempotency-key': idempotencyKey },
     )
+  }
+
+  sendSessionFile(
+    input: SendSessionFileRequest,
+  ): Promise<SendSessionFileResponse> {
+    return this.request('POST', '/v1/session-files', input)
   }
 
   privilegedExecution(

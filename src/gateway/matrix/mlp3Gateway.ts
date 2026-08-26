@@ -61,6 +61,7 @@ import type {
   PrivilegedExecutionInput,
   PrivilegedExecutionResult,
 } from '@/privilege'
+import type { SendFileCommandResult } from '@/runtime/semanticSessionRuntime'
 import {
   FileGatewayWebPushService,
   type GatewayWebPushService,
@@ -152,6 +153,14 @@ export interface WorkspaceInboxFileResult {
   fileId: string
   eventId: string
   delivery: 'delivered' | 'queued'
+}
+
+export interface SessionFileDeliveryInput {
+  path: string
+  filename?: string
+  caption?: string
+  type?: 'document' | 'file' | 'markdown' | 'code' | 'image'
+  language?: string
 }
 
 export interface PublishNativeClientReleaseResult {
@@ -393,6 +402,27 @@ export class MatrixMlp3GatewayRunner {
         throw new Error('This session does not support privileged execution')
       }
       return await runtime.session.requestPrivilegedExecution(input)
+    }
+    throw new Error(`Unknown active Malink session ${sessionId}`)
+  }
+
+  async sendSessionFile(
+    sessionId: string,
+    input: SessionFileDeliveryInput,
+  ): Promise<SendFileCommandResult> {
+    for (const project of this.projects.values()) {
+      const runtime = project.sessions.get(sessionId)
+      if (!runtime) continue
+      const result = await runtime.session.dispatch({
+        kind: 'command',
+        name: 'send_file',
+        args: JSON.stringify(input),
+        source: 'mcp',
+      })
+      if (!isSendFileCommandResult(result)) {
+        throw new Error('Session runtime returned an invalid file delivery result')
+      }
+      return result
     }
     throw new Error(`Unknown active Malink session ${sessionId}`)
   }
@@ -2020,6 +2050,12 @@ export class MatrixMlp3GatewayRunner {
   private log(message: string): void {
     this.dependencies.onLog?.(message)
   }
+}
+
+function isSendFileCommandResult(value: unknown): value is SendFileCommandResult {
+  if (!value || typeof value !== 'object') return false
+  const status = (value as { status?: unknown }).status
+  return status === 'queued' || status === 'sent' || status === 'failed'
 }
 
 function projection(
