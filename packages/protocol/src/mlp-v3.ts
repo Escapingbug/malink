@@ -89,8 +89,14 @@ export const providerSessionEntrySchema = z
     updatedAt: timestamp,
     cwd: z.string().min(1).max(8_192).optional(),
     managedSessionId: opaqueId.optional(),
+    latestArchivedSessionId: opaqueId.optional(),
+    lastArchivedAt: timestamp.optional(),
   })
   .strict()
+  .refine(
+    value => (value.latestArchivedSessionId === undefined) === (value.lastArchivedAt === undefined),
+    { message: 'Archived Malink session identity and timestamp must be published together' },
+  )
 
 export type ProviderSessionEntry = z.infer<typeof providerSessionEntrySchema>
 
@@ -725,9 +731,15 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       providerSessionId: opaqueId,
       title: z.string().min(1).max(512),
       managedSessionId: opaqueId.optional(),
+      latestArchivedSessionId: opaqueId.optional(),
+      lastArchivedAt: timestamp.optional(),
       messages: z.array(providerHistoryMessageSchema).max(256),
     })
     .strict()
+    .refine(
+      value => (value.latestArchivedSessionId === undefined) === (value.lastArchivedAt === undefined),
+      { message: 'Archived Malink session identity and timestamp must be published together' },
+    )
     .refine(value => JSON.stringify(value.messages).length <= 96 * 1024, {
       message: 'Provider session history is too large',
     }),

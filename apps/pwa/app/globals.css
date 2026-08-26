@@ -5849,7 +5849,47 @@ select:focus-visible {
   background: #fafafe;
 }
 
-.provider-history-body > aside > button {
+.provider-history-session-group {
+  display: grid;
+  gap: 3px;
+}
+
+.provider-history-session-group + .provider-history-session-group {
+  margin-top: 11px;
+  padding-top: 9px;
+  border-top: 1px solid #e7e9f0;
+}
+
+.provider-history-session-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 7px 5px;
+}
+
+.provider-history-session-group > header h3 {
+  margin: 0;
+  color: #687185;
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.provider-history-session-group > header span {
+  display: grid;
+  min-width: 19px;
+  height: 19px;
+  place-items: center;
+  border-radius: 999px;
+  background: #eceef4;
+  color: #7b8395;
+  font-size: 8px;
+  font-weight: 760;
+}
+
+.provider-history-session-group > button {
   display: grid;
   width: 100%;
   gap: 4px;
@@ -5859,12 +5899,16 @@ select:focus-visible {
   text-align: left;
 }
 
-.provider-history-body > aside > button:hover,
-.provider-history-body > aside > button.selected {
+.provider-history-session-group > button:hover,
+.provider-history-session-group > button.selected {
   background: #eeecfb;
 }
 
-.provider-history-body > aside strong {
+.provider-history-session-group.is-archived > button {
+  border-left: 2px solid #b08bdf;
+}
+
+.provider-history-session-group > button strong {
   overflow: hidden;
   color: #343a4c;
   font-size: 11px;
@@ -5872,9 +5916,39 @@ select:focus-visible {
   white-space: nowrap;
 }
 
-.provider-history-body > aside small {
+.provider-history-session-group > button small {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
   color: #858d9f;
   font-size: 9px;
+}
+
+.provider-history-session-group > button time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-history-session-badge {
+  flex: none;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: #eceef4;
+  color: #747d90;
+  font-size: 8px;
+  font-weight: 720;
+}
+
+.provider-history-session-badge.is-archived {
+  background: #f0e9f8;
+  color: #73519e;
+}
+
+.provider-history-session-badge.is-active {
+  background: #e4f3ee;
+  color: #28745f;
 }
 
 .provider-history-preview {

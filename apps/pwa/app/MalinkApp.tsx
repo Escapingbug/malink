@@ -61,6 +61,7 @@ import {
   type ProjectCreationGateway,
 } from "./NewProjectDialog";
 import { ProviderHistoryDialog } from "./ProviderHistoryDialog";
+import { findRecentlyArchivedProviderSession } from "./providerHistorySessions";
 import { GatewayForgetDialog } from "./GatewayForgetDialog";
 import { PrivilegeTotpDialog } from "./PrivilegeTotpDialog";
 import {
@@ -340,6 +341,12 @@ type ProviderHistoryPendingCommand = {
   provider: string;
   kind: "sessions" | "session";
   providerSessionId?: string;
+};
+
+type ProviderHistoryFocus = {
+  projectId: string;
+  provider: string;
+  archivedSessionId: string;
 };
 
 type FeedReturnAnchor = {
@@ -1216,6 +1223,7 @@ function MalinkAppRuntime() {
   const providerHistoryLoadRef = useRef<ProviderHistoryLoadState | null>(null);
   const providerHistoryLoadIdRef = useRef(0);
   const providerHistoryLoadedProviderRef = useRef<string | null>(null);
+  const providerHistoryFocusRef = useRef<ProviderHistoryFocus | null>(null);
   const providerHistoryPendingCommandRef =
     useRef<ProviderHistoryPendingCommand | null>(null);
   const deviceInvitationLifecycleRef = useRef(
@@ -5034,6 +5042,7 @@ function MalinkAppRuntime() {
     };
     providerHistoryLoadRef.current = load;
     setProviderHistoryLoad(load);
+    let focusedSession: ProviderSessionEntry | null = null;
     try {
       const sent = await sendOrRecoverProviderHistoryCommand(
         load,
@@ -5053,6 +5062,18 @@ function MalinkAppRuntime() {
       if (providerHistoryLoadRef.current?.id === load.id) {
         providerHistoryLoadedProviderRef.current = providerKey;
         setProviderHistorySessions(sessions);
+        const focus = providerHistoryFocusRef.current;
+        if (focus?.projectId === projectId && focus.provider === provider) {
+          focusedSession = findRecentlyArchivedProviderSession(
+            sessions,
+            focus.archivedSessionId,
+          );
+          if (focusedSession) {
+            providerHistoryFocusRef.current = null;
+            setProviderHistorySelected(focusedSession);
+            setProviderHistoryMessages([]);
+          }
+        }
       }
     } catch (error) {
       if (providerHistoryLoadRef.current?.id === load.id) {
@@ -5063,6 +5084,9 @@ function MalinkAppRuntime() {
         providerHistoryLoadRef.current = null;
         setProviderHistoryLoad(null);
       }
+    }
+    if (focusedSession) {
+      await inspectProviderHistorySession(focusedSession);
     }
   }
 
@@ -5564,7 +5588,21 @@ function MalinkAppRuntime() {
   }
 
   async function archiveSession(sessionId: string) {
-    await runSessionLifecycle("archive", sessionId);
+    const session = gatewayState?.sessions.find(candidate => candidate.id === sessionId);
+    await runSessionLifecycle("archive", sessionId, () => {
+      if (!session) return;
+      providerHistoryFocusRef.current = {
+        projectId: session.projectId,
+        provider: session.provider,
+        archivedSessionId: session.id,
+      };
+      if (
+        providerHistoryProjectIdRef.current === session.projectId
+        && providerHistoryProviderRef.current === session.provider
+      ) {
+        providerHistoryLoadedProviderRef.current = null;
+      }
+    });
   }
 
   function selectAttachments(event: ChangeEvent<HTMLInputElement>) {

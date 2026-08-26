@@ -12,6 +12,7 @@ import {
   type MatrixGatewayCapabilities,
   type NativeClientRelease,
   type ProviderCommand,
+  type ProviderSessionEntry,
   type GatewayEnrollmentPending,
 } from '@malink/protocol'
 import {
@@ -1211,17 +1212,17 @@ export class MatrixMlp3GatewayRunner {
       }
       const listed = (await provider.listSessions(project.project.cwd)).slice(0, 256)
       const sessions = listed.map(entry => {
-        const managed = project.project.sessions.find(session =>
-          session.lifecycle === 'active'
-          && session.provider === command.payload.provider
-          && session.providerSessionId === entry.sessionId
+        const relation = providerSessionMalinkRelation(
+          project.project.sessions,
+          command.payload.provider,
+          entry.sessionId,
         )
         return {
           sessionId: entry.sessionId,
           title: entry.title.trim() || 'Untitled provider session',
           updatedAt: Math.max(0, Math.trunc(entry.updated)),
           ...(entry.cwd ? { cwd: entry.cwd } : {}),
-          ...(managed ? { managedSessionId: managed.id } : {}),
+          ...relation,
         }
       })
       const payload = {
@@ -1257,17 +1258,17 @@ export class MatrixMlp3GatewayRunner {
         command.payload.providerSessionId,
         project.project.cwd,
       )
-      const managed = project.project.sessions.find(session =>
-        session.lifecycle === 'active'
-        && session.provider === command.payload.provider
-        && session.providerSessionId === command.payload.providerSessionId
+      const relation = providerSessionMalinkRelation(
+        project.project.sessions,
+        command.payload.provider,
+        command.payload.providerSessionId,
       )
       const payload = {
         type: 'provider.session.inspected' as const,
         provider: command.payload.provider,
         providerSessionId: command.payload.providerSessionId,
         title: history.title.trim() || 'Provider session',
-        ...(managed ? { managedSessionId: managed.id } : {}),
+        ...relation,
         messages: limitProviderHistoryMessages(history.messages),
       }
       await this.settleAndDeliver(
@@ -2129,6 +2130,34 @@ function limitProviderHistoryMessages(
     bytes += nextBytes
   }
   return result
+}
+
+function providerSessionMalinkRelation(
+  sessions: readonly PersistedMlp3Session[],
+  provider: string,
+  providerSessionId: string,
+): Pick<
+  ProviderSessionEntry,
+  'managedSessionId' | 'latestArchivedSessionId' | 'lastArchivedAt'
+> {
+  const related = sessions.filter(session =>
+    session.provider === provider
+    && session.providerSessionId === providerSessionId
+    && session.lifecycle !== 'deleted'
+  )
+  const managed = related.find(session => session.lifecycle === 'active')
+  const archived = related
+    .filter(session => session.lifecycle === 'archived')
+    .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))[0]
+  return {
+    ...(managed ? { managedSessionId: managed.id } : {}),
+    ...(archived
+      ? {
+          latestArchivedSessionId: archived.id,
+          lastArchivedAt: archived.updatedAt,
+        }
+      : {}),
+  }
 }
 
 function validateReasoningEffort(

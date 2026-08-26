@@ -3,6 +3,7 @@ import {
   mlp3CommandSchema,
   mlp3EventSchema,
   mlp3ProjectKeyGrantPlaintextSchema,
+  providerSessionEntrySchema,
 } from '../src/mlp-v3.js'
 import { matrixGatewayCapabilitiesSchema } from '../src/matrix-native.js'
 
@@ -159,9 +160,30 @@ describe('Malink Protocol v3 (MLP/3)', () => {
         provider: 'codex',
         providerSessionId: 'provider-session-1',
         title: 'Earlier work',
+        latestArchivedSessionId: 'session-archived-1',
+        lastArchivedAt: 1,
         messages: [{ id: 'message-1', role: 'user', text: 'Earlier prompt' }],
       },
     }).payload).toMatchObject({ type: 'provider.session.inspected' })
+  })
+
+  it('publishes archived Malink relations as an identity and timestamp pair', () => {
+    expect(providerSessionEntrySchema.parse({
+      sessionId: 'provider-session-1',
+      title: 'Earlier work',
+      updatedAt: 1,
+      latestArchivedSessionId: 'session-archived-1',
+      lastArchivedAt: 2,
+    })).toMatchObject({
+      latestArchivedSessionId: 'session-archived-1',
+      lastArchivedAt: 2,
+    })
+    expect(() => providerSessionEntrySchema.parse({
+      sessionId: 'provider-session-1',
+      title: 'Earlier work',
+      updatedAt: 1,
+      latestArchivedSessionId: 'session-archived-1',
+    })).toThrow('Archived Malink session identity and timestamp must be published together')
   })
 
   it('requires the exact business address instead of a global revision', () => {

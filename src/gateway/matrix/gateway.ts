@@ -1268,12 +1268,28 @@ export class MatrixGatewayRunner {
                                 candidate.record.provider === providerName
                                 && candidate.record.providerSessionId === entry.sessionId
                             )
+                            const archived = [...runtime.archivedSessions.values()]
+                                .filter(candidate =>
+                                    candidate.provider === providerName
+                                    && candidate.providerSessionId === entry.sessionId
+                                    && candidate.archivedAt !== null
+                                )
+                                .sort((left, right) =>
+                                    (right.archivedAt ?? 0) - (left.archivedAt ?? 0)
+                                    || left.id.localeCompare(right.id)
+                                )[0]
                             return {
                                 sessionId: entry.sessionId,
                                 title: entry.title.trim() || 'Untitled provider session',
                                 updatedAt: Math.max(0, Math.trunc(entry.updated)),
                                 ...(entry.cwd ? { cwd: entry.cwd } : {}),
                                 ...(managed ? { managedSessionId: managed.record.id } : {}),
+                                ...(archived
+                                    ? {
+                                        latestArchivedSessionId: archived.id,
+                                        lastArchivedAt: archived.archivedAt!,
+                                    }
+                                    : {}),
                             }
                         })
                     return {
@@ -1298,6 +1314,20 @@ export class MatrixGatewayRunner {
                         providerSessionId,
                         runtime.workspace.cwd,
                     )
+                    const managed = [...runtime.appSessions.values()].find(candidate =>
+                        candidate.record.provider === providerName
+                        && candidate.record.providerSessionId === providerSessionId
+                    )
+                    const archived = [...runtime.archivedSessions.values()]
+                        .filter(candidate =>
+                            candidate.provider === providerName
+                            && candidate.providerSessionId === providerSessionId
+                            && candidate.archivedAt !== null
+                        )
+                        .sort((left, right) =>
+                            (right.archivedAt ?? 0) - (left.archivedAt ?? 0)
+                            || left.id.localeCompare(right.id)
+                        )[0]
                     return {
                         sessionId: null,
                         result: {
@@ -1305,6 +1335,13 @@ export class MatrixGatewayRunner {
                             provider: providerName,
                             providerSessionId,
                             title: history.title.trim() || 'Provider session',
+                            ...(managed ? { managedSessionId: managed.record.id } : {}),
+                            ...(archived
+                                ? {
+                                    latestArchivedSessionId: archived.id,
+                                    lastArchivedAt: archived.archivedAt!,
+                                }
+                                : {}),
                             messages: limitLegacyProviderHistoryMessages(history.messages),
                         },
                     }

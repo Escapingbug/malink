@@ -7,6 +7,11 @@ import type {
 } from "@malink/protocol";
 import { MarkdownContent } from "./MarkdownContent";
 import { useDialogFocus } from "./dialogFocus";
+import {
+  groupProviderHistorySessions,
+  providerHistorySessionKind,
+  providerHistorySessionTimestamp,
+} from "./providerHistorySessions";
 
 type ProviderOption = {
   id: string;
@@ -58,6 +63,7 @@ function ProviderHistoryDialogContent({
   const draft = draftState.key === draftKey ? draftState.text : "";
   const dialogRef = useRef<HTMLElement>(null);
   const providerRef = useRef<HTMLSelectElement>(null);
+  const sessionGroups = groupProviderHistorySessions(sessions);
   useDialogFocus({
     open,
     containerRef: dialogRef,
@@ -123,20 +129,37 @@ function ProviderHistoryDialogContent({
 
         <div className="provider-history-body">
           <aside aria-label="Provider session list">
-            {sessions.map(session => (
-              <button
-                type="button"
-                key={session.sessionId}
-                className={selected?.sessionId === session.sessionId ? "selected" : ""}
-                onClick={() => onInspect(session)}
-                disabled={loading !== null}
-              >
-                <strong>{session.title}</strong>
-                <small>
-                  {session.managedSessionId ? "Open in Malink" : "Provider session"}
-                  {session.updatedAt ? ` · ${new Date(session.updatedAt).toLocaleString()}` : ""}
-                </small>
-              </button>
+            {sessionGroups.map(group => (
+              <section className={`provider-history-session-group is-${group.id}`} key={group.id}>
+                <header>
+                  <h3>{group.label}</h3>
+                  <span>{group.sessions.length}</span>
+                </header>
+                {group.sessions.map(session => {
+                  const kind = providerHistorySessionKind(session);
+                  const timestamp = providerHistorySessionTimestamp(session);
+                  const status = kind === "archived"
+                    ? "Archived"
+                    : kind === "active"
+                      ? "Current in Malink"
+                      : "Provider-only";
+                  return (
+                    <button
+                      type="button"
+                      key={session.sessionId}
+                      className={selected?.sessionId === session.sessionId ? "selected" : ""}
+                      onClick={() => onInspect(session)}
+                      disabled={loading !== null}
+                    >
+                      <strong>{session.title}</strong>
+                      <small>
+                        <span className={`provider-history-session-badge is-${kind}`}>{status}</span>
+                        {timestamp > 0 && <time>{new Date(timestamp).toLocaleString()}</time>}
+                      </small>
+                    </button>
+                  );
+                })}
+              </section>
             ))}
             {loading === "sessions" && sessions.length === 0 && (
               <p className="provider-history-empty">Loading provider sessions…</p>
@@ -161,7 +184,14 @@ function ProviderHistoryDialogContent({
                 <header>
                   <div>
                     <strong>{selected.title}</strong>
-                    <small>{selected.cwd || provider}</small>
+                    <small>
+                      {providerHistorySessionKind(selected) === "archived"
+                        ? "Archived from Malink"
+                        : providerHistorySessionKind(selected) === "active"
+                          ? "Current in Malink"
+                          : "Provider-only"}
+                      {` · ${selected.cwd || provider}`}
+                    </small>
                   </div>
                   {selected.managedSessionId && (
                     <button type="button" onClick={() => onOpenManaged(selected.managedSessionId!)}>
@@ -189,7 +219,9 @@ function ProviderHistoryDialogContent({
                       rows={2}
                     />
                     <button type="submit" disabled={!draft.trim() || loading === "session"}>
-                      Continue in Malink
+                      {selected.latestArchivedSessionId
+                        ? "Continue as new Malink session"
+                        : "Continue in Malink"}
                     </button>
                   </form>
                 )}

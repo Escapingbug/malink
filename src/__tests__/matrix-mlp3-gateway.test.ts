@@ -746,7 +746,13 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
       event.causationCommandId === 'provider-list-after-archive'
       && event.payload.type === 'provider.sessions.listed'
-    )?.payload).toMatchObject({ sessions: [{ sessionId: 'provider-session-1' }] })
+    )?.payload).toMatchObject({
+      sessions: [{
+        sessionId: 'provider-session-1',
+        latestArchivedSessionId: 'session-a',
+        lastArchivedAt: expect.any(Number),
+      }],
+    })
     expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
       event.causationCommandId === 'provider-list-after-archive'
       && event.payload.type === 'provider.sessions.listed'
