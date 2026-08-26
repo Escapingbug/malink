@@ -157,6 +157,27 @@ function MatrixSettingsDialog({
       config.accessToken.trim() &&
       config.roomId.trim(),
   );
+  const gatewayProfiles = savedGateways.length > 0
+    ? savedGateways
+    : trustedGateway
+      ? [trustedGateway]
+      : [];
+  const showGatewayManagement =
+    hasSavedConnection || gatewayProfiles.length > 0;
+  const gatewayManagementReady =
+    Boolean(trustedGateway) &&
+    status === "connected" &&
+    !repairRequired &&
+    !pairingPreview;
+  const gatewayManagementDetail = !trustedGateway
+    ? "Loading the current Gateway authorization…"
+    : pairingPreview
+      ? "Finish the current connection setup before adding another Gateway"
+      : repairRequired
+        ? "Repair the current connection before adding another Gateway"
+        : status !== "connected"
+          ? "Reconnect the current Gateway before adding another Gateway"
+          : `${gatewayProfiles.length} available to every authorized client`;
   const recoveryPlan = deriveConnectionRecoveryPlan({
     status,
     detail: connectionDetail,
@@ -245,16 +266,16 @@ function MatrixSettingsDialog({
           </p>
         </div>
 
-        {savedGateways.length > 0 && !pairingPreview && !repairRequired && (
-          <section className="gateway-profile-list" aria-label="Saved computers">
+        {showGatewayManagement && (
+          <section className="gateway-profile-list" aria-label="Workspace Gateways">
             <header>
               <span>
                 <strong>Workspace Gateways</strong>
-                <small>{savedGateways.length} available to every authorized client</small>
+                <small>{gatewayManagementDetail}</small>
               </span>
               <button
                 type="button"
-                disabled={busy}
+                disabled={busy || !gatewayManagementReady}
                 onClick={() => setAddingGateway((current) => !current)}
               >
                 {addingGateway
@@ -265,7 +286,7 @@ function MatrixSettingsDialog({
               </button>
             </header>
             <div>
-              {savedGateways.map((gateway) => {
+              {gatewayProfiles.map((gateway) => {
                 const gatewayProfileId = gateway.gatewayNodeId ?? gateway.gatewayId;
                 return (
                   <div
@@ -281,6 +302,16 @@ function MatrixSettingsDialog({
                   </div>
                 );
               })}
+              {gatewayProfiles.length === 0 && (
+                <div className="active" aria-live="polite">
+                  <span className="gateway-device-mark" aria-hidden="true">G</span>
+                  <span>
+                    <strong>Current Gateway</strong>
+                    <small>Loading its saved profile…</small>
+                  </span>
+                  <b>…</b>
+                </div>
+              )}
             </div>
           </section>
         )}

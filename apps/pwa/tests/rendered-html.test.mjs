@@ -859,6 +859,20 @@ test("pairs a Gateway without exposing Matrix fingerprints and signs strict comm
   assert.match(app, /readGatewayUiCache\(window\.localStorage, config\)/);
   assert.match(app, /writeGatewayUiCache\(/);
   assert.match(app, /clearGatewayUiCache\(window\.localStorage\)/);
+  assert.match(settings, /const showGatewayManagement =/);
+  assert.match(
+    settings,
+    /hasSavedConnection \|\| gatewayProfiles\.length > 0/,
+  );
+  assert.match(
+    settings,
+    /savedGateways\.length > 0[\s\S]{0,120}\? \[trustedGateway\]/,
+  );
+  assert.match(settings, /Loading the current Gateway authorization/);
+  assert.doesNotMatch(
+    settings,
+    /savedGateways\.length > 0 && !pairingPreview && !repairRequired/,
+  );
   assert.match(
     app,
     /operation: "gateway\.enrollment\.invite"[\s\S]{0,200}autoRetryRevisionConflict: true/,
