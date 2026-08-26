@@ -14,11 +14,24 @@ import {
 import {
   FileGatewayEnrollmentCoordinator,
   FileGatewayIdentityStore,
+  GATEWAY_ENROLLMENT_APPROVAL_LIFETIME_MS,
   createGatewayJoinInvitation,
   decodeGatewayEnrollmentInvitationLink,
+  gatewayEnrollmentApprovalDeadline,
 } from '@/gateway/pairing'
 
 describe('Gateway enrollment rendezvous', () => {
+  it('keeps a bounded approval recovery window after setup-link expiry', () => {
+    const invitationExpiresAt = 1_800_000_000_000
+
+    expect(gatewayEnrollmentApprovalDeadline(invitationExpiresAt)).toBe(
+      invitationExpiresAt + GATEWAY_ENROLLMENT_APPROVAL_LIFETIME_MS,
+    )
+    expect(() => gatewayEnrollmentApprovalDeadline(Number.MAX_SAFE_INTEGER)).toThrow(
+      /expiry is invalid/u,
+    )
+  })
+
   it('requires client approval before releasing the Workspace grant', async () => {
     const now = 1_800_000_000_000
     const directory = await mkdtemp(join(tmpdir(), 'malink-gateway-enrollment-'))
@@ -68,13 +81,21 @@ describe('Gateway enrollment rendezvous', () => {
       verificationCode: await gatewayEnrollmentVerificationCode(request.request),
     })
 
-    const bearer = createGatewayJoinInvitation(identity, undefined, now + 2, 60_000)
+    const bearer = createGatewayJoinInvitation(
+      identity,
+      undefined,
+      now + 2,
+      GATEWAY_ENROLLMENT_APPROVAL_LIFETIME_MS,
+    )
     const approved = await coordinator.approve(
       invitation.enrollmentId,
       bearer.link,
       now + 2,
     )
     expect(JSON.stringify(approved.response)).not.toContain('workspaceKeyPair')
+    expect(approved.response.expiresAt).toBe(
+      now + 2 + GATEWAY_ENROLLMENT_APPROVAL_LIFETIME_MS,
+    )
     const opened = await openSecureEnvelope(approved.response.sealedInvitation, {
       recipientPrivateKey: requestKeys.privateKey,
       senderPublicKey: identity.keys.publicKey,
@@ -88,10 +109,23 @@ describe('Gateway enrollment rendezvous', () => {
         recipientKeyId: requestKeys.keyId,
       },
       replayStore: new InMemoryReplayStore(),
-      now: now + 3,
+      now: created.expiresAt + 1,
     })
     expect(opened.plaintext).toEqual({ kind: 'gateway_join', link: bearer.link })
-    expect(await coordinator.pending(now + 3)).toEqual([])
+    expect(await coordinator.pending(created.expiresAt + 1)).toEqual([
+      expect.objectContaining({
+        enrollmentId: invitation.enrollmentId,
+        gatewayNodeId,
+        expiresAt: approved.response.expiresAt,
+      }),
+    ])
+    const repeated = await coordinator.approve(
+      invitation.enrollmentId,
+      'unused-after-idempotent-approval',
+      created.expiresAt + 1,
+    )
+    expect(repeated.response).toEqual(approved.response)
+    expect(await coordinator.pending(approved.response.expiresAt)).toEqual([])
   })
 
   it('rejects a request that does not carry the invitation challenge', async () => {

@@ -1036,6 +1036,28 @@ function MalinkAppRuntime() {
   } | null>(null);
   const [gatewayEnrollmentBusy, setGatewayEnrollmentBusy] = useState(false);
   const [gatewayEnrollmentError, setGatewayEnrollmentError] = useState<string | null>(null);
+  const [approvedGatewayEnrollmentIds, setApprovedGatewayEnrollmentIds] =
+    useState<Set<string>>(() => new Set());
+  const pendingGatewayEnrollments = useMemo(() => {
+    const joinedGatewayNodeIds = new Set(
+      gatewayState?.gatewayDirectory?.directory.gateways.map(
+        (gateway) => gateway.gatewayNodeId,
+      ) ?? [],
+    );
+    return (gatewayState?.pendingGatewayEnrollments ?? []).filter(
+      (enrollment) => !joinedGatewayNodeIds.has(enrollment.gatewayNodeId),
+    );
+  }, [gatewayState?.gatewayDirectory, gatewayState?.pendingGatewayEnrollments]);
+  const visibleApprovedGatewayEnrollmentIds = useMemo(() => {
+    const visibleEnrollmentIds = new Set(
+      pendingGatewayEnrollments.map((enrollment) => enrollment.enrollmentId),
+    );
+    return new Set(
+      [...approvedGatewayEnrollmentIds].filter(
+        (enrollmentId) => visibleEnrollmentIds.has(enrollmentId),
+      ),
+    );
+  }, [approvedGatewayEnrollmentIds, pendingGatewayEnrollments]);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [providerHistoryOpen, setProviderHistoryOpen] = useState(false);
   const [providerHistoryProjectId, setProviderHistoryProjectId] = useState("");
@@ -4042,7 +4064,7 @@ function MalinkAppRuntime() {
     try {
       const sent = await sendRealCommand({
         operation: "gateway.enrollment.invite",
-        lifetimeMs: 5 * 60_000,
+        lifetimeMs: 10 * 60_000,
       }, undefined, {
         autoRetryRevisionConflict: true,
         propagateFailure: true,
@@ -4116,6 +4138,11 @@ function MalinkAppRuntime() {
         );
       }
       setGatewayEnrollmentInvitation(null);
+      setApprovedGatewayEnrollmentIds((current) => {
+        const next = new Set(current);
+        next.add(enrollmentId);
+        return next;
+      });
       showUiNotice(
         `gateway-enrollment:${enrollmentId}`,
         "connection",
@@ -7489,7 +7516,8 @@ function MalinkAppRuntime() {
         invitationError={invitationError}
         invitationReauthRequired={invitationReauthRequired}
         gatewayEnrollmentInvitation={gatewayEnrollmentInvitation}
-        pendingGatewayEnrollments={gatewayState?.pendingGatewayEnrollments ?? []}
+        pendingGatewayEnrollments={pendingGatewayEnrollments}
+        approvedGatewayEnrollmentIds={visibleApprovedGatewayEnrollmentIds}
         gatewayEnrollmentBusy={gatewayEnrollmentBusy}
         gatewayEnrollmentError={gatewayEnrollmentError}
         updateState={pwaUpdateState}

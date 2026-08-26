@@ -11,6 +11,7 @@ export type GeneratedGatewayEnrollment = {
 export function GatewayEnrollmentPanel({
   invitation,
   pending,
+  approvedEnrollmentIds,
   busy,
   error,
   onCreate,
@@ -19,6 +20,7 @@ export function GatewayEnrollmentPanel({
 }: {
   invitation: GeneratedGatewayEnrollment | null;
   pending: GatewayEnrollmentPending[];
+  approvedEnrollmentIds: ReadonlySet<string>;
   busy: boolean;
   error: string | null;
   onCreate(): void;
@@ -86,24 +88,39 @@ export function GatewayEnrollmentPanel({
         </div>
       )}
 
-      {pending.map(request => (
-        <article className="gateway-enrollment-request" key={request.enrollmentId}>
-          <span className="gateway-device-mark" aria-hidden="true">G</span>
-          <span>
-            <strong>2. Approve {request.gatewayName}</strong>
-            <small>Confirm this code is also shown on the new Gateway</small>
-            <code>{request.verificationCode}</code>
-          </span>
-          <button
-            type="button"
-            className="connect-button"
-            disabled={busy}
-            onClick={() => onApprove(request.enrollmentId, request.approverProjectId)}
-          >
-            {busy ? "Approving…" : "Approve Gateway"}
-          </button>
-        </article>
-      ))}
+      {pending.map(request => {
+        const approved = approvedEnrollmentIds.has(request.enrollmentId);
+        return (
+          <article className="gateway-enrollment-request" key={request.enrollmentId}>
+            <span className="gateway-device-mark" aria-hidden="true">G</span>
+            <span>
+              <strong>
+                {approved
+                  ? `Approved ${request.gatewayName}`
+                  : `2. Approve ${request.gatewayName}`}
+              </strong>
+              <small>
+                {approved
+                  ? "Waiting for this Gateway to finish setup. You can safely send the approval again."
+                  : "Confirm this code is also shown on the new Gateway"}
+              </small>
+              <code>{request.verificationCode}</code>
+            </span>
+            <button
+              type="button"
+              className="connect-button"
+              disabled={busy}
+              onClick={() => onApprove(request.enrollmentId, request.approverProjectId)}
+            >
+              {busy
+                ? "Sending approval…"
+                : approved
+                  ? "Send approval again"
+                  : "Approve Gateway"}
+            </button>
+          </article>
+        );
+      })}
 
       {error && <p className="pairing-inline-error" role="alert">{error}</p>}
     </section>

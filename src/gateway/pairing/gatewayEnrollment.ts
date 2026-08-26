@@ -29,6 +29,17 @@ const MAX_LIFETIME_MS = 10 * 60_000
 const MAX_LINK_CHARS = 128 * 1024
 const MAX_OPEN_ENROLLMENTS = 32
 
+export const GATEWAY_ENROLLMENT_APPROVAL_LIFETIME_MS = 10 * 60_000
+
+export function gatewayEnrollmentApprovalDeadline(invitationExpiresAt: number): number {
+  if (
+    !Number.isSafeInteger(invitationExpiresAt)
+    || invitationExpiresAt < 0
+    || invitationExpiresAt > Number.MAX_SAFE_INTEGER - GATEWAY_ENROLLMENT_APPROVAL_LIFETIME_MS
+  ) throw new TypeError('Gateway enrollment invitation expiry is invalid')
+  return invitationExpiresAt + GATEWAY_ENROLLMENT_APPROVAL_LIFETIME_MS
+}
+
 interface EnrollmentRecord {
   invitation: SignedGatewayEnrollmentInvitation
   status: 'open' | 'pending' | 'approved'
@@ -168,19 +179,22 @@ export class FileGatewayEnrollmentCoordinator {
         validateState(state, this.identity.workspaceId)
         const changed = prune(state, now)
         const pending = Object.values(state.enrollments)
-          .filter(record => record.status === 'pending' && record.request)
-          .map(record => structuredClone(record.request!.request))
+          .filter(record => record.request && (record.status === 'pending' || record.status === 'approved'))
+          .map(record => ({
+            request: structuredClone(record.request!.request),
+            expiresAt: record.response?.expiresAt ?? record.request!.request.expiresAt,
+          }))
         return { result: pending, changed }
       },
     )
-    const pending = await Promise.all(requests.map(async request =>
+    const pending = await Promise.all(requests.map(async ({ request, expiresAt }) =>
       gatewayEnrollmentPendingSchema.parse({
         enrollmentId: request.enrollmentId,
         gatewayNodeId: request.gatewayNodeId,
         gatewayName: request.gatewayName,
         verificationCode: await gatewayEnrollmentVerificationCode(request),
         requestedAt: request.issuedAt,
-        expiresAt: request.expiresAt,
+        expiresAt,
       })))
     return pending.sort((left, right) => left.requestedAt - right.requestedAt)
   }
@@ -227,7 +241,7 @@ export class FileGatewayEnrollmentCoordinator {
         gatewayName: request.gatewayName,
       }
     }
-    const lifetimeMs = Math.max(1_000, Math.min(2 * 60_000, request.expiresAt - now))
+    const lifetimeMs = GATEWAY_ENROLLMENT_APPROVAL_LIFETIME_MS
     const sealedInvitation = await sealSecureEnvelope({
       gatewayId: this.identity.workspaceId,
       conversationId: enrollmentId,
@@ -328,10 +342,8 @@ function validateState(state: EnrollmentState, workspaceId: string): void {
 function prune(state: EnrollmentState, now: number): boolean {
   let changed = false
   for (const [id, record] of Object.entries(state.enrollments)) {
-    if (
-      record.invitation.invitation.expiresAt > now
-      && (record.response === undefined || record.response.expiresAt > now)
-    ) continue
+    const expiresAt = record.response?.expiresAt ?? record.invitation.invitation.expiresAt
+    if (expiresAt > now) continue
     delete state.enrollments[id]
     changed = true
   }

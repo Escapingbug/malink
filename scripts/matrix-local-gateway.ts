@@ -30,6 +30,7 @@ import {
     trustedDeviceFromRecord,
     trustedDeviceFromWorkspaceGrant,
     FileGatewayEnrollmentCoordinator,
+    GATEWAY_ENROLLMENT_APPROVAL_LIFETIME_MS,
     createGatewayJoinInvitation,
 } from '../src/gateway/pairing/index.js'
 import {
@@ -545,15 +546,17 @@ runner = new MatrixMlp3GatewayRunner(config, {
         return { enrollmentLink: invitation.link, expiresAt: invitation.expiresAt }
     },
     approveGatewayEnrollment: async ({ requestedByDeviceId, enrollmentId }) => {
+        const now = Date.now()
         const joinInvitation = createGatewayJoinInvitation(
             identity,
             undefined,
-            Date.now(),
-            2 * 60_000,
+            now,
+            GATEWAY_ENROLLMENT_APPROVAL_LIFETIME_MS,
         )
         const approved = await gatewayEnrollmentCoordinator.approve(
             enrollmentId,
             joinInvitation.link,
+            now,
         )
         if (!client.setApplicationRoomState) {
             throw new Error('Matrix transport cannot publish Gateway enrollment responses')

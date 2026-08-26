@@ -47,6 +47,7 @@ type Props = {
   invitationReauthRequired: boolean;
   gatewayEnrollmentInvitation: GeneratedGatewayEnrollment | null;
   pendingGatewayEnrollments: GatewayEnrollmentPending[];
+  approvedGatewayEnrollmentIds: ReadonlySet<string>;
   gatewayEnrollmentBusy: boolean;
   gatewayEnrollmentError: string | null;
   updateState: PwaUpdateState;
@@ -101,6 +102,7 @@ function MatrixSettingsDialog({
   invitationReauthRequired,
   gatewayEnrollmentInvitation,
   pendingGatewayEnrollments,
+  approvedGatewayEnrollmentIds,
   gatewayEnrollmentBusy,
   gatewayEnrollmentError,
   updateState,
@@ -366,6 +368,7 @@ function MatrixSettingsDialog({
           <GatewayEnrollmentPanel
             invitation={gatewayEnrollmentInvitation}
             pending={pendingGatewayEnrollments}
+            approvedEnrollmentIds={approvedGatewayEnrollmentIds}
             busy={gatewayEnrollmentBusy}
             error={gatewayEnrollmentError}
             onCreate={onCreateGatewayEnrollment}

@@ -41,7 +41,10 @@ import { FileGatewayIdentityStore } from './identityStore.js'
 import { acceptGatewayJoinInvitation } from './gatewayJoin.js'
 import { FileWorkspaceGatewayDirectory } from './workspaceDirectory.js'
 import { FileWorkspaceDeviceAuthorization } from './workspaceAuthorization.js'
-import { decodeGatewayEnrollmentInvitationLink } from './gatewayEnrollment.js'
+import {
+  decodeGatewayEnrollmentInvitationLink,
+  gatewayEnrollmentApprovalDeadline,
+} from './gatewayEnrollment.js'
 
 const RELAY_PATH = '/api/invitations'
 const REQUEST_FILE = 'gateway-enrollment-request.json'
@@ -124,8 +127,35 @@ export async function joinWorkspaceThroughGatewayEnrollment(input: {
     if (typeof persistedRequestExpiresAt !== 'number') {
       throw new Error('Interrupted Gateway enrollment request expiry is invalid')
     }
-    if (persistedRequestExpiresAt <= now()) {
+    if (gatewayEnrollmentApprovalDeadline(persistedRequestExpiresAt) <= now()) {
       await unlink(requestStatePath)
+      requestState = null
+    }
+  }
+  let resolvedReplacement: {
+    signedInvitation: SignedGatewayEnrollmentInvitation
+    invitation: Awaited<ReturnType<typeof verifyGatewayEnrollmentInvitation>>
+  } | null = null
+  if (requestState) {
+    try {
+      const resolvedLink = await resolveGatewayEnrollmentLink(input.invitationLink, fetchImpl)
+      const signedInvitation = decodeGatewayEnrollmentInvitationLink(resolvedLink)
+      if (
+        signedInvitation.invitation.enrollmentId
+        !== requestState.signedInvitation.invitation.enrollmentId
+      ) {
+        resolvedReplacement = {
+          signedInvitation,
+          invitation: await verifyGatewayEnrollmentInvitation(signedInvitation, now()),
+        }
+      }
+    } catch {
+      // A short link can expire while its signed request is still waiting for
+      // an already-issued approval. The private request state remains the
+      // recovery authority until the approval window closes.
+    }
+    if (resolvedReplacement) {
+      await removePrivateState(requestStatePath)
       requestState = null
     }
   }
@@ -138,9 +168,13 @@ export async function joinWorkspaceThroughGatewayEnrollment(input: {
         'This Gateway data directory is already configured; choose an empty directory for a new node',
       )
     }
-    const resolvedLink = await resolveGatewayEnrollmentLink(input.invitationLink, fetchImpl)
-    const signedInvitation = decodeGatewayEnrollmentInvitationLink(resolvedLink)
-    const invitation = await verifyGatewayEnrollmentInvitation(signedInvitation, now())
+    const resolvedLink = resolvedReplacement
+      ? null
+      : await resolveGatewayEnrollmentLink(input.invitationLink, fetchImpl)
+    const signedInvitation = resolvedReplacement?.signedInvitation
+      ?? decodeGatewayEnrollmentInvitationLink(resolvedLink!)
+    const invitation = resolvedReplacement?.invitation
+      ?? await verifyGatewayEnrollmentInvitation(signedInvitation, now())
     const requestKeys = await generateDeviceKeyPair()
     const gatewayKey = await exportPairingPublicKey(requestKeys.publicKey)
     const signedRequest = await signGatewayEnrollmentRequest({
@@ -165,9 +199,13 @@ export async function joinWorkspaceThroughGatewayEnrollment(input: {
     }
     await writePrivateJson(requestStatePath, requestState)
   }
+  const invitationExpiresAt = requestState.signedInvitation.invitation.expiresAt
+  // The request was signed and persisted while the setup invitation was
+  // valid. Verify that signature at the last valid instant when resuming, but
+  // only while the bounded approval recovery window above remains open.
   const invitation = await verifyGatewayEnrollmentInvitation(
     requestState.signedInvitation,
-    now(),
+    Math.min(now(), invitationExpiresAt - 1),
   )
   const requestKeys = await importDeviceKeyPair(requestState.requestKeys)
   const request = signedGatewayEnrollmentRequestSchema.parse(requestState.signedRequest)
@@ -211,7 +249,7 @@ export async function joinWorkspaceThroughGatewayEnrollment(input: {
   const responsePromise = new Promise<unknown>((resolve, reject) => {
     responseTimeout = setTimeout(() => {
       reject(new Error('Gateway enrollment approval expired before it was received'))
-    }, Math.max(1, invitation.expiresAt - now()))
+    }, Math.max(1, gatewayEnrollmentApprovalDeadline(invitation.expiresAt) - now()))
     unsubscribeResponse = client.onRoomEvent(event => {
       if (
         event.encrypted
