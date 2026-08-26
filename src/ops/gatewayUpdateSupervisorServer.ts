@@ -13,6 +13,10 @@ import {
   type GatewayUpdateStatus,
 } from '@malink/protocol'
 import type { GatewayUpdateSupervisor } from './gatewayUpdateSupervisor.js'
+import type {
+  GatewayAgentUpdateBeginResult,
+  GatewayAgentUpdateInstruction,
+} from './gatewayUpdateSupervisor.js'
 
 const MAX_BODY_BYTES = 8 * 1024
 
@@ -44,6 +48,34 @@ export async function startGatewayUpdateSupervisorServer(input: {
       if (request.method === 'POST' && path === '/v1/releases/apply') {
         const releaseId = releaseIdFromBody(await readJsonBody(request))
         sendJson(response, 202, await input.supervisor.scheduleApply(releaseId))
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/agent-updates/instruction') {
+        const releaseId = releaseIdFromBody(await readJsonBody(request))
+        sendJson(response, 200, await input.supervisor.agentInstruction(releaseId))
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/agent-updates/begin') {
+        const body = agentBeginFromBody(await readJsonBody(request))
+        sendJson(response, 200, await input.supervisor.beginAgentUpdate(
+          body.releaseId,
+          body.maintenanceSessionId,
+          body.ownerCommandId,
+        ))
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/agent-updates/submit') {
+        const releaseId = releaseIdFromBody(await readJsonBody(request))
+        sendJson(response, 200, await input.supervisor.submitAgentRelease(releaseId))
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/agent-updates/fail') {
+        const body = agentFailureFromBody(await readJsonBody(request))
+        sendJson(response, 200, await input.supervisor.failAgentUpdate(
+          body.releaseId,
+          body.ownerCommandId,
+          body.detail,
+        ))
         return
       }
       throw new SupervisorHttpError(404, 'not_found')
@@ -93,6 +125,39 @@ export class GatewayUpdateSupervisorClient {
   scheduleApply(releaseId: string): Promise<GatewayUpdateStatus> {
     return this.request('POST', '/v1/releases/apply', { releaseId })
       .then(value => gatewayUpdateStatusSchema.parse(value))
+  }
+
+  agentInstruction(releaseId: string): Promise<GatewayAgentUpdateInstruction> {
+    return this.request('POST', '/v1/agent-updates/instruction', { releaseId })
+  }
+
+  beginAgentUpdate(
+    releaseId: string,
+    maintenanceSessionId: string,
+    ownerCommandId: string,
+  ): Promise<GatewayAgentUpdateBeginResult> {
+    return this.request('POST', '/v1/agent-updates/begin', {
+      releaseId,
+      maintenanceSessionId,
+      ownerCommandId,
+    }).then(agentUpdateBeginResult)
+  }
+
+  submitAgentRelease(releaseId: string): Promise<GatewayUpdateStatus> {
+    return this.request('POST', '/v1/agent-updates/submit', { releaseId })
+      .then(value => gatewayUpdateStatusSchema.parse(value))
+  }
+
+  failAgentUpdate(
+    releaseId: string,
+    ownerCommandId: string,
+    detail: string,
+  ): Promise<GatewayUpdateStatus> {
+    return this.request('POST', '/v1/agent-updates/fail', {
+      releaseId,
+      ownerCommandId,
+      detail,
+    }).then(value => gatewayUpdateStatusSchema.parse(value))
   }
 
   private request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -155,6 +220,78 @@ function releaseIdFromBody(input: unknown): string {
     throw new SupervisorHttpError(400, 'invalid_release_id')
   }
   return values[0][1]
+}
+
+function agentBeginFromBody(input: unknown): {
+  releaseId: string
+  maintenanceSessionId: string
+  ownerCommandId: string
+} {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new SupervisorHttpError(400, 'invalid_request')
+  }
+  const value = input as Record<string, unknown>
+  if (
+    Object.keys(value).length !== 3
+    || typeof value.releaseId !== 'string'
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value.releaseId)
+    || typeof value.maintenanceSessionId !== 'string'
+    || value.maintenanceSessionId.length < 1
+    || value.maintenanceSessionId.length > 256
+    || typeof value.ownerCommandId !== 'string'
+    || value.ownerCommandId.length < 1
+    || value.ownerCommandId.length > 256
+  ) {
+    throw new SupervisorHttpError(400, 'invalid_request')
+  }
+  return {
+    releaseId: value.releaseId,
+    maintenanceSessionId: value.maintenanceSessionId,
+    ownerCommandId: value.ownerCommandId,
+  }
+}
+
+function agentUpdateBeginResult(input: unknown): GatewayAgentUpdateBeginResult {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Gateway Agent update begin result is invalid')
+  }
+  const value = input as Record<string, unknown>
+  if (Object.keys(value).length !== 2 || typeof value.started !== 'boolean') {
+    throw new Error('Gateway Agent update begin result is invalid')
+  }
+  return {
+    started: value.started,
+    status: gatewayUpdateStatusSchema.parse(value.status),
+  }
+}
+
+function agentFailureFromBody(input: unknown): {
+  releaseId: string
+  ownerCommandId: string
+  detail: string
+} {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new SupervisorHttpError(400, 'invalid_request')
+  }
+  const value = input as Record<string, unknown>
+  if (
+    Object.keys(value).length !== 3
+    || typeof value.releaseId !== 'string'
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value.releaseId)
+    || typeof value.ownerCommandId !== 'string'
+    || value.ownerCommandId.length < 1
+    || value.ownerCommandId.length > 256
+    || typeof value.detail !== 'string'
+    || value.detail.length < 1
+    || value.detail.length > 4_096
+  ) {
+    throw new SupervisorHttpError(400, 'invalid_request')
+  }
+  return {
+    releaseId: value.releaseId,
+    ownerCommandId: value.ownerCommandId,
+    detail: value.detail,
+  }
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {

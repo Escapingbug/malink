@@ -91,6 +91,7 @@ import {
   MALINK_BUILD_VERSION,
   MALINK_GATEWAY_RELEASE,
 } from "./buildInfo";
+import { discoverLatestGatewayAgentUpdate } from "./gatewayAgentUpdateDiscovery";
 import {
   automaticGatewayUpdateTargets as selectAutomaticGatewayUpdateTargets,
   hasAttemptedAutomaticGatewayUpdate,
@@ -461,6 +462,7 @@ function sameGatewayUiScope(
 const DEVICE_INVITATION_RESULT_TIMEOUT_MS = 95_000;
 const SESSION_CREATE_RESULT_RECOVERY_MS = 15_000;
 const PROVIDER_HISTORY_RESULT_TIMEOUT_MS = 60_000;
+const GATEWAY_UPDATE_DISCOVERY_INTERVAL_MS = 15 * 60_000;
 
 class InvitationReauthenticationRequiredError extends Error {
   constructor() {
@@ -1141,6 +1143,9 @@ function MalinkAppRuntime() {
   const [gatewayEnrollmentError, setGatewayEnrollmentError] = useState<string | null>(null);
   const [gatewayUpdateBusy, setGatewayUpdateBusy] = useState(false);
   const [gatewayUpdateError, setGatewayUpdateError] = useState<string | null>(null);
+  const [gatewayUpdateDiscoveryError, setGatewayUpdateDiscoveryError] =
+    useState<string | null>(null);
+  const [gatewayRelease, setGatewayRelease] = useState(MALINK_GATEWAY_RELEASE);
   const [approvedGatewayEnrollmentIds, setApprovedGatewayEnrollmentIds] =
     useState<Set<string>>(() => new Set());
   const pendingGatewayEnrollments = useMemo(() => {
@@ -1722,8 +1727,8 @@ function MalinkAppRuntime() {
         (gatewayState?.projects ?? (gatewayState ? [gatewayState.workspace] : []))
           .map((project) => project.projectId),
       ),
-      release: MALINK_GATEWAY_RELEASE,
-    }), [gatewayState]);
+      release: gatewayRelease,
+    }), [gatewayRelease, gatewayState]);
   const providerHistoryWorkspace = gatewayState?.projects?.find(
     project => project.projectId === providerHistoryProjectId,
   ) ?? gatewayState?.workspace;
@@ -1998,6 +2003,40 @@ function MalinkAppRuntime() {
   }, []);
 
   useEffect(() => {
+    const controller = new AbortController();
+    const refresh = () => {
+      void discoverLatestGatewayAgentUpdate(fetch, controller.signal)
+        .then((release) => {
+          if (controller.signal.aborted) return;
+          setGatewayUpdateDiscoveryError(null);
+          if (!release) return;
+          setGatewayRelease((current) =>
+            current?.releaseId === release.releaseId && current.buildId === release.buildId
+              ? current
+              : release,
+          );
+        })
+        .catch((error) => {
+          if (controller.signal.aborted) return;
+          const detail = formatUiError(error);
+          console.warn(`[gateway-update/discovery] ${detail}`, error);
+          setGatewayUpdateDiscoveryError(detail);
+        });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    refresh();
+    const timer = window.setInterval(refresh, GATEWAY_UPDATE_DISCOVERY_INTERVAL_MS);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
     componentMountedRef.current = true;
     return () => {
       componentMountedRef.current = false;
@@ -2005,33 +2044,38 @@ function MalinkAppRuntime() {
   }, []);
 
   useEffect(() => {
-    if (connectionStatus !== "connected" || !MALINK_GATEWAY_RELEASE) return;
+    if (connectionStatus !== "connected" || !gatewayRelease) return;
+    const release = gatewayRelease;
     const targets = automaticGatewayUpdateTargets.filter((target) =>
-      !automaticGatewayUpdateAttemptsRef.current.has(target.gatewayNodeId) &&
+      !automaticGatewayUpdateAttemptsRef.current.has(
+        `${target.gatewayNodeId}\0${release.releaseId}\0${release.buildId}`,
+      ) &&
       !hasAttemptedAutomaticGatewayUpdate(
         window.localStorage,
         target.gatewayNodeId,
-        MALINK_GATEWAY_RELEASE,
+        release,
       ),
     );
     if (targets.length === 0) return;
     for (const target of targets) {
       // This tab must also remain one-shot when localStorage is unavailable.
-      automaticGatewayUpdateAttemptsRef.current.add(target.gatewayNodeId);
+      automaticGatewayUpdateAttemptsRef.current.add(
+        `${target.gatewayNodeId}\0${release.releaseId}\0${release.buildId}`,
+      );
     }
     void (async () => {
       setGatewayUpdateBusy(true);
       setGatewayUpdateError(null);
       try {
-        for (const target of targets) {
+        await Promise.all(targets.map(async (target) => {
           recordAutomaticGatewayUpdateAttempt(
             window.localStorage,
             target.gatewayNodeId,
-            MALINK_GATEWAY_RELEASE,
+            release,
           );
           try {
             const status = await triggerAutomaticGatewayUpdate({
-              release: MALINK_GATEWAY_RELEASE,
+              release,
               target,
               send: (command, targetProjectId) =>
                 executeGatewayUpdateRef.current(command, targetProjectId),
@@ -2059,12 +2103,12 @@ function MalinkAppRuntime() {
               );
             }
           }
-        }
+        }));
       } finally {
         if (componentMountedRef.current) setGatewayUpdateBusy(false);
       }
     })();
-  }, [automaticGatewayUpdateTargets, connectionStatus]);
+  }, [automaticGatewayUpdateTargets, connectionStatus, gatewayRelease]);
 
   useEffect(() => {
     let active = true;
@@ -4484,6 +4528,43 @@ function MalinkAppRuntime() {
     setGatewayUpdateError(null);
     try {
       await executeGatewayUpdate(payload, targetProjectId);
+    } catch (error) {
+      setGatewayUpdateError(formatUiError(error));
+    } finally {
+      setGatewayUpdateBusy(false);
+    }
+  }
+
+  async function runPublishedGatewayUpdate(): Promise<void> {
+    if (!gatewayRelease) {
+      setGatewayUpdateError("No signed Gateway update Prompt is currently published.");
+      return;
+    }
+    setGatewayUpdateBusy(true);
+    setGatewayUpdateError(null);
+    try {
+      const targetProjectId = activeWorkspace?.projectId;
+      const staged = await executeGatewayUpdate({
+        operation: "gateway.update.stage",
+        releaseId: gatewayRelease.releaseId,
+      }, targetProjectId);
+      if (["scheduled", "activating", "probation", "committed"].includes(staged.phase)) {
+        return;
+      }
+      if (
+        staged.phase !== "staged" ||
+        staged.releaseId !== gatewayRelease.releaseId ||
+        staged.targetBuildId !== gatewayRelease.buildId
+      ) {
+        throw new Error(
+          `The Gateway did not prepare published release ${gatewayRelease.releaseId}.`,
+        );
+      }
+      await executeGatewayUpdate({
+        operation: "gateway.update.apply",
+        releaseId: gatewayRelease.releaseId,
+        mode: "when_idle",
+      }, targetProjectId);
     } catch (error) {
       setGatewayUpdateError(formatUiError(error));
     } finally {
@@ -8042,8 +8123,9 @@ function MalinkAppRuntime() {
         gatewayEnrollmentBusy={gatewayEnrollmentBusy}
         gatewayEnrollmentError={gatewayEnrollmentError}
         gatewayUpdate={gatewayState?.gatewayUpdate ?? null}
+        gatewayRelease={gatewayRelease}
         gatewayUpdateBusy={gatewayUpdateBusy}
-        gatewayUpdateError={gatewayUpdateError}
+        gatewayUpdateError={gatewayUpdateError ?? gatewayUpdateDiscoveryError}
         updateState={pwaUpdateState}
         nativeUpdateState={nativeUpdateState}
         nativeUpdateBusy={nativeUpdateBusy}
@@ -8098,15 +8180,7 @@ function MalinkAppRuntime() {
         onRefreshGatewayUpdate={() => void runGatewayUpdate({
           operation: "gateway.update.status",
         })}
-        onStageGatewayUpdate={(releaseId) => void runGatewayUpdate({
-          operation: "gateway.update.stage",
-          releaseId,
-        })}
-        onApplyGatewayUpdate={(releaseId) => void runGatewayUpdate({
-          operation: "gateway.update.apply",
-          releaseId,
-          mode: "when_idle",
-        })}
+        onStartGatewayUpdate={() => void runPublishedGatewayUpdate()}
         onCheckForUpdates={() => void pwaUpdateRef.current?.checkNow()}
         onUpdateNativeApp={() => void recoverNativeAppUpdate(true)}
         onRestartApp={() => window.location.reload()}
@@ -8394,6 +8468,8 @@ function describeConflictedAction(payload: CommandPayload): string {
       return "The session settings change";
     case "session.create":
       return "The new session request";
+    case "project.create":
+      return "The new project request";
     case "project.settings":
       return "The project settings request";
     case "provider.sessions.list":
@@ -8412,6 +8488,12 @@ function describeConflictedAction(payload: CommandPayload): string {
       return "The Gateway setup-link request";
     case "gateway.enrollment.approve":
       return "The Gateway approval request";
+    case "gateway.update.stage":
+      return "The Gateway update preparation request";
+    case "gateway.update.apply":
+      return "The Gateway update activation request";
+    case "gateway.update.status":
+      return "The Gateway update status request";
   }
 }
 

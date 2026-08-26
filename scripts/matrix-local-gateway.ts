@@ -12,6 +12,7 @@ import {
     MLP3_MATRIX_GATEWAY_ENROLLMENT_REQUEST_EVENT_TYPE,
     MLP3_MATRIX_GATEWAY_ENROLLMENT_RESPONSE_EVENT_TYPE,
     pairingOperationSchema,
+    signedGatewayAgentUpdatePromptSchema,
     type PairingOperation,
     type SignedWorkspaceGatewayDirectory,
 } from '@malink/protocol'
@@ -911,11 +912,20 @@ async function readJson<T>(path: string): Promise<T> {
 }
 
 async function currentGatewayBuildId(): Promise<string> {
-    const manifestPath = join(
+    const releaseRoot = join(
         dirname(fileURLToPath(import.meta.url)),
         '..',
-        'release-manifest.json',
     )
+    try {
+        const signed = signedGatewayAgentUpdatePromptSchema.parse(JSON.parse(await readFile(
+            join(releaseRoot, 'release-prompt.json'),
+            'utf8',
+        )))
+        return signed.update.buildId
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    const manifestPath = join(releaseRoot, 'release-manifest.json')
     try {
         const value = JSON.parse(await readFile(manifestPath, 'utf8')) as {
             manifest?: { buildId?: unknown }

@@ -5,8 +5,10 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   canonicalJsonBytes,
+  type GatewayAgentUpdatePrompt,
   type GatewayReleaseManifest,
   type PairingPublicKey,
+  type SignedGatewayAgentUpdatePrompt,
   type SignedGatewayReleaseManifest,
 } from '@malink/protocol'
 import {
@@ -95,6 +97,162 @@ describe('GatewayUpdateSupervisor', () => {
       expectedBuildId: 'build-2',
       requireDeepHealth: true,
     }))
+  })
+
+  it('runs a signed Prompt through an Agent workspace and seals only the local result', async () => {
+    const fixture = await agentUpdateFixture()
+    const activate = vi.fn(async () => undefined)
+    const requestedUrls: string[] = []
+    const fetchMock = vi.fn(async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      requestedUrls.push(String(input))
+      return fixture.fetch(input, init)
+    }) as unknown as typeof fetch
+    const supervisor = new GatewayUpdateSupervisor({
+      ...fixture.config,
+      activationDelayMs: 0,
+      probationMs: 0,
+    }, { fetch: fetchMock, activate })
+    await supervisor.initialize()
+    const server = await startGatewayUpdateSupervisorServer({
+      socketPath: join(fixture.installRoot, 'supervisor.sock'),
+      supervisor,
+    })
+    try {
+      const client = new GatewayUpdateSupervisorClient(server.socketPath, 5_000)
+      await expect(client.stage('release-2')).resolves.toMatchObject({
+        phase: 'agent_required',
+        releaseId: 'release-2',
+        targetBuildId: 'build-2',
+      })
+      expect(requestedUrls).toEqual([
+        'https://updates.example.test/agent-prompts/release-2.json',
+      ])
+      const instruction = await client.agentInstruction('release-2')
+      expect(instruction).toMatchObject({
+        releaseId: 'release-2',
+        buildId: 'build-2',
+        repository: {
+          url: 'https://github.com/Escapingbug/malink.git',
+          commit: '0123456789abcdef0123456789abcdef01234567',
+        },
+      })
+      expect(instruction.submitCommand).toContain('gatewayAgentUpdateCli.js')
+      expect(instruction.submitCommand).toContain(server.socketPath)
+      await expect(client.beginAgentUpdate(
+        'release-2',
+        'maintenance-1',
+        'stage-command-1',
+      )).resolves.toMatchObject({
+        started: true,
+        status: {
+          phase: 'agent_running',
+          maintenanceSessionId: 'maintenance-1',
+        },
+      })
+      await expect(client.beginAgentUpdate(
+        'release-2',
+        'maintenance-1',
+        'stage-command-2',
+      )).resolves.toMatchObject({
+        started: false,
+        status: {
+          phase: 'agent_running',
+          maintenanceSessionId: 'maintenance-1',
+        },
+      })
+
+      await writeFile(
+        join(instruction.candidateDirectory, 'ops', 'matrix-local-gateway.js'),
+        '// Agent-built Gateway release 2\n',
+      )
+      await writeFile(
+        join(instruction.candidateDirectory, 'ops', 'gatewayUpdateSupervisorMain.js'),
+        '// Agent-built supervisor release 2\n',
+      )
+      await writeFile(
+        join(instruction.candidateDirectory, 'ops', 'gatewayAgentUpdateCli.js'),
+        '// Agent-built update CLI release 2\n',
+      )
+      await expect(client.submitAgentRelease('release-2')).resolves.toMatchObject({
+        phase: 'staged',
+        maintenanceSessionId: 'maintenance-1',
+      })
+      await writeFile(
+        join(instruction.candidateDirectory, 'ops', 'matrix-local-gateway.js'),
+        '// candidate changed after sealing\n',
+      )
+      await expect(readFile(
+        join(fixture.installRoot, 'releases', 'release-2', 'ops', 'matrix-local-gateway.js'),
+        'utf8',
+      )).resolves.toBe('// Agent-built Gateway release 2\n')
+
+      await expect(client.scheduleApply('release-2')).resolves.toMatchObject({
+        phase: 'scheduled',
+        previousReleaseId: 'release-1',
+      })
+      await vi.waitFor(async () => {
+        expect(await client.status()).toMatchObject({
+          phase: 'committed',
+          currentBuildId: 'build-2',
+          maintenanceSessionId: 'maintenance-1',
+        })
+      })
+      expect(activate).toHaveBeenCalledWith(expect.objectContaining({
+        releaseDirectory: join(fixture.installRoot, 'releases', 'release-2'),
+        expectedBuildId: 'build-2',
+      }))
+    } finally {
+      await server.stop()
+      await supervisor.stop()
+    }
+  })
+
+  it('rejects a tampered Agent update Prompt before creating an Agent workspace', async () => {
+    const fixture = await agentUpdateFixture({ tamperPrompt: true })
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fixture.fetch })
+    await supervisor.initialize()
+
+    await expect(supervisor.stage('release-2')).rejects.toThrow(/signature is invalid/u)
+    await expect(supervisor.status()).resolves.toMatchObject({ phase: 'failed' })
+    await expect(supervisor.agentInstruction('release-2')).rejects.toThrow(/not prepared/u)
+  })
+
+  it('lets only the owning command fail or restart a maintenance Agent', async () => {
+    const fixture = await agentUpdateFixture()
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fixture.fetch })
+    await supervisor.initialize()
+    await supervisor.stage('release-2')
+
+    await expect(supervisor.beginAgentUpdate(
+      'release-2',
+      'maintenance-1',
+      'stage-command-1',
+    )).resolves.toMatchObject({ started: true })
+    await expect(supervisor.failAgentUpdate(
+      'release-2',
+      'stage-command-2',
+      'not the owner',
+    )).resolves.toMatchObject({ phase: 'agent_running' })
+    await expect(supervisor.failAgentUpdate(
+      'release-2',
+      'stage-command-1',
+      'Agent process failed',
+    )).resolves.toMatchObject({
+      phase: 'failed',
+      detail: 'Agent process failed',
+    })
+
+    await expect(supervisor.stage('release-2')).resolves.toMatchObject({
+      phase: 'agent_required',
+    })
+    await expect(supervisor.beginAgentUpdate(
+      'release-2',
+      'maintenance-1',
+      'stage-command-2',
+    )).resolves.toMatchObject({ started: true })
   })
 
   it('reuses verified active-release files and downloads only changed files', async () => {
@@ -510,6 +668,89 @@ async function releaseFixture(options: {
       launchAgentPath,
       serviceLabel: 'com.malink.gateway.test',
       gatewayAdminSocketPath: join(installRoot, 'gateway.sock'),
+      currentBuildId: 'build-1',
+    },
+  }
+}
+
+async function agentUpdateFixture(options: { tamperPrompt?: boolean } = {}) {
+  const installRoot = await temporaryDirectory()
+  const oldRelease = join(installRoot, 'releases', 'release-1')
+  await mkdir(join(oldRelease, 'runtime'), { recursive: true })
+  await mkdir(join(oldRelease, 'ops'), { recursive: true })
+  await writeFile(join(oldRelease, 'runtime', 'node'), '#!/bin/sh\n', { mode: 0o755 })
+  await writeFile(join(oldRelease, 'ops', 'matrix-local-gateway.js'), '// old Gateway\n')
+  await writeFile(
+    join(oldRelease, 'ops', 'gatewayUpdateSupervisorMain.js'),
+    '// old supervisor\n',
+  )
+  await writeFile(join(oldRelease, 'ops', 'gatewayAgentUpdateCli.js'), '// old CLI\n')
+  await symlink(oldRelease, join(installRoot, 'current'))
+  const launchAgentPath = join(installRoot, 'gateway.plist')
+  await writeFile(launchAgentPath, `<string>${join(installRoot, 'current')}</string>`)
+
+  const keys = await generateDeviceKeyPair()
+  const signer: PairingPublicKey = {
+    version: 1,
+    algorithm: 'ES256',
+    keyId: keys.keyId,
+    publicKey: keys.publicJwk as PairingPublicKey['publicKey'],
+  }
+  const update: GatewayAgentUpdatePrompt = {
+    kind: 'malink.gateway.agent-update',
+    version: 1,
+    releaseId: 'release-2',
+    versionName: '2.0.0',
+    buildId: 'build-2',
+    publishedAt: 42,
+    platform: 'darwin',
+    repository: {
+      url: 'https://github.com/Escapingbug/malink.git',
+      commit: '0123456789abcdef0123456789abcdef01234567',
+    },
+    prompt: 'Build, test, and place the exact Gateway release in the candidate directory.',
+    stateCatalog: GATEWAY_STATE_CATALOG.map(({ id, stateClass, schemaVersion }) => ({
+      id,
+      stateClass,
+      schemaVersion,
+    })),
+  }
+  const signature = await webCrypto().subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    keys.privateKey,
+    toArrayBuffer(canonicalJsonBytes(update)),
+  )
+  const signed: SignedGatewayAgentUpdatePrompt = {
+    update: options.tamperPrompt
+      ? { ...update, prompt: `${update.prompt} Tampered.` }
+      : update,
+    signer,
+    signature: {
+      algorithm: 'ES256',
+      keyId: keys.keyId,
+      value: base64UrlEncode(new Uint8Array(signature)),
+    },
+  }
+  const fetchMock = vi.fn(async (input: string | URL | Request) => {
+    if (!String(input).endsWith('/release-2.json')) {
+      return new Response('missing', { status: 404 })
+    }
+    return new Response(JSON.stringify(signed), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }) as unknown as typeof fetch
+  return {
+    installRoot,
+    fetch: fetchMock,
+    config: {
+      installRoot,
+      agentPromptBaseUrl: 'https://updates.example.test/agent-prompts/',
+      trustedSigner: signer,
+      launchAgentPath,
+      serviceLabel: 'com.malink.gateway.test',
+      gatewayAdminSocketPath: join(installRoot, 'gateway.sock'),
+      updateSocketPath: join(installRoot, 'supervisor.sock'),
       currentBuildId: 'build-1',
     },
   }

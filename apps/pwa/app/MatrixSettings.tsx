@@ -14,10 +14,8 @@ import type {
   GeneratedDeviceInvitation,
   PairingPreview,
 } from "./pairing";
-import {
-  MALINK_BUILD_VERSION,
-  MALINK_GATEWAY_RELEASE,
-} from "./buildInfo";
+import { MALINK_BUILD_VERSION } from "./buildInfo";
+import type { GatewayReleaseBuild } from "./buildInfo";
 import type { PwaUpdateState } from "./pwaUpdate";
 import type { NativeUpdateStatus } from "@malink/native-bridge";
 import { useDialogFocus } from "./dialogFocus";
@@ -61,6 +59,7 @@ type Props = {
   gatewayEnrollmentBusy: GatewayEnrollmentBusyState;
   gatewayEnrollmentError: string | null;
   gatewayUpdate: GatewayUpdateStatus | null;
+  gatewayRelease: GatewayReleaseBuild | null;
   gatewayUpdateBusy: boolean;
   gatewayUpdateError: string | null;
   updateState: PwaUpdateState;
@@ -84,8 +83,7 @@ type Props = {
   onApproveGatewayEnrollment(enrollmentId: string, approverProjectId?: string): void;
   onClearGatewayEnrollment(): void;
   onRefreshGatewayUpdate(): void;
-  onStageGatewayUpdate(releaseId: string): void;
-  onApplyGatewayUpdate(releaseId: string): void;
+  onStartGatewayUpdate(): void;
   onCheckForUpdates(): void;
   onUpdateNativeApp(): void;
   onRestartApp(): void;
@@ -124,6 +122,7 @@ function MatrixSettingsDialog({
   gatewayEnrollmentBusy,
   gatewayEnrollmentError,
   gatewayUpdate,
+  gatewayRelease,
   gatewayUpdateBusy,
   gatewayUpdateError,
   updateState,
@@ -147,8 +146,7 @@ function MatrixSettingsDialog({
   onApproveGatewayEnrollment,
   onClearGatewayEnrollment,
   onRefreshGatewayUpdate,
-  onStageGatewayUpdate,
-  onApplyGatewayUpdate,
+  onStartGatewayUpdate,
   onCheckForUpdates,
   onUpdateNativeApp,
   onRestartApp,
@@ -165,9 +163,6 @@ function MatrixSettingsDialog({
   const repairRequired = effectiveRepairReason !== null;
   const [loginPassword, setLoginPassword] = useState("");
   const [addingGateway, setAddingGateway] = useState(false);
-  const [gatewayReleaseId, setGatewayReleaseId] = useState(
-    MALINK_GATEWAY_RELEASE?.releaseId ?? gatewayUpdate?.releaseId ?? "",
-  );
   const connected =
     status === "connected" ||
     status === "securing" ||
@@ -641,10 +636,9 @@ function MatrixSettingsDialog({
                   <small>{nativeUpdateStatusText(nativeUpdateState)}</small>
                 )}
                 <small>{gatewayUpdateStatusText(gatewayUpdate)}</small>
-                {MALINK_GATEWAY_RELEASE && (
+                {gatewayRelease && (
                   <small>
-                    This PWA pairs Gateway release{" "}
-                    <code>{MALINK_GATEWAY_RELEASE.releaseId}</code>
+                    Published Gateway update <code>{gatewayRelease.releaseId}</code>
                   </small>
                 )}
                 {gatewayUpdateError && (
@@ -699,17 +693,6 @@ function MatrixSettingsDialog({
                       : "Install APK update"}
                   </button>
                 )}
-                <label className="gateway-update-release-field">
-                  <span>Gateway release ID</span>
-                  <input
-                    value={gatewayReleaseId}
-                    placeholder="2026.08.26"
-                    autoComplete="off"
-                    spellCheck={false}
-                    disabled={gatewayUpdateBusy}
-                    onChange={(event) => setGatewayReleaseId(event.target.value)}
-                  />
-                </label>
                 <button
                   type="button"
                   onClick={onRefreshGatewayUpdate}
@@ -719,29 +702,16 @@ function MatrixSettingsDialog({
                 </button>
                 <button
                   type="button"
-                  onClick={() => onStageGatewayUpdate(gatewayReleaseId.trim())}
+                  onClick={onStartGatewayUpdate}
                   disabled={
                     gatewayUpdateBusy ||
                     status !== "connected" ||
-                    !gatewayReleaseId.trim()
+                    !gatewayRelease
                   }
                 >
-                  {gatewayUpdateBusy && gatewayUpdate?.phase === "staging"
-                    ? "Downloading release…"
-                    : "Download Gateway release"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onApplyGatewayUpdate(gatewayReleaseId.trim())}
-                  disabled={
-                    gatewayUpdateBusy ||
-                    status !== "connected" ||
-                    !gatewayReleaseId.trim() ||
-                    gatewayUpdate?.phase !== "staged" ||
-                    gatewayUpdate.releaseId !== gatewayReleaseId.trim()
-                  }
-                >
-                  Finish current tasks and update
+                  {gatewayUpdateBusy
+                    ? "Running Gateway update…"
+                    : "Update Gateway with local Agent"}
                 </button>
               </div>
             </div>
@@ -822,7 +792,13 @@ function gatewayUpdateStatusText(state: GatewayUpdateStatus | null): string {
     case "idle":
       return `Gateway ${state.currentBuildId ?? "build unknown"}: no update staged`;
     case "staging":
-      return `Gateway: securely downloading release${release}`;
+      return `Gateway: verifying the signed update Prompt${release}`;
+    case "agent_required":
+      return `Gateway release${release}: waiting for its local maintenance Agent`;
+    case "agent_running":
+      return `Gateway release${release}: local maintenance Agent is updating and testing it`;
+    case "agent_validating":
+      return `Gateway release${release}: supervisor is validating the Agent-built result`;
     case "staged":
       return `Gateway release${release} is verified and ready`;
     case "waiting_for_idle":

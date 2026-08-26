@@ -9,6 +9,7 @@ export default defineConfig({
     'mcp/stdio': 'src/mcp/stdio.ts',
     'privilege/helperMain': 'src/privilege/helperMain.ts',
     'ops/gatewayUpdateSupervisorMain': 'src/ops/gatewayUpdateSupervisorMain.ts',
+    'ops/gatewayAgentUpdateCli': 'src/ops/gatewayAgentUpdateCli.ts',
     'ops/matrix-local-gateway': 'scripts/matrix-local-gateway.ts',
   },
   format: ['esm'],

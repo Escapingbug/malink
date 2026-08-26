@@ -11,11 +11,13 @@ const signer = pairingPublicKeySchema.parse(JSON.parse(await readFile(
 )))
 const supervisor = new GatewayUpdateSupervisor({
   installRoot,
-  manifestBaseUrl: requiredEnvironment('MALINK_GATEWAY_RELEASE_MANIFEST_BASE_URL'),
+  manifestBaseUrl: optionalEnvironment('MALINK_GATEWAY_RELEASE_MANIFEST_BASE_URL'),
+  agentPromptBaseUrl: optionalEnvironment('MALINK_GATEWAY_AGENT_UPDATE_PROMPT_BASE_URL'),
   trustedSigner: signer,
   launchAgentPath: requiredEnvironment('MALINK_GATEWAY_LAUNCH_AGENT'),
   serviceLabel: requiredEnvironment('MALINK_GATEWAY_SERVICE_LABEL'),
   gatewayAdminSocketPath: requiredEnvironment('MALINK_GATEWAY_ADMIN_SOCKET'),
+  updateSocketPath: optionalEnvironment('MALINK_GATEWAY_UPDATE_SOCKET'),
   currentBuildId: process.env.MALINK_GATEWAY_BUILD_ID,
   activationDelayMs: optionalDuration('MALINK_GATEWAY_UPDATE_ACTIVATION_DELAY_MS', 5_000),
   healthTimeoutMs: optionalDuration('MALINK_GATEWAY_UPDATE_HEALTH_TIMEOUT_MS', 180_000),
@@ -65,6 +67,10 @@ function requiredEnvironment(name: string): string {
   const value = process.env[name]?.trim()
   if (!value) throw new Error(`${name} is required`)
   return value
+}
+
+function optionalEnvironment(name: string): string | undefined {
+  return process.env[name]?.trim() || undefined
 }
 
 function optionalDuration(name: string, fallback: number): number {

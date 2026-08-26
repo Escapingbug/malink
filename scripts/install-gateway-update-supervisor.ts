@@ -17,6 +17,7 @@ import {
   canonicalJson,
   canonicalJsonBytes,
   pairingPublicKeySchema,
+  signedGatewayAgentUpdatePromptSchema,
   signedGatewayReleaseManifestSchema,
   type PairingPublicKey,
 } from '@malink/protocol'
@@ -32,7 +33,8 @@ interface InstallOptions {
   gatewayLaunchAgent: string
   gatewayServiceLabel: string
   gatewayAdminSocket: string
-  manifestBaseUrl: string
+  manifestBaseUrl?: string
+  agentPromptBaseUrl?: string
   signerFile: string
   supervisorLaunchAgent: string
   supervisorServiceLabel: string
@@ -50,22 +52,44 @@ export async function installGatewayUpdateSupervisor(options: InstallOptions): P
     join(currentRoot, 'runtime', 'node'),
     join(currentRoot, 'ops', 'matrix-local-gateway.js'),
     join(currentRoot, 'ops', 'gatewayUpdateSupervisorMain.js'),
+    ...(options.agentPromptBaseUrl
+      ? [join(currentRoot, 'ops', 'gatewayAgentUpdateCli.js')]
+      : []),
     resolve(options.gatewayLaunchAgent),
   ]) {
     const metadata = await stat(path)
     if (!metadata.isFile()) throw new Error(`Required Gateway installation file is missing: ${path}`)
   }
-  const manifestBase = new URL(options.manifestBaseUrl)
-  const loopback = manifestBase.protocol === 'http:'
-    && (manifestBase.hostname === '127.0.0.1' || manifestBase.hostname === 'localhost')
-  if (
-    (manifestBase.protocol !== 'https:' && !loopback)
-    || manifestBase.username
-    || manifestBase.password
-    || manifestBase.search
-    || manifestBase.hash
-  ) {
-    throw new Error('Gateway release manifest base must be credential-free HTTPS')
+  if (!options.manifestBaseUrl && !options.agentPromptBaseUrl) {
+    throw new Error('A Gateway update Prompt or legacy manifest base URL is required')
+  }
+  if (options.manifestBaseUrl) {
+    const manifestBase = new URL(options.manifestBaseUrl)
+    const loopback = manifestBase.protocol === 'http:'
+      && (manifestBase.hostname === '127.0.0.1' || manifestBase.hostname === 'localhost')
+    if (
+      (manifestBase.protocol !== 'https:' && !loopback)
+      || manifestBase.username
+      || manifestBase.password
+      || manifestBase.search
+      || manifestBase.hash
+    ) {
+      throw new Error('Gateway release manifest base must be credential-free HTTPS')
+    }
+  }
+  if (options.agentPromptBaseUrl) {
+    const promptBase = new URL(options.agentPromptBaseUrl)
+    const promptLoopback = promptBase.protocol === 'http:'
+      && (promptBase.hostname === '127.0.0.1' || promptBase.hostname === 'localhost')
+    if (
+      (promptBase.protocol !== 'https:' && !promptLoopback)
+      || promptBase.username
+      || promptBase.password
+      || promptBase.search
+      || promptBase.hash
+    ) {
+      throw new Error('Gateway Agent update Prompt base must be credential-free HTTPS')
+    }
   }
   const signer = pairingPublicKeySchema.parse(JSON.parse(await readFile(
     resolve(options.signerFile),
@@ -132,7 +156,12 @@ function supervisorLaunchAgentPlist(options: ResolvedInstallOptions): string {
   const environment: Record<string, string> = {
     MALINK_GATEWAY_INSTALL_ROOT: options.installRoot,
     MALINK_GATEWAY_RELEASE_SIGNER_FILE: options.signerFile,
-    MALINK_GATEWAY_RELEASE_MANIFEST_BASE_URL: options.manifestBaseUrl,
+    ...(options.manifestBaseUrl
+      ? { MALINK_GATEWAY_RELEASE_MANIFEST_BASE_URL: options.manifestBaseUrl }
+      : {}),
+    ...(options.agentPromptBaseUrl
+      ? { MALINK_GATEWAY_AGENT_UPDATE_PROMPT_BASE_URL: options.agentPromptBaseUrl }
+      : {}),
     MALINK_GATEWAY_LAUNCH_AGENT: options.gatewayLaunchAgent,
     MALINK_GATEWAY_SERVICE_LABEL: options.gatewayServiceLabel,
     MALINK_GATEWAY_ADMIN_SOCKET: options.gatewayAdminSocket,
@@ -170,32 +199,33 @@ async function resolveCurrentBuildId(
   configured: string | undefined,
 ): Promise<string> {
   try {
+    const signed = signedGatewayAgentUpdatePromptSchema.parse(JSON.parse(await readFile(
+      join(currentRoot, 'release-prompt.json'),
+      'utf8',
+    )))
+    await verifySignedReleaseMetadata(
+      signed.signer,
+      signed.signature,
+      signed.update,
+      trustedSigner,
+      'Gateway Agent update Prompt',
+    )
+    return signed.update.buildId
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  try {
     const signed = signedGatewayReleaseManifestSchema.parse(JSON.parse(await readFile(
       join(currentRoot, 'release-manifest.json'),
       'utf8',
     )))
-    const trustedKeyId = await publicKeyId(trustedSigner.publicKey)
-    if (
-      signed.signer.keyId !== trustedKeyId
-      || signed.signature.keyId !== trustedKeyId
-      || canonicalJson(signed.signer) !== canonicalJson(trustedSigner)
-    ) {
-      throw new Error('The current Gateway release manifest does not use the pinned signer')
-    }
-    const key = await webCrypto().subtle.importKey(
-      'jwk',
-      signed.signer.publicKey,
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      false,
-      ['verify'],
+    await verifySignedReleaseMetadata(
+      signed.signer,
+      signed.signature,
+      signed.manifest,
+      trustedSigner,
+      'Gateway release manifest',
     )
-    const valid = await webCrypto().subtle.verify(
-      { name: 'ECDSA', hash: 'SHA-256' },
-      key,
-      toArrayBuffer(base64UrlDecode(signed.signature.value)),
-      toArrayBuffer(canonicalJsonBytes(signed.manifest)),
-    )
-    if (!valid) throw new Error('The current Gateway release manifest signature is invalid')
     return signed.manifest.buildId
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
@@ -208,6 +238,37 @@ async function resolveCurrentBuildId(
     )
   }
   return fallback
+}
+
+async function verifySignedReleaseMetadata(
+  signer: PairingPublicKey,
+  signature: { keyId: string; algorithm: 'ES256'; value: string },
+  payload: unknown,
+  trustedSigner: PairingPublicKey,
+  label: string,
+): Promise<void> {
+  const trustedKeyId = await publicKeyId(trustedSigner.publicKey)
+  if (
+    signer.keyId !== trustedKeyId
+    || signature.keyId !== trustedKeyId
+    || canonicalJson(signer) !== canonicalJson(trustedSigner)
+  ) {
+    throw new Error(`The current ${label} does not use the pinned signer`)
+  }
+  const key = await webCrypto().subtle.importKey(
+    'jwk',
+    signer.publicKey,
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    false,
+    ['verify'],
+  )
+  const valid = await webCrypto().subtle.verify(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    key,
+    toArrayBuffer(base64UrlDecode(signature.value)),
+    toArrayBuffer(canonicalJsonBytes(payload)),
+  )
+  if (!valid) throw new Error(`The current ${label} signature is invalid`)
 }
 
 async function setLaunchAgentEnvironment(path: string, key: string, value: string): Promise<void> {
@@ -321,7 +382,12 @@ function parseArguments(argv: readonly string[]): InstallOptions {
     gatewayLaunchAgent: resolve(required('gateway-launch-agent')),
     gatewayServiceLabel: required('gateway-service-label'),
     gatewayAdminSocket: resolve(required('gateway-admin-socket')),
-    manifestBaseUrl: required('manifest-base-url'),
+    ...(values.get('manifest-base-url')?.trim()
+      ? { manifestBaseUrl: values.get('manifest-base-url')!.trim() }
+      : {}),
+    ...(values.get('agent-prompt-base-url')?.trim()
+      ? { agentPromptBaseUrl: values.get('agent-prompt-base-url')!.trim() }
+      : {}),
     signerFile: resolve(required('signer-file')),
     supervisorLaunchAgent: resolve(
       values.get('supervisor-launch-agent')

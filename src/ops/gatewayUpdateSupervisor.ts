@@ -19,10 +19,13 @@ import {
   canonicalJson,
   canonicalJsonBytes,
   gatewayUpdateStatusSchema,
+  signedGatewayAgentUpdatePromptSchema,
   signedGatewayReleaseManifestSchema,
+  type GatewayAgentUpdatePrompt,
   type GatewayReleaseManifest,
   type GatewayUpdateStatus,
   type PairingPublicKey,
+  type SignedGatewayAgentUpdatePrompt,
   type SignedGatewayReleaseManifest,
 } from '@malink/protocol'
 import {
@@ -43,17 +46,50 @@ interface GatewayUpdateSupervisorState {
   version: 1
   status: GatewayUpdateStatus
   staged?: SignedGatewayReleaseManifest
+  agentUpdate?: SignedGatewayAgentUpdatePrompt
+  agentSeal?: GatewayAgentReleaseSeal
+  agentOwnerCommandId?: string
   previousTarget?: string
   scheduledAt?: number
 }
 
+interface GatewayAgentReleaseSeal {
+  version: 1
+  updateHash: string
+  files: Array<{
+    path: string
+    size: number
+    sha256: string
+    executable?: true
+  }>
+}
+
+export interface GatewayAgentUpdateInstruction {
+  releaseId: string
+  buildId: string
+  versionName: string
+  repository: GatewayAgentUpdatePrompt['repository']
+  prompt: string
+  workspaceDirectory: string
+  sourceDirectory: string
+  candidateDirectory: string
+  submitCommand: string
+}
+
+export interface GatewayAgentUpdateBeginResult {
+  status: GatewayUpdateStatus
+  started: boolean
+}
+
 export interface GatewayUpdateSupervisorConfig {
   installRoot: string
-  manifestBaseUrl: string
+  manifestBaseUrl?: string
+  agentPromptBaseUrl?: string
   trustedSigner: PairingPublicKey
   launchAgentPath: string
   serviceLabel: string
   gatewayAdminSocketPath: string
+  updateSocketPath?: string
   currentBuildId?: string
   activationDelayMs?: number
   healthTimeoutMs?: number
@@ -75,6 +111,7 @@ export interface GatewayUpdateSupervisorDependencies {
 export class GatewayUpdateSupervisor {
   private readonly installRoot: string
   private readonly releasesRoot: string
+  private readonly agentUpdatesRoot: string
   private readonly stateFile: AtomicJsonFile<GatewayUpdateSupervisorState>
   private timer: ReturnType<typeof setTimeout> | null = null
   private activation: Promise<void> | null = null
@@ -86,21 +123,40 @@ export class GatewayUpdateSupervisor {
   ) {
     this.installRoot = resolve(config.installRoot)
     this.releasesRoot = join(this.installRoot, 'releases')
+    this.agentUpdatesRoot = join(this.installRoot, 'agent-updates')
     this.stateFile = new AtomicJsonFile(join(this.installRoot, 'supervisor-state.json'))
-    const manifestBase = new URL(config.manifestBaseUrl)
-    if (
-      (manifestBase.protocol !== 'https:' && !isLoopbackHttp(manifestBase))
-      || manifestBase.username
-      || manifestBase.password
-      || manifestBase.search
-      || manifestBase.hash
-    ) {
-      throw new Error('Gateway release manifest base must be credential-free HTTPS')
+    if (!config.manifestBaseUrl && !config.agentPromptBaseUrl) {
+      throw new Error('A Gateway update Prompt or legacy manifest base URL is required')
+    }
+    if (config.manifestBaseUrl) {
+      const manifestBase = new URL(config.manifestBaseUrl)
+      if (
+        (manifestBase.protocol !== 'https:' && !isLoopbackHttp(manifestBase))
+        || manifestBase.username
+        || manifestBase.password
+        || manifestBase.search
+        || manifestBase.hash
+      ) {
+        throw new Error('Gateway release manifest base must be credential-free HTTPS')
+      }
+    }
+    if (config.agentPromptBaseUrl) {
+      const promptBase = new URL(config.agentPromptBaseUrl)
+      if (
+        (promptBase.protocol !== 'https:' && !isLoopbackHttp(promptBase))
+        || promptBase.username
+        || promptBase.password
+        || promptBase.search
+        || promptBase.hash
+      ) {
+        throw new Error('Gateway Agent update Prompt base must be credential-free HTTPS')
+      }
     }
   }
 
   async initialize(): Promise<void> {
     await mkdir(this.releasesRoot, { recursive: true, mode: 0o700 })
+    await mkdir(this.agentUpdatesRoot, { recursive: true, mode: 0o700 })
     const state = await this.readState()
     if (state.status.phase === 'scheduled' && state.scheduledAt !== undefined) {
       this.armActivation(state.scheduledAt)
@@ -117,14 +173,231 @@ export class GatewayUpdateSupervisor {
       validateState(state)
       const changed = installedBuildId !== undefined
         && state.status.currentBuildId !== installedBuildId
-        && ['idle', 'staging', 'staged', 'failed'].includes(state.status.phase)
+        && [
+          'idle',
+          'staging',
+          'agent_required',
+          'agent_running',
+          'agent_validating',
+          'staged',
+          'failed',
+        ].includes(state.status.phase)
       if (changed) state.status.currentBuildId = installedBuildId
       return { result: structuredClone(state.status), changed }
     })
   }
 
   async stage(releaseId: string): Promise<GatewayUpdateStatus> {
-    return this.serializeRequest(() => this.stageOnce(releaseId))
+    return this.serializeRequest(() => this.config.agentPromptBaseUrl
+      ? this.prepareAgentUpdateOnce(releaseId)
+      : this.stageOnce(releaseId))
+  }
+
+  async agentInstruction(releaseId: string): Promise<GatewayAgentUpdateInstruction> {
+    requireReleaseId(releaseId)
+    const state = await this.readState()
+    if (!state.agentUpdate || state.agentUpdate.update.releaseId !== releaseId) {
+      throw new Error(`Gateway Agent update ${releaseId} is not prepared`)
+    }
+    if (!['agent_required', 'agent_running', 'failed'].includes(state.status.phase)) {
+      throw new Error(`Gateway Agent update ${releaseId} is ${state.status.phase}`)
+    }
+    return this.agentInstructionFor(state.agentUpdate)
+  }
+
+  async beginAgentUpdate(
+    releaseId: string,
+    maintenanceSessionId: string,
+    ownerCommandId: string,
+  ): Promise<GatewayAgentUpdateBeginResult> {
+    return this.serializeRequest(async () => {
+      requireReleaseId(releaseId)
+      if (!maintenanceSessionId || maintenanceSessionId.length > 256) {
+        throw new Error('Gateway maintenance session ID is invalid')
+      }
+      if (!ownerCommandId || ownerCommandId.length > 256) {
+        throw new Error('Gateway maintenance owner command ID is invalid')
+      }
+      let started = false
+      const status = await this.writeState(state => {
+        if (!state.agentUpdate || state.agentUpdate.update.releaseId !== releaseId) {
+          throw new Error(`Gateway Agent update ${releaseId} is not prepared`)
+        }
+        if (!['agent_required', 'agent_running', 'failed'].includes(state.status.phase)) {
+          throw new Error(`Gateway Agent update ${releaseId} is ${state.status.phase}`)
+        }
+        if (
+          state.status.phase === 'agent_running'
+          && state.agentOwnerCommandId !== ownerCommandId
+        ) return
+        started = true
+        state.agentOwnerCommandId = ownerCommandId
+        state.status = {
+          ...state.status,
+          phase: 'agent_running',
+          maintenanceSessionId,
+          detail: 'A local maintenance Agent is preparing the signed update Prompt',
+          updatedAt: this.now(),
+        }
+      })
+      return { status, started }
+    })
+  }
+
+  async submitAgentRelease(releaseId: string): Promise<GatewayUpdateStatus> {
+    return this.serializeRequest(() => this.submitAgentReleaseOnce(releaseId))
+  }
+
+  async failAgentUpdate(
+    releaseId: string,
+    ownerCommandId: string,
+    detail: string,
+  ): Promise<GatewayUpdateStatus> {
+    return this.serializeRequest(() => this.writeState(state => {
+      requireReleaseId(releaseId)
+      if (!ownerCommandId || ownerCommandId.length > 256) {
+        throw new Error('Gateway maintenance owner command ID is invalid')
+      }
+      if (
+        state.agentUpdate?.update.releaseId !== releaseId
+        || state.status.phase !== 'agent_running'
+        || state.agentOwnerCommandId !== ownerCommandId
+      ) return
+      state.agentOwnerCommandId = undefined
+      state.status = {
+        ...state.status,
+        phase: 'failed',
+        detail: statusDetail(detail),
+        updatedAt: this.now(),
+      }
+    }))
+  }
+
+  private async prepareAgentUpdateOnce(releaseId: string): Promise<GatewayUpdateStatus> {
+    requireReleaseId(releaseId)
+    const current = await this.readState()
+    if (
+      current.status.releaseId === releaseId
+      && ['agent_required', 'agent_running', 'staged', 'scheduled', 'activating', 'probation', 'committed']
+        .includes(current.status.phase)
+    ) {
+      return structuredClone(current.status)
+    }
+    if (
+      current.status.phase === 'scheduled'
+      || current.status.phase === 'activating'
+      || current.status.phase === 'probation'
+    ) {
+      throw new Error(`Cannot prepare an Agent update while update is ${current.status.phase}`)
+    }
+    const updateId = randomUUID()
+    const currentBuildId = await this.installedBuildId()
+    await this.writeState(state => {
+      state.staged = undefined
+      state.agentUpdate = undefined
+      state.agentSeal = undefined
+      state.agentOwnerCommandId = undefined
+      state.status = {
+        version: 1,
+        phase: 'staging',
+        updateId,
+        releaseId,
+        ...(currentBuildId ? { currentBuildId } : {}),
+        detail: 'Downloading and verifying the signed Gateway update Prompt',
+        updatedAt: this.now(),
+      }
+    })
+    try {
+      const signed = await this.fetchAndVerifyAgentPrompt(releaseId)
+      if (currentBuildId && signed.update.buildId === currentBuildId) {
+        return await this.writeState(state => {
+          state.status = {
+            version: 1,
+            phase: 'committed',
+            updateId,
+            releaseId,
+            targetBuildId: signed.update.buildId,
+            currentBuildId,
+            updatedAt: this.now(),
+          }
+        })
+      }
+      await this.prepareAgentWorkspace(signed)
+      return await this.writeState(state => {
+        state.agentUpdate = signed
+        state.status = {
+          version: 1,
+          phase: 'agent_required',
+          updateId,
+          releaseId,
+          targetBuildId: signed.update.buildId,
+          ...(currentBuildId ? { currentBuildId } : {}),
+          detail: 'The signed update Prompt is ready for a local maintenance Agent',
+          updatedAt: this.now(),
+        }
+      })
+    } catch (error) {
+      await this.writeState(state => {
+        state.status = {
+          version: 1,
+          phase: 'failed',
+          updateId,
+          releaseId,
+          detail: statusDetail(error),
+          ...(currentBuildId ? { currentBuildId } : {}),
+          updatedAt: this.now(),
+        }
+      })
+      throw error
+    }
+  }
+
+  private async submitAgentReleaseOnce(releaseId: string): Promise<GatewayUpdateStatus> {
+    requireReleaseId(releaseId)
+    const state = await this.readState()
+    if (
+      state.status.releaseId === releaseId
+      && ['staged', 'scheduled', 'activating', 'probation', 'committed']
+        .includes(state.status.phase)
+    ) {
+      return structuredClone(state.status)
+    }
+    if (!state.agentUpdate || state.agentUpdate.update.releaseId !== releaseId) {
+      throw new Error(`Gateway Agent update ${releaseId} is not prepared`)
+    }
+    if (!['agent_required', 'agent_running', 'failed'].includes(state.status.phase)) {
+      throw new Error(`Cannot submit an Agent update while update is ${state.status.phase}`)
+    }
+    await this.writeState(current => {
+      current.status = {
+        ...current.status,
+        phase: 'agent_validating',
+        detail: 'The supervisor is sealing and validating the Agent-built release',
+        updatedAt: this.now(),
+      }
+    })
+    try {
+      const seal = await this.stageAgentCandidate(state.agentUpdate)
+      return await this.writeState(current => {
+        current.agentSeal = seal
+        current.status = {
+          ...current.status,
+          phase: 'staged',
+          detail: 'The Agent-built release passed local supervisor validation',
+          updatedAt: this.now(),
+        }
+      })
+    } catch (error) {
+      await this.writeState(current => {
+        current.status = {
+          ...current.status,
+          phase: 'failed',
+          detail: statusDetail(error),
+          updatedAt: this.now(),
+        }
+      })
+      throw error
+    }
   }
 
   private async stageOnce(releaseId: string): Promise<GatewayUpdateStatus> {
@@ -147,6 +420,9 @@ export class GatewayUpdateSupervisor {
     const updateId = randomUUID()
     const currentBuildId = await this.installedBuildId()
     await this.writeState(state => {
+      state.agentUpdate = undefined
+      state.agentSeal = undefined
+      state.agentOwnerCommandId = undefined
       state.status = {
         version: 1,
         phase: 'staging',
@@ -175,6 +451,9 @@ export class GatewayUpdateSupervisor {
       await this.stageManifest(signed)
       return await this.writeState(state => {
         state.staged = signed
+        state.agentUpdate = undefined
+        state.agentSeal = undefined
+        state.agentOwnerCommandId = undefined
         state.status = {
           version: 1,
           phase: 'staged',
@@ -215,31 +494,56 @@ export class GatewayUpdateSupervisor {
     ) {
       return structuredClone(stagedState.status)
     }
-    if (!stagedState.staged || stagedState.staged.manifest.releaseId !== releaseId) {
+    const legacyRelease = stagedState.staged?.manifest.releaseId === releaseId
+      ? stagedState.staged
+      : undefined
+    const agentRelease = stagedState.agentUpdate?.update.releaseId === releaseId
+      && stagedState.agentSeal
+      ? { signed: stagedState.agentUpdate, seal: stagedState.agentSeal }
+      : undefined
+    if (!legacyRelease && !agentRelease) {
       throw new Error(`Gateway release ${releaseId} is not staged`)
     }
     if (stagedState.status.phase !== 'staged') {
       throw new Error(`Cannot schedule a release while update is ${stagedState.status.phase}`)
     }
     const stagedDirectory = join(this.releasesRoot, releaseId)
-    const installedManifest = signedGatewayReleaseManifestSchema.parse(JSON.parse(await readFile(
-      join(stagedDirectory, 'release-manifest.json'),
-      'utf8',
-    )))
-    if (canonicalJson(installedManifest) !== canonicalJson(stagedState.staged)) {
-      throw new Error(`Staged Gateway release ${releaseId} manifest changed after verification`)
+    if (legacyRelease) {
+      const installedManifest = signedGatewayReleaseManifestSchema.parse(JSON.parse(await readFile(
+        join(stagedDirectory, 'release-manifest.json'),
+        'utf8',
+      )))
+      if (canonicalJson(installedManifest) !== canonicalJson(legacyRelease)) {
+        throw new Error(`Staged Gateway release ${releaseId} manifest changed after verification`)
+      }
+      await verifyStagedManifest(stagedDirectory, legacyRelease.manifest)
+    } else if (agentRelease) {
+      const installedPrompt = signedGatewayAgentUpdatePromptSchema.parse(JSON.parse(await readFile(
+        join(stagedDirectory, 'release-prompt.json'),
+        'utf8',
+      )))
+      const installedSeal = parseAgentReleaseSeal(JSON.parse(await readFile(
+        join(stagedDirectory, 'release-seal.json'),
+        'utf8',
+      )))
+      if (
+        canonicalJson(installedPrompt) !== canonicalJson(agentRelease.signed)
+        || canonicalJson(installedSeal) !== canonicalJson(agentRelease.seal)
+      ) {
+        throw new Error(`Staged Gateway Agent release ${releaseId} changed after validation`)
+      }
+      await verifyAgentSealedRelease(stagedDirectory, agentRelease.signed, agentRelease.seal)
     }
-    await verifyStagedManifest(
-      stagedDirectory,
-      stagedState.staged.manifest,
-    )
+    const targetBuildId = legacyRelease?.manifest.buildId ?? agentRelease!.signed.update.buildId
     const currentLink = join(this.installRoot, 'current')
     const previousTarget = await readlink(currentLink)
     const previousReleaseId = basename(resolve(dirname(currentLink), previousTarget))
     const currentBuildId = await this.installedBuildId()
     const scheduledAt = this.now() + (this.config.activationDelayMs ?? 5_000)
     const status = await this.writeState(state => {
-      if (!state.staged || state.staged.manifest.releaseId !== releaseId) {
+      const hasRelease = state.staged?.manifest.releaseId === releaseId
+        || (state.agentUpdate?.update.releaseId === releaseId && state.agentSeal !== undefined)
+      if (!hasRelease) {
         throw new Error(`Gateway release ${releaseId} is not staged`)
       }
       if (state.status.phase !== 'staged') {
@@ -252,9 +556,12 @@ export class GatewayUpdateSupervisor {
         phase: 'scheduled',
         updateId: state.status.updateId ?? randomUUID(),
         releaseId,
-        targetBuildId: state.staged.manifest.buildId,
+        targetBuildId,
         ...(currentBuildId ? { currentBuildId } : {}),
         previousReleaseId,
+        ...(state.status.maintenanceSessionId
+          ? { maintenanceSessionId: state.status.maintenanceSessionId }
+          : {}),
         updatedAt: this.now(),
       }
     })
@@ -286,8 +593,9 @@ export class GatewayUpdateSupervisor {
 
   private async activateScheduled(): Promise<void> {
     const state = await this.readState()
-    if (state.status.phase !== 'scheduled' || !state.staged) return
-    const manifest = state.staged.manifest
+    if (state.status.phase !== 'scheduled') return
+    const target = state.staged?.manifest ?? state.agentUpdate?.update
+    if (!target) return
     const previousReleaseId = state.status.previousReleaseId
     await this.writeState(current => {
       current.status = {
@@ -310,13 +618,13 @@ export class GatewayUpdateSupervisor {
           },
         }))
       await activate({
-        releaseDirectory: join(this.releasesRoot, manifest.releaseId),
+        releaseDirectory: join(this.releasesRoot, target.releaseId),
         installRoot: this.installRoot,
         launchAgentPath: this.config.launchAgentPath,
         serviceLabel: this.config.serviceLabel,
         adminSocketPath: this.config.gatewayAdminSocketPath,
         healthTimeoutMs: this.config.healthTimeoutMs ?? 60_000,
-        expectedBuildId: manifest.buildId,
+        expectedBuildId: target.buildId,
         ...(state.status.currentBuildId
           ? { rollbackBuildId: state.status.currentBuildId }
           : {}),
@@ -331,10 +639,13 @@ export class GatewayUpdateSupervisor {
           version: 1,
           phase: 'committed',
           updateId: state.status.updateId,
-          releaseId: manifest.releaseId,
-          targetBuildId: manifest.buildId,
-          currentBuildId: manifest.buildId,
+          releaseId: target.releaseId,
+          targetBuildId: target.buildId,
+          currentBuildId: target.buildId,
           ...(previousReleaseId ? { previousReleaseId } : {}),
+          ...(state.status.maintenanceSessionId
+            ? { maintenanceSessionId: state.status.maintenanceSessionId }
+            : {}),
           updatedAt: this.now(),
         }
       })
@@ -403,10 +714,194 @@ export class GatewayUpdateSupervisor {
     }
   }
 
+  private async fetchAndVerifyAgentPrompt(
+    releaseId: string,
+  ): Promise<SignedGatewayAgentUpdatePrompt> {
+    const configuredBase = this.config.agentPromptBaseUrl
+    if (!configuredBase) throw new Error('Gateway Agent update Prompt delivery is not configured')
+    const base = new URL(configuredBase.endsWith('/') ? configuredBase : `${configuredBase}/`)
+    const url = new URL(`${encodeURIComponent(releaseId)}.json`, base)
+    if (url.origin !== base.origin) throw new Error('Gateway Agent update Prompt escaped its origin')
+    const text = await withFetchTimeout(
+      this.config.manifestFetchTimeoutMs ?? 30_000,
+      'Gateway Agent update Prompt download',
+      signal => this.retryTransientFetch('Agent update Prompt download', signal, async () => {
+        const response = await (this.dependencies.fetch ?? fetch)(url, {
+          signal,
+          headers: { 'accept-encoding': 'identity' },
+        })
+        if (response.url && new URL(response.url).origin !== base.origin) {
+          throw new Error('Gateway Agent update Prompt redirected to an untrusted origin')
+        }
+        if (!response.ok) {
+          throw fetchStatusError('Gateway Agent update Prompt', response.status)
+        }
+        return readBoundedText(response, 128 * 1024, 'Gateway Agent update Prompt')
+      }),
+    )
+    let input: unknown
+    try {
+      input = JSON.parse(text)
+    } catch (error) {
+      throw new Error('Gateway Agent update Prompt is invalid JSON', { cause: error })
+    }
+    const signed = signedGatewayAgentUpdatePromptSchema.parse(input)
+    if (signed.update.releaseId !== releaseId) {
+      throw new Error('Gateway Agent update Prompt ID does not match the request')
+    }
+    await this.verifyAgentPrompt(signed)
+    return signed
+  }
+
+  private async verifyAgentPrompt(signed: SignedGatewayAgentUpdatePrompt): Promise<void> {
+    const trustedKeyId = await publicKeyId(this.config.trustedSigner.publicKey)
+    if (
+      signed.signer.keyId !== trustedKeyId
+      || signed.signature.keyId !== trustedKeyId
+      || canonicalJson(signed.signer) !== canonicalJson(this.config.trustedSigner)
+    ) {
+      throw new Error('Gateway Agent update Prompt signer is not trusted')
+    }
+    const key = await webCrypto().subtle.importKey(
+      'jwk',
+      signed.signer.publicKey,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['verify'],
+    )
+    const verified = await webCrypto().subtle.verify(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      key,
+      toArrayBuffer(base64UrlDecode(signed.signature.value)),
+      toArrayBuffer(canonicalJsonBytes(signed.update)),
+    )
+    if (!verified) throw new Error('Gateway Agent update Prompt signature is invalid')
+    assertRollbackCompatibleState(signed.update)
+  }
+
+  private async prepareAgentWorkspace(signed: SignedGatewayAgentUpdatePrompt): Promise<void> {
+    const workspace = this.agentWorkspace(signed.update.releaseId)
+    try {
+      const existing = signedGatewayAgentUpdatePromptSchema.parse(JSON.parse(await readFile(
+        join(workspace, 'update-prompt.json'),
+        'utf8',
+      )))
+      if (canonicalJson(existing) !== canonicalJson(signed)) {
+        throw new Error(`Gateway Agent update ${signed.update.releaseId} is immutable`)
+      }
+      await lstat(join(workspace, 'candidate'))
+      return
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    const temporary = await mkdtemp(join(this.agentUpdatesRoot, `.prepare-${signed.update.releaseId}-`))
+    try {
+      const candidate = join(temporary, 'candidate')
+      const source = join(temporary, 'source')
+      await mkdir(candidate, { recursive: true, mode: 0o700 })
+      await mkdir(source, { recursive: true, mode: 0o700 })
+      const reusableRelease = await this.reusableReleaseDirectory()
+      if (reusableRelease) {
+        await copyAgentReleaseTree(reusableRelease, candidate, { ignoreReleaseMetadata: true })
+      }
+      await writeDurableFile(
+        join(temporary, 'update-prompt.json'),
+        `${JSON.stringify(signed)}\n`,
+      )
+      await rename(temporary, workspace)
+      await syncDirectory(this.agentUpdatesRoot)
+    } catch (error) {
+      await rm(temporary, { recursive: true, force: true })
+      throw error
+    }
+  }
+
+  private agentInstructionFor(
+    signed: SignedGatewayAgentUpdatePrompt,
+  ): GatewayAgentUpdateInstruction {
+    const workspaceDirectory = this.agentWorkspace(signed.update.releaseId)
+    const runtime = join(this.installRoot, 'current', 'runtime', 'node')
+    const cli = join(this.installRoot, 'current', 'ops', 'gatewayAgentUpdateCli.js')
+    const socket = this.config.updateSocketPath
+      ? resolve(this.config.updateSocketPath)
+      : join(this.installRoot, 'update-supervisor.sock')
+    return {
+      releaseId: signed.update.releaseId,
+      buildId: signed.update.buildId,
+      versionName: signed.update.versionName,
+      repository: structuredClone(signed.update.repository),
+      prompt: signed.update.prompt,
+      workspaceDirectory,
+      sourceDirectory: join(workspaceDirectory, 'source'),
+      candidateDirectory: join(workspaceDirectory, 'candidate'),
+      submitCommand: [
+        shellQuote(runtime),
+        shellQuote(cli),
+        'submit',
+        '--socket',
+        shellQuote(socket),
+        '--release-id',
+        shellQuote(signed.update.releaseId),
+      ].join(' '),
+    }
+  }
+
+  private agentWorkspace(releaseId: string): string {
+    return join(this.agentUpdatesRoot, releaseId)
+  }
+
+  private async stageAgentCandidate(
+    signed: SignedGatewayAgentUpdatePrompt,
+  ): Promise<GatewayAgentReleaseSeal> {
+    const releaseId = signed.update.releaseId
+    const destination = join(this.releasesRoot, releaseId)
+    try {
+      const installedPrompt = signedGatewayAgentUpdatePromptSchema.parse(JSON.parse(await readFile(
+        join(destination, 'release-prompt.json'),
+        'utf8',
+      )))
+      const installedSeal = parseAgentReleaseSeal(JSON.parse(await readFile(
+        join(destination, 'release-seal.json'),
+        'utf8',
+      )))
+      if (canonicalJson(installedPrompt) !== canonicalJson(signed)) {
+        throw new Error(`Installed Gateway Agent release ${releaseId} is immutable`)
+      }
+      await verifyAgentSealedRelease(destination, signed, installedSeal)
+      return installedSeal
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    const candidate = join(this.agentWorkspace(releaseId), 'candidate')
+    const temporary = await mkdtemp(join(this.releasesRoot, `.stage-agent-${releaseId}-`))
+    try {
+      await copyAgentReleaseTree(candidate, temporary)
+      await validateAgentReleaseEntrypoints(temporary)
+      const seal = await createAgentReleaseSeal(temporary, signed)
+      await writeDurableFile(
+        join(temporary, 'release-prompt.json'),
+        `${JSON.stringify(signed)}\n`,
+      )
+      await writeDurableFile(
+        join(temporary, 'release-seal.json'),
+        `${JSON.stringify(seal)}\n`,
+      )
+      await verifyAgentSealedRelease(temporary, signed, seal)
+      await rename(temporary, destination)
+      await syncDirectory(this.releasesRoot)
+      return seal
+    } catch (error) {
+      await rm(temporary, { recursive: true, force: true })
+      throw error
+    }
+  }
+
   private async fetchAndVerifyManifest(releaseId: string): Promise<SignedGatewayReleaseManifest> {
-    const base = new URL(this.config.manifestBaseUrl.endsWith('/')
-      ? this.config.manifestBaseUrl
-      : `${this.config.manifestBaseUrl}/`)
+    const configuredBase = this.config.manifestBaseUrl
+    if (!configuredBase) throw new Error('Legacy Gateway artifact delivery is not configured')
+    const base = new URL(configuredBase.endsWith('/')
+      ? configuredBase
+      : `${configuredBase}/`)
     const url = new URL(`${encodeURIComponent(releaseId)}.json`, base)
     if (url.origin !== base.origin) throw new Error('Gateway release manifest escaped its origin')
     const text = await withFetchTimeout(
@@ -469,7 +964,9 @@ export class GatewayUpdateSupervisor {
         + `not ${process.platform}/${process.arch}`,
       )
     }
-    const manifestOrigin = new URL(this.config.manifestBaseUrl).origin
+    const configuredBase = this.config.manifestBaseUrl
+    if (!configuredBase) throw new Error('Legacy Gateway artifact delivery is not configured')
+    const manifestOrigin = new URL(configuredBase).origin
     for (const file of signed.manifest.files) {
       if (new URL(file.url).origin !== manifestOrigin) {
         throw new Error(`Gateway release file ${file.path} uses an untrusted origin`)
@@ -727,6 +1224,18 @@ export class GatewayUpdateSupervisor {
 
   private async installedBuildId(): Promise<string | undefined> {
     try {
+      const signedPrompt = signedGatewayAgentUpdatePromptSchema.parse(JSON.parse(await readFile(
+        join(this.installRoot, 'current', 'release-prompt.json'),
+        'utf8',
+      )))
+      await this.verifyAgentPrompt(signedPrompt)
+      return signedPrompt.update.buildId
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error('The active Gateway Agent update Prompt is invalid', { cause: error })
+      }
+    }
+    try {
       const signed = signedGatewayReleaseManifestSchema.parse(JSON.parse(await readFile(
         join(this.installRoot, 'current', 'release-manifest.json'),
         'utf8',
@@ -741,6 +1250,189 @@ export class GatewayUpdateSupervisor {
   private log(message: string): void {
     this.dependencies.onLog?.(message)
   }
+}
+
+const AGENT_RELEASE_METADATA = new Set([
+  'release-manifest.json',
+  'release-prompt.json',
+  'release-seal.json',
+])
+const MAX_AGENT_RELEASE_FILES = 10_000
+const MAX_AGENT_RELEASE_BYTES = 1024 * 1024 * 1024
+
+async function copyAgentReleaseTree(
+  sourceRoot: string,
+  destinationRoot: string,
+  options: { ignoreReleaseMetadata?: boolean } = {},
+): Promise<void> {
+  let files = 0
+  let bytes = 0
+  const visit = async (sourceDirectory: string, destinationDirectory: string): Promise<void> => {
+    await mkdir(destinationDirectory, { recursive: true, mode: 0o700 })
+    const entries = await readdir(sourceDirectory, { withFileTypes: true })
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const source = join(sourceDirectory, entry.name)
+      const path = relative(sourceRoot, source).split(sep).join('/')
+      const destination = join(destinationRoot, ...path.split('/'))
+      if (AGENT_RELEASE_METADATA.has(path)) {
+        if (options.ignoreReleaseMetadata) continue
+        throw new Error(`Agent-built Gateway release contains reserved metadata: ${path}`)
+      }
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Agent-built Gateway release contains a symbolic link: ${path}`)
+      }
+      if (entry.isDirectory()) {
+        await visit(source, destination)
+        continue
+      }
+      if (!entry.isFile()) {
+        throw new Error(`Agent-built Gateway release contains a non-regular file: ${path}`)
+      }
+      const metadata = await lstat(source)
+      if (metadata.size < 1) throw new Error(`Agent-built Gateway release file is empty: ${path}`)
+      files += 1
+      bytes += metadata.size
+      if (files > MAX_AGENT_RELEASE_FILES || bytes > MAX_AGENT_RELEASE_BYTES) {
+        throw new Error('Agent-built Gateway release exceeds its file-count or size limit')
+      }
+      await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
+      await copyFile(
+        source,
+        destination,
+        constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE,
+      )
+      await chmod(destination, (metadata.mode & 0o111) !== 0 ? 0o755 : 0o600)
+    }
+  }
+  await visit(sourceRoot, destinationRoot)
+}
+
+async function validateAgentReleaseEntrypoints(releaseDirectory: string): Promise<void> {
+  await validateMacosGatewayRelease(releaseDirectory)
+  for (const relativePath of [
+    'ops/gatewayUpdateSupervisorMain.js',
+    'ops/gatewayAgentUpdateCli.js',
+  ]) {
+    const path = join(releaseDirectory, ...relativePath.split('/'))
+    const metadata = await lstat(path)
+    if (metadata.isSymbolicLink() || !metadata.isFile()) {
+      throw new Error(`Agent-built Gateway release path is not a regular file: ${relativePath}`)
+    }
+  }
+}
+
+async function createAgentReleaseSeal(
+  releaseDirectory: string,
+  signed: SignedGatewayAgentUpdatePrompt,
+): Promise<GatewayAgentReleaseSeal> {
+  const files: GatewayAgentReleaseSeal['files'] = []
+  let totalBytes = 0
+  const visit = async (directory: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true })
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const absolute = join(directory, entry.name)
+      const path = relative(releaseDirectory, absolute).split(sep).join('/')
+      if (AGENT_RELEASE_METADATA.has(path)) continue
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Agent-built Gateway release contains a symbolic link: ${path}`)
+      }
+      if (entry.isDirectory()) {
+        await visit(absolute)
+        continue
+      }
+      if (!entry.isFile()) {
+        throw new Error(`Agent-built Gateway release contains a non-regular file: ${path}`)
+      }
+      const metadata = await lstat(absolute)
+      if (metadata.size < 1) throw new Error(`Agent-built Gateway release file is empty: ${path}`)
+      totalBytes += metadata.size
+      if (files.length >= MAX_AGENT_RELEASE_FILES || totalBytes > MAX_AGENT_RELEASE_BYTES) {
+        throw new Error('Agent-built Gateway release exceeds its file-count or size limit')
+      }
+      files.push({
+        path,
+        size: metadata.size,
+        sha256: await hashFile(absolute),
+        ...((metadata.mode & 0o111) !== 0 ? { executable: true as const } : {}),
+      })
+    }
+  }
+  await visit(releaseDirectory)
+  return {
+    version: 1,
+    updateHash: createHash('sha256').update(canonicalJsonBytes(signed.update)).digest('hex'),
+    files,
+  }
+}
+
+async function verifyAgentSealedRelease(
+  releaseDirectory: string,
+  signed: SignedGatewayAgentUpdatePrompt,
+  expectedSeal: GatewayAgentReleaseSeal,
+): Promise<void> {
+  await validateAgentReleaseEntrypoints(releaseDirectory)
+  const installedPrompt = signedGatewayAgentUpdatePromptSchema.parse(JSON.parse(await readFile(
+    join(releaseDirectory, 'release-prompt.json'),
+    'utf8',
+  )))
+  if (canonicalJson(installedPrompt) !== canonicalJson(signed)) {
+    throw new Error('Agent-built Gateway release Prompt changed after validation')
+  }
+  const observedSeal = await createAgentReleaseSeal(releaseDirectory, signed)
+  if (canonicalJson(observedSeal) !== canonicalJson(expectedSeal)) {
+    throw new Error('Agent-built Gateway release changed after supervisor sealing')
+  }
+}
+
+function parseAgentReleaseSeal(input: unknown): GatewayAgentReleaseSeal {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Gateway Agent release seal is invalid')
+  }
+  const candidate = input as Partial<GatewayAgentReleaseSeal>
+  if (
+    candidate.version !== 1
+    || typeof candidate.updateHash !== 'string'
+    || !/^[0-9a-f]{64}$/u.test(candidate.updateHash)
+    || !Array.isArray(candidate.files)
+    || candidate.files.length < 1
+    || candidate.files.length > MAX_AGENT_RELEASE_FILES
+  ) {
+    throw new Error('Gateway Agent release seal is invalid')
+  }
+  const paths = new Set<string>()
+  let totalBytes = 0
+  for (const file of candidate.files) {
+    if (
+      !file
+      || typeof file.path !== 'string'
+      || !isSafeRelativeReleasePath(file.path)
+      || typeof file.size !== 'number'
+      || !Number.isSafeInteger(file.size)
+      || file.size < 1
+      || typeof file.sha256 !== 'string'
+      || !/^[0-9a-f]{64}$/u.test(file.sha256)
+      || (file.executable !== undefined && file.executable !== true)
+      || paths.has(file.path)
+    ) {
+      throw new Error('Gateway Agent release seal is invalid')
+    }
+    paths.add(file.path)
+    totalBytes += file.size
+  }
+  if (totalBytes > MAX_AGENT_RELEASE_BYTES) {
+    throw new Error('Gateway Agent release seal exceeds its size limit')
+  }
+  return structuredClone(candidate as GatewayAgentReleaseSeal)
+}
+
+function isSafeRelativeReleasePath(value: string): boolean {
+  if (value.startsWith('/') || value.endsWith('/') || value.includes('\\')) return false
+  const parts = value.split('/')
+  return parts.every(part => part.length > 0 && part !== '.' && part !== '..')
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`
 }
 
 async function verifyStagedManifest(
@@ -874,6 +1566,20 @@ function validateState(state: GatewayUpdateSupervisorState): void {
   if (state.version !== 1) throw new Error('Unsupported Gateway update supervisor state')
   gatewayUpdateStatusSchema.parse(state.status)
   if (state.staged) signedGatewayReleaseManifestSchema.parse(state.staged)
+  if (state.agentUpdate) signedGatewayAgentUpdatePromptSchema.parse(state.agentUpdate)
+  if (state.agentSeal) parseAgentReleaseSeal(state.agentSeal)
+  if (state.staged && (state.agentUpdate || state.agentSeal)) {
+    throw new Error('Gateway update supervisor state mixes artifact and Agent releases')
+  }
+  if (state.agentSeal && !state.agentUpdate) {
+    throw new Error('Gateway update supervisor Agent seal has no signed Prompt')
+  }
+  if (
+    state.agentOwnerCommandId !== undefined
+    && (!state.agentOwnerCommandId || state.agentOwnerCommandId.length > 256)
+  ) {
+    throw new Error('Gateway update supervisor Agent owner command ID is invalid')
+  }
   if (state.previousTarget !== undefined && !state.previousTarget) {
     throw new Error('Gateway update supervisor previous target is invalid')
   }
@@ -882,7 +1588,9 @@ function validateState(state: GatewayUpdateSupervisorState): void {
   }
 }
 
-function assertRollbackCompatibleState(manifest: GatewayReleaseManifest): void {
+function assertRollbackCompatibleState(
+  manifest: Pick<GatewayReleaseManifest, 'stateCatalog'>,
+): void {
   const currentCatalog = new Map(GATEWAY_STATE_CATALOG.map(entry => [entry.id, entry]))
   const target = new Map(manifest.stateCatalog.map(entry => [entry.id, entry]))
   for (const current of GATEWAY_STATE_CATALOG) {

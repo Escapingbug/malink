@@ -364,10 +364,11 @@ class MatrixMlp3NativeProjectionTest {
                     put("type", "gateway.update.status")
                     put("status", buildJsonObject {
                         put("version", 1)
-                        put("phase", "staged")
+                        put("phase", "agent_running")
                         put("releaseId", "release-2")
                         put("targetBuildId", "build-2")
                         put("currentBuildId", "build-1")
+                        put("maintenanceSessionId", "gateway-update-session-2")
                         put("updatedAt", 20)
                     })
                 },
@@ -382,8 +383,12 @@ class MatrixMlp3NativeProjectionTest {
             initialState = projection.durableState(),
         )
         val status = restored.snapshot()!!.getValue("gateway_update").jsonObject
-        assertEquals("staged", status.getValue("phase").jsonPrimitive.content)
+        assertEquals("agent_running", status.getValue("phase").jsonPrimitive.content)
         assertEquals("release-2", status.getValue("releaseId").jsonPrimitive.content)
+        assertEquals(
+            "gateway-update-session-2",
+            status.getValue("maintenanceSessionId").jsonPrimitive.content,
+        )
     }
 
     @Test

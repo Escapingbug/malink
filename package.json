@@ -17,6 +17,7 @@
     "activate:matrix-gateway:macos": "tsx scripts/macos-matrix-gateway-release.ts",
     "run:gateway-update-supervisor": "tsx src/ops/gatewayUpdateSupervisorMain.ts",
     "release:gateway-update": "tsx scripts/gateway-update-release.ts",
+    "release:gateway-agent-update": "tsx scripts/gateway-agent-update-release.ts",
     "install:gateway-update-supervisor": "tsx scripts/install-gateway-update-supervisor.ts",
     "generate:gateway-release-key": "tsx scripts/generate-gateway-release-key.ts",
     "release:android-update": "tsx scripts/android-update-release.ts",

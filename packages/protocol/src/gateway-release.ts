@@ -128,6 +128,9 @@ export type SignedGatewayReleaseManifest = z.infer<
 export const gatewayUpdatePhaseSchema = z.enum([
   'idle',
   'staging',
+  'agent_required',
+  'agent_running',
+  'agent_validating',
   'staged',
   'waiting_for_idle',
   'scheduled',
@@ -151,6 +154,7 @@ export const gatewayUpdateStatusSchema = z
     currentBuildId: opaqueId.optional(),
     previousReleaseId: releaseId.optional(),
     detail: z.string().min(1).max(4_096).optional(),
+    maintenanceSessionId: opaqueId.optional(),
     activeTurns: z.number().int().nonnegative().optional(),
     updatedAt: timestamp,
   })

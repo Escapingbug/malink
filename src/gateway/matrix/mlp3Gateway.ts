@@ -16,6 +16,10 @@ import {
   type GatewayEnrollmentPending,
   type GatewayUpdateStatus,
 } from '@malink/protocol'
+import type {
+  GatewayAgentUpdateBeginResult,
+  GatewayAgentUpdateInstruction,
+} from '@/ops/gatewayUpdateSupervisor'
 import {
   AGENT_PERMISSION_MODES,
   isAgentPermissionMode,
@@ -148,6 +152,17 @@ export interface MatrixMlp3GatewayDependencies {
     status(): Promise<GatewayUpdateStatus>
     stage(releaseId: string): Promise<GatewayUpdateStatus>
     scheduleApply(releaseId: string): Promise<GatewayUpdateStatus>
+    agentInstruction(releaseId: string): Promise<GatewayAgentUpdateInstruction>
+    beginAgentUpdate(
+      releaseId: string,
+      maintenanceSessionId: string,
+      ownerCommandId: string,
+    ): Promise<GatewayAgentUpdateBeginResult>
+    failAgentUpdate(
+      releaseId: string,
+      ownerCommandId: string,
+      detail: string,
+    ): Promise<GatewayUpdateStatus>
   }
 }
 
@@ -690,7 +705,7 @@ export class MatrixMlp3GatewayRunner {
         await this.unsubscribeNotifications(project, command)
         return
       case 'gateway.update.stage':
-        await this.stageGatewayUpdate(project, command)
+        await this.stageGatewayUpdate(project, command, journalRecord.matrixEventId)
         return
       case 'gateway.update.apply':
         await this.applyGatewayUpdate(project, command)
@@ -704,9 +719,62 @@ export class MatrixMlp3GatewayRunner {
   private async stageGatewayUpdate(
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'gateway.update.stage'>,
+    rootEventId?: string,
   ): Promise<void> {
+    if (!rootEventId) throw new Error('Gateway update command lost its Matrix thread root')
     const supervisor = this.requireGatewayUpdateSupervisor()
-    const status = await supervisor.stage(command.payload.releaseId)
+    let status = await supervisor.stage(command.payload.releaseId)
+    if (['agent_required', 'agent_running', 'failed'].includes(status.phase)) {
+      const instruction = await supervisor.agentInstruction(command.payload.releaseId)
+      const maintenanceSessionId = this.maintenanceAgentSessionId(instruction.releaseId)
+      const begin = await supervisor.beginAgentUpdate(
+        command.payload.releaseId,
+        maintenanceSessionId,
+        command.commandId,
+      )
+      if (begin.started) {
+        const runtime = await this.maintenanceAgentRuntime(
+          project,
+          command,
+          rootEventId,
+          instruction,
+        )
+        try {
+          await this.runPrompt(
+            project,
+            runtime,
+            command,
+            { text: maintenanceAgentPrompt(instruction) },
+            { settleCommand: false },
+          )
+        } catch (error) {
+          await supervisor.failAgentUpdate(
+            command.payload.releaseId,
+            command.commandId,
+            formatError(error).slice(0, 4_096) || 'Maintenance Agent failed',
+          ).catch(failureError => {
+            this.log(
+              `[mlp3/matrix] could not record maintenance Agent failure: `
+              + formatError(failureError),
+            )
+          })
+          throw error
+        }
+        status = await supervisor.status()
+      } else {
+        status = await this.waitForMaintenanceAgent(command.payload.releaseId)
+      }
+      if (
+        !['staged', 'scheduled', 'activating', 'probation', 'committed'].includes(status.phase)
+        || status.releaseId !== command.payload.releaseId
+        || status.targetBuildId !== instruction.buildId
+      ) {
+        throw new Error(
+          `Maintenance Agent did not stage Gateway update ${command.payload.releaseId}; `
+          + `supervisor reported ${status.phase}`,
+        )
+      }
+    }
     await this.settleAndDeliver(
       project,
       command,
@@ -718,6 +786,88 @@ export class MatrixMlp3GatewayRunner {
       status,
     )
     await this.publishGatewayUpdateStatus()
+  }
+
+  private async maintenanceAgentRuntime(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.update.stage'>,
+    rootEventId: string,
+    instruction: GatewayAgentUpdateInstruction,
+  ): Promise<Mlp3SessionRuntime> {
+    const sessionId = this.maintenanceAgentSessionId(instruction.releaseId)
+    const existing = project.sessions.get(sessionId)
+    if (existing) return existing
+    const existingRecord = project.project.sessions.find(session => session.id === sessionId)
+    if (existingRecord) {
+      if (existingRecord.lifecycle !== 'active') {
+        throw new Error(`Gateway maintenance session ${sessionId} is archived`)
+      }
+      const runtime = this.createSessionRuntime(project, existingRecord)
+      project.sessions.set(sessionId, runtime)
+      return runtime
+    }
+    const createdAt = this.now()
+    const cwd = this.scratchSessionDirectory(sessionId)
+    await mkdir(cwd, { recursive: true, mode: 0o700 })
+    const record: PersistedMlp3Session = {
+      id: sessionId,
+      scope: 'scratch',
+      cwd,
+      sourceCommandId: command.commandId,
+      threadRootEventId: rootEventId,
+      title: `Gateway update ${instruction.versionName}`,
+      createdAt,
+      updatedAt: createdAt,
+      stateVersion: 1,
+      lifecycle: 'active',
+      provider: project.project.provider,
+      model: project.project.model,
+      reasoningEffort: project.project.reasoningEffort,
+      permissionMode: 'bypassPermissions',
+      providerSessionId: null,
+      extensions: [],
+      extensionRevision: 1,
+      inheritedFromProjectExtensionRevision: null,
+      availableCommands: [],
+    }
+    project.project.sessions.push(record)
+    try {
+      const runtime = this.createSessionRuntime(project, record)
+      project.sessions.set(sessionId, runtime)
+      await this.persist(project)
+      return runtime
+    } catch (error) {
+      project.sessions.delete(sessionId)
+      project.project.sessions = project.project.sessions.filter(candidate => candidate !== record)
+      await this.removeScratchSessionDirectory(record).catch(() => undefined)
+      throw error
+    }
+  }
+
+  private maintenanceAgentSessionId(releaseId: string): string {
+    return `gateway-update-${createHash('sha256')
+      .update(`${this.config.gatewayId}\0${releaseId}`)
+      .digest('hex')
+      .slice(0, 40)}`
+  }
+
+  private async waitForMaintenanceAgent(releaseId: string): Promise<GatewayUpdateStatus> {
+    for (let attempt = 0; attempt < 7_200; attempt += 1) {
+      const status = await this.requireGatewayUpdateSupervisor().status()
+      if (
+        status.releaseId === releaseId
+        && ['staged', 'scheduled', 'activating', 'probation', 'committed'].includes(status.phase)
+      ) return status
+      if (status.releaseId !== releaseId || status.phase === 'failed') {
+        throw new Error(
+          status.detail
+            ?? `Maintenance Agent did not stage Gateway update ${releaseId}; `
+              + `supervisor reported ${status.phase}`,
+        )
+      }
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 1_000))
+    }
+    throw new Error(`Timed out waiting for the maintenance Agent to stage ${releaseId}`)
   }
 
   private async applyGatewayUpdate(
@@ -1033,6 +1183,7 @@ export class MatrixMlp3GatewayRunner {
     runtime: Mlp3SessionRuntime,
     command: Mlp3Command,
     prompt: { text: string; attachments?: import('@malink/protocol').MalinkAttachment[] },
+    options: { settleCommand?: boolean } = {},
   ): Promise<void> {
     this.transition(runtime, 'queued')
     await this.persist(project)
@@ -1111,7 +1262,8 @@ export class MatrixMlp3GatewayRunner {
       outcome: 'succeeded',
       projection: terminalProjection(runtime.record, runtime.activity.phase, this.extensions),
     })
-    await this.settleAndDeliver(project, command, completed, 'succeeded')
+    if (options.settleCommand === false) await this.emitBestEffort(project, runtime.record, completed)
+    else await this.settleAndDeliver(project, command, completed, 'succeeded')
     this.log(`[mlp3/matrix] turn ${command.commandId} completed`)
   }
 
@@ -2584,6 +2736,34 @@ function titleFromPrompt(text: string): string {
 function numericCompatibilityId(value: string): number {
   const hex = createHash('sha256').update(value).digest('hex').slice(0, 12)
   return -Math.max(1, Number.parseInt(hex, 16))
+}
+
+function maintenanceAgentPrompt(instruction: GatewayAgentUpdateInstruction): string {
+  return `You are the local Malink Gateway maintenance Agent for signed release ${instruction.releaseId}.
+
+The release signer authorized this exact update target:
+- version: ${instruction.versionName}
+- build ID: ${instruction.buildId}
+- Git repository: ${instruction.repository.url}
+- exact Git commit: ${instruction.repository.commit}
+
+Supervisor-owned paths:
+- workspace: ${instruction.workspaceDirectory}
+- source checkout: ${instruction.sourceDirectory}
+- candidate release: ${instruction.candidateDirectory}
+
+The candidate directory starts as a local copy of the active Gateway. Work only in the update workspace and a Git worktree or clone for the exact signed commit. Never modify the active current release, supervisor state, release signer, Matrix state, or durable Gateway data.
+
+Follow the signed release Prompt below. Resolve local runtime, dependency, build, and test issues autonomously. The final candidate must contain regular files at runtime/node, ops/matrix-local-gateway.js, ops/gatewayUpdateSupervisorMain.js, and ops/gatewayAgentUpdateCli.js. Do not leave symbolic links in the candidate.
+
+After every required test passes and the candidate is complete, run this exact owner-only submission command:
+
+${instruction.submitCommand}
+
+Do not report success unless that command returns a Gateway update status whose phase is staged.
+
+SIGNED RELEASE PROMPT
+${instruction.prompt}`
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

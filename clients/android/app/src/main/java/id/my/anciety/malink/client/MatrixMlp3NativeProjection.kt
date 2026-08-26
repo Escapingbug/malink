@@ -1151,6 +1151,7 @@ internal class MatrixMlp3NativeProjection(
                 "currentBuildId",
                 "previousReleaseId",
                 "detail",
+                "maintenanceSessionId",
                 "activeTurns",
             ),
             "Gateway update status",
@@ -1159,6 +1160,9 @@ internal class MatrixMlp3NativeProjection(
         require(value.requiredString("phase", 64) in setOf(
             "idle",
             "staging",
+            "agent_required",
+            "agent_running",
+            "agent_validating",
             "staged",
             "waiting_for_idle",
             "scheduled",
@@ -1175,6 +1179,7 @@ internal class MatrixMlp3NativeProjection(
         value.optionalString("currentBuildId", 256)
         value.optionalString("previousReleaseId", 128)
         value.optionalString("detail", 4_096)
+        value.optionalString("maintenanceSessionId", 256)
         require(value.requiredLong("updatedAt") >= 0)
         value.optionalLong("activeTurns")?.let { require(it >= 0) }
     }

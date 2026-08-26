@@ -218,6 +218,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     const createdProjectRequests: string[] = []
     let projectCreatedHooks = 0
     const gatewayUpdateCalls: string[] = []
+    let gatewayAgentStaged = false
     const webPushService: GatewayWebPushService = {
       initialize: async () => undefined,
       publicKey: () => 'B'.repeat(87),
@@ -316,10 +317,15 @@ describe('MatrixMlp3GatewayRunner', () => {
               dispatched.push({ sessionId: session.id, text: input.text })
               if (input.text === 'block A') await blocked.promise
               if (input.text === 'finish before update') await updateDrainBlocked.promise
+              if (input.text.includes('SIGNED RELEASE PROMPT')) gatewayAgentStaged = true
               await port.send({
                 text: `reply:${input.text}`,
                 format: 'markdown',
-                replyMarkup: { idempotencyKey: `reply-${session.id}-${input.text}` },
+                replyMarkup: {
+                  idempotencyKey: input.text.includes('SIGNED RELEASE PROMPT')
+                    ? `reply-${session.id}-${createHash('sha256').update(input.text).digest('hex')}`
+                    : `reply-${session.id}-${input.text}`,
+                },
               })
             }
             if (input.kind === 'command' && input.name === 'send_file') {
@@ -358,6 +364,17 @@ describe('MatrixMlp3GatewayRunner', () => {
       gatewayUpdateSupervisor: {
         async status() {
           gatewayUpdateCalls.push('status')
+          if (gatewayAgentStaged) {
+            return {
+              version: 1,
+              phase: 'staged',
+              releaseId: 'release-2',
+              targetBuildId: 'build-2',
+              currentBuildId: 'build-1',
+              maintenanceSessionId: 'maintenance-release-2',
+              updatedAt: 13,
+            }
+          }
           return {
             version: 1,
             phase: 'idle',
@@ -369,11 +386,53 @@ describe('MatrixMlp3GatewayRunner', () => {
           gatewayUpdateCalls.push(`stage:${releaseId}`)
           return {
             version: 1,
-            phase: 'staged',
+            phase: 'agent_required',
             releaseId,
             targetBuildId: 'build-2',
             currentBuildId: 'build-1',
             updatedAt: 11,
+          }
+        },
+        async agentInstruction(releaseId) {
+          gatewayUpdateCalls.push(`instruction:${releaseId}`)
+          return {
+            releaseId,
+            buildId: 'build-2',
+            versionName: '2.0.0',
+            repository: {
+              url: 'https://github.com/Escapingbug/malink.git',
+              commit: '0123456789abcdef0123456789abcdef01234567',
+            },
+            prompt: 'Build and test this exact signed commit.',
+            workspaceDirectory: '/updates/release-2',
+            sourceDirectory: '/updates/release-2/source',
+            candidateDirectory: '/updates/release-2/candidate',
+            submitCommand: '/current/runtime/node gatewayAgentUpdateCli.js submit',
+          }
+        },
+        async beginAgentUpdate(releaseId, maintenanceSessionId, ownerCommandId) {
+          gatewayUpdateCalls.push(`begin:${releaseId}:${maintenanceSessionId}`)
+          return {
+            started: true,
+            status: {
+              version: 1,
+              phase: 'agent_running',
+              releaseId,
+              targetBuildId: 'build-2',
+              currentBuildId: 'build-1',
+              maintenanceSessionId,
+              detail: ownerCommandId,
+              updatedAt: 12,
+            },
+          }
+        },
+        async failAgentUpdate(releaseId, _ownerCommandId, detail) {
+          return {
+            version: 1,
+            phase: 'failed',
+            releaseId,
+            detail,
+            updatedAt: 13,
           }
         },
         async scheduleApply(releaseId) {
@@ -574,7 +633,24 @@ describe('MatrixMlp3GatewayRunner', () => {
       payload: { operation: 'gateway.update.stage', releaseId: 'release-2' },
     }, '$gateway-update-stage-1')
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
-      .some(event => event.causationCommandId === 'gateway-update-stage-1'))
+      .some(event =>
+        event.causationCommandId === 'gateway-update-stage-1'
+        && (
+          event.payload.type === 'gateway.update.status'
+          || event.payload.type === 'command.rejected'
+        )
+      ))
+    const gatewayStageTerminal = (await events(client, activeKey.key, roomId, projectId))
+      .find(event =>
+        event.causationCommandId === 'gateway-update-stage-1'
+        && (
+          event.payload.type === 'gateway.update.status'
+          || event.payload.type === 'command.rejected'
+        )
+      )
+    if (gatewayStageTerminal?.payload.type === 'command.rejected') {
+      throw new Error(JSON.stringify(gatewayStageTerminal.payload))
+    }
     expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
       event.causationCommandId === 'gateway-update-stage-1'
       && event.payload.type === 'gateway.update.status'
@@ -582,6 +658,14 @@ describe('MatrixMlp3GatewayRunner', () => {
       status: { phase: 'staged', releaseId: 'release-2' },
     })
     expect(gatewayUpdateCalls).toContain('stage:release-2')
+    expect(gatewayUpdateCalls).toContain('instruction:release-2')
+    expect(gatewayUpdateCalls.some(call => call.startsWith('begin:release-2:gateway-update-')))
+      .toBe(true)
+    expect(dispatched.some(item =>
+      item.sessionId.startsWith('gateway-update-')
+      && item.text.includes('exact Git commit: 0123456789abcdef0123456789abcdef01234567')
+    )).toBe(true)
+    dispatched.splice(0)
     await send({
       ...base,
       commandId: 'provider-list-1',
@@ -966,9 +1050,13 @@ describe('MatrixMlp3GatewayRunner', () => {
       && event.payload.type === 'session.ready'
     )
     expect(recovered.map(event => event.sessionId).sort()).toEqual([
+      `gateway-update-${createHash('sha256')
+        .update('workspace-1\0release-2')
+        .digest('hex')
+        .slice(0, 40)}`,
       'session-b',
       'session-scratch',
-    ])
+    ].sort())
     expect(recovered.every(event =>
       event.payload.type === 'session.ready'
       && event.payload.projection.activity === 'idle'
