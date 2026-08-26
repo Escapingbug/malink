@@ -19,12 +19,14 @@ fun interface CommandIdFactory {
 }
 
 /**
- * Durable command lifecycle. Commands are independent MLP/3 objects;
- * unrelated sessions never share a global acknowledgement lane.
+ * Durable MLP/3 command lifecycle.
  *
- * A transmission lease never allocates a replacement command. If delivery is
- * uncertain, the exact same command id and sequence move to recovery_required
- * and can be sent again through the transport's idempotent recovery path.
+ * Commands are independent timeline objects identified by [CommandView.commandId].
+ * Matrix publication and Gateway business events are deliberately separate:
+ * `published` means the homeserver returned the physical event id, `running`
+ * means a signed Gateway progress event was projected, and only a signed
+ * terminal event completes the command. There is no acknowledgement sequence,
+ * workspace revision, or global command lane.
  */
 class DurableCommandOutbox internal constructor(
     private val store: CommandOutboxStore,
@@ -101,24 +103,10 @@ class DurableCommandOutbox internal constructor(
             updatedAt = now,
             sessionId = effectiveSessionId,
             projectId = projectId,
-            // Retained only as a bridge compatibility field. It is allocated
-            // locally and is not part of MLP/3 authorization or serialization.
-            sequence = Math.addExact(
-                maxOf(
-                    snapshot.lastAcknowledgedSequence,
-                    snapshot.commands.maxOfOrNull(PersistedCommand::sequence) ?: 0L,
-                ),
-                1L,
-            ),
-            baseRevision = snapshot.lastRevision,
-            revisionEpoch = snapshot.revisionEpoch,
-            revisionEpochGeneration = snapshot.revisionEpochGeneration,
-            authenticationIssuedAt = null,
-            authenticationNonce = null,
-            revision = null,
+            createdAt = null,
+            matrixEventId = null,
             cancelRequested = false,
             completion = null,
-            expectedRevision = null,
             payload = payload,
         )
         commit(snapshot.copy(commands = snapshot.commands + command))
@@ -133,9 +121,7 @@ class DurableCommandOutbox internal constructor(
         val next = command.copy(
             state = CommandState.TRANSMITTING,
             updatedAt = now,
-            authenticationIssuedAt = command.authenticationIssuedAt ?: now,
-            authenticationNonce = command.authenticationNonce
-                ?: authenticationNonce(command.commandId),
+            createdAt = command.createdAt ?: now,
         )
         replaceAndCommit(command, next)
         return next.toTransmission(recovery = false)
@@ -145,45 +131,20 @@ class DurableCommandOutbox internal constructor(
     fun claimRecovery(commandId: String): CommandTransmission? {
         val command = findCurrent(commandId) ?: return null
         if (command.state != CommandState.RECOVERY_REQUIRED) return null
-        val now = monotonicNow(command.updatedAt)
         val next = command.copy(
             state = CommandState.TRANSMITTING,
-            updatedAt = now,
-            authenticationIssuedAt = requireNotNull(command.authenticationIssuedAt) {
-                "Recoverable command authentication time is missing."
-            },
-            authenticationNonce = requireNotNull(command.authenticationNonce) {
-                "Recoverable command nonce is missing."
+            updatedAt = monotonicNow(command.updatedAt),
+            createdAt = requireNotNull(command.createdAt) {
+                "Recoverable command creation time is missing."
             },
         )
         replaceAndCommit(command, next)
         return next.toTransmission(recovery = true)
     }
 
-    /**
-     * Replays an already acknowledged command only to recover its terminal
-     * result. The accepted/running state is deliberately preserved: this is a
-     * read-through probe against the Gateway's durable replay ledger, not a
-     * second logical execution or a new command sequence.
-     */
+    /** Marks a Matrix PUT with an uncertain outcome as safe for idempotent retry. */
     @Synchronized
-    fun claimCompletionRecovery(commandId: String): CommandTransmission? {
-        val command = findCurrent(commandId) ?: return null
-        if (command.state != CommandState.ACCEPTED && command.state != CommandState.RUNNING) {
-            return null
-        }
-        return command.copy(
-            authenticationIssuedAt = requireNotNull(command.authenticationIssuedAt) {
-                "Accepted command authentication time is missing."
-            },
-            authenticationNonce = requireNotNull(command.authenticationNonce) {
-                "Accepted command nonce is missing."
-            },
-        ).toTransmission(recovery = true)
-    }
-
-    @Synchronized
-    fun markAcknowledgementTimedOut(commandId: String): CommandView? {
+    fun markTransmissionUncertain(commandId: String): CommandView? {
         val command = findCurrent(commandId) ?: return null
         if (command.state != CommandState.TRANSMITTING) return command.toView()
         val next = command.copy(
@@ -194,84 +155,48 @@ class DurableCommandOutbox internal constructor(
         return next.toView()
     }
 
+    /** Records only Matrix transport durability; it is not a Gateway acknowledgement. */
     @Synchronized
-    fun recordAcknowledgement(commandId: String, sequence: Long, revision: Long): Boolean {
-        requirePositiveJsonInteger(sequence, "Command sequence")
-        requireNonnegativeJsonInteger(revision, "Command revision")
+    fun recordPublished(commandId: String, matrixEventId: String): Boolean {
+        requireOpaqueId(matrixEventId, "matrixEventId")
         val command = findCurrent(commandId) ?: return false
-        if (command.sequence != sequence || command.state == CommandState.NEEDS_REVIEW) return false
         if (command.state.isTerminal) return false
+        if (command.matrixEventId != null && command.matrixEventId != matrixEventId) {
+            throw IllegalStateException("A command was published under a different Matrix event id.")
+        }
         val next = command.copy(
-            state = if (command.state == CommandState.RUNNING) CommandState.RUNNING else CommandState.ACCEPTED,
+            state = if (command.state == CommandState.RUNNING) CommandState.RUNNING else CommandState.PUBLISHED,
             updatedAt = monotonicNow(command.updatedAt),
-            revision = maxOf(command.revision ?: 0, revision),
+            matrixEventId = matrixEventId,
         )
-        commit(
-            snapshot.copy(
-                lastAcknowledgedSequence = if (command.belongsTo(snapshot)) {
-                    maxOf(snapshot.lastAcknowledgedSequence, sequence)
-                } else {
-                    snapshot.lastAcknowledgedSequence
-                },
-                lastRevision = if (command.belongsTo(snapshot)) {
-                    maxOf(snapshot.lastRevision, revision)
-                } else {
-                    snapshot.lastRevision
-                },
-                commands = replace(snapshot.commands, command, next),
-            ),
-        )
+        if (next == command) return false
+        replaceAndCommit(command, next)
         return true
     }
 
+    /** Records a signed Gateway progress event causally linked to this command. */
     @Synchronized
-    fun recordRunning(
-        commandId: String,
-        sequence: Long,
-        revision: Long,
-        sessionId: String? = null,
-    ): Boolean {
-        requirePositiveJsonInteger(sequence, "Command sequence")
-        requireNonnegativeJsonInteger(revision, "Command revision")
+    fun recordProgress(commandId: String, sessionId: String? = null): Boolean {
         sessionId?.let { requireOpaqueId(it, "sessionId") }
         val command = findCurrent(commandId) ?: return false
-        if (command.sequence != sequence || command.state.isTerminal || command.state == CommandState.NEEDS_REVIEW) {
-            return false
-        }
+        if (command.state.isTerminal) return false
         val next = command.copy(
             state = CommandState.RUNNING,
             updatedAt = monotonicNow(command.updatedAt),
-            revision = maxOf(command.revision ?: 0, revision),
             sessionId = sessionId ?: command.sessionId,
         )
-        commit(
-            snapshot.copy(
-                lastAcknowledgedSequence = if (command.belongsTo(snapshot)) {
-                    maxOf(snapshot.lastAcknowledgedSequence, sequence)
-                } else {
-                    snapshot.lastAcknowledgedSequence
-                },
-                lastRevision = if (command.belongsTo(snapshot)) {
-                    maxOf(snapshot.lastRevision, revision)
-                } else {
-                    snapshot.lastRevision
-                },
-                commands = replace(snapshot.commands, command, next),
-            ),
-        )
+        if (next == command) return false
+        replaceAndCommit(command, next)
         return true
     }
 
     @Synchronized
     fun recordCompletion(completion: CommandCompletion): Boolean {
         val command = findCurrent(completion.commandId) ?: return false
-        if (command.sequence != completion.sequence) return false
-        if (command.revision != null && completion.revision < command.revision) return false
         command.completion?.let { existing ->
             if (existing == completion) return false
             throw IllegalStateException("A different terminal result is already stored for this command.")
         }
-        if (command.state == CommandState.NEEDS_REVIEW) return false
         val terminalState = when (completion.outcome) {
             CommandOutcome.SUCCEEDED -> CommandState.SUCCEEDED
             CommandOutcome.FAILED -> CommandState.FAILED
@@ -280,99 +205,11 @@ class DurableCommandOutbox internal constructor(
         val next = command.copy(
             state = terminalState,
             updatedAt = monotonicNow(command.updatedAt),
-            revision = maxOf(command.revision ?: 0, completion.revision),
             sessionId = completion.sessionId ?: command.sessionId,
             completion = completion,
         )
-        commit(
-            snapshot.copy(
-                lastAcknowledgedSequence = if (command.belongsTo(snapshot)) {
-                    maxOf(snapshot.lastAcknowledgedSequence, completion.sequence)
-                } else {
-                    snapshot.lastAcknowledgedSequence
-                },
-                lastRevision = if (command.belongsTo(snapshot)) {
-                    maxOf(snapshot.lastRevision, completion.revision)
-                } else {
-                    snapshot.lastRevision
-                },
-                commands = replace(snapshot.commands, command, next),
-            ),
-        )
-        return true
-    }
-
-    @Synchronized
-    fun recordRevisionConflict(commandId: String, sequence: Long, expectedRevision: Long): CommandView? {
-        requirePositiveJsonInteger(sequence, "Command sequence")
-        requireNonnegativeJsonInteger(expectedRevision, "Expected command revision")
-        val command = findCurrent(commandId) ?: return null
-        if (command.sequence != sequence || command.state.isTerminal) return command.toView()
-        val next = command.copy(
-            state = CommandState.NEEDS_REVIEW,
-            updatedAt = monotonicNow(command.updatedAt),
-            expectedRevision = expectedRevision,
-        )
-        // The authenticated conflict is also an authoritative observation of
-        // the current revision. Persist it with the review state so either
-        // resolution path (retry or discard) leaves the next command based on
-        // the revision the Gateway actually reported.
-        commit(
-            snapshot.copy(
-                lastRevision = if (command.belongsTo(snapshot)) {
-                    maxOf(snapshot.lastRevision, expectedRevision)
-                } else {
-                    snapshot.lastRevision
-                },
-                commands = replace(snapshot.commands, command, next),
-            ),
-        )
-        return next.toView()
-    }
-
-    @Synchronized
-    fun resolveRevisionConflict(commandId: String, action: RevisionConflictAction): CommandReceipt {
-        val command = findCurrent(commandId)
-            ?: throw IllegalArgumentException("Command $commandId is not available.")
-        require(command.state == CommandState.NEEDS_REVIEW && command.expectedRevision != null) {
-            "Command $commandId does not have a revision conflict."
-        }
-        val now = monotonicNow(command.updatedAt)
-        val next = when (action) {
-            RevisionConflictAction.RETRY -> command.copy(
-                commandId = newUniqueId("commandId"),
-                retiredCommandIds = command.retiredCommandIds + command.commandId,
-                state = CommandState.QUEUED,
-                updatedAt = now,
-                baseRevision = command.expectedRevision,
-                authenticationIssuedAt = null,
-                authenticationNonce = null,
-                revision = null,
-                completion = null,
-                expectedRevision = null,
-            )
-
-            RevisionConflictAction.DISCARD -> command.copy(
-                state = CommandState.CANCELLED,
-                updatedAt = now,
-                revision = command.expectedRevision,
-                completion = CommandCompletion(
-                    commandId = command.commandId,
-                    sequence = command.sequence,
-                    revision = command.expectedRevision,
-                    outcome = CommandOutcome.CANCELLED,
-                    sessionId = command.sessionId,
-                    error = PublicCommandError(
-                        code = "revision_conflict_discarded",
-                        message = "The command was discarded after a revision conflict.",
-                        retryable = false,
-                    ),
-                ),
-                expectedRevision = null,
-            )
-        }
         replaceAndCommit(command, next)
-        return next.toView().toReceipt()
+        return true
     }
 
     @Synchronized
@@ -387,172 +224,9 @@ class DurableCommandOutbox internal constructor(
         return next.toView()
     }
 
-    /**
-     * Atomically binds the durable command cursor to authenticated Gateway
-     * Room State. Sequence numbers are monotonic only inside one revision
-     * epoch. A higher epoch generation therefore replaces, rather than
-     * compares with, the previous cursor.
-     *
-     * A command that was not acknowledged in the retired epoch is assigned a
-     * fresh command id, sequence, revision, nonce, and signature lease. The
-     * stable operation/idempotency identity is retained so the Web layer sees
-     * one logical action. Commands already accepted by the retired Gateway are
-     * never replayed automatically.
-     */
-    @Synchronized
-    internal fun reconcileGatewayScope(
-        revisionEpoch: String,
-        revisionEpochGeneration: Long,
-        acknowledgedSequence: Long,
-        revision: Long,
-    ): GatewayCommandScopeReconciliation {
-        requireOpaqueId(revisionEpoch, "revisionEpoch")
-        requirePositiveJsonInteger(revisionEpochGeneration, "Revision epoch generation")
-        requireNonnegativeJsonInteger(acknowledgedSequence, "Known Gateway command sequence")
-        requireNonnegativeJsonInteger(revision, "Known Gateway revision")
-
-        val previousEpoch = snapshot.revisionEpoch
-        val previousGeneration = snapshot.revisionEpochGeneration
-        if (previousEpoch != null && previousGeneration != null) {
-            if (revisionEpochGeneration < previousGeneration) {
-                return GatewayCommandScopeReconciliation(false, emptyList())
-            }
-            require(
-                revisionEpochGeneration != previousGeneration || revisionEpoch == previousEpoch,
-            ) { "Gateway revision epoch changed without advancing its generation." }
-            require(
-                revisionEpochGeneration == previousGeneration || revisionEpoch != previousEpoch,
-            ) { "Gateway revision epoch generation advanced without changing its epoch." }
-        }
-
-        val scopeChanged = previousEpoch == null ||
-            previousGeneration == null ||
-            revisionEpochGeneration > previousGeneration
-        if (!scopeChanged) {
-            val commands = if (
-                snapshot.commands.any { !it.state.isTerminal && it.state != CommandState.QUEUED }
-            ) {
-                snapshot.commands
-            } else {
-                snapshot.commands.map { command ->
-                    if (command.state == CommandState.QUEUED && command.belongsTo(snapshot)) {
-                        command.copy(baseRevision = revision)
-                    } else {
-                        command
-                    }
-                }
-            }
-            val next = snapshot.copy(
-                lastAcknowledgedSequence = maxOf(
-                    snapshot.lastAcknowledgedSequence,
-                    acknowledgedSequence,
-                ),
-                lastRevision = maxOf(snapshot.lastRevision, revision),
-                commands = commands,
-            )
-            if (next != snapshot) commit(next)
-            return GatewayCommandScopeReconciliation(false, emptyList())
-        }
-
-        val migratable = snapshot.commands.filter { command ->
-            !command.state.isTerminal &&
-                command.state in MIGRATABLE_EPOCH_STATES &&
-                !command.belongsTo(revisionEpoch, revisionEpochGeneration) &&
-                // Schema 3 did not persist the epoch. If the authoritative
-                // cursor already includes this sequence, the command was
-                // accepted in the current Gateway scope: bind it in place so
-                // exact recovery can retrieve the result. Only a sequence
-                // beyond the authoritative cursor needs a fresh identity.
-                (command.revisionEpoch != null || command.sequence > acknowledgedSequence)
-        }
-        require(migratable.size <= 1) {
-            "More than one unacknowledged command cannot cross a Gateway revision epoch."
-        }
-        val allocatedIds = mutableSetOf<String>()
-        val migrations = mutableListOf<CommandEpochMigration>()
-        val commands = snapshot.commands.map { command ->
-            when {
-                command in migratable -> {
-                    val currentCommandId = newUniqueId("commandId", allocatedIds).also(allocatedIds::add)
-                    migrations += CommandEpochMigration(command.commandId, currentCommandId)
-                    command.copy(
-                        commandId = currentCommandId,
-                        retiredCommandIds = command.retiredCommandIds + command.commandId,
-                        state = CommandState.QUEUED,
-                        updatedAt = monotonicNow(command.updatedAt),
-                        sequence = Math.addExact(acknowledgedSequence, 1L),
-                        baseRevision = revision,
-                        revisionEpoch = revisionEpoch,
-                        revisionEpochGeneration = revisionEpochGeneration,
-                        authenticationIssuedAt = null,
-                        authenticationNonce = null,
-                        revision = null,
-                        cancelRequested = false,
-                        completion = null,
-                        expectedRevision = null,
-                    )
-                }
-
-                command.revisionEpoch == null && command.sequence <= acknowledgedSequence -> {
-                    command.copy(
-                        revisionEpoch = revisionEpoch,
-                        revisionEpochGeneration = revisionEpochGeneration,
-                    )
-                }
-
-                else -> command
-            }
-        }
-        commit(
-            snapshot.copy(
-                lastAcknowledgedSequence = acknowledgedSequence,
-                lastRevision = revision,
-                revisionEpoch = revisionEpoch,
-                revisionEpochGeneration = revisionEpochGeneration,
-                commands = commands,
-            ),
-        )
-        return GatewayCommandScopeReconciliation(true, migrations)
-    }
-
-    @Synchronized
-    fun updateKnownRevision(
-        revisionEpoch: String,
-        revisionEpochGeneration: Long,
-        revision: Long,
-    ): Boolean {
-        requireOpaqueId(revisionEpoch, "revisionEpoch")
-        requirePositiveJsonInteger(revisionEpochGeneration, "Revision epoch generation")
-        requireNonnegativeJsonInteger(revision, "Known Gateway revision")
-        if (
-            snapshot.revisionEpoch != revisionEpoch ||
-            snapshot.revisionEpochGeneration != revisionEpochGeneration
-        ) return false
-        if (snapshot.commands.any { !it.state.isTerminal && it.state != CommandState.QUEUED }) {
-            return false
-        }
-        val commands = snapshot.commands.map { command ->
-            if (command.state == CommandState.QUEUED && command.belongsTo(snapshot)) {
-                command.copy(baseRevision = revision)
-            } else {
-                command
-            }
-        }
-        if (snapshot.lastRevision >= revision && commands == snapshot.commands) return false
-        commit(snapshot.copy(lastRevision = maxOf(snapshot.lastRevision, revision), commands = commands))
-        return true
-    }
-
     @Synchronized
     fun get(commandId: String): CommandView? = findCurrent(commandId)?.toView()
 
-    /**
-     * Resolves the current durable command from either its active identity or
-     * any identity retired during a Gateway revision-epoch migration. The
-     * operation remains idempotent across that re-key, and callers recovering
-     * a persisted UI marker must be rebound to the current command instead of
-     * mistaking the retired ID for a command that never existed.
-     */
     @Synchronized
     fun resolveCurrent(commandId: String): CommandView? = snapshot.commands
         .firstOrNull { command ->
@@ -571,6 +245,9 @@ class DurableCommandOutbox internal constructor(
     fun release(commandId: String): Boolean {
         val command = findCurrent(commandId) ?: return false
         require(command.state.isTerminal) { "Only completed commands can be released." }
+        require(snapshot.released.size < MAX_RELEASED_TOMBSTONES) {
+            "The released-command safety ledger is full; revoke this native account before clearing it."
+        }
         val tombstone = ReleasedCommandTombstone(
             operationId = command.operationId,
             commandId = command.commandId,
@@ -579,9 +256,6 @@ class DurableCommandOutbox internal constructor(
             requestFingerprint = command.requestFingerprint,
             releasedAt = nonnegativeNow(),
         )
-        require(snapshot.released.size < MAX_RELEASED_TOMBSTONES) {
-            "The released-command safety ledger is full; revoke this native account before clearing it."
-        }
         commit(snapshot.copy(commands = snapshot.commands - command, released = snapshot.released + tombstone))
         return true
     }
@@ -627,12 +301,6 @@ class DurableCommandOutbox internal constructor(
     companion object {
         private const val MAX_ACTIVE_COMMANDS = 128
         private const val MAX_RELEASED_TOMBSTONES = 4_096
-        private val MIGRATABLE_EPOCH_STATES = setOf(
-            CommandState.QUEUED,
-            CommandState.TRANSMITTING,
-            CommandState.RECOVERY_REQUIRED,
-            CommandState.NEEDS_REVIEW,
-        )
 
         internal fun encrypted(
             file: File,
@@ -656,23 +324,22 @@ private fun PersistedCommand.toTransmission(recovery: Boolean) = CommandTransmis
     commandId = commandId,
     idempotencyKey = idempotencyKey,
     projectId = projectId,
-    sequence = sequence,
-    baseRevision = baseRevision,
-    revisionEpoch = revisionEpoch,
-    revisionEpochGeneration = revisionEpochGeneration,
-    issuedAt = authenticationIssuedAt
-        ?: error("A transmission lease has no durable authentication timestamp."),
-    nonce = authenticationNonce
-        ?: error("A transmission lease has no durable authentication nonce."),
+    issuedAt = createdAt ?: error("A transmission has no durable creation timestamp."),
     payload = payload,
     recovery = recovery,
 )
 
-private fun PersistedCommand.belongsTo(snapshot: CommandOutboxSnapshot): Boolean =
-    belongsTo(snapshot.revisionEpoch, snapshot.revisionEpochGeneration)
-
-private fun PersistedCommand.belongsTo(epoch: String?, generation: Long?): Boolean =
-    revisionEpoch == epoch && revisionEpochGeneration == generation
+private fun PersistedCommand.toView() = CommandView(
+    operationId = operationId,
+    commandId = commandId,
+    idempotencyKey = idempotencyKey,
+    state = state,
+    submittedAt = submittedAt,
+    updatedAt = updatedAt,
+    sessionId = sessionId,
+    cancelRequested = cancelRequested,
+    completion = completion,
+)
 
 private fun requestFingerprint(payload: JsonObject, sessionId: String?, projectId: String?): String {
     val canonical = JsonObject(
@@ -688,10 +355,6 @@ private fun requestFingerprint(payload: JsonObject, sessionId: String?, projectI
         canonical.fill(0)
     }
 }
-
-private fun authenticationNonce(commandId: String): String = sha256Hex(
-    "malink.command.nonce.v1\u0000$commandId".toByteArray(Charsets.UTF_8),
-)
 
 private fun sha256Hex(value: ByteArray): String {
     val alphabet = "0123456789abcdef"

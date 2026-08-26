@@ -2,238 +2,169 @@ package id.my.anciety.malink.client.command
 
 import id.my.anciety.malink.security.EncryptedPayload
 import id.my.anciety.malink.security.SecretCipher
+import id.my.anciety.malink.security.SecretEnvelope
 import java.security.SecureRandom
+import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class EncryptedCommandOutboxStoreTest {
     @Test
-    fun `encrypted store atomically round trips outbox without plaintext leakage`() {
+    fun `encrypted store round trips an uncertain command without plaintext leakage`() {
         val blob = MemoryBlobStore()
-        val cipher = JvmAesGcmCipher()
-        val store = EncryptedAtomicCommandOutboxStore(blob, cipher, "account-a")
+        val store = EncryptedAtomicCommandOutboxStore(blob, JvmAesGcmCipher(), "account-a")
         val outbox = DurableCommandOutbox(store, IncrementingClock(), IncrementingIds())
-        val receipt = outbox.enqueue(
-            java.util.UUID.randomUUID().toString(),
-            buildJsonObject {
-                put("operation", "prompt")
-                put("sessionId", "session-1")
-                put("text", "highly secret prompt")
-            },
-        )
-        val transmission = outbox.claimForTransmission(receipt.commandId)!!
+        val receipt = outbox.enqueue(UUID.randomUUID().toString(), prompt("highly secret prompt"))
+        val transmission = checkNotNull(outbox.claimForTransmission(receipt.commandId))
 
-        val bytes = blob.value!!
-        assertFalse(bytes.toString(Charsets.UTF_8).contains("highly secret prompt"))
-        val persisted = checkNotNull(store.load()).commands.single()
-        assertEquals(transmission.issuedAt, persisted.authenticationIssuedAt)
-        assertEquals(transmission.nonce, persisted.authenticationNonce)
+        assertFalse(checkNotNull(blob.value).toString(Charsets.UTF_8).contains("highly secret prompt"))
+        assertEquals(transmission.issuedAt, checkNotNull(store.load()).commands.single().createdAt)
         val restored = DurableCommandOutbox(store, IncrementingClock(), IncrementingIds())
         assertEquals(CommandState.RECOVERY_REQUIRED, restored.get(receipt.commandId)?.state)
     }
 
     @Test
-    fun `encrypted store binds ciphertext to account scope`() {
+    fun `encrypted store binds ciphertext to the native account`() {
         val blob = MemoryBlobStore()
         val cipher = JvmAesGcmCipher()
-        val first = EncryptedAtomicCommandOutboxStore(blob, cipher, "account-a")
-        first.save(CommandOutboxSnapshot())
+        EncryptedAtomicCommandOutboxStore(blob, cipher, "account-a").save(CommandOutboxSnapshot())
 
-        val other = EncryptedAtomicCommandOutboxStore(blob, cipher, "account-b")
-        assertThrows(Exception::class.java) { other.load() }
+        assertThrows(Exception::class.java) {
+            EncryptedAtomicCommandOutboxStore(blob, cipher, "account-b").load()
+        }
         assertTrue(blob.value != null)
     }
 
     @Test
-    fun `legacy submitted command without authentication is quarantined without replay`() {
-        val store = InMemoryCommandOutboxStore()
-        val ids = IncrementingIds()
-        val outbox = DurableCommandOutbox(store, IncrementingClock(), ids)
-        val receipt = outbox.enqueue(
-            java.util.UUID.randomUUID().toString(),
-            buildJsonObject { put("operation", "session.create") },
-        )
-        outbox.claimForTransmission(receipt.commandId)
-        val current = CommandOutboxCodec.encode(checkNotNull(store.load()))
-            .toString(Charsets.UTF_8)
-        val legacy = downgradeOutboxSchema(current, 2)
-            .replace(Regex("\"authenticationIssuedAt\":[0-9]+"), "\"authenticationIssuedAt\":null")
-            .replace(Regex("\"authenticationNonce\":\"[^\"]+\""), "\"authenticationNonce\":null")
-            .toByteArray(Charsets.UTF_8)
+    fun `encrypted store persists multiple independent published commands`() {
+        val blob = MemoryBlobStore()
+        val cipher = JvmAesGcmCipher()
+        val store = EncryptedAtomicCommandOutboxStore(blob, cipher, "account-a")
+        val outbox = DurableCommandOutbox(store, IncrementingClock(), IncrementingIds())
+        val first = outbox.enqueue(UUID.randomUUID().toString(), prompt("one"), projectId = "project-a")
+        val second = outbox.enqueue(UUID.randomUUID().toString(), prompt("two"), projectId = "project-b")
+        outbox.claimForTransmission(first.commandId)
+        outbox.claimForTransmission(second.commandId)
+        outbox.recordPublished(first.commandId, "\$event-one")
+        outbox.recordPublished(second.commandId, "\$event-two")
 
-        val migrated = CommandOutboxCodec.decode(legacy)
+        val restored = DurableCommandOutbox(store, IncrementingClock(), IncrementingIds())
 
-        assertTrue(migrated.commands.isEmpty())
-        assertEquals(0, migrated.lastAcknowledgedSequence)
-        assertEquals(1, migrated.released.size)
-        assertEquals(receipt.commandId, migrated.released.single().commandId)
-        assertEquals(receipt.idempotencyKey, migrated.released.single().idempotencyKey)
+        assertEquals(CommandState.PUBLISHED, restored.get(first.commandId)?.state)
+        assertEquals(CommandState.PUBLISHED, restored.get(second.commandId)?.state)
     }
 
     @Test
-    fun `legacy quarantine waits for authoritative Gateway sequence before allocating the next command`() {
-        val store = InMemoryCommandOutboxStore()
-        val ids = IncrementingIds()
-        val outbox = DurableCommandOutbox(store, IncrementingClock(), ids)
-        val receipt = outbox.enqueue(
-            java.util.UUID.randomUUID().toString(),
-            buildJsonObject { put("operation", "session.create") },
-        )
-        outbox.claimForTransmission(receipt.commandId)
-        val legacy = CommandOutboxCodec.encode(checkNotNull(store.load()))
-            .toString(Charsets.UTF_8)
-            .let { downgradeOutboxSchema(it, 2) }
-            .replace(Regex("\"authenticationIssuedAt\":[0-9]+"), "\"authenticationIssuedAt\":null")
-            .replace(Regex("\"authenticationNonce\":\"[^\"]+\""), "\"authenticationNonce\":null")
-            .toByteArray(Charsets.UTF_8)
-        val migratedStore = InMemoryCommandOutboxStore(CommandOutboxCodec.decode(legacy))
-        val restored = DurableCommandOutbox(migratedStore, IncrementingClock(), ids)
-
-        restored.reconcileGatewayScope("epoch-current", 1, receipt.sequence, 0)
-        val next = restored.enqueue(
-            java.util.UUID.randomUUID().toString(),
-            buildJsonObject { put("operation", "session.create") },
-        )
-
-        assertEquals(receipt.sequence + 1, next.sequence)
-    }
-
-    @Test
-    fun `legacy queued command is preserved because it was never submitted`() {
+    fun `current schema rejects a submitted command without a creation timestamp`() {
         val store = InMemoryCommandOutboxStore()
         val outbox = DurableCommandOutbox(store, IncrementingClock(), IncrementingIds())
-        val receipt = outbox.enqueue(
-            java.util.UUID.randomUUID().toString(),
-            buildJsonObject { put("operation", "session.create") },
-        )
-        val legacy = CommandOutboxCodec.encode(checkNotNull(store.load()))
-            .toString(Charsets.UTF_8)
-            .let { downgradeOutboxSchema(it, 1) }
-            .replace(",\"authenticationIssuedAt\":null", "")
-            .replace(",\"authenticationNonce\":null", "")
-            .toByteArray(Charsets.UTF_8)
-
-        val migrated = CommandOutboxCodec.decode(legacy)
-        val restored = DurableCommandOutbox(
-            InMemoryCommandOutboxStore(migrated),
-            IncrementingClock(),
-            IncrementingIds(),
-        )
-
-        assertEquals(CommandState.QUEUED, restored.get(receipt.commandId)?.state)
-        val transmission = checkNotNull(restored.claimForTransmission(receipt.commandId))
-        assertTrue(transmission.nonce.length >= 16)
-        assertTrue(transmission.issuedAt >= receipt.updatedAt)
-    }
-
-    @Test
-    fun `current schema still rejects submitted command with missing authentication`() {
-        val store = InMemoryCommandOutboxStore()
-        val outbox = DurableCommandOutbox(store, IncrementingClock(), IncrementingIds())
-        val receipt = outbox.enqueue(
-            java.util.UUID.randomUUID().toString(),
-            buildJsonObject { put("operation", "session.create") },
-        )
+        val receipt = outbox.enqueue(UUID.randomUUID().toString(), sessionCreate())
         outbox.claimForTransmission(receipt.commandId)
         val corrupted = CommandOutboxCodec.encode(checkNotNull(store.load()))
             .toString(Charsets.UTF_8)
-            .replace(Regex("\"authenticationIssuedAt\":[0-9]+"), "\"authenticationIssuedAt\":null")
-            .replace(Regex("\"authenticationNonce\":\"[^\"]+\""), "\"authenticationNonce\":null")
+            .replace(Regex("\"createdAt\":[0-9]+"), "\"createdAt\":null")
             .toByteArray(Charsets.UTF_8)
 
-        assertThrows(IllegalArgumentException::class.java) {
-            CommandOutboxCodec.decode(corrupted)
-        }
+        assertThrows(IllegalArgumentException::class.java) { CommandOutboxCodec.decode(corrupted) }
     }
 
     @Test
-    fun `schema three authenticated command retains its lease for epoch reconciliation`() {
-        val sourceStore = InMemoryCommandOutboxStore()
-        val ids = IncrementingIds()
-        val source = DurableCommandOutbox(sourceStore, IncrementingClock(), ids)
-        val receipt = source.enqueue(
-            java.util.UUID.randomUUID().toString(),
-            buildJsonObject { put("operation", "session.create") },
+    fun `schema version validation rejects integer overflow`() {
+        val corrupted = """{"schemaVersion":4294967301,"commands":[],"released":[]}"""
+            .toByteArray(Charsets.UTF_8)
+
+        assertThrows(IllegalArgumentException::class.java) { CommandOutboxCodec.decode(corrupted) }
+    }
+
+    @Test
+    fun `schema version validation rejects a numeric string`() {
+        val corrupted = """{"schemaVersion":"6","commands":[],"released":[]}"""
+            .toByteArray(Charsets.UTF_8)
+
+        assertThrows(IllegalArgumentException::class.java) { CommandOutboxCodec.decode(corrupted) }
+    }
+
+    @Test
+    fun `schema five command state migrates without sequence or revision semantics`() {
+        val firstId = "legacy-command-one"
+        val secondId = "legacy-command-two"
+        val legacy = legacySchemaFive(
+            legacyCommand(firstId, "legacy-operation-one", UUID.randomUUID().toString(), 1),
+            legacyCommand(secondId, "legacy-operation-two", UUID.randomUUID().toString(), 2),
         )
-        val lease = source.claimForTransmission(receipt.commandId)!!
-        val schemaThree = CommandOutboxCodec.encode(checkNotNull(sourceStore.load()))
-            .toString(Charsets.UTF_8)
-            .let { downgradeOutboxSchema(it, 3) }
-            .toByteArray(Charsets.UTF_8)
 
-        val decoded = CommandOutboxCodec.decode(schemaThree)
-        val decodedCommand = decoded.commands.single()
-        assertEquals(lease.issuedAt, decodedCommand.authenticationIssuedAt)
-        assertEquals(lease.nonce, decodedCommand.authenticationNonce)
-        assertNull(decodedCommand.revisionEpoch)
-        assertNull(decoded.revisionEpoch)
+        val decoded = CommandOutboxCodec.decodeForStorage(legacy)
 
-        val restoredStore = InMemoryCommandOutboxStore(decoded)
-        val restored = DurableCommandOutbox(restoredStore, IncrementingClock(), ids)
-        val reconciliation = restored.reconcileGatewayScope("epoch-current", 2, 0, 0)
-        assertEquals(receipt.commandId, reconciliation.migratedCommands.single().previousCommandId)
+        assertEquals(CommandOutboxMigration(5, 0), decoded.migration)
+        assertEquals(listOf(firstId, secondId), decoded.snapshot.commands.map { it.commandId })
+        assertTrue(decoded.snapshot.commands.all { it.state == CommandState.PUBLISHED })
+        assertTrue(decoded.snapshot.commands.all { it.createdAt == 1_000L })
     }
 
     @Test
-    fun `encrypted store atomically rewrites legacy quarantine to current schema`() {
+    fun `schema two submitted command without exact signing time is quarantined`() {
+        val commandId = "legacy-unsafe-command"
+        val key = UUID.randomUUID().toString()
+        val legacy = legacySchemaTwo(commandId, key)
+
+        val decoded = CommandOutboxCodec.decodeForStorage(legacy)
+
+        assertEquals(CommandOutboxMigration(2, 1), decoded.migration)
+        assertTrue(decoded.snapshot.commands.isEmpty())
+        assertEquals(commandId, decoded.snapshot.released.single().commandId)
+        assertEquals(key, decoded.snapshot.released.single().idempotencyKey)
+    }
+
+    @Test
+    fun `encrypted store atomically rewrites schema five to event stream schema`() {
         val blob = MemoryBlobStore()
         val cipher = JvmAesGcmCipher()
         val scope = "account-a"
-        val store = EncryptedAtomicCommandOutboxStore(blob, cipher, scope)
-        val outbox = DurableCommandOutbox(store, IncrementingClock(), IncrementingIds())
-        val receipt = outbox.enqueue(
-            java.util.UUID.randomUUID().toString(),
-            buildJsonObject { put("operation", "session.delete"); put("sessionId", "session-1") },
+        val legacy = legacySchemaFive(
+            legacyCommand(
+                "legacy-command",
+                "legacy-operation",
+                UUID.randomUUID().toString(),
+                1,
+            ),
         )
-        outbox.claimForTransmission(receipt.commandId)
-        val legacy = decryptOutbox(checkNotNull(blob.value), cipher, scope)
-            .toString(Charsets.UTF_8)
-            .let { downgradeOutboxSchema(it, 2) }
-            .replace(Regex("\"authenticationIssuedAt\":[0-9]+"), "\"authenticationIssuedAt\":null")
-            .replace(Regex("\"authenticationNonce\":\"[^\"]+\""), "\"authenticationNonce\":null")
-            .toByteArray(Charsets.UTF_8)
         blob.value = encryptOutbox(legacy, cipher, scope)
         val migrations = mutableListOf<CommandOutboxMigration>()
 
         val migrated = EncryptedAtomicCommandOutboxStore(blob, cipher, scope, migrations::add).load()
 
-        assertTrue(checkNotNull(migrated).commands.isEmpty())
-        assertEquals(1, migrated.released.size)
-        assertEquals(CommandOutboxMigration(2, 1), migrations.single())
+        assertEquals(CommandOutboxMigration(5, 0), migrations.single())
+        assertEquals(CommandState.PUBLISHED, checkNotNull(migrated).commands.single().state)
         val rewritten = decryptOutbox(checkNotNull(blob.value), cipher, scope)
-        assertTrue(rewritten.toString(Charsets.UTF_8).contains("\"schemaVersion\":5"))
-        assertTrue(CommandOutboxCodec.decode(rewritten).commands.isEmpty())
+        assertTrue(rewritten.toString(Charsets.UTF_8).contains("\"schemaVersion\":6"))
+        assertFalse(rewritten.toString(Charsets.UTF_8).contains("lastAcknowledgedSequence"))
     }
 
     @Test
-    fun `failed atomic migration keeps the complete legacy blob for retry`() {
+    fun `failed atomic migration preserves the complete legacy blob`() {
         val blob = MemoryBlobStore()
         val cipher = JvmAesGcmCipher()
         val scope = "account-a"
-        val store = EncryptedAtomicCommandOutboxStore(blob, cipher, scope)
-        val outbox = DurableCommandOutbox(store, IncrementingClock(), IncrementingIds())
-        val receipt = outbox.enqueue(
-            java.util.UUID.randomUUID().toString(),
-            buildJsonObject { put("operation", "session.create") },
+        val legacy = legacySchemaFive(
+            legacyCommand(
+                "legacy-command",
+                "legacy-operation",
+                UUID.randomUUID().toString(),
+                1,
+            ),
         )
-        outbox.claimForTransmission(receipt.commandId)
-        val legacy = decryptOutbox(checkNotNull(blob.value), cipher, scope)
-            .toString(Charsets.UTF_8)
-            .let { downgradeOutboxSchema(it, 2) }
-            .replace(Regex("\"authenticationIssuedAt\":[0-9]+"), "\"authenticationIssuedAt\":null")
-            .replace(Regex("\"authenticationNonce\":\"[^\"]+\""), "\"authenticationNonce\":null")
-            .toByteArray(Charsets.UTF_8)
         val original = encryptOutbox(legacy, cipher, scope)
         blob.value = original.copyOf()
         blob.failNextWrite = true
@@ -244,20 +175,89 @@ class EncryptedCommandOutboxStoreTest {
         assertArrayEquals(original, blob.value)
     }
 
-    private fun downgradeOutboxSchema(value: String, targetVersion: Int): String = value
-        .replace(Regex("\"schemaVersion\":\\d+"), "\"schemaVersion\":$targetVersion")
-        .replace(",\"revisionEpoch\":null", "")
-        .replace(",\"revisionEpochGeneration\":null", "")
-        .replace(",\"projectId\":null", "")
+    private fun prompt(text: String) = buildJsonObject {
+        put("operation", "prompt")
+        put("sessionId", "session-1")
+        put("text", text)
+    }
+
+    private fun sessionCreate() = buildJsonObject { put("operation", "session.create") }
+
+    private fun legacySchemaFive(vararg commands: kotlinx.serialization.json.JsonObject): ByteArray =
+        buildJsonObject {
+            put("schemaVersion", 5)
+            put("lastAcknowledgedSequence", 0)
+            put("lastRevision", 0)
+            put("revisionEpoch", JsonNull)
+            put("revisionEpochGeneration", JsonNull)
+            put("commands", buildJsonArray { commands.forEach(::add) })
+            put("released", buildJsonArray {})
+        }.toString().toByteArray(Charsets.UTF_8)
+
+    private fun legacyCommand(
+        commandId: String,
+        operationId: String,
+        idempotencyKey: String,
+        sequence: Long,
+    ) = buildJsonObject {
+        put("operationId", operationId)
+        put("commandId", commandId)
+        put("retiredCommandIds", buildJsonArray {})
+        put("idempotencyKey", idempotencyKey)
+        put("requestFingerprint", "a".repeat(64))
+        put("state", "accepted")
+        put("submittedAt", 1_000)
+        put("updatedAt", 1_001)
+        put("sessionId", JsonNull)
+        put("projectId", "project-$sequence")
+        put("sequence", sequence)
+        put("baseRevision", 0)
+        put("revisionEpoch", JsonNull)
+        put("revisionEpochGeneration", JsonNull)
+        put("authenticationIssuedAt", 1_000)
+        put("authenticationNonce", "b".repeat(64))
+        put("revision", 0)
+        put("cancelRequested", false)
+        put("completion", JsonNull)
+        put("expectedRevision", JsonNull)
+        put("payload", sessionCreate())
+    }
+
+    private fun legacySchemaTwo(commandId: String, idempotencyKey: String): ByteArray =
+        buildJsonObject {
+            put("schemaVersion", 2)
+            put("lastAcknowledgedSequence", 0)
+            put("lastRevision", 0)
+            put("commands", buildJsonArray {
+                add(buildJsonObject {
+                    put("operationId", "legacy-unsafe-operation")
+                    put("commandId", commandId)
+                    put("retiredCommandIds", buildJsonArray {})
+                    put("idempotencyKey", idempotencyKey)
+                    put("requestFingerprint", "c".repeat(64))
+                    put("state", "transmitting")
+                    put("submittedAt", 1_000)
+                    put("updatedAt", 1_001)
+                    put("sessionId", JsonNull)
+                    put("sequence", 1)
+                    put("baseRevision", 0)
+                    put("authenticationIssuedAt", JsonNull)
+                    put("authenticationNonce", JsonNull)
+                    put("revision", JsonNull)
+                    put("cancelRequested", false)
+                    put("completion", JsonNull)
+                    put("expectedRevision", JsonNull)
+                    put("payload", sessionCreate())
+                })
+            })
+            put("released", buildJsonArray {})
+        }.toString().toByteArray(Charsets.UTF_8)
 
     private class MemoryBlobStore : CommandOutboxBlobStore {
         var value: ByteArray? = null
         var failNextWrite = false
-
         override fun exists(): Boolean = value != null
-
         override fun read(): ByteArray = checkNotNull(value).copyOf()
-
         override fun write(bytes: ByteArray) {
             if (failNextWrite) {
                 failNextWrite = false
@@ -265,7 +265,6 @@ class EncryptedCommandOutboxStoreTest {
             }
             value = bytes.copyOf()
         }
-
         override fun delete() {
             value = null
         }
@@ -275,7 +274,7 @@ class EncryptedCommandOutboxStoreTest {
         val associatedData = "malink.command.outbox.v1\u0000$scope".toByteArray(Charsets.UTF_8)
         val encrypted = cipher.encrypt(plaintext, associatedData)
         return try {
-            id.my.anciety.malink.security.SecretEnvelope.encode(encrypted)
+            SecretEnvelope.encode(encrypted)
         } finally {
             encrypted.iv.fill(0)
             encrypted.ciphertext.fill(0)
@@ -284,7 +283,7 @@ class EncryptedCommandOutboxStoreTest {
 
     private fun decryptOutbox(encrypted: ByteArray, cipher: SecretCipher, scope: String): ByteArray {
         val associatedData = "malink.command.outbox.v1\u0000$scope".toByteArray(Charsets.UTF_8)
-        val envelope = id.my.anciety.malink.security.SecretEnvelope.decode(encrypted)
+        val envelope = SecretEnvelope.decode(encrypted)
         return try {
             cipher.decrypt(envelope, associatedData)
         } finally {
@@ -300,10 +299,11 @@ class EncryptedCommandOutboxStoreTest {
         }
 
         override fun encrypt(plaintext: ByteArray, associatedData: ByteArray): EncryptedPayload {
+            val iv = ByteArray(12).also(SecureRandom()::nextBytes)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, key)
+            cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, iv))
             cipher.updateAAD(associatedData)
-            return EncryptedPayload(cipher.iv, cipher.doFinal(plaintext))
+            return EncryptedPayload(iv, cipher.doFinal(plaintext))
         }
 
         override fun decrypt(payload: EncryptedPayload, associatedData: ByteArray): ByteArray {
@@ -315,12 +315,12 @@ class EncryptedCommandOutboxStoreTest {
     }
 
     private class IncrementingClock : CommandClock {
-        private var value = 1L
-        override fun now(): Long = value++
+        private var next = 1_000L
+        override fun now(): Long = next++
     }
 
     private class IncrementingIds : CommandIdFactory {
-        private var value = 1
-        override fun newId(): String = "id-${value++}"
+        private var next = 1
+        override fun newId(): String = "generated-${next++}"
     }
 }

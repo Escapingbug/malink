@@ -177,7 +177,7 @@ test("allows native Matrix response time for history, pairing, renewal, and conf
   );
 });
 
-test("keeps native conflict decisions independent from slow Matrix command delivery", async () => {
+test("keeps Matrix delivery outside the lock and rejects legacy revision conflicts", async () => {
   const runtime = await readFile(
     new URL(
       "../../../clients/android/app/src/main/java/id/my/anciety/malink/client/NativeClientRuntime.kt",
@@ -189,8 +189,8 @@ test("keeps native conflict decisions independent from slow Matrix command deliv
     /suspend fun resolveConflict[\s\S]*?\n    fun openUpload/,
   )?.[0];
   assert.ok(conflictHandler, "Native conflict handler must remain inspectable");
-  assert.doesNotMatch(conflictHandler, /mutex\.withLock/);
-  assert.match(conflictHandler, /launchCommandTransmission/);
+  assert.doesNotMatch(conflictHandler, /mutex\.withLock|launchCommandTransmission/);
+  assert.match(conflictHandler, /MLP\/3 command .* has no global revision conflict/);
 
   const transmission = runtime.match(
     /private suspend fun transmit[\s\S]*?\n    private fun schedulePendingCommandRecoveries/,

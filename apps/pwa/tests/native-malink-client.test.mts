@@ -71,7 +71,7 @@ class RuntimePort implements NativeBridgePort {
   }
 }
 
-test("replays native state, sends a durable command, and acknowledges events", async () => {
+test("returns a durable native receipt immediately and acknowledges event cursors", async () => {
   const port = new RuntimePort();
   const bridge = await acquireNativeRpcBridge(port);
   const hello = await bridge.hello({
@@ -128,35 +128,9 @@ test("replays native state, sends a durable command, and acknowledges events", a
       targetCommandId: "turn-1",
     },
   );
-  port.deliver({
-    jsonrpc: "2.0",
-    method: "malink.events.deliver",
-    params: {
-      subscriptionId: "subscription-1",
-      events: [
-        {
-          schemaVersion: 1,
-          eventId: "event-command-ack-1",
-          cursor: "cursor-event-ack-1",
-          occurredAt: 2,
-          type: "command.changed",
-          payload: {
-            operationId: "operation-1",
-            commandId: "command-1",
-            idempotencyKey: "00000000-0000-4000-8000-000000000001",
-            state: "accepted",
-            submittedAt: 1,
-            updatedAt: 2,
-            sequence: 1,
-            revision: 4,
-          },
-        },
-      ],
-    },
-  });
   const sent = await pendingSend;
   assert.equal(sent.commandId, "command-1");
-  assert.equal(sent.revision, 4);
+  assert.equal(sent.revision, 0);
   port.deliver({
     jsonrpc: "2.0",
     method: "malink.events.deliver",
@@ -199,7 +173,6 @@ test("replays native state, sends a durable command, and acknowledges events", a
   assert.deepEqual(commandResults, ["command-1"]);
   assert.deepEqual(savedCursors, [
     "cursor-barrier-1",
-    "cursor-event-ack-1",
     "cursor-event-2",
   ]);
   assert.ok(port.requests.some((request) => request.method === "malink.events.ack"));
@@ -230,13 +203,13 @@ test("replays native state, sends a durable command, and acknowledges events", a
   replacement.close();
 });
 
-test("follows an automatically rebased session deletion by operation identity", async () => {
+test("keeps the durable receipt identity while Gateway progress arrives", async () => {
   const port = new RuntimePort((request) => {
     if (request.method !== "malink.command.send") return responseFor(request);
     const params = request.params as BridgeMethodParams["malink.command.send"];
     return {
-      operationId: "operation-rebased-1",
-      commandId: "command-original-1",
+      operationId: "operation-stable-1",
+      commandId: "command-stable-1",
       idempotencyKey: params.idempotencyKey,
       state: "transmitting",
       submittedAt: 1,
@@ -250,23 +223,22 @@ test("follows an automatically rebased session deletion by operation identity", 
     sessionId: "session-delete-1",
   });
   await nextTurn();
+  const sent = await pending;
+  assert.equal(sent.commandId, "command-stable-1");
+  assert.equal(sent.revision, 0);
   deliverCommand(port, {
-    operationId: "operation-rebased-1",
-    commandId: "command-rebased-1",
+    operationId: "operation-stable-1",
+    commandId: "command-stable-1",
     idempotencyKey: "00000000-0000-4000-8000-000000000002",
-    state: "accepted",
+    state: "running",
     submittedAt: 1,
     updatedAt: 3,
     sequence: 2,
     revision: 8,
-  }, "cursor-rebased-ack");
-
-  const sent = await pending;
-  assert.equal(sent.commandId, "command-rebased-1");
-  assert.equal(sent.revision, 8);
+  }, "cursor-stable-progress");
   deliverCommand(port, {
-    operationId: "operation-rebased-1",
-    commandId: "command-rebased-1",
+    operationId: "operation-stable-1",
+    commandId: "command-stable-1",
     idempotencyKey: "00000000-0000-4000-8000-000000000002",
     state: "succeeded",
     submittedAt: 1,
@@ -274,67 +246,74 @@ test("follows an automatically rebased session deletion by operation identity", 
     sequence: 2,
     revision: 8,
     completion: {
-      commandId: "command-rebased-1",
+      commandId: "command-stable-1",
       sequence: 2,
       revision: 8,
       outcome: "succeeded",
       sessionId: "session-delete-1",
     },
-  }, "cursor-rebased-result");
+  }, "cursor-stable-result");
   assert.equal((await sent.completion).sessionId, "session-delete-1");
   client.dispose();
 });
 
-test("follows a Gateway epoch re-key even when its command sequence restarts", async () => {
+test("does not serialize independent native commands behind a Gateway ack lane", async () => {
+  let next = 0;
   const port = new RuntimePort((request) => {
     if (request.method !== "malink.command.send") return responseFor(request);
     const params = request.params as BridgeMethodParams["malink.command.send"];
+    next += 1;
     return {
-      operationId: "operation-epoch-rekey-1",
-      commandId: "command-retired-9",
+      operationId: `operation-independent-${next}`,
+      commandId: `command-independent-${next}`,
       idempotencyKey: params.idempotencyKey,
       state: "transmitting",
       submittedAt: 1,
       updatedAt: 1,
-      sequence: 9,
+      sequence: 1,
     };
   });
   const client = await createTestClient(port);
-  const pending = client.send({ operation: "prompt", sessionId: "session-1", text: "hello" });
-  await nextTurn();
-  deliverCommand(port, {
-    operationId: "operation-epoch-rekey-1",
-    commandId: "command-current-1",
-    idempotencyKey: "00000000-0000-4000-8000-000000000009",
-    state: "accepted",
-    submittedAt: 1,
-    updatedAt: 3,
-    sequence: 1,
-    revision: 2,
-  }, "cursor-epoch-rekey-ack");
+  const [first, second] = await Promise.all([
+    client.send({ operation: "prompt", sessionId: "session-1", text: "one" }),
+    client.send({ operation: "prompt", sessionId: "session-2", text: "two" }),
+  ]);
 
-  const sent = await pending;
-  assert.equal(sent.commandId, "command-current-1");
-  assert.equal(sent.sequence, 1);
+  assert.equal(first.commandId, "command-independent-1");
+  assert.equal(second.commandId, "command-independent-2");
   deliverCommand(port, {
-    operationId: "operation-epoch-rekey-1",
-    commandId: "command-current-1",
-    idempotencyKey: "00000000-0000-4000-8000-000000000009",
+    operationId: "operation-independent-1",
+    commandId: "command-independent-1",
+    idempotencyKey: "00000000-0000-4000-8000-000000000011",
     state: "succeeded",
     submittedAt: 1,
-    updatedAt: 4,
+    updatedAt: 2,
     sequence: 1,
-    revision: 2,
-    sessionId: "session-1",
+    revision: 0,
     completion: {
-      commandId: "command-current-1",
+      commandId: "command-independent-1",
       sequence: 1,
-      revision: 2,
+      revision: 0,
       outcome: "succeeded",
-      sessionId: "session-1",
     },
-  }, "cursor-epoch-rekey-result");
-  assert.equal((await sent.completion).commandId, "command-current-1");
+  }, "cursor-independent-1");
+  deliverCommand(port, {
+    operationId: "operation-independent-2",
+    commandId: "command-independent-2",
+    idempotencyKey: "00000000-0000-4000-8000-000000000012",
+    state: "succeeded",
+    submittedAt: 1,
+    updatedAt: 2,
+    sequence: 1,
+    revision: 0,
+    completion: {
+      commandId: "command-independent-2",
+      sequence: 1,
+      revision: 0,
+      outcome: "succeeded",
+    },
+  }, "cursor-independent-2");
+  await Promise.all([first.completion, second.completion]);
   client.dispose();
 });
 

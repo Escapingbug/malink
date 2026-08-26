@@ -3,7 +3,6 @@ package id.my.anciety.malink.client.command
 import java.io.IOException
 import java.util.ArrayDeque
 import java.util.UUID
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -17,25 +16,24 @@ import org.junit.Test
 
 class DurableCommandOutboxTest {
     @Test
-    fun `restart recovers a committed command whose send coroutine had not started`() {
+    fun `restart preserves a queued command before its sender starts`() {
         val fixture = fixture()
-        val receipt = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("session.delete"))
+        val receipt = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("session.create"))
 
         val restored = DurableCommandOutbox(fixture.store, fixture.clock, fixture.ids)
-        assertEquals(CommandState.QUEUED, restored.get(receipt.commandId)?.state)
-        val transmission = restored.claimForTransmission(receipt.commandId)!!
+        val transmission = checkNotNull(restored.claimForTransmission(receipt.commandId))
 
         assertEquals(receipt.commandId, transmission.commandId)
-        assertEquals(receipt.sequence, transmission.sequence)
+        assertEquals(receipt.operationId, transmission.operationId)
         assertFalse(transmission.recovery)
     }
 
     @Test
-    fun `duplicate idempotency returns the original operation without reserving a sequence`() {
+    fun `duplicate idempotency returns the original durable operation`() {
         val fixture = fixture()
         val key = UUID.randomUUID().toString()
-
         val first = fixture.outbox.enqueue(key, payload("prompt", "hello"), "session-1")
+
         val duplicate = fixture.outbox.enqueue(
             key,
             buildJsonObject {
@@ -54,417 +52,144 @@ class DurableCommandOutboxTest {
     }
 
     @Test
-    fun `restart recovers an uncertain transmission with the same command identity`() {
+    fun `process restart recovers an uncertain Matrix send with the same identity`() {
         val fixture = fixture()
         val receipt = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("session.create"))
-        val firstLease = fixture.outbox.claimForTransmission(receipt.commandId)!!
+        val first = checkNotNull(fixture.outbox.claimForTransmission(receipt.commandId))
 
         val restored = DurableCommandOutbox(fixture.store, fixture.clock, fixture.ids)
         assertEquals(CommandState.RECOVERY_REQUIRED, restored.get(receipt.commandId)?.state)
-        val recoveryLease = restored.claimRecovery(receipt.commandId)!!
+        val retry = checkNotNull(restored.claimRecovery(receipt.commandId))
 
-        assertEquals(firstLease.commandId, recoveryLease.commandId)
-        assertEquals(firstLease.operationId, recoveryLease.operationId)
-        assertEquals(firstLease.sequence, recoveryLease.sequence)
-        assertEquals(firstLease.baseRevision, recoveryLease.baseRevision)
-        assertEquals(firstLease.issuedAt, recoveryLease.issuedAt)
-        assertEquals(firstLease.nonce, recoveryLease.nonce)
-        assertTrue(recoveryLease.recovery)
+        assertEquals(first.commandId, retry.commandId)
+        assertEquals(first.operationId, retry.operationId)
+        assertEquals(first.issuedAt, retry.issuedAt)
+        assertTrue(retry.recovery)
     }
 
     @Test
-    fun `ack timeout retains identity while an unrelated command can proceed`() {
+    fun `independent commands can be in flight and published concurrently`() {
         val fixture = fixture()
-        val receipt = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("prompt", "one"))
-        val transmission = fixture.outbox.claimForTransmission(receipt.commandId)!!
+        val first = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("prompt", "one"))
+        val second = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("prompt", "two"))
 
-        val timedOut = fixture.outbox.markAcknowledgementTimedOut(receipt.commandId)!!
-        assertEquals(CommandState.RECOVERY_REQUIRED, timedOut.state)
-        val independent = fixture.outbox.enqueue(
-            UUID.randomUUID().toString(),
-            payload("prompt", "two"),
-        )
-        assertNotEquals(receipt.commandId, independent.commandId)
-        assertEquals(receipt.sequence + 1, independent.sequence)
+        fixture.outbox.claimForTransmission(first.commandId)
+        fixture.outbox.claimForTransmission(second.commandId)
+        assertTrue(fixture.outbox.recordPublished(first.commandId, "\$event-one"))
+        assertTrue(fixture.outbox.recordPublished(second.commandId, "\$event-two"))
 
-        val recovered = fixture.outbox.claimRecovery(receipt.commandId)!!
-        assertEquals(transmission.commandId, recovered.commandId)
-        assertEquals(transmission.sequence, recovered.sequence)
-        assertNull(fixture.outbox.claimRecovery(receipt.commandId))
+        assertEquals(CommandState.PUBLISHED, fixture.outbox.get(first.commandId)?.state)
+        assertEquals(CommandState.PUBLISHED, fixture.outbox.get(second.commandId)?.state)
+        assertNotEquals(first.commandId, second.commandId)
     }
 
     @Test
-    fun `terminal result before acknowledgement is retained and cannot be downgraded`() {
+    fun `Matrix publication stops automatic retry and survives restart`() {
+        val fixture = fixture()
+        val receipt = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("session.create"))
+        val sent = checkNotNull(fixture.outbox.claimForTransmission(receipt.commandId))
+        fixture.outbox.recordPublished(receipt.commandId, "\$event-published")
+
+        val restored = DurableCommandOutbox(fixture.store, fixture.clock, fixture.ids)
+        assertEquals(CommandState.PUBLISHED, restored.get(receipt.commandId)?.state)
+        assertNull(restored.claimRecovery(receipt.commandId))
+        assertEquals(sent.issuedAt, fixture.store.load()?.commands?.single()?.createdAt)
+    }
+
+    @Test
+    fun `signed Gateway progress is not represented as an acknowledgement`() {
+        val fixture = fixture()
+        val receipt = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("prompt", "hello"))
+        fixture.outbox.claimForTransmission(receipt.commandId)
+        fixture.outbox.recordPublished(receipt.commandId, "\$event-progress")
+
+        assertTrue(fixture.outbox.recordProgress(receipt.commandId, "session-1"))
+        assertEquals(CommandState.RUNNING, fixture.outbox.get(receipt.commandId)?.state)
+    }
+
+    @Test
+    fun `terminal event can arrive before the Matrix send call returns`() {
         val fixture = fixture()
         val receipt = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("session.create"))
         fixture.outbox.claimForTransmission(receipt.commandId)
         val completion = CommandCompletion(
             commandId = receipt.commandId,
-            sequence = receipt.sequence,
-            revision = 7,
             outcome = CommandOutcome.SUCCEEDED,
             sessionId = "session-created",
             result = JsonPrimitive("ok"),
         )
 
         assertTrue(fixture.outbox.recordCompletion(completion))
-        assertFalse(fixture.outbox.recordAcknowledgement(receipt.commandId, receipt.sequence, 6))
-        assertFalse(fixture.outbox.recordCompletion(completion))
-        val view = fixture.outbox.get(receipt.commandId)!!
-        assertEquals(CommandState.SUCCEEDED, view.state)
-        assertEquals(7L, view.revision)
-        assertEquals(completion, view.completion)
-
-        val next = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("prompt", "next"))
-        assertEquals(receipt.sequence + 1, next.sequence)
+        assertFalse(fixture.outbox.recordPublished(receipt.commandId, "\$event-late"))
+        assertEquals(CommandState.SUCCEEDED, fixture.outbox.get(receipt.commandId)?.state)
+        assertEquals(completion, fixture.outbox.get(receipt.commandId)?.completion)
     }
 
     @Test
-    fun `ack before result survives restart and result completes without retransmission`() {
-        val fixture = fixture()
-        val receipt = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("device.invite"))
-        fixture.outbox.claimForTransmission(receipt.commandId)
-        assertTrue(fixture.outbox.recordAcknowledgement(receipt.commandId, receipt.sequence, 3))
-
-        val restored = DurableCommandOutbox(fixture.store, fixture.clock, fixture.ids)
-        assertEquals(CommandState.ACCEPTED, restored.get(receipt.commandId)?.state)
-        assertNull(restored.claimRecovery(receipt.commandId))
-        assertTrue(
-            restored.recordCompletion(
-                CommandCompletion(
-                    receipt.commandId,
-                    receipt.sequence,
-                    4,
-                    CommandOutcome.SUCCEEDED,
-                    result = JsonPrimitive("invite"),
-                ),
-            ),
-        )
-        assertEquals(CommandState.SUCCEEDED, restored.get(receipt.commandId)?.state)
-    }
-
-    @Test
-    fun `accepted command can probe its terminal result with the exact authenticated identity`() {
+    fun `a conflicting second terminal event is rejected`() {
         val fixture = fixture()
         val receipt = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("session.create"))
-        val original = fixture.outbox.claimForTransmission(receipt.commandId)!!
-        assertTrue(fixture.outbox.recordAcknowledgement(receipt.commandId, receipt.sequence, 3))
+        fixture.outbox.recordCompletion(CommandCompletion(receipt.commandId, outcome = CommandOutcome.SUCCEEDED))
 
-        val restored = DurableCommandOutbox(fixture.store, fixture.clock, fixture.ids)
-        val probe = restored.claimCompletionRecovery(receipt.commandId)!!
-
-        assertEquals(original.commandId, probe.commandId)
-        assertEquals(original.operationId, probe.operationId)
-        assertEquals(original.sequence, probe.sequence)
-        assertEquals(original.baseRevision, probe.baseRevision)
-        assertEquals(original.issuedAt, probe.issuedAt)
-        assertEquals(original.nonce, probe.nonce)
-        assertTrue(probe.recovery)
-        assertEquals(CommandState.ACCEPTED, restored.get(receipt.commandId)?.state)
+        assertThrows(IllegalStateException::class.java) {
+            fixture.outbox.recordCompletion(
+                CommandCompletion(receipt.commandId, outcome = CommandOutcome.FAILED),
+            )
+        }
     }
 
     @Test
-    fun `release removes completion but tombstone prevents replay after process restart`() {
+    fun `release keeps an idempotency tombstone across restart`() {
         val fixture = fixture()
         val key = UUID.randomUUID().toString()
-        val payload = payload("session.create")
-        val receipt = fixture.outbox.enqueue(key, payload)
-        fixture.outbox.recordCompletion(
-            CommandCompletion(receipt.commandId, receipt.sequence, 1, CommandOutcome.SUCCEEDED),
-        )
+        val body = payload("session.create")
+        val receipt = fixture.outbox.enqueue(key, body)
+        fixture.outbox.recordCompletion(CommandCompletion(receipt.commandId, outcome = CommandOutcome.SUCCEEDED))
 
         assertTrue(fixture.outbox.release(receipt.commandId))
         assertNull(fixture.outbox.get(receipt.commandId))
         val restored = DurableCommandOutbox(fixture.store, fixture.clock, fixture.ids)
-        assertThrows(ReleasedCommandException::class.java) {
-            restored.enqueue(key, payload)
-        }
-        assertTrue(restored.list().isEmpty())
+        assertThrows(ReleasedCommandException::class.java) { restored.enqueue(key, body) }
     }
 
     @Test
-    fun `revision retry rebases same operation and sequence using a fresh command id`() {
-        val fixture = fixture()
-        val key = UUID.randomUUID().toString()
-        val receipt = fixture.outbox.enqueue(key, payload("prompt", "retry"))
-        fixture.outbox.claimForTransmission(receipt.commandId)
-        val conflict = fixture.outbox.recordRevisionConflict(receipt.commandId, receipt.sequence, 9)!!
-        assertEquals(CommandState.NEEDS_REVIEW, conflict.state)
-
-        val retried = fixture.outbox.resolveRevisionConflict(receipt.commandId, RevisionConflictAction.RETRY)
-        assertEquals(receipt.operationId, retried.operationId)
-        assertEquals(receipt.idempotencyKey, retried.idempotencyKey)
-        assertEquals(receipt.sequence, retried.sequence)
-        assertNotEquals(receipt.commandId, retried.commandId)
-        val lease = fixture.outbox.claimForTransmission(retried.commandId)!!
-        assertEquals(9, lease.baseRevision)
-        assertFalse(
-            fixture.outbox.recordCompletion(
-                CommandCompletion(receipt.commandId, receipt.sequence, 9, CommandOutcome.SUCCEEDED),
-            ),
-        )
-        assertTrue(fixture.outbox.recordAcknowledgement(retried.commandId, retried.sequence, 10))
-    }
-
-    @Test
-    fun `legacy revision review never blocks an independent MLP3 command`() {
-        val fixture = fixture()
-        val receipt = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("session.delete"))
-        fixture.outbox.claimForTransmission(receipt.commandId)
-        fixture.outbox.recordRevisionConflict(receipt.commandId, receipt.sequence, 9)
-
-        val next = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("session.create"))
-
-        assertEquals(CommandState.NEEDS_REVIEW, fixture.outbox.get(receipt.commandId)?.state)
-        assertEquals(receipt.sequence + 1, next.sequence)
-    }
-
-    @Test
-    fun `legacy revision discard preserves a monotonic local compatibility sequence`() {
-        val fixture = fixture()
-        fixture.outbox.reconcileGatewayScope("epoch-1", 1, 0, 212)
-        val receipt = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("prompt", "discard"))
-        assertEquals(212L, fixture.outbox.claimForTransmission(receipt.commandId)?.baseRevision)
-        fixture.outbox.recordRevisionConflict(receipt.commandId, receipt.sequence, 348)
-
-        val discarded = fixture.outbox.resolveRevisionConflict(receipt.commandId, RevisionConflictAction.DISCARD)
-        assertEquals(CommandState.CANCELLED, discarded.state)
-        assertEquals(CommandState.CANCELLED, fixture.outbox.get(receipt.commandId)?.state)
-
-        // The conflict response is an authenticated observation of the
-        // Gateway's current revision. Discarding the stale intent must retain
-        // that observation durably; otherwise every replacement command uses
-        // the same stale base and immediately returns to needs_review.
-        val restored = DurableCommandOutbox(fixture.store, fixture.clock, fixture.ids)
-        val next = restored.enqueue(UUID.randomUUID().toString(), payload("prompt", "replacement"))
-        assertEquals(receipt.sequence + 1, next.sequence)
-        assertEquals(348L, restored.claimForTransmission(next.commandId)?.baseRevision)
-    }
-
-    @Test
-    fun `legacy epoch rotation does not reuse a MLP3 local command identity`() {
-        val fixture = fixture()
-        fixture.outbox.reconcileGatewayScope("epoch-1", 1, 0, 0)
-        val first = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("prompt", "first"))
-        fixture.outbox.claimForTransmission(first.commandId)
-        assertTrue(fixture.outbox.recordAcknowledgement(first.commandId, 1, 1))
-        assertTrue(
-            fixture.outbox.recordCompletion(
-                CommandCompletion(first.commandId, 1, 1, CommandOutcome.SUCCEEDED),
-            ),
-        )
-
-        val reconciliation = fixture.outbox.reconcileGatewayScope("epoch-2", 2, 0, 0)
-        val next = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("prompt", "next"))
-        val transmission = fixture.outbox.claimForTransmission(next.commandId)!!
-
-        assertTrue(reconciliation.epochChanged)
-        assertTrue(reconciliation.migratedCommands.isEmpty())
-        assertEquals(first.sequence + 1, transmission.sequence)
-        assertEquals("epoch-2", transmission.revisionEpoch)
-        assertEquals(2L, transmission.revisionEpochGeneration)
-    }
-
-    @Test
-    fun `unacknowledged command receives a fresh identity and signature lease in a higher epoch`() {
-        val fixture = fixture()
-        fixture.outbox.reconcileGatewayScope("epoch-1", 1, 7, 19)
-        val original = fixture.outbox.enqueue(
-            UUID.randomUUID().toString(),
-            payload("prompt", "survive rotation"),
-        )
-        val originalTransmission = fixture.outbox.claimForTransmission(original.commandId)!!
-
-        val reconciliation = fixture.outbox.reconcileGatewayScope("epoch-2", 2, 0, 3)
-        val migration = reconciliation.migratedCommands.single()
-        val migrated = fixture.outbox.get(migration.currentCommandId)!!
-        val migratedTransmission = fixture.outbox.claimForTransmission(migrated.commandId)!!
-
-        assertEquals(original.commandId, migration.previousCommandId)
-        assertEquals(original.operationId, migrated.operationId)
-        assertEquals(original.idempotencyKey, migrated.idempotencyKey)
-        assertEquals(CommandState.QUEUED, migrated.state)
-        assertEquals(1, migrated.sequence)
-        assertEquals(3, migratedTransmission.baseRevision)
-        assertEquals("epoch-2", migratedTransmission.revisionEpoch)
-        assertEquals(2L, migratedTransmission.revisionEpochGeneration)
-        assertNotEquals(originalTransmission.commandId, migratedTransmission.commandId)
-        assertNotEquals(originalTransmission.nonce, migratedTransmission.nonce)
-        assertFalse(
-            fixture.outbox.recordCompletion(
-                CommandCompletion(
-                    original.commandId,
-                    original.sequence,
-                    20,
-                    CommandOutcome.SUCCEEDED,
-                ),
-            ),
-        )
-    }
-
-    @Test
-    fun `legacy unscoped accepted command binds in place instead of executing twice`() {
-        val fixture = fixture()
-        val original = fixture.outbox.enqueue(
-            UUID.randomUUID().toString(),
-            payload("prompt", "already accepted"),
-        )
-        val originalTransmission = fixture.outbox.claimForTransmission(original.commandId)!!
-
-        val reconciliation = fixture.outbox.reconcileGatewayScope(
-            revisionEpoch = "epoch-current",
-            revisionEpochGeneration = 4,
-            acknowledgedSequence = original.sequence,
-            revision = 9,
-        )
-        val restored = DurableCommandOutbox(fixture.store, fixture.clock, fixture.ids)
-        val recovery = restored.claimRecovery(original.commandId)!!
-
-        assertTrue(reconciliation.epochChanged)
-        assertTrue(reconciliation.migratedCommands.isEmpty())
-        assertEquals(original.commandId, recovery.commandId)
-        assertEquals(originalTransmission.nonce, recovery.nonce)
-        assertEquals("epoch-current", recovery.revisionEpoch)
-        assertEquals(4L, recovery.revisionEpochGeneration)
-    }
-
-    @Test
-    fun `legacy unscoped pending command receives a fresh current epoch identity`() {
-        val fixture = fixture()
-        val original = fixture.outbox.enqueue(
-            UUID.randomUUID().toString(),
-            payload("prompt", "not accepted"),
-        )
-        fixture.outbox.claimForTransmission(original.commandId)
-
-        val reconciliation = fixture.outbox.reconcileGatewayScope(
-            revisionEpoch = "epoch-current",
-            revisionEpochGeneration = 4,
-            acknowledgedSequence = 0,
-            revision = 3,
-        )
-        val migration = reconciliation.migratedCommands.single()
-        val migrated = fixture.outbox.claimForTransmission(migration.currentCommandId)!!
-
-        assertEquals(original.commandId, migration.previousCommandId)
-        assertNotEquals(original.commandId, migrated.commandId)
-        assertEquals(
-            migration.currentCommandId,
-            fixture.outbox.resolveCurrent(original.commandId)?.commandId,
-        )
-        assertEquals(1L, migrated.sequence)
-        assertEquals(3L, migrated.baseRevision)
-        assertEquals("epoch-current", migrated.revisionEpoch)
-        assertEquals(4L, migrated.revisionEpochGeneration)
-    }
-
-    @Test
-    fun `completion from a retired accepted epoch cannot cause MLP3 identity reuse`() {
-        val fixture = fixture()
-        fixture.outbox.reconcileGatewayScope("epoch-1", 1, 0, 0)
-        val accepted = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("prompt", "old"))
-        fixture.outbox.claimForTransmission(accepted.commandId)
-        assertTrue(fixture.outbox.recordAcknowledgement(accepted.commandId, 1, 1))
-
-        fixture.outbox.reconcileGatewayScope("epoch-2", 2, 0, 0)
-        assertTrue(
-            fixture.outbox.recordCompletion(
-                CommandCompletion(accepted.commandId, 1, 1, CommandOutcome.SUCCEEDED),
-            ),
-        )
-        val next = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("prompt", "new"))
-        val transmission = fixture.outbox.claimForTransmission(next.commandId)!!
-
-        assertEquals(accepted.sequence + 1, transmission.sequence)
-        assertEquals("epoch-2", transmission.revisionEpoch)
-    }
-
-    @Test
-    fun `stale or conflicting authenticated epoch state cannot replace the current scope`() {
-        val fixture = fixture()
-        fixture.outbox.reconcileGatewayScope("epoch-2", 2, 4, 8)
-
-        val stale = fixture.outbox.reconcileGatewayScope("epoch-1", 1, 99, 99)
-        assertFalse(stale.epochChanged)
-        assertThrows(IllegalArgumentException::class.java) {
-            fixture.outbox.reconcileGatewayScope("different-epoch", 2, 0, 0)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            fixture.outbox.reconcileGatewayScope("epoch-2", 3, 0, 0)
-        }
-
-        val next = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("prompt", "still current"))
-        val transmission = fixture.outbox.claimForTransmission(next.commandId)!!
-        assertEquals(5, transmission.sequence)
-        assertEquals("epoch-2", transmission.revisionEpoch)
-        assertEquals(2L, transmission.revisionEpochGeneration)
-    }
-
-    @Test
-    fun `failed durable save rolls back in memory state`() {
+    fun `failed durable write leaves the in-memory state unchanged`() {
         val store = FailingStore()
-        val ids = QueueIds()
-        val outbox = DurableCommandOutbox(store, MutableClock(), ids)
+        val outbox = DurableCommandOutbox(store, MutableClock(), QueueIds())
         store.failWrites = true
 
         assertThrows(IOException::class.java) {
             outbox.enqueue(UUID.randomUUID().toString(), payload("prompt", "not saved"))
         }
         assertTrue(outbox.list().isEmpty())
-
-        store.failWrites = false
-        val saved = outbox.enqueue(UUID.randomUUID().toString(), payload("prompt", "saved"))
-        assertEquals(1, saved.sequence)
-        assertEquals(1, outbox.list().size)
     }
 
     @Test
-    fun `sensitive payload and result are redacted from lifecycle toString`() {
+    fun `sensitive command data is redacted from lifecycle strings`() {
         val fixture = fixture()
         val receipt = fixture.outbox.enqueue(
             UUID.randomUUID().toString(),
             payload("prompt", "secret-prompt"),
         )
-        val transmission = fixture.outbox.claimForTransmission(receipt.commandId)!!
+        val transmission = checkNotNull(fixture.outbox.claimForTransmission(receipt.commandId))
         assertFalse(transmission.toString().contains("secret-prompt"))
 
         val completion = CommandCompletion(
             receipt.commandId,
-            receipt.sequence,
-            1,
-            CommandOutcome.SUCCEEDED,
+            outcome = CommandOutcome.SUCCEEDED,
             result = JsonPrimitive("secret-result"),
         )
         assertFalse(completion.toString().contains("secret-result"))
     }
 
     @Test
-    fun `enqueue applies strict protocol validation and session binding`() {
+    fun `project route participates in the idempotency fingerprint`() {
         val fixture = fixture()
-        assertThrows(IllegalArgumentException::class.java) {
-            fixture.outbox.enqueue(
-                UUID.randomUUID().toString(),
-                buildJsonObject {
-                    put("operation", "prompt")
-                    put("sessionId", "session-1")
-                    put("text", "hello")
-                    put("unexpected", true)
-                },
-            )
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            fixture.outbox.enqueue(
-                UUID.randomUUID().toString(),
-                payload("prompt", "hello"),
-                sessionId = "different-session",
-            )
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            fixture.outbox.enqueue(
-                UUID.randomUUID().toString(),
-                payload("session.create"),
-                sessionId = "unexpected-session",
-            )
+        val key = UUID.randomUUID().toString()
+        fixture.outbox.enqueue(key, payload("project.settings"), projectId = "project-a")
+
+        assertThrows(CommandIdempotencyConflictException::class.java) {
+            fixture.outbox.enqueue(key, payload("project.settings"), projectId = "project-b")
         }
     }
 
@@ -477,10 +202,15 @@ class DurableCommandOutboxTest {
 
     private fun payload(operation: String, text: String? = null) = buildJsonObject {
         put("operation", operation)
-        if (operation in setOf("prompt", "cancel", "decision", "session.settings", "session.archive", "session.restore", "session.delete")) {
+        if (operation in setOf(
+                "prompt", "cancel", "decision", "session.settings", "session.archive",
+                "session.restore", "session.delete",
+            )
+        ) {
             put("sessionId", "session-1")
         }
         text?.let { put("text", it) }
+        if (operation == "project.settings") put("model", "default")
     }
 
     private data class Fixture(
@@ -498,7 +228,6 @@ class DurableCommandOutboxTest {
     private class QueueIds : CommandIdFactory {
         private val values = ArrayDeque<String>()
         private var next = 1
-
         override fun newId(): String = values.pollFirst() ?: "generated-${next++}"
     }
 
@@ -507,12 +236,10 @@ class DurableCommandOutboxTest {
         private var snapshot: CommandOutboxSnapshot? = null
 
         override fun load(): CommandOutboxSnapshot? = snapshot
-
         override fun save(snapshot: CommandOutboxSnapshot) {
             if (failWrites) throw IOException("injected durable write failure")
             this.snapshot = snapshot
         }
-
         override fun clear() {
             snapshot = null
         }

@@ -16,28 +16,19 @@ internal data class PersistedCommand(
     val updatedAt: Long,
     val sessionId: String?,
     val projectId: String?,
-    val sequence: Long,
-    val baseRevision: Long,
-    val revisionEpoch: String?,
-    val revisionEpochGeneration: Long?,
-    val authenticationIssuedAt: Long?,
-    val authenticationNonce: String?,
-    val revision: Long?,
+    val createdAt: Long?,
+    val matrixEventId: String?,
     val cancelRequested: Boolean,
     val completion: CommandCompletion?,
-    val expectedRevision: Long?,
     val payload: kotlinx.serialization.json.JsonObject,
 ) {
     override fun toString(): String =
         "PersistedCommand(operationId=$operationId, commandId=$commandId, " +
             "retiredCommandIds=$retiredCommandIds, idempotencyKey=$idempotencyKey, " +
             "requestFingerprint=$requestFingerprint, state=$state, submittedAt=$submittedAt, " +
-            "updatedAt=$updatedAt, sessionId=$sessionId, projectId=$projectId, sequence=$sequence, " +
-            "baseRevision=$baseRevision, revisionEpoch=<redacted>, " +
-            "revisionEpochGeneration=$revisionEpochGeneration, " +
-            "authenticationIssuedAt=$authenticationIssuedAt, " +
-            "authenticationNonce=<redacted>, revision=$revision, cancelRequested=$cancelRequested, " +
-            "completion=$completion, expectedRevision=$expectedRevision, payload=<redacted>)"
+            "updatedAt=$updatedAt, sessionId=$sessionId, projectId=$projectId, " +
+            "createdAt=$createdAt, matrixEventId=<redacted>, cancelRequested=$cancelRequested, " +
+            "completion=$completion, payload=<redacted>)"
 }
 
 internal data class ReleasedCommandTombstone(
@@ -55,10 +46,6 @@ internal data class CommandOutboxMigration(
 )
 
 internal data class CommandOutboxSnapshot(
-    val lastAcknowledgedSequence: Long = 0,
-    val lastRevision: Long = 0,
-    val revisionEpoch: String? = null,
-    val revisionEpochGeneration: Long? = null,
     val commands: List<PersistedCommand> = emptyList(),
     val released: List<ReleasedCommandTombstone> = emptyList(),
 )

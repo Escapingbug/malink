@@ -296,11 +296,9 @@ class NativeClientRuntime(
             reset = it::reset,
         )
     }
-    private val ackTimeouts = ConcurrentHashMap<String, Job>()
     private val commandTransmissionJobs = ConcurrentHashMap<String, Job>()
     private val commandRecoveryJobs = ConcurrentHashMap<String, Job>()
     private val commandRecoveryAttempts = ConcurrentHashMap<String, Int>()
-    private val automaticRevisionRetryAttempts = ConcurrentHashMap<String, Int>()
     private val capabilityRenewalWaiters =
         ConcurrentHashMap<String, CapabilityRenewalWaiter>()
     private val json = Json { isLenient = false; allowSpecialFloatingPointValues = false }
@@ -980,18 +978,12 @@ class NativeClientRuntime(
                 cancelScheduledCommandRecovery(current.commandId, resetAttempts = false)
                 launchCommandTransmission(current.commandId, recovery = true)
             }
-            DurableState.ACCEPTED, DurableState.RUNNING -> {
-                // An acknowledgement proves only that the Gateway durably
-                // claimed the command. If the Gateway or WebView stopped
-                // before the terminal event arrived, replay the exact signed
-                // identity so the Gateway can return its durable result (or
-                // safely terminalize a pre-result crash) without re-executing
-                // the logical action.
-                launchCommandTransmission(
-                    current.commandId,
-                    recovery = true,
-                    completionProbe = true,
-                )
+            DurableState.PUBLISHED, DurableState.RUNNING -> {
+                // Matrix already durably accepted this transaction. Sending
+                // the same transaction again can only return its original
+                // event id; it cannot create a new timeline delivery. Recover
+                // any missed signed progress/terminal events through /sync.
+                startMatrixMlp3ProjectionRefresh(recoverTransport = false)
             }
             else -> Unit
         }
@@ -1020,28 +1012,18 @@ class NativeClientRuntime(
     }
 
     fun releaseCommand(commandId: String): Boolean {
-        ackTimeouts.remove(commandId)?.cancel()
         cancelCommandTransmission(commandId)
         cancelScheduledCommandRecovery(commandId)
-        outbox.get(commandId)?.operationId?.let(automaticRevisionRetryAttempts::remove)
         val released = outbox.release(commandId)
         if (released) matrixMlp3CommandContent.remove(commandId)
         if (released) refreshSnapshot(publishLifecycle = false)
         return released
     }
 
-    suspend fun resolveConflict(commandId: String, action: RevisionConflictAction): DurableReceipt {
-        // DurableCommandOutbox serializes its own state. Conflict decisions
-        // intentionally bypass the broader runtime mutex so discard remains a
-        // local escape hatch even while unrelated Matrix recovery is slow.
-        val receipt = outbox.resolveRevisionConflict(commandId, action)
-        automaticRevisionRetryAttempts.remove(receipt.operationId)
-        publishCommand(outbox.get(receipt.commandId) ?: error("Resolved command disappeared."))
-        if (action == RevisionConflictAction.RETRY) {
-            launchCommandTransmission(receipt.commandId, recovery = false)
-        }
-        return publicReceipt(outbox.get(receipt.commandId) ?: error("Resolved command disappeared."))
-    }
+    suspend fun resolveConflict(commandId: String, action: RevisionConflictAction): DurableReceipt =
+        throw IllegalStateException(
+            "MLP/3 command $commandId has no global revision conflict to ${action.name.lowercase()}.",
+        )
 
     fun openUpload(name: String, mimeType: String, size: Long, sha256: String): UploadTransfer =
         transfers.openUpload(name, mimeType, size, sha256)
@@ -1066,13 +1048,8 @@ class NativeClientRuntime(
         } else {
             matrix.stop(clearSession = false)
         }
-        ackTimeouts.keys.toList().forEach { commandId ->
-            ackTimeouts.remove(commandId)?.cancel()
-            outbox.markAcknowledgementTimedOut(commandId)?.let(::publishCommand)
-        }
         cancelAllCommandTransmissions()
         cancelAllCommandRecoveries()
-        automaticRevisionRetryAttempts.clear()
         authoritativeStateRefreshJob?.cancel()
         authoritativeStateRefreshJob = null
         cancelGatewayConvergenceFallback()
@@ -1106,11 +1083,8 @@ class NativeClientRuntime(
 
     suspend fun close() {
         matrix.setObserver(null)
-        ackTimeouts.values.forEach(Job::cancel)
-        ackTimeouts.clear()
         cancelAllCommandTransmissions()
         cancelAllCommandRecoveries()
-        automaticRevisionRetryAttempts.clear()
         authoritativeStateRefreshJob?.cancel()
         authoritativeStateRefreshJob = null
         cancelGatewayConvergenceFallback()
@@ -1229,13 +1203,12 @@ class NativeClientRuntime(
     private fun launchCommandTransmission(
         commandId: String,
         recovery: Boolean,
-        completionProbe: Boolean = false,
     ) {
         synchronized(commandTransmissionJobs) {
             if (commandTransmissionJobs[commandId]?.isActive == true) return
             val job = scope.launch(start = CoroutineStart.LAZY) {
                 try {
-                    transmit(commandId, recovery, completionProbe)
+                    transmit(commandId, recovery)
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
@@ -1244,7 +1217,6 @@ class NativeClientRuntime(
                         mapOf(
                             "action" to (outbox.operation(commandId)?.wireName ?: "unknown"),
                             "stage" to when {
-                                completionProbe -> "completion_probe"
                                 recovery -> "recovery"
                                 else -> "initial"
                             },
@@ -1278,13 +1250,12 @@ class NativeClientRuntime(
     private suspend fun transmit(
         commandId: String,
         recovery: Boolean,
-        completionProbe: Boolean = false,
     ) {
         val transmission = mutex.withLock {
-            val claimed = when {
-                completionProbe -> outbox.claimCompletionRecovery(commandId)
-                recovery -> outbox.claimRecovery(commandId)
-                else -> outbox.claimForTransmission(commandId)
+            val claimed = if (recovery) {
+                outbox.claimRecovery(commandId)
+            } else {
+                outbox.claimForTransmission(commandId)
             } ?: return@withLock null
             publishCommand(outbox.get(commandId) ?: return@withLock null)
             claimed
@@ -1298,14 +1269,16 @@ class NativeClientRuntime(
                 roomId,
             )
             mutex.withLock {
+                if (outbox.recordPublished(transmission.commandId, matrixEventId)) {
+                    outbox.get(transmission.commandId)?.let(::publishCommand)
+                }
                 applyOwnMatrixMlp3Command(content, matrixEventId, transmission.issuedAt, roomId)
             }
         } catch (error: Exception) {
             val remainsCurrent = mutex.withLock {
                 val current = outbox.get(commandId)
                 if (current == null || current.state.isTerminal) return@withLock false
-                if (completionProbe) return@withLock true
-                outbox.markAcknowledgementTimedOut(commandId)?.let(::publishCommand)
+                outbox.markTransmissionUncertain(commandId)?.let(::publishCommand)
                 scheduleCommandRecovery(commandId)
                 true
             }
@@ -1317,27 +1290,6 @@ class NativeClientRuntime(
                 return
             }
             throw error
-        }
-        if (completionProbe) return
-        mutex.withLock {
-            if (outbox.get(commandId)?.state == DurableState.TRANSMITTING) {
-                ackTimeouts.remove(commandId)?.cancel()
-                ackTimeouts[commandId] = scope.launch {
-                    delay(COMMAND_ACK_TIMEOUT_MS)
-                    mutex.withLock {
-                        ackTimeouts.remove(commandId)
-                        val timedOut = outbox.markAcknowledgementTimedOut(commandId)
-                        timedOut?.let(::publishCommand)
-                        if (timedOut?.state == DurableState.RECOVERY_REQUIRED) {
-                            diagnostics.record(
-                                "command.recovery.required",
-                                mapOf("action" to (outbox.operation(commandId)?.wireName ?: "unknown")),
-                            )
-                            scheduleCommandRecovery(commandId)
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -2131,14 +2083,10 @@ class NativeClientRuntime(
             val sessionId = message.sessionId ?: return@forEach
             eventHub.upsertMessage(sessionId, message, refreshedSnapshot())
         }
-        result.acknowledgedCommandId?.let { commandId ->
-            val command = outbox.get(commandId)
-            if (command != null && !command.state.isTerminal) {
-                if (outbox.recordAcknowledgement(commandId, command.sequence, 0)) {
-                    ackTimeouts.remove(commandId)?.cancel()
-                    cancelScheduledCommandRecovery(commandId)
-                    outbox.get(commandId)?.let(::publishCommand)
-                }
+        result.progressedCommandId?.let { commandId ->
+            if (outbox.recordProgress(commandId, protocolEvent.string("sessionId"))) {
+                cancelScheduledCommandRecovery(commandId)
+                outbox.get(commandId)?.let(::publishCommand)
             }
         }
         result.terminal?.let(::recordMatrixMlp3Terminal)
@@ -2252,7 +2200,12 @@ class NativeClientRuntime(
         require(opened.logicalEventId == command.string("commandId")) {
             "The MLP/3 command envelope logical ID is invalid."
         }
+        val commandId = command.string("commandId")
+            ?: throw IllegalArgumentException("The MLP/3 command id is missing.")
         val result = matrixMlp3Projection.applyOwnCommand(command, matrixEventId, timestamp)
+        if (outbox.recordPublished(commandId, matrixEventId)) {
+            outbox.get(commandId)?.let(::publishCommand)
+        }
         result.messages.forEach { message ->
             val sessionId = message.sessionId ?: return@forEach
             eventHub.upsertMessage(sessionId, message, refreshedSnapshot())
@@ -2271,8 +2224,6 @@ class NativeClientRuntime(
         recordCommandCompletion(
             DurableCompletion(
                 commandId = terminal.commandId,
-                sequence = current.sequence,
-                revision = 0,
                 outcome = outcome,
                 sessionId = terminal.sessionId,
                 result = terminal.result,
@@ -2395,9 +2346,8 @@ class NativeClientRuntime(
                 event.eventId,
                 threadRootHint,
             )
-            projected.acknowledgedCommandId?.let { commandId ->
-                val command = outbox.get(commandId)
-                if (command != null) outbox.recordAcknowledgement(commandId, command.sequence, 0)
+            projected.progressedCommandId?.let { commandId ->
+                outbox.recordProgress(commandId, protocolEvent.string("sessionId"))
             }
             projected.terminal?.let(::recordMatrixMlp3Terminal)
             matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
@@ -2516,7 +2466,6 @@ class NativeClientRuntime(
         // Capture metadata before publishing the terminal event. A Web client
         // may synchronously consume it and release the durable command.
         val operation = outbox.operation(completion.commandId)
-        val operationId = outbox.get(completion.commandId)?.operationId
         val recorded = outbox.recordCompletion(completion)
         diagnostics.record(
             diagnosticEvent,
@@ -2533,9 +2482,7 @@ class NativeClientRuntime(
         // cancelling it prevents the late sender from observing a rotated
         // Gateway scope and reporting a spurious transmission failure.
         cancelCommandTransmission(completion.commandId)
-        ackTimeouts.remove(completion.commandId)?.cancel()
         cancelScheduledCommandRecovery(completion.commandId)
-        operationId?.let(automaticRevisionRetryAttempts::remove)
         outbox.get(completion.commandId)?.let(::publishCommand)
         runCatching {
             operation?.let { completedOperation ->
@@ -2941,7 +2888,11 @@ class NativeClientRuntime(
         operationId = value.operationId,
         commandId = value.commandId,
         idempotencyKey = value.idempotencyKey,
-        state = CommandState.valueOf(value.state.name),
+        state = if (value.state == DurableState.PUBLISHED) {
+            CommandState.ACCEPTED
+        } else {
+            CommandState.valueOf(value.state.name)
+        },
         submittedAt = value.submittedAt,
         updatedAt = value.updatedAt,
         sessionId = value.sessionId,
@@ -3012,10 +2963,7 @@ class NativeClientRuntime(
         const val CAPABILITY_RENEWAL_TIMEOUT_MS = 60_000L
         const val PAIRING_AUTO_RESUME_DELAY_MS = 30_000L
         const val GATEWAY_TRANSPORT_PROFILE_FIELD = "io.malink.gateway_transport"
-        const val COMMAND_LIFETIME_MS = 5 * 60_000L
-        const val COMMAND_ACK_TIMEOUT_MS = 30_000L
         const val GATEWAY_CONVERGENCE_GRACE_MS = 3_000L
-        const val MAX_AUTOMATIC_REVISION_RETRIES = 3
     }
 }
 
@@ -3051,22 +2999,6 @@ internal fun requiresGatewayConvergence(
     return currentRevision == null || currentRevision < expectedRevision
 }
 
-
-internal fun shouldAutomaticallyRetryRevisionConflict(operation: CommandOperation?): Boolean =
-    when (operation) {
-        // Current Gateways linearize stale prompts directly. Keep this client
-        // fallback so an updated APK also hands conversations off cleanly
-        // while a previously deployed Gateway is still being upgraded.
-        CommandOperation.PROMPT,
-        CommandOperation.SESSION_CREATE,
-        CommandOperation.SESSION_ARCHIVE,
-        CommandOperation.SESSION_RESTORE,
-        CommandOperation.SESSION_DELETE,
-        CommandOperation.GATEWAY_ENROLLMENT_INVITE,
-        CommandOperation.GATEWAY_ENROLLMENT_APPROVE,
-        -> true
-        else -> false
-    }
 
 internal fun commandRecoveryDelayMs(completedAttempts: Int): Long {
     require(completedAttempts >= 0)
@@ -3107,7 +3039,7 @@ internal fun recoverableCommandIds(commands: List<DurableView>): List<String> =
     commands
         .asSequence()
         .filter { it.state == DurableState.RECOVERY_REQUIRED }
-        .sortedBy(DurableView::sequence)
+        .sortedBy(DurableView::submittedAt)
         .map(DurableView::commandId)
         .toList()
 
@@ -3115,6 +3047,6 @@ internal fun queuedCommandIds(commands: List<DurableView>): List<String> =
     commands
         .asSequence()
         .filter { it.state == DurableState.QUEUED }
-        .sortedBy(DurableView::sequence)
+        .sortedBy(DurableView::submittedAt)
         .map(DurableView::commandId)
         .toList()

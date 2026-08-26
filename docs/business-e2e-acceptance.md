@@ -84,10 +84,11 @@ Android APK. Cross-device steps use two independently paired Matrix devices.
    - Previously synchronized sessions and history remain readable offline.
    - Commands show a truthful queued state and are delivered once after
      reconnect.
-   - Losing acknowledgement and terminal-result delivery after the Gateway
-     commits a create/delete command does not strand the native durable outbox.
-     Recovery must still work when Matrix transaction deduplication is no
-     longer available, and the next create/delete must start immediately.
+   - Losing the terminal event after Matrix has published a create/delete
+     command does not strand the native durable outbox. Projection recovery
+     uses Matrix sync; only an uncertain publication retries the exact command
+     ID and Matrix transaction. The next create/delete starts immediately
+     without a global acknowledgement lane.
    - Matrix sync restart, delayed lifecycle delivery, and duplicate timeline
      events converge without stale sessions or review deadlocks.
    - A limited Matrix `/sync` persists its gap before the live cursor advances,

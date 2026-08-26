@@ -6,9 +6,8 @@ import kotlinx.serialization.json.JsonObject
 enum class CommandState(val wireName: String) {
     QUEUED("queued"),
     TRANSMITTING("transmitting"),
-    ACCEPTED("accepted"),
+    PUBLISHED("published"),
     RUNNING("running"),
-    NEEDS_REVIEW("needs_review"),
     RECOVERY_REQUIRED("recovery_required"),
     SUCCEEDED("succeeded"),
     FAILED("failed"),
@@ -19,8 +18,14 @@ enum class CommandState(val wireName: String) {
         get() = this == SUCCEEDED || this == FAILED || this == CANCELLED
 
     companion object {
-        fun fromWireName(value: String): CommandState = entries.firstOrNull { it.wireName == value }
-            ?: throw IllegalArgumentException("Command state is invalid.")
+        fun fromWireName(value: String): CommandState = when (value) {
+            // Schema 1-5 compatibility. MLP/3 has neither an application ack
+            // state nor a global-revision review state.
+            "accepted" -> PUBLISHED
+            "needs_review" -> RECOVERY_REQUIRED
+            else -> entries.firstOrNull { it.wireName == value }
+                ?: throw IllegalArgumentException("Command state is invalid.")
+        }
     }
 }
 
@@ -52,8 +57,10 @@ data class PublicCommandError(
 
 data class CommandCompletion(
     val commandId: String,
-    val sequence: Long,
-    val revision: Long,
+    /** Native bridge v1 compatibility only; not serialized into an MLP/3 command. */
+    val sequence: Long = 1,
+    /** Native bridge v1 compatibility only; MLP/3 has no global revision. */
+    val revision: Long = 0,
     val outcome: CommandOutcome,
     val sessionId: String? = null,
     val result: JsonElement? = null,
@@ -61,8 +68,8 @@ data class CommandCompletion(
 ) {
     init {
         requireOpaqueId(commandId, "commandId")
-        requirePositiveJsonInteger(sequence, "Command sequence")
-        requireNonnegativeJsonInteger(revision, "Command revision")
+        requirePositiveJsonInteger(sequence, "Compatibility command sequence")
+        requireNonnegativeJsonInteger(revision, "Compatibility command revision")
         sessionId?.let { requireOpaqueId(it, "sessionId") }
         require(result == null || result.toString().toByteArray(Charsets.UTF_8).size <= MAX_RESULT_BYTES) {
             "Command result is too large."
@@ -70,8 +77,8 @@ data class CommandCompletion(
     }
 
     override fun toString(): String =
-        "CommandCompletion(commandId=$commandId, sequence=$sequence, revision=$revision, " +
-            "outcome=$outcome, sessionId=$sessionId, result=<redacted>, error=$error)"
+        "CommandCompletion(commandId=$commandId, outcome=$outcome, " +
+            "sessionId=$sessionId, result=<redacted>, error=$error)"
 }
 
 data class CommandView(
@@ -82,8 +89,10 @@ data class CommandView(
     val submittedAt: Long,
     val updatedAt: Long,
     val sessionId: String? = null,
-    val sequence: Long,
-    val revision: Long? = null,
+    /** Native bridge v1 compatibility only. */
+    val sequence: Long = 1,
+    /** Native bridge v1 compatibility only. */
+    val revision: Long? = 0,
     val cancelRequested: Boolean = false,
     val completion: CommandCompletion? = null,
 ) {
@@ -94,14 +103,11 @@ data class CommandView(
         requireNonnegativeJsonInteger(submittedAt, "Command submitted timestamp")
         requireNonnegativeJsonInteger(updatedAt, "Command updated timestamp")
         require(updatedAt >= submittedAt) { "Command timestamps are invalid." }
-        requirePositiveJsonInteger(sequence, "Command sequence")
-        revision?.let { requireNonnegativeJsonInteger(it, "Command revision") }
+        requirePositiveJsonInteger(sequence, "Compatibility command sequence")
+        revision?.let { requireNonnegativeJsonInteger(it, "Compatibility command revision") }
         sessionId?.let { requireOpaqueId(it, "sessionId") }
         require(completion == null || completion.commandId == commandId) {
             "Command completion does not belong to this command."
-        }
-        require(completion == null || completion.sequence == sequence) {
-            "Command completion sequence does not match."
         }
         require(state.isTerminal == (completion != null)) {
             "Terminal commands must contain exactly one completion."
@@ -117,8 +123,10 @@ data class CommandReceipt(
     val submittedAt: Long,
     val updatedAt: Long,
     val sessionId: String? = null,
-    val sequence: Long,
-    val revision: Long? = null,
+    /** Native bridge v1 compatibility only. */
+    val sequence: Long = 1,
+    /** A local durable receipt is immediately usable by bridge v1 clients. */
+    val revision: Long? = 0,
 ) {
     init {
         requireOpaqueId(operationId, "operationId")
@@ -128,8 +136,8 @@ data class CommandReceipt(
         requireNonnegativeJsonInteger(updatedAt, "Command updated timestamp")
         require(updatedAt >= submittedAt) { "Command timestamps are invalid." }
         sessionId?.let { requireOpaqueId(it, "sessionId") }
-        requirePositiveJsonInteger(sequence, "Command sequence")
-        revision?.let { requireNonnegativeJsonInteger(it, "Command revision") }
+        requirePositiveJsonInteger(sequence, "Compatibility command sequence")
+        revision?.let { requireNonnegativeJsonInteger(it, "Compatibility command revision") }
     }
 }
 
@@ -138,12 +146,7 @@ data class CommandTransmission(
     val commandId: String,
     val idempotencyKey: String,
     val projectId: String?,
-    val sequence: Long,
-    val baseRevision: Long,
-    val revisionEpoch: String?,
-    val revisionEpochGeneration: Long?,
     val issuedAt: Long,
-    val nonce: String,
     val payload: JsonObject,
     val recovery: Boolean,
 ) {
@@ -152,19 +155,7 @@ data class CommandTransmission(
         requireOpaqueId(commandId, "commandId")
         requireUuid(idempotencyKey)
         projectId?.let { requireOpaqueId(it, "projectId") }
-        requirePositiveJsonInteger(sequence, "Command sequence")
-        requireNonnegativeJsonInteger(baseRevision, "Command base revision")
-        require((revisionEpoch == null) == (revisionEpochGeneration == null)) {
-            "Command revision epoch metadata is incomplete."
-        }
-        revisionEpoch?.let { requireOpaqueId(it, "revisionEpoch") }
-        revisionEpochGeneration?.let {
-            requirePositiveJsonInteger(it, "Command revision epoch generation")
-        }
         requireNonnegativeJsonInteger(issuedAt, "Command authentication timestamp")
-        require(nonce.length in 16..256 && !nonce.any(Char::isISOControl)) {
-            "Command authentication nonce is invalid."
-        }
         require(payload.toString().toByteArray(Charsets.UTF_8).size <= MAX_PAYLOAD_BYTES) {
             "Command payload is too large."
         }
@@ -172,20 +163,9 @@ data class CommandTransmission(
 
     override fun toString(): String =
         "CommandTransmission(operationId=$operationId, commandId=$commandId, " +
-            "idempotencyKey=$idempotencyKey, sequence=$sequence, baseRevision=$baseRevision, " +
-            "revisionEpoch=<redacted>, revisionEpochGeneration=$revisionEpochGeneration, " +
-            "issuedAt=$issuedAt, nonce=<redacted>, payload=<redacted>, recovery=$recovery)"
+            "idempotencyKey=$idempotencyKey, issuedAt=$issuedAt, " +
+            "payload=<redacted>, recovery=$recovery)"
 }
-
-internal data class CommandEpochMigration(
-    val previousCommandId: String,
-    val currentCommandId: String,
-)
-
-internal data class GatewayCommandScopeReconciliation(
-    val epochChanged: Boolean,
-    val migratedCommands: List<CommandEpochMigration>,
-)
 
 enum class RevisionConflictAction {
     RETRY,
@@ -196,9 +176,9 @@ class CommandBusyException(
     val blockingCommandId: String,
     val blockingState: CommandState,
     val blockingOperation: CommandOperation,
-    val expectedRevision: Long?,
+    val expectedRevision: Long? = null,
 ) : IllegalStateException(
-    if (blockingState == CommandState.NEEDS_REVIEW) {
+    if (expectedRevision != null) {
         "The previous Malink action needs review before another action can start."
     } else {
         "Malink is restoring the previous queued action."
@@ -210,11 +190,6 @@ class CommandIdempotencyConflictException(message: String) : IllegalArgumentExce
 class ReleasedCommandException(message: String) : IllegalStateException(message)
 
 class UnknownCommandException(message: String) : IllegalArgumentException(message)
-
-class CommandRevisionConflictException(
-    val commandId: String,
-    val expectedRevision: Long,
-) : IllegalStateException("Command $commandId requires review at revision $expectedRevision.")
 
 internal const val MAX_PAYLOAD_BYTES = 256 * 1024
 internal const val MAX_RESULT_BYTES = 256 * 1024

@@ -823,7 +823,7 @@ class BridgeDispatcher(
             error.message ?: "Command idempotency conflict.",
         )
     } catch (error: CommandBusyException) {
-        val needsReview = error.blockingState == CommandState.NEEDS_REVIEW
+        val needsReview = error.expectedRevision != null
         BridgeProtocol.failure(
             request.id,
             BridgeError.INVALID_STATE,
@@ -1027,7 +1027,7 @@ class BridgeDispatcher(
         put("operationId", value.operationId)
         put("commandId", value.commandId)
         put("idempotencyKey", value.idempotencyKey)
-        put("state", value.state.wireName)
+        put("state", if (value.state == CommandState.PUBLISHED) "accepted" else value.state.wireName)
         put("submittedAt", value.submittedAt)
         put("updatedAt", value.updatedAt)
         value.sessionId?.let { put("sessionId", it) }

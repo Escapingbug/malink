@@ -33,7 +33,7 @@ internal data class MatrixMlp3NativeTerminal(
 
 internal data class MatrixMlp3NativeProjectionResult(
     val messages: List<ClientMessage> = emptyList(),
-    val acknowledgedCommandId: String? = null,
+    val progressedCommandId: String? = null,
     val terminal: MatrixMlp3NativeTerminal? = null,
     val changed: Boolean = false,
 )
@@ -475,7 +475,7 @@ internal class MatrixMlp3NativeProjection(
 
         return MatrixMlp3NativeProjectionResult(
             messages = messages,
-            acknowledgedCommandId = if (type in setOf("turn.queued", "turn.started")) causation else null,
+            progressedCommandId = if (type in setOf("turn.queued", "turn.started")) causation else null,
             terminal = terminal(type, event, payload, causation, sessionId),
             changed = sessionId != null || messages.isNotEmpty(),
         )

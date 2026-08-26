@@ -56,8 +56,8 @@ internal val NATIVE_STATE_CATALOG = listOf(
     NativeStateCatalogEntry(
         "command-outbox",
         NativePersistedStateClass.DURABLE_COMMAND,
-        4,
-        migrationFromVersions = setOf(1, 2, 3),
+        6,
+        migrationFromVersions = setOf(1, 2, 3, 4, 5),
     ),
     NativeStateCatalogEntry("pairing-transaction", NativePersistedStateClass.DURABLE_COMMAND, 1),
     NativeStateCatalogEntry(

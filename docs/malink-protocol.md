@@ -68,7 +68,7 @@ room, changing a relation, changing a command, or substituting a logical ID
 fails verification.
 
 `causationCommandId` records why a Gateway event exists. It is not the event's
-identity: a prompt, acknowledgement, Agent response, tool result, and terminal
+identity: a prompt, progress event, Agent response, tool result, and terminal
 result may all causally refer to one command while retaining distinct logical
 event IDs. Clients only reconcile the optimistic user prompt with its canonical
 user event; they never merge an Agent response into that prompt. A projected
@@ -81,8 +81,9 @@ delivery state in place.
 
 Before sending, a client writes the exact signed and encrypted Matrix content
 to its durable outbox. Retry reuses both `command_id` and Matrix transaction ID.
-Once Matrix acknowledges the event, the client stops retransmitting it and
-waits for the signed Gateway chain to reach acknowledgement and terminal state.
+Once Matrix returns the physical event ID, the client records the command as
+published and stops retransmitting it. Signed Gateway progress may follow, and
+only a signed terminal event completes the command.
 
 The Gateway commits each accepted `command_id` to a durable command journal
 before execution. Re-delivery returns the recorded state and never runs the
@@ -260,7 +261,7 @@ single response.
 Traffic scales with visible business activity:
 
 - one Matrix command event per user action;
-- one acknowledgement and one terminal event per command;
+- one terminal event per command, plus progress only when visible state changes;
 - Agent/tool events or edits that are actually visible;
 - one snapshot event plus one pointer replacement when the current projection
   materially changes;

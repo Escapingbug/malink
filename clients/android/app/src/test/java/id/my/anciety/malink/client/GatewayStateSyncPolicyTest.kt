@@ -100,9 +100,9 @@ class GatewayStateSyncPolicyTest {
     }
 
     @Test
-    fun `only recovery-required commands are resumed in sequence order`() {
+    fun `only recovery-required commands are resumed in submission order`() {
         val commands = listOf(
-            command("accepted", 2, CommandState.ACCEPTED),
+            command("published", 2, CommandState.PUBLISHED),
             command("later", 3, CommandState.RECOVERY_REQUIRED),
             command("earlier", 1, CommandState.RECOVERY_REQUIRED),
             command("done", 4, CommandState.SUCCEEDED),
@@ -112,7 +112,7 @@ class GatewayStateSyncPolicyTest {
     }
 
     @Test
-    fun `queued commands whose send job never started are resumed in sequence order`() {
+    fun `queued commands whose send job never started are resumed in submission order`() {
         val commands = listOf(
             command("later", 4, CommandState.QUEUED),
             command("ignored", 2, CommandState.RECOVERY_REQUIRED),
@@ -120,19 +120,6 @@ class GatewayStateSyncPolicyTest {
         )
 
         assertEquals(listOf("earlier", "later"), queuedCommandIds(commands))
-    }
-
-    @Test
-    fun `desired-state session operations retry revision conflicts without review`() {
-        assertEquals(true, shouldAutomaticallyRetryRevisionConflict(CommandOperation.SESSION_CREATE))
-        assertEquals(true, shouldAutomaticallyRetryRevisionConflict(CommandOperation.SESSION_ARCHIVE))
-        assertEquals(true, shouldAutomaticallyRetryRevisionConflict(CommandOperation.SESSION_RESTORE))
-        assertEquals(true, shouldAutomaticallyRetryRevisionConflict(CommandOperation.SESSION_DELETE))
-        assertEquals(true, shouldAutomaticallyRetryRevisionConflict(CommandOperation.PROMPT))
-        assertEquals(false, shouldAutomaticallyRetryRevisionConflict(CommandOperation.SESSION_SETTINGS))
-        assertEquals(false, shouldAutomaticallyRetryRevisionConflict(CommandOperation.DECISION))
-        assertEquals(false, shouldAutomaticallyRetryRevisionConflict(CommandOperation.DEVICE_INVITE))
-        assertEquals(false, shouldAutomaticallyRetryRevisionConflict(null))
     }
 
     private fun command(id: String, sequence: Long, state: CommandState): CommandView {
@@ -146,10 +133,10 @@ class GatewayStateSyncPolicyTest {
             commandId = id,
             idempotencyKey = UUID.randomUUID().toString(),
             state = state,
-            submittedAt = 1,
-            updatedAt = 1,
+            submittedAt = sequence,
+            updatedAt = sequence,
             sequence = sequence,
-            revision = if (state == CommandState.ACCEPTED || state.isTerminal) 4 else null,
+            revision = if (state == CommandState.PUBLISHED || state.isTerminal) 4 else null,
             completion = completion,
         )
     }

@@ -16,7 +16,6 @@ import {
 } from "@malink/native-bridge";
 import type { MalinkAttachment, CommandPayload } from "@malink/protocol";
 import {
-  CommandAcknowledgementTimeoutError,
   CommandCompletionExpiredError,
   CommandCompletionTimeoutError,
   type CommandCompletion,
@@ -80,20 +79,7 @@ export function hasCurrentNativeCapability(
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 24 * 60 * 60_000;
-const DEFAULT_COMMAND_ACKNOWLEDGEMENT_TIMEOUT_MS = 30_000;
 const DEFAULT_BLOCKED_COMMAND_RETRY_WINDOW_MS = 2 * 60_000;
-type Acknowledgement = {
-  commandId: string;
-  sequence: number;
-  revision: number;
-};
-
-type AcknowledgementWaiter = {
-  commandId: string;
-  sequence: number;
-  resolve(acknowledgement: Acknowledgement): void;
-  reject(error: Error): void;
-};
 
 type CompletionWaiter = {
   resolve(value: CommandCompletion): void;
@@ -137,8 +123,6 @@ export class NativeBridgeClient implements MalinkClient {
   readonly #historyBefore = new Map<string, string>();
   readonly #commandOperations = new Map<string, string>();
   readonly #reviewCommands = new Map<string, string>();
-  readonly #acknowledgements = new Map<string, Acknowledgement>();
-  readonly #acknowledgementWaiters = new Map<string, AcknowledgementWaiter>();
   readonly #completions = new Map<string, CommandCompletion>();
   readonly #completionWaiters = new Map<string, Set<CompletionWaiter>>();
   readonly #loadedHistoryEventIds = new Map<string, Set<string>>();
@@ -269,10 +253,8 @@ export class NativeBridgeClient implements MalinkClient {
     // receipt intentionally omits the persisted completion payload. Hydrate
     // the current durable view before installing a new completion waiter.
     //
-    // The native outbox may also re-key an unacknowledged command when the
-    // Gateway revision epoch changes. In that case `receipt.commandId` is the
-    // current identity, while `commandId` is a retired alias retained only for
-    // exact recovery.
+    // A legacy outbox may retain a retired command-id alias. The receipt names
+    // the stable current identity that owns any terminal event.
     if (receipt.commandId) {
       const current = await this.bridge.request("malink.command.get", {
         context: this.bridge.context(),
@@ -498,7 +480,6 @@ export class NativeBridgeClient implements MalinkClient {
     this.#completions.delete(commandId);
     const operationId = this.#commandOperations.get(commandId);
     if (operationId) {
-      this.#acknowledgements.delete(operationId);
       for (const [knownCommandId, knownOperationId] of this.#commandOperations) {
         if (knownOperationId === operationId) {
           this.#commandOperations.delete(knownCommandId);
@@ -517,9 +498,6 @@ export class NativeBridgeClient implements MalinkClient {
     this.#detachEventListener?.();
     this.#detachEventListener = null;
     this.#subscriptionId = null;
-    this.#rejectAcknowledgements(
-      new BridgeProtocolError("INVALID_STATE", "The native bridge is closed."),
-    );
     await this.bridge.request("malink.client.disconnect", {
       context: this.bridge.context(),
       idempotencyKey: crypto.randomUUID(),
@@ -531,9 +509,6 @@ export class NativeBridgeClient implements MalinkClient {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    this.#rejectAcknowledgements(
-      new BridgeProtocolError("INVALID_STATE", "The native bridge is closed."),
-    );
     this.#detachEventListener?.();
     this.#detachEventListener = null;
     const subscriptionId = this.#subscriptionId;
@@ -544,7 +519,7 @@ export class NativeBridgeClient implements MalinkClient {
     }
     // Posting the unsubscribe is synchronous. Release the injected port
     // immediately afterwards so a bootstrap/reconnect can acquire it without
-    // racing the asynchronous native acknowledgement.
+    // racing the asynchronous native response.
     void this.bridge.request("malink.events.unsubscribe", {
       context: this.bridge.context(),
       subscriptionId,
@@ -659,26 +634,9 @@ export class NativeBridgeClient implements MalinkClient {
     if (command.commandId && command.state === "needs_review") {
       const review: MalinkCommandReview = { commandId: command.commandId };
       this.#reviewCommands.set(command.operationId, command.commandId);
-      const waiter = this.#acknowledgementWaiters.get(command.operationId);
-      if (waiter) {
-        this.#acknowledgementWaiters.delete(command.operationId);
-        waiter.reject(new CommandReviewRequiredError(review));
-      }
       this.handlers.onCommandReviewRequired?.(review);
     } else if (this.#reviewCommands.delete(command.operationId)) {
       this.handlers.onCommandReviewRequired?.(null);
-    }
-    if (
-      command.commandId &&
-      command.sequence !== undefined &&
-      command.revision !== undefined
-    ) {
-      this.#recordAcknowledgement(
-        command.operationId,
-        command.commandId,
-        command.sequence,
-        command.revision,
-      );
     }
     const completion = command.completion;
     if (!completion) return;
@@ -739,14 +697,13 @@ export class NativeBridgeClient implements MalinkClient {
   }
 
   async #sendResult(receipt: CommandReceipt): Promise<MalinkCommandSendResult> {
-    if (!receipt.commandId || receipt.sequence === undefined) {
+    if (!receipt.commandId) {
       throw new BridgeProtocolError(
         "INVALID_REQUEST",
         "Native command receipt omitted its durable command identity.",
       );
     }
     const commandId = receipt.commandId;
-    const sequence = receipt.sequence;
     this.#commandOperations.set(commandId, receipt.operationId);
     if (receipt.state === "needs_review") {
       const review: MalinkCommandReview = { commandId };
@@ -754,98 +711,23 @@ export class NativeBridgeClient implements MalinkClient {
       this.handlers.onCommandReviewRequired?.(review);
       throw new CommandReviewRequiredError(review);
     }
-    const acknowledgement = receipt.revision === undefined
-      ? await this.#waitForAcknowledgement(
-          receipt.operationId,
-          commandId,
-          sequence,
-        )
-      : { commandId, sequence, revision: receipt.revision };
+    // The RPC result means the native service has atomically persisted and
+    // taken responsibility for the command. Matrix publication, Gateway
+    // progress, and the signed terminal event continue independently.
     const completion = this.#waitForCompletion(
-      acknowledgement.commandId,
+      commandId,
       DEFAULT_COMMAND_TIMEOUT_MS,
-      () => new CommandCompletionExpiredError(acknowledgement.commandId),
+      () => new CommandCompletionExpiredError(commandId),
     );
     return {
       operationId: receipt.operationId,
-      commandId: acknowledgement.commandId,
-      sequence: acknowledgement.sequence,
-      revision: acknowledgement.revision,
+      commandId,
+      // Compatibility presentation fields for callers that still render
+      // legacy command metadata. They carry no MLP/3 authorization meaning.
+      sequence: receipt.sequence ?? 1,
+      revision: receipt.revision ?? 0,
       completion,
     };
-  }
-
-  #recordAcknowledgement(
-    operationId: string,
-    commandId: string,
-    sequence: number,
-    revision: number,
-  ): void {
-    this.#commandOperations.set(commandId, operationId);
-    const current = this.#acknowledgements.get(operationId);
-    if (
-      !current ||
-      current.commandId !== commandId ||
-      sequence > current.sequence ||
-      (sequence === current.sequence && revision > current.revision)
-    ) {
-      this.#acknowledgements.set(operationId, { commandId, sequence, revision });
-    }
-    const waiter = this.#acknowledgementWaiters.get(operationId);
-    if (!waiter) return;
-    // A Gateway revision-epoch migration preserves the stable native
-    // operation while issuing a fresh command id and sequence. The receipt
-    // may already be in JavaScript when that migration happens, so match the
-    // replacement by operation id instead of waiting forever for the retired
-    // sequence. Events for one operation are delivered in native cursor order.
-    if (waiter.commandId === commandId && waiter.sequence !== sequence) return;
-    this.#acknowledgementWaiters.delete(operationId);
-    waiter.resolve({ commandId, sequence, revision });
-  }
-
-  #waitForAcknowledgement(
-    operationId: string,
-    commandId: string,
-    sequence: number,
-  ): Promise<Acknowledgement> {
-    const acknowledged = this.#acknowledgements.get(operationId);
-    if (
-      acknowledged &&
-      (acknowledged.commandId !== commandId || acknowledged.sequence === sequence)
-    ) {
-      return Promise.resolve(acknowledged);
-    }
-    return new Promise((resolve, reject) => {
-      const accept = (acknowledgement: Acknowledgement) => {
-        globalThis.clearTimeout(timeout);
-        resolve(acknowledgement);
-      };
-      const timeout = globalThis.setTimeout(() => {
-        const current = this.#acknowledgementWaiters.get(operationId);
-        if (current?.resolve === accept) {
-          this.#acknowledgementWaiters.delete(operationId);
-        }
-        reject(new CommandAcknowledgementTimeoutError(
-          current?.commandId ?? commandId,
-          sequence,
-        ));
-      }, DEFAULT_COMMAND_ACKNOWLEDGEMENT_TIMEOUT_MS);
-      this.#acknowledgementWaiters.set(operationId, {
-        commandId,
-        sequence,
-        resolve: accept,
-        reject: (error) => {
-          globalThis.clearTimeout(timeout);
-          reject(error);
-        },
-      });
-    });
-  }
-
-  #rejectAcknowledgements(error: Error): void {
-    const waiters = [...this.#acknowledgementWaiters.values()];
-    this.#acknowledgementWaiters.clear();
-    waiters.forEach((waiter) => waiter.reject(error));
   }
 
   #waitForCompletion(

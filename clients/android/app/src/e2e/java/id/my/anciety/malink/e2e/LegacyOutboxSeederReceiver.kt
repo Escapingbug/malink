@@ -68,8 +68,8 @@ class LegacyOutboxSeederReceiver : BroadcastReceiver() {
             )
             if (mode == MODE_CURRENT_ACCEPTED) {
                 checkNotNull(outbox.claimForTransmission(receipt.commandId))
-                check(outbox.recordAcknowledgement(receipt.commandId, receipt.sequence, 0L)) {
-                    "The accepted fixture could not persist its acknowledgement."
+                check(outbox.recordPublished(receipt.commandId, "\$e2e-published-$runId")) {
+                    "The published fixture could not persist its Matrix event id."
                 }
             }
             resultCode = Activity.RESULT_OK
@@ -94,8 +94,8 @@ class LegacyOutboxSeederReceiver : BroadcastReceiver() {
         } finally {
             plaintext.fill(0)
         }
-        check(current.getValue("schemaVersion").jsonPrimitive.long == 4L) {
-            "The fixture requires a current schema-4 outbox."
+        check(current.getValue("schemaVersion").jsonPrimitive.long == 6L) {
+            "The fixture requires a current schema-6 outbox."
         }
         val currentCommands = current.getValue("commands").jsonArray
         val terminalStates = setOf("succeeded", "failed", "cancelled")
@@ -108,19 +108,48 @@ class LegacyOutboxSeederReceiver : BroadcastReceiver() {
         val commandId = "legacy-upgrade-${sha256(runId).take(24)}"
         val operationId = "legacy-operation-${sha256("operation:$runId").take(24)}"
         val now = System.currentTimeMillis()
-        val sequence = current.getValue("lastAcknowledgedSequence").jsonPrimitive.long + 1L
+        val sequence = currentCommands.size + 1L
         val released = current.getValue("released").jsonArray.map { element ->
             JsonObject(element.jsonObject.filterKeys { key -> key != "retiredCommandIds" })
         }
-        val legacyCommands = currentCommands.map { element ->
-            JsonObject(element.jsonObject.filterKeys { key ->
-                key != "revisionEpoch" && key != "revisionEpochGeneration"
-            })
+        val legacyCommands = currentCommands.mapIndexed { index, element ->
+            val command = element.jsonObject
+            val compatibilitySequence = index + 1L
+            buildJsonObject {
+                put("operationId", command.getValue("operationId"))
+                put("commandId", command.getValue("commandId"))
+                put("retiredCommandIds", command.getValue("retiredCommandIds"))
+                put("idempotencyKey", command.getValue("idempotencyKey"))
+                put("requestFingerprint", command.getValue("requestFingerprint"))
+                put("state", command.getValue("state"))
+                put("submittedAt", command.getValue("submittedAt"))
+                put("updatedAt", command.getValue("updatedAt"))
+                put("sessionId", command.getValue("sessionId"))
+                put("sequence", compatibilitySequence)
+                put("baseRevision", 0)
+                put("authenticationIssuedAt", command.getValue("createdAt"))
+                put("authenticationNonce", sha256("legacy-nonce:$runId:$compatibilitySequence"))
+                put("revision", 0)
+                put("cancelRequested", command.getValue("cancelRequested"))
+                val completion = command.getValue("completion")
+                put("completion", if (completion is JsonNull) JsonNull else buildJsonObject {
+                    val value = completion.jsonObject
+                    put("commandId", value.getValue("commandId"))
+                    put("sequence", compatibilitySequence)
+                    put("revision", 0)
+                    put("outcome", value.getValue("outcome"))
+                    put("sessionId", value.getValue("sessionId"))
+                    put("result", value.getValue("result"))
+                    put("error", value.getValue("error"))
+                })
+                put("expectedRevision", JsonNull)
+                put("payload", command.getValue("payload"))
+            }
         }
         val legacy = buildJsonObject {
             put("schemaVersion", 2)
             put("lastAcknowledgedSequence", sequence - 1L)
-            put("lastRevision", current.getValue("lastRevision"))
+            put("lastRevision", 0)
             put("commands", buildJsonArray {
                 legacyCommands.forEach(::add)
                 add(buildJsonObject {
@@ -134,7 +163,7 @@ class LegacyOutboxSeederReceiver : BroadcastReceiver() {
                     put("updatedAt", now)
                     put("sessionId", JsonNull)
                     put("sequence", sequence)
-                    put("baseRevision", current.getValue("lastRevision"))
+                    put("baseRevision", 0)
                     put("authenticationIssuedAt", JsonNull)
                     put("authenticationNonce", JsonNull)
                     put("revision", JsonNull)

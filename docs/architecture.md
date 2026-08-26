@@ -166,8 +166,8 @@ non-sensitive placeholders.
 3. Commands and Gateway outputs use the same MLP/3 application envelope in
    ordinary `m.room.message` timeline events.
 4. A device signature authorizes an exact command. A Gateway signature proves
-   an exact acknowledgement, lifecycle transition, Agent/tool event, snapshot,
-   or terminal result.
+   an exact lifecycle transition, Agent/tool event, snapshot, rejection, or
+   terminal result. MLP/3 has no separate command-acknowledgement lane.
 5. Application encryption binds workspace, project, room, key epoch, logical
    ID, nonce, and ciphertext. A homeserver cannot relocate or rewrite a signed
    relation without rejection.
@@ -181,12 +181,13 @@ Explicitly restricted certificates remain restricted. Root privilege approval
 is never inherited and still requires the separate `privilege.approve` grant.
 Once a command signature and immutable bindings have been verified, a policy
 denial is journaled and returned as a signed `command.rejected` terminal event;
-unverified commands receive no application acknowledgement.
+unverified commands produce no application event.
 6. Logical event identity is independent of the physical Matrix event ID.
    `causationCommandId` is a relationship, never message identity.
 7. The client saves exact outbound content before send and reuses a stable
-   Matrix transaction ID. Matrix acknowledgement stops retransmission; terminal
-   convergence comes from the signed Gateway chain.
+   Matrix transaction ID. A returned Matrix event ID records homeserver
+   persistence and stops retransmission; terminal convergence comes from the
+   signed Gateway chain.
 8. The Gateway journals a command before execution. Redelivery of the same
    command ID returns its recorded state and cannot execute twice.
 9. Current project state is an ordinary signed snapshot referenced by
@@ -227,8 +228,10 @@ resumable and rebuildable; Matrix tokens, trust, commands, and history never
 enter update storage. There is no public update manifest or second update key.
 
 The WebView subscribes to a versioned native bridge and renders service-owned
-state. Detaching, reloading, or online-updating the PWA cannot cancel a running
-Agent or create a second Matrix client. Browser-only use implements the same MLP/3
+state. Its `malink.events.ack` method advances only the local Native-to-WebView
+event cursor; it is not a Matrix or MLP/3 command acknowledgement. Detaching,
+reloading, or online-updating the PWA cannot cancel a running Agent or create a
+second Matrix client. Browser-only use implements the same MLP/3
 projection in IndexedDB. It cannot keep Matrix `/sync` executing after the
 browser suspends it, but an opted-in standards-based Web Push subscription lets
 the Service Worker wake for a generic task-terminal system notification.

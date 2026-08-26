@@ -189,7 +189,9 @@ export type PublicCommandError = {
 
 export type CommandCompletion = {
   commandId: string;
+  /** Bridge-v1 compatibility metadata; it has no MLP/3 authorization meaning. */
   sequence: number;
+  /** Bridge-v1 compatibility metadata; MLP/3 has no global revision gate. */
   revision: number;
   outcome: "succeeded" | "failed" | "cancelled";
   sessionId?: string;
@@ -216,7 +218,9 @@ export type CommandView = {
   submittedAt: number;
   updatedAt: number;
   sessionId?: string;
+  /** Bridge-v1 compatibility metadata; it has no MLP/3 authorization meaning. */
   sequence?: number;
+  /** Bridge-v1 compatibility metadata; MLP/3 has no global revision gate. */
   revision?: number;
   cancelRequested?: boolean;
   completion?: CommandCompletion;
