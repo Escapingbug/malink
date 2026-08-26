@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseCodexModels } from '../index'
+import { CodexHistoryUnavailableError } from '../history'
 
-const { acpProviderConfigs } = vi.hoisted(() => ({
+const { acpProviderConfigs, fallbackHistoryCalls } = vi.hoisted(() => ({
     acpProviderConfigs: [] as Array<{ name: string; command: string; args: string[] }>,
+    fallbackHistoryCalls: [] as Array<{ sessionId: string; cwd: string }>,
 }))
 
 const { spawnSyncMock } = vi.hoisted(() => ({
@@ -28,6 +30,15 @@ vi.mock('@/providers/acp', () => ({
             this.name = config.name
             acpProviderConfigs.push(config)
         }
+
+        async getSessionHistory(sessionId: string, cwd: string) {
+            fallbackHistoryCalls.push({ sessionId, cwd })
+            return {
+                sessionId,
+                title: 'ACP fallback',
+                messages: [],
+            }
+        }
     },
 }))
 
@@ -39,6 +50,7 @@ describe('CodexProvider', () => {
             rmSync(directory, { recursive: true, force: true })
         }
         acpProviderConfigs.splice(0, acpProviderConfigs.length)
+        fallbackHistoryCalls.splice(0, fallbackHistoryCalls.length)
     })
 
     it('falls back to npx when codex-acp is not installed on PATH', async () => {
@@ -127,6 +139,50 @@ describe('CodexProvider', () => {
             },
         ])
         expect(spawnSyncMock).toHaveBeenCalled()
+    })
+
+    it('reads provider history through the Codex read-only history path', async () => {
+        const { CodexProvider } = await import('../index')
+        const historyReader = vi.fn().mockResolvedValue({
+            sessionId: 'thread-1',
+            title: 'Thread title',
+            messages: [{ id: 'user-1', role: 'user', text: 'Hello' }],
+        })
+        const provider = new CodexProvider({
+            env: { PATH: '', CODEX_PATH: '/opt/codex/bin/codex' },
+            cwd: '/gateway',
+            historyReader,
+        })
+
+        await expect(provider.getSessionHistory('thread-1', '/project')).resolves.toEqual({
+            sessionId: 'thread-1',
+            title: 'Thread title',
+            messages: [{ id: 'user-1', role: 'user', text: 'Hello' }],
+        })
+        expect(historyReader).toHaveBeenCalledWith({
+            sessionId: 'thread-1',
+            cwd: '/project',
+            command: '/opt/codex/bin/codex',
+            env: { PATH: '', CODEX_PATH: '/opt/codex/bin/codex' },
+            processCwd: '/gateway',
+        })
+        expect(fallbackHistoryCalls).toEqual([])
+    })
+
+    it('falls back to ACP session loading when Codex thread/read is unavailable', async () => {
+        const { CodexProvider } = await import('../index')
+        const provider = new CodexProvider({
+            historyReader: vi.fn().mockRejectedValue(
+                new CodexHistoryUnavailableError('thread/read is unavailable'),
+            ),
+        })
+
+        await expect(provider.getSessionHistory('thread-2', '/project')).resolves.toEqual({
+            sessionId: 'thread-2',
+            title: 'ACP fallback',
+            messages: [],
+        })
+        expect(fallbackHistoryCalls).toEqual([{ sessionId: 'thread-2', cwd: '/project' }])
     })
 })
 

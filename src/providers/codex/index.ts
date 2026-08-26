@@ -9,7 +9,12 @@ import { accessSync, constants } from 'node:fs'
 import { delimiter, join } from 'node:path'
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process'
 import { AcpProvider } from '@/providers/acp'
-import type { ModelEntry } from '@/providers/provider'
+import type { ModelEntry, ProviderSessionHistory } from '@/providers/provider'
+import {
+    CodexHistoryUnavailableError,
+    readCodexSessionHistory,
+    type CodexSessionHistoryReader,
+} from './history'
 
 const CODEX_ACP_COMMAND = 'npx'
 const CODEX_ACP_ARGS = ['-y', '@agentclientprotocol/codex-acp']
@@ -26,6 +31,7 @@ export interface CodexProviderOptions {
     cwd?: string
     modelsCommand?: string
     modelsArgs?: string[]
+    historyReader?: CodexSessionHistoryReader
 }
 
 interface CodexModelCatalog {
@@ -44,6 +50,8 @@ export class CodexProvider extends AcpProvider {
     private readonly modelsArgs: string[]
     private readonly env?: Record<string, string>
     private readonly cwd?: string
+    private readonly historyCommand: string
+    private readonly historyReader: CodexSessionHistoryReader
 
     constructor(options: CodexProviderOptions = {}) {
         const defaultLaunch = resolveDefaultCodexAcpLaunch(options.env)
@@ -58,6 +66,23 @@ export class CodexProvider extends AcpProvider {
         this.modelsArgs = options.modelsArgs ?? CODEX_MODELS_ARGS
         this.env = options.env
         this.cwd = options.cwd
+        this.historyCommand = options.env?.CODEX_PATH?.trim() || this.modelsCommand
+        this.historyReader = options.historyReader ?? readCodexSessionHistory
+    }
+
+    async getSessionHistory(sessionId: string, cwd: string): Promise<ProviderSessionHistory> {
+        try {
+            return await this.historyReader({
+                sessionId,
+                cwd,
+                command: this.historyCommand,
+                ...(this.env ? { env: this.env } : {}),
+                ...(this.cwd ? { processCwd: this.cwd } : {}),
+            })
+        } catch (error) {
+            if (!(error instanceof CodexHistoryUnavailableError)) throw error
+            return super.getSessionHistory(sessionId, cwd)
+        }
     }
 
     getAvailableModels(): ModelEntry[] {
