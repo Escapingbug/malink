@@ -13,6 +13,9 @@ sudo ./install-caddy-performance.sh
 
 The installer enables Zstandard and gzip response encoding and prevents the
 versioned Service Worker registration from being hidden by an HTTP cache.
+Immutable Gateway and native-update artifacts are excluded from transfer
+compression so update clients can compare `Content-Length` with the signed
+artifact size before streaming and hashing the response.
 
 Validate the deployed WASM response with a compression-capable client:
 

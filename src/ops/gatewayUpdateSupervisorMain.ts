@@ -18,7 +18,7 @@ const supervisor = new GatewayUpdateSupervisor({
   gatewayAdminSocketPath: requiredEnvironment('MALINK_GATEWAY_ADMIN_SOCKET'),
   currentBuildId: process.env.MALINK_GATEWAY_BUILD_ID,
   activationDelayMs: optionalDuration('MALINK_GATEWAY_UPDATE_ACTIVATION_DELAY_MS', 5_000),
-  healthTimeoutMs: optionalDuration('MALINK_GATEWAY_UPDATE_HEALTH_TIMEOUT_MS', 60_000),
+  healthTimeoutMs: optionalDuration('MALINK_GATEWAY_UPDATE_HEALTH_TIMEOUT_MS', 180_000),
   probationMs: optionalDuration('MALINK_GATEWAY_UPDATE_PROBATION_MS', 60_000),
   syncFreshnessMs: optionalDuration('MALINK_GATEWAY_UPDATE_SYNC_FRESHNESS_MS', 45_000),
   manifestFetchTimeoutMs: optionalDuration(

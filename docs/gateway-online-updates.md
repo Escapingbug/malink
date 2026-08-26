@@ -90,8 +90,10 @@ prepared/
 Build the two bundled entry points with `pnpm build`. Copy a real Node runtime,
 the two `dist/ops` files, and dereferenced production dependencies into the
 prepared directory. Do not leave pnpm symlinks in it: the release publisher
-rejects symlinks by design. Run the prepared Gateway locally against a test
-Matrix account before signing it.
+rejects symlinks by design. Remove non-runtime package content such as source
+maps and TypeScript declarations when necessary; the signed manifest must stay
+below one MiB. Run the prepared Gateway locally against a test Matrix account
+before signing it.
 
 Create the release key once, preferably on an offline signing machine:
 

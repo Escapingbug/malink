@@ -64,6 +64,7 @@ export interface GatewayUpdateSupervisorConfig {
 export interface GatewayUpdateSupervisorDependencies {
   fetch?: typeof fetch
   now?: () => number
+  sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>
   activate?: (options: MacosGatewayReleaseOptions) => Promise<void>
   onCommitted?: () => void | Promise<void>
   onLog?: (message: string) => void
@@ -409,16 +410,19 @@ export class GatewayUpdateSupervisor {
     const text = await withFetchTimeout(
       this.config.manifestFetchTimeoutMs ?? 30_000,
       'Gateway release manifest download',
-      async signal => {
-        const response = await (this.dependencies.fetch ?? fetch)(url, { signal })
+      signal => this.retryTransientFetch('manifest download', signal, async () => {
+        const response = await (this.dependencies.fetch ?? fetch)(url, {
+          signal,
+          headers: { 'accept-encoding': 'identity' },
+        })
         if (response.url && new URL(response.url).origin !== base.origin) {
           throw new Error('Gateway release manifest redirected to an untrusted origin')
         }
         if (!response.ok) {
-          throw new Error(`Gateway release manifest returned HTTP ${response.status}`)
+          throw fetchStatusError('Gateway release manifest', response.status)
         }
         return readBoundedText(response, 1024 * 1024, 'Gateway release manifest')
-      },
+      }),
     )
     let input: unknown
     try {
@@ -513,47 +517,98 @@ export class GatewayUpdateSupervisor {
     await withFetchTimeout(
       this.config.fileFetchTimeoutMs ?? 10 * 60_000,
       `Gateway release file ${file.path} download`,
-      async signal => {
-        const response = await (this.dependencies.fetch ?? fetch)(file.url, { signal })
-        if (response.url && new URL(response.url).origin !== new URL(file.url).origin) {
-          throw new Error(`Gateway release file ${file.path} redirected to an untrusted origin`)
-        }
-        if (!response.ok || !response.body) {
-          throw new Error(`Gateway release file ${file.path} returned HTTP ${response.status}`)
-        }
-        const advertisedLength = response.headers.get('content-length')
-        if (advertisedLength !== null && Number(advertisedLength) !== file.size) {
-          throw new Error(`Gateway release file ${file.path} has an unexpected length`)
-        }
-        const handle = await open(destination, 'wx', 0o600)
-        const reader = response.body.getReader()
-        const hash = createHash('sha256')
-        let bytes = 0
+      signal => this.retryTransientFetch(`file ${file.path} download`, signal, async () => {
+        await rm(destination, { force: true })
         try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            bytes += value.byteLength
-            if (bytes > file.size) {
-              throw new Error(`Gateway release file ${file.path} is oversized`)
-            }
-            hash.update(value)
-            await writeAll(handle, value)
+          const response = await (this.dependencies.fetch ?? fetch)(file.url, {
+            signal,
+            headers: { 'accept-encoding': 'identity' },
+          })
+          if (response.url && new URL(response.url).origin !== new URL(file.url).origin) {
+            throw new Error(`Gateway release file ${file.path} redirected to an untrusted origin`)
           }
-          await handle.sync()
+          if (!response.ok) {
+            throw fetchStatusError(`Gateway release file ${file.path}`, response.status)
+          }
+          if (!response.body) {
+            throw new RetryableGatewayUpdateFetchError(
+              `Gateway release file ${file.path} has no response body`,
+            )
+          }
+          const advertisedLength = response.headers.get('content-length')
+          const contentEncoding = response.headers.get('content-encoding')?.trim().toLowerCase()
+          if (
+            advertisedLength !== null
+            && (!contentEncoding || contentEncoding === 'identity')
+            && Number(advertisedLength) !== file.size
+          ) {
+            throw new RetryableGatewayUpdateFetchError(
+              `Gateway release file ${file.path} has an unexpected length`,
+            )
+          }
+          const handle = await open(destination, 'wx', 0o600)
+          const reader = response.body.getReader()
+          const hash = createHash('sha256')
+          let bytes = 0
+          try {
+            while (true) {
+              const { done, value } = await reader.read()
+              if (done) break
+              bytes += value.byteLength
+              if (bytes > file.size) {
+                throw new RetryableGatewayUpdateFetchError(
+                  `Gateway release file ${file.path} is oversized`,
+                )
+              }
+              hash.update(value)
+              await writeAll(handle, value)
+            }
+            await handle.sync()
+          } catch (error) {
+            await reader.cancel().catch(() => undefined)
+            throw error
+          } finally {
+            await handle.close()
+            reader.releaseLock()
+          }
+          if (bytes !== file.size || hash.digest('hex') !== file.sha256) {
+            throw new RetryableGatewayUpdateFetchError(
+              `Gateway release file ${file.path} failed integrity verification`,
+            )
+          }
         } catch (error) {
-          await reader.cancel().catch(() => undefined)
+          await rm(destination, { force: true })
           throw error
-        } finally {
-          await handle.close()
-          reader.releaseLock()
         }
-        if (bytes !== file.size || hash.digest('hex') !== file.sha256) {
-          throw new Error(`Gateway release file ${file.path} failed integrity verification`)
-        }
-      },
+      }),
     )
     await chmod(destination, file.executable ? 0o755 : 0o600)
+  }
+
+  private async retryTransientFetch<T>(
+    label: string,
+    signal: AbortSignal,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await operation()
+      } catch (error) {
+        if (
+          signal.aborted
+          || attempt >= 4
+          || !isTransientGatewayUpdateFetchError(error)
+        ) {
+          throw error
+        }
+        const retryAfterMs = transientRetryDelay(attempt)
+        this.log(
+          `[gateway-update] ${label} failed transiently; `
+          + `retrying in ${retryAfterMs}ms: ${formatError(error)}`,
+        )
+        await (this.dependencies.sleep ?? wait)(retryAfterMs, signal)
+      }
+    }
   }
 
   private readState(): Promise<GatewayUpdateSupervisorState> {
@@ -679,6 +734,47 @@ async function withFetchTimeout<T>(
   } finally {
     clearTimeout(timer)
   }
+}
+
+class RetryableGatewayUpdateFetchError extends Error {}
+
+function fetchStatusError(label: string, status: number): Error {
+  const message = `${label} returned HTTP ${status}`
+  return status === 408 || status === 425 || status === 429 || status >= 500
+    ? new RetryableGatewayUpdateFetchError(message)
+    : new Error(message)
+}
+
+function isTransientGatewayUpdateFetchError(error: unknown): boolean {
+  return error instanceof RetryableGatewayUpdateFetchError
+    || error instanceof TypeError
+    || (error instanceof DOMException
+      && (error.name === 'AbortError'
+        || error.name === 'NetworkError'
+        || error.name === 'TimeoutError'))
+}
+
+function transientRetryDelay(attempt: number): number {
+  return Math.min(4_000, 250 * (2 ** attempt))
+}
+
+function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolveWait, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason ?? new DOMException('The operation was aborted', 'AbortError'))
+      return
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolveWait()
+    }, milliseconds)
+    timer.unref?.()
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(signal.reason ?? new DOMException('The operation was aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 function defaultState(): GatewayUpdateSupervisorState {

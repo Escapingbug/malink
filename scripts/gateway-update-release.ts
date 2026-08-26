@@ -42,6 +42,8 @@ interface Options {
   architecture: 'arm64' | 'x64'
 }
 
+const MAX_SIGNED_MANIFEST_BYTES = 1024 * 1024
+
 export async function publishGatewayUpdateRelease(options: Options): Promise<{
   manifestPath: string
   signerPath: string
@@ -70,8 +72,6 @@ export async function publishGatewayUpdateRelease(options: Options): Promise<{
     const metadata = await stat(sourcePath)
     if (metadata.size < 1) throw new Error(`Gateway release file is empty: ${path}`)
     const sha256 = await hashFile(sourcePath)
-    const destination = join(artifactRoot, ...path.split('/'))
-    await copyImmutable(sourcePath, destination, sha256)
     const fileUrl = new URL(
       ['artifacts', options.releaseId, ...path.split('/')]
         .map(encodeURIComponent)
@@ -119,6 +119,20 @@ export async function publishGatewayUpdateRelease(options: Options): Promise<{
       value: base64UrlEncode(new Uint8Array(rawSignature)),
     },
   })
+  const signedManifestBytes = Buffer.byteLength(`${JSON.stringify(signed)}\n`)
+  if (signedManifestBytes > MAX_SIGNED_MANIFEST_BYTES) {
+    throw new Error(
+      `Signed Gateway release manifest exceeds ${MAX_SIGNED_MANIFEST_BYTES} bytes; `
+      + 'remove non-runtime files such as source maps and type declarations',
+    )
+  }
+  for (const file of files) {
+    await copyImmutable(
+      join(source, ...file.path.split('/')),
+      join(artifactRoot, ...file.path.split('/')),
+      file.sha256,
+    )
+  }
   const manifestPath = join(output, 'manifests', `${options.releaseId}.json`)
   const signerPath = join(output, 'release-signer.json')
   await writeImmutableJson(manifestPath, signed)

@@ -97,6 +97,72 @@ describe('GatewayUpdateSupervisor', () => {
     }))
   })
 
+  it('requests identity encoding and verifies a transparently decoded response body', async () => {
+    const fixture = await releaseFixture()
+    const artifactRequests: RequestInit[] = []
+    const fetchMock = vi.fn(async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      const response = await fixture.fetch(input, init)
+      if (String(input).endsWith('/release-2.json')) return response
+      artifactRequests.push(init ?? {})
+      return new Response(await response.arrayBuffer(), {
+        status: response.status,
+        headers: {
+          'content-encoding': 'gzip',
+          // Fetch exposes the encoded transfer length after decoding the body.
+          'content-length': '1',
+        },
+      })
+    }) as unknown as typeof fetch
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fetchMock })
+    await supervisor.initialize()
+
+    await expect(supervisor.stage('release-2')).resolves.toMatchObject({ phase: 'staged' })
+    expect(artifactRequests).toHaveLength(3)
+    for (const request of artifactRequests) {
+      expect(new Headers(request.headers).get('accept-encoding')).toBe('identity')
+    }
+  })
+
+  it('retries transient manifest and artifact download failures', async () => {
+    const fixture = await releaseFixture()
+    const failures = new Map<string, number>()
+    const logs: string[] = []
+    const fetchMock = vi.fn(async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      const url = String(input)
+      const attempts = failures.get(url) ?? 0
+      failures.set(url, attempts + 1)
+      if (attempts === 0 && url.endsWith('/release-2.json')) {
+        throw new TypeError('fetch failed')
+      }
+      if (attempts === 0 && url.endsWith('/runtime-node')) {
+        return new Response('temporarily unavailable', { status: 503 })
+      }
+      return fixture.fetch(input, init)
+    }) as unknown as typeof fetch
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, {
+      fetch: fetchMock,
+      sleep: async () => undefined,
+      onLog: message => logs.push(message),
+    })
+    await supervisor.initialize()
+
+    await expect(supervisor.stage('release-2')).resolves.toMatchObject({ phase: 'staged' })
+    expect(logs).toContain(
+      '[gateway-update] manifest download failed transiently; '
+      + 'retrying in 250ms: fetch failed',
+    )
+    expect(logs).toContain(
+      '[gateway-update] file runtime/node download failed transiently; '
+      + 'retrying in 250ms: Gateway release file runtime/node returned HTTP 503',
+    )
+  })
+
   it('records an automatic rollback outcome without losing the previous target', async () => {
     const fixture = await releaseFixture()
     const supervisor = new GatewayUpdateSupervisor({

@@ -89,6 +89,41 @@ describe('Gateway update release publisher', () => {
       architecture: process.arch as 'arm64' | 'x64',
     })).rejects.toThrow(/overwrite release artifact/u)
   })
+
+  it('rejects a signed manifest that the supervisor cannot download', async () => {
+    const root = await temporaryDirectory()
+    const source = join(root, 'prepared')
+    await preparedRelease(source)
+    const longDirectory = join(source, 'node_modules', 'x'.repeat(200))
+    await mkdir(longDirectory, { recursive: true })
+    for (let start = 0; start < 1_800; start += 100) {
+      await Promise.all(Array.from({ length: 100 }, (_, offset) =>
+        writeFile(join(longDirectory, `runtime-${start + offset}.js`), 'x')))
+    }
+    const keys = await generateDeviceKeyPair()
+    const keyPath = join(root, 'release-key.json')
+    await writeFile(keyPath, JSON.stringify(await exportDeviceKeyPair(keys)), { mode: 0o600 })
+    const output = join(root, 'published')
+
+    await expect(publishGatewayUpdateRelease({
+      source,
+      output,
+      releaseId: 'release-too-large',
+      versionName: '2.0.0',
+      buildId: 'build-too-large',
+      baseUrl: new URL('https://updates.example.test/gateway/'),
+      privateKeyFile: keyPath,
+      publishedAt: 42,
+      architecture: process.arch as 'arm64' | 'x64',
+    })).rejects.toThrow(/manifest exceeds 1048576 bytes/u)
+    await expect(readFile(join(
+      output,
+      'artifacts',
+      'release-too-large',
+      'runtime',
+      'node',
+    ))).rejects.toMatchObject({ code: 'ENOENT' })
+  }, 30_000)
 })
 
 async function preparedRelease(root: string): Promise<void> {

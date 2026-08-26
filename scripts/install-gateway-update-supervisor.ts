@@ -105,11 +105,7 @@ export async function installGatewayUpdateSupervisor(options: InstallOptions): P
     'bootout',
     `${domain}/${options.supervisorServiceLabel}`,
   ]).catch(() => undefined)
-  await run('/bin/launchctl', [
-    'bootstrap',
-    domain,
-    resolve(options.supervisorLaunchAgent),
-  ])
+  await bootstrapLaunchAgent(domain, resolve(options.supervisorLaunchAgent))
   await run('/bin/launchctl', [
     'kickstart',
     '-k',
@@ -123,11 +119,7 @@ export async function installGatewayUpdateSupervisor(options: InstallOptions): P
     'bootout',
     `${domain}/${options.gatewayServiceLabel}`,
   ]).catch(() => undefined)
-  await run('/bin/launchctl', [
-    'bootstrap',
-    domain,
-    resolve(options.gatewayLaunchAgent),
-  ])
+  await bootstrapLaunchAgent(domain, resolve(options.gatewayLaunchAgent))
   await run('/bin/launchctl', [
     'kickstart',
     '-k',
@@ -280,6 +272,22 @@ function run(command: string, arguments_: readonly string[]): Promise<void> {
       else reject(new Error(`${command} exited with ${code}`))
     })
   })
+}
+
+async function bootstrapLaunchAgent(domain: string, plistPath: string): Promise<void> {
+  let lastError: unknown = new Error('launchctl bootstrap did not run')
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await run('/bin/launchctl', ['bootstrap', domain, plistPath])
+      return
+    } catch (error) {
+      lastError = error
+    }
+    if (attempt < 4) {
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 250 * (attempt + 1)))
+    }
+  }
+  throw lastError
 }
 
 function xml(value: string): string {
