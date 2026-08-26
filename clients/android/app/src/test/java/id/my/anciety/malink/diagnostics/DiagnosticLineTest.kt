@@ -47,6 +47,23 @@ class DiagnosticLineTest {
     }
 
     @Test
+    fun `task notification channel diagnostics expose only attention state`() {
+        assertEquals(
+            "2026-08-04T12:00:00Z notification.task_channel " +
+                "available=true importance=4 reason=ready",
+            DiagnosticLine.encode(
+                "2026-08-04T12:00:00Z",
+                "notification.task_channel",
+                mapOf(
+                    "available" to "true",
+                    "importance" to "4",
+                    "reason" to "ready",
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun `matrix event diagnostics allow only counts and security codes`() {
         assertEquals(
             "2026-08-04T12:00:00Z matrix.native_event.rejected " +

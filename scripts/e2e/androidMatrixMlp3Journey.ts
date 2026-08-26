@@ -440,6 +440,7 @@ export async function runAndroidMatrixMlp3Journey(
             'Android task-completion notification',
             CONVERGENCE_TIMEOUT_MS,
         )
+        await assertTaskNotificationAlerts(options.serial)
         await waitFor(
             async () => await diagnosticCount(
                 options.serial,
@@ -656,6 +657,24 @@ async function assertForegroundNotification(serial: string): Promise<void> {
         (await notificationIds(serial)).includes(FOREGROUND_NOTIFICATION_ID),
         'The persistent Android foreground-service notification is missing.',
     )
+}
+
+async function assertTaskNotificationAlerts(serial: string): Promise<void> {
+    const output = await adb(serial, 'shell', 'dumpsys', 'notification', '--noredact')
+    const lines = output.split(/\r?\n/u)
+    const channel = lines.find(line => line.includes("mId='malink-agent-tasks-v2'"))
+    assert.ok(channel, 'The screen-off task alert channel is missing')
+    assert.match(channel, /mImportance=4/u)
+    assert.doesNotMatch(channel, /mSound=null/u)
+    assert.match(channel, /mVibrationEnabled=true/u)
+
+    const notification = lines.find(line =>
+        line.includes(`pkg=${PACKAGE_NAME}`) &&
+        line.includes('Notification(channel=malink-agent-tasks-v2'),
+    )
+    assert.ok(notification, 'The screen-off task notification did not use the alert channel')
+    assert.match(notification, /importance=4/u)
+    assert.doesNotMatch(notification, /ONLY_ALERT_ONCE/u)
 }
 
 async function notificationIds(serial: string): Promise<string[]> {

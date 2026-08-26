@@ -7,8 +7,9 @@
     <string name="notification_runtime_version">%1$s · Background connection service active</string>
     <string name="notification_export_logs">Export logs</string>
     <string name="notification_disconnect">Disconnect</string>
-    <string name="task_notification_channel_name">Agent task updates</string>
-    <string name="task_notification_channel_description">Completion updates for agent tasks while Malink is in the background</string>
+    <string name="task_notification_channel_name">Agent task alerts</string>
+    <string name="task_notification_channel_description">Sound, vibration, and on-screen alerts when background agent tasks finish</string>
+    <string name="task_notification_settings">Task alert settings</string>
     <string name="task_notification_succeeded_title">Agent task completed</string>
     <string name="task_notification_succeeded_body">Tap to view the result.</string>
     <string name="task_notification_failed_title">Agent task failed</string>

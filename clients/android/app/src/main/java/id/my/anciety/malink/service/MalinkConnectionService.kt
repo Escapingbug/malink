@@ -87,7 +87,7 @@ class MalinkConnectionService : Service() {
         taskNotifier = AgentTaskNotifier(this)
         registerPowerReceiver()
         createNotificationChannel()
-        taskNotifier.createChannel()
+        recordTaskNotificationChannel(taskNotifier.createChannel())
         initializeClientRuntime()
         if (
             preferences.restoreEnabled &&
@@ -303,10 +303,17 @@ class MalinkConnectionService : Service() {
         )
         if (kind == null) return
         runCatching { taskNotifier.show(kind, completion) }
-            .onSuccess {
+            .onSuccess { channelState ->
                 diagnostics.record(
                     "notification.task_posted",
-                    mapOf("stage" to completion.outcome.wireName),
+                    mapOf(
+                        "available" to (
+                            channelState.appNotificationsEnabled && channelState.channelExists
+                        ).toString(),
+                        "importance" to channelState.importance.toString(),
+                        "reason" to channelState.health.wireName,
+                        "stage" to completion.outcome.wireName,
+                    ),
                 )
             }
             .onFailure { error ->
@@ -315,6 +322,17 @@ class MalinkConnectionService : Service() {
                     mapOf("error" to error.javaClass.simpleName.take(160)),
                 )
             }
+    }
+
+    private fun recordTaskNotificationChannel(state: TaskNotificationChannelState) {
+        diagnostics.record(
+            "notification.task_channel",
+            mapOf(
+                "available" to (state.appNotificationsEnabled && state.channelExists).toString(),
+                "importance" to state.importance.toString(),
+                "reason" to state.health.wireName,
+            ),
+        )
     }
 
     private fun createNotificationChannel() {
@@ -362,6 +380,11 @@ class MalinkConnectionService : Service() {
                             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
                         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
                     ),
+                )
+                .addAction(
+                    0,
+                    getString(R.string.task_notification_settings),
+                    taskNotifier.channelSettingsPendingIntent(),
                 )
                 .addAction(
                     0,

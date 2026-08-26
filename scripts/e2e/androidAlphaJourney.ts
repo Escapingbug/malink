@@ -910,6 +910,7 @@ export async function runAndroidAlphaJourney(
             timeoutMs: CONVERGENCE_TIMEOUT_MS,
         })
         assert.equal(await diagnosticCount(serial, 'notification.task_posted'), postedBefore + 1)
+        await assertTaskNotificationAlerts(serial)
         await assertForegroundNotification(serial)
         const returnStarted = Date.now()
         android.close()
@@ -3167,6 +3168,24 @@ async function taskNotificationKeys(serial: string): Promise<NotificationKey[]> 
     return (await notificationKeys(serial)).filter(key =>
         key.packageName === PACKAGE_NAME && key.id !== FOREGROUND_NOTIFICATION_ID,
     )
+}
+
+async function assertTaskNotificationAlerts(serial: string): Promise<void> {
+    const output = await adb(serial, 'shell', 'dumpsys', 'notification', '--noredact')
+    const lines = output.split(/\r?\n/u)
+    const channel = lines.find(line => line.includes("mId='malink-agent-tasks-v2'"))
+    assert.ok(channel, 'The interruptive Agent task notification channel is missing')
+    assert.match(channel, /mImportance=4/u)
+    assert.doesNotMatch(channel, /mSound=null/u)
+    assert.match(channel, /mVibrationEnabled=true/u)
+
+    const notification = lines.find(line =>
+        line.includes(`pkg=${PACKAGE_NAME}`) &&
+        line.includes('Notification(channel=malink-agent-tasks-v2'),
+    )
+    assert.ok(notification, 'The Agent task notification did not use the interruptive channel')
+    assert.match(notification, /importance=4/u)
+    assert.doesNotMatch(notification, /ONLY_ALERT_ONCE/u)
 }
 
 type NotificationKey = { raw: string; packageName: string; id: string }
