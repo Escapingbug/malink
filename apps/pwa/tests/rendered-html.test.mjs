@@ -156,7 +156,7 @@ test("ships a complete installable offline shell", async () => {
   assert.doesNotMatch(newSession, /endpoint|bearerToken/);
   assert.match(styles, /\.session-extensions\s*\{/);
   assert.match(styles, /\.permission-details\s*\{/);
-  assert.match(source, /className="session-row session-create-pending"/);
+  assert.match(source, /session-row session-create-pending/);
   assert.match(source, /function ProjectFolderIcon\(\{ temporary \}:/);
   assert.match(source, /className="project-folder-clock"/);
   assert.match(source, /title=\{project\.temporary \? "Temporary workspace" : "Project"\}/);
@@ -171,8 +171,11 @@ test("ships a complete installable offline shell", async () => {
     /\.project-folder-shell\s*\{[\s\S]*?fill:\s*var\(--violet-soft\);[\s\S]*?stroke-width:\s*1\.55/,
   );
   assert.match(source, /aria-pressed=\{selectedSessionId === session\.id\}/);
-  assert.match(source, /"Creating session…"/);
-  assert.match(source, /"Session queued…"/);
+  assert.match(source, /Creating this conversation/);
+  assert.match(source, /Creating · Ready for messages/);
+  assert.match(source, /Conversation creation failed/);
+  assert.match(source, /Retry creation/);
+  assert.match(source, /discardFailedOptimisticSession/);
   assert.match(
     source,
     /setPendingSessionCreate\(input\);[\s\S]*?setNewSessionOpen\(false\);[\s\S]*?await waitForUiCommit\(\);[\s\S]*?operation: "session\.create"/,
@@ -261,6 +264,19 @@ test("ships a complete installable offline shell", async () => {
   );
   assert.match(history, /malink-pwa-message-history/);
   assert.match(history, /loadMessageHistoryPage/);
+  assert.match(history, /moveSessionMessageHistory/);
+  assert.match(history, /loadQueuedSessionMessages/);
+  assert.match(source, /deliveryState: "queued"/);
+  assert.match(source, /queueMessageForCreatingSession/);
+  assert.match(
+    source,
+    /moveSessionMessageHistory\(scope, localSessionId, remoteSessionId\)[\s\S]*?\.then\(\(\) => \{[\s\S]*?removeOptimisticSession\(localSessionId\);[\s\S]*?flushQueuedSessionMessages\(/,
+    "queued history must migrate durably before the optimistic recovery marker is cleared and sending starts",
+  );
+  assert.match(source, /Waiting for session creation/);
+  assert.match(source, /WAITING_AGENT_ACTIVITY/);
+  assert.match(styles, /\.optimistic-session-card\s*\{/);
+  assert.match(styles, /\.delivery-indicator\.queued\s*\{/);
   assert.match(history, /reconcileMessageHistory/);
   assert.match(history, /\["scope", "sessionId", "timestamp", "id"\]/);
   assert.match(

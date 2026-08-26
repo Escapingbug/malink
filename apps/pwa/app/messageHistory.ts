@@ -17,7 +17,7 @@ export type PersistedChatMessage = {
   replacesEventId?: string;
   commandId?: string;
   revision?: number;
-  deliveryState?: "sending" | "sent" | "failed";
+  deliveryState?: "queued" | "sending" | "sent" | "failed";
   originDeviceId?: string;
   originDeviceName?: string;
   format?: MessageFormat;
@@ -189,6 +189,99 @@ export async function deleteMessageHistory(
       database.close();
     }
   });
+}
+
+export async function moveSessionMessageHistory(
+  scope: string,
+  fromSessionId: string,
+  toSessionId: string,
+): Promise<void> {
+  if (!scope || !fromSessionId || !toSessionId || fromSessionId === toSessionId) {
+    return;
+  }
+  return enqueueHistoryWrite(async () => {
+    const database = await openHistoryDatabase();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction(MESSAGE_STORE, "readwrite");
+        const index = transaction.objectStore(MESSAGE_STORE).index(BY_SESSION_INDEX);
+        const range = IDBKeyRange.bound(
+          [scope, fromSessionId, 0, ""],
+          [scope, fromSessionId, Number.MAX_SAFE_INTEGER, "\uffff"],
+        );
+        const request = index.openCursor(range);
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (!cursor) return;
+          const message = cursor.value as StoredChatMessage;
+          cursor.update({ ...message, sessionId: toSessionId });
+          cursor.continue();
+        };
+        request.onerror = () => transaction.abort();
+        transaction.oncomplete = () => resolve();
+        transaction.onabort = () =>
+          reject(
+            transaction.error ??
+              request.error ??
+              new Error("Could not move the pending session history."),
+          );
+        transaction.onerror = () => {
+          // onabort reports the final transaction error.
+        };
+      });
+    } finally {
+      database.close();
+    }
+  });
+}
+
+export async function loadQueuedSessionMessages(
+  scope: string,
+  sessionId: string,
+): Promise<PersistedChatMessage[]> {
+  if (!scope || !sessionId) return [];
+  const database = await openHistoryDatabase();
+  try {
+    return await new Promise<PersistedChatMessage[]>((resolve, reject) => {
+      const transaction = database.transaction(MESSAGE_STORE, "readonly");
+      const index = transaction.objectStore(MESSAGE_STORE).index(BY_SESSION_INDEX);
+      const range = IDBKeyRange.bound(
+        [scope, sessionId, 0, ""],
+        [scope, sessionId, Number.MAX_SAFE_INTEGER, "\uffff"],
+      );
+      const request = index.openCursor(range);
+      const messages: PersistedChatMessage[] = [];
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        const stored = cursor.value as StoredChatMessage;
+        if (stored.kind === "user" && stored.deliveryState === "queued") {
+          const message = structuredClone(stored) as unknown as Record<
+            string,
+            unknown
+          >;
+          delete message.key;
+          delete message.scope;
+          delete message.sessionId;
+          messages.push(message as PersistedChatMessage);
+        }
+        cursor.continue();
+      };
+      request.onerror = () => transaction.abort();
+      transaction.oncomplete = () => resolve(messages);
+      transaction.onabort = () =>
+        reject(
+          transaction.error ??
+            request.error ??
+            new Error("Could not load messages waiting for session creation."),
+        );
+      transaction.onerror = () => {
+        // onabort reports the final transaction error.
+      };
+    });
+  } finally {
+    database.close();
+  }
 }
 
 export async function loadMessageHistoryPage(

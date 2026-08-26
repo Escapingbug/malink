@@ -26,6 +26,7 @@ const config: MatrixConnectionConfig = {
 function fakeTransport(
   onStop: () => void,
   onSend: (payload: CommandPayload) => void = () => {},
+  sessionId?: string,
 ): MatrixConnection {
   const completion = {
     commandId: "command-1",
@@ -36,6 +37,7 @@ function fakeTransport(
   const sent = {
     eventId: "$event",
     commandId: completion.commandId,
+    ...(sessionId ? { sessionId } : {}),
     sequence: completion.sequence,
     revision: completion.revision,
     completion: Promise.resolve(completion),
@@ -132,6 +134,17 @@ test("keeps UI disposal distinct from an explicit web disconnect", async () => {
     config,
   ).disconnect();
   assert.equal(disconnectedStops, 1);
+});
+
+test("forwards the preallocated web session identity before creation completes", async () => {
+  const client = new WebMalinkClient(
+    fakeTransport(() => {}, () => {}, "session-preallocated-1"),
+    config,
+  );
+
+  const sent = await client.send({ operation: "session.create" });
+
+  assert.equal(sent.sessionId, "session-preallocated-1");
 });
 
 test("creates the web client through an injectable transport boundary", async () => {

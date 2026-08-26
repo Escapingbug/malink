@@ -271,6 +271,7 @@ export type CommandResultState = CommandCompletion;
 export type CommandSendResult = {
   eventId: string;
   commandId: string;
+  sessionId?: string;
   sequence: number;
   revision: number;
   completion: Promise<CommandCompletion>;

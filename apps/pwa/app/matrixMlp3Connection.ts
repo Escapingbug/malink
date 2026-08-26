@@ -1045,6 +1045,7 @@ export async function connectMatrixMlp3(
       return {
         eventId: sent.eventId ?? `$malink.queued.${sent.commandId}`,
         commandId: sent.commandId,
+        ...(sent.sessionId ? { sessionId: sent.sessionId } : {}),
         sequence: 1,
         revision: 0,
         completion: sent.completion.then(toLegacyCompletion),

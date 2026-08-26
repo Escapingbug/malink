@@ -1,5 +1,6 @@
 export type AgentActivityPhase =
   | "sending"
+  | "waiting"
   | "starting"
   | "working"
   | "stopping";
@@ -12,12 +13,14 @@ export type AgentActivity = Readonly<{
 
 const ACTIVITY_LABELS: Readonly<Record<AgentActivityPhase, string>> = {
   sending: "Sending…",
+  waiting: "Message sent · Waiting for agent…",
   starting: "Starting agent…",
   working: "Agent is working…",
   stopping: "Stopping agent…",
 };
 
 export const SENDING_AGENT_ACTIVITY = agentActivityForPhase("sending");
+export const WAITING_AGENT_ACTIVITY = agentActivityForPhase("waiting");
 export const STARTING_AGENT_ACTIVITY = agentActivityForPhase("starting");
 export const WORKING_AGENT_ACTIVITY = agentActivityForPhase("working");
 export const STOPPING_AGENT_ACTIVITY = agentActivityForPhase("stopping");
@@ -89,6 +92,26 @@ export function reduceAgentActivity(
       default:
         return current;
     }
+  }
+
+  if (event.type === "turn.queued") {
+    return current?.phase === "working" || current?.phase === "stopping"
+      ? current
+      : WAITING_AGENT_ACTIVITY;
+  }
+  if (event.type === "turn.started") {
+    return current?.phase === "working" || current?.phase === "stopping"
+      ? current
+      : STARTING_AGENT_ACTIVITY;
+  }
+  if (event.type === "turn.completed" || event.type === "turn.failed") {
+    return null;
+  }
+  if (
+    event.type === "assistant.message" ||
+    event.type === "tool.activity"
+  ) {
+    return null;
   }
 
   if (event.kind === "message") return null;

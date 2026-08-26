@@ -315,6 +315,7 @@ function commandResultFromWeb(
   return {
     operationId: result.commandId,
     commandId: result.commandId,
+    ...(result.sessionId ? { sessionId: result.sessionId } : {}),
     sequence: result.sequence,
     revision: result.revision,
     completion: result.completion,

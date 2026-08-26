@@ -4,6 +4,7 @@ import {
   SENDING_AGENT_ACTIVITY,
   STARTING_AGENT_ACTIVITY,
   STOPPING_AGENT_ACTIVITY,
+  WAITING_AGENT_ACTIVITY,
   WORKING_AGENT_ACTIVITY,
   agentExecutionSignal,
   agentActivityForPhase,
@@ -19,6 +20,10 @@ test("exports stable, human-readable activity for local transitions", () => {
   assert.deepEqual(STARTING_AGENT_ACTIVITY, {
     phase: "starting",
     label: "Starting agent…",
+  });
+  assert.deepEqual(WAITING_AGENT_ACTIVITY, {
+    phase: "waiting",
+    label: "Message sent · Waiting for agent…",
   });
   assert.deepEqual(WORKING_AGENT_ACTIVITY, {
     phase: "working",
@@ -63,6 +68,37 @@ test("derives activity from explicit Matrix status phases", () => {
       activity_phase: "working",
     }),
     WORKING_AGENT_ACTIVITY,
+  );
+});
+
+test("keeps the delivery-to-execution gap explicit for MLP/3 turns", () => {
+  assert.equal(
+    reduceAgentActivity(SENDING_AGENT_ACTIVITY, {
+      type: "turn.queued",
+      turnId: "turn-1",
+    }),
+    WAITING_AGENT_ACTIVITY,
+  );
+  assert.equal(
+    reduceAgentActivity(WAITING_AGENT_ACTIVITY, {
+      type: "turn.started",
+      turnId: "turn-1",
+    }),
+    STARTING_AGENT_ACTIVITY,
+  );
+  assert.equal(
+    reduceAgentActivity(STARTING_AGENT_ACTIVITY, {
+      type: "assistant.message",
+    }),
+    null,
+  );
+  assert.equal(
+    reduceAgentActivity(WORKING_AGENT_ACTIVITY, {
+      type: "turn.queued",
+      turnId: "turn-2",
+    }),
+    WORKING_AGENT_ACTIVITY,
+    "a queued follow-up must not make an active turn look idle",
   );
 });
 

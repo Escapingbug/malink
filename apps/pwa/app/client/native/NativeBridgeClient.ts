@@ -206,7 +206,7 @@ export class NativeBridgeClient implements MalinkClient {
     await this.ready;
     const idempotencyKey = crypto.randomUUID();
     const receipt = await this.#sendWhenOutboxAvailable(payload, idempotencyKey, projectId);
-    return this.#sendResult(receipt);
+    return this.#sendResult(receipt, payload.operation === "session.create");
   }
 
   async requestMatrixLoginToken(
@@ -696,7 +696,10 @@ export class NativeBridgeClient implements MalinkClient {
     }
   }
 
-  async #sendResult(receipt: CommandReceipt): Promise<MalinkCommandSendResult> {
+  async #sendResult(
+    receipt: CommandReceipt,
+    createsSession = false,
+  ): Promise<MalinkCommandSendResult> {
     if (!receipt.commandId) {
       throw new BridgeProtocolError(
         "INVALID_REQUEST",
@@ -722,6 +725,11 @@ export class NativeBridgeClient implements MalinkClient {
     return {
       operationId: receipt.operationId,
       commandId,
+      ...(receipt.sessionId
+        ? { sessionId: receipt.sessionId }
+        : createsSession
+          ? { sessionId: commandId }
+          : {}),
       // Compatibility presentation fields for callers that still render
       // legacy command metadata. They carry no MLP/3 authorization meaning.
       sequence: receipt.sequence ?? 1,

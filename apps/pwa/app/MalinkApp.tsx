@@ -44,6 +44,7 @@ import {
   SENDING_AGENT_ACTIVITY,
   STARTING_AGENT_ACTIVITY,
   STOPPING_AGENT_ACTIVITY,
+  WAITING_AGENT_ACTIVITY,
   WORKING_AGENT_ACTIVITY,
   agentExecutionSignal,
   reduceAgentActivity,
@@ -74,6 +75,7 @@ import {
 } from "./privilegeTotp";
 import {
   gatewayProjectKey,
+  type GatewaySessionSummary,
 } from "./gatewayState";
 import {
   clearGatewayUiCache,
@@ -130,6 +132,16 @@ import {
   writePendingSessionCreateRecovery,
   type PendingSessionCreateRecovery,
 } from "./sessionCreateRecovery";
+import {
+  bindOptimisticSession,
+  clearOptimisticSession,
+  createOptimisticSessionRecord,
+  failOptimisticSession,
+  readOptimisticSession,
+  retryOptimisticSession,
+  writeOptimisticSession,
+  type OptimisticSessionRecord,
+} from "./optimisticSession";
 import {
   pendingSessionLifecycleIds,
   sessionsAvailableForAutomaticSelection,
@@ -244,8 +256,10 @@ import {
   clearSessionMessageHistory,
   deleteMessageHistory,
   loadMessageHistoryPage,
+  loadQueuedSessionMessages,
   loadTurnPromptHistory,
   matrixHistoryScope,
+  moveSessionMessageHistory,
   reconcileMessageHistory,
   saveMessageHistory,
   type MessageHistoryCursor,
@@ -1186,6 +1200,8 @@ function MalinkAppRuntime() {
     useState<SessionSettingsUpdate | null>(null);
   const [pendingSessionCreate, setPendingSessionCreate] =
     useState<NewSessionInput | null>(null);
+  const [optimisticSession, setOptimisticSession] =
+    useState<OptimisticSessionRecord | null>(null);
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() =>
     readProjectDisclosureState(
       typeof window === "undefined" ? null : window.localStorage,
@@ -1276,10 +1292,14 @@ function MalinkAppRuntime() {
   );
   const reconciledOptimisticMessageIdsRef = useRef(new Set<string>());
   const pendingPromptSessionIdsRef = useRef(new Set<string>());
+  const queuedSessionFlushIdsRef = useRef(new Set<string>());
+  const queuedSessionFlushInFlightRef = useRef(new Set<string>());
+  const optimisticPromotionInFlightRef = useRef<string | null>(null);
   const selectedSessionIdRef = useRef<string | null>(
     initialGatewayUi.selectedSessionId,
   );
   const pendingCreatedSessionIdRef = useRef<string | null>(null);
+  const optimisticSessionRef = useRef<OptimisticSessionRecord | null>(null);
   const pendingOpenedSessionIdRef = useRef<string | null>(null);
   const activateLocalSessionRef = useRef<(sessionId: string) => void>(() => {});
   const knownGatewaySessionIdsRef = useRef(
@@ -1317,12 +1337,20 @@ function MalinkAppRuntime() {
     scrollTop: number;
   } | null>(null);
 
-  const selected =
+  const gatewaySelected =
     gatewayState?.sessions.find(
       (session) => session.id === selectedSessionId,
     ) ?? null;
-  const selectedLifecycleAction = selected
-    ? sessionLifecycleBusy.get(selected.id) ?? null
+  const optimisticSelected = Boolean(
+    optimisticSession &&
+      optimisticSession.localSessionId === selectedSessionId,
+  );
+  const optimisticSelectedSummary = optimisticSelected && optimisticSession
+    ? optimisticSessionSummary(optimisticSession, gatewayState)
+    : null;
+  const selected = gatewaySelected ?? optimisticSelectedSummary;
+  const selectedLifecycleAction = gatewaySelected
+    ? sessionLifecycleBusy.get(gatewaySelected.id) ?? null
     : null;
   const selectedLifecycleBusy = selectedLifecycleAction !== null;
   const latestCompletedTurn = useMemo(
@@ -1615,9 +1643,9 @@ function MalinkAppRuntime() {
   const sessionReady = Boolean(
     gatewayAvailable &&
       gatewayState &&
-      selected,
+      gatewaySelected,
   );
-  const composerState = deriveComposerState({
+  const derivedComposerState = deriveComposerState({
     connectionStatus,
     gatewayAvailable,
     hasGatewayState: Boolean(gatewayState),
@@ -1629,6 +1657,22 @@ function MalinkAppRuntime() {
     isStopping,
     hasContent: Boolean(draft.trim() || pendingFiles.length > 0),
   });
+  const composerState = optimisticSelected && optimisticSession
+    ? optimisticSession.phase === "failed"
+      ? {
+          canType: true,
+          canSend: false,
+          mode: "blocked" as const,
+          reason: "Session creation failed · Retry creation to send queued messages",
+        }
+      : derivedComposerState.canSend
+        ? {
+            ...derivedComposerState,
+            mode: "queue" as const,
+            reason: "Creating conversation · Send queues this message safely",
+          }
+        : derivedComposerState
+    : derivedComposerState;
   const conversationTitle =
     selected?.title ??
     (trustedGateway
@@ -1978,17 +2022,76 @@ function MalinkAppRuntime() {
 
   useEffect(() => {
     const recovery = readPendingSessionCreateRecovery(window.localStorage);
-    if (!recovery) return;
-    pendingSessionCreateRecoveryRef.current = recovery;
+    let optimistic = readOptimisticSession(window.localStorage, {
+      gatewayId: matrixConfig.gatewayId,
+      conversationId: matrixConfig.conversationId,
+    });
+    if (!optimistic && recovery) {
+      optimistic = {
+        ...createOptimisticSessionRecord(
+          recovery.input,
+          {
+            gatewayId: recovery.gatewayId,
+            conversationId: recovery.conversationId,
+          },
+          `local-session:${recovery.commandId}`,
+          recovery.createdAt,
+        ),
+        commandId: recovery.commandId,
+      };
+      try {
+        writeOptimisticSession(window.localStorage, optimistic);
+      } catch {
+        // The durable command recovery below remains authoritative.
+      }
+    }
+    if (
+      optimistic?.phase === "creating" &&
+      !recovery &&
+      !optimistic.commandId
+    ) {
+      optimistic = failOptimisticSession(
+        optimistic,
+        "Session creation stopped before its secure command was saved. Retry creation to continue.",
+      );
+      try {
+        writeOptimisticSession(window.localStorage, optimistic);
+      } catch {
+        // The in-memory failed draft remains usable for this page lifetime.
+      }
+    }
+    if (recovery) pendingSessionCreateRecoveryRef.current = recovery;
+    if (optimistic) optimisticSessionRef.current = optimistic;
     let active = true;
     queueMicrotask(() => {
       if (!active) return;
-      setPendingSessionCreate(recovery.input);
-      setNewSessionBusy(true);
+      if (optimistic) {
+        setOptimisticSession(optimistic);
+        void restoreOptimisticSessionMessages(optimistic);
+        if (
+          !selectedSessionIdRef.current ||
+          selectedSessionIdRef.current === optimistic.localSessionId
+        ) {
+          activateLocalSession(
+            optimistic.localSessionId,
+            null,
+            true,
+            true,
+          );
+        }
+      }
+      if (recovery) {
+        setPendingSessionCreate(recovery.input);
+        setNewSessionBusy(true);
+      }
     });
     return () => {
       active = false;
     };
+    // This restores one durable record for the initial Matrix binding. The
+    // callbacks intentionally read current refs and must not restart whenever
+    // the render-local helper identities change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -2518,6 +2621,13 @@ function MalinkAppRuntime() {
       incoming.sessionId ?? selectedSessionIdRef.current ?? undefined;
     if (sessionId && !incoming.historical) {
       setSessionAgentActivity(sessionId, (current) => {
+        if (incoming.kind === "user") {
+          return current?.phase === "starting" ||
+            current?.phase === "working" ||
+            current?.phase === "stopping"
+            ? current
+            : WAITING_AGENT_ACTIVITY;
+        }
         return reduceAgentActivity(current, incoming.raw);
       });
       const executionSignal = agentExecutionSignal(incoming.raw);
@@ -2736,6 +2846,12 @@ function MalinkAppRuntime() {
           ),
         ),
       );
+      if (cached.messages.some((message) => message.deliveryState === "queued")) {
+        queuedSessionFlushIdsRef.current.add(sessionId);
+        if (connection && connectionStatusRef.current === "connected") {
+          void flushQueuedSessionMessages(sessionId, connection);
+        }
+      }
       setHistoryHasMore(cached.hasMore || Boolean(connection));
 
       if (!connection) return;
@@ -3232,6 +3348,69 @@ function MalinkAppRuntime() {
     setSessionCreateReloadBlocked(false);
   }
 
+  function commitOptimisticSession(record: OptimisticSessionRecord): void {
+    optimisticSessionRef.current = record;
+    setOptimisticSession(record);
+    try {
+      writeOptimisticSession(window.localStorage, record);
+    } catch (error) {
+      showUiNotice(
+        "session:create-draft-storage",
+        "session",
+        "warning",
+        `This draft session remains usable while the page stays open, but could not be saved for reload: ${formatUiError(error)}`,
+      );
+    }
+  }
+
+  function removeOptimisticSession(localSessionId: string): void {
+    if (optimisticSessionRef.current?.localSessionId !== localSessionId) return;
+    optimisticSessionRef.current = null;
+    setOptimisticSession(null);
+    try {
+      clearOptimisticSession(window.localStorage, localSessionId);
+    } catch (error) {
+      showUiNotice(
+        "session:create-draft-storage",
+        "session",
+        "warning",
+        `The completed draft marker could not be cleared: ${formatUiError(error)}`,
+      );
+    }
+  }
+
+  async function restoreOptimisticSessionMessages(
+    record: OptimisticSessionRecord,
+  ): Promise<void> {
+    const scope = historyScopeRef.current;
+    if (!scope) return;
+    try {
+      const queued = (await loadQueuedSessionMessages(
+        scope,
+        record.localSessionId,
+      )).map<ChatMessage>((message) => ({
+        ...message,
+        sessionId: record.localSessionId,
+        optimistic: true,
+      }));
+      const restored = mergeChatMessages(
+        liveMessagesBySessionRef.current.get(record.localSessionId) ?? [],
+        queued,
+      );
+      liveMessagesBySessionRef.current.set(record.localSessionId, restored);
+      if (selectedSessionIdRef.current === record.localSessionId) {
+        setMessages((current) => mergeChatMessages(current, restored));
+      }
+    } catch (error) {
+      showUiNotice(
+        "session:create-queue-storage",
+        "composer",
+        "warning",
+        `Messages waiting for session creation could not be restored: ${formatUiError(error)}`,
+      );
+    }
+  }
+
   function rememberPendingSessionCreate(
     input: NewSessionInput,
     commandId: string,
@@ -3365,7 +3544,15 @@ function MalinkAppRuntime() {
         }
         if (isMissingSessionCreateRecoveryCommand(error)) {
           forgetPendingSessionCreate(activeCommandId);
-          clearPendingSessionCreateUi();
+          const draft = optimisticSessionRef.current;
+          if (draft) {
+            markOptimisticSessionFailed(
+              draft.localSessionId,
+              "The saved creation command is no longer available. Retry creation to continue.",
+            );
+          } else {
+            clearPendingSessionCreateUi();
+          }
           showUiNotice(
             "session:create",
             "session",
@@ -3628,6 +3815,9 @@ function MalinkAppRuntime() {
               const activeConnection = malinkClientRef.current;
               if (activeConnection) {
                 continuePendingSessionCreate(activeConnection);
+                for (const sessionId of queuedSessionFlushIdsRef.current) {
+                  void flushQueuedSessionMessages(sessionId, activeConnection);
+                }
               }
             }, 0);
           }
@@ -3711,6 +3901,16 @@ function MalinkAppRuntime() {
               }
             }
             knownGatewaySessionIdsRef.current = nextSessionIds;
+            const pendingDraft = optimisticSessionRef.current;
+            if (
+              pendingDraft?.remoteSessionId &&
+              nextSessionIds.has(pendingDraft.remoteSessionId)
+            ) {
+              promoteOptimisticSession(
+                pendingDraft.remoteSessionId,
+                malinkClientRef.current,
+              );
+            }
             setGatewayState(state.gatewayState);
             const runningIds = new Set(
               state.gatewayState.sessions
@@ -3746,6 +3946,16 @@ function MalinkAppRuntime() {
                     session.id,
                     current.get(session.id) ?? WORKING_AGENT_ACTIVITY,
                   );
+                } else {
+                  const localActivity = current.get(session.id);
+                  if (
+                    (localActivity?.phase === "sending" ||
+                      localActivity?.phase === "waiting") &&
+                    (hasActivePromptCommand(session.id) ||
+                      pendingPromptSessionIdsRef.current.has(session.id))
+                  ) {
+                    next.set(session.id, localActivity);
+                  }
                 }
               }
               return next;
@@ -3765,11 +3975,19 @@ function MalinkAppRuntime() {
               activeSessions.map((session) => session.id),
             );
             const pendingCreated = pendingCreatedSessionIdRef.current;
+            const localDraftId = optimisticSessionRef.current?.localSessionId;
+            const localDraftSelected = Boolean(
+              localDraftId && selectedSessionIdRef.current === localDraftId,
+            );
             const nextSessionId =
               openedSession && availableIds.has(openedSession)
                 ? openedSession
-                : pendingCreated && availableIds.has(pendingCreated)
-                ? pendingCreated
+                : localDraftSelected
+                  ? localDraftId!
+                : !localDraftId &&
+                    pendingCreated &&
+                    availableIds.has(pendingCreated)
+                  ? pendingCreated
                 : selectedSessionIdRef.current &&
                     availableIds.has(selectedSessionIdRef.current)
                   ? selectedSessionIdRef.current
@@ -3841,6 +4059,7 @@ function MalinkAppRuntime() {
             completedCommandResultsRef.current.delete(result.commandId);
             finishLocalPromptCommand(promptSessionId);
             recoverUiNotice("composer:send");
+            void flushQueuedSessionMessages(promptSessionId);
           } else {
             completedCommandResultsRef.current.add(result.commandId);
           }
@@ -3868,7 +4087,14 @@ function MalinkAppRuntime() {
           if (malinkClientRef.current !== connection) return;
           continuePendingSessionCreate(connection);
           const sessionId = selectedSessionIdRef.current;
-          if (sessionId) void restoreSessionHistory(sessionId, connection);
+          if (
+            sessionId &&
+            optimisticSessionRef.current?.localSessionId === sessionId
+          ) {
+            void restoreOptimisticSessionMessages(optimisticSessionRef.current);
+          } else if (sessionId) {
+            void restoreSessionHistory(sessionId, connection);
+          }
         })
         .catch(() => undefined);
       return connection;
@@ -4891,6 +5117,16 @@ function MalinkAppRuntime() {
       completedCommandResultsRef.current.delete(commandId);
       if (completion.outcome !== "succeeded") return;
       if (completion.sessionId) {
+        const draft = optimisticSessionRef.current;
+        if (draft) {
+          commitOptimisticSession(
+            bindOptimisticSession(
+              draft,
+              commandId,
+              completion.sessionId,
+            ),
+          );
+        }
         const target = completedSessionCreateTarget(
           completion.sessionId,
           knownGatewaySessionIdsRef.current,
@@ -4920,15 +5156,91 @@ function MalinkAppRuntime() {
       }
     }
     if (sessionToReveal) {
-      clearPendingSessionCreateUi();
-      activateLocalSession(
-        sessionToReveal,
-        connection,
-        true,
-        skipHistoryRestore,
-      );
-      setMobileChatOpen(true);
+      if (optimisticSessionRef.current) {
+        promoteOptimisticSession(sessionToReveal, connection);
+      } else {
+        clearPendingSessionCreateUi();
+        activateLocalSession(
+          sessionToReveal,
+          connection,
+          true,
+          skipHistoryRestore,
+        );
+        setMobileChatOpen(true);
+      }
     }
+  }
+
+  function promoteOptimisticSession(
+    remoteSessionId: string,
+    connection: MalinkClient | null,
+  ): void {
+    const record = optimisticSessionRef.current;
+    if (!record) return;
+    const localSessionId = record.localSessionId;
+    if (optimisticPromotionInFlightRef.current === localSessionId) return;
+    optimisticPromotionInFlightRef.current = localSessionId;
+    const scope = historyScopeRef.current;
+    const migrateHistory = scope
+      ? moveSessionMessageHistory(scope, localSessionId, remoteSessionId)
+      : Promise.resolve();
+    void migrateHistory
+      .then(() => {
+        const current = optimisticSessionRef.current;
+        if (!current || current.localSessionId !== localSessionId) return;
+        const selectedDraft = selectedSessionIdRef.current === localSessionId;
+        const localMessages = (
+          liveMessagesBySessionRef.current.get(localSessionId) ?? []
+        ).map((message) => ({ ...message, sessionId: remoteSessionId }));
+        liveMessagesBySessionRef.current.delete(localSessionId);
+        liveMessagesBySessionRef.current.set(remoteSessionId, localMessages);
+        pendingCreatedSessionIdRef.current = null;
+        if (selectedDraft) {
+          selectedSessionIdRef.current = remoteSessionId;
+          historySessionIdRef.current = remoteSessionId;
+          setSelectedSessionId(remoteSessionId);
+          setMessages(localMessages);
+          if (scope) {
+            writeSelectedSession(
+              window.localStorage,
+              scope,
+              remoteSessionId,
+            );
+          }
+          setMobileChatOpen(true);
+        }
+        removeOptimisticSession(localSessionId);
+        clearPendingSessionCreateUi();
+        recoverUiNotice("session:create-queue-storage");
+        void flushQueuedSessionMessages(
+          remoteSessionId,
+          malinkClientRef.current === connection
+            ? connection
+            : malinkClientRef.current,
+        );
+      })
+      .catch((error) => {
+        showUiNotice(
+          "session:create-queue-storage",
+          "composer",
+          "error",
+          `The session was created, but its queued messages are still being prepared locally: ${formatUiError(error)}`,
+        );
+        window.setTimeout(() => {
+          const current = optimisticSessionRef.current;
+          if (
+            current?.localSessionId === localSessionId &&
+            current.remoteSessionId === remoteSessionId
+          ) {
+            promoteOptimisticSession(remoteSessionId, malinkClientRef.current);
+          }
+        }, 1_500);
+      })
+      .finally(() => {
+        if (optimisticPromotionInFlightRef.current === localSessionId) {
+          optimisticPromotionInFlightRef.current = null;
+        }
+      });
   }
 
   async function waitForRecoverableSessionCreateCompletion(
@@ -5030,7 +5342,7 @@ function MalinkAppRuntime() {
             sessionId,
             runningSessionIds.has(sessionId)
               ? WORKING_AGENT_ACTIVITY
-              : STARTING_AGENT_ACTIVITY,
+              : WAITING_AGENT_ACTIVITY,
           );
         }
       }
@@ -5550,7 +5862,10 @@ function MalinkAppRuntime() {
     }
   }
 
-  async function createSession(input: NewSessionInput) {
+  async function createSession(
+    input: NewSessionInput,
+    retryRecord?: OptimisticSessionRecord,
+  ) {
     const targetWorkspace = gatewayState?.projects?.find(
       project => project.projectId === input.projectId,
     ) ?? gatewayState?.workspace;
@@ -5566,11 +5881,32 @@ function MalinkAppRuntime() {
       );
       return;
     }
+    if (optimisticSessionRef.current && !retryRecord) {
+      showUiNotice(
+        "session:create",
+        "session",
+        "info",
+        "Finish or discard the current draft session before creating another one.",
+      );
+      return;
+    }
+    const localRecord = retryRecord
+      ? retryOptimisticSession(retryRecord)
+      : createOptimisticSessionRecord(
+          input,
+          {
+            gatewayId: matrixConfig.gatewayId,
+            conversationId: matrixConfig.conversationId,
+          },
+          `local-session:${crypto.randomUUID()}`,
+        );
+    commitOptimisticSession(localRecord);
     setSessionCreateReloadBlocked(true);
     setNewSessionBusy(true);
     setPendingSessionCreate(input);
     setNewSessionOpen(false);
-    setMobileChatOpen(false);
+    activateLocalSession(localRecord.localSessionId, null, true, true);
+    setMobileChatOpen(true);
     recoverUiNotice("session:create");
     let durableCommandRecorded = false;
     let connection: MalinkClient | null = null;
@@ -5612,13 +5948,33 @@ function MalinkAppRuntime() {
           : {}),
         ...(input.extensions ? { extensions: input.extensions } : {}),
       }, input.projectId);
-      if (!sent || !connection) return;
+      if (!sent || !connection) {
+        throw new Error("The secure session command was not accepted.");
+      }
       rememberPendingSessionCreate(input, sent.commandId);
+      const currentDraft = optimisticSessionRef.current;
+      if (currentDraft?.localSessionId === localRecord.localSessionId) {
+        commitOptimisticSession(
+          bindOptimisticSession(
+            currentDraft,
+            sent.commandId,
+            sent.sessionId ?? sent.commandId,
+          ),
+        );
+      }
       durableCommandRecorded = true;
       continuePendingSessionCreate(connection, sent);
     } catch (error) {
       if (error instanceof CommandAcknowledgementTimeoutError && connection) {
         rememberPendingSessionCreate(input, error.commandId);
+        const currentDraft = optimisticSessionRef.current;
+        if (currentDraft?.localSessionId === localRecord.localSessionId) {
+          commitOptimisticSession({
+            ...currentDraft,
+            commandId: error.commandId,
+            updatedAt: Date.now(),
+          });
+        }
         durableCommandRecorded = true;
         showUiNotice(
           "session:create",
@@ -5628,6 +5984,7 @@ function MalinkAppRuntime() {
         );
         continuePendingSessionCreate(connection);
       } else {
+        markOptimisticSessionFailed(localRecord.localSessionId, error);
         showUiNotice(
           "session:create",
           "session",
@@ -5638,6 +5995,54 @@ function MalinkAppRuntime() {
     } finally {
       if (!durableCommandRecorded) clearPendingSessionCreateUi();
     }
+  }
+
+  function retryFailedOptimisticSession(): void {
+    const record = optimisticSessionRef.current;
+    if (!record || record.phase !== "failed" || newSessionBusy) return;
+    void createSession(record.input, record);
+  }
+
+  async function discardFailedOptimisticSession(): Promise<void> {
+    const record = optimisticSessionRef.current;
+    if (!record || record.phase !== "failed" || newSessionBusy) return;
+    const localSessionId = record.localSessionId;
+    const wasSelected = selectedSessionIdRef.current === localSessionId;
+    removeOptimisticSession(localSessionId);
+    clearPendingSessionCreateUi();
+    liveMessagesBySessionRef.current.delete(localSessionId);
+    if (wasSelected) {
+      const fallback = gatewayState?.sessions.find(
+        (session) => session.status !== "archived",
+      ) ?? null;
+      activateLocalSession(fallback?.id ?? null);
+      if (!fallback) setMobileChatOpen(false);
+    }
+    const scope = historyScopeRef.current;
+    if (!scope) return;
+    try {
+      await clearSessionMessageHistory(scope, localSessionId);
+      recoverUiNotice("session:create-queue-storage");
+    } catch (error) {
+      showUiNotice(
+        "session:create-queue-storage",
+        "composer",
+        "warning",
+        `The discarded session's local messages could not be cleared: ${formatUiError(error)}`,
+      );
+    }
+  }
+
+  function markOptimisticSessionFailed(
+    localSessionId: string,
+    error: unknown,
+  ): void {
+    const record = optimisticSessionRef.current;
+    if (!record || record.localSessionId !== localSessionId) return;
+    commitOptimisticSession(
+      failOptimisticSession(record, formatUiError(error)),
+    );
+    clearPendingSessionCreateUi();
   }
 
   async function settleSessionCreate(
@@ -5651,6 +6056,13 @@ function MalinkAppRuntime() {
         sent,
       );
       if (completion.outcome !== "succeeded") {
+        const draft = optimisticSessionRef.current;
+        if (draft) {
+          markOptimisticSessionFailed(
+            draft.localSessionId,
+            completion.error?.message ?? "Your computer could not create the session.",
+          );
+        }
         showUiNotice(
           "session:create",
           "session",
@@ -6048,6 +6460,18 @@ function MalinkAppRuntime() {
         setAttachmentBusy(false);
       }
     }
+    const pendingDraft = optimisticSessionRef.current;
+    if (
+      pendingDraft?.phase === "creating" &&
+      pendingDraft.localSessionId === sessionId
+    ) {
+      await queueMessageForCreatingSession(
+        pendingDraft,
+        value,
+        attachments,
+      );
+      return;
+    }
     const submissionHistoryScope = historyScopeRef.current;
     const submissionOriginDeviceId = deviceKeyId ?? undefined;
     const submissionOriginDeviceName = connection.deviceName;
@@ -6136,7 +6560,7 @@ function MalinkAppRuntime() {
           sessionId,
           queueBehindActiveTurn
             ? activityBeforeSubmission ?? WORKING_AGENT_ACTIVITY
-            : STARTING_AGENT_ACTIVITY,
+            : WAITING_AGENT_ACTIVITY,
         );
       }
       setPendingFiles([]);
@@ -6276,7 +6700,7 @@ function MalinkAppRuntime() {
           sessionId,
           queueBehindActiveTurn
             ? activityBeforeSubmission ?? WORKING_AGENT_ACTIVITY
-            : STARTING_AGENT_ACTIVITY,
+            : WAITING_AGENT_ACTIVITY,
         );
       }
       const sentMessage: ChatMessage = {
@@ -6319,6 +6743,189 @@ function MalinkAppRuntime() {
       }
       recoverUiNotice("composer:send");
     }
+  }
+
+  async function queueMessageForCreatingSession(
+    record: OptimisticSessionRecord,
+    text: string,
+    attachments?: MalinkAttachment[],
+  ): Promise<void> {
+    const scope = historyScopeRef.current;
+    if (!scope) {
+      showUiNotice(
+        "session:create-queue-storage",
+        "composer",
+        "error",
+        "The local encrypted message store is not ready yet. Your draft was kept.",
+      );
+      return;
+    }
+    const message: ChatMessage = {
+      id: `queued-${Date.now()}-${crypto.randomUUID()}`,
+      kind: "user",
+      text,
+      time: "now",
+      timestamp: Date.now(),
+      sessionId: record.localSessionId,
+      optimistic: true,
+      deliveryState: "queued",
+      attachments,
+    };
+    try {
+      await saveMessageHistory(scope, record.localSessionId, [message]);
+    } catch (error) {
+      showUiNotice(
+        "session:create-queue-storage",
+        "composer",
+        "error",
+        `The message could not be queued safely: ${formatUiError(error)}`,
+      );
+      return;
+    }
+    rememberLiveMessage(record.localSessionId, message);
+    if (selectedSessionIdRef.current === record.localSessionId) {
+      followLatestRef.current = true;
+      setMessages((current) => [...current, message]);
+      setDraft("");
+    }
+    setPendingFiles([]);
+    setSessionAgentActivity(record.localSessionId, null);
+    recoverUiNotice("session:create-queue-storage");
+  }
+
+  async function flushQueuedSessionMessages(
+    sessionId: string,
+    connection: MalinkClient | null = malinkClientRef.current,
+  ): Promise<void> {
+    const scope = historyScopeRef.current;
+    if (
+      !scope ||
+      !connection ||
+      connectionStatusRef.current !== "connected"
+    ) {
+      queuedSessionFlushIdsRef.current.add(sessionId);
+      return;
+    }
+    if (queuedSessionFlushInFlightRef.current.has(sessionId)) return;
+    queuedSessionFlushIdsRef.current.add(sessionId);
+    queuedSessionFlushInFlightRef.current.add(sessionId);
+    let completed = false;
+    try {
+      const queued = await loadQueuedSessionMessages(scope, sessionId);
+      for (const persisted of queued) {
+        const sent = await transmitQueuedSessionMessage(
+          sessionId,
+          { ...persisted, sessionId, optimistic: true },
+        );
+        if (!sent) return;
+      }
+      completed = true;
+    } finally {
+      queuedSessionFlushInFlightRef.current.delete(sessionId);
+      if (completed) queuedSessionFlushIdsRef.current.delete(sessionId);
+    }
+  }
+
+  async function transmitQueuedSessionMessage(
+    sessionId: string,
+    queuedMessage: ChatMessage,
+  ): Promise<boolean> {
+    const scope = historyScopeRef.current;
+    if (!scope) return false;
+    const sendingMessage: ChatMessage = {
+      ...queuedMessage,
+      sessionId,
+      optimistic: true,
+      deliveryState: "sending",
+    };
+    optimisticMessagesRef.current.set(sendingMessage.id, {
+      id: sendingMessage.id,
+      text: sendingMessage.text ?? "",
+      sessionId,
+    });
+    rememberLiveMessage(sessionId, sendingMessage);
+    if (selectedSessionIdRef.current === sessionId) {
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === sendingMessage.id ? sendingMessage : message,
+        ),
+      );
+    }
+    await saveMessageHistory(scope, sessionId, [sendingMessage]);
+    setSessionPromptSubmitting(sessionId, true);
+    setSessionRunning(sessionId, true);
+    setSessionAgentActivity(sessionId, SENDING_AGENT_ACTIVITY);
+    let result: MalinkCommandSendResult | null = null;
+    try {
+      result = await sendRealCommand(
+        createPromptCommandPayload({
+          sessionId,
+          text: sendingMessage.text ?? "",
+          attachments: sendingMessage.attachments,
+        }),
+      );
+    } catch (error) {
+      if (error instanceof CommandAcknowledgementTimeoutError) {
+        const reference = optimisticMessagesRef.current.get(sendingMessage.id);
+        if (reference) reference.commandId = error.commandId;
+        activePromptCommandsRef.current.set(error.commandId, sessionId);
+        setSessionAgentActivity(sessionId, WAITING_AGENT_ACTIVITY);
+        showUiNotice(
+          "composer:send",
+          "composer",
+          "warning",
+          "The queued message is awaiting confirmation. Malink will reconcile it without sending a duplicate.",
+        );
+        return false;
+      }
+      throw error;
+    } finally {
+      setSessionPromptSubmitting(sessionId, false);
+    }
+    if (!result) {
+      optimisticMessagesRef.current.delete(sendingMessage.id);
+      const failed: ChatMessage = {
+        ...sendingMessage,
+        optimistic: false,
+        deliveryState: "failed",
+      };
+      rememberLiveMessage(sessionId, failed);
+      if (selectedSessionIdRef.current === sessionId) {
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === failed.id ? failed : message,
+          ),
+        );
+      }
+      await saveMessageHistory(scope, sessionId, [failed]);
+      finishLocalPromptCommand(sessionId);
+      return false;
+    }
+    const reference = optimisticMessagesRef.current.get(sendingMessage.id);
+    if (reference) reference.commandId = result.commandId;
+    if (completedCommandResultsRef.current.delete(result.commandId)) {
+      finishLocalPromptCommand(sessionId);
+    } else {
+      activePromptCommandsRef.current.set(result.commandId, sessionId);
+      setSessionAgentActivity(sessionId, WAITING_AGENT_ACTIVITY);
+    }
+    const sentMessage: ChatMessage = {
+      ...sendingMessage,
+      commandId: result.commandId,
+      revision: result.revision,
+      deliveryState: "sent",
+    };
+    rememberLiveMessage(sessionId, sentMessage);
+    if (selectedSessionIdRef.current === sessionId) {
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === sentMessage.id ? sentMessage : message,
+        ),
+      );
+    }
+    await saveMessageHistory(scope, sessionId, [sentMessage]);
+    recoverUiNotice("composer:send");
+    return true;
   }
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -6722,6 +7329,7 @@ function MalinkAppRuntime() {
               onClick={() => setNewSessionOpen(true)}
               disabled={
                 newSessionBusy ||
+                Boolean(optimisticSession) ||
                 !gatewayAvailable ||
                 !canCreateAnySession
               }
@@ -6792,38 +7400,55 @@ function MalinkAppRuntime() {
         />
 
         <div className="session-list">
-          {pendingSessionCreate && (
-            <div
-              className="session-row session-create-pending"
-              role="status"
-              aria-live="polite"
+          {optimisticSession && (
+            <button
+              type="button"
+              className={`session-row session-create-pending ${
+                optimisticSession.phase === "failed" ? "is-failed" : ""
+              } ${selectedSessionId === optimisticSession.localSessionId ? "selected" : ""}`}
+              data-session-id={optimisticSession.localSessionId}
+              data-session-phase={optimisticSession.phase}
+              aria-pressed={selectedSessionId === optimisticSession.localSessionId}
+              aria-label={`${optimisticSession.input.title?.trim() || "New session"}. ${
+                optimisticSession.phase === "failed"
+                  ? "Creation failed. Open to retry."
+                  : "Creating. You can already send messages."
+              }`}
+              onClick={() => {
+                setPrimaryView("chats");
+                setMobileChatOpen(true);
+                activateLocalSession(
+                  optimisticSession.localSessionId,
+                  null,
+                  true,
+                  true,
+                );
+                void restoreOptimisticSessionMessages(optimisticSession);
+              }}
             >
               <span className="session-avatar violet" aria-hidden="true">
-                <i className="session-create-spinner" />
+                {optimisticSession.phase === "creating" ? (
+                  <i className="session-create-spinner" />
+                ) : (
+                  "!"
+                )}
               </span>
               <span className="session-copy">
                 <span className="session-title-line">
-                  <strong>
-                    {gatewayAvailable
-                      ? "Creating session…"
-                      : "Session queued…"}
-                  </strong>
+                  <strong>{optimisticSession.input.title?.trim() || "New session"}</strong>
                   <time>
-                    {gatewayAvailable ? "now" : "waiting"}
+                    {optimisticSession.phase === "failed" ? "failed" : "now"}
                   </time>
                 </span>
                 <span className="session-preview-line">
                   <span>
-                    {pendingSessionCreate.scope === "scratch"
-                      ? "Temporary"
-                      : pendingSessionCreate.projectName}
-                    {pendingSessionCreate.model
-                      ? ` · ${pendingSessionCreate.model}`
-                      : ""}
+                    {optimisticSession.phase === "failed"
+                      ? "Creation failed · Open to retry"
+                      : "Creating · Ready for messages"}
                   </span>
                 </span>
               </span>
-            </div>
+            </button>
           )}
           {conversationGroups.map((project) => {
             const expanded = isProjectExpanded({
@@ -7067,6 +7692,7 @@ function MalinkAppRuntime() {
           {gatewayState &&
             gatewayState.sessions.length === 0 &&
             connectionStatus === "connected" &&
+            !optimisticSession &&
             !pendingSessionCreate && (
               <div className="empty-search">
                 <span>+</span>
@@ -7203,7 +7829,7 @@ function MalinkAppRuntime() {
             <span className="verified-line">
               <b>✓</b> This device is approved
             </span>
-            {selected && (
+            {gatewaySelected && (
               <div className="session-menu-actions">
                 <button
                   type="button"
@@ -7213,7 +7839,7 @@ function MalinkAppRuntime() {
                     !gatewayAvailable ||
                     !activeCapabilities?.canArchiveSession
                   }
-                  onClick={() => void archiveSession(selected.id)}
+                  onClick={() => void archiveSession(gatewaySelected.id)}
                 >
                   <span aria-hidden="true">▣</span>
                   <span>
@@ -7386,18 +8012,22 @@ function MalinkAppRuntime() {
                         <span
                           className={`delivery-indicator ${deliveryState}`}
                           aria-label={
-                            deliveryState === "sending"
-                              ? "Sending"
-                              : deliveryState === "failed"
-                                ? "Send failed"
-                                : "Sent"
+                            deliveryState === "queued"
+                              ? "Waiting for session creation"
+                              : deliveryState === "sending"
+                                ? "Sending"
+                                : deliveryState === "failed"
+                                  ? "Send failed"
+                                  : "Sent"
                           }
                         >
-                          {deliveryState === "sending"
-                            ? "…"
-                            : deliveryState === "failed"
-                              ? "!"
-                              : "✓✓"}
+                          {deliveryState === "queued"
+                            ? "◷"
+                            : deliveryState === "sending"
+                              ? "…"
+                              : deliveryState === "failed"
+                                ? "!"
+                                : "✓✓"}
                         </span>
                       )}
                     </time>
@@ -7698,6 +8328,53 @@ function MalinkAppRuntime() {
             </section>
           )}
 
+          {optimisticSelected && optimisticSession && (
+            <section
+              className={`optimistic-session-card phase-${optimisticSession.phase}`}
+              role={optimisticSession.phase === "failed" ? "alert" : "status"}
+              aria-live="polite"
+            >
+              <span className="optimistic-session-mark" aria-hidden="true">
+                {optimisticSession.phase === "creating" ? (
+                  <i className="session-create-spinner" />
+                ) : (
+                  "!"
+                )}
+              </span>
+              <div>
+                <strong>
+                  {optimisticSession.phase === "creating"
+                    ? "Creating this conversation"
+                    : "Conversation creation failed"}
+                </strong>
+                <p>
+                  {optimisticSession.phase === "creating"
+                    ? "You can start now. Messages are saved here and will be sent in order as soon as creation succeeds."
+                    : optimisticSession.error ||
+                      "Retry creation to keep this conversation and its queued messages."}
+                </p>
+              </div>
+              {optimisticSession.phase === "failed" && (
+                <div className="optimistic-session-actions">
+                  <button
+                    type="button"
+                    onClick={retryFailedOptimisticSession}
+                    disabled={newSessionBusy}
+                  >
+                    Retry creation
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void discardFailedOptimisticSession()}
+                    disabled={newSessionBusy}
+                  >
+                    Discard
+                  </button>
+                </div>
+              )}
+            </section>
+          )}
+
           <UiNoticeList
             notices={composerNotices}
             className="composer-notices"
@@ -7765,7 +8442,7 @@ function MalinkAppRuntime() {
                 type="button"
                 className="attachment-button"
                 aria-label="Attach a file"
-                disabled={!sessionReady || attachmentBusy}
+                disabled={!composerState.canType || attachmentBusy}
                 onClick={() => attachmentInputRef.current?.click()}
               >
                 {attachmentBusy ? "…" : "+"}
@@ -8316,6 +8993,38 @@ function incomingMessageFromClient(
     attachments: message.attachments,
     toolGroup: message.toolGroup,
     raw: message.semantic ?? {},
+  };
+}
+
+function optimisticSessionSummary(
+  record: OptimisticSessionRecord,
+  gatewayState: GatewayStateSnapshot | null,
+): GatewaySessionSummary {
+  const workspace = gatewayState?.projects?.find(
+    (project) => project.projectId === record.input.projectId,
+  ) ?? gatewayState?.workspace;
+  return {
+    id: record.localSessionId,
+    title: record.input.title?.trim() || "New session",
+    updatedAt: record.updatedAt,
+    status: record.phase === "failed" ? "failed" : "idle",
+    activityPhase: record.phase === "failed" ? "failed" : "starting",
+    scope: record.input.scope ?? "project",
+    projectId:
+      record.input.projectId ?? workspace?.projectId ?? "pending-project",
+    projectName: record.input.projectName,
+    cwd: record.input.cwd,
+    provider: record.input.provider || workspace?.provider || "Agent",
+    ...(record.input.model ? { model: record.input.model } : {}),
+    ...(record.input.reasoningEffort
+      ? { reasoningEffort: record.input.reasoningEffort }
+      : {}),
+    extensions: (record.input.extensions ?? []).map((extension) => ({
+      id: extension.id,
+      name: extension.id,
+      version: "pending",
+    })),
+    availableCommands: [],
   };
 }
 

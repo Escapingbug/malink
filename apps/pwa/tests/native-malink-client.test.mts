@@ -353,6 +353,11 @@ test("waits for transient outbox recovery with one idempotency key", async () =>
   });
   const client = await createTestClient(port);
   const sent = await client.send({ operation: "session.create" });
+  assert.equal(
+    sent.sessionId,
+    sent.commandId,
+    "native MLP/3 creation exposes its preallocated session identity immediately",
+  );
   const sends = port.requests.filter((request) => request.method === "malink.command.send");
   assert.equal(sends.length, 2);
   assert.equal(

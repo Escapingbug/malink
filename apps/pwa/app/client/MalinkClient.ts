@@ -30,6 +30,7 @@ export type MalinkPublicTrust = Extract<
 export type MalinkCommandSendResult = {
   operationId: string;
   commandId: string;
+  sessionId?: string;
   sequence: number;
   revision: number;
   completion: Promise<CommandCompletion>;
