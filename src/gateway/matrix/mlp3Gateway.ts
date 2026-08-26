@@ -748,6 +748,7 @@ export class MatrixMlp3GatewayRunner {
     ))
     runtime.port.setCausationCommandId(command.commandId)
     runtime.activeTurnId = command.commandId
+    let dispatchFailure: { error: unknown } | null = null
     try {
       const richInput = await materializePromptInput(
         prompt,
@@ -761,10 +762,29 @@ export class MatrixMlp3GatewayRunner {
         source: 'channel',
         user: { id: command.deviceId, username: command.deviceId },
       })
+    } catch (error) {
+      dispatchFailure = { error }
     } finally {
+      const causalDelivery = runtime.port.causalDeliveryBarrier(command.commandId)
       runtime.port.setCausationCommandId(null)
       runtime.activeTurnId = null
+      try {
+        // The terminal event is deliberately not staged until the newest
+        // version of every assistant/tool message in this turn is physically
+        // accepted by Matrix. This prevents urgent turn.completed delivery
+        // from overtaking the final answer under account-wide backpressure.
+        await causalDelivery
+      } catch (deliveryError) {
+        if (dispatchFailure) {
+          throw new AggregateError(
+            [dispatchFailure.error, deliveryError],
+            'Agent execution and causal Matrix delivery both failed',
+          )
+        }
+        throw deliveryError
+      }
     }
+    if (dispatchFailure) throw dispatchFailure.error
     runtime.record.providerSessionId = runtime.session.sessionRecord.conversationId
     this.transition(runtime, 'idle')
     await this.persist(project)

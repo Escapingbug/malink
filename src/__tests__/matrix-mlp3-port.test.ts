@@ -348,12 +348,14 @@ describe('MatrixMlp3Port', () => {
     if (completeOutputEnvelope.plaintext.kind !== 'signed_event') throw new Error('expected event')
     expect(completeOutputEnvelope.plaintext.value.event.payload).toMatchObject({
       type: 'assistant.message',
-      body: expect.stringContaining('important final line'),
+      body: expect.stringContaining('pnpm test'),
       ui: {
         kind: 'tool_group',
-        tools: [{ result: completeOutput }],
+        tools: [expect.not.objectContaining({ result: expect.anything() })],
       },
     })
+    expect(JSON.stringify(completeOutputEnvelope.plaintext.value.event.payload))
+      .not.toContain('important final line')
 
     const longToolStart = transport.delivered.length
     await port.send({
@@ -392,7 +394,7 @@ describe('MatrixMlp3Port', () => {
       }),
     ]))
 
-    const largeOutput = `${'complete output '.repeat(700)}important large-output tail`
+    const largeOutput = `${'complete output '.repeat(110_000)}important large-output tail`
     const largeOutputProjector = new ChannelProjector()
     const [projectedLargeOutputTool] = largeOutputProjector.project({
       kind: 'tool',
@@ -436,10 +438,8 @@ describe('MatrixMlp3Port', () => {
         return envelope.plaintext.value.event.payload
       }),
     )
-    expect(largeOutputPayloads.length).toBeGreaterThan(1)
-    expect(largeOutputPayloads.map(payload =>
-      payload.type === 'assistant.message' ? payload.body : '',
-    ).join('')).toContain('important large-output tail')
+    expect(largeOutputPayloads).toHaveLength(2)
+    expect(JSON.stringify(largeOutputPayloads)).not.toContain('important large-output tail')
     expect(largeOutputPayloads).toEqual(expect.arrayContaining([
       expect.objectContaining({
         type: 'assistant.message',

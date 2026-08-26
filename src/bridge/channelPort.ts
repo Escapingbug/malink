@@ -141,6 +141,11 @@ export interface ChannelPort {
      */
     readonly streamAssistantText?: boolean
 
+    /** Minimum interval used to merge progressive tool snapshots before the
+     * channel sees them. Durable, rate-limited transports may choose a longer
+     * interval while still sending the first snapshot and final turn state. */
+    readonly toolActivityDebounceMs?: number
+
     /**
      * Whether tool-output file:// references should receive channel command
      * hints such as `/file_f1`. First-party clients use structured artifacts.

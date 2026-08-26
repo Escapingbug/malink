@@ -165,7 +165,7 @@ describe('ChannelProjector — patch merge', () => {
         ])
     })
 
-    it('preserves complete multiline tool details and output in the structured presentation', () => {
+    it('bounds tool parameters and omits raw output from the structured presentation', () => {
         const detail = `node -e "${'command-part '.repeat(60)}"`
         const output = `first line\n${'important output '.repeat(80)}\nlast line`
         const result = projector.project(makeToolEvent({
@@ -178,10 +178,40 @@ describe('ChannelProjector — patch merge', () => {
             meta: makeMeta('long-output'),
         }), { verboseLevel: 1 })
 
-        expect(result[0]?.message.presentation?.tools[0]).toMatchObject({
-            detail,
-            result: output,
-        })
+        const item = result[0]?.message.presentation?.tools[0]
+        expect(item?.detail?.length).toBeLessThanOrEqual(512)
+        expect(item?.detail).toMatch(/…$/u)
+        expect(item).not.toHaveProperty('result')
+        expect(JSON.stringify(result[0]?.message)).not.toContain('important output')
+    })
+
+    it('summarizes edit diff line counts without transporting file contents', () => {
+        const oldText = 'old one\nold two\n'
+        const newText = 'new one\nnew two\nnew three\n'
+        const result = projector.project(makeToolEvent({
+            toolCallId: 'edit-summary',
+            phase: 'completed',
+            toolName: 'Edit',
+            category: 'edit',
+            input: { file_path: '/repo/src/app.ts', patch: 'secret raw patch' },
+            output: 'secret edit output',
+            content: [{
+                type: 'diff',
+                path: '/repo/src/app.ts',
+                oldText,
+                newText,
+            }],
+            meta: makeMeta('edit-summary'),
+        }), { verboseLevel: 1 })
+
+        const message = result[0]?.message
+        expect(message?.text).toContain('+3 -2 lines')
+        expect(message?.presentation?.tools[0]?.detail).toBe(
+            '/repo/src/app.ts · +3 -2 lines',
+        )
+        expect(JSON.stringify(message)).not.toContain('secret raw patch')
+        expect(JSON.stringify(message)).not.toContain('secret edit output')
+        expect(JSON.stringify(message)).not.toContain('new three')
     })
 
     it('starts a new tool group after a decision even without buffered assistant text', () => {

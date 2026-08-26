@@ -48,6 +48,12 @@ interface PendingDecision {
   resolve(value: DecisionResponse): void
 }
 
+interface CausalAssistantDelivery {
+  commandId: string
+  version: number
+  confirmations: Promise<{ eventId: string }>[]
+}
+
 export interface ResolvedV3Decision {
   kind: 'decision' | 'extension'
   decisionType?: DecisionRequest['type']
@@ -68,19 +74,32 @@ export class MatrixMlp3Port implements ChannelPort {
   // wide message limit as new chat messages. Preserve one logical bubble, but
   // publish it only at semantic boundaries just like an ordinary chat client.
   readonly streamAssistantText = false
+  readonly toolActivityDebounceMs = 10_000
   private readonly pendingDecisions = new Map<string, PendingDecision>()
   private readonly operationIds = new WeakMap<ChannelMessage, string>()
   private readonly attachmentUploads = new Map<string, Promise<MalinkAttachment[]>>()
   private readonly physicalEventIds = new Map<string, string>()
   private readonly messageVersions = new Map<string, number>()
   private readonly messageTimestamps = new Map<string, number>()
+  private readonly causalAssistantDeliveries = new Map<string, CausalAssistantDelivery>()
   private causationCommandId: string | null = null
   private lastOccurredAt = -1
 
   constructor(private readonly options: MatrixMlp3PortOptions) {}
 
   setCausationCommandId(commandId: string | null): void {
+    if (commandId !== null && commandId !== this.causationCommandId) {
+      this.causalAssistantDeliveries.clear()
+    }
     this.causationCommandId = commandId
+    if (commandId === null) this.causalAssistantDeliveries.clear()
+  }
+
+  causalDeliveryBarrier(commandId: string): Promise<void> {
+    const confirmations = [...this.causalAssistantDeliveries.values()]
+      .filter(delivery => delivery.commandId === commandId)
+      .flatMap(delivery => delivery.confirmations)
+    return Promise.all(confirmations).then(() => undefined)
   }
 
   async send(message: ChannelMessage): Promise<ChannelSendResult> {
@@ -117,6 +136,9 @@ export class MatrixMlp3Port implements ChannelPort {
         index === 0 ? messageId : undefined,
         version,
       )
+      if (!liveToolGroup) {
+        this.trackCausalAssistantDelivery(messageId, version, queued.confirmation)
+      }
     }
     return { messageId }
   }
@@ -130,13 +152,12 @@ export class MatrixMlp3Port implements ChannelPort {
     const messageOptions = readMessageOptions(message.replyMarkup)
     const presentation = message.presentation ?? messageOptions.ui
     const attachments = await this.uploadAttachments(messageId, message.attachments)
-    const finalToolSnapshot = context.finalSnapshot === true
-      && isToolGroupPresentation(presentation)
-    const parts = splitMessage(
-      finalToolSnapshot ? withToolTranscript(message, presentation) : message,
-    )
-    const transportPresentation = isToolGroupPresentation(presentation)
-      && (!finalToolSnapshot || parts.length > 1)
+    const toolGroup = isToolGroupPresentation(presentation)
+    // Tool output is execution data, not chat history. Final snapshots carry
+    // the same bounded metadata as live snapshots and must never expand into
+    // a raw textual transcript that Matrix then has to fragment and retry.
+    const parts = splitMessage(message)
+    const transportPresentation = toolGroup
       ? compactToolPresentation(presentation)
       : presentation
     const version = this.nextMessageVersion(messageId)
@@ -174,6 +195,9 @@ export class MatrixMlp3Port implements ChannelPort {
         index === 0 ? messageId : undefined,
         version,
       )
+      if (!toolGroup) {
+        this.trackCausalAssistantDelivery(messageId, version, queued.confirmation)
+      }
     }
   }
 
@@ -356,12 +380,16 @@ export class MatrixMlp3Port implements ChannelPort {
       },
     }
     const relation = options.relation ?? threadRelation(this.options.threadRootEventId)
+    const deliveryOptions = {
+      relation,
+      ...(isToolGroupPresentation(eventPayload.ui) ? { priority: 'bulk' as const } : {}),
+    }
     try {
       return await this.options.contentLayer.enqueueEvent(
         this.options.room,
         event,
         this.options.transport,
-        { relation },
+        deliveryOptions,
       )
     } catch (error) {
       if (!(error instanceof MatrixMlp3ContentTooLargeError) || eventPayload.ui === undefined) {
@@ -372,7 +400,7 @@ export class MatrixMlp3Port implements ChannelPort {
         try {
           this.options.onLog?.(
             `[mlp3/matrix] assistant ${logicalEventId} presentation exceeded the `
-            + 'Matrix event budget; retrying with the full transcript in the body',
+            + 'Matrix event budget; retrying with bounded tool metadata',
           )
           return await this.options.contentLayer.enqueueEvent(
             this.options.room,
@@ -386,19 +414,18 @@ export class MatrixMlp3Port implements ChannelPort {
               },
             },
             this.options.transport,
-            { relation },
+            deliveryOptions,
           )
         } catch (compactError) {
           if (!(compactError instanceof MatrixMlp3ContentTooLargeError)) throw compactError
         }
       }
-      // The complete textual rendering is already in body (and is split at
-      // 8 KiB). A pathological structured presentation must not suppress the
-      // actual assistant/tool output or poison later deliveries.
+      // The bounded textual summary is already in body. A pathological
+      // presentation must not poison later assistant deliveries.
       const { ui: _ui, ...textualPayload } = eventPayload
       this.options.onLog?.(
         `[mlp3/matrix] assistant ${logicalEventId} presentation exceeded the `
-        + 'Matrix event budget; delivered the complete textual rendering',
+        + 'Matrix event budget; delivered the bounded textual summary',
       )
       return this.options.contentLayer.enqueueEvent(
         this.options.room,
@@ -411,7 +438,7 @@ export class MatrixMlp3Port implements ChannelPort {
           },
         },
         this.options.transport,
-        { relation },
+        deliveryOptions,
       )
     }
   }
@@ -433,6 +460,25 @@ export class MatrixMlp3Port implements ChannelPort {
         `[mlp3/matrix] assistant ${logicalPartId} v${version} queued: ${formatError(error)}`,
       )
     })
+  }
+
+  private trackCausalAssistantDelivery(
+    messageId: string,
+    version: number,
+    confirmation: Promise<{ eventId: string }>,
+  ): void {
+    const commandId = this.causationCommandId
+    if (!commandId) return
+    const current = this.causalAssistantDeliveries.get(messageId)
+    if (!current || current.commandId !== commandId || current.version < version) {
+      this.causalAssistantDeliveries.set(messageId, {
+        commandId,
+        version,
+        confirmations: [confirmation],
+      })
+      return
+    }
+    if (current.version === version) current.confirmations.push(confirmation)
   }
 
   private baseEvent(
@@ -521,29 +567,12 @@ function splitMessage(message: ChannelMessage): ChannelMessage[] {
   }))
 }
 
-function withToolTranscript(
-  message: ChannelMessage,
-  presentation: unknown,
-): ChannelMessage {
-  if (!isToolGroupPresentation(presentation)) return message
-  const needsTranscript = presentation.tools.some(tool =>
-    Boolean(tool.result?.trim()) || (tool.detail?.length ?? 0) > 512
-  )
-  if (!needsTranscript) return message
-  const tools = presentation.tools.map((tool, index) => {
-    const sections = [`[${index + 1}] ${tool.name} — ${tool.phase}`]
-    if (tool.detail?.trim()) sections.push(`Details:\n${tool.detail}`)
-    if (tool.result?.trim()) sections.push(`Output:\n${tool.result}`)
-    return sections.join('\n')
-  }).join('\n\n')
-  const transcript = `Tool transcript\n\n${tools}`
-  return transcript.trim()
-    ? { ...message, text: transcript, format: 'plain' }
-    : message
-}
-
 function compactToolPresentation(value: unknown): unknown {
   if (!isToolGroupPresentation(value)) return value
+  const detailLimit = Math.min(
+    256,
+    Math.max(64, Math.floor((8 * 1024) / Math.max(1, value.tools.length))),
+  )
   return {
     ...value,
     groupId: compactPreview(value.groupId, 256),
@@ -551,10 +580,11 @@ function compactToolPresentation(value: unknown): unknown {
       const { result: _result, ...summary } = tool
       return {
         ...summary,
-        name: compactPreview(tool.name, 128),
-        title: compactPreview(tool.title, 256),
+        id: compactPreview(tool.id, 256),
+        name: compactPreview(tool.name, 64),
+        title: compactPreview(tool.title, 128),
         ...(tool.detail?.trim()
-          ? { detail: compactPreview(tool.detail, 512) }
+          ? { detail: compactPreview(tool.detail, detailLimit) }
           : {}),
       }
     }),

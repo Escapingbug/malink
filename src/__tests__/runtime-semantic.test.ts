@@ -167,9 +167,11 @@ describe('ChannelProjector durable tool snapshots', () => {
             message: {
                 presentation: {
                     kind: 'tool_group',
-                    tools: [{ id: 'tool-1', result: 'complete output' }],
+                    tools: [{ id: 'tool-1', phase: 'completed' }],
                 },
             },
         })
+        expect(terminal[0]?.message.presentation?.tools[0]).not.toHaveProperty('result')
+        expect(JSON.stringify(terminal)).not.toContain('complete output')
     })
 })

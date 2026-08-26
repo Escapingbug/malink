@@ -38,6 +38,12 @@ interface ProjectedToolState {
     updatedAt: number
 }
 
+const MAX_TOOL_DETAIL_CHARS = 512
+const MAX_TOOL_COMMAND_CHARS = 1_024
+const MAX_TOOL_PLAN_CHARS = 8 * 1_024
+const MAX_TOOL_TODO_ITEMS = 32
+const MAX_TOOL_TODO_CONTENT_CHARS = 256
+
 export class ChannelProjector {
     private textBuffer = ''
     private toolStates = new Map<string, ProjectedToolState>()
@@ -198,7 +204,10 @@ export class ChannelProjector {
         }
 
         if (verboseLevel === 1) {
-            messages.push(this.projectNormalToolGroup(event))
+            messages.push(this.projectNormalToolGroup(
+                event,
+                Boolean(options.preserveNormalToolGroup),
+            ))
             return messages
         }
 
@@ -206,7 +215,10 @@ export class ChannelProjector {
         return messages
     }
 
-    private projectNormalToolGroup(event: Extract<ConversationEvent, { kind: 'tool' }>): ProjectedMessage {
+    private projectNormalToolGroup(
+        event: Extract<ConversationEvent, { kind: 'tool' }>,
+        deferCompletionToTurnBoundary: boolean,
+    ): ProjectedMessage {
         const groupKey = this.ensureNormalToolGroup()
         const state = this.mergeToolState(event)
         if (!this.normalToolGroupToolIds.includes(event.toolCallId)) {
@@ -224,7 +236,11 @@ export class ChannelProjector {
             },
             toolUseId: groupKey,
             isToolEvent: true,
-            isTerminal: event.phase === 'completed' || event.phase === 'failed',
+            // A completed tool call is not the turn boundary. Keeping these
+            // edits progressive lets DeliveryOutbox replace the whole burst
+            // with the final turn-scoped snapshot before Matrix staging.
+            isTerminal: !deferCompletionToTurnBoundary
+                && (event.phase === 'completed' || event.phase === 'failed'),
             semanticEvent: withMergedToolContent(event, state),
         }
     }
@@ -435,21 +451,30 @@ export class ChannelProjector {
         // Build effective tool name for display
         // Use toolName for canonical tools, displayTitle for path-like titles
         // If toolName is generic (tool_call/tool), use displayTitle if available
-        let effectiveToolName = state.toolName
-        if (isGenericToolName(state.toolName) && state.displayTitle) {
-            effectiveToolName = state.displayTitle
+        const exitPlan = isExitPlanModeTool(state)
+        const boundedDisplayTitle = state.displayTitle
+            ? boundedPresentationText(
+                state.displayTitle,
+                exitPlan ? MAX_TOOL_PLAN_CHARS : MAX_TOOL_DETAIL_CHARS,
+            )
+            : undefined
+        let effectiveToolName = boundedPresentationText(state.toolName, 128)
+        if (isGenericToolName(state.toolName) && boundedDisplayTitle) {
+            effectiveToolName = boundedDisplayTitle
         }
 
-        return formatToolBubble({
+        const rendered = formatToolBubble({
             toolName: effectiveToolName,
-            input: state.input,
+            input: boundedToolInput(state),
             status,
             output: allowedToolOutput(state),
             isError: state.isError,
-            displayTitle: state.displayTitle,
+            displayTitle: boundedDisplayTitle,
             category: state.category,
-            content: state.content,
+            content: boundedToolContent(state),
         })
+        const changeSummary = toolChangeSummary(state)
+        return changeSummary ? `${rendered}\n${changeSummary}` : rendered
     }
 }
 
@@ -461,13 +486,11 @@ function toolPresentationItem(
         ? state.displayTitle
         : state.toolName
     const detail = toolPresentationDetail(state)
-    const result = toolPresentationOutput(state)
     return {
         id: toolCallId,
         name,
         title: state.displayTitle ?? name,
         ...(detail ? { detail } : {}),
-        ...(result ? { result } : {}),
         category: state.category ?? 'unknown',
         phase: state.phase,
         isError: state.phase === 'failed' || Boolean(state.isError),
@@ -481,7 +504,11 @@ function toolPresentationDetail(state: ProjectedToolState): string | undefined {
     const value = state.displayTitle
         ?? pickInputText(input, detailKeysForTool(state.toolName, state.category))
         ?? (typeof state.input === 'string' ? state.input : undefined)
-    return value?.trim() ? normalizePresentationText(value) : undefined
+    const detail = value?.trim()
+        ? boundedPresentationText(value, MAX_TOOL_DETAIL_CHARS)
+        : undefined
+    const changeSummary = toolChangeSummary(state)
+    return [detail, changeSummary].filter(Boolean).join(' · ') || undefined
 }
 
 function detailKeysForTool(
@@ -521,14 +548,143 @@ function pickInputText(
     return undefined
 }
 
-function toolPresentationOutput(state: ProjectedToolState): string | undefined {
-    if (state.output === undefined || state.output === null) return undefined
-    const output = normalizePresentationText(formatUnknown(state.output))
-    return output.trim() ? output : undefined
-}
-
 function normalizePresentationText(value: string): string {
     return value.replace(/\r\n?/gu, '\n').trimEnd()
+}
+
+function boundedPresentationText(value: string, limit: number): string {
+    const normalized = normalizePresentationText(value).trim()
+    return normalized.length > limit
+        ? `${normalized.slice(0, Math.max(0, limit - 1))}…`
+        : normalized
+}
+
+function boundedToolInput(state: ProjectedToolState): Record<string, unknown> | undefined {
+    const input = asRecord(state.input)
+    if (!input) return undefined
+    const bounded: Record<string, unknown> = {}
+    const stringLimits: Record<string, number> = {
+        command: MAX_TOOL_COMMAND_CHARS,
+        cmd: MAX_TOOL_COMMAND_CHARS,
+        script: MAX_TOOL_COMMAND_CHARS,
+        file_path: MAX_TOOL_DETAIL_CHARS,
+        filePath: MAX_TOOL_DETAIL_CHARS,
+        path: MAX_TOOL_DETAIL_CHARS,
+        target_file: MAX_TOOL_DETAIL_CHARS,
+        targetFile: MAX_TOOL_DETAIL_CHARS,
+        pattern: MAX_TOOL_DETAIL_CHARS,
+        query: MAX_TOOL_DETAIL_CHARS,
+        regex: MAX_TOOL_DETAIL_CHARS,
+        glob: MAX_TOOL_DETAIL_CHARS,
+        url: MAX_TOOL_DETAIL_CHARS,
+        description: MAX_TOOL_DETAIL_CHARS,
+        prompt: MAX_TOOL_DETAIL_CHARS,
+        task: MAX_TOOL_DETAIL_CHARS,
+        name: MAX_TOOL_DETAIL_CHARS,
+        subagent_type: 128,
+        plan: MAX_TOOL_PLAN_CHARS,
+        content: MAX_TOOL_PLAN_CHARS,
+    }
+    for (const [key, limit] of Object.entries(stringLimits)) {
+        const value = input[key]
+        if (typeof value === 'string') bounded[key] = boundedPresentationText(value, limit)
+    }
+    if (Array.isArray(input.todos)) {
+        bounded.todos = input.todos.slice(0, MAX_TOOL_TODO_ITEMS).flatMap((value) => {
+            const todo = asRecord(value)
+            if (!todo || typeof todo.content !== 'string') return []
+            return [{
+                content: boundedPresentationText(todo.content, MAX_TOOL_TODO_CONTENT_CHARS),
+                status: typeof todo.status === 'string' ? todo.status : 'pending',
+            }]
+        })
+    }
+    return bounded
+}
+
+function boundedToolContent(state: ProjectedToolState): ProjectedToolState['content'] {
+    return state.content?.map((item) => {
+        if (item.type === 'diff') {
+            return {
+                type: 'diff' as const,
+                ...(item.path
+                    ? { path: boundedPresentationText(item.path, MAX_TOOL_DETAIL_CHARS) }
+                    : {}),
+            }
+        }
+        if (item.type === 'content') {
+            return {
+                type: 'content' as const,
+                contentType: boundedPresentationText(item.contentType, 128),
+                ...(isExitPlanModeTool(state) && item.text
+                    ? { text: boundedPresentationText(item.text, MAX_TOOL_PLAN_CHARS) }
+                    : {}),
+            }
+        }
+        return {
+            type: 'terminal' as const,
+            ...(item.terminalId
+                ? { terminalId: boundedPresentationText(item.terminalId, 256) }
+                : {}),
+        }
+    })
+}
+
+function toolChangeSummary(state: ProjectedToolState): string | undefined {
+    const normalizedName = state.toolName.toLowerCase()
+    if (
+        state.category !== 'edit'
+        && state.category !== 'write'
+        && normalizedName !== 'edit'
+        && normalizedName !== 'write'
+        && normalizedName !== 'edit_file'
+        && normalizedName !== 'write_file'
+    ) return undefined
+
+    const diffs = state.content?.filter((item): item is Extract<NonNullable<ProjectedToolState['content']>[number], { type: 'diff' }> =>
+        item.type === 'diff'
+    ) ?? []
+    if (diffs.length === 0) return undefined
+    const changes = diffs.map(diff => changedLineCounts(diff.oldText, diff.newText))
+    const added = changes.reduce((total, change) => total + change.added, 0)
+    const deleted = changes.reduce((total, change) => total + change.deleted, 0)
+    const files = new Set(diffs.flatMap(diff => diff.path ? [diff.path] : [])).size
+    const fileLabel = files > 1 ? `${files} files · ` : ''
+    return `${fileLabel}+${added} -${deleted} lines`
+}
+
+function changedLineCounts(
+    oldText: string | undefined,
+    newText: string | undefined,
+): { added: number; deleted: number } {
+    const oldLines = textLines(oldText)
+    const newLines = textLines(newText)
+    let prefix = 0
+    while (
+        prefix < oldLines.length
+        && prefix < newLines.length
+        && oldLines[prefix] === newLines[prefix]
+    ) prefix += 1
+
+    let suffix = 0
+    while (
+        suffix < oldLines.length - prefix
+        && suffix < newLines.length - prefix
+        && oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+    ) suffix += 1
+
+    return {
+        added: newLines.length - prefix - suffix,
+        deleted: oldLines.length - prefix - suffix,
+    }
+}
+
+function textLines(value: string | undefined): string[] {
+    if (!value) return []
+    const normalized = value.replace(/\r\n?/gu, '\n')
+    const lines = normalized.split('\n')
+    if (normalized.endsWith('\n')) lines.pop()
+    return lines
 }
 
 function isGenericToolName(toolName: string | undefined): boolean {
@@ -543,7 +699,9 @@ function withMergedToolContent(
 }
 
 function allowedToolOutput(state: ProjectedToolState): string | undefined {
-    if (isExitPlanModeTool(state) && typeof state.output === 'string') return state.output
+    if (isExitPlanModeTool(state) && typeof state.output === 'string') {
+        return boundedPresentationText(state.output, MAX_TOOL_PLAN_CHARS)
+    }
     if (state.category !== 'search' || typeof state.output !== 'string') return undefined
     const output = state.output.trim()
     return /^\d+ (matches|match|files|file)( \(truncated\))?$/.test(output) ? output : undefined

@@ -41,6 +41,7 @@ import { FileTimelineKeyStore, type TimelineKeyRing } from './fileTimelineKeySto
 import {
   FileMatrixMlp3Outbox,
   type MatrixMlp3Delivery,
+  type MatrixMlp3DeliveryPriority,
   type MatrixMlp3DeliveryMetadata,
   type MatrixMlp3EventDelivery,
 } from './fileMatrixMlp3Outbox'
@@ -214,6 +215,7 @@ export class GatewayMlp3ContentLayer {
     options: {
       transactionId?: string
       relation?: Record<string, unknown>
+      priority?: MatrixMlp3DeliveryPriority
     } = {},
   ): Promise<MatrixSendEventResult> {
     const delivery = await this.stageEvent(room, eventInput, transport, options)
@@ -232,6 +234,7 @@ export class GatewayMlp3ContentLayer {
     options: {
       transactionId?: string
       relation?: Record<string, unknown>
+      priority?: MatrixMlp3DeliveryPriority
     } = {},
   ): Promise<EnqueuedMlp3Event> {
     const delivery = await this.stageEvent(room, eventInput, transport, options)
@@ -257,6 +260,7 @@ export class GatewayMlp3ContentLayer {
     options: {
       transactionId?: string
       relation?: Record<string, unknown>
+      priority?: MatrixMlp3DeliveryPriority
     } = {},
   ): Promise<{ status: 'delivered' | 'queued'; eventId?: string }> {
     const queued = await this.enqueueEvent(room, eventInput, transport, options)
@@ -274,6 +278,7 @@ export class GatewayMlp3ContentLayer {
     options: {
       transactionId?: string
       relation?: Record<string, unknown>
+      priority?: MatrixMlp3DeliveryPriority
     },
   ): Promise<Extract<MatrixMlp3Delivery, { kind: 'event' }>> {
     this.transports.set(room.roomId, transport)
@@ -316,6 +321,7 @@ export class GatewayMlp3ContentLayer {
       content,
       createdAt: Date.now(),
       ...eventDeliveryMetadata(event),
+      ...(options.priority ? { priority: options.priority } : {}),
     })
     const superseded = await this.outbox.stage(delivery)
     this.rejectSupersededConfirmations(superseded)

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdtemp, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -25,6 +26,10 @@ import {
   type MatrixIncomingEvent,
 } from '@/channel/matrix'
 import type {
+  MatrixApplicationTimelineEventRequest,
+  MatrixSendEventResult,
+} from '@/channel/matrix/transport'
+import type {
   MatrixGatewayClient,
   MatrixGatewayEventListener,
 } from '@/gateway/matrix/client'
@@ -43,6 +48,10 @@ import {
 
 class TestMatrixClient extends InMemoryMatrixTransport implements MatrixGatewayClient {
   private readonly listeners = new Set<MatrixGatewayEventListener>()
+  private readonly timelineGates = new Map<string, {
+    started: ReturnType<typeof deferred<void>>
+    release: ReturnType<typeof deferred<void>>
+  }>()
   initializeCrypto(_config: MatrixGatewayCryptoConfig): Promise<void> { return Promise.resolve() }
   onRoomEvent(listener: MatrixGatewayEventListener): () => void {
     this.listeners.add(listener)
@@ -54,6 +63,22 @@ class TestMatrixClient extends InMemoryMatrixTransport implements MatrixGatewayC
   pinTrustedDevices(): Promise<void> { return Promise.resolve() }
   prepareRoomThread(): Promise<void> { return Promise.resolve() }
   stop(): Promise<void> { return Promise.resolve() }
+  blockTimelineTransaction(transactionId: string) {
+    const gate = { started: deferred<void>(), release: deferred<void>() }
+    this.timelineGates.set(transactionId, gate)
+    return gate
+  }
+  override async sendApplicationTimelineEvent(
+    request: MatrixApplicationTimelineEventRequest,
+  ): Promise<MatrixSendEventResult> {
+    const gate = this.timelineGates.get(request.transactionId)
+    if (gate) {
+      gate.started.resolve()
+      await gate.release.promise
+      this.timelineGates.delete(request.transactionId)
+    }
+    return super.sendApplicationTimelineEvent(request)
+  }
   emit(event: MatrixIncomingEvent): void {
     for (const listener of this.listeners) listener(event)
   }
@@ -603,6 +628,34 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(dispatched.filter(item => item.text === 'block A')).toHaveLength(1)
     expect(terminalNotifications).toHaveLength(1)
 
+    const causalText = 'causal barrier'
+    const causalMessageId = `reply-session-b-${causalText}`
+    const causalGate = client.blockTimelineTransaction(
+      assistantTransactionId(causalMessageId),
+    )
+    await send({
+      ...base,
+      commandId: 'prompt-causal-barrier',
+      sessionId: 'session-b',
+      operation: 'prompt.submit',
+      payload: { operation: 'prompt.submit', text: causalText },
+    }, '$prompt-causal-barrier')
+    await causalGate.started.promise
+    expect((await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === 'prompt-causal-barrier'
+      && event.payload.type === 'turn.completed'
+    )).toBe(false)
+    causalGate.release.resolve()
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'prompt-causal-barrier'
+        && event.payload.type === 'turn.completed'
+      ))
+    const causalEvents = (await events(client, activeKey.key, roomId, projectId))
+      .filter(event => event.causationCommandId === 'prompt-causal-barrier')
+    expect(causalEvents.findIndex(event => event.payload.type === 'assistant.message'))
+      .toBeLessThan(causalEvents.findIndex(event => event.payload.type === 'turn.completed'))
+
     // A cancel can race a completion or arrive from a stale client after a
     // Gateway restart. It must converge the client to idle instead of leaving
     // an unrecoverable "not active" command failure.
@@ -758,6 +811,13 @@ function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
   const promise = new Promise<T>(done => { resolve = done })
   return { promise, resolve }
+}
+
+function assistantTransactionId(messageId: string, version = 1): string {
+  const logicalEventId = createHash('sha256')
+    .update(`malink-v3:assistant\0${messageId}\0${version}`)
+    .digest('base64url')
+  return `malink.v3.${createHash('sha256').update(logicalEventId).digest('hex')}`
 }
 
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {

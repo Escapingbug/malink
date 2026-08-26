@@ -198,6 +198,7 @@ export class SemanticSessionRuntime {
                 this.log(`[delivery] ${record.kind} failed: ${record.error instanceof Error ? record.error.message : record.error}`)
                 this.recordDeliveryFailure(record)
             },
+            progressiveEditDebounceMs: config.channelPort.toolActivityDebounceMs,
         })
         this.extensionHost = new SessionExtensionHost(config.extensions)
     }

@@ -1260,7 +1260,6 @@ describe('SemanticSessionRuntime', () => {
         expect(toolOperations.map(operation => operation.kind)).toEqual([
             'send',
             'edit',
-            'edit',
         ])
         expect(toolOperations.every(operation => operation.messageId === toolOperations[0].messageId)).toBe(true)
         const assistantOperations = operations.filter(operation => !operation.message.presentation)
@@ -1276,6 +1275,49 @@ describe('SemanticSessionRuntime', () => {
                 { id: 'tool-2', phase: 'completed' },
             ],
         })
+        expect(JSON.stringify(toolOperations)).not.toContain('passed')
+    })
+
+    it('coalesces a burst of tool lifecycles into one initial and one final snapshot', async () => {
+        const operations: DeliveryOperation[] = []
+        const channel = {
+            ...createChannel([], [], operations),
+            coalesceAssistantText: true,
+        }
+        const toolEvents = Array.from({ length: 30 }, (_, index) => [
+            {
+                kind: 'tool_use' as const,
+                toolUseId: `tool-${index}`,
+                toolName: 'Bash',
+                input: { command: `command-${index}` },
+                status: 'running' as const,
+            },
+            {
+                kind: 'tool_result' as const,
+                toolUseId: `tool-${index}`,
+                toolName: 'Bash',
+                output: `raw-output-${index}`,
+                isError: false,
+            },
+        ]).flat()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider: createProvider([
+                ...toolEvents,
+                { kind: 'result', status: 'success' },
+            ]),
+            providerName: 'test-acp',
+            channelPort: channel,
+            providerSettings: { verboseLevel: 1 },
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'run tool burst', source: 'channel' })
+
+        const toolOperations = operations.filter(operation => operation.message.presentation)
+        expect(toolOperations.map(operation => operation.kind)).toEqual(['send', 'edit'])
+        expect(toolOperations.at(-1)?.message.presentation?.tools).toHaveLength(30)
+        expect(JSON.stringify(toolOperations)).not.toContain('raw-output-')
     })
 
     it('suppresses all tool output in quiet mode while preserving assistant text', async () => {
