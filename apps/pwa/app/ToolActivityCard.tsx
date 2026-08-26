@@ -35,9 +35,9 @@ export function ToolActivityCard({
   const [selectedStageKind, setSelectedStageKind] =
     useState<ToolStageKind | null>(null);
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
-    "idle",
-  );
+  const [copyState, setCopyState] = useState<
+    "idle" | "copying" | "copied" | "failed"
+  >("idle");
   const userControlledExpansionRef = useRef(false);
   const followLatestRef = useRef(true);
   const stages = useMemo(() => toolStages(group.tools), [group.tools]);
@@ -85,7 +85,8 @@ export function ToolActivityCard({
       )
       .join("\n\n");
     const value = fullText?.trim() || structuredDetails;
-    if (!value) return;
+    if (!value || copyState === "copying") return;
+    setCopyState("copying");
     try {
       await navigator.clipboard.writeText(value);
       setCopyState("copied");
@@ -219,8 +220,14 @@ export function ToolActivityCard({
               {time && <time>{time}</time>}
               <small>{formatDuration(group.tools)} total</small>
             </span>
-            <button type="button" onClick={() => void copyDetails()}>
-              {copyState === "copied"
+            <button
+              type="button"
+              disabled={copyState === "copying"}
+              onClick={() => void copyDetails()}
+            >
+              {copyState === "copying"
+                ? "Copying…"
+                : copyState === "copied"
                 ? "Copied"
                 : copyState === "failed"
                   ? "Copy failed"

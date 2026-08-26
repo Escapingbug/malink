@@ -34,6 +34,23 @@ describe('DeliveryOutbox', () => {
         expect(outbox.list().map(r => r.status)).toEqual(['sent', 'sent'])
     })
 
+    it('forwards final snapshot context when a terminal tool must be sent', async () => {
+        const sent: string[] = []
+        const channel = createChannelPort(sent)
+        const outbox = new DeliveryOutbox({ channelPort: channel })
+        const message: ChannelMessage = { text: 'final tool state', format: 'plain' }
+
+        await outbox.send(message, undefined, {
+            terminal: true,
+            finalSnapshot: true,
+        })
+
+        expect(channel.send).toHaveBeenCalledWith(message, {
+            terminal: true,
+            finalSnapshot: true,
+        })
+    })
+
     it('resolves deferred edits after earlier sends can publish message ids', async () => {
         const sent: string[] = []
         let messageId: number | undefined

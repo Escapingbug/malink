@@ -108,6 +108,11 @@ export interface ChannelEditContext {
     finalSnapshot?: boolean
 }
 
+export type ChannelSendContext = Pick<
+    ChannelEditContext,
+    'terminal' | 'finalSnapshot'
+>
+
 /**
  * The channel accepted the message into a durable delivery queue, but no
  * remote recipient has confirmed it yet. Callers must not resend solely
@@ -153,7 +158,10 @@ export interface ChannelPort {
     readonly fileReferenceHints?: boolean
 
     /** Send a message to the channel */
-    send(message: ChannelMessage): Promise<ChannelSendResult>
+    send(
+        message: ChannelMessage,
+        context?: ChannelSendContext,
+    ): Promise<ChannelSendResult>
 
     /** Edit an existing message (for progressive tool call display) */
     edit?(

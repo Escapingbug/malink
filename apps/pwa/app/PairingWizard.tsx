@@ -60,6 +60,8 @@ export function PairingWizard({
   const [reauthPassword, setReauthPassword] = useState("");
   const [qrCode, setQrCode] = useState({ link: "", dataUrl: "" });
   const [shareStatus, setShareStatus] = useState<string | null>(null);
+  const [shareBusy, setShareBusy] = useState<"copy" | "share" | null>(null);
+  const [pasteBusy, setPasteBusy] = useState(false);
   const [imageScanBusy, setImageScanBusy] = useState(false);
   const [imageScanError, setImageScanError] = useState<string | null>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -199,8 +201,10 @@ export function PairingWizard({
               <button
                 type="button"
                 className="scan-button"
+                disabled={shareBusy !== null}
                 onClick={() => {
                   setShareStatus(null);
+                  setShareBusy("copy");
                   void navigator.clipboard
                     .writeText(deviceInvitation.link)
                     .then(() => setShareStatus("Invitation link copied."))
@@ -208,16 +212,20 @@ export function PairingWizard({
                       setShareStatus(
                         "Copy was blocked. Select the link above manually.",
                       ),
-                    );
+                    )
+                    .finally(() => setShareBusy(null));
                 }}
               >
-                Copy link
+                {shareBusy === "copy" ? "Copying…" : "Copy link"}
               </button>
               {typeof navigator.share === "function" && (
                 <button
                   type="button"
                   className="paste-button"
-                  onClick={() =>
+                  disabled={shareBusy !== null}
+                  onClick={() => {
+                    setShareStatus(null);
+                    setShareBusy("share");
                     void navigator
                       .share({
                         title: `Join ${trustedGateway.gatewayName}`,
@@ -225,15 +233,17 @@ export function PairingWizard({
                         url: deviceInvitation.link,
                       })
                       .catch(() => undefined)
-                  }
+                      .finally(() => setShareBusy(null));
+                  }}
                 >
-                  Share
+                  {shareBusy === "share" ? "Sharing…" : "Share"}
                 </button>
               )}
               <button
                 type="button"
                 className="continue-link-button"
                 onClick={onClearInvitation}
+                disabled={shareBusy !== null}
               >
                 Done
               </button>
@@ -351,6 +361,7 @@ export function PairingWizard({
           placeholder="malink://pair?data=…"
           rows={3}
           spellCheck={false}
+          disabled={busy || pasteBusy || imageScanBusy}
           onChange={(event) => setLink(event.target.value)}
           onPaste={(event) => {
             const pasted = event.clipboardData.getData("text");
@@ -367,6 +378,7 @@ export function PairingWizard({
         <button
           className="scan-button"
           onClick={() => setScannerOpen(true)}
+          disabled={busy || pasteBusy || imageScanBusy}
           type="button"
         >
           <span aria-hidden="true">▦</span> Scan QR code
@@ -375,6 +387,7 @@ export function PairingWizard({
           className="paste-button"
           onClick={() => {
             setClipboardError(null);
+            setPasteBusy(true);
             void navigator.clipboard
               .readText()
               .then((value) => {
@@ -385,24 +398,31 @@ export function PairingWizard({
                 setClipboardError(
                   "Clipboard access was blocked. Paste the link in the box above.",
                 );
-              });
+              })
+              .finally(() => setPasteBusy(false));
           }}
+          disabled={busy || pasteBusy || imageScanBusy}
           type="button"
         >
-          Paste from clipboard
+          {pasteBusy ? "Pasting…" : "Paste from clipboard"}
         </button>
         <button
           className="continue-link-button"
           onClick={() => onLink(link)}
-          disabled={!link.trim()}
+          disabled={!link.trim() || busy || pasteBusy || imageScanBusy}
           type="button"
         >
-          Continue
+          {busy ? "Checking invitation…" : "Continue"}
         </button>
       </div>
       {clipboardError && (
         <p className="pairing-inline-error" role="alert">
           {clipboardError}
+        </p>
+      )}
+      {busy && (
+        <p className="pairing-scan-status" role="status">
+          Verifying the invitation…
         </p>
       )}
 
@@ -430,6 +450,7 @@ export function PairingWizard({
         accept="image/*"
         capture="environment"
         hidden
+        disabled={busy || imageScanBusy}
         onChange={(event) => {
           void decodeSelectedQrImage(
             event.currentTarget,
@@ -447,6 +468,7 @@ export function PairingWizard({
         type="file"
         accept="image/*"
         hidden
+        disabled={busy || imageScanBusy}
         onChange={(event) => {
           void decodeSelectedQrImage(
             event.currentTarget,

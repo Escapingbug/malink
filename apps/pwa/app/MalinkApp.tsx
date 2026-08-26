@@ -48,6 +48,7 @@ import {
   type AgentActivity,
 } from "./agentActivity";
 import { MatrixSettings } from "./MatrixSettings";
+import type { GatewayEnrollmentBusyState } from "./GatewayEnrollmentPanel";
 import { waitForUiCommit } from "./uiScheduling";
 import { hasPairingRoute, pairingRouteFromUrl } from "./pairingRoute";
 import {
@@ -295,6 +296,25 @@ type RevisionConflictNotice = {
 type NativeCommandReviewNotice = MalinkCommandReview & {
   busy: boolean;
 };
+
+type SessionSettingsField = "model" | "reasoningEffort" | "permissionMode";
+
+type SessionSettingsUpdate = {
+  sessionId: string;
+  field: SessionSettingsField;
+  value: string;
+};
+
+function sessionSettingsFieldLabel(field: SessionSettingsField): string {
+  switch (field) {
+    case "model":
+      return "Model";
+    case "reasoningEffort":
+      return "Reasoning effort";
+    case "permissionMode":
+      return "Permission mode";
+  }
+}
 
 type SendRealCommandOptions = {
   autoRetryRevisionConflict?: boolean;
@@ -1003,6 +1023,7 @@ function MalinkAppRuntime() {
     useState<NativeUpdateStatus | null>(null);
   const [nativeUpdateBusy, setNativeUpdateBusy] = useState(false);
   const nativeUpdateBusyRef = useRef(false);
+  const [pageLinkCopyBusy, setPageLinkCopyBusy] = useState(false);
   const [pwaUpdateState, setPwaUpdateState] = useState<PwaUpdateState>({
     phase: "current",
     currentVersion: MALINK_BUILD_VERSION,
@@ -1038,7 +1059,8 @@ function MalinkAppRuntime() {
     link: string;
     expiresAt: number;
   } | null>(null);
-  const [gatewayEnrollmentBusy, setGatewayEnrollmentBusy] = useState(false);
+  const [gatewayEnrollmentBusy, setGatewayEnrollmentBusy] =
+    useState<GatewayEnrollmentBusyState>(null);
   const [gatewayEnrollmentError, setGatewayEnrollmentError] = useState<string | null>(null);
   const [approvedGatewayEnrollmentIds, setApprovedGatewayEnrollmentIds] =
     useState<Set<string>>(() => new Set());
@@ -1076,6 +1098,8 @@ function MalinkAppRuntime() {
   const [forgetDialogOpen, setForgetDialogOpen] = useState(false);
   const [newSessionBusy, setNewSessionBusy] = useState(false);
   const [newProjectBusy, setNewProjectBusy] = useState(false);
+  const [sessionSettingsUpdate, setSessionSettingsUpdate] =
+    useState<SessionSettingsUpdate | null>(null);
   const [pendingSessionCreate, setPendingSessionCreate] =
     useState<NewSessionInput | null>(null);
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() =>
@@ -3524,10 +3548,15 @@ function MalinkAppRuntime() {
         onCommandReviewRequired(review) {
           if (!isCurrentStartup()) return;
           if (!review) {
+            if (nativeCommandReviewRef.current?.busy) return;
             nativeCommandReviewRef.current = null;
             setNativeCommandReview(null);
             return;
           }
+          if (
+            nativeCommandReviewRef.current?.busy &&
+            nativeCommandReviewRef.current.commandId === review.commandId
+          ) return;
           const notice: NativeCommandReviewNotice = {
             ...review,
             busy: false,
@@ -3673,8 +3702,10 @@ function MalinkAppRuntime() {
     setInvitationBusy(false);
     setInvitationError(null);
     setGatewayEnrollmentInvitation(null);
-    setGatewayEnrollmentBusy(false);
+    setGatewayEnrollmentBusy(null);
     setGatewayEnrollmentError(null);
+    setPairingBusy(false);
+    setSessionSettingsUpdate(null);
   }
 
   function detachClientForNativeBootstrap() {
@@ -3751,6 +3782,8 @@ function MalinkAppRuntime() {
   }
 
   async function openPairingLink(link: string) {
+    if (pairingBusy) return;
+    setPairingBusy(true);
     setConnectionError(null);
     setPairingError(null);
     try {
@@ -3789,6 +3822,8 @@ function MalinkAppRuntime() {
       setSettingsOpen(true);
     } catch (error) {
       setConnectionError(formatUiError(error));
+    } finally {
+      setPairingBusy(false);
     }
   }
 
@@ -4113,7 +4148,8 @@ function MalinkAppRuntime() {
       );
       return;
     }
-    setGatewayEnrollmentBusy(true);
+    if (gatewayEnrollmentBusy) return;
+    setGatewayEnrollmentBusy({ kind: "create" });
     setGatewayEnrollmentError(null);
     let commandId: string | null = null;
     try {
@@ -4154,7 +4190,7 @@ function MalinkAppRuntime() {
         completedCommandResultsRef.current.delete(commandId);
         await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
       }
-      setGatewayEnrollmentBusy(false);
+      setGatewayEnrollmentBusy(null);
     }
   }
 
@@ -4162,7 +4198,8 @@ function MalinkAppRuntime() {
     enrollmentId: string,
     approverProjectId?: string,
   ): Promise<void> {
-    setGatewayEnrollmentBusy(true);
+    if (gatewayEnrollmentBusy) return;
+    setGatewayEnrollmentBusy({ kind: "approve", enrollmentId });
     setGatewayEnrollmentError(null);
     let commandId: string | null = null;
     try {
@@ -4212,7 +4249,7 @@ function MalinkAppRuntime() {
         completedCommandResultsRef.current.delete(commandId);
         await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
       }
-      setGatewayEnrollmentBusy(false);
+      setGatewayEnrollmentBusy(null);
     }
   }
 
@@ -4345,6 +4382,8 @@ function MalinkAppRuntime() {
   }
 
   async function copyPageLinkForAnotherBrowser(): Promise<void> {
+    if (pageLinkCopyBusy) return;
+    setPageLinkCopyBusy(true);
     const pageLink = window.location.href;
     try {
       if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
@@ -4361,6 +4400,8 @@ function MalinkAppRuntime() {
         "Copy this Malink link and open it in a current Chrome, Edge, or Safari browser:",
         pageLink,
       );
+    } finally {
+      setPageLinkCopyBusy(false);
     }
   }
 
@@ -4771,22 +4812,20 @@ function MalinkAppRuntime() {
     const busyReview = { ...review, busy: true };
     nativeCommandReviewRef.current = busyReview;
     setNativeCommandReview(busyReview);
+    let retriedCommandId: string | null = null;
     try {
       const sent = await connection.confirmRevisionRetry(review.commandId);
+      retriedCommandId = sent.commandId;
+      const completion = await sent.completion;
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message ?? "The retried action did not complete.",
+        );
+      }
       if (nativeCommandReviewRef.current?.commandId === review.commandId) {
         nativeCommandReviewRef.current = null;
         setNativeCommandReview(null);
       }
-      void sent.completion
-        .then(() => connection.releaseCommand(sent.commandId))
-        .catch((error) => {
-          showUiNotice(
-            "command:review-retry",
-            "composer",
-            "warning",
-            `The retried action is still being reconciled: ${formatUiError(error)}`,
-          );
-        });
     } catch (error) {
       if (error instanceof CommandReviewRequiredError) {
         const next: NativeCommandReviewNotice = {
@@ -4806,6 +4845,17 @@ function MalinkAppRuntime() {
         "error",
         formatUiError(error),
       );
+    } finally {
+      if (retriedCommandId) {
+        await connection.releaseCommand(retriedCommandId).catch((error) => {
+          showUiNotice(
+            "command:review-release",
+            "composer",
+            "warning",
+            `The completed action could not be cleared from local recovery: ${formatUiError(error)}`,
+          );
+        });
+      }
     }
   }
 
@@ -6079,42 +6129,62 @@ function MalinkAppRuntime() {
     }
   }
 
-  async function changeModel(nextModel: string) {
+  async function updateSessionSetting(
+    field: SessionSettingsField,
+    value: string,
+  ): Promise<void> {
     const sessionId = selectedSessionIdRef.current;
-    if (!sessionId) return;
-    const sent = await sendRealCommand({
-      operation: "session.settings",
-      sessionId,
-      model: nextModel,
-    });
-    if (sent) await sent.completion;
+    if (!sessionId || sessionSettingsUpdate) return;
+    const update = { sessionId, field, value };
+    setSessionSettingsUpdate(update);
+    const payload: CommandPayload = field === "model"
+      ? { operation: "session.settings", sessionId, model: value }
+      : field === "reasoningEffort"
+        ? { operation: "session.settings", sessionId, reasoningEffort: value }
+        : {
+            operation: "session.settings",
+            sessionId,
+            permissionMode: value as
+              | "default"
+              | "accept_edits"
+              | "plan"
+              | "bypass_permissions",
+          };
+    try {
+      const sent = await sendRealCommand(payload, undefined, {
+        propagateFailure: true,
+      });
+      if (!sent) throw new Error("The setting update was not sent.");
+      const completion = await sent.completion;
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message ?? "The setting update did not complete.",
+        );
+      }
+      showUiNotice(
+        "session:settings",
+        "composer",
+        "success",
+        `${sessionSettingsFieldLabel(field)} updated.`,
+        3_000,
+      );
+    } catch (error) {
+      showUiNotice(
+        "session:settings",
+        "composer",
+        "error",
+        formatUiError(error),
+      );
+    } finally {
+      setSessionSettingsUpdate((current) => current === update ? null : current);
+    }
   }
 
-  async function changeReasoningEffort(nextReasoningEffort: string) {
-    const sessionId = selectedSessionIdRef.current;
-    if (!sessionId) return;
-    const sent = await sendRealCommand({
-      operation: "session.settings",
-      sessionId,
-      reasoningEffort: nextReasoningEffort,
-    });
-    if (sent) await sent.completion;
-  }
-
-  async function changeMode(nextMode: string) {
-    const sessionId = selectedSessionIdRef.current;
-    if (!sessionId) return;
-    const sent = await sendRealCommand({
-      operation: "session.settings",
-      sessionId,
-      permissionMode: nextMode as
-        | "default"
-        | "accept_edits"
-        | "plan"
-        | "bypass_permissions",
-    });
-    if (sent) await sent.completion;
-  }
+  const activeSessionSettingsUpdate = sessionSettingsUpdate?.sessionId ===
+      selectedSessionId
+    ? sessionSettingsUpdate
+    : null;
+  const settingsUpdateBusy = sessionSettingsUpdate !== null;
 
   return (
     <main className={`app-shell ${mobileChatOpen ? "mobile-chat-open" : ""} ${primaryView === "files" ? "file-inbox-open" : ""}`}>
@@ -7131,7 +7201,7 @@ function MalinkAppRuntime() {
                 <span />
                 <span />
               </span>
-              <span className="activity-copy visually-hidden">
+              <span className="activity-copy">
                 <strong>{agentActivity.label}</strong>
                 {agentActivity.detail && <small>{agentActivity.detail}</small>}
               </span>
@@ -7365,11 +7435,16 @@ function MalinkAppRuntime() {
                 <label>
                   <span className="status-spark" />
                   <select
-                    value={activeWorkspace?.model ?? ""}
-                    onChange={(event) => void changeModel(event.target.value)}
+                    value={activeSessionSettingsUpdate?.field === "model"
+                      ? activeSessionSettingsUpdate.value
+                      : activeWorkspace?.model ?? ""}
+                    onChange={(event) =>
+                      void updateSessionSetting("model", event.target.value)
+                    }
                     aria-label="Agent model"
                     disabled={
                       !sessionReady ||
+                      settingsUpdateBusy ||
                       activeProviderModels.length === 0
                     }
                   >
@@ -7387,17 +7462,23 @@ function MalinkAppRuntime() {
                 <label>
                   <select
                     value={
-                      activeWorkspace?.reasoningEffort ??
-                      activeModelCapability?.defaultReasoningLevel ??
-                      ""
+                      activeSessionSettingsUpdate?.field === "reasoningEffort"
+                        ? activeSessionSettingsUpdate.value
+                        : activeWorkspace?.reasoningEffort ??
+                          activeModelCapability?.defaultReasoningLevel ??
+                          ""
                     }
                     onChange={(event) =>
-                      void changeReasoningEffort(event.target.value)
+                      void updateSessionSetting(
+                        "reasoningEffort",
+                        event.target.value,
+                      )
                     }
                     aria-label="Reasoning effort"
                     title="Reasoning effort"
                     disabled={
                       !sessionReady ||
+                      settingsUpdateBusy ||
                       !activeModelCapability ||
                       activeModelCapability.supportedReasoningLevels.length === 0
                     }
@@ -7424,12 +7505,20 @@ function MalinkAppRuntime() {
                     <span className="control-divider" />
                     <label>
                       <select
-                        value={activeWorkspace?.permissionMode ?? ""}
-                        onChange={(event) => void changeMode(event.target.value)}
+                        value={activeSessionSettingsUpdate?.field === "permissionMode"
+                          ? activeSessionSettingsUpdate.value
+                          : activeWorkspace?.permissionMode ?? ""}
+                        onChange={(event) =>
+                          void updateSessionSetting(
+                            "permissionMode",
+                            event.target.value,
+                          )
+                        }
                         aria-label="Permission mode"
                         title="Permission mode"
                         disabled={
                           !sessionReady ||
+                          settingsUpdateBusy ||
                           activeCapabilities!.permissionModes.length === 0
                         }
                       >
@@ -7444,6 +7533,12 @@ function MalinkAppRuntime() {
                       </select>
                     </label>
                   </>
+                )}
+                {sessionSettingsUpdate && (
+                  <span className="agent-setting-status" role="status">
+                    <span className="button-spinner" aria-hidden="true" />
+                    Updating {sessionSettingsFieldLabel(sessionSettingsUpdate.field).toLowerCase()}…
+                  </span>
                 )}
               </div>
               <div className="composer-submit-actions">
@@ -7645,6 +7740,7 @@ function MalinkAppRuntime() {
         nativeRuntime={nativeRuntime}
         webPushState={webPushState}
         webPushBusy={webPushBusy}
+        copyPageLinkBusy={pageLinkCopyBusy}
         onChange={setMatrixConfig}
         onPairingLink={(link) => void openPairingLink(link)}
         onClearPairing={() => {

@@ -2448,10 +2448,6 @@ select:focus-visible {
   white-space: nowrap;
 }
 
-.agent-activity .activity-copy {
-  position: absolute !important;
-}
-
 .agent-bubble {
   border: 1px solid #e5e7ed;
   border-bottom-left-radius: 4px;
@@ -4163,6 +4159,23 @@ select:focus-visible {
   color: #626b7c;
   font-size: 8px;
   font-weight: 600;
+}
+
+.agent-setting-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #6f668d;
+  font-size: 9px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.agent-setting-status .button-spinner {
+  width: 10px;
+  height: 10px;
+  border-color: rgb(111 102 141 / 25%);
+  border-top-color: var(--violet);
 }
 
 .status-spark {
@@ -7111,9 +7124,9 @@ body {
   }
 
   .agent-activity {
-    width: 25px;
+    width: auto;
     min-height: 25px;
-    justify-content: center;
+    justify-content: flex-start;
     margin-left: 32px;
   }
 }
@@ -7674,6 +7687,11 @@ body {
   .agent-controls .status-spark,
   .agent-controls .control-divider {
     display: none;
+  }
+
+  .agent-setting-status {
+    min-height: 32px;
+    padding-inline: 10px;
   }
 
   .context-item b {

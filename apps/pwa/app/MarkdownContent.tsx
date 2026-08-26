@@ -6,13 +6,14 @@ import remarkGfm from "remark-gfm";
 
 function MarkdownCodeBlock({ children }: { children: ReactNode }) {
   const blockRef = useRef<HTMLPreElement>(null);
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
-    "idle",
-  );
+  const [copyState, setCopyState] = useState<
+    "idle" | "copying" | "copied" | "failed"
+  >("idle");
 
   async function copyCode() {
     const value = blockRef.current?.innerText ?? "";
-    if (!value) return;
+    if (!value || copyState === "copying") return;
+    setCopyState("copying");
     try {
       await navigator.clipboard.writeText(value);
       setCopyState("copied");
@@ -24,8 +25,14 @@ function MarkdownCodeBlock({ children }: { children: ReactNode }) {
 
   return (
     <div className="markdown-code-block">
-      <button type="button" onClick={() => void copyCode()}>
-        {copyState === "copied"
+      <button
+        type="button"
+        disabled={copyState === "copying"}
+        onClick={() => void copyCode()}
+      >
+        {copyState === "copying"
+          ? "Copying…"
+          : copyState === "copied"
           ? "Copied"
           : copyState === "failed"
             ? "Copy failed"

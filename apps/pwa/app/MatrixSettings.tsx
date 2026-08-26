@@ -27,6 +27,7 @@ import type { WebPushNotificationState } from "./webPushNotifications";
 import type { GatewayEnrollmentPending } from "@malink/protocol";
 import {
   GatewayEnrollmentPanel,
+  type GatewayEnrollmentBusyState,
   type GeneratedGatewayEnrollment,
 } from "./GatewayEnrollmentPanel";
 
@@ -48,7 +49,7 @@ type Props = {
   gatewayEnrollmentInvitation: GeneratedGatewayEnrollment | null;
   pendingGatewayEnrollments: GatewayEnrollmentPending[];
   approvedGatewayEnrollmentIds: ReadonlySet<string>;
-  gatewayEnrollmentBusy: boolean;
+  gatewayEnrollmentBusy: GatewayEnrollmentBusyState;
   gatewayEnrollmentError: string | null;
   updateState: PwaUpdateState;
   nativeUpdateState: NativeUpdateStatus | null;
@@ -56,6 +57,7 @@ type Props = {
   nativeRuntime: MalinkNativeRuntimeInfo | null;
   webPushState: WebPushNotificationState;
   webPushBusy: boolean;
+  copyPageLinkBusy: boolean;
   onChange(config: MatrixConnectionConfig): void;
   onPairingLink(link: string): void;
   onClearPairing(): void;
@@ -111,6 +113,7 @@ function MatrixSettingsDialog({
   nativeRuntime,
   webPushState,
   webPushBusy,
+  copyPageLinkBusy,
   onChange,
   onPairingLink,
   onClearPairing,
@@ -144,13 +147,17 @@ function MatrixSettingsDialog({
     status === "connected" ||
     status === "securing" ||
     status === "reconnecting";
+  const actionBusy =
+    pairingBusy ||
+    invitationBusy ||
+    gatewayEnrollmentBusy !== null ||
+    webPushBusy ||
+    nativeUpdateBusy ||
+    copyPageLinkBusy;
   const busy =
     status === "connecting" ||
     status === "securing" ||
-    pairingBusy ||
-    invitationBusy ||
-    gatewayEnrollmentBusy ||
-    webPushBusy;
+    actionBusy;
   const needsAccount =
     Boolean(pairingPreview) && (!trustedGateway || repairRequired);
   const hasSavedConnection = Boolean(
@@ -189,6 +196,7 @@ function MatrixSettingsDialog({
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const requestClose = () => {
+    if (actionBusy) return;
     setLoginPassword("");
     onClose();
   };
@@ -197,6 +205,7 @@ function MatrixSettingsDialog({
     open,
     containerRef: dialogRef,
     initialFocusRef: closeButtonRef,
+    escapeDisabled: actionBusy,
     onEscape: requestClose,
   });
 
@@ -254,6 +263,7 @@ function MatrixSettingsDialog({
             type="button"
             onClick={requestClose}
             aria-label="Close connection settings"
+            disabled={actionBusy}
           >
             ×
           </button>
@@ -333,6 +343,8 @@ function MatrixSettingsDialog({
                 className="connect-button"
                 disabled={
                   busy ||
+                  (recoveryPlan.primary.action === "copy-page-link" &&
+                    copyPageLinkBusy) ||
                   (recoveryPlan.primary.action === "update-native-app" &&
                     nativeUpdateBusy)
                 }
@@ -341,6 +353,9 @@ function MatrixSettingsDialog({
                 {recoveryPlan.primary.action === "update-native-app" &&
                 nativeUpdateBusy
                   ? "Checking APK…"
+                  : recoveryPlan.primary.action === "copy-page-link" &&
+                      copyPageLinkBusy
+                    ? "Copying link…"
                   : recoveryPlan.primary.label}
               </button>
               {recoveryPlan.secondary && (
@@ -348,12 +363,17 @@ function MatrixSettingsDialog({
                   type="button"
                   disabled={
                     busy ||
+                    (recoveryPlan.secondary.action === "copy-page-link" &&
+                      copyPageLinkBusy) ||
                     (recoveryPlan.secondary.action === "update-native-app" &&
                       nativeUpdateBusy)
                   }
                   onClick={() => runRecoveryAction(recoveryPlan.secondary!.action)}
                 >
-                  {recoveryPlan.secondary.label}
+                  {recoveryPlan.secondary.action === "copy-page-link" &&
+                  copyPageLinkBusy
+                    ? "Copying link…"
+                    : recoveryPlan.secondary.label}
                 </button>
               )}
             </div>
@@ -384,7 +404,7 @@ function MatrixSettingsDialog({
           preview={pairingPreview}
           trustedGateway={trustedGateway}
           repairReason={effectiveRepairReason}
-          busy={busy}
+          busy={pairingBusy}
           canConfirm={Boolean(config.accessToken)}
           deviceInvitation={deviceInvitation}
           invitationBusy={invitationBusy}
@@ -622,7 +642,9 @@ function MatrixSettingsDialog({
                     onClick={onInstallNativeUpdate}
                     disabled={nativeUpdateBusy}
                   >
-                    {nativeUpdateState.phase === "permission_required"
+                    {nativeUpdateBusy
+                      ? "Installing APK…"
+                      : nativeUpdateState.phase === "permission_required"
                       ? "Allow and install APK"
                       : "Install APK update"}
                   </button>

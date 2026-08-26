@@ -922,7 +922,10 @@ export class SemanticSessionRuntime {
             return
         }
 
-        const record = await this.outbox.send(message)
+        const record = await this.outbox.send(message, undefined, {
+            terminal: isTerminal,
+            finalSnapshot: isFinalToolSnapshot,
+        })
         this.noteDeliveryRecord(record)
         if (isToolEvent && toolUseId && record.messageId !== undefined) {
             this.toolMessageIds.set(toolUseId, record.messageId)

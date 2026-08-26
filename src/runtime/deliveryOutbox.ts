@@ -91,7 +91,15 @@ export class DeliveryOutbox {
         const completion = this.enqueueReliable(lane, record, async () => {
             try {
                 this.logAttachmentSend(record)
-                const result = await this.withRateLimitRetry(() => this.config.channelPort.send(message), this.timeoutForMessage(message))
+                const result = await this.withRateLimitRetry(
+                    () => options.terminal || options.finalSnapshot
+                        ? this.config.channelPort.send(message, {
+                            terminal: options.terminal === true,
+                            finalSnapshot: options.finalSnapshot === true,
+                        })
+                        : this.config.channelPort.send(message),
+                    this.timeoutForMessage(message),
+                )
                 record.status = 'sent'
                 record.messageId = result.messageId
                 if (original?.status === 'failed') {
@@ -415,7 +423,15 @@ export class DeliveryOutbox {
             this.config.onFailure?.(task.record)
             if (task.fallbackToSend) {
                 try {
-                    const result = await this.withRateLimitRetry(() => this.config.channelPort.send(task.message), this.timeoutForMessage(task.message))
+                    const result = await this.withRateLimitRetry(
+                        () => task.record.terminal || task.record.finalSnapshot
+                            ? this.config.channelPort.send(task.message, {
+                                terminal: task.record.terminal === true,
+                                finalSnapshot: task.record.finalSnapshot === true,
+                            })
+                            : this.config.channelPort.send(task.message),
+                        this.timeoutForMessage(task.message),
+                    )
                     task.record.status = 'sent'
                     task.record.messageId = result.messageId
                 } catch (sendError) {
@@ -461,7 +477,12 @@ export class DeliveryOutbox {
     private async sendEditFallback(record: DeliveryRecord, message: ChannelMessage): Promise<void> {
         try {
             const result = await this.withRateLimitRetry(
-                () => this.config.channelPort.send(message),
+                () => record.terminal || record.finalSnapshot
+                    ? this.config.channelPort.send(message, {
+                        terminal: record.terminal === true,
+                        finalSnapshot: record.finalSnapshot === true,
+                    })
+                    : this.config.channelPort.send(message),
                 this.timeoutForMessage(message),
             )
             record.status = 'sent'

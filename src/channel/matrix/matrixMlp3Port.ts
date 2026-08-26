@@ -9,6 +9,7 @@ import type {
   ChannelEditContext,
   ChannelMessage,
   ChannelPort,
+  ChannelSendContext,
   ChannelSendResult,
   ChannelToolGroupPresentation,
   DecisionRequest,
@@ -102,7 +103,10 @@ export class MatrixMlp3Port implements ChannelPort {
     return Promise.all(confirmations).then(() => undefined)
   }
 
-  async send(message: ChannelMessage): Promise<ChannelSendResult> {
+  async send(
+    message: ChannelMessage,
+    context: ChannelSendContext = {},
+  ): Promise<ChannelSendResult> {
     const messageOptions = readMessageOptions(message.replyMarkup)
     const messageId = messageOptions.idempotencyKey ?? this.operationIdFor(message)
     const presentation = message.presentation ?? messageOptions.ui
@@ -129,6 +133,9 @@ export class MatrixMlp3Port implements ChannelPort {
         ...(index === 0 && attachments.length > 0 ? { attachments } : {}),
       }, {
         occurredAt: this.messageTimestamp(messageId),
+        ...(liveToolGroup && context.finalSnapshot
+          ? { priority: 'normal' as const }
+          : {}),
       })
       this.observeAssistantDelivery(
         queued.confirmation,
@@ -136,7 +143,7 @@ export class MatrixMlp3Port implements ChannelPort {
         index === 0 ? messageId : undefined,
         version,
       )
-      if (!liveToolGroup) {
+      if (!liveToolGroup || context.finalSnapshot) {
         this.trackCausalAssistantDelivery(messageId, version, queued.confirmation)
       }
     }
@@ -180,6 +187,9 @@ export class MatrixMlp3Port implements ChannelPort {
         ...(index === 0 && attachments.length > 0 ? { attachments } : {}),
       }, {
         occurredAt: this.messageTimestamp(messageId),
+        ...(toolGroup && context.finalSnapshot
+          ? { priority: 'normal' as const }
+          : {}),
         ...(physicalTarget
           ? {
               relation: {
@@ -195,7 +205,7 @@ export class MatrixMlp3Port implements ChannelPort {
         index === 0 ? messageId : undefined,
         version,
       )
-      if (!toolGroup) {
+      if (!toolGroup || context.finalSnapshot) {
         this.trackCausalAssistantDelivery(messageId, version, queued.confirmation)
       }
     }
@@ -368,6 +378,7 @@ export class MatrixMlp3Port implements ChannelPort {
     options: {
       relation?: Record<string, unknown>
       occurredAt?: number
+      priority?: 'urgent' | 'control' | 'normal' | 'bulk'
     } = {},
   ) {
     const { eventId: logicalEventId, ...eventPayload } = payload
@@ -382,7 +393,11 @@ export class MatrixMlp3Port implements ChannelPort {
     const relation = options.relation ?? threadRelation(this.options.threadRootEventId)
     const deliveryOptions = {
       relation,
-      ...(isToolGroupPresentation(eventPayload.ui) ? { priority: 'bulk' as const } : {}),
+      ...(options.priority
+        ? { priority: options.priority }
+        : isToolGroupPresentation(eventPayload.ui)
+          ? { priority: 'bulk' as const }
+          : {}),
     }
     try {
       return await this.options.contentLayer.enqueueEvent(

@@ -8,6 +8,11 @@ export type GeneratedGatewayEnrollment = {
   expiresAt: number;
 };
 
+export type GatewayEnrollmentBusyState =
+  | { kind: "create" }
+  | { kind: "approve"; enrollmentId: string }
+  | null;
+
 export function GatewayEnrollmentPanel({
   invitation,
   pending,
@@ -21,13 +26,15 @@ export function GatewayEnrollmentPanel({
   invitation: GeneratedGatewayEnrollment | null;
   pending: GatewayEnrollmentPending[];
   approvedEnrollmentIds: ReadonlySet<string>;
-  busy: boolean;
+  busy: GatewayEnrollmentBusyState;
   error: string | null;
   onCreate(): void;
   onApprove(enrollmentId: string, approverProjectId?: string): void;
   onClear(): void;
 }) {
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const operationBusy = busy !== null;
   const command = invitation
     ? `malink gateway join '${invitation.link}' --gateway-data-dir ~/.malink/gateway`
     : "";
@@ -39,7 +46,7 @@ export function GatewayEnrollmentPanel({
           <strong>Add a Gateway</strong>
           <small>One approval connects it to every authorized client.</small>
         </span>
-        <button type="button" disabled={busy} onClick={onClear}>Close</button>
+        <button type="button" disabled={operationBusy} onClick={onClear}>Close</button>
       </header>
 
       {!invitation && pending.length === 0 && (
@@ -49,8 +56,8 @@ export function GatewayEnrollmentPanel({
             approve the matching verification code here. No Workspace key or
             existing Gateway credential needs to be copied.
           </p>
-          <button type="button" className="connect-button" disabled={busy} onClick={onCreate}>
-            {busy ? "Creating setup link…" : "Create Gateway setup link"}
+          <button type="button" className="connect-button" disabled={operationBusy} onClick={onCreate}>
+            {busy?.kind === "create" ? "Creating setup link…" : "Create Gateway setup link"}
           </button>
         </div>
       )}
@@ -72,16 +79,21 @@ export function GatewayEnrollmentPanel({
             <button
               type="button"
               className="scan-button"
+              disabled={copyBusy || operationBusy}
               onClick={() => {
                 setCopyStatus(null);
+                setCopyBusy(true);
                 void navigator.clipboard.writeText(command)
                   .then(() => setCopyStatus("Gateway setup command copied."))
-                  .catch(() => setCopyStatus("Copy was blocked; select the command manually."));
+                  .catch(() => setCopyStatus("Copy was blocked; select the command manually."))
+                  .finally(() => setCopyBusy(false));
               }}
             >
-              Copy setup command
+              {copyBusy ? "Copying…" : "Copy setup command"}
             </button>
-            <button type="button" disabled={busy} onClick={onCreate}>Create a new link</button>
+            <button type="button" disabled={operationBusy || copyBusy} onClick={onCreate}>
+              {busy?.kind === "create" ? "Creating new link…" : "Create a new link"}
+            </button>
           </div>
           <small>Expires {formatExpiry(invitation.expiresAt)}</small>
           {copyStatus && <p role="status">{copyStatus}</p>}
@@ -90,6 +102,8 @@ export function GatewayEnrollmentPanel({
 
       {pending.map(request => {
         const approved = approvedEnrollmentIds.has(request.enrollmentId);
+        const approvingThisRequest = busy?.kind === "approve"
+          && busy.enrollmentId === request.enrollmentId;
         return (
           <article className="gateway-enrollment-request" key={request.enrollmentId}>
             <span className="gateway-device-mark" aria-hidden="true">G</span>
@@ -109,10 +123,10 @@ export function GatewayEnrollmentPanel({
             <button
               type="button"
               className="connect-button"
-              disabled={busy}
+              disabled={operationBusy}
               onClick={() => onApprove(request.enrollmentId, request.approverProjectId)}
             >
-              {busy
+              {approvingThisRequest
                 ? "Sending approval…"
                 : approved
                   ? "Send approval again"

@@ -540,6 +540,72 @@ describe('MatrixMlp3Port', () => {
     })
     expect(oversizedPresentationEnvelope.plaintext.value.event.payload).not.toHaveProperty('ui')
   })
+
+  it('holds the causal barrier for a final tool snapshot', async () => {
+    let releaseConfirmation!: (value: { eventId: string }) => void
+    const confirmation = new Promise<{ eventId: string }>(resolve => {
+      releaseConfirmation = resolve
+    })
+    let deliveryPriority: string | undefined
+    const contentLayer = {
+      enqueueEvent: async (
+        _room: unknown,
+        _event: unknown,
+        _transport: unknown,
+        options: { priority?: string },
+      ) => {
+        deliveryPriority = options.priority
+        return { deliveryId: 'final-tool-delivery', confirmation }
+      },
+    } as unknown as GatewayMlp3ContentLayer
+    const port = new MatrixMlp3Port({
+      contentLayer,
+      transport: {} as InMemoryMatrixTransport,
+      room: {
+        roomId: '!project:example.org',
+        conversationId: 'unused-v3',
+        cwd: '/repo',
+        providerName: 'test',
+      },
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      threadRootEventId: '$root:example.org',
+      projection: () => ({
+        title: 'Session',
+        lifecycle: 'active',
+        activity: 'working',
+        updatedAt: 1,
+        stateVersion: 1,
+      }),
+      now: () => 1,
+    })
+    port.setCausationCommandId('prompt-1')
+
+    await port.send({
+      text: 'Read — completed',
+      format: 'plain',
+      replyMarkup: { idempotencyKey: 'tool-group-1' },
+      presentation: {
+        kind: 'tool_group',
+        version: 1,
+        groupId: 'turn-tools',
+        tools: [],
+      },
+    }, { terminal: true, finalSnapshot: true })
+
+    let barrierSettled = false
+    const barrier = port.causalDeliveryBarrier('prompt-1').then(() => {
+      barrierSettled = true
+    })
+    await Promise.resolve()
+    expect(barrierSettled).toBe(false)
+    expect(deliveryPriority).toBe('normal')
+
+    releaseConfirmation({ eventId: '$final-tool' })
+    await barrier
+    expect(barrierSettled).toBe(true)
+  })
 })
 
 async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {

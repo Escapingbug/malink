@@ -225,7 +225,11 @@ test("ships a complete installable offline shell", async () => {
   );
   assert.doesNotMatch(source, /const \[isStreaming, setIsStreaming\]/);
   assert.match(source, /gatewayProjectKey/);
-  assert.match(source, /changeReasoningEffort/);
+  assert.match(
+    source,
+    /updateSessionSetting\([\s\S]{0,80}?"reasoningEffort"/,
+  );
+  assert.match(source, /Updating \{sessionSettingsFieldLabel/);
   assert.match(newSession, /Computer · Project/);
   assert.match(
     newSession,
@@ -373,7 +377,12 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /inferredCompletedTurnResultIds/);
   assert.match(source, /className=\{`message-row user-row turn-prompt/);
   assert.match(source, /turnPresentationClass/);
-  assert.match(source, /className="activity-copy visually-hidden"/);
+  assert.match(source, /className="activity-copy"/);
+  assert.doesNotMatch(source, /className="activity-copy visually-hidden"/);
+  assert.doesNotMatch(
+    styles,
+    /\.agent-activity \.activity-copy\s*\{[^}]*position:\s*absolute/,
+  );
   assert.match(source, /aria-label=\{`\$\{session\.title\}\. \$\{statusSummary\}/);
   assert.match(source, /title=\{`\$\{session\.title\} · \$\{statusSummary\}`\}/);
   assert.match(source, /title=\{completionLabel\}/);
@@ -483,6 +492,8 @@ test("renders safe Markdown and keeps tool activity in one accessible staged car
   assert.match(toolGroup, /Diagnostics · Raw transcript/);
   assert.match(toolGroup, /terminal-output/);
   assert.match(toolGroup, /copyDetails/);
+  assert.match(toolGroup, /copyState === "copying"/);
+  assert.match(toolGroup, /Copying…/);
   assert.match(toolGroup, /className={`tool-result-view/);
   assert.match(presentation, /const TOOL_LIMIT = 200/);
   assert.match(packageJson, /"react-markdown"/);
