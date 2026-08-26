@@ -563,13 +563,8 @@ object CommandAuthorizationPolicy {
         operation: CommandOperation,
         certificateGrants: Collection<PairingOperation>,
     ): CommandAuthorizationDecision {
-        val authorizedWireName = when (operation) {
-            CommandOperation.GATEWAY_ENROLLMENT_INVITE,
-            CommandOperation.GATEWAY_ENROLLMENT_APPROVE,
-            -> PairingOperation.DEVICE_INVITE.wireName
-            else -> operation.wireName
-        }
-        val granted = certificateGrants.any { grant -> grant.wireName == authorizedWireName }
+        val requiredGrant = requiredCertificateOperation(operation)
+        val granted = requiredGrant in certificateGrants
         return if (granted) {
             CommandAuthorizationDecision(true, CommandAuthorizationSource.CERTIFICATE_GRANT)
         } else {
@@ -587,3 +582,17 @@ object CommandAuthorizationPolicy {
         }
     }
 }
+
+/**
+ * Gateway enrollment belongs to the same delegated administration authority
+ * as inviting another client. Keep this mapping shared by the local command
+ * authorization check and the capability preflight so an existing
+ * DEVICE_INVITE certificate can create and approve Gateway setup links.
+ */
+internal fun requiredCertificateOperation(operation: CommandOperation): PairingOperation =
+    when (operation) {
+        CommandOperation.GATEWAY_ENROLLMENT_INVITE,
+        CommandOperation.GATEWAY_ENROLLMENT_APPROVE,
+        -> PairingOperation.DEVICE_INVITE
+        else -> PairingOperation.parse(operation.wireName)
+    }

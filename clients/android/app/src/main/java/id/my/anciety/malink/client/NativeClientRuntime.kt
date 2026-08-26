@@ -7,6 +7,7 @@ import id.my.anciety.malink.client.command.CommandAuthorizationPolicy
 import id.my.anciety.malink.client.command.CommandPayloadValidator
 import id.my.anciety.malink.client.command.CommandOutcome as DurableOutcome
 import id.my.anciety.malink.client.command.CommandOperation
+import id.my.anciety.malink.client.command.requiredCertificateOperation
 import id.my.anciety.malink.client.command.CommandReceipt as DurableReceipt
 import id.my.anciety.malink.client.command.CommandState as DurableState
 import id.my.anciety.malink.client.command.CommandTransmission
@@ -1715,7 +1716,7 @@ class NativeClientRuntime(
     }
 
     private suspend fun ensureCommandCapability(operation: CommandOperation) {
-        val requiredOperation = PairingOperation.parse(operation.wireName)
+        val requiredOperation = requiredCertificateOperation(operation)
         val currentTrust = mutex.withLock {
             val activeTrust = trust
                 ?: throw NativeTrustRequiredException("Pair the Gateway before sending commands.")

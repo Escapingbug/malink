@@ -294,6 +294,7 @@ type NativeCommandReviewNotice = MalinkCommandReview & {
 
 type SendRealCommandOptions = {
   autoRetryRevisionConflict?: boolean;
+  propagateFailure?: boolean;
 };
 
 type TurnHistoryLoadState = {
@@ -4042,10 +4043,13 @@ function MalinkAppRuntime() {
       const sent = await sendRealCommand({
         operation: "gateway.enrollment.invite",
         lifetimeMs: 5 * 60_000,
-      }, undefined, { autoRetryRevisionConflict: true });
+      }, undefined, {
+        autoRetryRevisionConflict: true,
+        propagateFailure: true,
+      });
       if (!sent) {
         throw new Error(
-          "The Workspace is still synchronizing. Try creating the Gateway setup link again.",
+          "The connected client could not send the Gateway setup request.",
         );
       }
       commandId = sent.commandId;
@@ -4091,10 +4095,13 @@ function MalinkAppRuntime() {
       const sent = await sendRealCommand({
         operation: "gateway.enrollment.approve",
         enrollmentId,
-      }, approverProjectId, { autoRetryRevisionConflict: true });
+      }, approverProjectId, {
+        autoRetryRevisionConflict: true,
+        propagateFailure: true,
+      });
       if (!sent) {
         throw new Error(
-          "The Workspace is still synchronizing. Try approving this Gateway again.",
+          "The connected client could not send the Gateway approval.",
         );
       }
       commandId = sent.commandId;
@@ -4307,15 +4314,17 @@ function MalinkAppRuntime() {
     const connection = malinkClientRef.current;
     const currentConnectionStatus = connectionStatusRef.current;
     if (!connection || currentConnectionStatus !== "connected") {
+      const message = currentConnectionStatus === "reconnecting" ||
+          currentConnectionStatus === "connecting" ||
+          currentConnectionStatus === "securing"
+        ? "The connection is still resuming. Try again when your computer is connected."
+        : "Your computer is not connected. Open connection settings.";
+      if (options.propagateFailure) throw new Error(message);
       showUiNotice(
         notice.key,
         notice.scope,
         "warning",
-        currentConnectionStatus === "reconnecting" ||
-          currentConnectionStatus === "connecting" ||
-          currentConnectionStatus === "securing"
-          ? "The connection is still resuming. Try again when your computer is connected."
-          : "Your computer is not connected. Open connection settings.",
+        message,
       );
       return null;
     }
@@ -4360,9 +4369,11 @@ function MalinkAppRuntime() {
         nativeCommandReviewRef.current = review;
         setNativeCommandReview(review);
         recoverUiNotice(notice.key);
+        if (options.propagateFailure) throw error;
         return null;
       }
       if (isCommandRecoveryPendingError(error)) {
+        if (options.propagateFailure) throw error;
         showUiNotice(
           notice.key,
           notice.scope,
@@ -4381,8 +4392,10 @@ function MalinkAppRuntime() {
         revisionConflictRef.current = notice;
         setRevisionConflict(notice);
         recoverUiNotice(commandNoticeFor(payload).key);
+        if (options.propagateFailure) throw error;
         return null;
       }
+      if (options.propagateFailure) throw error;
       showUiNotice(
         notice.key,
         notice.scope,
