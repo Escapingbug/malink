@@ -19,11 +19,6 @@ export default defineConfig({
   noExternal: [
     '@malink/protocol',
     '@malink/security',
-    '@agentclientprotocol/sdk',
-    'conf',
-    'matrix-js-sdk',
-    'qrcode',
-    'web-push',
     'zod',
   ],
   esbuildOptions(options) {

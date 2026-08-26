@@ -181,6 +181,42 @@ describe('MatrixNodeSdkGatewayClient', () => {
         await second.stop()
     })
 
+    it('retries transient crypto request failures during startup', async () => {
+        const directory = await temporaryDirectory()
+        let calls = 0
+        const logs: string[] = []
+        const fetchMock = vi.fn(async () => {
+            calls += 1
+            if (calls === 1) throw new TypeError('fetch failed')
+            return jsonResponse({ one_time_key_counts: {} })
+        }) as unknown as typeof fetch
+        const client = new MatrixNodeSdkGatewayClient(
+            {
+                baseUrl: 'https://matrix.example.test',
+                accessToken: 'token',
+                userId: '@gateway:example.test',
+                deviceId: 'STABLE_DEVICE',
+            },
+            1_000,
+            message => logs.push(message),
+            fetchMock,
+        )
+
+        await client.initializeCrypto({
+            backend: 'node-sqlite',
+            storagePath: join(directory, 'crypto'),
+            storagePassword: 'test-only-passphrase',
+            syncTokenPath: join(directory, 'sync.json'),
+        })
+
+        expect(calls).toBeGreaterThanOrEqual(2)
+        expect(logs).toContain(
+            '[matrix-node] POST /_matrix/client/v3/keys/upload failed transiently; '
+            + 'retrying in 250ms: fetch failed',
+        )
+        await client.stop()
+    })
+
     it('creates one stable, owner-only crypto-store passphrase', async () => {
         const directory = await temporaryDirectory()
         const path = join(directory, 'matrix-crypto.passphrase')
@@ -393,7 +429,9 @@ describe('MatrixNodeSdkGatewayClient', () => {
 
         expect(calls).toBe(3)
         expect(maxActive).toBe(1)
-        expect(logs).toContain('[matrix-node] rate limited; retrying in 250ms')
+        expect(logs.some(message =>
+            message.startsWith('[matrix-node] PUT /_matrix/client/v3/rooms/')
+            && message.endsWith('rate limited; retrying in 250ms'))).toBe(true)
     })
 })
 

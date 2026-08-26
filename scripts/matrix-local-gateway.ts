@@ -150,13 +150,14 @@ const login = await loadOrLoginMatrixGateway({
         ?? (isLoopbackHomeserver(fixture.homeserver) ? 'malink-gateway-local' : undefined),
     onLog: message => process.stderr.write(`[matrix-login] ${message}\n`),
 })
+const matrixInitialSyncTimeoutMs = 120_000
 const client = new MatrixNodeSdkGatewayClient({
     baseUrl: fixture.homeserver,
     accessToken: login.access_token,
     userId: login.user_id,
     deviceId: login.device_id,
-    initialSyncTimeoutMs: 30_000,
-}, 30_000, message => {
+    initialSyncTimeoutMs: matrixInitialSyncTimeoutMs,
+}, matrixInitialSyncTimeoutMs, message => {
     process.stderr.write(`${message}\n`)
 })
 const registry = new FileTrustedDeviceRegistry(

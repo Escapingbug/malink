@@ -110,6 +110,7 @@ interface MatrixRequestOptions {
     signal?: AbortSignal
     timeoutMs?: number
     retryRateLimit?: boolean
+    retryTransient?: boolean
 }
 
 class MatrixHttpError extends Error {
@@ -710,17 +711,23 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             switch (request.type) {
                 case RequestType.KeysUpload:
                     response = await this.matrixRequest('POST', '/_matrix/client/v3/keys/upload', {
-                        body: JSON.parse(request.body), retryRateLimit: true,
+                        body: JSON.parse(request.body),
+                        retryRateLimit: true,
+                        retryTransient: true,
                     })
                     break
                 case RequestType.KeysQuery:
                     response = await this.matrixRequest('POST', '/_matrix/client/v3/keys/query', {
-                        body: JSON.parse(request.body), retryRateLimit: true,
+                        body: JSON.parse(request.body),
+                        retryRateLimit: true,
+                        retryTransient: true,
                     })
                     break
                 case RequestType.KeysClaim:
                     response = await this.matrixRequest('POST', '/_matrix/client/v3/keys/claim', {
-                        body: JSON.parse(request.body), retryRateLimit: true,
+                        body: JSON.parse(request.body),
+                        retryRateLimit: true,
+                        retryTransient: true,
                     })
                     break
                 case RequestType.ToDevice:
@@ -729,7 +736,11 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                     response = await this.matrixRequest(
                         'PUT',
                         `/_matrix/client/v3/sendToDevice/${encodeURIComponent(toDevice.eventType)}/${encodeURIComponent(toDevice.txnId)}`,
-                        { body: JSON.parse(toDevice.body), retryRateLimit: true },
+                        {
+                            body: JSON.parse(toDevice.body),
+                            retryRateLimit: true,
+                            retryTransient: true,
+                        },
                     )
                     break
                     }
@@ -737,7 +748,11 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                     response = await this.matrixRequest(
                         'POST',
                         '/_matrix/client/v3/keys/signatures/upload',
-                        { body: JSON.parse(request.body), retryRateLimit: true },
+                        {
+                            body: JSON.parse(request.body),
+                            retryRateLimit: true,
+                            retryTransient: true,
+                        },
                     )
                     break
                 default:
@@ -751,7 +766,11 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
         const response = await this.matrixRequest(
             'POST',
             '/_matrix/client/v3/keys/claim',
-            { body: JSON.parse(request.body), retryRateLimit: true },
+            {
+                body: JSON.parse(request.body),
+                retryRateLimit: true,
+                retryTransient: true,
+            },
         )
         await this.requireMachine().markRequestAsSent(
             request.id,
@@ -770,7 +789,11 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
         const response = await this.matrixRequest(
             'PUT',
             `/_matrix/client/v3/sendToDevice/${encodeURIComponent(request.eventType)}/${encodeURIComponent(request.txnId)}`,
-            { body: JSON.parse(request.body), retryRateLimit: true },
+            {
+                body: JSON.parse(request.body),
+                retryRateLimit: true,
+                retryTransient: true,
+            },
         )
         await this.requireMachine().markRequestAsSent(
             request.id,
@@ -800,6 +823,7 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
         path: string,
         options: MatrixRequestOptions = {},
     ): Promise<T> {
+        let transientAttempts = 0
         while (true) {
             const url = new URL(path, normalizedBaseUrl(this.connection.baseUrl))
             for (const [key, value] of Object.entries(options.query ?? {})) {
@@ -824,6 +848,22 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
                     signal,
                 })
+            } catch (error) {
+                if (
+                    options.retryTransient
+                    && !options.signal?.aborted
+                    && isTransientMatrixNetworkError(error)
+                ) {
+                    const retryAfterMs = transientRetryDelay(transientAttempts)
+                    transientAttempts += 1
+                    this.onLog?.(
+                        `[matrix-node] ${method} ${path} failed transiently; `
+                        + `retrying in ${retryAfterMs}ms: ${formatError(error)}`,
+                    )
+                    await wait(retryAfterMs, options.signal)
+                    continue
+                }
+                throw error
             } finally {
                 clearTimeout(timeout)
             }
@@ -833,7 +873,10 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             const record = asRecord(body)
             const retryAfterMs = retryDelay(response, record)
             if (response.status === 429 && options.retryRateLimit) {
-                this.onLog?.(`[matrix-node] rate limited; retrying in ${retryAfterMs}ms`)
+                this.onLog?.(
+                    `[matrix-node] ${method} ${path} rate limited; `
+                    + `retrying in ${retryAfterMs}ms`,
+                )
                 await wait(retryAfterMs, options.signal)
                 continue
             }
@@ -986,6 +1029,16 @@ function retryDelay(response: Response, body: Record<string, unknown> | null): n
         return Math.min(300_000, Math.max(250, Math.ceil(headerSeconds * 1_000)))
     }
     return 1_000
+}
+
+function transientRetryDelay(attempt: number): number {
+    return Math.min(10_000, 250 * (2 ** Math.min(attempt, 6)))
+}
+
+function isTransientMatrixNetworkError(error: unknown): boolean {
+    return error instanceof TypeError
+        || (error instanceof DOMException
+            && (error.name === 'AbortError' || error.name === 'TimeoutError'))
 }
 
 async function readSyncToken(path: string): Promise<string | null> {
