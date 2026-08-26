@@ -8,6 +8,8 @@ import {
 const emptyState = {
   deleteDialogOpen: false,
   deleteDialogBusy: false,
+  newProjectOpen: false,
+  newProjectBusy: false,
   newSessionOpen: false,
   newSessionBusy: false,
   settingsOpen: false,
@@ -35,6 +37,15 @@ test("selects the topmost visible Malink UI layer", () => {
       mobileChatOpen: true,
     }),
     "close-provider-history",
+  );
+  assert.equal(
+    resolveMalinkBackAction({
+      ...emptyState,
+      newProjectOpen: true,
+      newSessionOpen: true,
+      settingsOpen: true,
+    }),
+    "close-new-project",
   );
   assert.equal(
     resolveMalinkBackAction({
@@ -89,6 +100,14 @@ test("consumes Back without closing destructive or create dialogs while busy", (
       deleteDialogBusy: true,
     }),
     "block-delete-dialog",
+  );
+  assert.equal(
+    resolveMalinkBackAction({
+      ...emptyState,
+      newProjectOpen: true,
+      newProjectBusy: true,
+    }),
+    "block-new-project",
   );
   assert.equal(
     resolveMalinkBackAction({

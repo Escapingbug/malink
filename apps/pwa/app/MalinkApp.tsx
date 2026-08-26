@@ -54,6 +54,11 @@ import {
   NewSessionDialog,
   type NewSessionInput,
 } from "./NewSessionDialog";
+import {
+  NewProjectDialog,
+  type NewProjectInput,
+  type ProjectCreationGateway,
+} from "./NewProjectDialog";
 import { ProviderHistoryDialog } from "./ProviderHistoryDialog";
 import { GatewayForgetDialog } from "./GatewayForgetDialog";
 import { PrivilegeTotpDialog } from "./PrivilegeTotpDialog";
@@ -1059,6 +1064,7 @@ function MalinkAppRuntime() {
     );
   }, [approvedGatewayEnrollmentIds, pendingGatewayEnrollments]);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [providerHistoryOpen, setProviderHistoryOpen] = useState(false);
   const [providerHistoryProjectId, setProviderHistoryProjectId] = useState("");
   const [providerHistoryProvider, setProviderHistoryProvider] = useState("");
@@ -1070,6 +1076,7 @@ function MalinkAppRuntime() {
   const [providerHistoryError, setProviderHistoryError] = useState<string | null>(null);
   const [forgetDialogOpen, setForgetDialogOpen] = useState(false);
   const [newSessionBusy, setNewSessionBusy] = useState(false);
+  const [newProjectBusy, setNewProjectBusy] = useState(false);
   const [pendingSessionCreate, setPendingSessionCreate] =
     useState<NewSessionInput | null>(null);
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() =>
@@ -1236,6 +1243,8 @@ function MalinkAppRuntime() {
     deleteDialogOpen: false,
     deleteDialogBusy: false,
     providerHistoryOpen,
+    newProjectOpen,
+    newProjectBusy,
     newSessionOpen,
     newSessionBusy,
     settingsOpen,
@@ -1252,6 +1261,11 @@ function MalinkAppRuntime() {
           break;
         case "close-provider-history":
           setProviderHistoryOpen(false);
+          break;
+        case "close-new-project":
+          setNewProjectOpen(false);
+          break;
+        case "block-new-project":
           break;
         case "close-new-session":
           setNewSessionOpen(false);
@@ -1491,6 +1505,48 @@ function MalinkAppRuntime() {
   const activeCapabilities = activeWorkspace?.capabilities ?? gatewayState?.capabilities;
   const canCreateAnySession = (gatewayState?.projects ?? (gatewayState ? [gatewayState.workspace] : []))
     .some(project => (project.capabilities ?? gatewayState?.capabilities)?.canCreateSession);
+  const projectCreationGateways = useMemo<ProjectCreationGateway[]>(() => {
+    if (!gatewayState) return [];
+    const workspaces = gatewayState.projects ?? [gatewayState.workspace];
+    const directory = gatewayState.gatewayDirectory?.directory;
+    if (directory) {
+      return directory.gateways.flatMap(gateway => {
+        const route = (gateway.projects ?? []).find(candidate =>
+          workspaces.some(project => project.projectId === candidate.projectId),
+        );
+        const workspace = route
+          ? workspaces.find(project => project.projectId === route.projectId)
+          : undefined;
+        if (!route || !workspace) return [];
+        const capabilities = workspace.capabilities ?? gatewayState.capabilities;
+        return [{
+          gatewayNodeId: gateway.gatewayNodeId,
+          gatewayName: gateway.gatewayName,
+          targetProjectId: route.projectId,
+          providers: capabilities.providers.map(provider => ({
+            id: provider.id,
+            name: provider.name,
+          })),
+          defaultProvider: workspace.provider,
+        }];
+      });
+    }
+    const gatewayNodeId = matrixConfig.gatewayNodeId
+      ?? trustedGateway?.gatewayNodeId
+      ?? matrixConfig.gatewayId;
+    if (!gatewayNodeId) return [];
+    const capabilities = gatewayState.workspace.capabilities ?? gatewayState.capabilities;
+    return [{
+      gatewayNodeId,
+      gatewayName: trustedGateway?.gatewayName ?? "Gateway",
+      targetProjectId: gatewayState.workspace.projectId,
+      providers: capabilities.providers.map(provider => ({
+        id: provider.id,
+        name: provider.name,
+      })),
+      defaultProvider: gatewayState.workspace.provider,
+    }];
+  }, [gatewayState, matrixConfig.gatewayId, matrixConfig.gatewayNodeId, trustedGateway]);
   const providerHistoryWorkspace = gatewayState?.projects?.find(
     project => project.projectId === providerHistoryProjectId,
   ) ?? gatewayState?.workspace;
@@ -5032,6 +5088,52 @@ function MalinkAppRuntime() {
     });
   }
 
+  async function createProject(input: NewProjectInput): Promise<void> {
+    if (newProjectBusy) return;
+    setNewProjectBusy(true);
+    recoverUiNotice("project:create");
+    try {
+      const target = projectCreationGateways.find(gateway =>
+        gateway.gatewayNodeId === input.gatewayNodeId &&
+        gateway.targetProjectId === input.targetProjectId,
+      );
+      if (!target) {
+        throw new Error("The selected Gateway route changed. Reopen project creation and try again.");
+      }
+      const sent = await sendRealCommand({
+        operation: "project.create",
+        name: input.name,
+        cwd: input.cwd,
+        ...(input.provider ? { provider: input.provider } : {}),
+        createDirectory: input.createDirectory,
+      }, target.targetProjectId, { propagateFailure: true });
+      if (!sent) return;
+      const completion = await sent.completion;
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message ?? "The Gateway could not create this project.",
+        );
+      }
+      setNewProjectOpen(false);
+      showUiNotice(
+        "project:create",
+        "session",
+        "success",
+        `${input.name} was created on the selected Gateway. It will appear after the encrypted project room syncs.`,
+        7_000,
+      );
+    } catch (error) {
+      showUiNotice(
+        "project:create",
+        "session",
+        "error",
+        formatUiError(error),
+      );
+    } finally {
+      setNewProjectBusy(false);
+    }
+  }
+
   async function createSession(input: NewSessionInput) {
     const targetWorkspace = gatewayState?.projects?.find(
       project => project.projectId === input.projectId,
@@ -6149,6 +6251,19 @@ function MalinkAppRuntime() {
               }}
             >
               {sessionSearchOpen ? "×" : "⌕"}
+            </button>
+            <button
+              type="button"
+              className="new-project-button"
+              aria-label="New project"
+              onClick={() => setNewProjectOpen(true)}
+              disabled={
+                newProjectBusy ||
+                !gatewayAvailable ||
+                projectCreationGateways.length === 0
+              }
+            >
+              <span aria-hidden="true">▱+</span>
             </button>
             <button
               className="round-button"
@@ -7452,6 +7567,18 @@ function MalinkAppRuntime() {
       )}
 
       {gatewayState && (
+        <NewProjectDialog
+          open={newProjectOpen}
+          busy={newProjectBusy}
+          gateways={projectCreationGateways}
+          onClose={() => {
+            if (!newProjectBusy) setNewProjectOpen(false);
+          }}
+          onCreate={(input) => void createProject(input)}
+        />
+      )}
+
+      {gatewayState && (
         <NewSessionDialog
           open={newSessionOpen}
           busy={newSessionBusy}
@@ -7626,6 +7753,12 @@ function commandNoticeFor(payload: CommandPayload): {
   }
   if (payload.operation === "prompt") {
     return { key: "composer:send", scope: "composer" };
+  }
+  if (payload.operation.startsWith("project.")) {
+    return {
+      key: `project:${payload.operation.slice("project.".length)}`,
+      scope: "session",
+    };
   }
   if (payload.operation.startsWith("session.")) {
     return {

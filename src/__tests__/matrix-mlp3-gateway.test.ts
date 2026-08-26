@@ -150,6 +150,7 @@ describe('MatrixMlp3GatewayRunner', () => {
           'session.archive',
           'session.restore',
           'session.delete',
+          'project.create',
           'project.settings',
           'provider.sessions.list',
           'provider.session.inspect',
@@ -174,6 +175,8 @@ describe('MatrixMlp3GatewayRunner', () => {
     const rejected: unknown[] = []
     const notificationSubscriptions: string[] = []
     const terminalNotifications: string[] = []
+    const createdProjectRequests: string[] = []
+    let projectCreatedHooks = 0
     const webPushService: GatewayWebPushService = {
       initialize: async () => undefined,
       publicKey: () => 'B'.repeat(87),
@@ -238,6 +241,22 @@ describe('MatrixMlp3GatewayRunner', () => {
       client,
       onRejected: (_event, error) => rejected.push(error),
       webPushService,
+      createProject: async input => {
+        createdProjectRequests.push(`${input.name}:${input.cwd}`)
+        return {
+          gatewayNodeId: 'gateway-node-1',
+          alreadyExisted: false,
+          room: {
+            roomId: '!created-project:example.org',
+            conversationId: 'created-project',
+            projectId: 'project-created',
+            projectName: input.name,
+            cwd: input.cwd,
+            providerName: input.provider ?? input.sourceRoom.providerName,
+          },
+        }
+      },
+      onProjectCreated: async () => { projectCreatedHooks += 1 },
       sessionExtensionRegistry: new SessionExtensionRegistry([extensionProvider]),
       sessionFactory: (room, port, session) => {
         sessionExtensions.set(session.id, session.extensions)
@@ -391,6 +410,34 @@ describe('MatrixMlp3GatewayRunner', () => {
       certificateId: 'certificate-1',
       createdAt: 1,
     }
+    await send({
+      ...base,
+      commandId: 'project-create-1',
+      operation: 'project.create',
+      payload: {
+        operation: 'project.create',
+        name: 'Created remotely',
+        cwd: '/srv/created-remotely',
+        provider: 'test',
+        createDirectory: true,
+      },
+    }, '$project-create-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'project-create-1'))
+    expect(createdProjectRequests).toEqual(['Created remotely:/srv/created-remotely'])
+    const projectCreatedEvent = (await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'project-create-1'
+    )
+    if (projectCreatedEvent?.payload.type !== 'project.created') {
+      throw new Error(JSON.stringify(projectCreatedEvent?.payload))
+    }
+    expect(projectCreatedEvent?.payload).toMatchObject({
+      type: 'project.created',
+      gatewayNodeId: 'gateway-node-1',
+      projectId: 'project-created',
+      roomId: '!created-project:example.org',
+    })
+    expect(projectCreatedHooks).toBe(1)
     await send({
       ...base,
       commandId: 'provider-list-1',

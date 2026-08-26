@@ -61,6 +61,7 @@ export const DEFAULT_PAIRING_OPERATIONS: PairingOperation[] = [
   'decision',
   'session.settings',
   'session.create',
+  'project.create',
   'project.settings',
   'provider.sessions.list',
   'provider.session.inspect',

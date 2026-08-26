@@ -186,10 +186,10 @@ function defaultState(workspaceId: string): V3RuntimeState {
 }
 
 function defaultProject(room: MatrixGatewayRoomConfig): PersistedMlp3Project {
-  const project = gatewayProjectIdentity(room.cwd)
+  const project = gatewayProjectIdentity(room.cwd, room.projectName)
   return {
     roomId: room.roomId,
-    projectId: project.id,
+    projectId: room.projectId ?? project.id,
     name: project.name,
     cwd: project.cwd,
     provider: room.providerName,
@@ -249,10 +249,6 @@ function validateProject(project: PersistedMlp3Project, roomId: string): void {
   }
   if (project.capabilities !== null) {
     matrixGatewayCapabilitiesSchema.parse(project.capabilities)
-  }
-  const expected = gatewayProjectIdentity(project.cwd, project.name)
-  if (expected.id !== project.projectId) {
-    throw new Error(`MLP/3 project identity changed for ${roomId}`)
   }
   const ids = new Set<string>()
   for (const session of project.sessions) {

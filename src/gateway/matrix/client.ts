@@ -3,7 +3,9 @@ import {
     ClientEvent,
     Method,
     MatrixScheduler,
+    Preset,
     SyncState,
+    Visibility,
     createClient,
     type MatrixClient,
     type MatrixEvent,
@@ -16,6 +18,7 @@ import {
     MALINK_MATRIX_SESSION_DIRECTORY_EVENT_TYPE,
     MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
     MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
+    MLP3_MATRIX_PROJECT_PROVISIONING_EVENT_TYPE,
     MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
     MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
     MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
@@ -25,6 +28,7 @@ import {
     MLP3_MATRIX_GATEWAY_ENROLLMENT_RESPONSE_EVENT_TYPE,
     mlp3CurrentPointerSchema,
     mlp3ProjectKeyGrantStateSchema,
+    mlp3ProjectProvisioningStateSchema,
     mlp3TimelineContentSchema,
     signedWorkspaceDeviceGrantSchema,
     signedWorkspaceDeviceRevocationSchema,
@@ -32,6 +36,7 @@ import {
     signedGatewayEnrollmentRequestSchema,
     gatewayEnrollmentResponseSchema,
     canonicalJson,
+    type Mlp3ProjectProvisioningState,
 } from '@malink/protocol'
 import { toArrayBuffer } from '@malink/security'
 import type {
@@ -81,10 +86,24 @@ export interface MatrixGatewayClient extends MatrixTransport {
     waitUntilReady(timeoutMs?: number): Promise<void>
     assertRoomEncrypted(roomId: string): Promise<void>
     ensureRoomInvitation?(roomId: string, userId: string): Promise<void>
+    ensureProjectRoom?(request: MatrixProjectRoomRequest): Promise<MatrixProjectRoomResult>
     pinTrustedDevices?(devices: MatrixGatewayPinnedTransportDevice[]): Promise<void>
     prepareRoomThread?(roomId: string, rootEventId: string, timeoutMs?: number): Promise<void>
     setExtendedProfileProperty?(key: string, value: unknown): Promise<void>
     stop(): Promise<void>
+}
+
+export interface MatrixProjectRoomRequest {
+    aliasLocalpart: string
+    /** Non-sensitive Matrix-visible placeholder; project metadata stays inside MLP. */
+    name: string
+    inviteUserIds: string[]
+    marker: Mlp3ProjectProvisioningState
+}
+
+export interface MatrixProjectRoomResult {
+    roomId: string
+    alreadyExisted: boolean
 }
 
 export function createMatrixJsSdkGatewayClient(
@@ -262,6 +281,47 @@ export class MatrixJsSdkGatewayClient implements MatrixGatewayClient {
         const membership = this.client.getRoom(roomId)?.getMember(userId)?.membership
         if (membership === 'join' || membership === 'invite') return
         await this.client.invite(roomId, userId)
+    }
+
+    async ensureProjectRoom(request: MatrixProjectRoomRequest): Promise<MatrixProjectRoomResult> {
+        mlp3ProjectProvisioningStateSchema.parse(request.marker)
+        const alias = matrixRoomAlias(request.aliasLocalpart, this.client.getUserId())
+        let roomId: string
+        let alreadyExisted = false
+        try {
+            const created = await this.client.createRoom({
+                room_alias_name: request.aliasLocalpart,
+                visibility: Visibility.Private,
+                preset: Preset.PrivateChat,
+                name: request.name,
+                invite: [...new Set(request.inviteUserIds)],
+                initial_state: [
+                    {
+                        type: 'm.room.encryption',
+                        state_key: '',
+                        content: { algorithm: 'm.megolm.v1.aes-sha2' },
+                    },
+                    {
+                        type: MLP3_MATRIX_PROJECT_PROVISIONING_EVENT_TYPE,
+                        state_key: '',
+                        content: request.marker,
+                    },
+                ],
+            })
+            roomId = created.room_id
+        } catch (error) {
+            if (asRecord(error)?.errcode !== 'M_ROOM_IN_USE') throw error
+            alreadyExisted = true
+            const resolved = await this.client.getRoomIdForAlias(alias)
+            roomId = resolved.room_id
+            const marker = await this.client.getStateEvent(
+                roomId,
+                MLP3_MATRIX_PROJECT_PROVISIONING_EVENT_TYPE,
+                '',
+            )
+            assertProjectRoomMarker(marker, request.marker)
+        }
+        return { roomId, alreadyExisted }
     }
 
     async pinTrustedDevices(devices: MatrixGatewayPinnedTransportDevice[]): Promise<void> {
@@ -603,6 +663,24 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown>
         : null
+}
+
+function matrixRoomAlias(localpart: string, userId: string | null): string {
+    const separator = userId?.indexOf(':') ?? -1
+    if (!userId || separator < 1 || separator === userId.length - 1) {
+        throw new Error('Matrix user ID cannot determine a room alias server')
+    }
+    return `#${localpart}:${userId.slice(separator + 1)}`
+}
+
+function assertProjectRoomMarker(
+    value: unknown,
+    expected: Mlp3ProjectProvisioningState,
+): void {
+    const marker = mlp3ProjectProvisioningStateSchema.parse(value)
+    if (canonicalJson(marker) !== canonicalJson(expected)) {
+        throw new Error('Existing Matrix room alias belongs to another Malink project')
+    }
 }
 
 function isReadyState(state: SyncState | null): boolean {

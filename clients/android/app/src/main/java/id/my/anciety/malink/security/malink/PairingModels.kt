@@ -75,6 +75,7 @@ enum class PairingOperation(val wireName: String) {
     DECISION("decision"),
     SESSION_SETTINGS("session.settings"),
     SESSION_CREATE("session.create"),
+    PROJECT_CREATE("project.create"),
     PROJECT_SETTINGS("project.settings"),
     PROVIDER_SESSIONS_LIST("provider.sessions.list"),
     PROVIDER_SESSION_INSPECT("provider.session.inspect"),

@@ -35,6 +35,16 @@ describe('FileGatewayRuntimeStateStore', () => {
         expect(first.id).not.toBe(second.id)
     })
 
+    it('scopes newly provisioned project identities to their owning Gateway node', () => {
+        const first = gatewayProjectIdentity('/srv/repo', 'Repo', 'gateway-node-1')
+        const second = gatewayProjectIdentity('/srv/repo', 'Repo', 'gateway-node-2')
+        const legacy = gatewayProjectIdentity('/srv/repo', 'Repo')
+
+        expect(first.id).not.toBe(second.id)
+        expect(first.id).not.toBe(legacy.id)
+        expect(first.cwd).toBe(legacy.cwd)
+    })
+
     it('preserves the runtime epoch and never regresses a concurrent state version', async () => {
         const directory = await mkdtemp(join(tmpdir(), 'malink-runtime-state-'))
         temporaryDirectories.push(directory)

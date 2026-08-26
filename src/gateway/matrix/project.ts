@@ -9,11 +9,15 @@ export interface GatewayProjectIdentity {
 export function gatewayProjectIdentity(
     cwdInput: string,
     nameInput?: string,
+    gatewayNodeId?: string,
 ): GatewayProjectIdentity {
     const cwd = cwdInput.trim()
     const normalized = normalizeProjectCwd(cwd)
     const name = nameInput?.trim() || projectNameFromCwd(normalized)
-    const digest = createHash('sha256').update(normalized).digest('base64url').slice(0, 22)
+    const identityInput = gatewayNodeId
+        ? `gateway-project\0${gatewayNodeId}\0${normalized}`
+        : normalized
+    const digest = createHash('sha256').update(identityInput).digest('base64url').slice(0, 22)
     return {
         id: `project-${digest}`,
         name,

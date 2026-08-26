@@ -35,6 +35,10 @@ export interface MatrixGatewayRoomConfig {
     roomId: string
     /** Stable Malink conversation binding, distinct from an ACP session ID. */
     conversationId: string
+    /** Explicit identity for dynamically provisioned projects. */
+    projectId?: string
+    /** User-facing name retained independently from the working-directory basename. */
+    projectName?: string
     cwd: string
     providerName: string
     model?: string
@@ -151,6 +155,8 @@ export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
     for (const room of config.rooms) {
         requireText(room.roomId, 'room.roomId')
         requireText(room.conversationId, 'room.conversationId')
+        if (room.projectId !== undefined) requireText(room.projectId, 'room.projectId')
+        if (room.projectName !== undefined) requireText(room.projectName, 'room.projectName')
         requireText(room.cwd, 'room.cwd')
         requireText(room.providerName, 'room.providerName')
     }

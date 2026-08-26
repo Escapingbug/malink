@@ -642,6 +642,9 @@ async function createSignedCommand(
   reservation: CommandReservation,
   sequenceEpoch: string,
 ): Promise<SignedCommand> {
+  if (payload.operation === "project.create") {
+    throw new Error("Project creation requires the Matrix MLP/3 transport.");
+  }
   const config = normalizeMatrixConfig(configInput);
   const command: MalinkCommand = {
     kind: "malink.command",
@@ -5405,6 +5408,8 @@ function fallbackBody(payload: CommandPayload): string {
       return "Update agent session settings";
     case "session.create":
       return "Create a new agent session";
+    case "project.create":
+      return "Create a new project";
     case "project.settings":
       return "Update project defaults";
     case "provider.sessions.list":

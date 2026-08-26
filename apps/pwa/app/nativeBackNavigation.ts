@@ -50,6 +50,8 @@ export type MalinkBackState = {
   deleteDialogOpen: boolean;
   deleteDialogBusy: boolean;
   providerHistoryOpen?: boolean;
+  newProjectOpen?: boolean;
+  newProjectBusy?: boolean;
   newSessionOpen: boolean;
   newSessionBusy: boolean;
   settingsOpen: boolean;
@@ -63,6 +65,8 @@ export type MalinkBackAction =
   | "close-delete-dialog"
   | "block-delete-dialog"
   | "close-provider-history"
+  | "close-new-project"
+  | "block-new-project"
   | "close-new-session"
   | "block-new-session"
   | "close-settings"
@@ -81,6 +85,11 @@ export function resolveMalinkBackAction(
   }
   if (state.providerHistoryOpen) {
     return "close-provider-history";
+  }
+  if (state.newProjectOpen) {
+    return state.newProjectBusy
+      ? "block-new-project"
+      : "close-new-project";
   }
   if (state.newSessionOpen) {
     return state.newSessionBusy

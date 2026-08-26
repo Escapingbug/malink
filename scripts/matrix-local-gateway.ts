@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { mkdir, readFile, stat } from 'node:fs/promises'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import QRCode from 'qrcode'
 import {
     MLP3_MATRIX_WORKSPACE_DEVICE_GRANT_EVENT_TYPE,
@@ -40,14 +40,16 @@ import {
 import {
     MatrixMlp3GatewayRunner,
     MatrixNodeSdkGatewayClient,
+    FileGatewayProjectCatalog,
     loadOrCreateMatrixCryptoPassphrase,
     loadOrLoginMatrixGateway,
     gatewayProjectIdentity,
     type MatrixGatewayConfig,
+    type MatrixGatewayRoomConfig,
     type MatrixGatewayTrustedDevice,
 } from '../src/gateway/matrix/index.js'
 import { registerConfiguredProviders } from '../src/providers/configured.js'
-import { registerProvider } from '../src/providers/registry.js'
+import { getProvider, registerProvider } from '../src/providers/registry.js'
 import type {
     AgentProvider,
     AgentQueryHandle,
@@ -159,7 +161,6 @@ const cryptoConfig = {
 await client.initializeCrypto(cryptoConfig)
 await client.start()
 await client.waitUntilReady()
-await client.assertRoomEncrypted(fixture.roomId)
 const ownKeys = client.getOwnDeviceKeys()
 const currentTransport = {
     homeserver: fixture.homeserver,
@@ -172,16 +173,36 @@ const workspaceDirectory = new FileWorkspaceGatewayDirectory(
     join(dataDirectory, 'workspace-gateways.json'),
     identity,
 )
-await workspaceDirectory.publishLocal(
-    process.env.MALINK_GATEWAY_NAME ?? 'Malink local Gateway',
-    currentTransport,
-    Date.now(),
-    [{
-        projectId: gatewayProjectIdentity(cwd).id,
-        roomId: fixture.roomId,
-        conversationId: fixture.roomId,
-    }],
+const gatewayName = process.env.MALINK_GATEWAY_NAME ?? 'Malink local Gateway'
+const configuredRootRoom: MatrixGatewayRoomConfig = {
+    roomId: fixture.roomId,
+    conversationId: fixture.roomId,
+    cwd,
+    providerName,
+}
+const projectCatalog = new FileGatewayProjectCatalog(
+    join(dataDirectory, 'gateway-projects.json'),
+    identity.gatewayNodeId,
 )
+await projectCatalog.initialize([configuredRootRoom])
+const configuredRooms = await projectCatalog.list()
+for (const room of configuredRooms) await client.assertRoomEncrypted(room.roomId)
+
+async function publishLocalWorkspaceDirectory(): Promise<void> {
+    const rooms = await projectCatalog.list()
+    await workspaceDirectory.publishLocal(
+        gatewayName,
+        currentTransport,
+        Date.now(),
+        rooms.map(room => ({
+            projectId: room.projectId ?? gatewayProjectIdentity(room.cwd, room.projectName).id,
+            roomId: room.roomId,
+            conversationId: room.conversationId,
+        })),
+    )
+}
+
+await publishLocalWorkspaceDirectory()
 const workspaceAuthorization = new FileWorkspaceDeviceAuthorization(
     join(dataDirectory, 'workspace-device-authorization.json'),
     identity,
@@ -202,7 +223,7 @@ const invitationCoordinator = new DeviceInvitationCoordinator(
     pairingService,
     registry,
     {
-        gatewayName: process.env.MALINK_GATEWAY_NAME ?? 'Malink local Gateway',
+        gatewayName,
         gatewayTransport: () => currentTransport,
         matrixLoginTokenIssuer: new FileMatrixLoginTokenIssuer({
             credentialsPath: pwaLoginPath,
@@ -294,7 +315,7 @@ if (active.length === 0) {
     }
 }
 
-const localRoomIds = [fixture.roomId]
+const localRoomIds = configuredRooms.map(room => room.roomId)
 const portableTrustedDevices = async () =>
     (await workspaceAuthorization.activeGrants()).map(grant =>
         trustedDeviceFromWorkspaceGrant(grant, localRoomIds))
@@ -400,6 +421,17 @@ async function publishWorkspaceState(
 const stopWorkspaceControl = client.onRoomEvent(event => {
     if (event.encrypted) return
     if (
+        event.eventType === 'm.room.member'
+        && localRoomIds.includes(event.roomId)
+        && event.content.membership === 'join'
+        && event.sender !== currentTransport.userId
+    ) {
+        void runner?.provisionCurrentState().catch(error => {
+            process.stderr.write(`[workspace-control] project join provisioning failed: ${formatError(error)}\n`)
+        })
+        return
+    }
+    if (
         event.roomId === currentTransport.roomId
         && event.eventType === MLP3_MATRIX_GATEWAY_ENROLLMENT_REQUEST_EVENT_TYPE
     ) {
@@ -468,12 +500,7 @@ const config: MatrixGatewayConfig = {
         initialSyncTimeoutMs: 30_000,
     },
     crypto: cryptoConfig,
-    rooms: [{
-        roomId: fixture.roomId,
-        conversationId: fixture.roomId,
-        cwd,
-        providerName,
-    }],
+    rooms: configuredRooms,
     trustedDevices,
     replayLedgerPath: join(dataDirectory, 'gateway-replay.jsonl'),
     applicationSecurity: {
@@ -577,6 +604,92 @@ runner = new MatrixMlp3GatewayRunner(config, {
     },
     pendingGatewayEnrollments: () => gatewayEnrollmentCoordinator.pending(),
     workspaceGatewayDirectory: () => workspaceDirectory.load(),
+    createProject: async input => {
+        if (!client.ensureProjectRoom) {
+            throw new Error('Matrix transport cannot create project rooms')
+        }
+        if (!isAbsolute(input.cwd)) {
+            throw new Error('Project working directory must be an absolute path on the target Gateway')
+        }
+        const projectName = input.name.trim()
+        if (!projectName) throw new Error('Project name is required')
+        const projectCwd = resolve(input.cwd)
+        const identityForProject = gatewayProjectIdentity(
+            projectCwd,
+            projectName,
+            identity.gatewayNodeId,
+        )
+        const catalogProjects = await projectCatalog.list()
+        const existing = catalogProjects.find(project =>
+            resolve(project.cwd) === projectCwd)
+            ?? await projectCatalog.findByProjectId(identityForProject.id)
+        if (existing) {
+            return {
+                room: existing,
+                gatewayNodeId: identity.gatewayNodeId,
+                alreadyExisted: true,
+            }
+        }
+        if (catalogProjects.length >= 256) {
+            throw new Error('This Gateway already has the maximum of 256 projects')
+        }
+        try {
+            const details = await stat(projectCwd)
+            if (!details.isDirectory()) {
+                throw new Error(`Project working directory is not a directory: ${projectCwd}`)
+            }
+        } catch (error) {
+            if (!isMissingFile(error)) throw error
+            if (input.createDirectory === false) {
+                throw new Error(`Project working directory does not exist: ${projectCwd}`)
+            }
+            await mkdir(projectCwd, { recursive: true, mode: 0o700 })
+        }
+        const selectedProvider = input.provider ?? input.sourceRoom.providerName
+        if (!getProvider(selectedProvider)) {
+            throw new Error(`Provider ${selectedProvider} is not configured on this Gateway`)
+        }
+        const inviteUserIds = (await workspaceAuthorization.activeGrants())
+            .map(grant => grant.grant.deviceTransport.userId)
+        const roomResult = await client.ensureProjectRoom({
+            aliasLocalpart: projectRoomAliasLocalpart(
+                identity.workspaceId,
+                identity.gatewayNodeId,
+                identityForProject.id,
+            ),
+            name: 'Malink project',
+            inviteUserIds,
+            marker: {
+                kind: 'malink.project.provisioning',
+                version: 1,
+                workspaceId: identity.workspaceId,
+                gatewayNodeId: identity.gatewayNodeId,
+                projectId: identityForProject.id,
+            },
+        })
+        const room = await projectCatalog.add({
+            roomId: roomResult.roomId,
+            conversationId: roomResult.roomId,
+            projectId: identityForProject.id,
+            projectName,
+            cwd: projectCwd,
+            providerName: selectedProvider,
+        })
+        localRoomIds.splice(0, localRoomIds.length, ...(
+            await projectCatalog.list()
+        ).map(project => project.roomId))
+        process.stdout.write(
+            `Device ${input.requestedByDeviceId} created project ${projectName} on this Gateway.\n`,
+        )
+        return {
+            room,
+            gatewayNodeId: identity.gatewayNodeId,
+            alreadyExisted: roomResult.alreadyExisted,
+        }
+    },
+    onProjectCreated: async () => {
+        await synchronizeWorkspaceControl(publishLocalWorkspaceDirectory)
+    },
     onRejected: (event, error) => {
         process.stderr.write(
             `[matrix-gateway] rejected ${event.eventId}: ${formatError(error)}\n`,
@@ -841,6 +954,22 @@ function isLoopbackHomeserver(homeserver: string): boolean {
 
 function formatCode(code: string): string {
     return code.replace(/(\d{3})(\d{3})/u, '$1 $2')
+}
+
+function projectRoomAliasLocalpart(
+    workspaceId: string,
+    gatewayNodeId: string,
+    projectId: string,
+): string {
+    const digest = createHash('sha256')
+        .update(`malink-project-room\0${workspaceId}\0${gatewayNodeId}\0${projectId}`)
+        .digest('hex')
+        .slice(0, 40)
+    return `malink-project-${digest}`
+}
+
+function isMissingFile(error: unknown): boolean {
+    return !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
 }
 
 function formatError(error: unknown): string {

@@ -698,6 +698,20 @@ function toMlp3Command(
           },
         },
       };
+    case "project.create":
+      return {
+        ...common,
+        operation: "project.create",
+        payload: {
+          operation: "project.create",
+          name: payload.name,
+          cwd: payload.cwd,
+          ...(payload.provider ? { provider: payload.provider } : {}),
+          ...(payload.createDirectory === undefined
+            ? {}
+            : { createDirectory: payload.createDirectory }),
+        },
+      };
     case "provider.sessions.list":
       return {
         ...common,

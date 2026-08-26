@@ -31,6 +31,33 @@ describe("MatrixMlp3Projection", () => {
     expect(projection.sessionMessages("session-a")).toHaveLength(500);
   });
 
+  it("settles a client-created project command from its routed result", () => {
+    const projection = new MatrixMlp3Projection();
+    projection.applyEvent({
+      kind: "malink.event",
+      version: 3,
+      eventId: "project-created-event",
+      workspaceId: "workspace-1",
+      projectId: "bootstrap-project",
+      occurredAt: 2,
+      causationCommandId: "project-create-command",
+      payload: {
+        type: "project.created",
+        gatewayNodeId: "gateway-node-1",
+        projectId: "new-project",
+        roomId: "!new-project:example.org",
+        conversationId: "!new-project:example.org",
+        name: "Remote project",
+        cwd: "/srv/projects/remote",
+      },
+    }, "$project-created");
+
+    expect(projection.completions.get("project-create-command")).toMatchObject({
+      outcome: "succeeded",
+      event: { payload: { type: "project.created", projectId: "new-project" } },
+    });
+  });
+
   it("tombstones only the targeted session without a global inventory revision", () => {
     const projection = new MatrixMlp3Projection();
     projection.applyCommand(createCommand("a"), "$root-a");

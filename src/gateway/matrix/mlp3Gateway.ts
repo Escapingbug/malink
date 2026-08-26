@@ -53,6 +53,7 @@ import {
 } from './mlp3Authorizer'
 import { GatewayMlp3ContentLayer } from './mlp3Content'
 import { FileNativeClientReleaseStore } from './fileNativeClientReleaseStore'
+import { gatewayProjectIdentity } from './project'
 import { materializePromptInput } from './media'
 import { SessionExtensionRegistry } from '@/runtime/sessionExtensions'
 import type {
@@ -121,6 +122,20 @@ export interface MatrixMlp3GatewayDependencies {
   privilegeExecutor?: PrivilegeExecutor
   webPushService?: GatewayWebPushService
   workspaceGatewayDirectory?: () => Promise<import('@malink/protocol').SignedWorkspaceGatewayDirectory | undefined>
+  createProject?: (input: {
+    sourceRoom: MatrixGatewayRoomConfig
+    requestedByDeviceId: string
+    commandId: string
+    name: string
+    cwd: string
+    provider?: string
+    createDirectory?: boolean
+  }) => Promise<{
+    room: MatrixGatewayRoomConfig
+    gatewayNodeId: string
+    alreadyExisted: boolean
+  }>
+  onProjectCreated?: (room: MatrixGatewayRoomConfig) => Promise<void>
 }
 
 export type MatrixMlp3GatewayState = 'stopped' | 'starting' | 'running' | 'stopping'
@@ -453,7 +468,9 @@ export class MatrixMlp3GatewayRunner {
   ): Promise<void> {
     const command = journalRecord.command
     const activeKey = commandKey(command)
-    const sessionKey = command.operation === 'project.update'
+    const sessionKey = command.operation === 'project.create'
+      ? `${this.config.gatewayId}\0project-create`
+      : command.operation === 'project.update'
       || command.operation === 'provider.sessions.list'
       || command.operation === 'provider.session.inspect'
       ? `${project.config.roomId}\0project-settings`
@@ -513,6 +530,9 @@ export class MatrixMlp3GatewayRunner {
         return
       case 'project.update':
         await this.updateProject(project, command)
+        return
+      case 'project.create':
+        await this.createProject(project, command)
         return
       case 'provider.sessions.list':
         await this.listProviderSessions(project, command)
@@ -1088,6 +1108,47 @@ export class MatrixMlp3GatewayRunner {
     await this.settleAndDeliver(project, command, event, 'succeeded')
   }
 
+  private async createProject(
+    sourceProject: V3ProjectRuntime,
+    command: Mlp3CommandOf<'project.create'>,
+  ): Promise<void> {
+    if (!this.dependencies.createProject) {
+      throw new Error('This Gateway host does not support project creation')
+    }
+    const created = await this.dependencies.createProject({
+      sourceRoom: sourceProject.config,
+      requestedByDeviceId: command.deviceId,
+      commandId: command.commandId,
+      name: command.payload.name,
+      cwd: command.payload.cwd,
+      ...(command.payload.provider ? { provider: command.payload.provider } : {}),
+      ...(command.payload.createDirectory === undefined
+        ? {}
+        : { createDirectory: command.payload.createDirectory }),
+    })
+    const project = await this.registerProject(created.room)
+    await this.dependencies.onProjectCreated?.(created.room)
+    const result = {
+      gatewayNodeId: created.gatewayNodeId,
+      projectId: project.project.projectId,
+      roomId: project.config.roomId,
+      conversationId: project.config.conversationId,
+      name: project.project.name,
+      cwd: project.project.cwd,
+      ...(created.alreadyExisted ? { alreadyExisted: true } : {}),
+    }
+    await this.settleAndDeliver(
+      sourceProject,
+      command,
+      this.eventFor(sourceProject, undefined, command, 'project-created', {
+        type: 'project.created',
+        ...result,
+      }),
+      'succeeded',
+      result,
+    )
+  }
+
   private async listProviderSessions(
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'provider.sessions.list'>,
@@ -1413,25 +1474,63 @@ export class MatrixMlp3GatewayRunner {
 
   private async createProjectRuntimes(): Promise<void> {
     for (const room of this.config.rooms) {
-      const projectState = await this.runtimeState.project(room.roomId)
-      const project: V3ProjectRuntime = {
-        config: room,
-        project: projectState,
-        sessions: new Map(),
-      }
+      const project = await this.createProjectRuntime(room)
       this.projects.set(room.roomId, project)
-      for (const record of projectState.sessions) {
-        if (record.lifecycle !== 'active') continue
-        if (record.scope === 'scratch') {
-          const expected = this.scratchSessionDirectory(record.id)
-          if (resolve(record.cwd) !== expected) {
-            throw new Error(`MLP/3 scratch session ${record.id} has an invalid working directory`)
-          }
-          await mkdir(expected, { recursive: true, mode: 0o700 })
-        }
-        project.sessions.set(record.id, this.createSessionRuntime(project, record))
-      }
     }
+  }
+
+  private async registerProject(room: MatrixGatewayRoomConfig): Promise<V3ProjectRuntime> {
+    const requestedProjectId = room.projectId ?? gatewayProjectIdentity(
+      room.cwd,
+      room.projectName,
+    ).id
+    const existing = [...this.projects.values()].find(project =>
+      project.config.roomId === room.roomId || project.project.projectId === requestedProjectId)
+    if (existing) {
+      if (
+        existing.config.roomId !== room.roomId
+        || existing.project.projectId !== requestedProjectId
+      ) throw new Error(`Project ${requestedProjectId} conflicts with an active Matrix room`)
+      await this.activateProject(existing)
+      return existing
+    }
+    await this.runtimeState.initialize([room])
+    const project = await this.createProjectRuntime(room)
+    this.projects.set(room.roomId, project)
+    if (!this.config.rooms.some(candidate => candidate.roomId === room.roomId)) {
+      this.config.rooms.push(room)
+    }
+    await this.activateProject(project)
+    return project
+  }
+
+  private async createProjectRuntime(room: MatrixGatewayRoomConfig): Promise<V3ProjectRuntime> {
+    const projectState = await this.runtimeState.project(room.roomId)
+    const project: V3ProjectRuntime = {
+      config: room,
+      project: projectState,
+      sessions: new Map(),
+    }
+    for (const record of projectState.sessions) {
+      if (record.lifecycle !== 'active') continue
+      if (record.scope === 'scratch') {
+        const expected = this.scratchSessionDirectory(record.id)
+        if (resolve(record.cwd) !== expected) {
+          throw new Error(`MLP/3 scratch session ${record.id} has an invalid working directory`)
+        }
+        await mkdir(expected, { recursive: true, mode: 0o700 })
+      }
+      project.sessions.set(record.id, this.createSessionRuntime(project, record))
+    }
+    return project
+  }
+
+  private async activateProject(project: V3ProjectRuntime): Promise<void> {
+    await this.client.assertRoomEncrypted(project.config.roomId)
+    await this.content.provisionProject(project.config, this.client)
+    await this.prepareSessionThreads(project)
+    await this.publishSessionRecovery(project)
+    await this.publishProjectSnapshot(project)
   }
 
   private createSessionRuntime(

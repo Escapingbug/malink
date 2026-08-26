@@ -13,6 +13,7 @@ export const pairingOperationSchema = z.enum([
   'decision',
   'session.settings',
   'session.create',
+  'project.create',
   'project.settings',
   'provider.sessions.list',
   'provider.session.inspect',

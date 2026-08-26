@@ -268,6 +268,49 @@ describe('Malink Protocol v3 (MLP/3)', () => {
     })).toThrow()
   })
 
+  it('models client-requested project creation and its routed result', () => {
+    const command = mlp3CommandSchema.parse({
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'project-create-1',
+      workspaceId: 'workspace-1',
+      projectId: 'bootstrap-project',
+      deviceId: 'device-1',
+      certificateId: 'certificate-1',
+      createdAt: 1,
+      operation: 'project.create',
+      payload: {
+        operation: 'project.create',
+        name: 'Remote project',
+        cwd: '/srv/projects/remote',
+        provider: 'codex',
+        createDirectory: true,
+      },
+    })
+    expect(command.sessionId).toBeUndefined()
+    expect(command.payload).toMatchObject({ name: 'Remote project', createDirectory: true })
+
+    const event = mlp3EventSchema.parse({
+      kind: 'malink.event',
+      version: 3,
+      eventId: 'project-created-1',
+      workspaceId: 'workspace-1',
+      projectId: 'bootstrap-project',
+      occurredAt: 2,
+      causationCommandId: command.commandId,
+      payload: {
+        type: 'project.created',
+        gatewayNodeId: 'gateway-node-1',
+        projectId: 'new-project',
+        roomId: '!new-project:example.org',
+        conversationId: '!new-project:example.org',
+        name: 'Remote project',
+        cwd: '/srv/projects/remote',
+      },
+    })
+    expect(event.payload).toMatchObject({ type: 'project.created', projectId: 'new-project' })
+  })
+
   it('models extension-owned views and project defaults without privacy-specific fields', () => {
     const command = mlp3CommandSchema.parse({
       kind: 'malink.command',

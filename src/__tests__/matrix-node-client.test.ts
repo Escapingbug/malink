@@ -16,6 +16,93 @@ afterEach(async () => {
 })
 
 describe('MatrixNodeSdkGatewayClient', () => {
+    it('idempotently creates an encrypted project room with a Gateway ownership marker', async () => {
+        const directory = await temporaryDirectory()
+        let createAttempts = 0
+        const marker = {
+            kind: 'malink.project.provisioning' as const,
+            version: 1 as const,
+            workspaceId: 'workspace-1',
+            gatewayNodeId: 'gateway-node-1',
+            projectId: 'project-1',
+        }
+        const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+            const url = decodeURIComponent(String(input))
+            if (url.endsWith('/_matrix/client/v3/createRoom')) {
+                createAttempts += 1
+                if (createAttempts > 1) {
+                    return new Response(JSON.stringify({ errcode: 'M_ROOM_IN_USE' }), {
+                        status: 400,
+                        headers: { 'content-type': 'application/json' },
+                    })
+                }
+                return new Response(JSON.stringify({ room_id: '!project:example.test' }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                })
+            }
+            if (url.includes('/directory/room/#malink-project-test:example.test')) {
+                return jsonResponse({ room_id: '!project:example.test' })
+            }
+            if (url.includes('/state/io.malink.project.provisioning.v1/')) {
+                return jsonResponse(marker)
+            }
+            if (url.includes('/state/m.room.encryption/')) {
+                return jsonResponse({ algorithm: 'm.megolm.v1.aes-sha2' })
+            }
+            if (url.includes('/state/m.room.history_visibility/')) {
+                return jsonResponse({ history_visibility: 'shared' })
+            }
+            if (url.includes('/joined_members')) return jsonResponse({ joined: {} })
+            return jsonResponse({ one_time_key_counts: {} })
+        })
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test',
+            accessToken: 'token',
+            userId: '@gateway:example.test',
+            deviceId: 'STABLE_DEVICE',
+        }, 1_000, undefined, fetchMock as unknown as typeof fetch)
+        await client.initializeCrypto({
+            backend: 'node-sqlite',
+            storagePath: join(directory, 'crypto'),
+            storagePassword: 'test-only-passphrase',
+            syncTokenPath: join(directory, 'sync.json'),
+        })
+        const request = {
+            aliasLocalpart: 'malink-project-test',
+            name: 'Malink project',
+            inviteUserIds: ['@phone:example.test'],
+            marker,
+        }
+
+        await expect(client.ensureProjectRoom(request)).resolves.toEqual({
+            roomId: '!project:example.test',
+            alreadyExisted: false,
+        })
+        await expect(client.ensureProjectRoom(request)).resolves.toEqual({
+            roomId: '!project:example.test',
+            alreadyExisted: true,
+        })
+
+        const createCall = fetchMock.mock.calls.find(([input]) =>
+            String(input).endsWith('/_matrix/client/v3/createRoom'))
+        const body = JSON.parse(String(createCall?.[1]?.body)) as Record<string, unknown>
+        expect(body).toMatchObject({
+            room_alias_name: 'malink-project-test',
+            visibility: 'private',
+            preset: 'private_chat',
+            invite: ['@phone:example.test'],
+        })
+        expect(body.initial_state).toEqual(expect.arrayContaining([
+            expect.objectContaining({ type: 'm.room.encryption' }),
+            expect.objectContaining({
+                type: 'io.malink.project.provisioning.v1',
+                content: marker,
+            }),
+        ]))
+        await client.stop()
+    })
+
     it('invites an authorized Workspace device after checking current membership', async () => {
         const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
             const url = String(input)
@@ -234,4 +321,11 @@ async function temporaryDirectory(): Promise<string> {
     const path = await mkdtemp(join(tmpdir(), 'malink-matrix-node-client-'))
     temporaryDirectories.push(path)
     return path
+}
+
+function jsonResponse(value: unknown): Response {
+    return new Response(JSON.stringify(value), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+    })
 }

@@ -1053,6 +1053,8 @@ internal class MatrixMlp3NativeProjection(
                 MatrixMlp3NativeTerminal(commandId, "succeeded", sessionId)
             "provider.sessions.listed", "provider.session.inspected" ->
                 MatrixMlp3NativeTerminal(commandId, "succeeded", sessionId, result = payload)
+            "project.created" ->
+                MatrixMlp3NativeTerminal(commandId, "succeeded", sessionId, result = payload)
             "turn.completed" -> MatrixMlp3NativeTerminal(
                 commandId,
                 if (payload.requiredString("outcome", 32) == "cancelled") "cancelled" else "succeeded",

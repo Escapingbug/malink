@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.longOrNull
 
 enum class CommandOperation(val wireName: String) {
@@ -13,6 +14,7 @@ enum class CommandOperation(val wireName: String) {
     DECISION("decision"),
     SESSION_SETTINGS("session.settings"),
     SESSION_CREATE("session.create"),
+    PROJECT_CREATE("project.create"),
     PROJECT_SETTINGS("project.settings"),
     PROVIDER_SESSIONS_LIST("provider.sessions.list"),
     PROVIDER_SESSION_INSPECT("provider.session.inspect"),
@@ -149,6 +151,20 @@ data class ProjectSettingsCommandPayload(
     override val sessionId: String? = null
 }
 
+data class ProjectCreateCommandPayload(
+    val name: String,
+    val cwd: String,
+    val provider: String?,
+    val createDirectory: Boolean?,
+) : ValidatedCommandPayload {
+    override val operation = CommandOperation.PROJECT_CREATE
+    override val sessionId: String? = null
+
+    override fun toString(): String =
+        "ProjectCreateCommandPayload(name=<redacted>, cwd=<redacted>, provider=$provider, " +
+            "createDirectory=$createDirectory)"
+}
+
 data class ProviderSessionsListCommandPayload(
     val provider: String,
     val cursor: String?,
@@ -220,6 +236,7 @@ object CommandPayloadValidator {
             CommandOperation.DECISION -> validateDecision(value)
             CommandOperation.SESSION_SETTINGS -> validateSessionSettings(value)
             CommandOperation.SESSION_CREATE -> validateSessionCreate(value)
+            CommandOperation.PROJECT_CREATE -> validateProjectCreate(value)
             CommandOperation.PROJECT_SETTINGS -> validateProjectSettings(value)
             CommandOperation.PROVIDER_SESSIONS_LIST -> validateProviderSessionsList(value)
             CommandOperation.PROVIDER_SESSION_INSPECT -> validateProviderSessionInspect(value)
@@ -351,6 +368,19 @@ object CommandPayloadValidator {
         return ProjectSettingsCommandPayload(
             model = value.optionalNullableBoundedString("model", 256),
             reasoningEffort = value.optionalNullableBoundedString("reasoningEffort", 64),
+        )
+    }
+
+    private fun validateProjectCreate(value: JsonObject): ProjectCreateCommandPayload {
+        value.requireExactKeys(
+            required = setOf("operation", "name", "cwd"),
+            optional = setOf("provider", "createDirectory"),
+        )
+        return ProjectCreateCommandPayload(
+            name = value.requiredString("name", 256),
+            cwd = value.requiredString("cwd", 4_096),
+            provider = value.optionalBoundedString("provider", 256),
+            createDirectory = value.optionalBoolean("createDirectory"),
         )
     }
 
@@ -527,6 +557,15 @@ object CommandPayloadValidator {
 
     private fun JsonObject.optionalLong(key: String): Long? =
         if (key in this) requiredLong(key) else null
+
+    private fun JsonObject.optionalBoolean(key: String): Boolean? {
+        if (key !in this) return null
+        val primitive = get(key) as? JsonPrimitive
+            ?: throw IllegalArgumentException("Command field $key is invalid.")
+        require(!primitive.isString) { "Command field $key must be a boolean." }
+        return primitive.booleanOrNull
+            ?: throw IllegalArgumentException("Command field $key must be a boolean.")
+    }
 
     private fun JsonObject.optionalArray(key: String): List<JsonElement>? {
         if (key !in this) return null

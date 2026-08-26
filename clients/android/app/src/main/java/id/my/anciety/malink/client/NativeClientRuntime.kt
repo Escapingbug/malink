@@ -1518,6 +1518,17 @@ class NativeClientRuntime(
                     })
                 }
             }
+            "project.create" -> {
+                v3Operation = "project.create"
+                v3SessionId = null
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    put("name", raw.string("name")!!)
+                    put("cwd", raw.string("cwd")!!)
+                    raw.string("provider")?.let { put("provider", it) }
+                    raw["createDirectory"]?.let { put("createDirectory", it) }
+                }
+            }
             "provider.sessions.list" -> {
                 v3Operation = "provider.sessions.list"
                 v3SessionId = null

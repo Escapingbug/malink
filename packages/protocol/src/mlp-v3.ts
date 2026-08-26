@@ -34,6 +34,9 @@ export const MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE =
   'io.malink.workspace.current.v3' as const
 export const MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE =
   'io.malink.project.key_grant.v3' as const
+/** Idempotent ownership marker for a Gateway-created Matrix project room. */
+export const MLP3_MATRIX_PROJECT_PROVISIONING_EVENT_TYPE =
+  'io.malink.project.provisioning.v1' as const
 /** Signed Workspace control state replicated to every authorized project room. */
 export const MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE =
   'io.malink.workspace.gateway_directory.v1' as const
@@ -54,6 +57,20 @@ const matrixRoomId = z.string().min(1).max(512)
 const matrixEventId = z.string().min(1).max(512)
 const timestamp = z.number().int().nonnegative()
 const base64Url = z.string().regex(/^[A-Za-z0-9_-]+$/)
+
+export const mlp3ProjectProvisioningStateSchema = z
+  .object({
+    kind: z.literal('malink.project.provisioning'),
+    version: z.literal(1),
+    workspaceId: opaqueId,
+    gatewayNodeId: opaqueId,
+    projectId: opaqueId,
+  })
+  .strict()
+
+export type Mlp3ProjectProvisioningState = z.infer<
+  typeof mlp3ProjectProvisioningStateSchema
+>
 
 export const providerCommandSchema = z
   .object({
@@ -260,6 +277,15 @@ const gatewayEnrollmentApprovePayloadSchema = z
     enrollmentId: opaqueId,
   })
   .strict()
+const projectCreatePayloadSchema = z
+  .object({
+    operation: z.literal('project.create'),
+    name: z.string().min(1).max(256),
+    cwd: z.string().min(1).max(8_192),
+    provider: z.string().min(1).max(256).optional(),
+    createDirectory: z.boolean().optional(),
+  })
+  .strict()
 const projectUpdatePayloadSchema = z
   .object({
     operation: z.literal('project.update'),
@@ -309,6 +335,7 @@ export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   decisionAnswerPayloadSchema,
   sessionUpdatePayloadSchema,
   sessionLifecyclePayloadSchema,
+  projectCreatePayloadSchema,
   projectUpdatePayloadSchema,
   providerSessionsListPayloadSchema,
   providerSessionInspectPayloadSchema,
@@ -349,6 +376,12 @@ export const mlp3CommandSchema = z.union([
     ...sessionCommandCommon,
     operation: z.literal('prompt.submit'),
     payload: promptSubmitPayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('project.create'),
+    payload: projectCreatePayloadSchema,
   }).strict(),
   z.object({
     ...projectCommandCommon,
@@ -663,6 +696,18 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       code: z.string().min(1).max(128),
       message: z.string().min(1).max(8_192),
       retryable: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('project.created'),
+      gatewayNodeId: opaqueId,
+      projectId: opaqueId,
+      roomId: matrixRoomId,
+      conversationId: opaqueId,
+      name: z.string().min(1).max(256),
+      cwd: z.string().min(1).max(8_192),
+      alreadyExisted: z.boolean().optional(),
     })
     .strict(),
   z

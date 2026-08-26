@@ -133,7 +133,7 @@ export class GatewayMlp3ContentLayer {
   }
 
   projectId(room: MatrixGatewayRoomConfig): string {
-    return gatewayProjectIdentity(room.cwd).id
+    return room.projectId ?? gatewayProjectIdentity(room.cwd, room.projectName).id
   }
 
   async hasActiveDevices(roomId: string): Promise<boolean> {

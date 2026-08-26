@@ -1108,6 +1108,8 @@ export class MatrixGatewayRunner {
         command: MalinkCommand,
     ): Promise<CommandExecutionResult> {
         switch (command.payload.operation) {
+            case 'project.create':
+                throw new Error('Project creation requires the Matrix MLP/3 Gateway')
             case 'prompt': {
                 const appSession = this.requireAppSession(
                     runtime,
@@ -2269,6 +2271,7 @@ function commandSessionId(command: MalinkCommand): string | null {
         case 'device.invite':
         case 'gateway.enrollment.invite':
         case 'gateway.enrollment.approve':
+        case 'project.create':
         case 'project.settings':
         case 'provider.sessions.list':
         case 'provider.session.inspect':

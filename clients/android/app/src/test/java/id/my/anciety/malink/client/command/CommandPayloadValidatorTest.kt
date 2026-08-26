@@ -43,6 +43,13 @@ class CommandPayloadValidatorTest {
             },
             buildJsonObject { put("operation", "session.create") },
             buildJsonObject {
+                put("operation", "project.create")
+                put("name", "Remote project")
+                put("cwd", "/srv/projects/remote")
+                put("provider", "codex")
+                put("createDirectory", true)
+            },
+            buildJsonObject {
                 put("operation", "project.settings")
                 put("model", "gpt-5")
                 put("reasoningEffort", "high")
@@ -80,7 +87,8 @@ class CommandPayloadValidatorTest {
             (CommandPayloadValidator.validate(payloads[2]) as DecisionCommandPayload).totp,
         )
         assertTrue(CommandPayloadValidator.validate(payloads[4]) is SessionCreateCommandPayload)
-        assertTrue(CommandPayloadValidator.validate(payloads[8]) is SessionLifecycleCommandPayload)
+        assertTrue(CommandPayloadValidator.validate(payloads[5]) is ProjectCreateCommandPayload)
+        assertTrue(CommandPayloadValidator.validate(payloads[9]) is SessionLifecycleCommandPayload)
     }
 
     @Test
@@ -107,6 +115,12 @@ class CommandPayloadValidatorTest {
             put("requestId", "request-1")
             put("decision", "allow_once")
             put("totp", "12345")
+        })
+        assertInvalid(buildJsonObject {
+            put("operation", "project.create")
+            put("name", "Remote project")
+            put("cwd", "/srv/projects/remote")
+            put("createDirectory", "yes")
         })
         assertInvalid(buildJsonObject {
             put("operation", "session.archive")

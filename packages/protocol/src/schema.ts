@@ -287,6 +287,15 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
     }),
   z
     .object({
+      operation: z.literal('project.create'),
+      name: z.string().min(1).max(256),
+      cwd: z.string().min(1).max(4096),
+      provider: z.string().min(1).max(256).optional(),
+      createDirectory: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('project.settings'),
       model: z.string().min(1).max(256).nullable().optional(),
       reasoningEffort: z.string().min(1).max(64).nullable().optional(),

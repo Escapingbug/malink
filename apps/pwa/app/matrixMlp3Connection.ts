@@ -1218,6 +1218,8 @@ function toLegacyCompletion(
               gatewayName: payload.gatewayName,
             },
           }
+      : payload.type === "project.created"
+        ? { result: payload }
       : payload.type === "provider.sessions.listed" || payload.type === "provider.session.inspected"
         ? { result: payload }
       : {}),

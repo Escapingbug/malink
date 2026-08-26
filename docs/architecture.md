@@ -124,6 +124,19 @@ Project display names need not be unique, but project IDs and room bindings are.
 A session stores its provider binding, model/reasoning configuration, lifecycle,
 thread root, and immutable project ID. It cannot move between rooms.
 
+The configured room is a bootstrap route, not a fixed project catalog. An
+authorized PWA or Android client creates another project by sending
+`project.create` through any existing route owned by the selected Gateway node.
+The target node validates (and optionally creates) the absolute working
+directory, provisions an encrypted Matrix room with a deterministic alias and
+scope-bound ownership marker, commits the room to its durable project catalog,
+then republishes its routes in the signed Workspace Gateway Directory. Clients
+join and project the new room through the same multi-Gateway reconciliation
+path; no local Gateway UI or shell access is required. Newly provisioned
+project IDs include `gatewayNodeId` in their identity scope so identical paths
+on different Gateway nodes cannot collide. Legacy bootstrap project IDs retain
+their existing cwd-only identity.
+
 Every active session owns its own `TopicSession`, `SemanticSessionRuntime`, and
 provider instance. Sessions may execute concurrently. Selecting a conversation
 is client-local view state and never suspends another session or mutates a
