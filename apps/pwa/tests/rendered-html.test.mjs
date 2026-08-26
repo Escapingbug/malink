@@ -332,7 +332,7 @@ test("ships a complete installable offline shell", async () => {
   );
   assert.match(
     styles,
-    /@media \(max-width: 900px\)[\s\S]*?\.tool-group-summary\s*\{[\s\S]*?min-height:\s*44px/,
+    /@media \(max-width: 900px\)[\s\S]*?\.tool-activity-summary\s*\{[\s\S]*?min-height:\s*54px/,
   );
   assert.match(
     styles,
@@ -360,11 +360,11 @@ test("ships a complete installable offline shell", async () => {
   );
   assert.match(
     styles,
-    /@media \(min-width: 901px\)[\s\S]*?\.tool-group-summary\s*\{[\s\S]*?min-height:\s*44px/,
+    /\.tool-activity-summary\s*\{[\s\S]*?min-height:\s*62px/,
   );
   assert.match(
     styles,
-    /@media \(min-width: 901px\)[\s\S]*?\.tool-group-summary > \.tool-state > span\s*\{[\s\S]*?clip-path:\s*inset\(50%\)/,
+    /\.tool-activity-details\s*\{[\s\S]*?grid-template-columns:\s*210px minmax\(0, 1fr\)/,
   );
   assert.match(
     styles,
@@ -452,12 +452,12 @@ test("keeps conversations inside the viewport with an independently scrollable f
   assert.doesNotMatch(source, /behavior:\s*"smooth"/);
 });
 
-test("renders safe Markdown and keeps consecutive tools in an accessible folded group", async () => {
+test("renders safe Markdown and keeps tool activity in one accessible staged card", async () => {
   const [app, markdown, toolGroup, presentation, packageJson, styles] =
     await Promise.all([
       readFile(new URL("app/MalinkApp.tsx", appRoot), "utf8"),
       readFile(new URL("app/MarkdownContent.tsx", appRoot), "utf8"),
-      readFile(new URL("app/ToolGroupCard.tsx", appRoot), "utf8"),
+      readFile(new URL("app/ToolActivityCard.tsx", appRoot), "utf8"),
       readFile(new URL("app/presentation.ts", appRoot), "utf8"),
       readFile(new URL("package.json", appRoot), "utf8"),
       readFile(new URL("app/globals.css", appRoot), "utf8"),
@@ -466,7 +466,7 @@ test("renders safe Markdown and keeps consecutive tools in an accessible folded 
   assert.match(app, /<MarkdownContent content=\{message\.text \?\? ""\}/);
   assert.match(
     app,
-    /<ToolGroupCard[\s\S]*?group=\{message\.toolGroup\}[\s\S]*?fullText=\{fullToolTranscript\(message\.text\)\}/,
+    /<ToolActivityCard[\s\S]*?group=\{message\.toolGroup\}[\s\S]*?fullText=\{fullToolTranscript\(message\.text\)\}[\s\S]*?live=\{liveToolMessage\?\.id === message\.id\}/,
   );
   assert.match(app, /text\?\.startsWith\("Tool transcript\\n\\n"\)/);
   assert.doesNotMatch(app, /legacyCommandText|legacyToolGroupPresentation/);
@@ -479,15 +479,17 @@ test("renders safe Markdown and keeps consecutive tools in an accessible folded 
   assert.match(markdown, /MarkdownCodeBlock/);
   assert.match(markdown, /navigator\.clipboard\.writeText/);
   assert.match(toolGroup, /aria-expanded=\{expanded\}/);
-  assert.match(toolGroup, /group\.tools\.map/);
+  assert.match(toolGroup, /toolStages\(group\.tools\)/);
+  assert.match(toolGroup, /Diagnostics · Raw transcript/);
+  assert.match(toolGroup, /terminal-output/);
   assert.match(toolGroup, /copyDetails/);
-  assert.match(toolGroup, /className="tool-item-result"/);
-  assert.match(toolGroup, /Full tool transcript/);
+  assert.match(toolGroup, /className={`tool-result-view/);
   assert.match(presentation, /const TOOL_LIMIT = 200/);
   assert.match(packageJson, /"react-markdown"/);
   assert.match(packageJson, /"remark-gfm"/);
   assert.match(styles, /\.markdown-content pre/);
-  assert.match(styles, /\.tool-group-details/);
+  assert.match(styles, /\.tool-activity-details/);
+  assert.match(styles, /\.tool-stage-nav/);
   assert.match(styles, /\.agent-turn-continuation/);
   assert.match(styles, /overflow-wrap: anywhere/);
 });

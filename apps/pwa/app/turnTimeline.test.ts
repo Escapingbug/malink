@@ -6,7 +6,7 @@ import {
 } from "./turnTimeline";
 
 describe("turnTimelineMessages", () => {
-  it("anchors completed activity after the final Agent output", () => {
+  it("keeps activity at its original transcript position", () => {
     const messages = [
       message("prompt", "user", "turn-1"),
       message("progress-1", "agent", "turn-1"),
@@ -15,25 +15,26 @@ describe("turnTimelineMessages", () => {
       message("result", "agent", "turn-1"),
     ];
 
-    expect(turnTimelineMessages(messages, null).map(({ id }) => id)).toEqual([
+    expect(turnTimelineMessages(messages).map(({ id }) => id)).toEqual([
       "prompt",
       "progress-1",
+      "tools",
       "progress-2",
       "result",
-      "tools",
     ]);
   });
 
-  it("removes active activity from the transcript for separate monitoring", () => {
+  it("keeps active activity in the same timeline", () => {
     const messages = [
       message("prompt", "user", "turn-1"),
       message("progress", "agent", "turn-1"),
       toolMessage("tools", "turn-1"),
     ];
 
-    expect(turnTimelineMessages(messages, "tools").map(({ id }) => id)).toEqual([
+    expect(turnTimelineMessages(messages).map(({ id }) => id)).toEqual([
       "prompt",
       "progress",
+      "tools",
     ]);
   });
 
@@ -46,16 +47,16 @@ describe("turnTimelineMessages", () => {
       message("result", "agent", "turn-1"),
     ];
 
-    expect(turnTimelineMessages(messages, null).map(({ id }) => id)).toEqual([
+    expect(turnTimelineMessages(messages).map(({ id }) => id)).toEqual([
       "prompt",
-      "progress",
-      "result",
       "tools-1",
+      "progress",
       "tools-2",
+      "result",
     ]);
   });
 
-  it("falls back to prompt boundaries for legacy history", () => {
+  it("does not mutate the caller's message array", () => {
     const messages = [
       message("prompt", "user"),
       toolMessage("tools"),
@@ -63,12 +64,15 @@ describe("turnTimelineMessages", () => {
       message("next-prompt", "user"),
     ];
 
-    expect(turnTimelineMessages(messages, null).map(({ id }) => id)).toEqual([
+    const timeline = turnTimelineMessages(messages);
+
+    expect(timeline.map(({ id }) => id)).toEqual([
       "prompt",
-      "result",
       "tools",
+      "result",
       "next-prompt",
     ]);
+    expect(timeline).not.toBe(messages);
   });
 });
 

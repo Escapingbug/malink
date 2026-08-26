@@ -77,8 +77,7 @@ import {
   writeGatewayUiCache,
 } from "./gatewayUiCache";
 import { MarkdownContent } from "./MarkdownContent";
-import { ToolGroupCard } from "./ToolGroupCard";
-import { TurnActivityMonitor } from "./TurnActivityMonitor";
+import { ToolActivityCard } from "./ToolActivityCard";
 import {
   ExtensionViewCard,
   type ExtensionViewDecisionState,
@@ -1449,8 +1448,8 @@ function MalinkAppRuntime() {
     [isStreaming, messages],
   );
   const timelineMessages = useMemo(
-    () => turnTimelineMessages(messages, liveToolMessage?.id ?? null),
-    [liveToolMessage?.id, messages],
+    () => turnTimelineMessages(messages),
+    [messages],
   );
   const isStopping = Boolean(
     selectedSessionId && stoppingSessionIds.has(selectedSessionId),
@@ -6774,9 +6773,7 @@ function MalinkAppRuntime() {
         )}
 
 
-        <div
-          className={`conversation-workspace ${liveToolMessage?.toolGroup ? "has-live-activity" : ""}`}
-        >
+        <div className="conversation-workspace">
           <div
             className="chat-feed"
             ref={feedRef}
@@ -6965,15 +6962,16 @@ function MalinkAppRuntime() {
               if (!message.toolGroup) return null;
               return (
                 <div
-                  className={`message-row tool-group-row completed-turn-activity ${agentTurnClass} ${turnPresentationClass} ${
+                  className={`message-row tool-group-row ${agentTurnClass} ${turnPresentationClass} ${
                     message.historical ? "" : "message-enter"
                   }`}
                   key={message.id}
                 >
-                  <ToolGroupCard
+                  <ToolActivityCard
                     group={message.toolGroup}
                     time={message.time}
                     fullText={fullToolTranscript(message.text)}
+                    live={liveToolMessage?.id === message.id}
                   />
                 </div>
               );
@@ -7140,12 +7138,6 @@ function MalinkAppRuntime() {
             </div>
             )}
           </div>
-          {liveToolMessage?.toolGroup && (
-            <TurnActivityMonitor
-              group={liveToolMessage.toolGroup}
-              fullText={fullToolTranscript(liveToolMessage.text)}
-            />
-          )}
         </div>
 
         <div className="composer-area">
