@@ -101,6 +101,10 @@ test("ships a complete installable offline shell", async () => {
   assert.match(serviceWorker, /notificationclick/);
   assert.match(serviceWorker, /claimPushEvent/);
   assert.match(matrixSettings, /Agent notifications/);
+  assert.match(source, /function NewProjectIcon\(\)[\s\S]*className="new-project-icon"/);
+  assert.match(source, /aria-label="New project"[\s\S]*title="New project"[\s\S]*<NewProjectIcon \/>/);
+  assert.doesNotMatch(source, /▱\+/);
+  assert.match(styles, /\.new-project-icon \{[\s\S]*width: 22px;[\s\S]*height: 22px;[\s\S]*stroke: currentColor/);
   assert.match(matrixSettings, /deriveConnectionRecoveryPlan/);
   assert.match(matrixSettings, /runRecoveryAction\(recoveryPlan\.primary\.action\)/);
   assert.match(matrixSettings, /case "update-native-app"[\s\S]*onUpdateNativeApp\(\)/);

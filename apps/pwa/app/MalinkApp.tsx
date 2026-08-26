@@ -536,6 +536,19 @@ function ProjectFolderIcon({ temporary }: { temporary: boolean }) {
   );
 }
 
+function NewProjectIcon() {
+  return (
+    <svg aria-hidden="true" className="new-project-icon" viewBox="0 0 24 24">
+      <path
+        className="new-project-icon-shell"
+        d="M3.25 7V6.35c0-.75.6-1.35 1.35-1.35h4.1l1.9 2.15h8.8c.75 0 1.35.6 1.35 1.35v9.1c0 .75-.6 1.35-1.35 1.35H4.6c-.75 0-1.35-.6-1.35-1.35V7Z"
+      />
+      <path className="new-project-icon-seam" d="M3.6 8.4h16.8" />
+      <path className="new-project-icon-plus" d="M17.25 11.75v5M14.75 14.25h5" />
+    </svg>
+  );
+}
+
 function SessionSignalIcon({
   signal,
 }: {
@@ -6325,6 +6338,7 @@ function MalinkAppRuntime() {
               type="button"
               className="new-project-button"
               aria-label="New project"
+              title="New project"
               onClick={() => setNewProjectOpen(true)}
               disabled={
                 newProjectBusy ||
@@ -6332,7 +6346,7 @@ function MalinkAppRuntime() {
                 projectCreationGateways.length === 0
               }
             >
-              <span aria-hidden="true">▱+</span>
+              <NewProjectIcon />
             </button>
             <button
               className="round-button"
