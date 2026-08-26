@@ -51,8 +51,14 @@ intentionally does not offer it as the normal remote path.
 
 Remote clients never provide an artifact URL. They can name only a release ID.
 The supervisor downloads `<manifest-base>/<release-id>.json`, requires HTTPS
-(loopback HTTP is test-only), verifies an ES256 signature against the locally
-pinned release key, and then downloads only the exact files in that manifest.
+(loopback HTTP is test-only), and verifies an ES256 signature against the
+locally pinned release key. It then compares each signed file with the active
+managed release. A regular, non-symlink file with the exact signed size and
+SHA-256 digest is copied locally into the new release; only missing or changed
+files are downloaded. Local copies are independent copy-on-write clones when
+the filesystem supports them, not hard links, so release immutability does not
+depend on another release remaining unchanged. The complete staged directory
+is verified again before activation.
 
 Every file has a normalized relative path, exact byte count, SHA-256 digest,
 and executable bit. Symlinks, path traversal, cross-origin artifacts, mutable

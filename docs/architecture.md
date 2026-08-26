@@ -288,12 +288,14 @@ command is not a recovery strategy.
 ## Gateway online-update boundary
 
 The Gateway process does not update itself. An independently launched,
-owner-only supervisor downloads a complete signed release, verifies every file
-against a locally pinned release key, switches the stable `current` symlink,
-and asks launchd to restart the Gateway. The old Gateway first enters a drain
-state: it stops starting commands, waits for active turns in the default update
-mode, and keeps durably staging new Matrix events. The replacement process
-resumes that inbox before the Matrix sync cursor can skip an accepted event.
+owner-only supervisor constructs a complete signed release, reusing verified
+files from the active release and downloading only changed files. It verifies
+every staged file against a locally pinned release key, switches the stable
+`current` symlink, and asks launchd to restart the Gateway. The old Gateway
+first enters a drain state: it stops starting commands, waits for active turns
+in the default update mode, and keeps durably staging new Matrix events. The
+replacement process resumes that inbox before the Matrix sync cursor can skip
+an accepted event.
 
 There is no release-channel poller. Each node publishes its current build ID
 and supervised-update capability in the root-signed Gateway Directory. A

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import {
   chmod,
+  copyFile,
   lstat,
   mkdir,
   mkdtemp,
@@ -8,10 +9,11 @@ import {
   readFile,
   readdir,
   readlink,
+  realpath,
   rename,
   rm,
 } from 'node:fs/promises'
-import { createReadStream } from 'node:fs'
+import { constants, createReadStream } from 'node:fs'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import {
   canonicalJson,
@@ -494,7 +496,24 @@ export class GatewayUpdateSupervisor {
 
     const temporary = await mkdtemp(join(this.releasesRoot, `.stage-${manifest.releaseId}-`))
     try {
-      for (const file of manifest.files) await this.downloadFile(file, temporary)
+      const reusableRelease = await this.reusableReleaseDirectory()
+      let reusedFiles = 0
+      let reusedBytes = 0
+      let downloadedFiles = 0
+      let downloadedBytes = 0
+      for (const file of manifest.files) {
+        const reused = reusableRelease
+          ? await this.reuseFile(file, reusableRelease, temporary)
+          : false
+        if (reused) {
+          reusedFiles += 1
+          reusedBytes += file.size
+          continue
+        }
+        await this.downloadFile(file, temporary)
+        downloadedFiles += 1
+        downloadedBytes += file.size
+      }
       await writeDurableFile(
         join(temporary, 'release-manifest.json'),
         `${JSON.stringify(signed)}\n`,
@@ -502,8 +521,75 @@ export class GatewayUpdateSupervisor {
       await verifyStagedManifest(temporary, manifest)
       await rename(temporary, destination)
       await syncDirectory(this.releasesRoot)
+      this.log(
+        `[gateway-update] staged ${manifest.releaseId}: `
+        + `reused ${reusedFiles} files (${reusedBytes} bytes), `
+        + `downloaded ${downloadedFiles} files (${downloadedBytes} bytes)`,
+      )
     } catch (error) {
       await rm(temporary, { recursive: true, force: true })
+      throw error
+    }
+  }
+
+  private async reusableReleaseDirectory(): Promise<string | undefined> {
+    try {
+      const releasesRoot = await realpath(this.releasesRoot)
+      const current = await realpath(join(this.installRoot, 'current'))
+      const relativePath = relative(releasesRoot, current)
+      if (
+        relativePath === ''
+        || relativePath === '..'
+        || relativePath.startsWith(`..${sep}`)
+      ) {
+        this.log('[gateway-update] active release is outside the managed releases directory')
+        return undefined
+      }
+      const metadata = await lstat(current)
+      if (!metadata.isDirectory()) return undefined
+      return current
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw error
+    }
+  }
+
+  private async reuseFile(
+    file: GatewayReleaseManifest['files'][number],
+    sourceRoot: string,
+    destinationRoot: string,
+  ): Promise<boolean> {
+    const source = join(sourceRoot, file.path)
+    const destination = join(destinationRoot, file.path)
+    try {
+      const [resolvedSource, metadata] = await Promise.all([
+        realpath(source),
+        lstat(source),
+      ])
+      if (
+        resolvedSource !== source
+        || !metadata.isFile()
+        || metadata.size !== file.size
+      ) {
+        return false
+      }
+      await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
+      await copyFile(
+        source,
+        destination,
+        constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE,
+      )
+      if (await hashFile(destination) !== file.sha256) {
+        await rm(destination, { force: true })
+        return false
+      }
+      await chmod(destination, file.executable ? 0o755 : 0o600)
+      return true
+    } catch (error) {
+      await rm(destination, { force: true })
+      if (['ENOENT', 'ELOOP', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+        return false
+      }
       throw error
     }
   }

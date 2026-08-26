@@ -45,3 +45,10 @@ This maps `https://rd.anciety.my.id/gateway-updates/...` to
 If the automatic attempt fails, the PWA records the attempt instead of looping.
 Use Advanced diagnostics to retry the same immutable release manually after
 correcting the release or network problem.
+
+The signed manifest always describes a complete self-contained release, but a
+current supervisor does not download every byte again. It locally copies files
+whose size and SHA-256 already match the active managed release and downloads
+only changed files. This keeps update traffic proportional to the actual
+binary delta while preserving a fully verified, independently activatable
+release directory.

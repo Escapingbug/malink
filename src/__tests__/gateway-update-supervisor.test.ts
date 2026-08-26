@@ -97,6 +97,103 @@ describe('GatewayUpdateSupervisor', () => {
     }))
   })
 
+  it('reuses verified active-release files and downloads only changed files', async () => {
+    const fixture = await releaseFixture()
+    const requestedUrls: string[] = []
+    const logs: string[] = []
+    const fetchMock = vi.fn(async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      requestedUrls.push(String(input))
+      return fixture.fetch(input, init)
+    }) as unknown as typeof fetch
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, {
+      fetch: fetchMock,
+      onLog: message => logs.push(message),
+    })
+    await supervisor.initialize()
+
+    await expect(supervisor.stage('release-2')).resolves.toMatchObject({ phase: 'staged' })
+
+    expect(requestedUrls).toEqual([
+      'https://updates.example.test/manifests/release-2.json',
+      'https://updates.example.test/gateway.js',
+      'https://updates.example.test/supervisor.js',
+    ])
+    expect(logs).toContain(
+      '[gateway-update] staged release-2: reused 1 files (10 bytes), '
+      + 'downloaded 2 files (52 bytes)',
+    )
+
+    const stagedRuntime = join(
+      fixture.installRoot,
+      'releases',
+      'release-2',
+      'runtime',
+      'node',
+    )
+    await writeFile(stagedRuntime, '#!/bin/changed\n')
+    await expect(readFile(
+      join(fixture.installRoot, 'releases', 'release-1', 'runtime', 'node'),
+      'utf8',
+    )).resolves.toBe('#!/bin/sh\n')
+  })
+
+  it('downloads a signed file when the active-release copy has the wrong hash', async () => {
+    const fixture = await releaseFixture()
+    await writeFile(
+      join(fixture.installRoot, 'releases', 'release-1', 'runtime', 'node'),
+      '#!/bin/xx\n',
+      { mode: 0o755 },
+    )
+    const requestedUrls: string[] = []
+    const fetchMock = vi.fn(async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      requestedUrls.push(String(input))
+      return fixture.fetch(input, init)
+    }) as unknown as typeof fetch
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fetchMock })
+    await supervisor.initialize()
+
+    await expect(supervisor.stage('release-2')).resolves.toMatchObject({ phase: 'staged' })
+    expect(requestedUrls).toContain('https://updates.example.test/runtime-node')
+    await expect(readFile(
+      join(fixture.installRoot, 'releases', 'release-2', 'runtime', 'node'),
+      'utf8',
+    )).resolves.toBe('#!/bin/sh\n')
+  })
+
+  it('does not reuse a symbolic link from the active release', async () => {
+    const fixture = await releaseFixture()
+    const activeRuntime = join(
+      fixture.installRoot,
+      'releases',
+      'release-1',
+      'runtime',
+      'node',
+    )
+    const externalRuntime = join(fixture.installRoot, 'external-runtime')
+    await writeFile(externalRuntime, '#!/bin/sh\n', { mode: 0o755 })
+    await rm(activeRuntime)
+    await symlink(externalRuntime, activeRuntime)
+    const requestedUrls: string[] = []
+    const fetchMock = vi.fn(async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      requestedUrls.push(String(input))
+      return fixture.fetch(input, init)
+    }) as unknown as typeof fetch
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fetchMock })
+    await supervisor.initialize()
+
+    await expect(supervisor.stage('release-2')).resolves.toMatchObject({ phase: 'staged' })
+    expect(requestedUrls).toContain('https://updates.example.test/runtime-node')
+  })
+
   it('requests identity encoding and verifies a transparently decoded response body', async () => {
     const fixture = await releaseFixture()
     const artifactRequests: RequestInit[] = []
@@ -120,7 +217,7 @@ describe('GatewayUpdateSupervisor', () => {
     await supervisor.initialize()
 
     await expect(supervisor.stage('release-2')).resolves.toMatchObject({ phase: 'staged' })
-    expect(artifactRequests).toHaveLength(3)
+    expect(artifactRequests).toHaveLength(2)
     for (const request of artifactRequests) {
       expect(new Headers(request.headers).get('accept-encoding')).toBe('identity')
     }
@@ -140,7 +237,7 @@ describe('GatewayUpdateSupervisor', () => {
       if (attempts === 0 && url.endsWith('/release-2.json')) {
         throw new TypeError('fetch failed')
       }
-      if (attempts === 0 && url.endsWith('/runtime-node')) {
+      if (attempts === 0 && url.endsWith('/gateway.js')) {
         return new Response('temporarily unavailable', { status: 503 })
       }
       return fixture.fetch(input, init)
@@ -158,8 +255,8 @@ describe('GatewayUpdateSupervisor', () => {
       + 'retrying in 250ms: fetch failed',
     )
     expect(logs).toContain(
-      '[gateway-update] file runtime/node download failed transiently; '
-      + 'retrying in 250ms: Gateway release file runtime/node returned HTTP 503',
+      '[gateway-update] file ops/matrix-local-gateway.js download failed transiently; '
+      + 'retrying in 250ms: Gateway release file ops/matrix-local-gateway.js returned HTTP 503',
     )
   })
 
