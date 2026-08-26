@@ -252,8 +252,10 @@ export function trustedDeviceFromRecord(
     deviceName: certificate.deviceName,
     publicKey: certificate.deviceKey.publicKey,
     allowedRoomIds: [...allowedRoomIds],
-    // The signed certificate is the complete authorization policy. There is
-    // no local compatibility grant that can silently widen it.
+    // Preserve the signed pairing-time capability set. The MLP/3 authorizer
+    // recognizes device.invite as full Workspace membership and maps that
+    // authority to ordinary operations added by later protocol versions;
+    // privilege.approve remains an explicit certificate-only capability.
     allowedOperations: certificate.allowedOperations,
     matrixUserId: certificate.deviceTransport.userId,
     matrixDeviceId: certificate.deviceTransport.deviceId,

@@ -10,6 +10,54 @@ import {
   type Mlp3CommandClaim,
 } from './fileMlp3CommandJournal'
 
+export type Mlp3CommandAuthorizationRejection = {
+  code: 'room_not_allowed' | 'certificate_expired' | 'operation_not_allowed'
+  message: string
+  retryable: false
+}
+
+export type Mlp3CommandAuthorization = {
+  command: Mlp3Command
+  claim: Mlp3CommandClaim
+  rejection?: Mlp3CommandAuthorizationRejection
+}
+
+/**
+ * `device.invite` is the pairing-time marker for a full Workspace member: a
+ * device that can add another full member already dominates every ordinary
+ * command capability. Keep the wire field for compatibility, but let such a
+ * member inherit ordinary operations introduced by later MLP/3 versions.
+ *
+ * Root privilege approval remains outside this list and is checked directly
+ * against the signed certificate by canApprovePrivilegedExecution().
+ */
+const CURRENT_WORKSPACE_MEMBER_OPERATIONS = [
+  'session.create',
+  'prompt.submit',
+  'turn.cancel',
+  'decision.answer',
+  'session.update',
+  'session.set_lifecycle',
+  'project.create',
+  'project.update',
+  'provider.sessions.list',
+  'provider.session.inspect',
+  'device.invitation.create',
+  'gateway.enrollment.invitation.create',
+  'gateway.enrollment.approve',
+  'notification.subscribe',
+  'notification.unsubscribe',
+] as const satisfies readonly Mlp3CommandOperation[]
+
+type MissingWorkspaceMemberOperation = Exclude<
+  Mlp3CommandOperation,
+  (typeof CURRENT_WORKSPACE_MEMBER_OPERATIONS)[number]
+>
+const ALL_WORKSPACE_MEMBER_OPERATIONS_ARE_LISTED: MissingWorkspaceMemberOperation extends never
+  ? true
+  : never = true
+void ALL_WORKSPACE_MEMBER_OPERATIONS_ARE_LISTED
+
 export class MatrixMlp3CommandAuthorizer {
   constructor(
     private readonly workspaceId: string,
@@ -23,20 +71,36 @@ export class MatrixMlp3CommandAuthorizer {
     projectId: string,
     matrixEventId?: string,
     now = Date.now(),
-  ): Promise<{ command: Mlp3Command; claim: Mlp3CommandClaim }> {
-    if (!device.allowedRoomIds.includes(roomId)) {
-      throw new Error('Malink device is not allowed in this project room')
-    }
-    if (device.certificateExpiresAt !== undefined && device.certificateExpiresAt <= now) {
-      throw new Error('Malink device certificate has expired')
-    }
+  ): Promise<Mlp3CommandAuthorization> {
+    // Verify the signature and immutable execution bindings before returning a
+    // policy rejection. This lets the Gateway safely acknowledge a known
+    // device's denied command without reflecting attacker-controlled IDs.
     const command = await verifyMlp3Command(signed, device.publicKey, {
       workspaceId: this.workspaceId,
       projectId,
       deviceId: device.deviceId,
       certificateId: device.sequenceEpoch,
-      allowedOperations: v3AllowedOperations(device.allowedOperations),
     })
+    const allowedOperations = v3AllowedOperations(device.allowedOperations)
+    const rejection = !device.allowedRoomIds.includes(roomId)
+      ? {
+          code: 'room_not_allowed' as const,
+          message: 'Malink device is not allowed in this project room',
+          retryable: false as const,
+        }
+      : device.certificateExpiresAt !== undefined && device.certificateExpiresAt <= now
+        ? {
+            code: 'certificate_expired' as const,
+            message: 'Malink device certificate has expired',
+            retryable: false as const,
+          }
+        : allowedOperations !== undefined && !allowedOperations.includes(command.operation)
+          ? {
+              code: 'operation_not_allowed' as const,
+              message: `Malink device is not allowed to run ${command.operation}`,
+              retryable: false as const,
+            }
+          : undefined
     return {
       command,
       claim: await this.journal.claim(
@@ -44,6 +108,7 @@ export class MatrixMlp3CommandAuthorizer {
         now,
         matrixEventId ? { roomId, matrixEventId } : undefined,
       ),
+      ...(rejection ? { rejection } : {}),
     }
   }
 }
@@ -58,6 +123,9 @@ function v3AllowedOperations(
   legacy: MatrixGatewayTrustedDevice['allowedOperations'],
 ): Mlp3CommandOperation[] | undefined {
   if (!legacy) return undefined
+  if (legacy.includes('device.invite')) {
+    return [...CURRENT_WORKSPACE_MEMBER_OPERATIONS]
+  }
   const result = new Set<Mlp3CommandOperation>()
   for (const operation of legacy) {
     switch (operation) {

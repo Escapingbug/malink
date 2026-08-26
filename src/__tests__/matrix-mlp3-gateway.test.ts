@@ -132,6 +132,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-v3-gateway-'))
     const gatewayKeys = await generateDeviceKeyPair()
     const phoneKeys = await generateDeviceKeyPair()
+    const limitedKeys = await generateDeviceKeyPair()
     const client = new TestMatrixClient()
     const roomId = '!project:example.org'
     const projectId = gatewayProjectIdentity('/repo').id
@@ -175,16 +176,26 @@ describe('MatrixMlp3GatewayRunner', () => {
           'session.archive',
           'session.restore',
           'session.delete',
-          'project.create',
           'project.settings',
           'provider.sessions.list',
           'provider.session.inspect',
+          'device.invite',
         ],
         matrixUserId: '@phone:example.org',
         matrixDeviceId: 'PHONE',
         matrixDeviceKeys: ['matrix-phone-key'],
         certificateExpiresAt: Date.now() + 60_000,
         sequenceEpoch: 'certificate-1',
+      }, {
+        deviceId: 'limited-device',
+        publicKey: limitedKeys.publicJwk,
+        allowedRoomIds: [roomId],
+        allowedOperations: ['prompt'],
+        matrixUserId: '@limited:example.org',
+        matrixDeviceId: 'LIMITED',
+        matrixDeviceKeys: ['matrix-limited-key'],
+        certificateExpiresAt: Date.now() + 60_000,
+        sequenceEpoch: 'limited-certificate',
       }],
       replayLedgerPath: join(directory, 'replay'),
       applicationSecurity: {
@@ -345,6 +356,7 @@ describe('MatrixMlp3GatewayRunner', () => {
 
     const grantState = [...client.state.values()].find(state =>
       state.eventType === MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE
+      && state.content.deviceId === 'phone-1'
     )
     const grant = mlp3ProjectKeyGrantStateSchema.parse(grantState?.content)
     const keyGrant = await openMlp3ProjectKeyGrant(grant.sealedGrant, {
@@ -427,8 +439,9 @@ describe('MatrixMlp3GatewayRunner', () => {
       matrixEventId: string,
       relation?: Record<string, unknown>,
       sender = '@phone:example.org',
+      signingKeys = phoneKeys,
     ) => {
-      const signed = await signMlp3Command(command, phoneKeys.privateKey, phoneKeys.keyId)
+      const signed = await signMlp3Command(command, signingKeys.privateKey, signingKeys.keyId)
       const envelope = await sealMlp3Envelope({
         plaintext: { kind: 'signed_command', value: signed },
         projectKey: base64UrlDecode(activeKey.key),
@@ -488,6 +501,35 @@ describe('MatrixMlp3GatewayRunner', () => {
       roomId: '!created-project:example.org',
     })
     expect(projectCreatedHooks).toBe(1)
+
+    await send({
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'limited-project-create-1',
+      workspaceId: 'workspace-1',
+      projectId,
+      deviceId: 'limited-device',
+      certificateId: 'limited-certificate',
+      createdAt: 1,
+      operation: 'project.create',
+      payload: {
+        operation: 'project.create',
+        name: 'Denied project',
+        cwd: '/srv/denied-project',
+      },
+    }, '$limited-project-create-1', undefined, '@limited:example.org', limitedKeys)
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'limited-project-create-1'))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'limited-project-create-1'
+    )?.payload).toMatchObject({
+      type: 'command.rejected',
+      commandId: 'limited-project-create-1',
+      code: 'operation_not_allowed',
+      retryable: false,
+    })
+    expect(createdProjectRequests).toEqual(['Created remotely:/srv/created-remotely'])
+
     await send({
       ...base,
       commandId: 'provider-list-1',

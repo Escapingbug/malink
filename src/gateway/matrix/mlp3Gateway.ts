@@ -51,6 +51,7 @@ import {
 import {
   MatrixMlp3CommandAuthorizer,
   canApprovePrivilegedExecution,
+  type Mlp3CommandAuthorizationRejection,
 } from './mlp3Authorizer'
 import { GatewayMlp3ContentLayer } from './mlp3Content'
 import { FileNativeClientReleaseStore } from './fileNativeClientReleaseStore'
@@ -486,6 +487,14 @@ export class MatrixMlp3GatewayRunner {
     const record = authorized.claim.record
     if (record.status === 'terminal') {
       if (!record.terminalDeliveryEventId) this.scheduleTerminalRedelivery(project, record)
+      return
+    }
+    if (authorized.rejection) {
+      // A duplicate that was already dispatched was authorized under the
+      // policy active at dispatch time. Never reinterpret in-flight execution
+      // as a later authorization failure.
+      if (record.status === 'dispatched') return
+      await this.rejectCommandAuthorization(project, authorized.command, authorized.rejection)
       return
     }
     const activeKey = commandKey(authorized.command)
@@ -1316,6 +1325,26 @@ export class MatrixMlp3GatewayRunner {
     const event = this.eventFor(project, runtime?.record, command, 'command-failed', payload)
     await this.settleAndDeliver(project, command, event, 'failed').catch(deliveryError => {
       this.log(`[mlp3/matrix] failed command result delivery failed: ${formatError(deliveryError)}`)
+    })
+  }
+
+  private async rejectCommandAuthorization(
+    project: V3ProjectRuntime,
+    command: Mlp3Command,
+    rejection: Mlp3CommandAuthorizationRejection,
+  ): Promise<void> {
+    const runtime = command.sessionId ? project.sessions.get(command.sessionId) : undefined
+    const event = this.eventFor(project, runtime?.record, command, 'authorization-rejected', {
+      type: 'command.rejected',
+      commandId: command.commandId,
+      code: rejection.code,
+      message: rejection.message,
+      retryable: rejection.retryable,
+    })
+    await this.settleAndDeliver(project, command, event, 'rejected').catch(deliveryError => {
+      this.log(
+        `[mlp3/matrix] authorization rejection delivery failed: ${formatError(deliveryError)}`,
+      )
     })
   }
 

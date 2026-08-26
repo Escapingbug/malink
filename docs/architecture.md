@@ -171,6 +171,17 @@ non-sensitive placeholders.
 5. Application encryption binds workspace, project, room, key epoch, logical
    ID, nonce, and ciphertext. A homeserver cannot relocate or rewrite a signed
    relation without rejection.
+
+A pairing certificate that includes `device.invite` represents a full
+Workspace member: because that device can add another full member, it already
+dominates every ordinary MLP/3 command capability. Gateways therefore map it to
+the current protocol's ordinary operation set so existing clients inherit new
+product operations without re-pairing or rotating every project key grant.
+Explicitly restricted certificates remain restricted. Root privilege approval
+is never inherited and still requires the separate `privilege.approve` grant.
+Once a command signature and immutable bindings have been verified, a policy
+denial is journaled and returned as a signed `command.rejected` terminal event;
+unverified commands receive no application acknowledgement.
 6. Logical event identity is independent of the physical Matrix event ID.
    `causationCommandId` is a relationship, never message identity.
 7. The client saves exact outbound content before send and reuses a stable
