@@ -890,6 +890,33 @@ describe('Semantic runtime integration chain', () => {
         expect(onProviderSessionId).toHaveBeenCalledWith('new-session-id')
     })
 
+    it('notifies the user when an unrecoverable provider session is replaced', async () => {
+        const provider = createProvider([
+            { kind: 'session_init', sessionId: 'replacement-session-id', isNewSession: true },
+            { kind: 'text', text: 'continued response' },
+            { kind: 'result', status: 'success' },
+        ])
+        const channel = createChannel()
+        const onProviderSessionId = vi.fn()
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-1',
+            cwd: '/repo',
+            provider,
+            providerName: 'mock-acp',
+            providerSessionId: 'lost-session-id',
+            channelPort: channel,
+            onProviderSessionId,
+        })
+
+        await runtime.dispatch({ kind: 'user_message', text: 'continue', source: 'channel' })
+
+        expect(onProviderSessionId).toHaveBeenCalledWith('replacement-session-id')
+        expect(channel.sent.map(message => message.text)).toEqual([
+            expect.stringContaining('previous Agent session could not be restored'),
+            'continued response',
+        ])
+    })
+
     it('bridges provider permission requests to channel decisions through runtime config', async () => {
         const provider = createProvider([], {
             startQuery: vi.fn((_prompt: string, config: AgentQueryConfig): AgentQueryHandle => ({
