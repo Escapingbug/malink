@@ -5,9 +5,8 @@
  * The Agent Client Protocol codex-acp adapter as a stdio ACP agent.
  */
 
-import { accessSync, constants } from 'node:fs'
-import { delimiter, join } from 'node:path'
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { AcpProvider } from '@/providers/acp'
 import type { ModelEntry, ProviderSessionHistory } from '@/providers/provider'
 import {
@@ -16,12 +15,15 @@ import {
     type CodexSessionHistoryReader,
 } from './history'
 
-const CODEX_ACP_COMMAND = 'npx'
-const CODEX_ACP_ARGS = ['-y', '@agentclientprotocol/codex-acp']
-const INSTALLED_CODEX_ACP_COMMAND = 'codex-acp'
-const CODEX_MODELS_COMMAND = 'codex'
+const CODEX_ACP_PACKAGE = '@agentclientprotocol/codex-acp'
+const CODEX_CLI_SUBCOMMAND = 'cli'
 const CODEX_MODELS_ARGS = ['debug', 'models']
 const CODEX_MODEL_PROVIDER = 'openai'
+
+interface CommandLaunch {
+    command: string
+    args: string[]
+}
 
 export interface CodexProviderOptions {
     name?: string
@@ -51,10 +53,12 @@ export class CodexProvider extends AcpProvider {
     private readonly env?: Record<string, string>
     private readonly cwd?: string
     private readonly historyCommand: string
+    private readonly historyArgs: string[]
     private readonly historyReader: CodexSessionHistoryReader
 
     constructor(options: CodexProviderOptions = {}) {
-        const defaultLaunch = resolveDefaultCodexAcpLaunch(options.env)
+        const defaultLaunch = resolveDefaultCodexAcpLaunch()
+        const defaultCodexCli = resolveDefaultCodexCliLaunch(options.env)
         super({
             name: options.name ?? 'codex',
             command: options.command ?? defaultLaunch.command,
@@ -62,11 +66,17 @@ export class CodexProvider extends AcpProvider {
             ...(options.env ? { env: options.env } : {}),
             ...(options.cwd ? { cwd: options.cwd } : {}),
         })
-        this.modelsCommand = options.modelsCommand ?? CODEX_MODELS_COMMAND
-        this.modelsArgs = options.modelsArgs ?? CODEX_MODELS_ARGS
+        const usesDefaultCodexCli = options.modelsCommand === undefined
+        this.modelsCommand = options.modelsCommand ?? defaultCodexCli.command
+        this.modelsArgs = [
+            ...(usesDefaultCodexCli ? defaultCodexCli.args : []),
+            ...(options.modelsArgs ?? CODEX_MODELS_ARGS),
+        ]
         this.env = options.env
         this.cwd = options.cwd
-        this.historyCommand = options.env?.CODEX_PATH?.trim() || this.modelsCommand
+        const customHistoryCommand = options.env?.CODEX_PATH?.trim() || options.modelsCommand
+        this.historyCommand = customHistoryCommand || defaultCodexCli.command
+        this.historyArgs = customHistoryCommand ? [] : defaultCodexCli.args
         this.historyReader = options.historyReader ?? readCodexSessionHistory
     }
 
@@ -76,6 +86,7 @@ export class CodexProvider extends AcpProvider {
                 sessionId,
                 cwd,
                 command: this.historyCommand,
+                commandArgs: this.historyArgs,
                 ...(this.env ? { env: this.env } : {}),
                 ...(this.cwd ? { processCwd: this.cwd } : {}),
             })
@@ -101,25 +112,25 @@ export class CodexProvider extends AcpProvider {
     }
 }
 
-export function resolveDefaultCodexAcpLaunch(env?: Record<string, string>): { command: string; args: string[] } {
-    const mergedEnv = mergeProcessEnv(env)
-    if (findExecutableOnPath(INSTALLED_CODEX_ACP_COMMAND, mergedEnv.PATH)) {
-        return { command: INSTALLED_CODEX_ACP_COMMAND, args: [] }
+export function resolveDefaultCodexAcpLaunch(): CommandLaunch {
+    return {
+        command: process.execPath,
+        args: [resolveCodexAcpEntrypoint()],
     }
-    return { command: CODEX_ACP_COMMAND, args: [...CODEX_ACP_ARGS] }
 }
 
-function findExecutableOnPath(command: string, pathValue: string | undefined): boolean {
-    if (!pathValue) return false
-    return pathValue.split(delimiter).some(directory => {
-        if (!directory) return false
-        try {
-            accessSync(join(directory, command), constants.X_OK)
-            return true
-        } catch {
-            return false
-        }
-    })
+function resolveDefaultCodexCliLaunch(env?: Record<string, string>): CommandLaunch {
+    const configuredCodex = env?.CODEX_PATH?.trim()
+    if (configuredCodex) return { command: configuredCodex, args: [] }
+    const acp = resolveDefaultCodexAcpLaunch()
+    return {
+        command: acp.command,
+        args: [...acp.args, CODEX_CLI_SUBCOMMAND],
+    }
+}
+
+function resolveCodexAcpEntrypoint(): string {
+    return createRequire(import.meta.url).resolve(CODEX_ACP_PACKAGE)
 }
 
 function mergeProcessEnv(env?: Record<string, string>): NodeJS.ProcessEnv {
