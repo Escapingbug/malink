@@ -805,6 +805,16 @@ function toMlp3Command(
           enrollmentId: payload.enrollmentId,
         },
       };
+    case "gateway.profile.update":
+      return {
+        ...common,
+        operation: "gateway.profile.update",
+        payload: {
+          operation: "gateway.profile.update",
+          gatewayNodeId: payload.gatewayNodeId,
+          gatewayName: payload.gatewayName,
+        },
+      };
     case "gateway.update.stage":
       return {
         ...common,

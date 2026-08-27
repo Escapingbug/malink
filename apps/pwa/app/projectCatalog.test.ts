@@ -56,6 +56,7 @@ describe("canonicalGatewayProjects", () => {
     const owners = gatewayProjectOwners([{
       gatewayNodeId: "c7134bb0-32ee-4861-89cc-b5b6bfab2910",
       gatewayName: "Office Mac",
+      computerName: "alice-macbook",
       projects: [{ projectId: "project-root" }],
     }, {
       gatewayNodeId: "gateway-nas-87654321",
@@ -65,8 +66,9 @@ describe("canonicalGatewayProjects", () => {
 
     expect(owners.get("project-root")).toMatchObject({
       gatewayName: "Office Mac",
+      computerName: "alice-macbook",
       shortId: "BFAB2910",
-      label: "Office Mac · BFAB2910",
+      label: "Office Mac · alice-macbook",
     });
     expect(owners.get("project-other")?.gatewayNodeId).toBe("gateway-nas-87654321");
     expect(gatewayNodeShortId("gateway-nas-87654321")).toBe("87654321");

@@ -46,6 +46,7 @@ export interface GatewayAdminIdentity {
   gatewayNodeId: string
   gatewayShortId: string
   gatewayName: string
+  computerName?: string
 }
 
 export const receiveWorkspaceFileRequestSchema = z
@@ -119,6 +120,7 @@ export interface GatewayAdminStatus {
   gatewayNodeId: string
   gatewayShortId: string
   gatewayName: string
+  computerName?: string
   state: string
   pid: number
   startedAt: number

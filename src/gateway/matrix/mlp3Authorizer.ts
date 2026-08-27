@@ -45,6 +45,7 @@ const CURRENT_WORKSPACE_MEMBER_OPERATIONS = [
   'device.invitation.create',
   'gateway.enrollment.invitation.create',
   'gateway.enrollment.approve',
+  'gateway.profile.update',
   'notification.subscribe',
   'notification.unsubscribe',
   'gateway.update.stage',
@@ -154,6 +155,7 @@ function v3AllowedOperations(
         result.add('device.invitation.create')
         result.add('gateway.enrollment.invitation.create')
         result.add('gateway.enrollment.approve')
+        result.add('gateway.profile.update')
         break
       case 'privilege.approve': break
       case 'gateway.update':

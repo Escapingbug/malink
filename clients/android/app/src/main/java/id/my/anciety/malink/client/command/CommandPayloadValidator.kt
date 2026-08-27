@@ -24,6 +24,7 @@ enum class CommandOperation(val wireName: String) {
     DEVICE_INVITE("device.invite"),
     GATEWAY_ENROLLMENT_INVITE("gateway.enrollment.invite"),
     GATEWAY_ENROLLMENT_APPROVE("gateway.enrollment.approve"),
+    GATEWAY_PROFILE_UPDATE("gateway.profile.update"),
     GATEWAY_UPDATE_STAGE("gateway.update.stage"),
     GATEWAY_UPDATE_APPLY("gateway.update.apply"),
     GATEWAY_UPDATE_STATUS("gateway.update.status"),
@@ -226,6 +227,14 @@ data class GatewayEnrollmentApproveCommandPayload(
     override val sessionId: String? = null
 }
 
+data class GatewayProfileUpdateCommandPayload(
+    val gatewayNodeId: String,
+    val gatewayName: String,
+) : ValidatedCommandPayload {
+    override val operation = CommandOperation.GATEWAY_PROFILE_UPDATE
+    override val sessionId: String? = null
+}
+
 data class GatewayUpdateCommandPayload(
     override val operation: CommandOperation,
     val releaseId: String?,
@@ -266,6 +275,7 @@ object CommandPayloadValidator {
             CommandOperation.DEVICE_INVITE -> validateDeviceInvite(value)
             CommandOperation.GATEWAY_ENROLLMENT_INVITE -> validateGatewayEnrollmentInvite(value)
             CommandOperation.GATEWAY_ENROLLMENT_APPROVE -> validateGatewayEnrollmentApprove(value)
+            CommandOperation.GATEWAY_PROFILE_UPDATE -> validateGatewayProfileUpdate(value)
             CommandOperation.GATEWAY_UPDATE_STAGE,
             CommandOperation.GATEWAY_UPDATE_APPLY,
             CommandOperation.GATEWAY_UPDATE_STATUS,
@@ -481,6 +491,16 @@ object CommandPayloadValidator {
         return GatewayEnrollmentApproveCommandPayload(value.requiredOpaqueId("enrollmentId"))
     }
 
+    private fun validateGatewayProfileUpdate(value: JsonObject): GatewayProfileUpdateCommandPayload {
+        value.requireExactKeys(setOf("operation", "gatewayNodeId", "gatewayName"))
+        return GatewayProfileUpdateCommandPayload(
+            gatewayNodeId = value.requiredOpaqueId("gatewayNodeId"),
+            gatewayName = value.requiredString("gatewayName", 128).trim().also {
+                require(it.isNotEmpty()) { "Gateway name is invalid." }
+            },
+        )
+    }
+
     private fun validateGatewayUpdate(
         value: JsonObject,
         operation: CommandOperation,
@@ -677,6 +697,7 @@ internal fun requiredCertificateOperation(operation: CommandOperation): PairingO
     when (operation) {
         CommandOperation.GATEWAY_ENROLLMENT_INVITE,
         CommandOperation.GATEWAY_ENROLLMENT_APPROVE,
+        CommandOperation.GATEWAY_PROFILE_UPDATE,
         -> PairingOperation.DEVICE_INVITE
         CommandOperation.GATEWAY_UPDATE_STAGE,
         CommandOperation.GATEWAY_UPDATE_APPLY,

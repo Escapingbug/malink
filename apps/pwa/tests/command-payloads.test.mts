@@ -104,6 +104,23 @@ test("creates Gateway enrollment commands under the existing device-invite autho
   });
 });
 
+test("creates a targeted Gateway profile update", () => {
+  assert.deepEqual(commandPayloadSchema.parse({
+    operation: "gateway.profile.update",
+    gatewayNodeId: "gateway-node-1",
+    gatewayName: "Office Mac",
+  }), {
+    operation: "gateway.profile.update",
+    gatewayNodeId: "gateway-node-1",
+    gatewayName: "Office Mac",
+  });
+  assert.throws(() => commandPayloadSchema.parse({
+    operation: "gateway.profile.update",
+    gatewayNodeId: "gateway-node-1",
+    gatewayName: "   ",
+  }));
+});
+
 test("provider is fixed after session creation", () => {
   assert.throws(() => commandPayloadSchema.parse({
     operation: "session.settings",

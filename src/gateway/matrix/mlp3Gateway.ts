@@ -130,6 +130,12 @@ export interface MatrixMlp3GatewayDependencies {
     commandId: string
     enrollmentId: string
   }) => Promise<{ gatewayNodeId: string; gatewayName: string }>
+  updateGatewayProfile?: (input: {
+    requestedByDeviceId: string
+    commandId: string
+    gatewayNodeId: string
+    gatewayName: string
+  }) => Promise<{ gatewayNodeId: string; gatewayName: string; computerName: string }>
   pendingGatewayEnrollments?: () => Promise<readonly GatewayEnrollmentPending[]>
   privilegeExecutor?: PrivilegeExecutor
   webPushService?: GatewayWebPushService
@@ -619,6 +625,8 @@ export class MatrixMlp3GatewayRunner {
     const activeKey = commandKey(command)
     const sessionKey = command.operation === 'project.create'
       ? `${this.config.gatewayId}\0project-create`
+      : command.operation === 'gateway.profile.update'
+      ? `${this.config.gatewayId}\0gateway-profile`
       : command.operation === 'project.update'
       || command.operation === 'provider.sessions.list'
       || command.operation === 'provider.session.inspect'
@@ -697,6 +705,9 @@ export class MatrixMlp3GatewayRunner {
         return
       case 'gateway.enrollment.approve':
         await this.approveGatewayEnrollment(project, command)
+        return
+      case 'gateway.profile.update':
+        await this.updateGatewayProfile(project, command)
         return
       case 'notification.subscribe':
         await this.subscribeNotifications(project, command)
@@ -1529,6 +1540,31 @@ export class MatrixMlp3GatewayRunner {
     })
     await this.settleAndDeliver(project, command, event, 'succeeded', approved)
     await this.syncState()
+  }
+
+  private async updateGatewayProfile(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.profile.update'>,
+  ): Promise<void> {
+    if (!this.dependencies.updateGatewayProfile) {
+      throw new Error('This Gateway host does not support profile updates')
+    }
+    const updated = await this.dependencies.updateGatewayProfile({
+      requestedByDeviceId: command.deviceId,
+      commandId: command.commandId,
+      gatewayNodeId: command.payload.gatewayNodeId,
+      gatewayName: command.payload.gatewayName,
+    })
+    await this.settleAndDeliver(
+      project,
+      command,
+      this.eventFor(project, undefined, command, 'gateway-profile-updated', {
+        type: 'gateway.profile.updated',
+        ...updated,
+      }),
+      'succeeded',
+      updated,
+    )
   }
 
   private async updateProject(

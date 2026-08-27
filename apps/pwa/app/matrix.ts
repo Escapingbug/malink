@@ -643,8 +643,8 @@ async function createSignedCommand(
   reservation: CommandReservation,
   sequenceEpoch: string,
 ): Promise<SignedCommand> {
-  if (payload.operation === "project.create") {
-    throw new Error("Project creation requires the Matrix MLP/3 transport.");
+  if (payload.operation === "project.create" || payload.operation === "gateway.profile.update") {
+    throw new Error(`${fallbackBody(payload)} requires the Matrix MLP/3 transport.`);
   }
   const config = normalizeMatrixConfig(configInput);
   const command: MalinkCommand = {
@@ -5430,6 +5430,8 @@ function fallbackBody(payload: CommandPayload): string {
       return "Create a Gateway enrollment";
     case "gateway.enrollment.approve":
       return "Approve a Gateway enrollment";
+    case "gateway.profile.update":
+      return `Rename Gateway to ${payload.gatewayName}`;
     case "gateway.update.stage":
       return `Stage Gateway release ${payload.releaseId}`;
     case "gateway.update.apply":
@@ -5441,6 +5443,7 @@ function fallbackBody(payload: CommandPayload): string {
 
 function requiredPairingOperation(operation: CommandOperation): PairingOperation {
   if (operation.startsWith("gateway.enrollment.")) return "device.invite";
+  if (operation.startsWith("gateway.profile.")) return "device.invite";
   if (operation.startsWith("gateway.update.")) return "gateway.update";
   return operation as PairingOperation;
 }

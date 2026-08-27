@@ -216,6 +216,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     const notificationSubscriptions: string[] = []
     const terminalNotifications: string[] = []
     const createdProjectRequests: string[] = []
+    const gatewayProfileUpdates: string[] = []
     let projectCreatedHooks = 0
     const gatewayUpdateCalls: string[] = []
     let gatewayAgentStaged = false
@@ -299,6 +300,14 @@ describe('MatrixMlp3GatewayRunner', () => {
         }
       },
       onProjectCreated: async () => { projectCreatedHooks += 1 },
+      updateGatewayProfile: async input => {
+        gatewayProfileUpdates.push(`${input.gatewayNodeId}:${input.gatewayName}`)
+        return {
+          gatewayNodeId: input.gatewayNodeId,
+          gatewayName: input.gatewayName,
+          computerName: 'alice-macbook',
+        }
+      },
       sessionExtensionRegistry: new SessionExtensionRegistry([extensionProvider]),
       sessionFactory: (room, port, session) => {
         sessionExtensions.set(session.id, session.extensions)
@@ -597,6 +606,28 @@ describe('MatrixMlp3GatewayRunner', () => {
       roomId: '!created-project:example.org',
     })
     expect(projectCreatedHooks).toBe(1)
+
+    await send({
+      ...base,
+      commandId: 'gateway-profile-update-1',
+      operation: 'gateway.profile.update',
+      payload: {
+        operation: 'gateway.profile.update',
+        gatewayNodeId: 'gateway-node-1',
+        gatewayName: 'Office Mac',
+      },
+    }, '$gateway-profile-update-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'gateway-profile-update-1'))
+    expect(gatewayProfileUpdates).toEqual(['gateway-node-1:Office Mac'])
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'gateway-profile-update-1'
+    )?.payload).toMatchObject({
+      type: 'gateway.profile.updated',
+      gatewayNodeId: 'gateway-node-1',
+      gatewayName: 'Office Mac',
+      computerName: 'alice-macbook',
+    })
 
     await send({
       kind: 'malink.command',

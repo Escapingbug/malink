@@ -52,6 +52,7 @@ export const workspaceGatewayDescriptorSchema = z.object({
   gatewayNodeId: opaqueId,
   workspaceId: opaqueId,
   gatewayName: z.string().min(1).max(128),
+  computerName: z.string().min(1).max(128).optional(),
   buildId: z.string().min(1).max(256).optional(),
   onlineUpdate: z.literal(true).optional(),
   transport: matrixTransportBindingSchema,

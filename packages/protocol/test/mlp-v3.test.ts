@@ -333,6 +333,41 @@ describe('Malink Protocol v3 (MLP/3)', () => {
     expect(event.payload).toMatchObject({ type: 'project.created', projectId: 'new-project' })
   })
 
+  it('models a targeted Gateway profile update and result', () => {
+    const command = mlp3CommandSchema.parse({
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'gateway-profile-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      deviceId: 'device-1',
+      certificateId: 'certificate-1',
+      createdAt: 1,
+      operation: 'gateway.profile.update',
+      payload: {
+        operation: 'gateway.profile.update',
+        gatewayNodeId: 'gateway-node-1',
+        gatewayName: 'Office Mac',
+      },
+    })
+    expect(command.payload).toMatchObject({ gatewayNodeId: 'gateway-node-1' })
+    expect(mlp3EventSchema.parse({
+      kind: 'malink.event',
+      version: 3,
+      eventId: 'gateway-profile-updated-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      occurredAt: 2,
+      causationCommandId: command.commandId,
+      payload: {
+        type: 'gateway.profile.updated',
+        gatewayNodeId: 'gateway-node-1',
+        gatewayName: 'Office Mac',
+        computerName: 'alice-macbook',
+      },
+    }).payload).toMatchObject({ computerName: 'alice-macbook' })
+  })
+
   it('models extension-owned views and project defaults without privacy-specific fields', () => {
     const command = mlp3CommandSchema.parse({
       kind: 'malink.command',

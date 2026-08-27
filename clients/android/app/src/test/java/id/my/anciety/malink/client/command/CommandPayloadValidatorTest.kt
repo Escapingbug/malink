@@ -79,6 +79,11 @@ class CommandPayloadValidatorTest {
                 put("enrollmentId", "enrollment-1")
             },
             buildJsonObject {
+                put("operation", "gateway.profile.update")
+                put("gatewayNodeId", "gateway-node-1")
+                put("gatewayName", "Office Mac")
+            },
+            buildJsonObject {
                 put("operation", "gateway.update.stage")
                 put("releaseId", "release-2")
             },
@@ -337,6 +342,7 @@ class CommandPayloadValidatorTest {
             operation in listOf(
                 CommandOperation.GATEWAY_ENROLLMENT_INVITE,
                 CommandOperation.GATEWAY_ENROLLMENT_APPROVE,
+                CommandOperation.GATEWAY_PROFILE_UPDATE,
             )
         ) {
             assertEquals(

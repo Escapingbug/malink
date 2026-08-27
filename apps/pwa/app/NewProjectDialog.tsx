@@ -7,6 +7,7 @@ import { gatewayProjectOwner } from "./projectCatalog";
 export type ProjectCreationGateway = {
   gatewayNodeId: string;
   gatewayName: string;
+  computerName?: string;
   targetProjectId: string;
   providers: Array<{ id: string; name: string }>;
   defaultProvider: string;
@@ -39,7 +40,11 @@ function NewProjectDialogContent({ open, busy, gateways, onClose, onCreate }: Pr
   const [gatewayNodeId, setGatewayNodeId] = useState(first?.gatewayNodeId ?? "");
   const selected = gateways.find(gateway => gateway.gatewayNodeId === gatewayNodeId) ?? first;
   const selectedGateway = selected
-    ? gatewayProjectOwner(selected.gatewayNodeId, selected.gatewayName)
+    ? gatewayProjectOwner(
+        selected.gatewayNodeId,
+        selected.gatewayName,
+        selected.computerName,
+      )
     : null;
   const [name, setName] = useState("");
   const [cwd, setCwd] = useState("");
@@ -111,7 +116,11 @@ function NewProjectDialogContent({ open, busy, gateways, onClose, onCreate }: Pr
               >
                 {gateways.map(gateway => (
                   <option key={gateway.gatewayNodeId} value={gateway.gatewayNodeId}>
-                    {gatewayProjectOwner(gateway.gatewayNodeId, gateway.gatewayName).label}
+                    {gatewayProjectOwner(
+                      gateway.gatewayNodeId,
+                      gateway.gatewayName,
+                      gateway.computerName,
+                    ).label}
                   </option>
                 ))}
               </select>

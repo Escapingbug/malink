@@ -126,6 +126,7 @@ function legacyAllowedCommandOperations(
         if (operation === 'device.invite') {
             allowed.add('gateway.enrollment.invite')
             allowed.add('gateway.enrollment.approve')
+            allowed.add('gateway.profile.update')
         }
     }
     return [...allowed]

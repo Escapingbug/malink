@@ -1537,6 +1537,23 @@ class NativeClientRuntime(
                     )
                 }
             }
+            "gateway.profile.update" -> {
+                v3Operation = operation
+                v3SessionId = null
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    put(
+                        "gatewayNodeId",
+                        raw.string("gatewayNodeId")
+                            ?: throw IllegalArgumentException("Gateway node ID is missing."),
+                    )
+                    put(
+                        "gatewayName",
+                        raw.string("gatewayName")
+                            ?: throw IllegalArgumentException("Gateway name is missing."),
+                    )
+                }
+            }
             "gateway.update.stage" -> {
                 v3Operation = operation
                 v3SessionId = null

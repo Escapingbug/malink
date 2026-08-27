@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -25,6 +25,7 @@ describe('Gateway node profile', () => {
       version: 1,
       gatewayNodeId: 'gateway-node-12345678',
       gatewayName: 'office-mac',
+      computerName: 'office-mac',
       createdAt: 100,
       updatedAt: 100,
     })
@@ -35,8 +36,14 @@ describe('Gateway node profile', () => {
     })
     await expect(store.rename('Office Mac mini', 300)).resolves.toMatchObject({
       gatewayName: 'Office Mac mini',
+      computerName: 'office-mac',
       createdAt: 100,
       updatedAt: 300,
+    })
+    await expect(store.updateComputerName('Alice-MacBook', 400)).resolves.toMatchObject({
+      gatewayName: 'Office Mac mini',
+      computerName: 'Alice-MacBook',
+      updatedAt: 400,
     })
     await expect(store.rename('Clock rollback', 50)).rejects.toThrow(
       'cannot precede its creation',
@@ -44,6 +51,7 @@ describe('Gateway node profile', () => {
     expect(JSON.parse(await readFile(path, 'utf8'))).toMatchObject({
       gatewayNodeId: 'gateway-node-12345678',
       gatewayName: 'Office Mac mini',
+      computerName: 'Alice-MacBook',
     })
   })
 
@@ -57,5 +65,29 @@ describe('Gateway node profile', () => {
 
     expect(() => store.loadOrCreate('   ')).toThrow('Gateway name')
     expect(gatewayNodeShortId('c7134bb0-32ee-4861-89cc-b5b6bfab2910')).toBe('BFAB2910')
+  })
+
+  it('upgrades profiles created before computer names were recorded', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-gateway-profile-legacy-'))
+    temporaryDirectories.push(directory)
+    const path = join(directory, 'profile.json')
+    await writeFile(path, JSON.stringify({
+      version: 1,
+      gatewayNodeId: 'gateway-node-legacy',
+      gatewayName: 'Studio Gateway',
+      createdAt: 100,
+      updatedAt: 100,
+    }))
+    const store = new FileGatewayNodeProfileStore(path, 'gateway-node-legacy')
+
+    await expect(store.loadOrCreate('ignored-default', 200)).resolves.toMatchObject({
+      gatewayName: 'Studio Gateway',
+      computerName: 'Studio Gateway',
+    })
+    await expect(store.updateComputerName('studio-mac', 300)).resolves.toMatchObject({
+      gatewayName: 'Studio Gateway',
+      computerName: 'studio-mac',
+      updatedAt: 300,
+    })
   })
 })

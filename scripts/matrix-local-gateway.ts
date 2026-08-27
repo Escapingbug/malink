@@ -132,11 +132,12 @@ const gatewayProfileStore = new FileGatewayNodeProfileStore(
     identity.gatewayNodeId,
 )
 const configuredGatewayName = process.env.MALINK_GATEWAY_NAME?.trim()
-const detectedGatewayName = hostname().trim()
+const detectedComputerName = hostname().trim()
     || `Gateway ${gatewayNodeShortId(identity.gatewayNodeId)}`
 let gatewayProfile = await gatewayProfileStore.loadOrCreate(
-    configuredGatewayName || detectedGatewayName,
+    configuredGatewayName || detectedComputerName,
 )
+gatewayProfile = await gatewayProfileStore.updateComputerName(detectedComputerName)
 if (configuredGatewayName && gatewayProfile.gatewayName !== configuredGatewayName) {
     gatewayProfile = await gatewayProfileStore.rename(configuredGatewayName)
 }
@@ -221,6 +222,7 @@ async function publishLocalWorkspaceDirectory(): Promise<void> {
             conversationId: room.conversationId,
         })),
         {
+            computerName: gatewayProfile.computerName,
             buildId: gatewayBuildId,
             ...(gatewayUpdateSupervisor ? { onlineUpdate: true } : {}),
         },
@@ -628,6 +630,24 @@ runner = new MatrixMlp3GatewayRunner(config, {
             gatewayName: approved.gatewayName,
         }
     },
+    updateGatewayProfile: async input => {
+        if (input.gatewayNodeId !== identity.gatewayNodeId) {
+            throw new Error(
+                `Gateway profile command targets another node: ${input.gatewayNodeId}`,
+            )
+        }
+        gatewayProfile = await gatewayProfileStore.rename(input.gatewayName)
+        await synchronizeWorkspaceControl(publishLocalWorkspaceDirectory)
+        process.stdout.write(
+            `Device ${input.requestedByDeviceId} renamed this Gateway to `
+            + `${gatewayProfile.gatewayName}.\n`,
+        )
+        return {
+            gatewayNodeId: identity.gatewayNodeId,
+            gatewayName: gatewayProfile.gatewayName,
+            computerName: gatewayProfile.computerName,
+        }
+    },
     pendingGatewayEnrollments: () => gatewayEnrollmentCoordinator.pending(),
     workspaceGatewayDirectory: () => workspaceDirectory.load(),
     createProject: async input => {
@@ -738,6 +758,7 @@ const adminServer = await startGatewayAdminServer({
     gatewayId: identity.gatewayId,
     gatewayNodeId: identity.gatewayNodeId,
     getGatewayName: () => gatewayProfile.gatewayName,
+    getComputerName: () => gatewayProfile.computerName,
     renameGateway: async gatewayName => {
         gatewayProfile = await gatewayProfileStore.rename(gatewayName)
         await synchronizeWorkspaceControl(publishLocalWorkspaceDirectory)

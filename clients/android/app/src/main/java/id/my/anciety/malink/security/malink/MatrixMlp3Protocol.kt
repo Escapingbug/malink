@@ -317,7 +317,17 @@ object MatrixMlp3Protocol {
         val ids = gateways.map { element ->
             val gateway = element as? JsonObject
                 ?: throw IllegalArgumentException("Workspace Gateway Directory entry is invalid.")
+            gateway.requireAllowedKeys(
+                required = setOf(
+                    "gatewayNodeId", "workspaceId", "gatewayName", "transport", "publicKey",
+                    "issuedAt",
+                ),
+                optional = setOf("computerName", "buildId", "onlineUpdate", "projects"),
+                label = "Workspace Gateway Directory entry",
+            )
             require(gateway.opaque("workspaceId") == workspaceId)
+            gateway.opaque("gatewayName", 128)
+            if ("computerName" in gateway) gateway.opaque("computerName", 128)
             gateway.opaque("gatewayNodeId")
         }
         require(ids.distinct().size == ids.size)

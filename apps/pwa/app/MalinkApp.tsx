@@ -1155,6 +1155,8 @@ function MalinkAppRuntime() {
   const [gatewayEnrollmentBusy, setGatewayEnrollmentBusy] =
     useState<GatewayEnrollmentBusyState>(null);
   const [gatewayEnrollmentError, setGatewayEnrollmentError] = useState<string | null>(null);
+  const [gatewayProfileBusy, setGatewayProfileBusy] = useState<string | null>(null);
+  const [gatewayProfileError, setGatewayProfileError] = useState<string | null>(null);
   const [gatewayUpdateBusy, setGatewayUpdateBusy] = useState(false);
   const [gatewayUpdateError, setGatewayUpdateError] = useState<string | null>(null);
   const [gatewayUpdateDiscoveryError, setGatewayUpdateDiscoveryError] =
@@ -1456,6 +1458,7 @@ function MalinkAppRuntime() {
     return gatewayProjectOwner(
       directoryGateway?.gatewayNodeId ?? expectedGatewayNodeId,
       directoryGateway?.gatewayName ?? trustedGateway?.gatewayName ?? "Gateway",
+      directoryGateway?.computerName,
     );
   }, [
     gatewayState?.gatewayDirectory,
@@ -1474,7 +1477,7 @@ function MalinkAppRuntime() {
     () =>
       visibleGatewaySessions.filter((session) => {
         const owner = projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway;
-        return `${session.title} ${session.projectName} ${session.cwd} ${session.provider} ${session.model ?? ""} ${owner.gatewayName} ${owner.gatewayNodeId}`
+        return `${session.title} ${session.projectName} ${session.cwd} ${session.provider} ${session.model ?? ""} ${owner.gatewayName} ${owner.computerName} ${owner.gatewayNodeId}`
           .toLowerCase()
           .includes(search.toLowerCase());
       }),
@@ -1709,6 +1712,7 @@ function MalinkAppRuntime() {
       ? gatewayProjectOwner(
           onlyWorkspaceGateway.gatewayNodeId,
           onlyWorkspaceGateway.gatewayName,
+          onlyWorkspaceGateway.computerName,
         ).label
       : trustedGateway
         ? fallbackProjectGateway.label
@@ -1733,6 +1737,7 @@ function MalinkAppRuntime() {
         return [{
           gatewayNodeId: gateway.gatewayNodeId,
           gatewayName: gateway.gatewayName,
+          computerName: gateway.computerName,
           targetProjectId: route.projectId,
           providers: capabilities.providers.map(provider => ({
             id: provider.id,
@@ -1750,6 +1755,7 @@ function MalinkAppRuntime() {
     return [{
       gatewayNodeId,
       gatewayName: fallbackProjectGateway.gatewayName,
+      computerName: fallbackProjectGateway.computerName,
       targetProjectId: gatewayState.workspace.projectId,
       providers: capabilities.providers.map(provider => ({
         id: provider.id,
@@ -1759,6 +1765,7 @@ function MalinkAppRuntime() {
     }];
   }, [
     fallbackProjectGateway.gatewayName,
+    fallbackProjectGateway.computerName,
     gatewayState,
     matrixConfig.gatewayId,
     matrixConfig.gatewayNodeId,
@@ -4743,6 +4750,53 @@ function MalinkAppRuntime() {
         await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
       }
       setGatewayEnrollmentBusy(null);
+    }
+  }
+
+  async function renameGateway(
+    gatewayNodeId: string,
+    gatewayName: string,
+    targetProjectId: string,
+  ): Promise<void> {
+    if (gatewayProfileBusy) return;
+    setGatewayProfileBusy(gatewayNodeId);
+    setGatewayProfileError(null);
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand({
+        operation: "gateway.profile.update",
+        gatewayNodeId,
+        gatewayName,
+      }, targetProjectId, {
+        autoRetryRevisionConflict: true,
+        propagateFailure: true,
+      });
+      if (!sent) {
+        throw new Error("The connected client could not update this Gateway name.");
+      }
+      commandId = sent.commandId;
+      const completion = await waitForCommandCompletion(sent.completion, 60_000);
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message ?? "The Gateway name update did not complete.",
+        );
+      }
+      showUiNotice(
+        `gateway-profile:${gatewayNodeId}`,
+        "connection",
+        "success",
+        `Gateway renamed to ${gatewayName}.`,
+        4_000,
+      );
+    } catch (error) {
+      setGatewayProfileError(formatUiError(error));
+      throw error;
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+      setGatewayProfileBusy(null);
     }
   }
 
@@ -8799,6 +8853,8 @@ function MalinkAppRuntime() {
         approvedGatewayEnrollmentIds={visibleApprovedGatewayEnrollmentIds}
         gatewayEnrollmentBusy={gatewayEnrollmentBusy}
         gatewayEnrollmentError={gatewayEnrollmentError}
+        gatewayProfileBusy={gatewayProfileBusy}
+        gatewayProfileError={gatewayProfileError}
         gatewayUpdate={gatewayState?.gatewayUpdate ?? null}
         gatewayRelease={gatewayRelease}
         gatewayUpdateBusy={gatewayUpdateBusy}
@@ -8854,6 +8910,7 @@ function MalinkAppRuntime() {
           setGatewayEnrollmentInvitation(null);
           setGatewayEnrollmentError(null);
         }}
+        onRenameGateway={renameGateway}
         onRefreshGatewayUpdate={() => void runGatewayUpdate({
           operation: "gateway.update.status",
         })}
@@ -8909,6 +8966,7 @@ function commandNoticeFor(payload: CommandPayload): {
   if (
     payload.operation === "device.invite" ||
     payload.operation.startsWith("gateway.enrollment.") ||
+    payload.operation.startsWith("gateway.profile.") ||
     payload.operation.startsWith("gateway.update.")
   ) {
     return { key: `pairing:${payload.operation}`, scope: "pairing" };
@@ -9197,6 +9255,8 @@ function describeConflictedAction(payload: CommandPayload): string {
       return "The Gateway setup-link request";
     case "gateway.enrollment.approve":
       return "The Gateway approval request";
+    case "gateway.profile.update":
+      return "The Gateway name update";
     case "gateway.update.stage":
       return "The Gateway update preparation request";
     case "gateway.update.apply":
@@ -9232,6 +9292,8 @@ function nativeCommandReviewTitle(
       return "A Gateway setup link needs review";
     case "gateway.enrollment.approve":
       return "A Gateway approval needs review";
+    case "gateway.profile.update":
+      return "A Gateway name change needs review";
     default:
       return "A previous action needs review";
   }
@@ -9264,6 +9326,8 @@ function nativeCommandReviewDescription(
         return "Gateway setup link";
       case "gateway.enrollment.approve":
         return "Gateway approval";
+      case "gateway.profile.update":
+        return "Gateway name change";
       default:
         return "action";
     }

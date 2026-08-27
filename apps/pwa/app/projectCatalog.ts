@@ -7,6 +7,7 @@ export type GatewayProjectSource = {
 export type GatewayProjectOwner = {
   gatewayNodeId: string;
   gatewayName: string;
+  computerName: string;
   shortId: string;
   label: string;
 };
@@ -14,6 +15,7 @@ export type GatewayProjectOwner = {
 type GatewayDirectorySource = {
   gatewayNodeId: string;
   gatewayName: string;
+  computerName?: string;
   projects?: readonly { projectId: string }[];
 };
 
@@ -22,7 +24,11 @@ export function gatewayProjectOwners(
 ): Map<string, GatewayProjectOwner> {
   const owners = new Map<string, GatewayProjectOwner>();
   for (const gateway of gateways) {
-    const owner = gatewayProjectOwner(gateway.gatewayNodeId, gateway.gatewayName);
+    const owner = gatewayProjectOwner(
+      gateway.gatewayNodeId,
+      gateway.gatewayName,
+      gateway.computerName,
+    );
     for (const project of gateway.projects ?? []) owners.set(project.projectId, owner);
   }
   return owners;
@@ -31,13 +37,19 @@ export function gatewayProjectOwners(
 export function gatewayProjectOwner(
   gatewayNodeId: string,
   gatewayName: string,
+  computerNameInput?: string,
 ): GatewayProjectOwner {
   const shortId = gatewayNodeShortId(gatewayNodeId);
+  const computerName = computerNameInput?.trim() || gatewayName;
+  const label = gatewayName === computerName
+    ? computerName
+    : `${gatewayName} · ${computerName}`;
   return {
     gatewayNodeId,
     gatewayName,
+    computerName,
     shortId,
-    label: `${gatewayName} · ${shortId}`,
+    label,
   };
 }
 

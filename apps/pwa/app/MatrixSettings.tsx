@@ -58,6 +58,8 @@ type Props = {
   approvedGatewayEnrollmentIds: ReadonlySet<string>;
   gatewayEnrollmentBusy: GatewayEnrollmentBusyState;
   gatewayEnrollmentError: string | null;
+  gatewayProfileBusy: string | null;
+  gatewayProfileError: string | null;
   gatewayUpdate: GatewayUpdateStatus | null;
   gatewayRelease: GatewayReleaseBuild | null;
   gatewayUpdateBusy: boolean;
@@ -82,6 +84,11 @@ type Props = {
   onCreateGatewayEnrollment(): void;
   onApproveGatewayEnrollment(enrollmentId: string, approverProjectId?: string): void;
   onClearGatewayEnrollment(): void;
+  onRenameGateway(
+    gatewayNodeId: string,
+    gatewayName: string,
+    targetProjectId: string,
+  ): Promise<void>;
   onRefreshGatewayUpdate(): void;
   onStartGatewayUpdate(): void;
   onCheckForUpdates(): void;
@@ -121,6 +128,8 @@ function MatrixSettingsDialog({
   approvedGatewayEnrollmentIds,
   gatewayEnrollmentBusy,
   gatewayEnrollmentError,
+  gatewayProfileBusy,
+  gatewayProfileError,
   gatewayUpdate,
   gatewayRelease,
   gatewayUpdateBusy,
@@ -145,6 +154,7 @@ function MatrixSettingsDialog({
   onCreateGatewayEnrollment,
   onApproveGatewayEnrollment,
   onClearGatewayEnrollment,
+  onRenameGateway,
   onRefreshGatewayUpdate,
   onStartGatewayUpdate,
   onCheckForUpdates,
@@ -163,6 +173,8 @@ function MatrixSettingsDialog({
   const repairRequired = effectiveRepairReason !== null;
   const [loginPassword, setLoginPassword] = useState("");
   const [addingGateway, setAddingGateway] = useState(false);
+  const [editingGatewayNodeId, setEditingGatewayNodeId] = useState<string | null>(null);
+  const [gatewayNameDraft, setGatewayNameDraft] = useState("");
   const connected =
     status === "connected" ||
     status === "securing" ||
@@ -171,6 +183,7 @@ function MatrixSettingsDialog({
     pairingBusy ||
     invitationBusy ||
     gatewayEnrollmentBusy !== null ||
+    gatewayProfileBusy !== null ||
     webPushBusy ||
     nativeUpdateBusy ||
     copyPageLinkBusy;
@@ -191,15 +204,24 @@ function MatrixSettingsDialog({
       gatewayId: gateway.workspaceId,
       gatewayNodeId: gateway.gatewayNodeId,
       gatewayName: gateway.gatewayName,
+      computerName: gateway.computerName,
+      targetProjectId: gateway.projects?.[0]?.projectId,
     }),
   );
-  const gatewayProfiles = directoryGatewayProfiles.length > 0
-    ? directoryGatewayProfiles
-    : savedGateways.length > 0
-      ? savedGateways
+  const savedGatewayProfiles = (savedGateways.length > 0
+    ? savedGateways
     : trustedGateway
       ? [trustedGateway]
-      : [];
+      : []).map(gateway => ({
+        gatewayId: gateway.gatewayId,
+        gatewayNodeId: gateway.gatewayNodeId,
+        gatewayName: gateway.gatewayName,
+        computerName: undefined as string | undefined,
+        targetProjectId: undefined as string | undefined,
+      }));
+  const gatewayProfiles = directoryGatewayProfiles.length > 0
+    ? directoryGatewayProfiles
+    : savedGatewayProfiles;
   const showGatewayManagement =
     hasSavedConnection || gatewayProfiles.length > 0;
   const gatewayManagementReady =
@@ -332,7 +354,10 @@ function MatrixSettingsDialog({
                 const gatewayIdentity = gatewayProjectOwner(
                   gatewayProfileId,
                   gateway.gatewayName,
+                  gateway.computerName,
                 );
+                const editing = editingGatewayNodeId === gatewayProfileId;
+                const targetProjectId = gateway.targetProjectId;
                 return (
                   <div
                     key={gatewayProfileId}
@@ -343,9 +368,75 @@ function MatrixSettingsDialog({
                       <strong>
                         {gatewayIdentity.label}
                       </strong>
-                      <small title={gatewayProfileId}>Stable Gateway node identity</small>
+                      <small title={gatewayProfileId}>
+                        Computer: {gatewayIdentity.computerName} · Node {gatewayIdentity.shortId}
+                      </small>
+                      {editing && (
+                        <form
+                          className="gateway-profile-rename"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            if (!targetProjectId || !gatewayNameDraft.trim()) return;
+                            void onRenameGateway(
+                              gatewayProfileId,
+                              gatewayNameDraft.trim(),
+                              targetProjectId,
+                            ).then(() => setEditingGatewayNodeId(null)).catch(() => undefined);
+                          }}
+                        >
+                          <label>
+                            <span>Custom name</span>
+                            <input
+                              value={gatewayNameDraft}
+                              maxLength={128}
+                              autoComplete="off"
+                              disabled={gatewayProfileBusy === gatewayProfileId}
+                              onChange={(event) => setGatewayNameDraft(event.target.value)}
+                            />
+                          </label>
+                          <span>
+                            <button
+                              type="submit"
+                              className="connect-button"
+                              disabled={
+                                gatewayProfileBusy === gatewayProfileId ||
+                                !gatewayNameDraft.trim() ||
+                                gatewayNameDraft.trim() === gateway.gatewayName
+                              }
+                            >
+                              {gatewayProfileBusy === gatewayProfileId ? "Saving…" : "Save"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={gatewayProfileBusy === gatewayProfileId}
+                              onClick={() => setEditingGatewayNodeId(null)}
+                            >
+                              Cancel
+                            </button>
+                          </span>
+                          {gatewayProfileError && (
+                            <em role="alert">{gatewayProfileError}</em>
+                          )}
+                        </form>
+                      )}
                     </span>
-                    <b>✓</b>
+                    {editing ? (
+                      <b aria-hidden="true">✓</b>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={busy || !gatewayManagementReady || !targetProjectId}
+                        title={targetProjectId
+                          ? `Rename ${gatewayIdentity.label}`
+                          : "This Gateway has no available project route"}
+                        onClick={() => {
+                          setEditingGatewayNodeId(gatewayProfileId);
+                          setGatewayNameDraft(gateway.gatewayName);
+                        }}
+                      >
+                        Rename
+                      </button>
+                    )}
                   </div>
                 );
               })}

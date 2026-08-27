@@ -284,6 +284,13 @@ const gatewayEnrollmentApprovePayloadSchema = z
     enrollmentId: opaqueId,
   })
   .strict()
+const gatewayProfileUpdatePayloadSchema = z
+  .object({
+    operation: z.literal('gateway.profile.update'),
+    gatewayNodeId: opaqueId,
+    gatewayName: z.string().trim().min(1).max(128),
+  })
+  .strict()
 const projectCreatePayloadSchema = z
   .object({
     operation: z.literal('project.create'),
@@ -365,6 +372,7 @@ export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   deviceInvitationPayloadSchema,
   gatewayEnrollmentInvitationPayloadSchema,
   gatewayEnrollmentApprovePayloadSchema,
+  gatewayProfileUpdatePayloadSchema,
   notificationSubscribePayloadSchema,
   notificationUnsubscribePayloadSchema,
   gatewayUpdateStagePayloadSchema,
@@ -467,6 +475,12 @@ export const mlp3CommandSchema = z.union([
     sessionId: opaqueId.optional(),
     operation: z.literal('gateway.enrollment.approve'),
     payload: gatewayEnrollmentApprovePayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('gateway.profile.update'),
+    payload: gatewayProfileUpdatePayloadSchema,
   }).strict(),
   z.object({
     ...projectCommandCommon,
@@ -802,6 +816,14 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       enrollmentId: opaqueId,
       gatewayNodeId: opaqueId,
       gatewayName: z.string().min(1).max(128),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('gateway.profile.updated'),
+      gatewayNodeId: opaqueId,
+      gatewayName: z.string().min(1).max(128),
+      computerName: z.string().min(1).max(128),
     })
     .strict(),
   z

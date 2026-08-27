@@ -43,6 +43,7 @@ export interface GatewayAdminServerOptions {
   gatewayId: string
   gatewayNodeId: string
   getGatewayName: () => string
+  getComputerName?: () => string
   renameGateway?: (gatewayName: string) => Promise<void>
   coordinator: DeviceInvitationCoordinator
   pairingService: GatewayPairingService
@@ -154,6 +155,7 @@ export async function startGatewayAdminServer(
           gatewayNodeId: options.gatewayNodeId,
           gatewayShortId: gatewayNodeShortId(options.gatewayNodeId),
           gatewayName: options.getGatewayName(),
+          ...(options.getComputerName ? { computerName: options.getComputerName() } : {}),
         }
         options.onLog?.(`[gateway-admin] renamed Gateway node ${options.gatewayNodeId}`)
         sendJson(response, 200, identity)
@@ -404,6 +406,7 @@ async function statusResponse(
     gatewayNodeId: options.gatewayNodeId,
     gatewayShortId: gatewayNodeShortId(options.gatewayNodeId),
     gatewayName: options.getGatewayName(),
+    ...(options.getComputerName ? { computerName: options.getComputerName() } : {}),
     state: options.getGatewayState(),
     pid: process.pid,
     startedAt,

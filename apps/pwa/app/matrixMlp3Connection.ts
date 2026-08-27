@@ -1256,6 +1256,14 @@ function toLegacyCompletion(
               gatewayName: payload.gatewayName,
             },
           }
+      : payload.type === "gateway.profile.updated"
+        ? {
+            result: {
+              gatewayNodeId: payload.gatewayNodeId,
+              gatewayName: payload.gatewayName,
+              computerName: payload.computerName,
+            },
+          }
       : payload.type === "project.created"
         ? { result: payload }
       : payload.type === "provider.sessions.listed" || payload.type === "provider.session.inspected"

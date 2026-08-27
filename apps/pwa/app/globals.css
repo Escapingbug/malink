@@ -5054,6 +5054,39 @@ select:focus-visible {
   flex-direction: column;
 }
 
+.gateway-profile-list > div > div > button {
+  flex: 0 0 auto;
+}
+
+.gateway-profile-rename {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.gateway-profile-rename label,
+.gateway-profile-rename > span {
+  display: flex;
+  gap: 8px;
+}
+
+.gateway-profile-rename label {
+  flex-direction: column;
+  color: #60697a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.gateway-profile-rename input {
+  width: 100%;
+}
+
+.gateway-profile-rename em {
+  color: var(--danger);
+  font-size: 12px;
+  font-style: normal;
+}
+
 .gateway-enrollment-panel {
   display: grid;
   gap: 14px;

@@ -9,12 +9,14 @@ import { gatewayProjectOwner } from "../app/projectCatalog.ts";
 const gateways = [{
   gatewayNodeId: "gateway-a",
   gatewayName: "Office Gateway",
+  computerName: "alice-macbook",
   targetProjectId: "bootstrap-a",
   providers: [{ id: "codex", name: "Codex" }],
   defaultProvider: "codex",
 }, {
   gatewayNodeId: "gateway-b",
   gatewayName: "NAS Gateway",
+  computerName: "home-nas",
   targetProjectId: "bootstrap-b",
   providers: [{ id: "agent", name: "Agent" }],
   defaultProvider: "agent",
@@ -33,15 +35,15 @@ test("creates projects against an explicitly selected Gateway route", () => {
   assert.match(html, /Office Gateway/);
   assert.match(html, /NAS Gateway/);
   assert.match(html, /Working directory on this Gateway/);
-  assert.match(html, /Office Gateway · GATEWAYA/);
-  assert.match(html, /This path is resolved on Office Gateway · GATEWAYA/);
+  assert.match(html, /Office Gateway · alice-macbook/);
+  assert.match(html, /This path is resolved on Office Gateway · alice-macbook/);
   assert.match(html, /Create the directory if it does not exist/);
   assert.match(html, /<button type="submit"[^>]*disabled=""[^>]*>Create project/);
 });
 
 test("shows the owning Gateway for every project session route", () => {
-  const office = gatewayProjectOwner("gateway-a", "Office Gateway");
-  const nas = gatewayProjectOwner("gateway-b", "NAS Gateway");
+  const office = gatewayProjectOwner("gateway-a", "Office Gateway", "alice-macbook");
+  const nas = gatewayProjectOwner("gateway-b", "NAS Gateway", "home-nas");
   const workspaces = [{
     projectId: "project-office",
     projectName: "Malink",
@@ -72,9 +74,9 @@ test("shows the owning Gateway for every project session route", () => {
     onCreate() {},
   }));
 
-  assert.match(html, /NAS Gateway · GATEWAYB/);
-  assert.match(html, /Malink — Office Gateway · GATEWAYA/);
-  assert.match(html, /Archive — NAS Gateway · GATEWAYB/);
+  assert.match(html, /NAS Gateway · home-nas/);
+  assert.match(html, /Malink — Office Gateway · alice-macbook/);
+  assert.match(html, /Archive — NAS Gateway · home-nas/);
 });
 
 test("blocks dismissal while a durable project command is pending", () => {
