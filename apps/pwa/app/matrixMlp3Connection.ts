@@ -1235,7 +1235,7 @@ function toolGroupFromMlp3Payload(
   };
 }
 
-function toLegacyCompletion(
+export function toLegacyCompletion(
   completion: import("./matrixMlp3Projection").Mlp3CommandCompletion,
 ): CommandCompletion {
   const payload = completion.event.payload;
@@ -1266,6 +1266,8 @@ function toLegacyCompletion(
           }
       : payload.type === "project.created"
         ? { result: payload }
+      : payload.type === "gateway.update.status"
+        ? { result: payload.status }
       : payload.type === "provider.sessions.listed" || payload.type === "provider.session.inspected"
         ? { result: payload }
       : {}),

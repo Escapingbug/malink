@@ -4,7 +4,7 @@ import {
   MATRIX_MLP3_PROJECTION_STATE_VERSION,
   MatrixMlp3Projection,
 } from "./matrixMlp3Projection";
-import { toIncomingMessage } from "./matrixMlp3Connection";
+import { toIncomingMessage, toLegacyCompletion } from "./matrixMlp3Connection";
 
 describe("MatrixMlp3Projection", () => {
   it("converges per session despite out-of-order events and physical relation changes", () => {
@@ -298,6 +298,20 @@ describe("MatrixMlp3Projection", () => {
     expect(projection.workspace?.gatewayUpdate).toMatchObject({
       phase: "staged",
       releaseId: "release-2",
+    });
+    expect(toLegacyCompletion(
+      projection.completions.get("gateway-update-stage-1")!,
+    )).toMatchObject({
+      commandId: "gateway-update-stage-1",
+      outcome: "succeeded",
+      result: {
+        version: 1,
+        phase: "staged",
+        releaseId: "release-2",
+        targetBuildId: "build-2",
+        currentBuildId: "build-1",
+        updatedAt: 20,
+      },
     });
     const restored = new MatrixMlp3Projection();
     restored.restore(projection.durableState());
