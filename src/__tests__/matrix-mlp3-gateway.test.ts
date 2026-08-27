@@ -273,6 +273,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     const blocked = deferred<void>()
     const updateDrainBlocked = deferred<void>()
     const dispatched: Array<{ sessionId: string; text: string }> = []
+    const decisionResults: string[] = []
     const generatedImagePath = join(directory, 'generated-image.png')
     await writeFile(generatedImagePath, 'generated image bytes', 'utf8')
     const sessionExtensions = new Map<string, readonly { id: string }[]>()
@@ -391,6 +392,18 @@ describe('MatrixMlp3GatewayRunner', () => {
               dispatched.push({ sessionId: session.id, text: input.text })
               if (input.text === 'block A') await blocked.promise
               if (input.text === 'finish before update') await updateDrainBlocked.promise
+              if (input.text === 'needs permission') {
+                const response = await port.requestDecision({
+                  type: 'permission',
+                  title: 'Allow Bash?',
+                  details: 'git status',
+                  options: [
+                    { label: 'Allow', value: 'allow' },
+                    { label: 'Deny', value: 'deny' },
+                  ],
+                })
+                decisionResults.push(response.value)
+              }
               if (input.text.includes('SIGNED RELEASE PROMPT')) gatewayAgentStaged = true
               await port.send({
                 text: `reply:${input.text}`,
@@ -946,6 +959,50 @@ describe('MatrixMlp3GatewayRunner', () => {
       ))
     expect(dispatched.filter(item => item.text === 'block A')).toHaveLength(1)
     expect(terminalNotifications).toHaveLength(1)
+
+    await send({
+      ...base,
+      commandId: 'prompt-permission-b',
+      sessionId: 'session-b',
+      operation: 'prompt.submit',
+      payload: { operation: 'prompt.submit', text: 'needs permission' },
+    }, '$prompt-permission-b')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'prompt-permission-b'
+        && event.payload.type === 'decision.requested'
+      ))
+    const permissionRequest = (await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'prompt-permission-b'
+      && event.payload.type === 'decision.requested'
+    )
+    if (permissionRequest?.payload.type !== 'decision.requested') {
+      throw new Error('The permission request was not delivered')
+    }
+    await send({
+      ...base,
+      commandId: 'decision-allow-b',
+      sessionId: 'session-b',
+      operation: 'decision.answer',
+      payload: {
+        operation: 'decision.answer',
+        requestId: permissionRequest.payload.requestId,
+        decision: 'allow',
+      },
+    }, '$decision-allow-b')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'decision-allow-b'
+        && event.payload.type === 'decision.resolved'
+      ))
+    await waitFor(() => Promise.resolve(decisionResults.length === 1))
+    expect(decisionResults).toEqual(['allow'])
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'decision-allow-b'
+    )?.payload).toMatchObject({
+      type: 'decision.resolved',
+      decision: 'allow',
+    })
 
     const causalText = 'causal barrier'
     const causalMessageId = `reply-session-b-${causalText}`

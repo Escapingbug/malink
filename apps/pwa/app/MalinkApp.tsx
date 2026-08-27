@@ -173,6 +173,7 @@ import {
   isTransientAgentLifecycleEvent,
   mergeChatMessage,
   mergeChatMessages,
+  resolvedDecisionActionId,
   withoutReconciledOptimisticCopies,
   type ChatMessage,
   type OptimisticMessageReference,
@@ -2789,12 +2790,10 @@ function MalinkAppRuntime() {
       return;
     }
     if (incoming.requestId && !incoming.historical) {
-      const resolvedActionId = typeof incoming.raw?.resolvedActionId === "string"
-        ? incoming.raw.resolvedActionId
-        : undefined;
+      const resolvedActionId = resolvedDecisionActionId(incoming.raw);
       setDecisionStates((current) => ({
         ...current,
-        [incoming.replacesEventId ?? incoming.eventId]: resolvedActionId
+        [message.id]: resolvedActionId
           ? { actionId: resolvedActionId }
           : "pending",
       }));
@@ -7348,23 +7347,44 @@ function MalinkAppRuntime() {
       ...current,
       [message.id]: "submitting",
     }));
-    const sent = await sendRealCommand({
-      operation: "decision",
-      sessionId,
-      requestId: message.requestId,
-      decision,
-      ...(totp ? { totp } : {}),
-    });
-    if (sent && (await sent.completion).outcome === "succeeded") {
+    try {
+      const sent = await sendRealCommand({
+        operation: "decision",
+        sessionId,
+        requestId: message.requestId,
+        decision,
+        ...(totp ? { totp } : {}),
+      });
+      if (!sent) {
+        setDecisionStates((current) => ({
+          ...current,
+          [message.id]: "pending",
+        }));
+        return;
+      }
+      const completion = await sent.completion;
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message ??
+            "Your computer could not apply this permission decision.",
+        );
+      }
       setDecisionStates((current) => ({
         ...current,
         [message.id]: { actionId: decision },
       }));
-    } else {
+      recoverUiNotice("composer:permission");
+    } catch (error) {
       setDecisionStates((current) => ({
         ...current,
         [message.id]: "pending",
       }));
+      showUiNotice(
+        "composer:permission",
+        "composer",
+        "error",
+        formatUiError(error),
+      );
     }
   }
 
@@ -8339,8 +8359,10 @@ function MalinkAppRuntime() {
               );
             }
             if (message.kind === "permission") {
-              const decisionState =
-                decisionStates[message.id] ?? "pending";
+              const resolvedActionId = resolvedDecisionActionId(message.raw);
+              const decisionState = resolvedActionId
+                ? { actionId: resolvedActionId }
+                : decisionStates[message.id] ?? "pending";
               const extensionView = parseExtensionViewPresentation(message.raw);
               if (extensionView) {
                 return (
@@ -8418,6 +8440,7 @@ function MalinkAppRuntime() {
                             className={action.deny ? "deny-button" : "approve-button"}
                             key={action.value}
                             onClick={() => void decidePermission(message, action.value)}
+                            type="button"
                           >
                             {action.label}
                           </button>

@@ -51,6 +51,20 @@ export function isAgentWorkMessage(
   return message?.kind === "agent" || message?.kind === "tool";
 }
 
+/**
+ * A resolved decision is part of the verified MLP projection, while the
+ * component decision map is only transient click feedback. Prefer the
+ * projection so another tab or device cannot leave a stale Allow button
+ * active after the Gateway has already consumed the request.
+ */
+export function resolvedDecisionActionId(
+  raw: Record<string, unknown> | undefined,
+): string | undefined {
+  return typeof raw?.resolvedActionId === "string" && raw.resolvedActionId
+    ? raw.resolvedActionId
+    : undefined;
+}
+
 export function findOptimisticMessageId(
   references: Iterable<OptimisticMessageReference>,
   incoming: Pick<ChatMessage, "text" | "sessionId" | "commandId">,

@@ -5,6 +5,7 @@ const {
   isAgentWorkMessage,
   mergeChatMessage,
   mergeChatMessages,
+  resolvedDecisionActionId,
   withoutReconciledOptimisticCopies,
 } = await import(new URL("../app/chatMessages.ts", import.meta.url).href);
 
@@ -12,6 +13,16 @@ test("identifies agent work messages without guessing from their text", () => {
   assert.equal(isAgentWorkMessage({ kind: "agent" }), true);
   assert.equal(isAgentWorkMessage({ kind: "tool" }), true);
   assert.equal(isAgentWorkMessage({ kind: "user" }), false);
+});
+
+test("uses the verified resolved decision instead of leaving a stale permission action", () => {
+  assert.equal(
+    resolvedDecisionActionId({ resolvedActionId: "allow" }),
+    "allow",
+  );
+  assert.equal(resolvedDecisionActionId({ resolvedActionId: "" }), undefined);
+  assert.equal(resolvedDecisionActionId({ resolvedActionId: 1 }), undefined);
+  assert.equal(resolvedDecisionActionId(undefined), undefined);
 });
 
 test("authoritative user echo repairs clock-skewed optimistic ordering", () => {
