@@ -584,14 +584,15 @@ function splitMessage(message: ChannelMessage): ChannelMessage[] {
 
 function compactToolPresentation(value: unknown): unknown {
   if (!isToolGroupPresentation(value)) return value
-  const detailLimit = Math.min(
-    256,
-    Math.max(64, Math.floor((8 * 1024) / Math.max(1, value.tools.length))),
+  const focusedToolIndex = focusedToolPresentationIndex(value.tools)
+  const historicalDetailLimit = Math.min(
+    192,
+    Math.max(64, Math.floor((4 * 1024) / Math.max(1, value.tools.length - 1))),
   )
   return {
     ...value,
     groupId: compactPreview(value.groupId, 256),
-    tools: value.tools.map(tool => {
+    tools: value.tools.map((tool, index) => {
       const { result: _result, ...summary } = tool
       return {
         ...summary,
@@ -599,11 +600,33 @@ function compactToolPresentation(value: unknown): unknown {
         name: compactPreview(tool.name, 64),
         title: compactPreview(tool.title, 128),
         ...(tool.detail?.trim()
-          ? { detail: compactPreview(tool.detail, detailLimit) }
+          ? {
+              detail: index === focusedToolIndex
+                ? boundedToolInvocation(tool.detail, 4 * 1024)
+                : compactPreview(tool.detail, historicalDetailLimit),
+            }
           : {}),
       }
     }),
   } satisfies ChannelToolGroupPresentation
+}
+
+function focusedToolPresentationIndex(
+  tools: ChannelToolGroupPresentation['tools'],
+): number {
+  for (let index = tools.length - 1; index >= 0; index -= 1) {
+    if (tools[index]?.phase === 'started' || tools[index]?.phase === 'updated') {
+      return index
+    }
+  }
+  return Math.max(0, tools.length - 1)
+}
+
+function boundedToolInvocation(value: string, limit: number): string {
+  const normalized = value.replace(/\r\n?/gu, '\n').trimEnd()
+  return normalized.length > limit
+    ? `${normalized.slice(0, limit - 1)}…`
+    : normalized
 }
 
 function compactPreview(value: string, limit: number): string {

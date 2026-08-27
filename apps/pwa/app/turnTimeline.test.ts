@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "./chatMessages";
 import {
+  activeTurnToolFocus,
   activeTurnToolMessage,
   turnTimelineMessages,
 } from "./turnTimeline";
@@ -99,19 +100,73 @@ describe("activeTurnToolMessage", () => {
       ),
     ).toBeNull();
   });
+
+  it("returns attention to Agent text that follows a tool group", () => {
+    const messages = [
+      message("prompt", "user", "turn-1", 1),
+      toolMessage("tools", "turn-1", 2),
+      message("explanation", "agent", "turn-1", 3),
+    ];
+
+    expect(activeTurnToolMessage(messages, true)).toBeNull();
+  });
+
+  it("uses the latest tool update even when its bubble keeps an older timeline position", () => {
+    const messages = [
+      message("prompt", "user", "turn-1", 1),
+      toolMessage("tools", "turn-1", 4),
+      message("explanation", "agent", "turn-1", 3),
+    ];
+
+    expect(activeTurnToolMessage(messages, true)?.id).toBe("tools");
+  });
+});
+
+describe("activeTurnToolFocus", () => {
+  it("keeps only the nearest user or Agent message as tool context", () => {
+    const messages = [
+      message("prompt", "user", "turn-1", 1),
+      message("reasoning-1", "agent", "turn-1", 2),
+      toolMessage("tools-1", "turn-1", 3),
+      message("reasoning-2", "agent", "turn-1", 4),
+      toolMessage("tools-2", "turn-1", 5),
+    ];
+
+    const focus = activeTurnToolFocus(messages, true);
+
+    expect(focus?.toolMessage.id).toBe("tools-2");
+    expect(focus?.contextMessage?.id).toBe("reasoning-2");
+  });
+
+  it("uses the current prompt when no Agent message precedes the tool", () => {
+    const focus = activeTurnToolFocus(
+      [
+        message("prompt", "user", "turn-1", 1),
+        toolMessage("tools", "turn-1", 2),
+      ],
+      true,
+    );
+
+    expect(focus?.contextMessage?.id).toBe("prompt");
+  });
 });
 
 function message(
   id: string,
   kind: ChatMessage["kind"],
   commandId?: string,
+  timestamp = id.length,
 ): ChatMessage {
-  return { id, kind, commandId, text: id, timestamp: id.length };
+  return { id, kind, commandId, text: id, timestamp };
 }
 
-function toolMessage(id: string, commandId?: string): ChatMessage {
+function toolMessage(
+  id: string,
+  commandId?: string,
+  updatedAt = 2,
+): ChatMessage {
   return {
-    ...message(id, "tool", commandId),
+    ...message(id, "tool", commandId, Math.max(1, updatedAt - 1)),
     toolGroup: {
       kind: "tool_group",
       version: 1,
@@ -126,7 +181,7 @@ function toolMessage(id: string, commandId?: string): ChatMessage {
           phase: "completed",
           isError: false,
           startedAt: 1,
-          updatedAt: 2,
+          updatedAt,
         },
       ],
     },

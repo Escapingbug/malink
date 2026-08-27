@@ -285,6 +285,54 @@ describe('MatrixMlp3Port', () => {
       },
     })
 
+    const fullInvocation = [
+      'pnpm exec vitest run \\',
+      'src/runtime/__tests__/channelProjector.test.ts \\',
+      `${'--testNamePattern tool-focus '.repeat(80)}--invocation-tail`,
+    ].join('\n')
+    const invocationProjector = new ChannelProjector()
+    const [projectedInvocation] = invocationProjector.project({
+      kind: 'tool',
+      meta: {
+        id: 'turn-1:tool:long-invocation:1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        provider: 'acp',
+        seq: 2,
+        timestamp: 2,
+        sourcePhase: 'live',
+      },
+      phase: 'started',
+      toolCallId: 'long-invocation',
+      toolName: 'Bash',
+      category: 'execute',
+      input: { command: fullInvocation },
+    }, { verboseLevel: 2 })
+    const invocationStart = transport.delivered.length
+    await port.send({
+      ...projectedInvocation!.message,
+      replyMarkup: { idempotencyKey: 'long-invocation-message' },
+    })
+    await waitFor(() => transport.delivered.length > invocationStart)
+    const invocationExtension = transport.delivered[invocationStart]!
+      .content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
+    const invocationEnvelope = await openMlp3Envelope(invocationExtension.envelope, {
+      projectKey: base64UrlDecode(projectKey.key),
+      roomId: room.roomId,
+      projectId: grant.projectId,
+      keyId: projectKey.keyId,
+    })
+    if (invocationEnvelope.plaintext.kind !== 'signed_event') {
+      throw new Error('expected event')
+    }
+    expect(invocationEnvelope.plaintext.value.event.payload).toMatchObject({
+      type: 'assistant.message',
+      ui: {
+        kind: 'tool_group',
+        tools: [{ detail: fullInvocation }],
+      },
+    })
+
     const completeOutput = `first line\n${'visible output '.repeat(80)}\nimportant final line`
     const outputProjector = new ChannelProjector()
     const [projectedOutputTool] = outputProjector.project({

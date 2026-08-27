@@ -28,7 +28,7 @@ describe("ToolActivityCard", () => {
     expect(html).not.toContain("4 tool calls");
   });
 
-  it("uses one expanded stage view for live activity and diagnostics", () => {
+  it("keeps invocation visible and captured output behind an explicit action", () => {
     const html = renderToStaticMarkup(
       createElement(ToolActivityCard, {
         defaultExpanded: true,
@@ -55,8 +55,11 @@ describe("ToolActivityCard", () => {
     expect(html).toContain("Change");
     expect(html).toContain("Verify");
     expect(html).toContain('aria-label="Running"');
-    expect(html).toContain("terminal-output");
-    expect(html).toContain("Running test suite…");
+    expect(html).toContain("tool-call-invocation");
+    expect(html).toContain("pnpm test");
+    expect(html).toContain('aria-label="Show captured output"');
+    expect(html).not.toContain("terminal-output");
+    expect(html).not.toContain("Running test suite…");
     expect(html).toContain("Diagnostics · Raw transcript");
     expect(html).toContain("raw agent output");
   });

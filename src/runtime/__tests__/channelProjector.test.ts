@@ -166,7 +166,7 @@ describe('ChannelProjector — patch merge', () => {
     })
 
     it('bounds tool parameters and omits raw output from the structured presentation', () => {
-        const detail = `node -e "${'command-part '.repeat(60)}"`
+        const detail = `node -e "${'command-part '.repeat(420)}"`
         const output = `first line\n${'important output '.repeat(80)}\nlast line`
         const result = projector.project(makeToolEvent({
             toolCallId: 'long-output',
@@ -179,7 +179,8 @@ describe('ChannelProjector — patch merge', () => {
         }), { verboseLevel: 1 })
 
         const item = result[0]?.message.presentation?.tools[0]
-        expect(item?.detail?.length).toBeLessThanOrEqual(512)
+        expect(item?.detail?.length).toBeLessThanOrEqual(4_096)
+        expect(item?.detail).toContain('command-part command-part')
         expect(item?.detail).toMatch(/…$/u)
         expect(item).not.toHaveProperty('result')
         expect(JSON.stringify(result[0]?.message)).not.toContain('important output')

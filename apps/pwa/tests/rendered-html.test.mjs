@@ -496,12 +496,23 @@ test("keeps conversations inside the viewport with an independently scrollable f
   assert.doesNotMatch(source, /behavior:\s*"smooth"/);
 });
 
-test("renders safe Markdown and keeps tool activity in one accessible staged card", async () => {
-  const [app, markdown, toolGroup, presentation, packageJson, styles] =
+test("renders safe Markdown with phase-aware, responsive tool focus", async () => {
+  const [
+    app,
+    markdown,
+    toolGroup,
+    toolFocus,
+    turnTimeline,
+    presentation,
+    packageJson,
+    styles,
+  ] =
     await Promise.all([
       readFile(new URL("app/MalinkApp.tsx", appRoot), "utf8"),
       readFile(new URL("app/MarkdownContent.tsx", appRoot), "utf8"),
       readFile(new URL("app/ToolActivityCard.tsx", appRoot), "utf8"),
+      readFile(new URL("app/ToolFocusPanel.tsx", appRoot), "utf8"),
+      readFile(new URL("app/turnTimeline.ts", appRoot), "utf8"),
       readFile(new URL("app/presentation.ts", appRoot), "utf8"),
       readFile(new URL("package.json", appRoot), "utf8"),
       readFile(new URL("app/globals.css", appRoot), "utf8"),
@@ -525,11 +536,31 @@ test("renders safe Markdown and keeps tool activity in one accessible staged car
   assert.match(toolGroup, /aria-expanded=\{expanded\}/);
   assert.match(toolGroup, /toolStages\(group\.tools\)/);
   assert.match(toolGroup, /Diagnostics · Raw transcript/);
-  assert.match(toolGroup, /terminal-output/);
   assert.match(toolGroup, /copyDetails/);
   assert.match(toolGroup, /copyState === "copying"/);
   assert.match(toolGroup, /Copying…/);
-  assert.match(toolGroup, /className={`tool-result-view/);
+  assert.match(toolGroup, /className="tool-call-invocation"/);
+  assert.match(toolGroup, /outputOpen && tool\.result/);
+  assert.doesNotMatch(toolGroup, /Waiting for output|No output was captured/);
+  assert.match(app, /activeTurnToolFocus\(messages, isStreaming\)/);
+  assert.match(app, /<ToolFocusPanel/);
+  assert.match(app, /tool-focus-context-message/);
+  assert.match(toolFocus, /className="tool-focus-invocation"/);
+  assert.match(toolFocus, /outputOpen && tool\.result/);
+  assert.match(toolFocus, /Show captured output/);
+  assert.match(toolFocus, /\{toolIndex \+ 1\}\/\{group\.tools\.length\}/);
+  assert.match(turnTimeline, /messageActivityAt\(message\)/);
+  assert.match(styles, /\.conversation-workspace\.is-tool-focused/);
+  assert.match(
+    styles,
+    /\.conversation-panel\s*\{[\s\S]*?container-type:\s*inline-size/,
+  );
+  assert.match(styles, /@container \(min-width: 820px\)/);
+  assert.match(
+    styles,
+    /grid-template-columns:\s*minmax\(0, 1fr\) clamp\(390px, 42%, 620px\)/,
+  );
+  assert.match(styles, /max-height:\s*min\(48vh, 440px\)/);
   assert.match(presentation, /const TOOL_LIMIT = 200/);
   assert.match(packageJson, /"react-markdown"/);
   assert.match(packageJson, /"remark-gfm"/);

@@ -38,8 +38,11 @@ interface ProjectedToolState {
     updatedAt: number
 }
 
-const MAX_TOOL_DETAIL_CHARS = 512
-const MAX_TOOL_COMMAND_CHARS = 1_024
+// The presentation layer uses a bounded 4 KiB invocation field. Preserve that
+// full budget here so long commands remain inspectable instead of being
+// permanently truncated before they reach the client.
+const MAX_TOOL_DETAIL_CHARS = 4 * 1_024
+const MAX_TOOL_COMMAND_CHARS = 4 * 1_024
 const MAX_TOOL_PLAN_CHARS = 8 * 1_024
 const MAX_TOOL_TODO_ITEMS = 32
 const MAX_TOOL_TODO_CONTENT_CHARS = 256

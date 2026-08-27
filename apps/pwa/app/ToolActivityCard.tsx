@@ -7,6 +7,7 @@ import type {
   ToolPhase,
   ToolPresentationItem,
 } from "./presentation";
+import { ToolOutput } from "./ToolFocusPanel";
 
 type ToolStageKind = "explore" | "change" | "execute" | "delegate" | "other";
 
@@ -38,7 +39,6 @@ export function ToolActivityCard({
   const [copyState, setCopyState] = useState<
     "idle" | "copying" | "copied" | "failed"
   >("idle");
-  const userControlledExpansionRef = useRef(false);
   const followLatestRef = useRef(true);
   const stages = useMemo(() => toolStages(group.tools), [group.tools]);
   const latest = currentTool(group.tools);
@@ -56,16 +56,6 @@ export function ToolActivityCard({
     () => `tool-activity-${safeDomId(group.groupId)}`,
     [group.groupId],
   );
-
-  useEffect(() => {
-    if (
-      live &&
-      !userControlledExpansionRef.current &&
-      !window.matchMedia("(max-width: 900px)").matches
-    ) {
-      setExpanded(true);
-    }
-  }, [live]);
 
   useEffect(() => {
     if (!live || !followLatestRef.current || !latestToolId) return;
@@ -117,10 +107,7 @@ export function ToolActivityCard({
         className="tool-activity-summary"
         aria-expanded={expanded}
         aria-controls={detailsId}
-        onClick={() => {
-          userControlledExpansionRef.current = true;
-          setExpanded((current) => !current);
-        }}
+        onClick={() => setExpanded((current) => !current)}
       >
         <ActivityStateMark phase={summary.phase} />
         <span className="tool-activity-copy">
@@ -241,43 +228,33 @@ export function ToolActivityCard({
 }
 
 function ToolCallDetail({ tool }: { tool: ToolPresentationItem }) {
-  const active = tool.phase === "started" || tool.phase === "updated";
+  const [outputToolId, setOutputToolId] = useState<string | null>(null);
+  const outputOpen = outputToolId === tool.id;
+
   return (
     <div className={`tool-call-detail category-${tool.category}`}>
       <div className="tool-call-command">
         <span>{tool.name}</span>
-        <code>{tool.detail || tool.title}</code>
-      </div>
-      {tool.result ? (
-        tool.category === "edit" || tool.category === "write" ? (
-          <pre className="tool-result-view diff-output">
-            {tool.result.split("\n").map((line, index) => (
-              <span
-                className={
-                  line.startsWith("+") && !line.startsWith("+++")
-                    ? "is-added"
-                    : line.startsWith("-") && !line.startsWith("---")
-                      ? "is-removed"
-                      : ""
-                }
-                key={`${index}:${line}`}
-              >
-                {line || " "}
-                {"\n"}
-              </span>
-            ))}
-          </pre>
-        ) : (
-          <pre
-            className={`tool-result-view ${tool.category === "execute" ? "terminal-output" : "source-output"}`}
+        {tool.result && (
+          <button
+            type="button"
+            className={outputOpen ? "is-active" : ""}
+            aria-label={outputOpen ? "Show tool call" : "Show captured output"}
+            aria-pressed={outputOpen}
+            onClick={() =>
+              setOutputToolId((current) => current === tool.id ? null : tool.id)
+            }
           >
-            {tool.result}
-          </pre>
-        )
+            &gt;_
+          </button>
+        )}
+      </div>
+      {outputOpen && tool.result ? (
+        <ToolOutput tool={tool} />
       ) : (
-        <div className={`tool-result-empty ${active ? "is-waiting" : ""}`}>
-          {active ? "Waiting for output…" : "No output was captured for this call."}
-        </div>
+        <pre className="tool-call-invocation" key={tool.id}>
+          {tool.detail || tool.title}
+        </pre>
       )}
     </div>
   );

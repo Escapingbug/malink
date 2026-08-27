@@ -95,6 +95,10 @@ import {
 import { MarkdownContent } from "./MarkdownContent";
 import { ToolActivityCard } from "./ToolActivityCard";
 import {
+  focusedToolPresentation,
+  ToolFocusPanel,
+} from "./ToolFocusPanel";
+import {
   ExtensionViewCard,
   type ExtensionViewDecisionState,
 } from "./ExtensionViewCard";
@@ -282,7 +286,7 @@ import {
   type ObservedCommandCompletion,
 } from "./turnContext";
 import {
-  activeTurnToolMessage,
+  activeTurnToolFocus,
   turnTimelineMessages,
 } from "./turnTimeline";
 import {
@@ -1089,6 +1093,9 @@ function MalinkAppRuntime() {
     Map<string, ChatMessage | null>
   >(() => new Map());
   const [expandedTurnId, setExpandedTurnId] = useState<string | null>(null);
+  const [toolFocusHistoryKey, setToolFocusHistoryKey] = useState<string | null>(
+    null,
+  );
   const [turnHistoryLoad, setTurnHistoryLoad] =
     useState<TurnHistoryLoadState | null>(null);
   const [feedReturnAnchor, setFeedReturnAnchor] =
@@ -1640,9 +1647,19 @@ function MalinkAppRuntime() {
   const isStreaming = Boolean(
     selectedSessionId && runningSessionIds.has(selectedSessionId),
   );
-  const liveToolMessage = useMemo(
-    () => activeTurnToolMessage(messages, isStreaming),
+  const toolFocus = useMemo(
+    () => activeTurnToolFocus(messages, isStreaming),
     [isStreaming, messages],
+  );
+  const liveToolMessage = toolFocus?.toolMessage ?? null;
+  const toolFocusCurrentTool = toolFocus?.toolMessage.toolGroup
+    ? focusedToolPresentation(toolFocus.toolMessage.toolGroup.tools)
+    : undefined;
+  const toolFocusKey = toolFocus && toolFocusCurrentTool
+    ? `${selectedSessionId ?? "session"}:${toolFocus.toolMessage.id}:${toolFocusCurrentTool.id}`
+    : null;
+  const toolFocusHistoryOpen = Boolean(
+    toolFocusKey && toolFocusHistoryKey === toolFocusKey,
   );
   const timelineMessages = useMemo(
     () => turnTimelineMessages(messages),
@@ -1654,6 +1671,7 @@ function MalinkAppRuntime() {
   const agentActivity = selectedSessionId
     ? agentActivitiesBySession.get(selectedSessionId) ?? null
     : null;
+
   const isPromptSubmitting = Boolean(
     selectedSessionId && submittingPromptSessionIds.has(selectedSessionId),
   );
@@ -8107,7 +8125,9 @@ function MalinkAppRuntime() {
         )}
 
 
-        <div className="conversation-workspace">
+        <div
+          className={`conversation-workspace ${toolFocus ? "is-tool-focused" : ""} ${toolFocusHistoryOpen ? "show-focus-history" : ""}`}
+        >
           <div
             className="chat-feed"
             ref={feedRef}
@@ -8154,6 +8174,10 @@ function MalinkAppRuntime() {
             <div className="history-skeleton" aria-hidden="true" />
           )}
           {timelineMessages.map((message, messageIndex) => {
+            const isToolFocusContext =
+              toolFocus?.contextMessage?.id === message.id;
+            const isToolFocusSource =
+              toolFocus?.toolMessage.id === message.id;
             const agentWork = isAgentWorkMessage(message);
             const previousIsAgentWork = isAgentWorkMessage(
               timelineMessages[messageIndex - 1],
@@ -8234,7 +8258,7 @@ function MalinkAppRuntime() {
                 (message.revision !== undefined ? "sent" : undefined);
               return (
                 <div
-                  className={`message-row user-row turn-prompt ${
+                  className={`message-row user-row turn-prompt ${isToolFocusContext ? "tool-focus-context-message" : ""} ${
                     message.historical ? "" : "message-enter"
                   }`}
                   key={message.id}
@@ -8300,7 +8324,7 @@ function MalinkAppRuntime() {
               if (!message.toolGroup) return null;
               return (
                 <div
-                  className={`message-row tool-group-row ${agentTurnClass} ${turnPresentationClass} ${
+                  className={`message-row tool-group-row ${isToolFocusSource ? "tool-focus-source" : ""} ${agentTurnClass} ${turnPresentationClass} ${
                     message.historical ? "" : "message-enter"
                   }`}
                   key={message.id}
@@ -8428,7 +8452,7 @@ function MalinkAppRuntime() {
             }
             return (
               <div
-                className={`message-row agent-row ${agentTurnClass} ${turnPresentationClass} ${
+                className={`message-row agent-row ${isToolFocusContext ? "tool-focus-context-message" : ""} ${agentTurnClass} ${turnPresentationClass} ${
                   message.historical ? "" : "message-enter"
                 }`}
                 key={message.id}
@@ -8476,6 +8500,17 @@ function MalinkAppRuntime() {
             </div>
             )}
           </div>
+          {toolFocus?.toolMessage.toolGroup && (
+            <ToolFocusPanel
+              group={toolFocus.toolMessage.toolGroup}
+              historyOpen={toolFocusHistoryOpen}
+              onToggleHistory={() =>
+                setToolFocusHistoryKey((current) =>
+                  current === toolFocusKey ? null : toolFocusKey,
+                )
+              }
+            />
+          )}
         </div>
 
         <div className="composer-area">
