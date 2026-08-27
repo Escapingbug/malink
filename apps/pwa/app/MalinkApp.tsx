@@ -492,6 +492,7 @@ function sameGatewayUiScope(
 
 const DEVICE_INVITATION_RESULT_TIMEOUT_MS = 95_000;
 const SESSION_CREATE_RESULT_RECOVERY_MS = 15_000;
+const PROJECT_CREATE_RESULT_TIMEOUT_MS = 60_000;
 const PROVIDER_HISTORY_RESULT_TIMEOUT_MS = 60_000;
 const GATEWAY_UPDATE_DISCOVERY_INTERVAL_MS = 15 * 60_000;
 
@@ -6076,6 +6077,7 @@ function MalinkAppRuntime() {
     if (newProjectBusy) return;
     setNewProjectBusy(true);
     recoverUiNotice("project:create");
+    let completedCommandId: string | null = null;
     try {
       const target = projectCreationGateways.find(gateway =>
         gateway.gatewayNodeId === input.gatewayNodeId &&
@@ -6092,7 +6094,11 @@ function MalinkAppRuntime() {
         createDirectory: input.createDirectory,
       }, target.targetProjectId, { propagateFailure: true });
       if (!sent) return;
-      const completion = await sent.completion;
+      const completion = await waitForCommandCompletion(
+        sent.completion,
+        PROJECT_CREATE_RESULT_TIMEOUT_MS,
+      );
+      completedCommandId = sent.commandId;
       if (completion.outcome !== "succeeded") {
         throw new Error(
           completion.error?.message ?? "The Gateway could not create this project.",
@@ -6114,6 +6120,11 @@ function MalinkAppRuntime() {
         formatUiError(error),
       );
     } finally {
+      if (completedCommandId) {
+        completedCommandResultsRef.current.delete(completedCommandId);
+        await malinkClientRef.current?.releaseCommand(completedCommandId)
+          .catch(() => undefined);
+      }
       setNewProjectBusy(false);
     }
   }

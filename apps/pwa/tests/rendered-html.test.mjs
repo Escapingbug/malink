@@ -829,6 +829,15 @@ test("pairs a Gateway without exposing Matrix fingerprints and signs strict comm
       matrix.indexOf("const recoveredTrust = await recoverGatewayTransportSnapshot"),
   );
   assert.match(app, /waitForCommandCompletion\(sent\.completion\)/);
+  const projectCreation = app.slice(
+    app.indexOf("async function createProject"),
+    app.indexOf("async function createSession"),
+  );
+  assert.match(
+    projectCreation,
+    /waitForCommandCompletion\([\s\S]*sent\.completion,[\s\S]*PROJECT_CREATE_RESULT_TIMEOUT_MS/,
+  );
+  assert.match(projectCreation, /releaseCommand\(completedCommandId\)/);
   assert.match(
     app,
     /waitForCommandCompletion\([\s\S]*sent\.completion,[\s\S]*PROVIDER_HISTORY_RESULT_TIMEOUT_MS/,

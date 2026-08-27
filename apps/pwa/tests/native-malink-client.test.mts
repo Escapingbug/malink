@@ -545,7 +545,7 @@ test("detaching the WebView waiter does not cancel a native-confirmed pairing", 
   client.dispose();
 });
 
-test("surfaces a review-required blocker with its operation immediately", async () => {
+test("surfaces a review-required project creation blocker immediately", async () => {
   const reviews: string[] = [];
   const port = new RuntimePort((request) => {
     if (request.method !== "malink.command.send") return responseFor(request);
@@ -557,7 +557,7 @@ test("surfaces a review-required blocker with its operation immediately", async 
           kind: "command_blocked",
           commandId: "command-review-1",
           state: "needs_review",
-          operation: "session.delete",
+          operation: "project.create",
           expectedRevision: 12,
         },
       },
@@ -571,13 +571,17 @@ test("surfaces a review-required blocker with its operation immediately", async 
     }
   });
   await assert.rejects(
-    client.send({ operation: "session.create" }),
+    client.send({
+      operation: "project.create",
+      name: "New project",
+      cwd: "/workspace/new-project",
+    }),
     (error) => error instanceof CommandReviewRequiredError &&
       error.review.commandId === "command-review-1" &&
-      error.review.operation === "session.delete" &&
+      error.review.operation === "project.create" &&
       error.review.expectedRevision === 12,
   );
-  assert.deepEqual(reviews, ["command-review-1:session.delete:12"]);
+  assert.deepEqual(reviews, ["command-review-1:project.create:12"]);
   client.dispose();
 });
 

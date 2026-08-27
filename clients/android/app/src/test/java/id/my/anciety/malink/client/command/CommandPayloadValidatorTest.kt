@@ -316,7 +316,7 @@ class CommandPayloadValidatorTest {
     }
 
     @Test
-    fun `authorization is exactly the signed certificate grant set`() {
+    fun `authorization follows explicit grants and upgrades full Workspace members`() {
         assertEquals(
             CommandAuthorizationSource.CERTIFICATE_GRANT,
             CommandAuthorizationPolicy.evaluate(
@@ -366,10 +366,25 @@ class CommandPayloadValidatorTest {
         assertEquals(CommandAuthorizationSource.DENIED, denied.source)
         assertFalse(
             CommandAuthorizationPolicy.evaluate(
+                CommandOperation.PROJECT_CREATE,
+                listOf(PairingOperation.PROMPT),
+            ).authorized,
+        )
+        assertFalse(
+            CommandAuthorizationPolicy.evaluate(
                 CommandOperation.DEVICE_INVITE,
                 emptyList(),
             ).authorized,
         )
+        CommandOperation.entries.forEach { operation ->
+            assertTrue(
+                "Full Workspace member should inherit ${operation.wireName}",
+                CommandAuthorizationPolicy.evaluate(
+                    operation,
+                    listOf(PairingOperation.DEVICE_INVITE),
+                ).authorized,
+            )
+        }
     }
 
     @Test

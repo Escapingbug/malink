@@ -668,7 +668,14 @@ object CommandAuthorizationPolicy {
         certificateGrants: Collection<PairingOperation>,
     ): CommandAuthorizationDecision {
         val requiredGrant = requiredCertificateOperation(operation)
-        val granted = requiredGrant in certificateGrants
+        // DEVICE_INVITE marks a full Workspace member. Such a member can
+        // already delegate full membership, so it inherits ordinary command
+        // operations introduced after its certificate was issued. Keep this
+        // local preflight aligned with MatrixMlp3CommandAuthorizer; otherwise
+        // an older Android pairing can reject a command that the Gateway
+        // explicitly authorizes.
+        val granted = requiredGrant in certificateGrants ||
+            PairingOperation.DEVICE_INVITE in certificateGrants
         return if (granted) {
             CommandAuthorizationDecision(true, CommandAuthorizationSource.CERTIFICATE_GRANT)
         } else {

@@ -1056,6 +1056,7 @@ function parseBlockingCommand(error: unknown): BlockingCommand | null {
 function parseCommandOperation(input: unknown): CommandPayload["operation"] | undefined {
   switch (input) {
     case "session.create":
+    case "project.create":
     case "project.settings":
     case "provider.sessions.list":
     case "provider.session.inspect":
@@ -1070,6 +1071,9 @@ function parseCommandOperation(input: unknown): CommandPayload["operation"] | un
     case "gateway.enrollment.invite":
     case "gateway.enrollment.approve":
     case "gateway.profile.update":
+    case "gateway.update.stage":
+    case "gateway.update.apply":
+    case "gateway.update.status":
       return input;
     default:
       return undefined;
