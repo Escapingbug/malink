@@ -90,6 +90,7 @@ The Agent-built candidate must contain regular files at:
 ```text
 runtime/node
 ops/matrix-local-gateway.js
+mcp/stdio.js
 ops/gatewayUpdateSupervisorMain.js
 ops/gatewayAgentUpdateCli.js
 ```

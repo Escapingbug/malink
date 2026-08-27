@@ -142,8 +142,14 @@ export async function validateMacosGatewayRelease(releaseDirectory: string): Pro
     const root = await realpath(releaseDirectory)
     const runtime = join(root, 'runtime', 'node')
     const entrypoint = join(root, 'ops', 'matrix-local-gateway.js')
-    for (const path of [runtime, entrypoint]) {
-        const metadata = await lstat(path)
+    const mcpEntrypoint = join(root, 'mcp', 'stdio.js')
+    for (const path of [runtime, entrypoint, mcpEntrypoint]) {
+        const metadata = await lstat(path).catch(error => {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+                throw new Error(`Required Gateway release path is missing: ${path}`)
+            }
+            throw error
+        })
         if (metadata.isSymbolicLink() || !metadata.isFile()) {
             throw new Error(`Gateway release path is not a regular file: ${path}`)
         }
@@ -158,6 +164,7 @@ export async function validateMacosGatewayRelease(releaseDirectory: string): Pro
             await chmod(runtime, 0o755)
         })
     await access(entrypoint, constants.R_OK)
+    await access(mcpEntrypoint, constants.R_OK)
 }
 
 function stableLaunchAgentPlist(

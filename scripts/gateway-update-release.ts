@@ -144,6 +144,7 @@ async function requirePreparedRelease(source: string): Promise<void> {
   for (const [path, mode] of [
     ['runtime/node', constants.X_OK],
     ['ops/matrix-local-gateway.js', constants.R_OK],
+    ['mcp/stdio.js', constants.R_OK],
     ['ops/gatewayUpdateSupervisorMain.js', constants.R_OK],
   ] as const) {
     const absolute = join(source, ...path.split('/'))

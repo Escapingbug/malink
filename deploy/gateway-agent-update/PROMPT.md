@@ -16,6 +16,9 @@ Update this Malink Gateway from the exact signed Git commit supplied above.
    its Gateway and update-supervisor bundles with the target commit's production
    bundles, including `ops/matrix-local-gateway.js`,
    `ops/gatewayUpdateSupervisorMain.js`, and `ops/gatewayAgentUpdateCli.js`.
+   Replace the target commit's `dist/mcp/stdio.js` bundle at
+   `mcp/stdio.js` in the candidate as well; ACP sessions cannot open without
+   this release-pinned subprocess entrypoint.
    Preserve unchanged production dependencies locally. If the target lockfile
    changes a runtime dependency, install and dereference the exact production
    dependency tree into the candidate; no symlink may remain.

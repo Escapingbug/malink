@@ -84,6 +84,9 @@ export function resolveMalinkMcpServerCommand(options: MalinkMcpResolutionOption
 
     const builtCandidates = [
         ...(moduleDir ? [resolve(moduleDir, 'mcp', 'stdio.js')] : []),
+        // A self-contained Gateway release keeps runtime entrypoints beside
+        // ops/ instead of preserving the source dist/ directory.
+        ...(moduleDir ? [resolve(moduleDir, '..', 'mcp', 'stdio.js')] : []),
         resolve(cwd, 'dist', 'mcp', 'stdio.js'),
     ]
 

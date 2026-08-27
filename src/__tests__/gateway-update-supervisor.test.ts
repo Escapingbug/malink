@@ -176,6 +176,10 @@ describe('GatewayUpdateSupervisor', () => {
         join(instruction.candidateDirectory, 'ops', 'gatewayAgentUpdateCli.js'),
         '// Agent-built update CLI release 2\n',
       )
+      await writeFile(
+        join(instruction.candidateDirectory, 'mcp', 'stdio.js'),
+        '// Agent-built MCP release 2\n',
+      )
       await expect(client.submitAgentRelease('release-2')).resolves.toMatchObject({
         phase: 'staged',
         maintenanceSessionId: 'maintenance-1',
@@ -277,11 +281,12 @@ describe('GatewayUpdateSupervisor', () => {
     expect(requestedUrls).toEqual([
       'https://updates.example.test/manifests/release-2.json',
       'https://updates.example.test/gateway.js',
+      'https://updates.example.test/mcp.js',
       'https://updates.example.test/supervisor.js',
     ])
     expect(logs).toContain(
       '[gateway-update] staged release-2: reused 1 files (10 bytes), '
-      + 'downloaded 2 files (52 bytes)',
+      + 'downloaded 3 files (69 bytes)',
     )
 
     const stagedRuntime = join(
@@ -375,7 +380,7 @@ describe('GatewayUpdateSupervisor', () => {
     await supervisor.initialize()
 
     await expect(supervisor.stage('release-2')).resolves.toMatchObject({ phase: 'staged' })
-    expect(artifactRequests).toHaveLength(2)
+    expect(artifactRequests).toHaveLength(3)
     for (const request of artifactRequests) {
       expect(new Headers(request.headers).get('accept-encoding')).toBe('identity')
     }
@@ -562,14 +567,17 @@ async function releaseFixture(options: {
   const oldRelease = join(releasesRoot, 'release-1')
   await mkdir(join(oldRelease, 'runtime'), { recursive: true })
   await mkdir(join(oldRelease, 'ops'), { recursive: true })
+  await mkdir(join(oldRelease, 'mcp'), { recursive: true })
   await writeFile(join(oldRelease, 'runtime', 'node'), '#!/bin/sh\n', { mode: 0o755 })
   await writeFile(join(oldRelease, 'ops', 'matrix-local-gateway.js'), '// old\n')
+  await writeFile(join(oldRelease, 'mcp', 'stdio.js'), '// old mcp\n')
   await symlink(oldRelease, join(installRoot, 'current'))
   const launchAgentPath = join(installRoot, 'gateway.plist')
   await writeFile(launchAgentPath, `<string>${join(installRoot, 'current')}</string>`)
 
   const runtime = new TextEncoder().encode('#!/bin/sh\n')
   const entrypoint = new TextEncoder().encode('// gateway release 2\n')
+  const mcpEntrypoint = new TextEncoder().encode('// mcp release 2\n')
   const supervisorEntrypoint = new TextEncoder().encode('// update supervisor release 2\n')
   const keys = await generateDeviceKeyPair()
   const signer: PairingPublicKey = {
@@ -616,6 +624,11 @@ async function releaseFixture(options: {
         entrypoint,
       ),
       releaseFile(
+        'mcp/stdio.js',
+        'https://updates.example.test/mcp.js',
+        mcpEntrypoint,
+      ),
+      releaseFile(
         'ops/gatewayUpdateSupervisorMain.js',
         'https://updates.example.test/supervisor.js',
         supervisorEntrypoint,
@@ -640,6 +653,7 @@ async function releaseFixture(options: {
   const bodies = new Map<string, Uint8Array>([
     ['https://updates.example.test/runtime-node', runtime],
     ['https://updates.example.test/gateway.js', entrypoint],
+    ['https://updates.example.test/mcp.js', mcpEntrypoint],
     ['https://updates.example.test/supervisor.js', supervisorEntrypoint],
   ])
   const fetchMock = vi.fn(async (input: string | URL | Request) => {
@@ -678,7 +692,9 @@ async function agentUpdateFixture(options: { tamperPrompt?: boolean } = {}) {
   const oldRelease = join(installRoot, 'releases', 'release-1')
   await mkdir(join(oldRelease, 'runtime'), { recursive: true })
   await mkdir(join(oldRelease, 'ops'), { recursive: true })
+  await mkdir(join(oldRelease, 'mcp'), { recursive: true })
   await writeFile(join(oldRelease, 'runtime', 'node'), '#!/bin/sh\n', { mode: 0o755 })
+  await writeFile(join(oldRelease, 'mcp', 'stdio.js'), '// old MCP\n')
   await writeFile(join(oldRelease, 'ops', 'matrix-local-gateway.js'), '// old Gateway\n')
   await writeFile(
     join(oldRelease, 'ops', 'gatewayUpdateSupervisorMain.js'),

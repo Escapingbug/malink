@@ -51,6 +51,7 @@ export async function installGatewayUpdateSupervisor(options: InstallOptions): P
   for (const path of [
     join(currentRoot, 'runtime', 'node'),
     join(currentRoot, 'ops', 'matrix-local-gateway.js'),
+    join(currentRoot, 'mcp', 'stdio.js'),
     join(currentRoot, 'ops', 'gatewayUpdateSupervisorMain.js'),
     ...(options.agentPromptBaseUrl
       ? [join(currentRoot, 'ops', 'gatewayAgentUpdateCli.js')]

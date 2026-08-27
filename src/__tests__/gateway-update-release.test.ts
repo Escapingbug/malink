@@ -60,6 +60,7 @@ describe('Gateway update release publisher', () => {
       toArrayBuffer(canonicalJsonBytes(signed.manifest)),
     )).resolves.toBe(true)
     expect(signed.manifest.files.map(file => file.path)).toEqual([
+      'mcp/stdio.js',
       'ops/gatewayUpdateSupervisorMain.js',
       'ops/matrix-local-gateway.js',
       'runtime/node',
@@ -129,7 +130,9 @@ describe('Gateway update release publisher', () => {
 async function preparedRelease(root: string): Promise<void> {
   await mkdir(join(root, 'runtime'), { recursive: true })
   await mkdir(join(root, 'ops'), { recursive: true })
+  await mkdir(join(root, 'mcp'), { recursive: true })
   await writeFile(join(root, 'runtime', 'node'), '#!/bin/sh\n', { mode: 0o755 })
+  await writeFile(join(root, 'mcp', 'stdio.js'), '// mcp\n')
   await writeFile(join(root, 'ops', 'matrix-local-gateway.js'), '// gateway\n')
   await writeFile(
     join(root, 'ops', 'gatewayUpdateSupervisorMain.js'),

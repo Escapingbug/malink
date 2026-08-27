@@ -163,6 +163,11 @@ export class AcpClientManager {
                 cwd: this.config.cwd,
                 env: { ...process.env, ...this.config.env },
                 windowsHide: true,
+                // ACP adapters such as codex-acp spawn their own long-lived
+                // agent process. Give every adapter a dedicated POSIX process
+                // group so timeout recovery can terminate the complete tree
+                // instead of orphaning the actual agent under PID 1.
+                detached: !isWindows,
                 // On Windows, agent commands are typically .cmd wrappers (e.g. agent.cmd).
                 // Node's spawn() cannot execute .cmd files directly without shell: true,
                 // causing the process to exit immediately → "Connection closed" on ACP init.
@@ -556,6 +561,8 @@ export class AcpClientManager {
                         windowsHide: true,
                         stdio: 'ignore',
                     })
+                } else if (this.childProcess.pid) {
+                    process.kill(-this.childProcess.pid, 'SIGKILL')
                 } else {
                     this.childProcess.kill('SIGKILL')
                 }
@@ -595,27 +602,55 @@ export class AcpClientManager {
             return
         }
 
-        // Stage 1: Close stdin (most graceful for stdio-based ACP agents)
+        const processGroupId = child.pid
+
+        // Stage 1: Close stdin (most graceful for stdio-based ACP agents).
+        // The adapter may exit while leaving its own child alive, so the
+        // process-group checks below must run even when this direct child has
+        // already emitted exit.
         const stdin = child.stdin
         if (stdin && !stdin.destroyed) {
             try { stdin.end() } catch {}
         }
         let exited = await this.waitForChildExit(child, STDIN_CLOSE_GRACE_MS)
 
-        // Stage 2: SIGTERM
-        if (!exited && this.isChildRunning(child)) {
-            try { child.kill('SIGTERM') } catch {}
-            exited = await this.waitForChildExit(child, SIGTERM_GRACE_MS)
+        // Stage 2: terminate the complete adapter process group. A direct
+        // child kill is retained only for the defensive no-PID case.
+        let processTreeExited = processGroupId
+            ? !this.isProcessGroupRunning(processGroupId)
+            : exited
+        if (!processTreeExited) {
+            if (processGroupId) {
+                this.signalProcessGroup(processGroupId, 'SIGTERM')
+                processTreeExited = await this.waitForProcessGroupExit(
+                    processGroupId,
+                    SIGTERM_GRACE_MS,
+                )
+            } else if (!exited && this.isChildRunning(child)) {
+                try { child.kill('SIGTERM') } catch {}
+                exited = await this.waitForChildExit(child, SIGTERM_GRACE_MS)
+                processTreeExited = exited
+            }
         }
 
-        // Stage 3: SIGKILL
-        if (!exited && this.isChildRunning(child)) {
-            console.error(`[acp-agent] Agent did not exit after SIGTERM+${SIGTERM_GRACE_MS}ms, sending SIGKILL`)
-            try { child.kill('SIGKILL') } catch {}
-            exited = await this.waitForChildExit(child, SIGKILL_GRACE_MS)
+        // Stage 3: force-kill any adapter descendant that ignored SIGTERM.
+        if (!processTreeExited) {
+            console.error(`[acp-agent] Agent process tree did not exit after SIGTERM+${SIGTERM_GRACE_MS}ms, sending SIGKILL`)
+            if (processGroupId) {
+                this.signalProcessGroup(processGroupId, 'SIGKILL')
+                processTreeExited = await this.waitForProcessGroupExit(
+                    processGroupId,
+                    SIGKILL_GRACE_MS,
+                )
+            } else if (!exited && this.isChildRunning(child)) {
+                try { child.kill('SIGKILL') } catch {}
+                exited = await this.waitForChildExit(child, SIGKILL_GRACE_MS)
+                processTreeExited = exited
+            }
         }
 
-        this.destroyChildHandles(child, !exited)
+        if (!exited) exited = await this.waitForChildExit(child, SIGKILL_GRACE_MS)
+        this.destroyChildHandles(child, !exited || !processTreeExited)
     }
 
     private waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
@@ -644,6 +679,37 @@ export class AcpClientManager {
             }
         } catch {}
         return false
+    }
+
+    private isProcessGroupRunning(processGroupId: number): boolean {
+        try {
+            process.kill(-processGroupId, 0)
+            return true
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false
+            return true
+        }
+    }
+
+    private signalProcessGroup(processGroupId: number, signal: NodeJS.Signals): void {
+        try {
+            process.kill(-processGroupId, signal)
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+        }
+    }
+
+    private async waitForProcessGroupExit(
+        processGroupId: number,
+        timeoutMs: number,
+    ): Promise<boolean> {
+        const deadline = Date.now() + timeoutMs
+        while (this.isProcessGroupRunning(processGroupId)) {
+            const remaining = deadline - Date.now()
+            if (remaining <= 0) return false
+            await new Promise(resolve => setTimeout(resolve, Math.min(25, remaining)))
+        }
+        return true
     }
 
     private destroyChildHandles(child: ChildProcess, unref = false): void {
