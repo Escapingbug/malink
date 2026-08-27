@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
     parseProviderProfilesFile,
     registerConfiguredProviders,
     resolveProviderProfiles,
+    normalizeLegacyCodexProfile,
+    createProviderFromProfile,
 } from '@/providers/configured'
 import { OpencodeProvider } from '@/providers/opencode'
 import {
@@ -111,6 +113,66 @@ describe('provider profiles', () => {
         } finally {
             rmSync(dir, { recursive: true, force: true })
         }
+    })
+
+    it('uses the release-pinned Codex runtime for installer-generated legacy paths', () => {
+        const legacyCodex = join(homedir(), '.local', 'bin', 'codex')
+        const legacyProfile = {
+            id: 'codex',
+            type: 'codex' as const,
+            command: join(
+                homedir(),
+                '.local',
+                'share',
+                'codever-adapters',
+                'node_modules',
+                '.bin',
+                'codex-acp',
+            ),
+            args: [],
+            modelsCommand: legacyCodex,
+            modelsArgs: ['debug', 'models'],
+            env: {
+                CODEX_PATH: legacyCodex,
+                CODEX_CONFIG: '/config/codex.toml',
+                INITIAL_AGENT_MODE: 'default',
+            },
+        }
+        const profile = normalizeLegacyCodexProfile(legacyProfile)
+
+        expect(profile).toEqual({
+            id: 'codex',
+            type: 'codex',
+            env: {
+                CODEX_CONFIG: '/config/codex.toml',
+                INITIAL_AGENT_MODE: 'default',
+            },
+        })
+
+        createProviderFromProfile(legacyProfile)
+        expect(acpProviderConfigs.at(-1)).toEqual(expect.objectContaining({
+            name: 'codex',
+            command: process.execPath,
+            args: [expect.stringContaining('@agentclientprotocol/codex-acp')],
+            env: {
+                CODEX_CONFIG: '/config/codex.toml',
+                INITIAL_AGENT_MODE: 'default',
+            },
+        }))
+    })
+
+    it('preserves genuinely custom Codex commands', () => {
+        const profile = {
+            id: 'codex',
+            type: 'codex' as const,
+            command: '/opt/acp/custom-codex-acp',
+            args: ['--custom'],
+            modelsCommand: '/opt/codex/custom-codex',
+            modelsArgs: ['debug', 'models'],
+            env: { CODEX_PATH: '/opt/codex/custom-codex' },
+        }
+
+        expect(normalizeLegacyCodexProfile(profile)).toEqual(profile)
     })
 
     it('uses profile env when listing opencode models', () => {
