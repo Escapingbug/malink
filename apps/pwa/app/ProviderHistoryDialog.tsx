@@ -12,6 +12,7 @@ import {
   providerHistorySessionKind,
   providerHistorySessionTimestamp,
 } from "./providerHistorySessions";
+import type { ProviderHistorySource } from "./providerHistoryRouting";
 
 type ProviderOption = {
   id: string;
@@ -22,6 +23,8 @@ type ProviderOption = {
 
 type Props = {
   open: boolean;
+  sourceKey: string;
+  sources: ProviderHistorySource[];
   provider: string;
   providers: ProviderOption[];
   sessions: ProviderSessionEntry[];
@@ -30,6 +33,7 @@ type Props = {
   loading: "sessions" | "session" | null;
   error: string | null;
   onClose(): void;
+  onSourceChange(sourceKey: string): void;
   onProviderChange(provider: string): void;
   onInspect(session: ProviderSessionEntry): void;
   onRetry(): void;
@@ -44,6 +48,8 @@ export function ProviderHistoryDialog(props: Props) {
 
 function ProviderHistoryDialogContent({
   open,
+  sourceKey,
+  sources,
   provider,
   providers,
   sessions,
@@ -52,22 +58,39 @@ function ProviderHistoryDialogContent({
   loading,
   error,
   onClose,
+  onSourceChange,
   onProviderChange,
   onInspect,
   onRetry,
   onOpenManaged,
   onContinue,
 }: Props) {
-  const draftKey = `${provider}\u0000${selected?.sessionId ?? ""}`;
+  const draftKey = `${sourceKey}\u0000${provider}\u0000${selected?.sessionId ?? ""}`;
   const [draftState, setDraftState] = useState({ key: draftKey, text: "" });
   const draft = draftState.key === draftKey ? draftState.text : "";
   const dialogRef = useRef<HTMLElement>(null);
+  const sourceRef = useRef<HTMLSelectElement>(null);
   const providerRef = useRef<HTMLSelectElement>(null);
   const sessionGroups = groupProviderHistorySessions(sessions);
+  const selectedSource = sources.find(source => source.key === sourceKey) ?? null;
+  const sourceGroups = sources.reduce<Array<{
+    gatewayNodeId: string;
+    gatewayLabel: string;
+    sources: ProviderHistorySource[];
+  }>>((groups, source) => {
+    const existing = groups.find(group => group.gatewayNodeId === source.gatewayNodeId);
+    if (existing) existing.sources.push(source);
+    else groups.push({
+      gatewayNodeId: source.gatewayNodeId,
+      gatewayLabel: source.gatewayLabel,
+      sources: [source],
+    });
+    return groups;
+  }, []);
   useDialogFocus({
     open,
     containerRef: dialogRef,
-    initialFocusRef: providerRef,
+    initialFocusRef: sourceRef,
     onEscape: onClose,
   });
 
@@ -99,25 +122,50 @@ function ProviderHistoryDialogContent({
           <div>
             <span className="eyebrow">Provider-owned history</span>
             <h2 id="provider-history-title">Provider sessions</h2>
-            <p>Browse first. Sending a message adopts the session into Malink.</p>
+            <p>
+              {selectedSource
+                ? `${selectedSource.gatewayLabel} · ${selectedSource.projectName}`
+                : "Choose a computer and project to browse provider-owned history."}
+            </p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close provider history">×</button>
         </header>
 
         <div className="provider-history-toolbar">
-          <label>
-            <span>Provider</span>
-            <select
-              ref={providerRef}
-              value={provider}
-              disabled={loading !== null}
-              onChange={(event) => onProviderChange(event.target.value)}
-            >
-              {providers.map(option => (
-                <option key={option.id} value={option.id}>{option.name}</option>
-              ))}
-            </select>
-          </label>
+          <div className="provider-history-toolbar-fields">
+            <label>
+              <span>Computer / Project</span>
+              <select
+                ref={sourceRef}
+                value={sourceKey}
+                disabled={loading !== null}
+                onChange={(event) => onSourceChange(event.target.value)}
+              >
+                {sourceGroups.map(group => (
+                  <optgroup key={group.gatewayNodeId} label={group.gatewayLabel}>
+                    {group.sources.map(source => (
+                      <option key={source.key} value={source.key}>
+                        {source.projectName} — {source.cwd}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Provider</span>
+              <select
+                ref={providerRef}
+                value={provider}
+                disabled={loading !== null}
+                onChange={(event) => onProviderChange(event.target.value)}
+              >
+                {providers.map(option => (
+                  <option key={option.id} value={option.id}>{option.name}</option>
+                ))}
+              </select>
+            </label>
+          </div>
           <small>
             {loading === "sessions"
               ? sessions.length === 0

@@ -5,9 +5,20 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ProviderHistoryDialog } from "../app/ProviderHistoryDialog.tsx";
 import { findRecentlyArchivedProviderSession } from "../app/providerHistorySessions.ts";
 
+const defaultSource = {
+  key: '["gateway-office","project-api"]',
+  gatewayNodeId: "gateway-office",
+  gatewayLabel: "Office Mac",
+  projectId: "project-api",
+  projectName: "API",
+  cwd: "/work/api",
+};
+
 test("keeps provider history dismissible while sessions load", () => {
   const html = renderToStaticMarkup(createElement(ProviderHistoryDialog, {
     open: true,
+    sourceKey: defaultSource.key,
+    sources: [defaultSource],
     provider: "codex",
     providers: [{
       id: "codex",
@@ -21,6 +32,7 @@ test("keeps provider history dismissible while sessions load", () => {
     loading: "sessions",
     error: null,
     onClose() {},
+    onSourceChange() {},
     onProviderChange() {},
     onInspect() {},
     onRetry() {},
@@ -40,6 +52,8 @@ test("keeps provider history dismissible while sessions load", () => {
 test("keeps the provider history retry action after a background failure", () => {
   const html = renderToStaticMarkup(createElement(ProviderHistoryDialog, {
     open: true,
+    sourceKey: defaultSource.key,
+    sources: [defaultSource],
     provider: "codex",
     providers: [],
     sessions: [],
@@ -48,6 +62,7 @@ test("keeps the provider history retry action after a background failure", () =>
     loading: null,
     error: "Provider history could not be loaded.",
     onClose() {},
+    onSourceChange() {},
     onProviderChange() {},
     onInspect() {},
     onRetry() {},
@@ -89,6 +104,8 @@ test("groups archived sessions first and sorts them by Malink archive time", () 
   ];
   const html = renderToStaticMarkup(createElement(ProviderHistoryDialog, {
     open: true,
+    sourceKey: defaultSource.key,
+    sources: [defaultSource],
     provider: "codex",
     providers: [{
       id: "codex",
@@ -102,6 +119,7 @@ test("groups archived sessions first and sorts them by Malink archive time", () 
     loading: null,
     error: null,
     onClose() {},
+    onSourceChange() {},
     onProviderChange() {},
     onInspect() {},
     onRetry() {},
@@ -135,4 +153,53 @@ test("finds the provider session that was just archived", () => {
   }], "malink-session");
 
   assert.equal(session?.sessionId, "provider-session");
+});
+
+test("shows every Project under its owning Gateway", () => {
+  const sources = [defaultSource, {
+    key: '["gateway-office","project-web"]',
+    gatewayNodeId: "gateway-office",
+    gatewayLabel: "Office Mac",
+    projectId: "project-web",
+    projectName: "Web",
+    cwd: "/work/web",
+  }, {
+    key: '["gateway-home","project-personal"]',
+    gatewayNodeId: "gateway-home",
+    gatewayLabel: "Home NAS",
+    projectId: "project-personal",
+    projectName: "Personal",
+    cwd: "/srv/personal",
+  }];
+  const html = renderToStaticMarkup(createElement(ProviderHistoryDialog, {
+    open: true,
+    sourceKey: defaultSource.key,
+    sources,
+    provider: "codex",
+    providers: [{
+      id: "codex",
+      name: "Codex",
+      canListSessions: true,
+      canInspectSessions: true,
+    }],
+    sessions: [],
+    selected: null,
+    messages: [],
+    loading: null,
+    error: null,
+    onClose() {},
+    onSourceChange() {},
+    onProviderChange() {},
+    onInspect() {},
+    onRetry() {},
+    onOpenManaged() {},
+    onContinue() {},
+  }));
+
+  assert.match(html, /<optgroup label="Office Mac">/);
+  assert.match(html, /API — \/work\/api/);
+  assert.match(html, /Web — \/work\/web/);
+  assert.match(html, /<optgroup label="Home NAS">/);
+  assert.match(html, /Personal — \/srv\/personal/);
+  assert.match(html, /Office Mac · API/);
 });

@@ -65,6 +65,16 @@ import {
 } from "./NewProjectDialog";
 import { ProviderHistoryDialog } from "./ProviderHistoryDialog";
 import { findRecentlyArchivedProviderSession } from "./providerHistorySessions";
+import {
+  buildProviderHistorySources,
+  findProviderHistorySource,
+  findProviderHistorySourceByKey,
+  firstMatchingProviderHistorySource,
+  providerHistoryRequestKey,
+  providerHistoryRequestMatches,
+  type ProviderHistoryRouteIdentity,
+  type ProviderHistorySource,
+} from "./providerHistoryRouting";
 import { GatewayForgetDialog } from "./GatewayForgetDialog";
 import { PrivilegeTotpDialog } from "./PrivilegeTotpDialog";
 import {
@@ -357,26 +367,28 @@ type TurnHistoryLoadState = {
   phase: "loading" | "ready" | "error";
 };
 
-type ProviderHistoryLoadState = {
+type ProviderHistoryLoadState = ProviderHistoryRouteIdentity & {
   id: number;
-  projectId: string;
   provider: string;
   kind: "sessions" | "session";
   providerSessionId?: string;
 };
 
-type ProviderHistoryPendingCommand = {
+type ProviderHistoryPendingCommand = ProviderHistoryRouteIdentity & {
   commandId: string;
-  projectId: string;
   provider: string;
   kind: "sessions" | "session";
   providerSessionId?: string;
 };
 
-type ProviderHistoryFocus = {
-  projectId: string;
+type ProviderHistoryFocus = ProviderHistoryRouteIdentity & {
   provider: string;
   archivedSessionId: string;
+};
+
+type OpenProviderHistoryRequest = {
+  sourceKey?: string;
+  provider?: string;
 };
 
 type FeedReturnAnchor = {
@@ -1187,6 +1199,7 @@ function MalinkAppRuntime() {
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [providerHistoryOpen, setProviderHistoryOpen] = useState(false);
+  const [providerHistoryGatewayNodeId, setProviderHistoryGatewayNodeId] = useState("");
   const [providerHistoryProjectId, setProviderHistoryProjectId] = useState("");
   const [providerHistoryProvider, setProviderHistoryProvider] = useState("");
   const [providerHistorySessions, setProviderHistorySessions] = useState<ProviderSessionEntry[]>([]);
@@ -1314,6 +1327,7 @@ function MalinkAppRuntime() {
   const historyGenerationRef = useRef(0);
   const historyLoadingRef = useRef(false);
   const providerHistoryProviderRef = useRef("");
+  const providerHistoryGatewayNodeIdRef = useRef("");
   const providerHistoryProjectIdRef = useRef("");
   const providerHistoryLoadRef = useRef<ProviderHistoryLoadState | null>(null);
   const providerHistoryLoadIdRef = useRef(0);
@@ -1780,11 +1794,34 @@ function MalinkAppRuntime() {
       ),
       release: gatewayRelease,
     }), [gatewayRelease, gatewayState]);
-  const providerHistoryWorkspace = gatewayState?.projects?.find(
-    project => project.projectId === providerHistoryProjectId,
-  ) ?? gatewayState?.workspace;
+  const providerHistorySources = useMemo<ProviderHistorySource[]>(() => {
+    if (!gatewayState) return [];
+    return buildProviderHistorySources({
+      workspaces: gatewayState.projects ?? [gatewayState.workspace],
+      projectOwners: projectGatewaysById,
+      fallbackOwner: fallbackProjectGateway,
+      fallbackCapabilities: gatewayState.capabilities,
+      directoryAvailable: Boolean(gatewayState.gatewayDirectory),
+    });
+  }, [fallbackProjectGateway, gatewayState, projectGatewaysById]);
+  const providerHistorySource = findProviderHistorySource(
+    providerHistorySources,
+    providerHistoryGatewayNodeId && providerHistoryProjectId
+      ? {
+          gatewayNodeId: providerHistoryGatewayNodeId,
+          projectId: providerHistoryProjectId,
+        }
+      : null,
+  );
+  const providerHistoryWorkspace = providerHistorySource
+    ? gatewayState?.projects?.find(
+        project => project.projectId === providerHistorySource.projectId,
+      ) ?? (gatewayState?.workspace.projectId === providerHistorySource.projectId
+        ? gatewayState.workspace
+        : undefined)
+    : undefined;
   const providerHistoryCapabilities = providerHistoryWorkspace?.capabilities
-    ?? gatewayState?.capabilities;
+    ?? (providerHistoryWorkspace ? gatewayState?.capabilities : undefined);
   const activeProviderModels = activeCapabilities?.providers.find(
     (provider) => provider.id === activeProvider,
   )?.models ?? activeCapabilities?.models ?? [];
@@ -5612,10 +5649,7 @@ function MalinkAppRuntime() {
     pending: ProviderHistoryPendingCommand,
     load: ProviderHistoryLoadState,
   ): boolean {
-    return pending.projectId === load.projectId
-      && pending.provider === load.provider
-      && pending.kind === load.kind
-      && pending.providerSessionId === load.providerSessionId;
+    return providerHistoryRequestMatches(pending, load);
   }
 
   async function sendOrRecoverProviderHistoryCommand(
@@ -5625,6 +5659,12 @@ function MalinkAppRuntime() {
       { operation: "provider.sessions.list" | "provider.session.inspect" }
     >,
   ): Promise<MalinkCommandSendResult> {
+    const source = findProviderHistorySource(providerHistorySources, load);
+    if (!source) {
+      throw new Error(
+        "The selected computer or project route changed. Choose the source again before loading Provider History.",
+      );
+    }
     const pending = providerHistoryPendingCommandRef.current;
     if (pending) {
       if (!providerHistoryPendingCommandMatches(pending, load)) {
@@ -5651,6 +5691,7 @@ function MalinkAppRuntime() {
     }
     providerHistoryPendingCommandRef.current = {
       commandId: sent.commandId,
+      gatewayNodeId: load.gatewayNodeId,
       projectId: load.projectId,
       provider: load.provider,
       kind: load.kind,
@@ -5685,42 +5726,136 @@ function MalinkAppRuntime() {
     return completion;
   }
 
-  async function openProviderHistory(requestedProvider?: string) {
-    const projectId = providerHistoryOpen && providerHistoryProjectIdRef.current
-      ? providerHistoryProjectIdRef.current
-      : activeWorkspace?.projectId ?? "";
-    const historyWorkspace = gatewayState?.projects?.find(
-      project => project.projectId === projectId,
-    ) ?? (gatewayState?.workspace.projectId === projectId ? gatewayState.workspace : undefined);
-    const historyCapabilities = historyWorkspace?.capabilities ?? gatewayState?.capabilities;
-    const provider = requestedProvider
-      ?? historyCapabilities?.providers.find(candidate =>
-        candidate.id === historyWorkspace?.provider
-        && candidate.canListSessions
-        && candidate.canInspectSessions
-      )?.id
-      ?? historyCapabilities?.providers.find(candidate =>
-        candidate.canListSessions && candidate.canInspectSessions
-      )?.id
-      ?? "";
-    if (!projectId || !provider) return;
+  async function openProviderHistory(request: OpenProviderHistoryRequest = {}) {
     setProviderHistoryOpen(true);
-    const providerKey = `${projectId}\u0000${provider}`;
+    const focus = providerHistoryFocusRef.current;
+    const requestedSource = request.sourceKey === undefined
+      ? null
+      : findProviderHistorySourceByKey(providerHistorySources, request.sourceKey);
+    if (request.sourceKey !== undefined && !requestedSource) {
+      setProviderHistoryError(
+        "That computer or project route is no longer available. Choose another source.",
+      );
+      return;
+    }
+    const focusedSource = !providerHistoryOpen && focus
+      ? findProviderHistorySource(providerHistorySources, focus)
+      : null;
+    if (!providerHistoryOpen && focus && !focusedSource) {
+      setProviderHistoryError(
+        "The computer or project for the archived session is no longer available. Reconnect it before restoring Provider History.",
+      );
+      return;
+    }
+    const currentSource = providerHistoryOpen
+      ? findProviderHistorySource(providerHistorySources, {
+          gatewayNodeId: providerHistoryGatewayNodeIdRef.current,
+          projectId: providerHistoryProjectIdRef.current,
+        })
+      : null;
     if (
-      providerHistoryProjectIdRef.current === projectId
+      providerHistoryOpen
+      && providerHistoryGatewayNodeIdRef.current
+      && providerHistoryProjectIdRef.current
+      && !currentSource
+      && request.sourceKey === undefined
+    ) {
+      setProviderHistoryError(
+        "The selected computer or project route changed. Choose the source again.",
+      );
+      return;
+    }
+    const activeOwner = activeWorkspace
+      ? projectGatewaysById.get(activeWorkspace.projectId)
+        ?? (gatewayState?.gatewayDirectory ? undefined : fallbackProjectGateway)
+      : undefined;
+    const activeSource = activeWorkspace && activeOwner
+      ? findProviderHistorySource(providerHistorySources, {
+          gatewayNodeId: activeOwner.gatewayNodeId,
+          projectId: activeWorkspace.projectId,
+        })
+      : null;
+    const source = requestedSource ?? firstMatchingProviderHistorySource(
+      providerHistorySources,
+      [currentSource, focusedSource, activeSource],
+    );
+    if (!source) {
+      setProviderHistoryError(
+        "No connected computer and project currently exposes Provider History.",
+      );
+      return;
+    }
+    const historyWorkspace = gatewayState?.projects?.find(
+      project => project.projectId === source.projectId,
+    ) ?? (gatewayState?.workspace.projectId === source.projectId
+      ? gatewayState.workspace
+      : undefined);
+    if (!historyWorkspace) {
+      setProviderHistoryError(
+        "The selected project has not finished syncing. Try again after it appears in the project list.",
+      );
+      return;
+    }
+    const historyCapabilities = historyWorkspace.capabilities ?? gatewayState?.capabilities;
+    const availableProviders = historyCapabilities?.providers.filter(candidate =>
+      candidate.canListSessions && candidate.canInspectSessions
+    ) ?? [];
+    const focusMatchesSource = Boolean(
+      focus
+      && focus.gatewayNodeId === source.gatewayNodeId
+      && focus.projectId === source.projectId,
+    );
+    const currentProvider = providerHistoryGatewayNodeIdRef.current === source.gatewayNodeId
+      && providerHistoryProjectIdRef.current === source.projectId
+      ? providerHistoryProviderRef.current
+      : "";
+    const provider = request.provider
+      ?? availableProviders.find(candidate => candidate.id === currentProvider)?.id
+      ?? (focusMatchesSource
+        ? availableProviders.find(candidate => candidate.id === focus?.provider)?.id
+        : undefined)
+      ?? availableProviders.find(candidate => candidate.id === historyWorkspace.provider)?.id
+      ?? availableProviders[0]?.id
+      ?? "";
+    if (!provider || (
+      request.provider !== undefined
+      && !availableProviders.some(candidate => candidate.id === request.provider)
+    )) {
+      setProviderHistoryError(
+        "The selected Provider does not expose list and inspect history for this project.",
+      );
+      return;
+    }
+    if (
+      focus
+      && (
+        (request.sourceKey !== undefined && !focusMatchesSource)
+        || (request.provider !== undefined && request.provider !== focus.provider)
+      )
+    ) {
+      providerHistoryFocusRef.current = null;
+    }
+    const providerKey = providerHistoryRequestKey(source, provider);
+    if (
+      providerHistoryGatewayNodeIdRef.current === source.gatewayNodeId
+      && providerHistoryProjectIdRef.current === source.projectId
       && providerHistoryProviderRef.current === provider
       && (
-        (providerHistoryLoadRef.current?.projectId === projectId
+        (providerHistoryLoadRef.current?.gatewayNodeId === source.gatewayNodeId
+          && providerHistoryLoadRef.current.projectId === source.projectId
           && providerHistoryLoadRef.current.provider === provider)
         || providerHistoryLoadedProviderRef.current === providerKey
       )
     ) {
       return;
     }
-    const providerChanged = providerHistoryProjectIdRef.current !== projectId
+    const providerChanged = providerHistoryGatewayNodeIdRef.current !== source.gatewayNodeId
+      || providerHistoryProjectIdRef.current !== source.projectId
       || providerHistoryProviderRef.current !== provider;
-    providerHistoryProjectIdRef.current = projectId;
-    setProviderHistoryProjectId(projectId);
+    providerHistoryGatewayNodeIdRef.current = source.gatewayNodeId;
+    setProviderHistoryGatewayNodeId(source.gatewayNodeId);
+    providerHistoryProjectIdRef.current = source.projectId;
+    setProviderHistoryProjectId(source.projectId);
     providerHistoryProviderRef.current = provider;
     setProviderHistoryProvider(provider);
     if (providerChanged) {
@@ -5732,7 +5867,8 @@ function MalinkAppRuntime() {
     setProviderHistoryError(null);
     const load: ProviderHistoryLoadState = {
       id: ++providerHistoryLoadIdRef.current,
-      projectId,
+      gatewayNodeId: source.gatewayNodeId,
+      projectId: source.projectId,
       provider,
       kind: "sessions",
     };
@@ -5758,11 +5894,15 @@ function MalinkAppRuntime() {
       if (providerHistoryLoadRef.current?.id === load.id) {
         providerHistoryLoadedProviderRef.current = providerKey;
         setProviderHistorySessions(sessions);
-        const focus = providerHistoryFocusRef.current;
-        if (focus?.projectId === projectId && focus.provider === provider) {
+        const currentFocus = providerHistoryFocusRef.current;
+        if (
+          currentFocus?.gatewayNodeId === source.gatewayNodeId
+          && currentFocus.projectId === source.projectId
+          && currentFocus.provider === provider
+        ) {
           focusedSession = findRecentlyArchivedProviderSession(
             sessions,
-            focus.archivedSessionId,
+            currentFocus.archivedSessionId,
           );
           if (focusedSession) {
             providerHistoryFocusRef.current = null;
@@ -5794,6 +5934,7 @@ function MalinkAppRuntime() {
     setProviderHistoryError(null);
     const load: ProviderHistoryLoadState = {
       id: ++providerHistoryLoadIdRef.current,
+      gatewayNodeId: providerHistoryGatewayNodeIdRef.current,
       projectId: providerHistoryProjectIdRef.current,
       provider,
       kind: "session",
@@ -5837,33 +5978,76 @@ function MalinkAppRuntime() {
     }
   }
 
+  function openManagedProviderHistorySession(sessionId: string): void {
+    const source = findProviderHistorySource(providerHistorySources, {
+      gatewayNodeId: providerHistoryGatewayNodeIdRef.current,
+      projectId: providerHistoryProjectIdRef.current,
+    });
+    const managed = gatewayState?.sessions.find(session => session.id === sessionId);
+    const owner = managed
+      ? projectGatewaysById.get(managed.projectId)
+        ?? (gatewayState?.gatewayDirectory ? undefined : fallbackProjectGateway)
+      : undefined;
+    if (
+      !source
+      || !managed
+      || managed.projectId !== source.projectId
+      || owner?.gatewayNodeId !== source.gatewayNodeId
+    ) {
+      setProviderHistoryError(
+        "The current Malink session is no longer on this computer and project. Refresh Provider History.",
+      );
+      return;
+    }
+    setProviderHistoryOpen(false);
+    chooseSession(sessionId);
+  }
+
   function continueProviderHistorySession(session: ProviderSessionEntry, text: string) {
+    const source = findProviderHistorySource(providerHistorySources, {
+      gatewayNodeId: providerHistoryGatewayNodeIdRef.current,
+      projectId: providerHistoryProjectIdRef.current,
+    });
+    if (!source) {
+      setProviderHistoryError(
+        "The selected computer or project route changed. Choose the source again before continuing.",
+      );
+      return;
+    }
     const historyWorkspace = gatewayState?.projects?.find(
-      project => project.projectId === providerHistoryProjectIdRef.current,
-    ) ?? (gatewayState?.workspace.projectId === providerHistoryProjectIdRef.current
+      project => project.projectId === source.projectId,
+    ) ?? (gatewayState?.workspace.projectId === source.projectId
       ? gatewayState.workspace
       : undefined);
     const historyCapabilities = historyWorkspace?.capabilities ?? gatewayState?.capabilities;
+    const provider = providerHistoryProviderRef.current;
     const providerCapability = historyCapabilities?.providers.find(
-      candidate => candidate.id === providerHistoryProvider,
+      candidate => candidate.id === provider
+        && candidate.canListSessions
+        && candidate.canInspectSessions,
     );
-    if (!historyWorkspace) return;
+    if (!historyWorkspace || !providerCapability) {
+      setProviderHistoryError(
+        "The selected Provider is no longer available for this computer and project.",
+      );
+      return;
+    }
     setProviderHistoryOpen(false);
     void createSession({
       projectId: historyWorkspace.projectId,
       scope: "project",
       cwd: historyWorkspace.cwd,
       projectName: historyWorkspace.projectName,
-      provider: providerHistoryProvider,
+      provider,
       providerSessionId: session.sessionId,
       title: session.title,
       initialPrompt: text,
-      ...(providerHistoryProvider === historyWorkspace.provider && historyWorkspace.model
+      ...(provider === historyWorkspace.provider && historyWorkspace.model
         ? { model: historyWorkspace.model }
-        : providerCapability?.models[0]
+        : providerCapability.models[0]
           ? { model: providerCapability.models[0].id }
           : {}),
-      ...(providerHistoryProvider === historyWorkspace.provider && historyWorkspace.reasoningEffort
+      ...(provider === historyWorkspace.provider && historyWorkspace.reasoningEffort
         ? { reasoningEffort: historyWorkspace.reasoningEffort }
         : {}),
       extensions: historyWorkspace.defaultExtensions ?? [],
@@ -6162,6 +6346,15 @@ function MalinkAppRuntime() {
   ): Promise<boolean> {
     const sessionProjectId = gatewayState?.sessions.find(session => session.id === sessionId)
       ?.projectId;
+    if (!sessionProjectId) {
+      showUiNotice(
+        `session:${action}`,
+        "session",
+        "error",
+        "The session project route is unavailable. Refresh conversations before archiving.",
+      );
+      return false;
+    }
     const sessionWorkspace = gatewayState?.projects?.find(
       project => project.projectId === sessionProjectId,
     );
@@ -6186,6 +6379,7 @@ function MalinkAppRuntime() {
       connection = malinkClientRef.current;
       const sent = await sendRealCommand(
         sessionLifecyclePayload(action, sessionId),
+        sessionProjectId,
       );
       if (!sent || !connection) {
         updateSessionLifecycleBusy((current) => {
@@ -6385,15 +6579,20 @@ function MalinkAppRuntime() {
 
   async function archiveSession(sessionId: string) {
     const session = gatewayState?.sessions.find(candidate => candidate.id === sessionId);
+    const historySource = session
+      ? providerHistorySources.find(source => source.projectId === session.projectId) ?? null
+      : null;
     await runSessionLifecycle("archive", sessionId, () => {
-      if (!session) return;
+      if (!session || !historySource) return;
       providerHistoryFocusRef.current = {
+        gatewayNodeId: historySource.gatewayNodeId,
         projectId: session.projectId,
         provider: session.provider,
         archivedSessionId: session.id,
       };
       if (
-        providerHistoryProjectIdRef.current === session.projectId
+        providerHistoryGatewayNodeIdRef.current === historySource.gatewayNodeId
+        && providerHistoryProjectIdRef.current === session.projectId
         && providerHistoryProviderRef.current === session.provider
       ) {
         providerHistoryLoadedProviderRef.current = null;
@@ -7328,9 +7527,7 @@ function MalinkAppRuntime() {
               onClick={() => void openProviderHistory()}
               disabled={
                 !gatewayAvailable ||
-                !activeCapabilities?.providers.some(provider =>
-                  provider.canListSessions && provider.canInspectSessions
-                )
+                providerHistorySources.length === 0
               }
             >
               <HistoryIcon />
@@ -8805,6 +9002,8 @@ function MalinkAppRuntime() {
       {gatewayState && (
         <ProviderHistoryDialog
           open={providerHistoryOpen}
+          sourceKey={providerHistorySource?.key ?? ""}
+          sources={providerHistorySources}
           provider={providerHistoryProvider || providerHistoryWorkspace?.provider || ""}
           providers={(providerHistoryCapabilities?.providers ?? []).filter(provider =>
             provider.canListSessions && provider.canInspectSessions
@@ -8815,19 +9014,17 @@ function MalinkAppRuntime() {
           loading={providerHistoryLoad?.kind ?? null}
           error={providerHistoryError}
           onClose={() => setProviderHistoryOpen(false)}
-          onProviderChange={(provider) => void openProviderHistory(provider)}
+          onSourceChange={(sourceKey) => void openProviderHistory({ sourceKey })}
+          onProviderChange={(provider) => void openProviderHistory({ provider })}
           onInspect={(session) => void inspectProviderHistorySession(session)}
           onRetry={() => {
             if (providerHistorySelected) {
               void inspectProviderHistorySession(providerHistorySelected);
             } else {
-              void openProviderHistory(providerHistoryProvider);
+              void openProviderHistory({ provider: providerHistoryProvider });
             }
           }}
-          onOpenManaged={(sessionId) => {
-            setProviderHistoryOpen(false);
-            chooseSession(sessionId);
-          }}
+          onOpenManaged={openManagedProviderHistorySession}
           onContinue={continueProviderHistorySession}
         />
       )}
