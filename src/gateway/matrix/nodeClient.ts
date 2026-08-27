@@ -134,6 +134,7 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
     private readonly sdkClient: MatrixClient
     private readonly listeners = new Set<MatrixGatewayEventListener>()
     private readonly roomCrypto = new Map<string, MatrixRoomCryptoState>()
+    private readonly knownRoomMembers = new Map<string, Set<string>>()
     private machine: OlmMachineType | null = null
     private cryptoConfig: Extract<MatrixGatewayCryptoConfig, { backend: 'node-sqlite' }> | null = null
     private started = false
@@ -246,6 +247,7 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
     }
 
     async ensureRoomInvitation(roomId: string, userId: string): Promise<void> {
+        if (this.knownRoomMembers.get(roomId)?.has(userId)) return
         let membership: unknown
         try {
             const state = await this.matrixRequest<Record<string, unknown>>(
@@ -253,6 +255,9 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                 matrixStatePath(roomId, 'm.room.member', userId),
             )
             membership = state.membership
+            if (membership === 'join' || membership === 'invite') {
+                this.rememberRoomMember(roomId, userId)
+            }
         } catch (error) {
             if (!(error instanceof MatrixHttpError && error.status === 404)) throw error
         }
@@ -262,6 +267,7 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/invite`,
             { body: { user_id: userId }, retryRateLimit: true },
         )
+        this.rememberRoomMember(roomId, userId)
     }
 
     async ensureProjectRoom(request: MatrixProjectRoomRequest): Promise<MatrixProjectRoomResult> {
@@ -297,6 +303,9 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                 },
             )
             roomId = requireRoomId(created)
+            for (const userId of request.inviteUserIds) {
+                this.rememberRoomMember(roomId, userId)
+            }
         } catch (error) {
             if (!(error instanceof MatrixHttpError && error.errcode === 'M_ROOM_IN_USE')) throw error
             alreadyExisted = true
@@ -650,13 +659,20 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             current.historyVisibility = matrixHistoryVisibility(content.history_visibility)
             return
         }
-        if (event.type === 'm.room.member' && current) {
+        if (event.type === 'm.room.member') {
             const userId = event.state_key
-            const joined = content.membership === 'join'
-            const members = new Set(current.joinedUserIds)
-            if (joined) members.add(userId)
-            else members.delete(userId)
-            current.joinedUserIds = [...members]
+            const active = content.membership === 'join' || content.membership === 'invite'
+            const known = this.knownRoomMembers.get(roomId) ?? new Set<string>()
+            if (active) known.add(userId)
+            else known.delete(userId)
+            this.knownRoomMembers.set(roomId, known)
+            if (current) {
+                const joined = content.membership === 'join'
+                const members = new Set(current.joinedUserIds)
+                if (joined) members.add(userId)
+                else members.delete(userId)
+                current.joinedUserIds = [...members]
+            }
         }
     }
 
@@ -696,11 +712,18 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             joinedUserIds: joined ? Object.keys(joined) : [],
         }
         this.roomCrypto.set(roomId, state)
+        for (const userId of state.joinedUserIds) this.rememberRoomMember(roomId, userId)
         await this.withCryptoLock(async machine => {
             await machine.updateTrackedUsers(state.joinedUserIds.map(userId => new UserId(userId)))
             await this.processOutgoingRequests()
         })
         return state
+    }
+
+    private rememberRoomMember(roomId: string, userId: string): void {
+        const members = this.knownRoomMembers.get(roomId) ?? new Set<string>()
+        members.add(userId)
+        this.knownRoomMembers.set(roomId, members)
     }
 
     private async processOutgoingRequests(): Promise<void> {

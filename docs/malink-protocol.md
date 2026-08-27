@@ -261,19 +261,28 @@ single response.
 Traffic scales with visible business activity:
 
 - one Matrix command event per user action;
-- one terminal event per command, plus progress only when visible state changes;
-- Agent/tool events or edits that are actually visible;
+- one canonical queued projection and one terminal event for a prompt; there is
+  no separate durable `turn.started` transition;
+- one bounded final tool-group snapshot per completed tool group; intermediate
+  tool telemetry stays in the Gateway runtime and never enters Matrix;
 - one snapshot event plus one pointer replacement when the current projection
   materially changes;
 - one workspace snapshot plus one pointer replacement per active project when
   an account native-client release changes;
 - one pairwise key-grant state event only when a device or key epoch changes.
+- one root-signed Workspace directory/grant/revocation state write on the
+  Gateway bootstrap control route when that semantic document changes, rather
+  than one copy per project room.
 
 There is no per-device fan-out for ordinary conversation output, heartbeat
 state, focus refresh, reconnect RPC, session-directory page rewrite, or manual
-checkpoint publication. Gateway and client outboxes honor Matrix `retry_after`
-and stable transaction IDs, so homeserver rate limits affect latency rather
-than correctness.
+checkpoint publication. Gateway invitation reconciliation reuses membership
+from `/sync`; it does not poll every device in every project on a timer.
+Identical signed snapshot pointers and root-signed
+Workspace control documents are durably recognized across process restart; an
+unchanged Gateway restart performs zero Matrix writes. Gateway and client
+outboxes honor Matrix `retry_after` and stable transaction IDs, so homeserver
+rate limits affect latency rather than correctness.
 
 ## Cutover invariants
 

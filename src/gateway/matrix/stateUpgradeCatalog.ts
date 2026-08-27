@@ -77,6 +77,14 @@ export const GATEWAY_STATE_CATALOG: readonly GatewayStateCatalogEntry[] = Object
         migrationFromVersions: new Set<number>(),
     },
     {
+        // Homeserver acknowledgements suppress identical root-signed control
+        // writes after restart. Deleting this cache only causes safe replay.
+        id: 'matrix-workspace-state-publication-cache',
+        stateClass: 'rebuildable-projection',
+        schemaVersion: 1,
+        migrationFromVersions: new Set<number>(),
+    },
+    {
         // This inbox may contain a command after the Matrix cursor advanced
         // but before authorization claimed it. It is therefore durable-command
         // state, not a rebuildable transport cache.

@@ -128,6 +128,71 @@ describe('MatrixMlp3GatewayRunner', () => {
     await runner.stop()
   })
 
+  it('performs zero Matrix writes on an unchanged Gateway restart', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-stable-restart-'))
+    const gatewayKeys = await generateDeviceKeyPair()
+    const phoneKeys = await generateDeviceKeyPair()
+    const client = new TestMatrixClient()
+    const roomId = '!stable-project:example.org'
+    const config: MatrixGatewayConfig = {
+      gatewayId: 'workspace-stable',
+      connection: {
+        baseUrl: 'https://matrix.example.org',
+        accessToken: 'gateway-token',
+        userId: '@gateway:example.org',
+        deviceId: 'GATEWAY',
+      },
+      crypto: {
+        backend: 'memory',
+        databasePrefix: 'stable-restart-test',
+        allowInMemoryForTesting: true,
+      },
+      rooms: [{
+        roomId,
+        conversationId: roomId,
+        cwd: '/stable-repo',
+        providerName: 'test',
+      }],
+      trustedDevices: [{
+        deviceId: 'phone-1',
+        publicKey: phoneKeys.publicJwk,
+        allowedRoomIds: [roomId],
+        allowedOperations: ['prompt'],
+        matrixUserId: '@phone:example.org',
+        matrixDeviceId: 'PHONE',
+        matrixDeviceKeys: ['matrix-phone-key'],
+        certificateExpiresAt: Date.now() + 60_000,
+        sequenceEpoch: 'certificate-1',
+      }],
+      replayLedgerPath: join(directory, 'replay'),
+      applicationSecurity: {
+        gatewayDeviceId: 'workspace-stable',
+        gatewayKeyPair: await exportDeviceKeyPair(gatewayKeys),
+        envelopeReplayLedgerPath: join(directory, 'security'),
+      },
+    }
+    let stateWrites = 0
+    const setState = client.setApplicationRoomState.bind(client)
+    client.setApplicationRoomState = async request => {
+      stateWrites += 1
+      return setState(request)
+    }
+
+    const first = new MatrixMlp3GatewayRunner(config, { client })
+    await first.start()
+    await first.stop()
+    const firstTimelineWrites = client.delivered.length
+    const firstStateWrites = stateWrites
+    expect(firstTimelineWrites).toBe(2)
+    expect(firstStateWrites).toBe(3)
+
+    const restarted = new MatrixMlp3GatewayRunner(config, { client })
+    await restarted.start()
+    expect(client.delivered).toHaveLength(firstTimelineWrites)
+    expect(stateWrites).toBe(firstStateWrites)
+    await restarted.stop()
+  })
+
   it('runs session threads independently and deduplicates by logical command identity', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-v3-gateway-'))
     const gatewayKeys = await generateDeviceKeyPair()
@@ -907,6 +972,11 @@ describe('MatrixMlp3GatewayRunner', () => {
       ))
     const causalEvents = (await events(client, activeKey.key, roomId, projectId))
       .filter(event => event.causationCommandId === 'prompt-causal-barrier')
+    expect(causalEvents.map(event => event.payload.type)).toEqual([
+      'turn.queued',
+      'assistant.message',
+      'turn.completed',
+    ])
     expect(causalEvents.findIndex(event => event.payload.type === 'assistant.message'))
       .toBeLessThan(causalEvents.findIndex(event => event.payload.type === 'turn.completed'))
 

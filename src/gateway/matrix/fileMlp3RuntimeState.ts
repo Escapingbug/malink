@@ -45,6 +45,7 @@ export interface PersistedMlp3Project {
   snapshotVersion: number
   capabilitySnapshotVersion: number
   capabilities: MatrixGatewayCapabilities | null
+  workspaceSnapshotFingerprint: string | null
   defaultExtensions: SessionExtensionBinding[]
   extensionDefaultsRevision: number
   sessions: PersistedMlp3Session[]
@@ -86,6 +87,10 @@ export class FileMlp3RuntimeStateStore {
           }
           if (existing.capabilities === undefined) {
             existing.capabilities = null
+            changed = true
+          }
+          if (existing.workspaceSnapshotFingerprint === undefined) {
+            existing.workspaceSnapshotFingerprint = null
             changed = true
           }
           if (!Array.isArray(existing.defaultExtensions)) {
@@ -203,6 +208,7 @@ function defaultProject(room: MatrixGatewayRoomConfig): PersistedMlp3Project {
     snapshotVersion: 1,
     capabilitySnapshotVersion: 0,
     capabilities: null,
+    workspaceSnapshotFingerprint: null,
     defaultExtensions: [],
     extensionDefaultsRevision: 1,
     sessions: [],
@@ -240,6 +246,8 @@ function validateProject(project: PersistedMlp3Project, roomId: string): void {
     || !Number.isSafeInteger(project.capabilitySnapshotVersion)
     || project.capabilitySnapshotVersion < 0
     || !(project.capabilities === null || typeof project.capabilities === 'object')
+    || !(project.workspaceSnapshotFingerprint === null
+      || typeof project.workspaceSnapshotFingerprint === 'string')
     || !Array.isArray(project.defaultExtensions)
     || !Number.isSafeInteger(project.extensionDefaultsRevision)
     || project.extensionDefaultsRevision < 1

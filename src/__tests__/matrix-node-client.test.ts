@@ -100,6 +100,9 @@ describe('MatrixNodeSdkGatewayClient', () => {
                 content: marker,
             }),
         ]))
+        const requestCount = fetchMock.mock.calls.length
+        await client.ensureRoomInvitation('!project:example.test', '@phone:example.test')
+        expect(fetchMock).toHaveBeenCalledTimes(requestCount)
         await client.stop()
     })
 
@@ -131,9 +134,12 @@ describe('MatrixNodeSdkGatewayClient', () => {
         }, 1_000, undefined, fetchMock as unknown as typeof fetch)
 
         await client.ensureRoomInvitation('!room:example.test', '@joined:example.test')
+        await client.ensureRoomInvitation('!room:example.test', '@joined:example.test')
+        await client.ensureRoomInvitation('!room:example.test', '@new:example.test')
         await client.ensureRoomInvitation('!room:example.test', '@new:example.test')
 
         expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+        expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'GET')).toHaveLength(2)
         const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')
         expect(String(post?.[0])).toContain('/invite')
         expect(post?.[1]?.body).toBe(JSON.stringify({ user_id: '@new:example.test' }))

@@ -50,6 +50,12 @@ describe('GatewayMlp3ContentLayer', () => {
     )
     await layer.initialize()
     const transport = new InMemoryMatrixTransport()
+    let stateWrites = 0
+    const setState = transport.setApplicationRoomState.bind(transport)
+    transport.setApplicationRoomState = async request => {
+      stateWrites += 1
+      return setState(request)
+    }
     const room = {
       roomId: '!project:example.org',
       conversationId: 'legacy-conversation-unused',
@@ -92,6 +98,55 @@ describe('GatewayMlp3ContentLayer', () => {
       rel_type: 'm.thread',
       event_id: '$root:example.org',
     })
+
+    const snapshot: Mlp3Event = {
+      kind: 'malink.event',
+      version: 3,
+      eventId: 'project-snapshot-1',
+      workspaceId: event.workspaceId,
+      projectId: event.projectId,
+      occurredAt: event.occurredAt,
+      payload: {
+        type: 'project.snapshot',
+        name: 'repo',
+        cwd: '/repo',
+        provider: 'test',
+        permissionMode: 'default',
+        installedExtensions: [],
+        defaultExtensions: [],
+        extensionDefaultsRevision: 1,
+        snapshotVersion: 1,
+      },
+    }
+    const sentSnapshot = await layer.sendEvent(room, snapshot, transport)
+    await layer.publishProjectPointer(room, snapshot, sentSnapshot.eventId, transport)
+    await layer.publishProjectPointer(room, {
+      ...snapshot,
+      occurredAt: 999,
+    }, sentSnapshot.eventId, transport)
+    // One key grant and one semantic pointer. Re-signing the same snapshot
+    // version must not manufacture another Matrix state write.
+    expect(stateWrites).toBe(2)
+
+    if (snapshot.payload.type !== 'project.snapshot') throw new Error('expected project snapshot')
+    const newerSnapshot: Mlp3Event = {
+      ...snapshot,
+      eventId: 'project-snapshot-2',
+      payload: { ...snapshot.payload, snapshotVersion: 2 },
+    }
+    const sentNewerSnapshot = await layer.sendEvent(room, newerSnapshot, transport)
+    await layer.publishProjectPointer(
+      room,
+      newerSnapshot,
+      sentNewerSnapshot.eventId,
+      transport,
+    )
+    await layer.publishProjectPointer(room, snapshot, sentSnapshot.eventId, transport)
+    expect(stateWrites).toBe(3)
+    await expect(layer.publishProjectPointer(room, {
+      ...newerSnapshot,
+      eventId: 'conflicting-project-snapshot-2',
+    }, sentNewerSnapshot.eventId, transport)).rejects.toThrow(/immutable/)
   })
 
   it('opens a client command from the same project key without comparing Matrix relations', async () => {

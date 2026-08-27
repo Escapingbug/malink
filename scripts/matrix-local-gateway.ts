@@ -46,6 +46,7 @@ import {
     MatrixMlp3GatewayRunner,
     MatrixNodeSdkGatewayClient,
     FileGatewayProjectCatalog,
+    FileMatrixStatePublicationCache,
     loadOrCreateMatrixCryptoPassphrase,
     loadOrLoginMatrixGateway,
     gatewayProjectIdentity,
@@ -195,6 +196,9 @@ const currentTransport = {
 const workspaceDirectory = new FileWorkspaceGatewayDirectory(
     join(dataDirectory, 'workspace-gateways.json'),
     identity,
+)
+const workspaceStatePublicationCache = new FileMatrixStatePublicationCache(
+    join(dataDirectory, 'workspace-state-publications.json'),
 )
 const configuredRootRoom: MatrixGatewayRoomConfig = {
     roomId: fixture.roomId,
@@ -353,9 +357,7 @@ const trustedDevices = deduplicateTrustedDevices([
 let runner: MatrixMlp3GatewayRunner | null = null
 let requestWorkspaceShutdown: ((failure: Error) => void) | null = null
 let workspaceControlChain = Promise.resolve()
-const publishedWorkspaceState = new Map<string, string>()
 let provisionedAuthorizationFingerprint = ''
-let synchronizedDirectoryRevision = -1
 
 async function performWorkspaceControlSync(): Promise<void> {
     const directory = await workspaceDirectory.load()
@@ -372,6 +374,11 @@ async function performWorkspaceControlSync(): Promise<void> {
         throw failure
     }
     const roomIds = workspaceDirectoryRoomIds(directory)
+    // The Gateway bootstrap route is the stable Workspace control lane for
+    // this node. Every authorized client and Gateway account joins it through
+    // the signed directory, so root-signed control documents do not need an
+    // O(projects) copy in every conversation room.
+    const controlRoomIds = [currentTransport.roomId]
     const grants = await workspaceAuthorization.activeGrants()
     if (!client.ensureRoomInvitation) {
         throw new Error('Matrix transport cannot invite authorized Workspace devices')
@@ -382,14 +389,14 @@ async function performWorkspaceControlSync(): Promise<void> {
         }
     }
     await publishWorkspaceState(
-        roomIds,
+        controlRoomIds,
         MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
         identity.workspaceId,
         directory,
     )
     for (const grant of grants) {
         await publishWorkspaceState(
-            roomIds,
+            controlRoomIds,
             MLP3_MATRIX_WORKSPACE_DEVICE_GRANT_EVENT_TYPE,
             `${grant.grant.deviceId}.${grant.grant.certificateId}`,
             grant,
@@ -397,7 +404,7 @@ async function performWorkspaceControlSync(): Promise<void> {
     }
     for (const revocation of await workspaceAuthorization.revocations()) {
         await publishWorkspaceState(
-            roomIds,
+            controlRoomIds,
             MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE,
             `${revocation.revocation.deviceId}.${revocation.revocation.certificateId}`,
             revocation,
@@ -411,11 +418,6 @@ async function performWorkspaceControlSync(): Promise<void> {
         authorizationFingerprint !== provisionedAuthorizationFingerprint) {
         await runner.provisionCurrentState()
         provisionedAuthorizationFingerprint = authorizationFingerprint
-    }
-    if (runner?.getState() === 'running' &&
-        directory.directory.revision !== synchronizedDirectoryRevision) {
-        await runner.syncState()
-        synchronizedDirectoryRevision = directory.directory.revision
     }
 }
 
@@ -436,12 +438,20 @@ async function publishWorkspaceState(
     if (!client.setApplicationRoomState) {
         throw new Error('Matrix transport cannot publish signed Workspace control state')
     }
-    const digest = createHash('sha256').update(JSON.stringify(content)).digest('hex')
     for (const roomId of roomIds) {
-        const key = `${roomId}\u0000${eventType}\u0000${stateKey}`
-        if (publishedWorkspaceState.get(key) === digest) continue
+        if (await workspaceStatePublicationCache.isPublished(
+            roomId,
+            eventType,
+            stateKey,
+            content,
+        )) continue
         await client.setApplicationRoomState({ roomId, eventType, stateKey, content })
-        publishedWorkspaceState.set(key, digest)
+        await workspaceStatePublicationCache.markPublished(
+            roomId,
+            eventType,
+            stateKey,
+            content,
+        )
     }
 }
 

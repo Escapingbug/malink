@@ -56,6 +56,32 @@ describe('Workspace Gateway join', () => {
     })
   })
 
+  it('keeps the signed directory stable when only the publication time and route order change', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-workspace-stable-directory-'))
+    const identity = await new FileGatewayIdentityStore(join(directory, 'identity.json'))
+      .loadOrCreate('workspace-1', 1_800_000_000_000)
+    const gatewayDirectory = new FileWorkspaceGatewayDirectory(
+      join(directory, 'directory.json'), identity,
+    )
+    const routes = [{
+      projectId: 'project-b', roomId: '!b:example.org', conversationId: '!b:example.org',
+    }, {
+      projectId: 'project-a', roomId: '!a:example.org', conversationId: '!a:example.org',
+    }]
+    const first = await gatewayDirectory.publishLocal(
+      'Gateway A', transport, 1_800_000_000_001, routes,
+    )
+    const repeated = await gatewayDirectory.publishLocal(
+      'Gateway A', transport, 1_800_000_010_000, [...routes].reverse(),
+    )
+
+    expect(repeated).toEqual(first)
+    expect(repeated.directory.revision).toBe(1)
+    expect(repeated.directory.gateways[0]?.issuedAt).toBe(1_800_000_000_001)
+    expect(repeated.directory.gateways[0]?.projects?.map(route => route.projectId))
+      .toEqual(['project-a', 'project-b'])
+  })
+
   it('rejects expired invitations and an existing identity from another Workspace', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-workspace-join-reject-'))
     const first = await new FileGatewayIdentityStore(join(directory, 'first.json'))

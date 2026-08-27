@@ -75,7 +75,10 @@ export class MatrixMlp3Port implements ChannelPort {
   // wide message limit as new chat messages. Preserve one logical bubble, but
   // publish it only at semantic boundaries just like an ordinary chat client.
   readonly streamAssistantText = false
-  readonly toolActivityDebounceMs = 10_000
+  // Matrix is the durable conversation transport, not a live telemetry bus.
+  // Intermediate tool snapshots are kept inside the runtime and only the
+  // final bounded snapshot crosses the network.
+  readonly toolActivityDebounceMs = 0
   private readonly pendingDecisions = new Map<string, PendingDecision>()
   private readonly operationIds = new WeakMap<ChannelMessage, string>()
   private readonly attachmentUploads = new Map<string, Promise<MalinkAttachment[]>>()
@@ -110,8 +113,9 @@ export class MatrixMlp3Port implements ChannelPort {
     const messageOptions = readMessageOptions(message.replyMarkup)
     const messageId = messageOptions.idempotencyKey ?? this.operationIdFor(message)
     const presentation = message.presentation ?? messageOptions.ui
-    const attachments = await this.uploadAttachments(messageId, message.attachments)
     const liveToolGroup = isToolGroupPresentation(presentation)
+    if (liveToolGroup && !context.finalSnapshot) return { messageId }
+    const attachments = await this.uploadAttachments(messageId, message.attachments)
     const parts = splitMessage(message)
     const transportPresentation = liveToolGroup
       ? compactToolPresentation(presentation)
@@ -158,8 +162,9 @@ export class MatrixMlp3Port implements ChannelPort {
     const messageId = String(messageIdInput)
     const messageOptions = readMessageOptions(message.replyMarkup)
     const presentation = message.presentation ?? messageOptions.ui
-    const attachments = await this.uploadAttachments(messageId, message.attachments)
     const toolGroup = isToolGroupPresentation(presentation)
+    if (toolGroup && !context.finalSnapshot) return
+    const attachments = await this.uploadAttachments(messageId, message.attachments)
     // Tool output is execution data, not chat history. Final snapshots carry
     // the same bounded metadata as live snapshots and must never expand into
     // a raw textual transcript that Matrix then has to fragment and retry.

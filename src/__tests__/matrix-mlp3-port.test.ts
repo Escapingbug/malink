@@ -256,12 +256,18 @@ describe('MatrixMlp3Port', () => {
       category: 'read',
       input: { file_path: '/repo/src/index.ts' },
     }, { verboseLevel: 2 })
+    const toolStart = transport.delivered.length
     await port.send({
       ...projectedTool!.message,
       replyMarkup: { idempotencyKey: 'tool-message-1' },
     })
-    await waitFor(() => transport.delivered.length >= 7)
-    const toolDelivery = transport.delivered[6]!
+    expect(transport.delivered).toHaveLength(toolStart)
+    await port.edit('tool-message-1', projectedTool!.message, {
+      terminal: true,
+      finalSnapshot: true,
+    })
+    await waitFor(() => transport.delivered.length === toolStart + 1)
+    const toolDelivery = transport.delivered[toolStart]!
     const toolExtension = toolDelivery.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
     const toolEnvelope = await openMlp3Envelope(toolExtension.envelope, {
       projectKey: base64UrlDecode(projectKey.key),
@@ -312,7 +318,7 @@ describe('MatrixMlp3Port', () => {
     await port.send({
       ...projectedInvocation!.message,
       replyMarkup: { idempotencyKey: 'long-invocation-message' },
-    })
+    }, { terminal: true, finalSnapshot: true })
     await waitFor(() => transport.delivered.length > invocationStart)
     const invocationExtension = transport.delivered[invocationStart]!
       .content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
@@ -358,32 +364,14 @@ describe('MatrixMlp3Port', () => {
       ...projectedOutputTool!.message,
       replyMarkup: { idempotencyKey: 'tool-output-message-1' },
     })
-    await waitFor(() => transport.delivered.length > completeOutputStart)
-    const liveOutputDelivery = transport.delivered[completeOutputStart]!
-    const liveOutputExtension = liveOutputDelivery
-      .content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
-    const liveOutputEnvelope = await openMlp3Envelope(liveOutputExtension.envelope, {
-      projectKey: base64UrlDecode(projectKey.key),
-      roomId: room.roomId,
-      projectId: grant.projectId,
-      keyId: projectKey.keyId,
-    })
-    if (liveOutputEnvelope.plaintext.kind !== 'signed_event') throw new Error('expected event')
-    expect(liveOutputEnvelope.plaintext.value.event.payload).toMatchObject({
-      type: 'assistant.message',
-      body: expect.stringContaining('pnpm test'),
-      ui: {
-        kind: 'tool_group',
-        tools: [expect.not.objectContaining({ result: expect.anything() })],
-      },
-    })
+    expect(transport.delivered).toHaveLength(completeOutputStart)
 
     await port.edit('tool-output-message-1', projectedOutputTool!.message, {
       progressive: true,
       terminal: true,
       finalSnapshot: true,
     })
-    await waitFor(() => transport.delivered.length > completeOutputStart + 1)
+    await waitFor(() => transport.delivered.length === completeOutputStart + 1)
     const completeOutputDelivery = transport.delivered.at(-1)!
     const completeOutputExtension = completeOutputDelivery
       .content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
@@ -411,7 +399,7 @@ describe('MatrixMlp3Port', () => {
       text: `${'x'.repeat(8 * 1024)}尾`,
       format: 'plain',
       replyMarkup: { idempotencyKey: 'long-tool-message-1' },
-    })
+    }, { terminal: true, finalSnapshot: true })
     const longToolPayloads = await Promise.all(
       transport.delivered.slice(longToolStart).map(async delivery => {
         const extension = delivery.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
@@ -467,12 +455,13 @@ describe('MatrixMlp3Port', () => {
       ...projectedLargeOutputTool!.message,
       replyMarkup: { idempotencyKey: 'large-tool-output-message' },
     })
+    expect(transport.delivered).toHaveLength(largeOutputStart)
     await port.edit('large-tool-output-message', projectedLargeOutputTool!.message, {
       progressive: true,
       terminal: true,
       finalSnapshot: true,
     })
-    await waitFor(() => transport.delivered.length > largeOutputStart + 1)
+    await waitFor(() => transport.delivered.length === largeOutputStart + 1)
     const largeOutputPayloads = await Promise.all(
       transport.delivered.slice(largeOutputStart).map(async delivery => {
         const extension = delivery.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
@@ -486,7 +475,7 @@ describe('MatrixMlp3Port', () => {
         return envelope.plaintext.value.event.payload
       }),
     )
-    expect(largeOutputPayloads).toHaveLength(2)
+    expect(largeOutputPayloads).toHaveLength(1)
     expect(JSON.stringify(largeOutputPayloads)).not.toContain('important large-output tail')
     expect(largeOutputPayloads).toEqual(expect.arrayContaining([
       expect.objectContaining({

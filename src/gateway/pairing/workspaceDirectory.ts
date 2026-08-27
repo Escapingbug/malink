@@ -44,6 +44,11 @@ export class FileWorkspaceGatewayDirectory {
     runtime: { computerName?: string; buildId?: string; onlineUpdate?: true } = {},
   ): Promise<SignedWorkspaceGatewayDirectory> {
     const publicKey = await exportPairingPublicKey(this.identity.keys.publicKey)
+    const normalizedProjects = [...projects]
+      .map(project => structuredClone(project))
+      .sort((left, right) =>
+        left.projectId.localeCompare(right.projectId)
+        || left.roomId.localeCompare(right.roomId))
     const result = await this.file.transaction(
       () => initialState(this.identity.workspaceId),
       state => {
@@ -51,7 +56,7 @@ export class FileWorkspaceGatewayDirectory {
         if (state.removedGatewayNodeIds?.includes(this.identity.gatewayNodeId)) {
           throw new Error('This Gateway node was removed from the Workspace directory')
         }
-        const descriptor: WorkspaceGatewayDescriptor = {
+        const nextDescriptor = {
           gatewayNodeId: this.identity.gatewayNodeId,
           workspaceId: this.identity.workspaceId,
           gatewayName,
@@ -60,13 +65,16 @@ export class FileWorkspaceGatewayDirectory {
           ...(runtime.onlineUpdate ? { onlineUpdate: true as const } : {}),
           transport,
           publicKey,
-          ...(projects.length > 0 ? { projects: structuredClone([...projects]) } : {}),
-          issuedAt: now,
+          ...(normalizedProjects.length > 0 ? { projects: normalizedProjects } : {}),
         }
-        const previous = state.gateways[descriptor.gatewayNodeId]
-        const changed = !previous || canonicalJson(previous) !== canonicalJson(descriptor)
+        const previous = state.gateways[nextDescriptor.gatewayNodeId]
+        const changed = !previous
+          || canonicalJson(descriptorSemantics(previous)) !== canonicalJson(nextDescriptor)
         if (changed) {
-          state.gateways[descriptor.gatewayNodeId] = descriptor
+          state.gateways[nextDescriptor.gatewayNodeId] = {
+            ...nextDescriptor,
+            issuedAt: now,
+          }
           state.revision += 1
           state.signed = undefined
         }
@@ -268,6 +276,13 @@ export class FileWorkspaceGatewayDirectory {
     })
     return signed
   }
+}
+
+function descriptorSemantics(
+  descriptor: WorkspaceGatewayDescriptor,
+): Omit<WorkspaceGatewayDescriptor, 'issuedAt'> {
+  const { issuedAt: _issuedAt, ...semantics } = descriptor
+  return semantics
 }
 
 function initialState(workspaceId: string): WorkspaceDirectoryState {

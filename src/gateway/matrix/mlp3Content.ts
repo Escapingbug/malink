@@ -5,6 +5,7 @@ import {
   MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
   MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
   mlp3ContentEnvelopeSchema,
+  mlp3CurrentPointerSchema,
   mlp3EventSchema,
   mlp3ProjectKeyGrantStateSchema,
   canonicalJson,
@@ -344,6 +345,29 @@ export class GatewayMlp3ContentLayer {
     if (snapshotEvent.payload.type !== 'project.snapshot') {
       throw new Error('Project pointer must reference a project snapshot')
     }
+    const previous = this.outbox.latestState(
+      room.roomId,
+      MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
+      projectId,
+    )
+    const parsedPrevious = mlp3CurrentPointerSchema.safeParse(previous?.content)
+    if (previous && parsedPrevious.success) {
+      const document = parsedPrevious.data.document
+      const sameEntity = document.kind === 'project.current'
+        && document.workspaceId === this.workspaceId
+        && document.projectId === projectId
+        && document.roomId === room.roomId
+      if (sameEntity && document.snapshotVersion > snapshotEvent.payload.snapshotVersion) {
+        return this.deliver(previous, transport)
+      }
+      if (sameEntity && document.snapshotVersion === snapshotEvent.payload.snapshotVersion) {
+        if (
+          document.eventId !== snapshotEventId
+          || document.logicalEventId !== snapshotEvent.eventId
+        ) throw new Error('Project snapshot version is immutable')
+        return this.deliver(previous, transport)
+      }
+    }
     const keys = this.requireGatewayKeys()
     const pointer: Mlp3CurrentPointer = await signMlp3Pointer({
       kind: 'project.current',
@@ -377,6 +401,29 @@ export class GatewayMlp3ContentLayer {
     const projectId = this.projectId(room)
     if (snapshotEvent.payload.type !== 'workspace.snapshot') {
       throw new Error('Workspace pointer must reference a workspace snapshot')
+    }
+    const previous = this.outbox.latestState(
+      room.roomId,
+      MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
+      this.workspaceId,
+    )
+    const parsedPrevious = mlp3CurrentPointerSchema.safeParse(previous?.content)
+    if (previous && parsedPrevious.success) {
+      const document = parsedPrevious.data.document
+      const sameEntity = document.kind === 'workspace.current'
+        && document.workspaceId === this.workspaceId
+        && document.projectId === projectId
+        && document.roomId === room.roomId
+      if (sameEntity && document.snapshotVersion > snapshotEvent.payload.snapshotVersion) {
+        return this.deliver(previous, transport)
+      }
+      if (sameEntity && document.snapshotVersion === snapshotEvent.payload.snapshotVersion) {
+        if (
+          document.eventId !== snapshotEventId
+          || document.logicalEventId !== snapshotEvent.eventId
+        ) throw new Error('Workspace snapshot version is immutable')
+        return this.deliver(previous, transport)
+      }
     }
     const keys = this.requireGatewayKeys()
     const pointer: Mlp3CurrentPointer = await signMlp3Pointer({

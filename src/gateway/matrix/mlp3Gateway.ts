@@ -3,6 +3,7 @@ import { mkdir, rm } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import {
   MALINK_MATRIX_EXTENSION,
+  canonicalJson,
   matrixGatewayCapabilitiesSchema,
   type Mlp3Command,
   type Mlp3Event,
@@ -239,9 +240,6 @@ export class MatrixMlp3GatewayRunner {
     record: Mlp3CommandJournalRecord
   }>()
   private publishedClientReleases: NativeClientRelease[] = []
-  private readonly publishedGatewayDirectoryRevisions = new Map<string, number>()
-  private readonly publishedGatewayEnrollmentFingerprints = new Map<string, string>()
-  private readonly publishedGatewayUpdateFingerprints = new Map<string, string>()
   private readonly runtimeEpoch = randomUUID()
 
   constructor(
@@ -361,6 +359,7 @@ export class MatrixMlp3GatewayRunner {
         await this.content.provisionProject(project.config, this.client)
         await this.prepareSessionThreads(project)
         await this.publishSessionRecovery(project)
+        await this.publishWorkspaceSnapshot(project)
         await this.publishProjectSnapshot(project)
       }
       this.state = 'running'
@@ -434,7 +433,10 @@ export class MatrixMlp3GatewayRunner {
     const projects = roomId
       ? [this.projects.get(roomId)].filter((value): value is V3ProjectRuntime => value !== undefined)
       : [...this.projects.values()]
-    for (const project of projects) await this.publishProjectSnapshot(project)
+    for (const project of projects) {
+      await this.publishWorkspaceSnapshot(project)
+      await this.publishProjectSnapshot(project)
+    }
   }
 
   async provisionCurrentState(): Promise<void> {
@@ -443,6 +445,7 @@ export class MatrixMlp3GatewayRunner {
     }
     for (const project of this.projects.values()) {
       await this.content.provisionProject(project.config, this.client)
+      await this.publishWorkspaceSnapshot(project)
       await this.publishProjectSnapshot(project)
     }
   }
@@ -456,12 +459,6 @@ export class MatrixMlp3GatewayRunner {
     const operation = this.eventChain.then(async () => {
       const published = await this.nativeClientReleases.publish(input)
       this.publishedClientReleases = published.releases
-      if (published.changed) {
-        for (const project of this.projects.values()) {
-          project.project.capabilitySnapshotVersion += 1
-          await this.persist(project)
-        }
-      }
       // Publish even for an idempotent retry. If the previous admin request
       // committed the local release but lost a Matrix acknowledgement, the
       // durable MLP outbox and stable snapshot ID finish the same publication.
@@ -1214,17 +1211,6 @@ export class MatrixMlp3GatewayRunner {
     ))
     this.transition(runtime, 'working')
     await this.persist(project)
-    await this.emitBestEffort(project, runtime.record, this.eventFor(
-      project,
-      runtime.record,
-      command,
-      'turn-started',
-      {
-        type: 'turn.started',
-        turnId: command.commandId,
-        projection: projection(runtime.record, runtime.activity.phase, this.extensions),
-      },
-    ))
     runtime.port.setCausationCommandId(command.commandId)
     runtime.activeTurnId = command.commandId
     let dispatchFailure: { error: unknown } | null = null
@@ -2075,6 +2061,7 @@ export class MatrixMlp3GatewayRunner {
     await this.content.provisionProject(project.config, this.client)
     await this.prepareSessionThreads(project)
     await this.publishSessionRecovery(project)
+    await this.publishWorkspaceSnapshot(project)
     await this.publishProjectSnapshot(project)
   }
 
@@ -2266,7 +2253,6 @@ export class MatrixMlp3GatewayRunner {
     // provisionCurrentState() after the first certificate is committed, which
     // publishes the key grant and this snapshot in the correct order.
     if (!await this.content.hasActiveDevices(project.config.roomId)) return
-    await this.publishWorkspaceSnapshot(project)
     const occurredAt = Math.max(0, ...project.project.sessions.map(session => session.updatedAt))
     const event: Mlp3Event = {
       kind: 'malink.event',
@@ -2305,12 +2291,12 @@ export class MatrixMlp3GatewayRunner {
           this.config.gatewayId,
           project.project.projectId,
           record.id,
-          this.runtimeEpoch,
+          record.stateVersion,
         ),
         workspaceId: this.config.gatewayId,
         projectId: project.project.projectId,
         sessionId: record.id,
-        occurredAt: this.now(),
+        occurredAt: record.updatedAt,
         payload: {
           type: 'session.ready',
           projection: terminalProjection(record, 'idle', this.extensions),
@@ -2328,49 +2314,36 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private async publishWorkspaceSnapshot(project: V3ProjectRuntime): Promise<void> {
+    if (!await this.content.hasActiveDevices(project.config.roomId)) return
     const capabilities = this.discoverCapabilities(project)
-    const gatewayDirectory = await this.dependencies.workspaceGatewayDirectory?.()
     const pendingGatewayEnrollments = [
       ...(await this.dependencies.pendingGatewayEnrollments?.() ?? []),
     ].map(enrollment => ({
       ...enrollment,
       approverProjectId: project.project.projectId,
     }))
-    const enrollmentFingerprint = JSON.stringify(pendingGatewayEnrollments)
     const gatewayUpdate = await this.dependencies.gatewayUpdateSupervisor?.status().catch(error => {
       this.log(`[mlp3/matrix] Gateway update status unavailable: ${formatError(error)}`)
       return undefined
     })
-    const updateFingerprint = JSON.stringify(gatewayUpdate ?? null)
-    const directoryChanged = gatewayDirectory !== undefined &&
-      gatewayDirectory.directory.revision !==
-        this.publishedGatewayDirectoryRevisions.get(project.project.projectId)
-    const enrollmentsChanged = enrollmentFingerprint !==
-      this.publishedGatewayEnrollmentFingerprints.get(project.project.projectId)
-    const updateChanged = updateFingerprint !==
-      this.publishedGatewayUpdateFingerprints.get(project.project.projectId)
-    if (
-      JSON.stringify(project.project.capabilities) !== JSON.stringify(capabilities)
-      || directoryChanged
-      || enrollmentsChanged
-      || updateChanged
-    ) {
+    const snapshotContent = {
+      protocolMin: 3 as const,
+      protocolMax: 3 as const,
+      gatewayKeyId: this.config.applicationSecurity.gatewayKeyPair.keyId,
+      capabilities,
+      ...(this.publishedClientReleases.length > 0
+        ? { clientReleases: structuredClone(this.publishedClientReleases) }
+        : {}),
+      ...(pendingGatewayEnrollments.length > 0 ? { pendingGatewayEnrollments } : {}),
+      ...(gatewayUpdate ? { gatewayUpdate } : {}),
+    }
+    const fingerprint = createHash('sha256')
+      .update(canonicalJson(snapshotContent as JsonValue))
+      .digest('base64url')
+    if (project.project.workspaceSnapshotFingerprint !== fingerprint) {
       project.project.capabilities = capabilities
+      project.project.workspaceSnapshotFingerprint = fingerprint
       project.project.capabilitySnapshotVersion += 1
-      if (gatewayDirectory) {
-        this.publishedGatewayDirectoryRevisions.set(
-          project.project.projectId,
-          gatewayDirectory.directory.revision,
-        )
-      }
-      this.publishedGatewayEnrollmentFingerprints.set(
-        project.project.projectId,
-        enrollmentFingerprint,
-      )
-      this.publishedGatewayUpdateFingerprints.set(
-        project.project.projectId,
-        updateFingerprint,
-      )
       await this.persist(project)
     }
     if (project.project.capabilitySnapshotVersion < 1 || !project.project.capabilities) {
@@ -2390,16 +2363,7 @@ export class MatrixMlp3GatewayRunner {
       occurredAt,
       payload: {
         type: 'workspace.snapshot',
-        protocolMin: 3,
-        protocolMax: 3,
-        gatewayKeyId: this.config.applicationSecurity.gatewayKeyPair.keyId,
-        capabilities: project.project.capabilities,
-        ...(this.publishedClientReleases.length > 0
-          ? { clientReleases: structuredClone(this.publishedClientReleases) }
-          : {}),
-        ...(gatewayDirectory ? { gatewayDirectory } : {}),
-        ...(pendingGatewayEnrollments.length > 0 ? { pendingGatewayEnrollments } : {}),
-        ...(gatewayUpdate ? { gatewayUpdate } : {}),
+        ...snapshotContent,
         snapshotVersion: project.project.capabilitySnapshotVersion,
       },
     }
@@ -2750,11 +2714,11 @@ function logicalSessionRecoveryEventId(
   workspaceId: string,
   projectId: string,
   sessionId: string,
-  runtimeEpoch: string,
+  stateVersion: number,
 ): string {
   return createHash('sha256')
     .update(
-      `malink-v3-session-recovery\0${workspaceId}\0${projectId}\0${sessionId}\0${runtimeEpoch}`,
+      `malink-v3-session-recovery\0${workspaceId}\0${projectId}\0${sessionId}\0${stateVersion}`,
     )
     .digest('base64url')
 }

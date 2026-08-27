@@ -65,11 +65,12 @@ Adding a trusted Gateway is normally an in-product enrollment:
    Signed directory, device-grant, and revocation state converges from the
    rendezvous room instead of inflating the approval event beyond Matrix's
    event-size limit.
-6. The new node publishes its descriptor into the signed Gateway Directory.
-   Each Gateway mirrors that root-signed directory and the portable device
-   grants into every project room. Authorized clients are invited to new rooms,
-   verify the directory signature, join automatically, and add the route to
-   their existing Matrix session. No Gateway switch is exposed to the user.
+6. The new node publishes its descriptor into the signed Gateway Directory on
+   its stable bootstrap control route. Root-signed directory, portable grant,
+   and revocation documents are not copied into every conversation room.
+   Authorized clients are invited to new rooms, verify the directory signature,
+   join automatically, and add the route to their existing Matrix session. No
+   Gateway switch is exposed to the user.
 7. To retire a node, run
    `malink gateway remove-gateway NODE_ID --gateway-data-dir PATH` on another
    active node. The signed tombstone removes its project routes from every

@@ -1285,6 +1285,8 @@ function gatewayState(
   const project = protocol.projection.project;
   const sessions = protocol.projection.visibleSessions();
   const inboxFiles = protocol.projection.visibleInboxFiles();
+  const gatewayDirectory = trust?.gatewayDirectory
+    ?? protocol.projection.workspace?.gatewayDirectory;
   const capabilities = protocol.projection.workspace
     ? parseGatewayCapabilities(protocol.projection.workspace.capabilities)
     : {
@@ -1359,8 +1361,8 @@ function gatewayState(
     },
     capabilities,
     nativeClientReleases: protocol.projection.workspace?.clientReleases ?? [],
-    ...(protocol.projection.workspace?.gatewayDirectory
-      ? { gatewayDirectory: protocol.projection.workspace.gatewayDirectory }
+    ...(gatewayDirectory
+      ? { gatewayDirectory }
       : {}),
     pendingGatewayEnrollments:
       protocol.projection.workspace?.pendingGatewayEnrollments ?? [],
@@ -1377,8 +1379,8 @@ function aggregateGatewayState(
 ): GatewayStateSnapshot {
   const states = protocols.map(value => gatewayState(value, config, trust));
   const first = states[0]!;
-  const directory = protocols
-    .map(value => value.projection.workspace?.gatewayDirectory)
+  const directory = states
+    .map(value => value.gatewayDirectory)
     .filter((value): value is NonNullable<typeof value> => Boolean(value))
     .sort((left, right) => right.directory.revision - left.directory.revision)[0];
   const pendingGatewayEnrollments = states
