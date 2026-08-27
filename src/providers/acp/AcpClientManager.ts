@@ -64,6 +64,7 @@ interface SessionUpdateWaiter {
 export class AcpClientManager {
     private config: AcpClientManagerConfig
     private childProcess: ChildProcess | null = null
+    private processGeneration = 0
     private connection: ClientSideConnection | null = null
     private initResponse: InitializeResponse | null = null
     private _connected = false
@@ -158,6 +159,7 @@ export class AcpClientManager {
 
         try {
             const isWindows = process.platform === 'win32'
+            const generation = ++this.processGeneration
             this.childProcess = spawn(this.config.command, this.config.args, {
                 stdio: ['pipe', 'pipe', 'pipe'],
                 cwd: this.config.cwd,
@@ -189,7 +191,7 @@ export class AcpClientManager {
                 }
             })
 
-            this.attachAgentLifecycleObservers(this.childProcess)
+            this.attachAgentLifecycleObservers(this.childProcess, generation)
 
             const output = Writable.toWeb(this.childProcess.stdin!) as WritableStream<Uint8Array>
             const input = Readable.toWeb(this.childProcess.stdout!) as ReadableStream<Uint8Array>
@@ -544,6 +546,8 @@ export class AcpClientManager {
         this.extensionHandler = null
         this.sessionUpdateSeqs.clear()
         this.historicalSeqBoundaries.clear()
+        this.sessionUpdates.clear()
+        this.sessionWaiters.clear()
         this.childProcess = null
         this.connection = null
         this._connected = false
@@ -721,19 +725,29 @@ export class AcpClientManager {
         }
     }
 
-    private attachAgentLifecycleObservers(child: ChildProcess): void {
+    private attachAgentLifecycleObservers(child: ChildProcess, generation: number): void {
         child.once('exit', (exitCode, signal) => {
-            this.recordAgentExit('process_exit', exitCode, signal)
+            this.recordAgentExit(child, generation, 'process_exit', exitCode, signal)
         })
         child.once('close', (exitCode, signal) => {
-            this.recordAgentExit('process_close', exitCode, signal)
+            this.recordAgentExit(child, generation, 'process_close', exitCode, signal)
         })
         child.stdout?.once('close', () => {
-            this.recordAgentExit('pipe_close', child.exitCode ?? null, child.signalCode ?? null)
+            this.recordAgentExit(child, generation, 'pipe_close', child.exitCode ?? null, child.signalCode ?? null)
         })
     }
 
-    private recordAgentExit(reason: string, exitCode: number | null, signal: NodeJS.Signals | string | null): void {
+    private recordAgentExit(
+        child: ChildProcess,
+        generation: number,
+        reason: string,
+        exitCode: number | null,
+        signal: NodeJS.Signals | string | null,
+    ): void {
+        // A closed ACP process can deliver its final pipe/close callbacks after a
+        // replacement process has already initialized. Those stale callbacks must
+        // never mark the new connection disconnected or reject its waiters.
+        if (this.childProcess !== child || this.processGeneration !== generation) return
         if (this.lastAgentExit) return
         this.lastAgentExit = { reason, exitCode, signal }
         this._connected = false
