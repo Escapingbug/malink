@@ -248,6 +248,10 @@ describe("MatrixMlp3ProtocolClient", () => {
     await localFirst.prepareAuthoritativeRecovery();
     expect(localFirst.projection.visibleSessions()).toHaveLength(1);
     expect(listInbox).not.toHaveBeenCalled();
+    expect(await localFirst.requiresThreadDirectoryRecovery("sync-1")).toBe(true);
+    await localFirst.checkpointMatrixSync("sync-1");
+    expect(await localFirst.requiresThreadDirectoryRecovery("sync-1")).toBe(false);
+    expect(await localFirst.requiresThreadDirectoryRecovery("sync-2")).toBe(true);
     listInbox.mockRestore();
 
     // A previously quarantined valid event must get one fresh attempt when
@@ -306,6 +310,7 @@ describe("MatrixMlp3ProtocolClient", () => {
     expect(failingStore.inbox.size).toBe(0);
     expect(failingStore.outbox.has(sent.commandId)).toBe(true);
     await repaired.prepareAuthoritativeRecovery();
+    expect(await repaired.requiresThreadDirectoryRecovery("sync-1")).toBe(true);
     expect(warning).toHaveBeenCalledTimes(1);
     warning.mockRestore();
   });

@@ -284,6 +284,14 @@ recent thread relations. Live `/sync` events update the projection directly;
 explicit gap workers and user-requested older pagination are the only recovery
 paths allowed to read remote history.
 
+Warm startup is likewise cursor-driven. A browser may skip thread-directory
+recovery only when its application projection checkpoint exactly matches the
+Matrix SDK's durably saved sync token. Android may do so only when both its
+encrypted projection and application-control cursor are present. A missing or
+mismatched checkpoint triggers the complete thread-directory rebuild, while
+additional Workspace project rooms converge independently in the background
+and cannot hold an already-authoritative primary project in `Connecting`.
+
 No layer substitutes for another. In particular, increasing an in-memory event
 window, publishing a manual checkpoint, or resending an already Matrix-acked
 command is not a recovery strategy.

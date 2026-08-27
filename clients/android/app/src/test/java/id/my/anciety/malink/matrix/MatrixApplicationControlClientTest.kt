@@ -15,6 +15,13 @@ import org.matrix.rustcomponents.sdk.SlidingSyncVersion
 
 class MatrixApplicationControlClientTest {
     @Test
+    fun `warm application projection uses the durable cursor without a directory rebuild`() {
+        assertFalse(requiresApplicationProjectionRebuild("s-current", true))
+        assertTrue(requiresApplicationProjectionRebuild(null, true))
+        assertTrue(requiresApplicationProjectionRebuild("s-current", false))
+    }
+
+    @Test
     fun `sends only a MLP3 project envelope as a room message with a stable transaction id`() =
         runBlocking {
             lateinit var endpoint: URI

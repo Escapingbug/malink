@@ -259,6 +259,9 @@ internal class AtomicEncryptedMatrixMlp3ProjectKeyStore internal constructor(
     fun values(): List<MatrixMlp3ProjectKeyGrant> = grants.values.map { it.deepCopy() }
 
     @Synchronized
+    fun isNotEmpty(): Boolean = grants.isNotEmpty()
+
+    @Synchronized
     fun save(value: MatrixMlp3ProjectKeyGrant) {
         grants.remove(value.projectId)?.wipe()
         grants[value.projectId] = value.deepCopy()

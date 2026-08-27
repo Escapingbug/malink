@@ -62,6 +62,7 @@ class MatrixConnectionRuntime(
     ),
     private val retryDelayMs: Long = 5_000,
     private val elapsedRealtime: () -> Long = SystemClock::elapsedRealtime,
+    private val hasCachedApplicationProjection: () -> Boolean = { false },
     private val onPairingTransportReady: (MatrixTransportIdentity) -> Unit = {},
     private val onTransportReady: (MatrixTransportIdentity) -> Unit = {},
     private val onConvergenceRequired: (String) -> Unit = {},
@@ -834,20 +835,102 @@ class MatrixConnectionRuntime(
         applicationControlReceiverJob = scope.launch {
             var since = applicationControlSince
             var consecutiveFailures = 0
+            var projectionRebuildRequired = requiresApplicationProjectionRebuild(
+                since,
+                hasCachedApplicationProjection(),
+            )
+            var gapRecoveryStarted = false
+            if (!projectionRebuildRequired) {
+                diagnostics.record(
+                    "matrix.application_state.cache_reused",
+                    mapOf("mode" to "incremental"),
+                )
+            }
             while (isActive) {
-                try {
-                    val accepted = refreshApplicationProjectionBaseline(session)
-                    val threads = refreshThreadDirectory(session)
-                    applicationControlLastProgressAt = elapsedRealtime()
-                    diagnostics.record(
-                        "matrix.application_state.current_received",
-                        mapOf(
-                            "candidates" to accepted.toString(),
-                            "accepted" to accepted.toString(),
-                            "threads" to threads.toString(),
-                        ),
+                if (projectionRebuildRequired) {
+                    try {
+                        val accepted = refreshApplicationProjectionBaseline(session)
+                        val threads = refreshThreadDirectory(session)
+                        applicationControlLastProgressAt = elapsedRealtime()
+                        diagnostics.record(
+                            "matrix.application_state.current_received",
+                            mapOf(
+                                "candidates" to accepted.toString(),
+                                "accepted" to accepted.toString(),
+                                "threads" to threads.toString(),
+                                "mode" to "rebuild",
+                            ),
+                        )
+                        projectionRebuildRequired = false
+                        consecutiveFailures = 0
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        applicationControlLastProgressAt = elapsedRealtime()
+                        if (error is MatrixApplicationControlPayloadException) {
+                            diagnostics.record(
+                                "matrix.application_state.current_rejected",
+                                errorAttributes(error),
+                            )
+                            ready.completeExceptionally(error)
+                            scope.launch {
+                                mutex.withLock {
+                                    if (driverGeneration == generation) {
+                                        accept(MatrixRuntimeEvent.Failed(
+                                            "matrix_application_state_malformed",
+                                            blocked = true,
+                                        ))
+                                    }
+                                }
+                            }
+                            return@launch
+                        }
+                        if (error is MatrixApplicationControlSyncException && error.fatal) {
+                            ready.completeExceptionally(error)
+                            scope.launch {
+                                mutex.withLock {
+                                    if (driverGeneration == generation) {
+                                        accept(MatrixRuntimeEvent.Failed(
+                                            "matrix_application_state_rejected",
+                                            blocked = true,
+                                        ))
+                                    }
+                                }
+                            }
+                            return@launch
+                        }
+                        consecutiveFailures += 1
+                        diagnostics.record(
+                            "matrix.application_state.current_retry",
+                            errorAttributes(error),
+                        )
+                        delay(
+                            (error as? MatrixApplicationControlSyncException)?.retryAfterMs
+                                ?: APPLICATION_CONTROL_RETRY_BASE_MS *
+                                    consecutiveFailures.coerceAtMost(
+                                        APPLICATION_CONTROL_MAX_RETRY_MULTIPLIER,
+                                    ),
+                        )
+                        continue
+                    }
+                }
+                if (!gapRecoveryStarted) {
+                    startApplicationControlGapRecovery(
+                        session = session,
+                        currentFiles = currentFiles,
+                        generation = generation,
                     )
-                    break
+                    gapRecoveryStarted = true
+                }
+                val batch = try {
+                    // A persisted cursor makes this a live sync, but readiness must not
+                    // wait for an empty long poll. Confirm the cursor immediately, then
+                    // use long polling only after the receiver is ready.
+                    applicationControlSyncClient.sync(
+                        session,
+                        since,
+                        longPoll = ready.isCompleted,
+                    )
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
@@ -865,75 +948,10 @@ class MatrixConnectionRuntime(
                             mapOf("reason" to cursorRebuildReason),
                         )
                         onConvergenceRequired("application_control_cursor_rebuilt")
+                        projectionRebuildRequired = true
                         consecutiveFailures = 0
                         continue
                     }
-                    if (error is MatrixApplicationControlPayloadException) {
-                        diagnostics.record(
-                            "matrix.application_state.current_rejected",
-                            errorAttributes(error),
-                        )
-                        ready.completeExceptionally(error)
-                        scope.launch {
-                            mutex.withLock {
-                                if (driverGeneration == generation) {
-                                    accept(MatrixRuntimeEvent.Failed(
-                                        "matrix_application_state_malformed",
-                                        blocked = true,
-                                    ))
-                                }
-                            }
-                        }
-                        return@launch
-                    }
-                    if (error is MatrixApplicationControlSyncException && error.fatal) {
-                        ready.completeExceptionally(error)
-                        scope.launch {
-                            mutex.withLock {
-                                if (driverGeneration == generation) {
-                                    accept(MatrixRuntimeEvent.Failed(
-                                        "matrix_application_state_rejected",
-                                        blocked = true,
-                                    ))
-                                }
-                            }
-                        }
-                        return@launch
-                    }
-                    consecutiveFailures += 1
-                    diagnostics.record(
-                        "matrix.application_state.current_retry",
-                        errorAttributes(error),
-                    )
-                    delay(
-                        (error as? MatrixApplicationControlSyncException)?.retryAfterMs
-                            ?: APPLICATION_CONTROL_RETRY_BASE_MS *
-                                consecutiveFailures.coerceAtMost(
-                                    APPLICATION_CONTROL_MAX_RETRY_MULTIPLIER,
-                                ),
-                    )
-                }
-            }
-            consecutiveFailures = 0
-            startApplicationControlGapRecovery(
-                session = session,
-                currentFiles = currentFiles,
-                generation = generation,
-            )
-            while (isActive) {
-                val batch = try {
-                    // A persisted cursor makes this a live sync, but readiness must not
-                    // wait for an empty long poll. Confirm the cursor immediately, then
-                    // use long polling only after the receiver is ready.
-                    applicationControlSyncClient.sync(
-                        session,
-                        since,
-                        longPoll = ready.isCompleted,
-                    )
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Exception) {
-                    applicationControlLastProgressAt = elapsedRealtime()
                     if (error is MatrixApplicationControlPayloadException) {
                         diagnostics.record(
                             "matrix.application_control.receiver_rejected",
@@ -1422,6 +1440,11 @@ class MatrixConnectionRuntime(
         const val MAX_THREAD_DIRECTORY_PAGES = 1_000
     }
 }
+
+internal fun requiresApplicationProjectionRebuild(
+    cursor: String?,
+    hasCachedProjection: Boolean,
+): Boolean = cursor == null || !hasCachedProjection
 
 internal fun applicationControlReceiverIsStale(
     lastProgressAt: Long,

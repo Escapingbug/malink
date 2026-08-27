@@ -1110,19 +1110,12 @@ class NativeClientRuntime(
     override fun onTransportReady(identity: MatrixTransportIdentity) {
         transportIdentity = identity
         gatewayStateSynchronized = trust != null &&
-            matrixMlp3ProjectKeys.values().isNotEmpty() &&
+            matrixMlp3ProjectKeys.isNotEmpty() &&
             matrixMlp3Projection.snapshot() != null
         refreshSnapshot(publishLifecycle = true)
         if (trust != null) {
             scheduleWorkspaceDirectoryConvergence()
             scope.launch {
-                runCatching { matrix.refreshThreadDirectory() }
-                    .onFailure { error ->
-                        diagnostics.record(
-                            "matrix.thread_directory.refresh_failure",
-                            mapOf("error" to diagnosticErrorName(error)),
-                        )
-                    }
                 mutex.withLock {
                     runCatching { recoverGatewayTransportSnapshotLocked() }
                         .onFailure { error ->
@@ -1143,6 +1136,11 @@ class NativeClientRuntime(
             resumeConfirmedPairing()
         }
     }
+
+    override fun hasCachedApplicationProjection(): Boolean =
+        trust != null &&
+            matrixMlp3ProjectKeys.isNotEmpty() &&
+            matrixMlp3Projection.snapshot() != null
 
     override fun onConvergenceRequired(reason: String) {
         requestAuthoritativeConvergence(reason)
@@ -1980,13 +1978,6 @@ class NativeClientRuntime(
             diagnostics.record("matrix.v3_project_keys.accepted")
             matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
             scope.launch {
-                runCatching { matrix.refreshThreadDirectory() }
-                    .onFailure { error ->
-                        diagnostics.record(
-                            "matrix.thread_directory.refresh_failure",
-                            mapOf("error" to diagnosticErrorName(error)),
-                        )
-                    }
                 mutex.withLock { replayMatrixMlp3InboxLocked() }
             }
             return true
@@ -2152,10 +2143,13 @@ class NativeClientRuntime(
                     }
                     if (next == null) return@launch
                     bindings = null
-                    if (matrix.publicSession()?.roomBindings != next) {
+                    val bindingsChanged = matrix.publicSession()?.roomBindings != next
+                    if (bindingsChanged) {
                         matrix.updateRoomBindings(next)
                     }
-                    matrix.refreshApplicationProjection()
+                    if (bindingsChanged || !gatewayStateSynchronized) {
+                        matrix.refreshApplicationProjection()
+                    }
                 }
                 if (result.isSuccess) return@launch
                 diagnostics.record(

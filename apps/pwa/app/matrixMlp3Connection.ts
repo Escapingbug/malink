@@ -110,6 +110,7 @@ export async function connectMatrixMlp3(
   let room: Room | null = null;
   let protocol: MatrixMlp3ProtocolClient | null = null;
   let projectId: string | null = null;
+  let savedMatrixSyncToken: string | null = null;
   const secondaryProtocols = new Map<string, {
     route: MatrixWorkspaceRoute;
     room: Room;
@@ -120,7 +121,6 @@ export async function connectMatrixMlp3(
   let matrixDeviceKeys: { ed25519: string; curve25519: string } | null = null;
   const readiness = new MatrixMlp3Readiness(Boolean(trust));
   let authoritativeProjectionPrepared = false;
-  let workspaceRoutesReady = !trust;
   let cachedProjectionPublished = false;
   let reconcileWorkspaceRoutes = () => undefined;
   const deliveredMessages = new Map<string, { version: number; physicalEventId: string }>();
@@ -337,9 +337,17 @@ export async function connectMatrixMlp3(
     );
       await routeProtocol.initialize();
       await routeProtocol.acceptKeyGrant(resolution.grant);
-      secondaryProtocols.set(route.projectId, { route, room: routeRoom, protocol: routeProtocol });
+      const context = { route, room: routeRoom, protocol: routeProtocol };
+      secondaryProtocols.set(route.projectId, context);
       routeRoom.on(sdk.RoomStateEvent.Events, onRoomState);
       await recoverSecondaryProject(route.projectId);
+      if (await routeProtocol.requiresThreadDirectoryRecovery(savedMatrixSyncToken)) {
+        await replayThreadDirectory(
+          route.roomId,
+          event => ingestSecondaryEvent(context, event),
+        );
+      }
+      await checkpointMatrixSync([routeProtocol]);
     } finally {
       pendingSecondaryProjects.delete(route.projectId);
     }
@@ -434,7 +442,9 @@ export async function connectMatrixMlp3(
       }
       for (const route of desired.values()) await createSecondaryProtocol(route);
     }).catch(error => {
-      reportRecoveryFailure("Workspace project routes could not be reconciled", error);
+      // One unavailable project route must not downgrade every other Gateway
+      // and project after the primary command path is authoritative.
+      console.error("[mlp3/matrix] a Workspace project route could not be reconciled", error);
     });
   };
 
@@ -580,6 +590,7 @@ export async function connectMatrixMlp3(
 
   let inboundChain = Promise.resolve();
   let recoveryChain = Promise.resolve();
+  let checkpointChain = Promise.resolve();
   const enqueue = (event: MatrixEvent): void => {
     inboundChain = inboundChain.then(() => ingestEvent(event)).catch(error => {
       console.error("[mlp3/matrix] an application event could not be ingested", error);
@@ -618,13 +629,19 @@ export async function connectMatrixMlp3(
       if (event.getType() === MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE) {
         void secondary.protocol.acceptKeyGrant(event.getContent())
           .then(() => recoverSecondaryProject(secondary.route.projectId))
-          .catch(error => reportRecoveryFailure("A project key grant could not be opened", error));
+          .catch(error => console.error(
+            `[mlp3/matrix] project ${secondary.route.projectId} key grant could not be opened`,
+            error,
+          ));
       } else if (
         event.getType() === MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE ||
         event.getType() === MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
       ) {
         void recoverSecondaryProject(secondary.route.projectId)
-          .catch(error => reportRecoveryFailure("A project snapshot could not be recovered", error));
+          .catch(error => console.error(
+            `[mlp3/matrix] project ${secondary.route.projectId} snapshot could not be recovered`,
+            error,
+          ));
       }
       return;
     }
@@ -648,9 +665,10 @@ export async function connectMatrixMlp3(
   const onSync = (state: string) => {
     if (stopped) return;
     if (state === "SYNCING" || state === "PREPARED") {
-      void flushMatrixSyncStore(syncDatabase, syncStore);
+      const persisted = flushMatrixSyncStore(syncDatabase, syncStore);
       if (readiness.canPublishAuthoritativeProjection) {
         void protocol?.retryPending();
+        void checkpointMatrixSync(activeWorkspaceProtocols(), persisted);
       }
     }
     const update = readiness.statusForMatrixSync(state);
@@ -661,31 +679,36 @@ export async function connectMatrixMlp3(
     const currentRoom = room;
     if (!currentRoom || !protocol) return;
     for (const event of currentRoom.getLiveTimeline().getEvents()) enqueue(event);
-    await replayThreadDirectory();
+    if (await protocol.requiresThreadDirectoryRecovery(savedMatrixSyncToken)) {
+      await replayThreadDirectory(config.roomId, ingestEvent);
+    }
     await inboundChain;
   };
 
-  const replayThreadDirectory = async (): Promise<void> => {
+  const replayThreadDirectory = async (
+    roomId: string,
+    ingest: (event: MatrixEvent) => Promise<void>,
+  ): Promise<void> => {
     let from: string | null = null;
     const seenTokens = new Set<string>();
     for (let pageIndex = 0; pageIndex < 1_000; pageIndex += 1) {
       const page = await client.createThreadListMessagesRequest(
-        config.roomId,
+        roomId,
         from,
         100,
         sdk.Direction.Backward,
         sdk.ThreadFilterType.All,
       );
       for (const rawEvent of page.chunk) {
-        const raw = { ...rawEvent, room_id: rawEvent.room_id ?? config.roomId };
-        await ingestEvent(new sdk.MatrixEvent(raw));
+        const raw = { ...rawEvent, room_id: rawEvent.room_id ?? roomId };
+        await ingest(new sdk.MatrixEvent(raw));
         const latest = latestThreadEvent(rawEvent);
         if (latest) {
-          await ingestEvent(new sdk.MatrixEvent({
+          await ingest(new sdk.MatrixEvent({
             ...latest,
             room_id: typeof latest.room_id === "string"
               ? latest.room_id
-              : config.roomId,
+              : roomId,
           }));
         }
       }
@@ -698,6 +721,21 @@ export async function connectMatrixMlp3(
       from = next;
     }
     throw new Error("The Matrix thread directory exceeded the 100,000-session safety limit.");
+  };
+
+  const checkpointMatrixSync = (
+    targets: MatrixMlp3ProtocolClient[],
+    persistedStore: Promise<void> = flushMatrixSyncStore(syncDatabase, syncStore),
+  ): Promise<void> => {
+    const token = syncStore.getSyncToken();
+    if (!token || targets.length === 0) return Promise.resolve();
+    const operation = checkpointChain.catch(() => undefined).then(async () => {
+      await inboundChain;
+      await persistedStore;
+      await Promise.all(targets.map(target => target.checkpointMatrixSync(token)));
+    });
+    checkpointChain = operation;
+    return operation;
   };
 
   const recoverAuthoritativeState = async (): Promise<void> => {
@@ -723,10 +761,10 @@ export async function connectMatrixMlp3(
       }
       await replayKnownTimeline();
       await protocol?.retryPending();
+      await checkpointMatrixSync(activeWorkspaceProtocols());
       readiness.completeRecovery();
       publishProjection();
       handlers.onStatus("connected");
-      if (workspaceRoutesReady) completeReady();
     });
     recoveryChain = operation;
     await operation;
@@ -746,6 +784,7 @@ export async function connectMatrixMlp3(
 
   const transportReady = (async () => {
     await withMatrixTimeout(syncStore.startup(), LOCAL_TIMEOUT_MS, "The Matrix sync store did not open in time.");
+    savedMatrixSyncToken = await syncStore.getSavedSyncToken();
     handlers.onStatus("connecting", "Opening the Matrix encryption store…");
     await client.initRustCrypto({ useIndexedDB: true, cryptoDatabasePrefix: cryptoScope });
     const cryptoApi = client.getCrypto();
@@ -779,9 +818,8 @@ export async function connectMatrixMlp3(
     }
     await recoverAuthoritativeState();
     await recoverWorkspaceDirectoryState();
-    await Promise.all((config.workspaceRoutes ?? []).map(createSecondaryProtocol));
-    workspaceRoutesReady = true;
     completeReady();
+    reconcileWorkspaceRoutes();
   });
   void initialRecovery.catch(error => {
     reportRecoveryFailure("The current MLP/3 state could not be recovered", error);
@@ -846,9 +884,8 @@ export async function connectMatrixMlp3(
       await waitForGrant(signal);
       await recoverAuthoritativeState();
       await recoverWorkspaceDirectoryState();
-      await Promise.all((trust ? workspaceRoutesFromTrust(trust) : []).map(createSecondaryProtocol));
-      workspaceRoutesReady = true;
       completeReady();
+      reconcileWorkspaceRoutes();
     } catch (error) {
       reportRecoveryFailure("The paired Gateway state could not be recovered", error);
       throw error;

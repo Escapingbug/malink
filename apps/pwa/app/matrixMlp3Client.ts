@@ -61,6 +61,8 @@ export interface MatrixMlp3ClientStore {
   deleteInbox(eventId: string): Promise<void>;
   loadProjection(): Promise<unknown | null>;
   saveProjection(state: MatrixMlp3ProjectionState): Promise<void>;
+  loadSyncCheckpoint(): Promise<string | null>;
+  saveSyncCheckpoint(token: string): Promise<void>;
   clearProjection(): Promise<void>;
   /** Drops only Matrix-derived inbox/projection state; durable outbox survives. */
   resetRebuildableState(): Promise<void>;
@@ -100,6 +102,7 @@ export class MatrixMlp3ProtocolClient {
   private drainChain: Promise<void> = Promise.resolve();
   private projectionSaveChain: Promise<void> = Promise.resolve();
   private initialization: Promise<void> | null = null;
+  private projectionRestored = false;
   private readonly retriedQuarantinedEventIds = new Set<string>();
 
   constructor(
@@ -127,6 +130,7 @@ export class MatrixMlp3ProtocolClient {
           return;
         }
         this.projection.restore(state);
+        this.projectionRestored = true;
       } catch (error) {
         // The projection is rebuildable from the durable raw inbox and Matrix
         // history. Never let a stale/corrupt materialized view block startup.
@@ -305,6 +309,24 @@ export class MatrixMlp3ProtocolClient {
     // retained inbox on every reconnect.
   }
 
+  async requiresThreadDirectoryRecovery(
+    savedMatrixSyncToken: string | null,
+  ): Promise<boolean> {
+    await this.initialize();
+    if (!this.projectionRestored || !savedMatrixSyncToken) return true;
+    return await this.store.loadSyncCheckpoint() !== savedMatrixSyncToken;
+  }
+
+  checkpointMatrixSync(token: string): Promise<void> {
+    if (!token) throw new Error("The Matrix sync checkpoint is empty.");
+    const operation = this.projectionSaveChain.then(async () => {
+      await this.initialize();
+      await this.store.saveSyncCheckpoint(token);
+    });
+    this.projectionSaveChain = operation.catch(() => undefined);
+    return operation;
+  }
+
   async ingest(raw: MatrixMlp3RawEvent): Promise<void> {
     await this.initialize();
     if (raw.roomId !== this.config.roomId) return;
@@ -480,6 +502,7 @@ export class MatrixMlp3ProtocolClient {
       );
     }
     this.projection.reset();
+    this.projectionRestored = false;
     this.retriedQuarantinedEventIds.clear();
     this.onProjection?.();
     console.warn(
@@ -531,6 +554,7 @@ export class MemoryMatrixMlp3ClientStore implements MatrixMlp3ClientStore {
   readonly outbox = new Map<string, MatrixMlp3OutboxRecord>();
   readonly inbox = new Map<string, MatrixMlp3InboxRecord>();
   projectionState: MatrixMlp3ProjectionState | null = null;
+  syncCheckpoint: string | null = null;
   async putOutbox(record: MatrixMlp3OutboxRecord): Promise<void> {
     this.outbox.set(record.command.commandId, structuredClone(record));
   }
@@ -577,12 +601,20 @@ export class MemoryMatrixMlp3ClientStore implements MatrixMlp3ClientStore {
   async saveProjection(state: MatrixMlp3ProjectionState): Promise<void> {
     this.projectionState = structuredClone(state);
   }
+  async loadSyncCheckpoint(): Promise<string | null> {
+    return this.syncCheckpoint;
+  }
+  async saveSyncCheckpoint(token: string): Promise<void> {
+    if (this.projectionState) this.syncCheckpoint = token;
+  }
   async clearProjection(): Promise<void> {
     this.projectionState = null;
+    this.syncCheckpoint = null;
   }
   async resetRebuildableState(): Promise<void> {
     this.inbox.clear();
     this.projectionState = null;
+    this.syncCheckpoint = null;
   }
 }
 

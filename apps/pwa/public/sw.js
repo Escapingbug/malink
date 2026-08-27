@@ -72,6 +72,28 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  if (
+    requestUrl.origin === self.location.origin &&
+    requestUrl.pathname.startsWith("/assets/")
+  ) {
+    // Asset names contain their content hash and are immutable. Prefer the
+    // Cache API so a slow origin cannot hold a warm client on the crypto WASM
+    // download before Matrix startup. A new release has new URLs and therefore
+    // cannot be confused with an older cached binary.
+    event.respondWith(
+      caches.match(event.request).then((cached) =>
+        cached ?? fetch(event.request).then((response) => {
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+          }
+          return response;
+        }),
+      ),
+    );
+    return;
+  }
+
   event.respondWith(
     fetch(event.request)
       .then((response) => {

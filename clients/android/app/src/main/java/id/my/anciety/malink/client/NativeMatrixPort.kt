@@ -20,6 +20,7 @@ interface NativeMatrixObserver {
     /** The independent application-control receiver is ready for trusted commands. */
     fun onTransportReady(identity: MatrixTransportIdentity)
     fun onConvergenceRequired(reason: String)
+    fun hasCachedApplicationProjection(): Boolean = false
     suspend fun onDecryptedEvent(event: MatrixDecryptedEvent)
 }
 
@@ -80,6 +81,9 @@ class MatrixNativePort(context: Context) : NativeMatrixPort {
     private val runtime = MatrixConnectionRuntime(
         context = context,
         diagnostics = diagnostics,
+        hasCachedApplicationProjection = {
+            observer?.hasCachedApplicationProjection() == true
+        },
         onPairingTransportReady = { identity -> observer?.onPairingTransportReady(identity) },
         onTransportReady = { identity -> observer?.onTransportReady(identity) },
         onConvergenceRequired = { reason -> observer?.onConvergenceRequired(reason) },

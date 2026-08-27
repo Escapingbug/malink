@@ -90,6 +90,11 @@ test("ships a complete installable offline shell", async () => {
   assert.match(serviceWorker, /caches\.open\(CACHE_NAME\)/);
   assert.match(serviceWorker, /event\.request\.mode === "navigate"/);
   assert.match(serviceWorker, /cache:\s*"no-store"/);
+  assert.match(serviceWorker, /requestUrl\.pathname\.startsWith\("\/assets\/"\)/);
+  assert.match(
+    serviceWorker,
+    /pathname\.startsWith\("\/assets\/"\)[\s\S]*?caches\.match\(event\.request\)[\s\S]*?fetch\(event\.request\)/,
+  );
   assert.match(serviceWorker, /pathname\.startsWith\("\/_matrix\/"\)/);
   assert.match(
     serviceWorker,

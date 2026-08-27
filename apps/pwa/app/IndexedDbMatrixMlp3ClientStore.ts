@@ -32,6 +32,12 @@ type InboxRow = MatrixMlp3InboxRecord & {
   scopeStatus: string;
 };
 
+type ProjectionRow = {
+  key: string;
+  state: unknown;
+  syncCheckpoint?: string;
+};
+
 /** Bounded raw processing inbox and independently durable command outbox. */
 export class IndexedDbMatrixMlp3ClientStore implements MatrixMlp3ClientStore {
   constructor(private readonly scope: string) {
@@ -177,7 +183,7 @@ export class IndexedDbMatrixMlp3ClientStore implements MatrixMlp3ClientStore {
   async loadProjection(): Promise<unknown | null> {
     const database = await openDatabase();
     try {
-      const row = await get<{ key: string; state: unknown }>(
+      const row = await get<ProjectionRow>(
         database,
         PROJECTION,
         this.scope,
@@ -191,10 +197,38 @@ export class IndexedDbMatrixMlp3ClientStore implements MatrixMlp3ClientStore {
   async saveProjection(state: MatrixMlp3ProjectionState): Promise<void> {
     const database = await openDatabase();
     try {
-      await put(database, PROJECTION, {
+      const transaction = database.transaction(PROJECTION, "readwrite", { durability: "strict" });
+      const store = transaction.objectStore(PROJECTION);
+      const current = await request<ProjectionRow | undefined>(store.get(this.scope));
+      store.put({
+        ...current,
         key: this.scope,
         state: structuredClone(state),
-      });
+      } satisfies ProjectionRow);
+      await transactionDone(transaction);
+    } finally {
+      database.close();
+    }
+  }
+
+  async loadSyncCheckpoint(): Promise<string | null> {
+    const database = await openDatabase();
+    try {
+      const row = await get<ProjectionRow>(database, PROJECTION, this.scope);
+      return typeof row?.syncCheckpoint === "string" ? row.syncCheckpoint : null;
+    } finally {
+      database.close();
+    }
+  }
+
+  async saveSyncCheckpoint(token: string): Promise<void> {
+    const database = await openDatabase();
+    try {
+      const transaction = database.transaction(PROJECTION, "readwrite", { durability: "strict" });
+      const store = transaction.objectStore(PROJECTION);
+      const current = await request<ProjectionRow | undefined>(store.get(this.scope));
+      if (current) store.put({ ...current, syncCheckpoint: token } satisfies ProjectionRow);
+      await transactionDone(transaction);
     } finally {
       database.close();
     }
