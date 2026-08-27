@@ -14,6 +14,12 @@ test("exports bounded connection diagnostics without unstructured errors or cred
     detail: "https://matrix.example/_matrix?access_token=secret-token",
     deviceKeyId: "device-key-1",
     nativeRuntime,
+    gateways: [{
+      gatewayNodeId: "gateway-node-1",
+      gatewayName: "Office Gateway",
+      computerName: "alice-macbook",
+      buildId: "gateway-2026.08.27.1-arm64",
+    }],
     online: true,
     visibility: "visible",
     userAgent: "test-browser",
@@ -23,9 +29,32 @@ test("exports bounded connection diagnostics without unstructured errors or cred
   assert.equal(parsed.connection.detailCode, null);
   assert.equal(parsed.connection.hasUnstructuredDetail, true);
   assert.equal(parsed.device.keyId, "device-key-1");
+  assert.deepEqual(parsed.gateways, [{
+    nodeId: "gateway-node-1",
+    name: "Office Gateway",
+    computerName: "alice-macbook",
+    buildId: "gateway-2026.08.27.1-arm64",
+  }]);
   assert.equal(report.includes("secret-token"), false);
   assert.equal(report.includes("access_token"), false);
   assert.equal(report.includes("native-secret"), false);
+});
+
+test("marks missing Gateway versions explicitly", () => {
+  const report = JSON.parse(createConnectionDiagnostics({
+    buildVersion: "build-1",
+    status: "connected",
+    gateways: [{
+      gatewayNodeId: "gateway-node-legacy",
+      gatewayName: "Legacy Gateway",
+    }],
+    online: true,
+    visibility: "visible",
+    userAgent: "test-browser",
+  }, 0));
+
+  assert.equal(report.gateways[0].buildId, null);
+  assert.equal(report.gateways[0].computerName, null);
 });
 
 test("retains a safe recovery code for support", () => {

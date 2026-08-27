@@ -5043,6 +5043,7 @@ function MalinkAppRuntime() {
       detail: connectionDetail,
       deviceKeyId,
       nativeRuntime,
+      gateways: gatewayDirectory?.directory.gateways,
       online: navigator.onLine,
       visibility: document.visibilityState,
       userAgent: navigator.userAgent,
