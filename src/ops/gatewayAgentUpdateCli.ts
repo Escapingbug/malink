@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { GatewayUpdateSupervisorClient } from './gatewayUpdateSupervisorServer.js'
 
@@ -25,7 +26,16 @@ function requiredArgument(argv: readonly string[], name: string): string {
   return value
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+export function isGatewayAgentUpdateCliEntry(moduleUrl: string, argvPath: string | undefined): boolean {
+  if (!argvPath) return false
+  try {
+    return realpathSync(new URL(moduleUrl)) === realpathSync(argvPath)
+  } catch {
+    return moduleUrl === pathToFileURL(argvPath).href
+  }
+}
+
+if (isGatewayAgentUpdateCliEntry(import.meta.url, process.argv[1])) {
   await runGatewayAgentUpdateCli(process.argv.slice(2))
     .then(result => process.stdout.write(`${JSON.stringify(result, null, 2)}\n`))
     .catch(error => {
