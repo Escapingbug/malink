@@ -205,6 +205,7 @@ function MatrixSettingsDialog({
       gatewayNodeId: gateway.gatewayNodeId,
       gatewayName: gateway.gatewayName,
       computerName: gateway.computerName,
+      buildId: gateway.buildId,
       targetProjectId: gateway.projects?.[0]?.projectId,
     }),
   );
@@ -217,6 +218,7 @@ function MatrixSettingsDialog({
         gatewayNodeId: gateway.gatewayNodeId,
         gatewayName: gateway.gatewayName,
         computerName: undefined as string | undefined,
+        buildId: undefined as string | undefined,
         targetProjectId: undefined as string | undefined,
       }));
   const gatewayProfiles = directoryGatewayProfiles.length > 0
@@ -369,7 +371,10 @@ function MatrixSettingsDialog({
                         {gatewayIdentity.label}
                       </strong>
                       <small title={gatewayProfileId}>
-                        Computer: {gatewayIdentity.computerName} · Node {gatewayIdentity.shortId}
+                        Computer: {gatewayIdentity.computerName}
+                      </small>
+                      <small title={gateway.buildId ?? "This Gateway did not report a build ID"}>
+                        Build: {gateway.buildId ?? "Not reported"} · Node {gatewayIdentity.shortId}
                       </small>
                       {editing && (
                         <form

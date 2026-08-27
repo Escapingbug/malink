@@ -9,6 +9,12 @@ export type ConnectionDiagnosticsInput = {
     runtimeVersion: string;
     runtimeBuild: string;
   } | null;
+  gateways?: readonly {
+    gatewayNodeId: string;
+    gatewayName: string;
+    computerName?: string;
+    buildId?: string;
+  }[];
   online: boolean;
   visibility: DocumentVisibilityState;
   userAgent: string;
@@ -45,6 +51,16 @@ export function createConnectionDiagnostics(
           }
         : null,
     },
+    gateways: (input.gateways ?? []).slice(0, 256).map(gateway => ({
+      nodeId: boundedString(gateway.gatewayNodeId, 512),
+      name: boundedString(gateway.gatewayName, 128),
+      computerName: gateway.computerName
+        ? boundedString(gateway.computerName, 128)
+        : null,
+      buildId: gateway.buildId
+        ? boundedString(gateway.buildId, 256)
+        : null,
+    })),
     browser: {
       online: input.online,
       visibility: input.visibility,

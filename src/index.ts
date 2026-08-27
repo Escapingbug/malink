@@ -647,6 +647,7 @@ async function handleGatewayCommand(
             `Gateway: ${status.gatewayName} · ${status.gatewayShortId}`,
         )
         if (status.computerName) console.log(`Computer name: ${status.computerName}`)
+        console.log(`Build ID: ${status.buildId ?? 'not reported'}`)
         console.log(`State: ${status.state}`)
         console.log(`Workspace ID: ${status.workspaceId}`)
         console.log(`Gateway node ID: ${status.gatewayNodeId}`)
