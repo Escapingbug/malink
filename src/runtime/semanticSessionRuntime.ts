@@ -516,6 +516,12 @@ export class SemanticSessionRuntime {
                 if (providerEvent.kind === 'session_init' && providerEvent.sessionId) {
                     this.config.providerSessionId = providerEvent.sessionId
                     this.config.onProviderSessionId?.(providerEvent.sessionId)
+                    if (providerEvent.isNewSession) {
+                        await this.send({
+                            text: '⚠️ The previous Agent session could not be restored. This conversation is continuing in a new Agent session; earlier messages remain available, but the Agent context was reset.',
+                            format: 'plain',
+                        })
+                    }
                 }
                 if (providerEvent.kind === 'commands_update') {
                     this.availableCommands = providerEvent.commands
