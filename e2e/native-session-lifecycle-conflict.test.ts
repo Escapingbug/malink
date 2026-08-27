@@ -97,9 +97,13 @@ describe('native session lifecycle revision recovery', () => {
             })),
         })
         const reviews: Array<string | null> = []
+        const commandResults: string[] = []
         const client = new NativeBridgeClient(bridge, hello, {
             onMessage() {},
             onStatus() {},
+            onCommandResult(result) {
+                commandResults.push(result.commandId)
+            },
             onCommandReviewRequired(review) {
                 reviews.push(review?.commandId ?? null)
             },
@@ -162,6 +166,10 @@ describe('native session lifecycle revision recovery', () => {
             baseRevision: 2,
         })
         expect(reviews).toEqual([])
+        expect(commandResults).toEqual([
+            deletion.commandId,
+            creation.commandId,
+        ])
         await expect(replayStore.getConversationRevision(
             'gateway-1',
             'conversation-1',

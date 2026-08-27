@@ -477,18 +477,24 @@ export class NativeBridgeClient implements MalinkClient {
       idempotencyKey: crypto.randomUUID(),
       commandId,
     });
-    this.#completions.delete(commandId);
     const operationId = this.#commandOperations.get(commandId);
     if (operationId) {
+      const aliases: string[] = [];
       for (const [knownCommandId, knownOperationId] of this.#commandOperations) {
         if (knownOperationId === operationId) {
-          this.#commandOperations.delete(knownCommandId);
+          aliases.push(knownCommandId);
         }
       }
+      for (const alias of aliases) {
+        this.#completions.delete(alias);
+        this.#commandOperations.delete(alias);
+        this.#rejectCompletion(alias, new CommandCompletionExpiredError(alias));
+      }
     } else {
+      this.#completions.delete(commandId);
       this.#commandOperations.delete(commandId);
+      this.#rejectCompletion(commandId, new CommandCompletionExpiredError(commandId));
     }
-    this.#rejectCompletion(commandId, new CommandCompletionExpiredError(commandId));
   }
 
   async disconnect(): Promise<void> {
@@ -629,7 +635,7 @@ export class NativeBridgeClient implements MalinkClient {
 
   #recordCommand(command: CommandView): void {
     if (command.commandId) {
-      this.#commandOperations.set(command.commandId, command.operationId);
+      this.#rememberCommandOperation(command.commandId, command.operationId);
     }
     if (command.commandId && command.state === "needs_review") {
       const review: MalinkCommandReview = { commandId: command.commandId };
@@ -640,6 +646,7 @@ export class NativeBridgeClient implements MalinkClient {
     }
     const completion = command.completion;
     if (!completion) return;
+    this.#rememberCommandOperation(completion.commandId, command.operationId);
     const normalized: CommandCompletion = {
       commandId: completion.commandId,
       sequence: completion.sequence,
@@ -651,12 +658,23 @@ export class NativeBridgeClient implements MalinkClient {
       ...(completion.result === undefined ? {} : { result: completion.result }),
       ...(completion.error === undefined ? {} : { error: completion.error }),
     };
-    this.#completions.set(completion.commandId, normalized);
-    this.handlers.onCommandResult?.(normalized);
-    const waiters = this.#completionWaiters.get(completion.commandId);
-    if (!waiters) return;
-    this.#completionWaiters.delete(completion.commandId);
-    waiters.forEach((waiter) => waiter.resolve(normalized));
+    const aliases = [...this.#commandOperations]
+      .filter(([, operationId]) => operationId === command.operationId)
+      .map(([commandId]) => commandId);
+    if (!aliases.includes(completion.commandId)) aliases.push(completion.commandId);
+    const primaryCommandId = aliases[0] ?? completion.commandId;
+    for (const commandId of aliases) {
+      const aliased = commandId === completion.commandId
+        ? normalized
+        : { ...normalized, commandId };
+      this.#completions.set(commandId, aliased);
+      this.#resolveCompletion(commandId, aliased);
+    }
+    this.handlers.onCommandResult?.(
+      primaryCommandId === completion.commandId
+        ? normalized
+        : { ...normalized, commandId: primaryCommandId },
+    );
   }
 
   async #sendWhenOutboxAvailable(
@@ -707,7 +725,7 @@ export class NativeBridgeClient implements MalinkClient {
       );
     }
     const commandId = receipt.commandId;
-    this.#commandOperations.set(commandId, receipt.operationId);
+    this.#rememberCommandOperation(commandId, receipt.operationId);
     if (receipt.state === "needs_review") {
       const review: MalinkCommandReview = { commandId };
       this.#reviewCommands.set(receipt.operationId, commandId);
@@ -777,6 +795,27 @@ export class NativeBridgeClient implements MalinkClient {
     if (!waiters) return;
     this.#completionWaiters.delete(commandId);
     waiters.forEach((waiter) => waiter.reject(error));
+  }
+
+  #rememberCommandOperation(commandId: string, operationId: string): void {
+    this.#commandOperations.set(commandId, operationId);
+    if (this.#completions.has(commandId)) return;
+    for (const [knownCommandId, knownOperationId] of this.#commandOperations) {
+      if (knownOperationId !== operationId || knownCommandId === commandId) continue;
+      const completed = this.#completions.get(knownCommandId);
+      if (!completed) continue;
+      const aliased = { ...completed, commandId };
+      this.#completions.set(commandId, aliased);
+      this.#resolveCompletion(commandId, aliased);
+      return;
+    }
+  }
+
+  #resolveCompletion(commandId: string, completion: CommandCompletion): void {
+    const waiters = this.#completionWaiters.get(commandId);
+    if (!waiters) return;
+    this.#completionWaiters.delete(commandId);
+    waiters.forEach((waiter) => waiter.resolve(completion));
   }
 
   async #loadHistory(

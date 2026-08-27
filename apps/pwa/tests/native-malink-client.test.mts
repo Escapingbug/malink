@@ -51,13 +51,17 @@ class RuntimePort implements NativeBridgePort {
     this.onmessage?.({ data: JSON.stringify(notification) });
   }
 
+  respond(request: Request, result: unknown): void {
+    this.onmessage?.({
+      data: JSON.stringify({ jsonrpc: "2.0", id: request.id, result }),
+    });
+  }
+
   #respond(request: Request): void {
     try {
       const result = this.responder(request);
       if (result === NO_RESPONSE) return;
-      this.onmessage?.({
-        data: JSON.stringify({ jsonrpc: "2.0", id: request.id, result }),
-      });
+      this.respond(request, result);
     } catch (error) {
       if (!(error instanceof BridgeProtocolError)) throw error;
       this.onmessage?.({
@@ -254,6 +258,78 @@ test("keeps the durable receipt identity while Gateway progress arrives", async 
     },
   }, "cursor-stable-result");
   assert.equal((await sent.completion).sessionId, "session-delete-1");
+  client.dispose();
+});
+
+test("rebinds a retried command completion even when the event precedes its receipt", async () => {
+  const port = new RuntimePort((request) =>
+    request.method === "malink.command.send" ? NO_RESPONSE : responseFor(request)
+  );
+  const commandResults: string[] = [];
+  const bridge = await acquireNativeRpcBridge(port);
+  const hello = await bridge.hello({
+    webBuild: "test-build",
+    requiredCapabilities: [],
+    optionalCapabilities: REQUIRED_NATIVE_CAPABILITIES.map((name) => ({
+      name,
+      versions: nativeCapabilityVersions(name),
+    })),
+  });
+  const client = new NativeBridgeClient(bridge, hello, {
+    onMessage() {},
+    onStatus() {},
+    onCommandResult(result) {
+      commandResults.push(result.commandId);
+    },
+  });
+  await client.ready;
+
+  const sending = client.send({
+    operation: "session.delete",
+    sessionId: "session-rebased-1",
+  });
+  await nextTurn();
+  const request = port.requests.find(
+    (candidate) => candidate.method === "malink.command.send",
+  );
+  assert.ok(request);
+  const params = request.params as BridgeMethodParams["malink.command.send"];
+  const receipt = {
+    operationId: "operation-rebased-1",
+    commandId: "command-original-1",
+    idempotencyKey: params.idempotencyKey,
+    state: "transmitting" as const,
+    submittedAt: 1,
+    updatedAt: 1,
+    sequence: 4,
+  };
+  deliverCommand(port, {
+    ...receipt,
+    commandId: "command-rebased-1",
+    state: "succeeded",
+    updatedAt: 3,
+    revision: 9,
+    completion: {
+      commandId: "command-rebased-1",
+      sequence: 4,
+      revision: 9,
+      outcome: "succeeded",
+      sessionId: "session-rebased-1",
+    },
+  }, "cursor-rebased-before-receipt");
+  await nextTurn();
+  port.respond(request, receipt);
+
+  const sent = await sending;
+  assert.equal(sent.commandId, "command-original-1");
+  assert.deepEqual(await sent.completion, {
+    commandId: "command-original-1",
+    sequence: 4,
+    revision: 9,
+    outcome: "succeeded",
+    sessionId: "session-rebased-1",
+  });
+  assert.deepEqual(commandResults, ["command-rebased-1"]);
   client.dispose();
 });
 
