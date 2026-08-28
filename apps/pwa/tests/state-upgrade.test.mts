@@ -53,6 +53,7 @@ test("first coordinated upgrade preserves security state and invalidates only re
   storage.setItem("malink.pairing.trust.v1", '{"version":1}');
   storage.setItem("malink.native.cursor.v1.device", "c1.stale");
   storage.setItem("malink:pending-session-create:v1", '{"version":0}');
+  storage.setItem("malink:optimistic-project-create:v1", '{"version":0}');
   storage.setItem("malink.ui.project-disclosure.v1", '{"version":99}');
 
   const result = runPwaStateUpgrade(storage, 1_000);
@@ -62,12 +63,14 @@ test("first coordinated upgrade preserves security state and invalidates only re
   assert.equal(storage.getItem("malink.pairing.trust.v1"), '{"version":1}');
   assert.equal(storage.getItem("malink.native.cursor.v1.device"), "c1.stale");
   assert.equal(storage.getItem("malink:pending-session-create:v1"), null);
+  assert.equal(storage.getItem("malink:optimistic-project-create:v1"), null);
   assert.equal(storage.getItem("malink.ui.project-disclosure.v1"), null);
   const manifest = JSON.parse(storage.getItem(PWA_STATE_MANIFEST_STORAGE_KEY)!);
   assert.equal(manifest.phase, "complete");
   assert.equal(manifest.version, 1);
   assert.equal(manifest.appBuild, MALINK_BUILD_VERSION);
   assert.deepEqual(manifest.invalidated, [
+    "pending-project-create-projection",
     "pending-session-create-projection",
     "project-disclosure",
   ]);

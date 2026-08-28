@@ -169,6 +169,23 @@ import {
   type OptimisticSessionRecord,
 } from "./optimisticSession";
 import {
+  bindOptimisticProjectCreate,
+  clearOptimisticProjectCreate,
+  completedProjectId,
+  createOptimisticProjectCreate,
+  failOptimisticProjectCreate,
+  markOptimisticProjectCreateUncertain,
+  optimisticProjectMatchesProjection,
+  projectCreateRecoveryMatches,
+  projectCreateFailureMessage,
+  readOptimisticProjectCreate,
+  rebindOptimisticProjectCreate,
+  retryOptimisticProjectCreate,
+  syncOptimisticProjectCreate,
+  writeOptimisticProjectCreate,
+  type OptimisticProjectCreateRecord,
+} from "./projectCreateRecovery";
+import {
   pendingSessionLifecycleIds,
   sessionsAvailableForAutomaticSelection,
 } from "./pendingSessionDeletion";
@@ -194,6 +211,11 @@ import {
   createCancelCommandPayload,
   createPromptCommandPayload,
 } from "./commandPayloads";
+import {
+  agentReceivedCommandIds,
+  messageDeliveryPresentation,
+  userMessageDeliveryState,
+} from "./messageDelivery";
 import { retryMatchingCommandRevisionConflict } from "./commandRevisionRetry";
 import { deriveComposerState } from "./composerState";
 import {
@@ -248,6 +270,13 @@ import {
   gatewayProjectOwners,
 } from "./projectCatalog";
 import {
+  ALL_GATEWAYS_FILTER,
+  normalizeGatewayFilter,
+  projectMatchesGatewayFilter,
+  readGatewayFilter,
+  writeGatewayFilter,
+} from "./gatewayFilter";
+import {
   EMPTY_UI_NOTICE_STATE,
   noticesForScope,
   reduceUiNotices,
@@ -284,7 +313,6 @@ import {
   deleteMessageHistory,
   loadMessageHistoryPage,
   loadQueuedSessionMessages,
-  loadTurnPromptHistory,
   matrixHistoryScope,
   moveSessionMessageHistory,
   reconcileMessageHistory,
@@ -292,12 +320,10 @@ import {
   type MessageHistoryCursor,
 } from "./messageHistory";
 import {
-  latestCompletedTurnContext,
-  nextTurnPromptLookup,
-  trimHistoryPageToTurn,
-  turnPrompt,
+  completedTurnPresentation,
+  type CompletedTurnProcess,
   type ObservedCommandCompletion,
-} from "./turnContext";
+} from "./turnPresentation";
 import {
   activeTurnToolFocus,
   turnTimelineMessages,
@@ -379,11 +405,6 @@ type SendRealCommandOptions = {
   propagateFailure?: boolean;
 };
 
-type TurnHistoryLoadState = {
-  commandId: string;
-  phase: "loading" | "ready" | "error";
-};
-
 type ProviderHistoryLoadState = ProviderHistoryRouteIdentity & {
   id: number;
   provider: string;
@@ -408,12 +429,9 @@ type OpenProviderHistoryRequest = {
   provider?: string;
 };
 
-type FeedReturnAnchor = {
-  sessionId: string;
-  messageId: string;
-  viewportOffset: number;
-  fallbackScrollTop: number;
-};
+type TimelinePresentationItem =
+  | { kind: "message"; message: ChatMessage }
+  | { kind: "process"; process: CompletedTurnProcess };
 
 type PendingSessionLifecycleRecovery = {
   commandId: string;
@@ -553,19 +571,29 @@ function CheckCircleIcon() {
   );
 }
 
-function QuoteIcon() {
+function ProcessDisclosureIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M5.5 8.2h5v5.1H7.6c0 1.7.8 2.7 2.4 3.1v2c-3-.5-4.5-2.4-4.5-5.7V8.2Zm8 0h5v5.1h-2.9c0 1.7.8 2.7 2.4 3.1v2c-3-.5-4.5-2.4-4.5-5.7V8.2Z" />
+      <path d="M7 6.5h10M7 12h10M7 17.5h10" />
+      <circle cx="4" cy="6.5" r="1" />
+      <circle cx="4" cy="12" r="1" />
+      <circle cx="4" cy="17.5" r="1" />
     </svg>
   );
 }
 
-function LocateIcon() {
+function ProcessChevronIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 3v3M12 18v3M3 12h3M18 12h3" />
+      <path d="m8 10 4 4 4-4" />
+    </svg>
+  );
+}
+
+function AttachmentGlyph() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path d="m8.2 12.8 5.9-5.9a3 3 0 0 1 4.2 4.2l-7.5 7.5a4.5 4.5 0 0 1-6.4-6.4l7-7" />
     </svg>
   );
 }
@@ -748,80 +776,89 @@ function AttachmentList({
   );
 }
 
-function TurnResultContext({
-  prompt,
-  connection,
+function TurnProcessDisclosure({
+  process,
   expanded,
-  locationPhase,
-  failed,
-  onTogglePrompt,
-  onLocatePrompt,
+  onToggle,
 }: {
-  prompt: ChatMessage;
-  connection: MalinkClient | null;
+  process: CompletedTurnProcess;
   expanded: boolean;
-  locationPhase: TurnHistoryLoadState["phase"];
-  failed: boolean;
-  onTogglePrompt(): void;
-  onLocatePrompt(): void;
+  onToggle(): void;
 }) {
-  const locating = locationPhase === "loading";
-  const completionLabel = failed ? "Task ended with an error" : "Task completed";
-  const locateLabel = locating
-    ? "Loading the original message"
-    : locationPhase === "error"
-      ? "Retry loading the original message"
-      : "Jump to the original message";
+  const stepLabel = `${process.stepCount} ${
+    process.stepCount === 1 ? "step" : "steps"
+  }`;
+  const processDetails = [
+    process.attachmentCount > 0
+      ? `${process.attachmentCount} ${
+          process.attachmentCount === 1 ? "attachment" : "attachments"
+        }`
+      : null,
+    process.failedStepCount > 0
+      ? `${process.failedStepCount} failed`
+      : null,
+  ].filter(Boolean);
+  const actionLabel = `${expanded ? "Hide" : "Show"} ${stepLabel} from this task${
+    processDetails.length > 0 ? `. ${processDetails.join(", ")}` : ""
+  }`;
   return (
-    <div className={`turn-result-context ${expanded ? "is-expanded" : ""}`}>
-      <div className="turn-result-toolbar" aria-label="Completed task context">
-        <span
-          className={`turn-completion-mark ${failed ? "is-failed" : ""}`}
-          aria-label={completionLabel}
-          title={completionLabel}
-          role="img"
-        >
-          {failed ? "!" : <CheckCircleIcon />}
-        </span>
-        <button
-          type="button"
-          className="turn-context-button"
-          aria-label={expanded ? "Hide the original message" : "Show the original message"}
-          aria-expanded={expanded}
-          title={expanded ? "Hide original message" : "Show original message"}
-          onClick={onTogglePrompt}
-        >
-          <QuoteIcon />
-        </button>
-        <button
-          type="button"
-          className={`turn-context-button turn-locate-button is-${locationPhase}`}
-          aria-label={locateLabel}
-          aria-busy={locating}
-          disabled={locating}
-          title={locateLabel}
-          onClick={onLocatePrompt}
-        >
-          <LocateIcon />
-          {locating && <span className="turn-location-spinner" aria-hidden="true" />}
-          {locationPhase === "error" && (
-            <span className="turn-location-error" aria-hidden="true" />
-          )}
-        </button>
-      </div>
-      {expanded && (
-        <div className="turn-origin-preview">
-          <QuoteIcon />
-          <div>
-            {prompt.text ? <p>{prompt.text}</p> : null}
-            <AttachmentList
-              attachments={prompt.attachments}
-              connection={connection}
-            />
-          </div>
-        </div>
-      )}
+    <div className={`turn-process-disclosure ${expanded ? "is-expanded" : ""}`}>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-label={actionLabel}
+        title={actionLabel}
+        onClick={onToggle}
+      >
+        <ProcessDisclosureIcon />
+        <span>{stepLabel}</span>
+        {process.attachmentCount > 0 && (
+          <span
+            className="turn-process-attachment"
+            aria-label={`${process.attachmentCount} ${
+              process.attachmentCount === 1 ? "attachment" : "attachments"
+            }`}
+            title={`${process.attachmentCount} ${
+              process.attachmentCount === 1 ? "attachment" : "attachments"
+            }`}
+          >
+            <AttachmentGlyph />
+            {process.attachmentCount}
+          </span>
+        )}
+        {process.failedStepCount > 0 && (
+          <span
+            className="turn-process-failure"
+            aria-label={`${process.failedStepCount} failed`}
+            title={`${process.failedStepCount} failed`}
+          />
+        )}
+        <ProcessChevronIcon />
+      </button>
     </div>
+  );
+}
+
+function TurnResultState({
+  outcome,
+}: {
+  outcome: ObservedCommandCompletion["outcome"];
+}) {
+  if (outcome === "failed") return null;
+  const label = outcome === "cancelled" ? "Task stopped" : "Task completed";
+  return (
+    <span
+      className={`turn-result-state is-${outcome}`}
+      aria-label={label}
+      title={label}
+      role="img"
+    >
+      {outcome === "cancelled" ? (
+        <span aria-hidden="true">■</span>
+      ) : (
+        <CheckCircleIcon />
+      )}
+    </span>
   );
 }
 
@@ -1087,6 +1124,16 @@ function MalinkAppRuntime() {
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
   const [primaryView, setPrimaryView] = useState<"chats" | "files">("chats");
   const [search, setSearch] = useState("");
+  // This is client-local inventory view state, not an active Gateway or
+  // transport switch. Commands still route through each project's signed
+  // Gateway Directory owner.
+  const [gatewayFilterSelection, setGatewayFilterSelection] = useState(() => ({
+    workspaceId: initialGatewayUi.config.gatewayId,
+    gatewayNodeId: readGatewayFilter(
+      typeof window === "undefined" ? null : window.localStorage,
+      initialGatewayUi.config.gatewayId,
+    ),
+  }));
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -1103,17 +1150,12 @@ function MalinkAppRuntime() {
   const [observedCommandCompletions, setObservedCommandCompletions] = useState<
     ObservedCommandCompletion[]
   >([]);
-  const [turnPromptCache, setTurnPromptCache] = useState<
-    Map<string, ChatMessage | null>
-  >(() => new Map());
-  const [expandedTurnId, setExpandedTurnId] = useState<string | null>(null);
+  const [expandedProcessTurnIds, setExpandedProcessTurnIds] = useState<
+    Set<string>
+  >(() => new Set());
   const [toolFocusHistoryKey, setToolFocusHistoryKey] = useState<string | null>(
     null,
   );
-  const [turnHistoryLoad, setTurnHistoryLoad] =
-    useState<TurnHistoryLoadState | null>(null);
-  const [feedReturnAnchor, setFeedReturnAnchor] =
-    useState<FeedReturnAnchor | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
     initialGatewayUi.selectedSessionId,
   );
@@ -1136,6 +1178,16 @@ function MalinkAppRuntime() {
   const [matrixConfig, setMatrixConfig] = useState<MatrixConnectionConfig>(
     initialGatewayUi.config,
   );
+  const storedGatewayFilter = useMemo(
+    () => readGatewayFilter(
+      typeof window === "undefined" ? null : window.localStorage,
+      matrixConfig.gatewayId,
+    ),
+    [matrixConfig.gatewayId],
+  );
+  const gatewayFilter = gatewayFilterSelection.workspaceId === matrixConfig.gatewayId
+    ? gatewayFilterSelection.gatewayNodeId
+    : storedGatewayFilter;
   const [connectionStatus, setConnectionStatus] =
     useState<MatrixConnectionStatus>("offline");
   const [connectionDetail, setConnectionDetail] = useState<string | null>(null);
@@ -1240,6 +1292,15 @@ function MalinkAppRuntime() {
   const [newSessionBusy, setNewSessionBusy] = useState(false);
   const [newProjectBusy, setNewProjectBusy] = useState(false);
   const [projectSettingsBusy, setProjectSettingsBusy] = useState(false);
+  const [optimisticProjectCreate, setOptimisticProjectCreate] =
+    useState<OptimisticProjectCreateRecord | null>(() =>
+      typeof window === "undefined"
+        ? null
+        : readOptimisticProjectCreate(window.localStorage, {
+            gatewayId: initialGatewayUi.config.gatewayId,
+            conversationId: initialGatewayUi.config.conversationId,
+          }),
+    );
   const [sessionSettingsUpdate, setSessionSettingsUpdate] =
     useState<SessionSettingsUpdate | null>(null);
   const [pendingSessionCreate, setPendingSessionCreate] =
@@ -1305,6 +1366,13 @@ function MalinkAppRuntime() {
   const matrixSessionRepairRequiredRef = useRef(false);
   const pendingSessionCreateRecoveryRef =
     useRef<PendingSessionCreateRecovery | null>(null);
+  const optimisticProjectCreateRef =
+    useRef<OptimisticProjectCreateRecord | null>(optimisticProjectCreate);
+  const projectCreateRecoveryInFlightRef = useRef<{
+    commandId: string;
+    connection: MalinkClient;
+  } | null>(null);
+  const projectCreateRecoveryTimerRef = useRef<number | null>(null);
   const sessionCreateRecoveryInFlightRef = useRef<{
     commandId: string;
     connection: MalinkClient;
@@ -1328,9 +1396,7 @@ function MalinkAppRuntime() {
   const activePromptCommandsRef = useRef(new Map<string, string>());
   const completedCommandResultsRef = useRef(new Set<string>());
   const completionObservationOrderRef = useRef(0);
-  const turnPromptLookupRef = useRef(new Set<string>());
-  const turnHistoryHydrationRef = useRef<string | null>(null);
-  const messageElementsRef = useRef(new Map<string, HTMLDivElement>());
+  const presentedCompletedTurnIdsRef = useRef(new Set<string>());
   const optimisticMessagesRef = useRef(
     new Map<string, OptimisticMessageReference>(),
   );
@@ -1398,37 +1464,15 @@ function MalinkAppRuntime() {
     ? sessionLifecycleBusy.get(gatewaySelected.id) ?? null
     : null;
   const selectedLifecycleBusy = selectedLifecycleAction !== null;
-  const latestCompletedTurn = useMemo(
+  const completedTurns = useMemo(
     () =>
-      latestCompletedTurnContext(
+      completedTurnPresentation(
         messages,
         observedCommandCompletions,
-        turnPromptCache,
         selectedSessionId,
       ),
-    [
-      messages,
-      observedCommandCompletions,
-      selectedSessionId,
-      turnPromptCache,
-    ],
+    [messages, observedCommandCompletions, selectedSessionId],
   );
-  const inferredCompletedTurnResultIds = useMemo(() => {
-    const resultIds = new Set<string>();
-    let latestAgentResultId: string | null = null;
-    for (const message of messages) {
-      if (message.kind === "user") {
-        if (latestAgentResultId) resultIds.add(latestAgentResultId);
-        latestAgentResultId = null;
-        continue;
-      }
-      if (message.kind === "agent" || message.kind === "error") {
-        latestAgentResultId = message.id;
-      }
-    }
-    if (latestCompletedTurn) resultIds.add(latestCompletedTurn.result.id);
-    return resultIds;
-  }, [latestCompletedTurn, messages]);
   const nativeBackAction = resolveMalinkBackAction({
     deleteDialogOpen: false,
     deleteDialogBusy: false,
@@ -1454,8 +1498,6 @@ function MalinkAppRuntime() {
           break;
         case "close-new-project":
           setNewProjectOpen(false);
-          break;
-        case "block-new-project":
           break;
         case "close-new-session":
           setNewSessionOpen(false);
@@ -1516,28 +1558,83 @@ function MalinkAppRuntime() {
     ),
     [gatewayState?.gatewayDirectory],
   );
+  const gatewayFilterOptions = useMemo(
+    () => (gatewayState?.gatewayDirectory?.directory.gateways ?? [])
+      .map(gateway => gatewayProjectOwner(
+        gateway.gatewayNodeId,
+        gateway.gatewayName,
+        gateway.computerName,
+      ))
+      .sort((left, right) =>
+        left.label.localeCompare(right.label) ||
+        left.gatewayNodeId.localeCompare(right.gatewayNodeId),
+      ),
+    [gatewayState?.gatewayDirectory],
+  );
+  const activeGatewayFilter = gatewayFilterOptions.length > 0
+    ? normalizeGatewayFilter(
+        gatewayFilter,
+        gatewayFilterOptions.map(gateway => gateway.gatewayNodeId),
+      )
+    : ALL_GATEWAYS_FILTER;
+  const gatewayScopedSessions = useMemo(
+    () => visibleGatewaySessions.filter(session => projectMatchesGatewayFilter(
+      activeGatewayFilter,
+      session.projectId,
+      projectGatewaysById,
+      fallbackProjectGateway.gatewayNodeId,
+    )),
+    [
+      activeGatewayFilter,
+      fallbackProjectGateway.gatewayNodeId,
+      projectGatewaysById,
+      visibleGatewaySessions,
+    ],
+  );
   const filteredSessions = useMemo(
     () =>
-      visibleGatewaySessions.filter((session) => {
+      gatewayScopedSessions.filter((session) => {
         const owner = projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway;
         return `${session.title} ${session.projectName} ${session.cwd} ${session.provider} ${session.model ?? ""} ${owner.gatewayName} ${owner.computerName} ${owner.gatewayNodeId}`
           .toLowerCase()
           .includes(search.toLowerCase());
       }),
-    [fallbackProjectGateway, projectGatewaysById, search, visibleGatewaySessions],
+    [fallbackProjectGateway, gatewayScopedSessions, projectGatewaysById, search],
   );
   const activeFilteredSessions = filteredSessions;
-  const activeSessionCount = visibleGatewaySessions.length;
+  const activeSessionCount = gatewayScopedSessions.length;
+  const gatewayScopedProjects = useMemo(
+    () => (gatewayState?.projects ?? []).filter(project => projectMatchesGatewayFilter(
+      activeGatewayFilter,
+      project.projectId,
+      projectGatewaysById,
+      fallbackProjectGateway.gatewayNodeId,
+    )),
+    [
+      activeGatewayFilter,
+      fallbackProjectGateway.gatewayNodeId,
+      gatewayState?.projects,
+      projectGatewaysById,
+    ],
+  );
+  const gatewayScopedWorkspace = gatewayState?.workspace && projectMatchesGatewayFilter(
+    activeGatewayFilter,
+    gatewayState.workspace.projectId,
+    projectGatewaysById,
+    fallbackProjectGateway.gatewayNodeId,
+  )
+    ? gatewayState.workspace
+    : undefined;
   const canonicalProjectsById = useMemo(
     () =>
       new Map(
         canonicalGatewayProjects(
-          gatewayState?.workspace,
-          visibleGatewaySessions,
-          gatewayState?.projects ?? [],
+          gatewayScopedWorkspace,
+          gatewayScopedSessions,
+          gatewayScopedProjects,
         ).map((project) => [project.projectId, project]),
       ),
-    [gatewayState?.workspace, gatewayState?.projects, visibleGatewaySessions],
+    [gatewayScopedProjects, gatewayScopedSessions, gatewayScopedWorkspace],
   );
   const projectGroups = useMemo(() => {
     const groups = new Map<
@@ -1607,26 +1704,56 @@ function MalinkAppRuntime() {
     search,
     sessionReadState,
   ]);
-  const scratchSessions = useMemo(
-    () => activeFilteredSessions
-      .filter((session) => session.scope === "scratch")
-      .sort((left, right) => compareSessionsForAction(left, right, sessionReadState)),
-    [activeFilteredSessions, sessionReadState],
-  );
+  const scratchGroups = useMemo(() => {
+    const groups = new Map<string, {
+      key: string;
+      projectId: string;
+      projectName: string;
+      cwd: string;
+      gatewayLabel: string;
+      sessions: NonNullable<typeof gatewayState>["sessions"];
+      temporary: true;
+    }>();
+    for (const session of activeFilteredSessions) {
+      if (session.scope !== "scratch") continue;
+      const owner = projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway;
+      const group = groups.get(owner.gatewayNodeId) ?? {
+        key: `${matrixConfig.gatewayId}\u0000${owner.gatewayNodeId}\u0000scratch`,
+        projectId: `scratch:${owner.gatewayNodeId}`,
+        projectName: "Temporary",
+        cwd: "Isolated workspace · not linked to a project",
+        gatewayLabel: owner.label,
+        sessions: [],
+        temporary: true,
+      };
+      group.sessions.push(session);
+      groups.set(owner.gatewayNodeId, group);
+    }
+    const ordered = [...groups.values()];
+    for (const group of ordered) {
+      group.sessions.sort((left, right) =>
+        compareSessionsForAction(left, right, sessionReadState),
+      );
+    }
+    ordered.sort((left, right) =>
+      compareProjectSessionsForAction(
+        left.sessions,
+        right.sessions,
+        sessionReadState,
+      ) || left.gatewayLabel.localeCompare(right.gatewayLabel),
+    );
+    return ordered;
+  }, [
+    activeFilteredSessions,
+    fallbackProjectGateway,
+    matrixConfig.gatewayId,
+    projectGatewaysById,
+    sessionReadState,
+  ]);
   const conversationGroups = useMemo(() => [
-    ...(scratchSessions.length > 0
-      ? [{
-          key: `${matrixConfig.gatewayId}\u0000scratch`,
-          projectId: "scratch",
-          projectName: "Temporary",
-          cwd: "Isolated workspace · not linked to a project",
-          gatewayLabel: null,
-          sessions: scratchSessions,
-          temporary: true,
-        }]
-      : []),
-    ...projectGroups.map((project) => ({ ...project, temporary: false })),
-  ], [matrixConfig.gatewayId, projectGroups, scratchSessions]);
+    ...scratchGroups,
+    ...projectGroups.map((project) => ({ ...project, temporary: false as const })),
+  ], [projectGroups, scratchGroups]);
   const inboxFiles = gatewayState?.inboxFiles ?? [];
   const matrixConnectionPresentation = useMemo(
     () => deriveConnectionPresentation(connectionStatus, connectionDetail),
@@ -1687,12 +1814,60 @@ function MalinkAppRuntime() {
     () => turnTimelineMessages(messages),
     [messages],
   );
+  const presentedTimeline = useMemo<TimelinePresentationItem[]>(() => {
+    const items: TimelinePresentationItem[] = [];
+    for (const message of timelineMessages) {
+      const process = completedTurns.processByMessageId.get(message.id);
+      if (!process) {
+        items.push({ kind: "message", message });
+        continue;
+      }
+      const expanded = expandedProcessTurnIds.has(process.commandId);
+      if (message.id === process.firstMessageId) {
+        items.push({ kind: "process", process });
+      }
+      if (expanded) items.push({ kind: "message", message });
+    }
+    return items;
+  }, [completedTurns, expandedProcessTurnIds, timelineMessages]);
+  useLayoutEffect(() => {
+    const completedTurnIds = new Set(
+      [...completedTurns.resultByMessageId.values()].map(
+        (result) => result.commandId,
+      ),
+    );
+    const newlyCompleted = [...completedTurnIds].filter(
+      (commandId) => !presentedCompletedTurnIdsRef.current.has(commandId),
+    );
+    presentedCompletedTurnIdsRef.current = completedTurnIds;
+    if (newlyCompleted.length === 0 || followLatestRef.current) return;
+    // Preserve a user's reading target if a turn finishes while they are
+    // inspecting earlier output. History and follow-latest views stay compact.
+    setExpandedProcessTurnIds((current) => {
+      const next = new Set(current);
+      for (const commandId of newlyCompleted) next.add(commandId);
+      return next;
+    });
+  }, [completedTurns]);
   const isStopping = Boolean(
     selectedSessionId && stoppingSessionIds.has(selectedSessionId),
   );
   const agentActivity = selectedSessionId
     ? agentActivitiesBySession.get(selectedSessionId) ?? null
     : null;
+  const receivedPromptCommandIds = useMemo(
+    () =>
+      agentReceivedCommandIds({
+        sessionId: selectedSessionId,
+        session: gatewaySelected,
+        messages,
+        completions: observedCommandCompletions,
+      }),
+    [gatewaySelected, messages, observedCommandCompletions, selectedSessionId],
+  );
+  useLayoutEffect(() => {
+    resizeComposerTextarea(composerTextareaRef.current);
+  }, [draft, selectedSessionId]);
 
   const isPromptSubmitting = Boolean(
     selectedSessionId && submittingPromptSessionIds.has(selectedSessionId),
@@ -1761,6 +1936,25 @@ function MalinkAppRuntime() {
         permissionMode: selectedProjectWorkspace?.permissionMode ?? "default",
       }
     : gatewayState?.workspace;
+  const allWorkspaceProjects = gatewayState?.projects ??
+    (gatewayState ? [gatewayState.workspace] : []);
+  const preferredSessionCreationWorkspace = selected
+    ? allWorkspaceProjects.find(project => project.projectId === selected.projectId)
+    : gatewayState?.workspace;
+  const gatewayFilterDefaultWorkspace = activeGatewayFilter === ALL_GATEWAYS_FILTER ||
+      (preferredSessionCreationWorkspace && projectMatchesGatewayFilter(
+        activeGatewayFilter,
+        preferredSessionCreationWorkspace.projectId,
+        projectGatewaysById,
+        fallbackProjectGateway.gatewayNodeId,
+      ))
+    ? preferredSessionCreationWorkspace ?? gatewayState?.workspace
+    : allWorkspaceProjects.find(project => projectMatchesGatewayFilter(
+        activeGatewayFilter,
+        project.projectId,
+        projectGatewaysById,
+        fallbackProjectGateway.gatewayNodeId,
+      ));
   const activeProjectGateway = activeWorkspace
     ? projectGatewaysById.get(activeWorkspace.projectId) ?? fallbackProjectGateway
     : fallbackProjectGateway;
@@ -1807,7 +2001,13 @@ function MalinkAppRuntime() {
         ? fallbackProjectGateway.label
       : "Connect a computer";
   const activeCapabilities = activeWorkspace?.capabilities ?? gatewayState?.capabilities;
-  const canCreateAnySession = (gatewayState?.projects ?? (gatewayState ? [gatewayState.workspace] : []))
+  const canCreateAnySession = allWorkspaceProjects
+    .filter(project => projectMatchesGatewayFilter(
+      activeGatewayFilter,
+      project.projectId,
+      projectGatewaysById,
+      fallbackProjectGateway.gatewayNodeId,
+    ))
     .some(project => (project.capabilities ?? gatewayState?.capabilities)?.canCreateSession);
   const projectCreationGateways = useMemo<ProjectCreationGateway[]>(() => {
     if (!gatewayState) return [];
@@ -1860,6 +2060,15 @@ function MalinkAppRuntime() {
     matrixConfig.gatewayNodeId,
     trustedGateway,
   ]);
+  const presentedProjectCreationGateways = useMemo(
+    () => activeGatewayFilter === ALL_GATEWAYS_FILTER
+      ? projectCreationGateways
+      : [...projectCreationGateways].sort((left, right) =>
+          Number(right.gatewayNodeId === activeGatewayFilter) -
+          Number(left.gatewayNodeId === activeGatewayFilter),
+        ),
+    [activeGatewayFilter, projectCreationGateways],
+  );
   const gatewayUpdatePlan = useMemo(() =>
     buildGatewayUpdatePlan({
       directory: gatewayState?.gatewayDirectory,
@@ -1974,6 +2183,28 @@ function MalinkAppRuntime() {
       now: Date.now(),
       ...(autoDismissMs === undefined ? {} : { autoDismissMs }),
     });
+  }
+
+  function selectGatewayFilter(gatewayNodeId: string): void {
+    setGatewayFilterSelection({
+      workspaceId: matrixConfig.gatewayId,
+      gatewayNodeId,
+    });
+    try {
+      writeGatewayFilter(
+        window.localStorage,
+        matrixConfig.gatewayId,
+        gatewayNodeId,
+      );
+      recoverUiNotice("gateway-filter-storage");
+    } catch (error) {
+      showUiNotice(
+        "gateway-filter-storage",
+        "session",
+        "warning",
+        `This Gateway view is active for now, but the preference could not be saved: ${formatUiError(error)}`,
+      );
+    }
   }
 
   function updateSessionLifecycleBusy(
@@ -2101,17 +2332,6 @@ function MalinkAppRuntime() {
         ? current
         : [...current, observed],
     );
-    const prompt = turnPrompt(
-      liveMessagesBySessionRef.current.get(result.sessionId) ?? [],
-      result.commandId,
-    );
-    if (prompt) {
-      setTurnPromptCache((current) => {
-        const next = new Map(current);
-        next.set(result.commandId, prompt);
-        return next;
-      });
-    }
   }
 
   useEffect(() => {
@@ -2123,67 +2343,6 @@ function MalinkAppRuntime() {
   }, [sessionReadState]);
 
   useEffect(() => {
-    const sessionId = selectedSessionId;
-    const scope = historyScopeRef.current;
-    if (!sessionId || !scope) return;
-    const unresolved = nextTurnPromptLookup(
-      [
-        ...messages,
-        ...(liveMessagesBySessionRef.current.get(sessionId) ?? []),
-      ],
-      observedCommandCompletions,
-      turnPromptCache,
-      sessionId,
-    );
-    if (!unresolved) return;
-    const lookupKey = `${sessionId}:${unresolved.commandId}`;
-    if (turnPromptLookupRef.current.has(lookupKey)) return;
-    turnPromptLookupRef.current.add(lookupKey);
-    void loadTurnPromptHistory(scope, sessionId, unresolved.commandId)
-      .then((prompt) => {
-        if (historyScopeRef.current !== scope) return;
-        setTurnPromptCache((current) => {
-          const next = new Map(current);
-          next.set(
-            unresolved.commandId,
-            prompt ? { ...prompt, sessionId, historical: true } : null,
-          );
-          return next;
-        });
-      })
-      .catch((error) => {
-        showUiNotice(
-          "history:turn-prompt",
-          "history",
-          "warning",
-          `The task's original message could not be read: ${formatUiError(error)}`,
-        );
-      })
-      .finally(() => turnPromptLookupRef.current.delete(lookupKey));
-  }, [
-    messages,
-    observedCommandCompletions,
-    selectedSessionId,
-    turnPromptCache,
-  ]);
-
-  useEffect(() => {
-    const turn = latestCompletedTurn;
-    if (!turn) return;
-    if (turn.promptInTranscript) return;
-    if (
-      historyLoading ||
-      turnHistoryHydrationRef.current === turn.commandId ||
-      (turnHistoryLoad?.commandId === turn.commandId &&
-        (turnHistoryLoad.phase === "loading" ||
-          turnHistoryLoad.phase === "error"))
-    ) {
-      return;
-    }
-    void hydrateTurnHistory(turn.completion.sessionId!, turn.commandId);
-  }, [historyLoading, latestCompletedTurn, turnHistoryLoad]);
-
-  useEffect(() => {
     if (!Object.values(uiNotices).some((notice) => notice.expiresAt !== null)) {
       return;
     }
@@ -2192,6 +2351,35 @@ function MalinkAppRuntime() {
     }, 1_000);
     return () => window.clearInterval(timer);
   }, [uiNotices]);
+
+  useEffect(() => {
+    const record = optimisticProjectCreateRef.current;
+    if (!record) return;
+    if (record.phase === "submitting" && !record.commandId) {
+      commitOptimisticProjectCreate(
+        failOptimisticProjectCreate(
+          record,
+          "Project creation stopped before its secure command was saved. Retry creation to continue.",
+        ),
+      );
+      return;
+    }
+    setOptimisticProjectCreate(record);
+    // This restores one local record for the initial Matrix binding. Recovery
+    // resumes when the connection's ready promise settles below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const record = optimisticProjectCreateRef.current;
+    if (!record || record.phase !== "syncing" || !gatewayState) return;
+    const projects = gatewayState.projects ?? [gatewayState.workspace];
+    if (!optimisticProjectMatchesProjection(record, projects)) return;
+    removeOptimisticProjectCreate(record.localId);
+    recoverUiNotice("project:create");
+    // The helpers intentionally update refs and storage atomically.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gatewayState, optimisticProjectCreate]);
 
   useEffect(() => {
     let recovery = readPendingSessionCreateRecovery(window.localStorage);
@@ -3196,150 +3384,6 @@ function MalinkAppRuntime() {
     }
   }
 
-  async function hydrateTurnHistory(
-    sessionId: string,
-    commandId: string,
-  ): Promise<void> {
-    const scope = historyScopeRef.current;
-    if (
-      !scope ||
-      historySessionIdRef.current !== sessionId ||
-      historyLoadingRef.current ||
-      turnHistoryHydrationRef.current === commandId
-    ) {
-      return;
-    }
-    const generation = historyGenerationRef.current;
-    turnHistoryHydrationRef.current = commandId;
-    historyLoadingRef.current = true;
-    setTurnHistoryLoad({ commandId, phase: "loading" });
-    setHistoryError(null);
-    setHistoryRetryMode(null);
-    try {
-      while (
-        generation === historyGenerationRef.current &&
-        historySessionIdRef.current === sessionId
-      ) {
-        const cached = await loadMessageHistoryPage(scope, sessionId, {
-          before: historyCursorRef.current,
-          limit: 100,
-        });
-        if (
-          generation !== historyGenerationRef.current ||
-          historySessionIdRef.current !== sessionId
-        ) {
-          return;
-        }
-        if (cached.messages.length > 0) {
-          const cachedMessages = cached.messages.map((message) => ({
-            ...message,
-            sessionId,
-            historical: true,
-          }));
-          const turnPage = trimHistoryPageToTurn(cachedMessages, commandId);
-          prepareHistoryPrepend(feedRef.current, prependScrollRef);
-          historyCursorRef.current = turnPage.prompt
-            ? olderHistoryCursor(
-                historyCursorRef.current,
-                [turnPage.prompt],
-              )
-            : cached.cursor;
-          setMessages((current) =>
-            mergeChatMessages(
-              current,
-              withoutReconciledOptimisticCopies(
-                turnPage.messages,
-                reconciledOptimisticMessageIdsRef.current,
-              ),
-            ),
-          );
-          const connection = malinkClientRef.current;
-          connection?.markHistoryLoaded(
-            sessionId,
-            cachedMessages.flatMap((message) =>
-              message.eventId ? [message.eventId] : [],
-            ),
-          );
-          if (turnPage.prompt) {
-            setHistoryHasMore(
-              turnPage.hasEarlierMessages ||
-                cached.hasMore ||
-                Boolean(connection),
-            );
-            setTurnHistoryLoad({ commandId, phase: "ready" });
-            return;
-          }
-          if (cached.hasMore) {
-            setHistoryHasMore(true);
-            continue;
-          }
-        }
-
-        const connection = malinkClientRef.current;
-        if (!connection) {
-          setHistoryHasMore(false);
-          setTurnHistoryLoad({ commandId, phase: "error" });
-          return;
-        }
-        const remote = await connection.loadHistoryPage(sessionId, 100);
-        const remoteMessages = remote.messages.map((message) =>
-          chatMessageFromIncoming(
-            { ...incomingMessageFromClient(message), historical: true },
-            message.sessionId ?? sessionId,
-          ),
-        );
-        if (remoteMessages.length > 0) {
-          await persistMessageHistoryPage(scope, sessionId, remoteMessages);
-        }
-        if (
-          generation !== historyGenerationRef.current ||
-          historySessionIdRef.current !== sessionId
-        ) {
-          return;
-        }
-        if (remoteMessages.length > 0) {
-          const turnPage = trimHistoryPageToTurn(remoteMessages, commandId);
-          prepareHistoryPrepend(feedRef.current, prependScrollRef);
-          historyCursorRef.current = olderHistoryCursor(
-            historyCursorRef.current,
-            turnPage.prompt ? [turnPage.prompt] : remoteMessages,
-          );
-          setMessages((current) =>
-            mergeChatMessages(current, turnPage.messages),
-          );
-          if (turnPage.prompt) {
-            setHistoryHasMore(turnPage.hasEarlierMessages || remote.hasMore);
-            setTurnHistoryLoad({ commandId, phase: "ready" });
-            return;
-          }
-        }
-        setHistoryHasMore(remote.hasMore);
-        if (!remote.hasMore) {
-          setTurnHistoryLoad({ commandId, phase: "error" });
-          return;
-        }
-      }
-    } catch (error) {
-      if (
-        generation === historyGenerationRef.current &&
-        historySessionIdRef.current === sessionId
-      ) {
-        setTurnHistoryLoad({ commandId, phase: "error" });
-        setHistoryError(
-          `The task's original position could not be loaded: ${formatUiError(error)}`,
-        );
-        setHistoryRetryMode("older");
-      }
-    } finally {
-      if (turnHistoryHydrationRef.current === commandId) {
-        turnHistoryHydrationRef.current = null;
-      }
-      if (generation === historyGenerationRef.current) {
-        historyLoadingRef.current = false;
-      }
-    }
-  }
-
   function handleFeedScroll() {
     const feed = feedRef.current;
     if (!feed) return;
@@ -3364,76 +3408,6 @@ function MalinkAppRuntime() {
     setFeedHasUnseenMessages(false);
   }
 
-  function bindMessageElement(
-    messageId: string,
-    element: HTMLDivElement | null,
-  ): void {
-    if (element) messageElementsRef.current.set(messageId, element);
-    else messageElementsRef.current.delete(messageId);
-  }
-
-  function feedScrollBehavior(): ScrollBehavior {
-    return window.matchMedia("(prefers-reduced-motion: reduce)").matches
-      ? "auto"
-      : "smooth";
-  }
-
-  function jumpToTurnOrigin(): void {
-    const turn = latestCompletedTurn;
-    const feed = feedRef.current;
-    const promptId = turn?.promptInTranscript?.id;
-    if (!turn || !feed || !promptId) {
-      if (turn && turnHistoryLoad?.phase === "error") {
-        void hydrateTurnHistory(turn.completion.sessionId!, turn.commandId);
-      }
-      return;
-    }
-    const promptElement = messageElementsRef.current.get(promptId);
-    const resultElement = messageElementsRef.current.get(turn.result.id);
-    if (!promptElement || !resultElement) return;
-    const feedRect = feed.getBoundingClientRect();
-    setFeedReturnAnchor({
-      sessionId: turn.completion.sessionId!,
-      messageId: turn.result.id,
-      viewportOffset: resultElement.getBoundingClientRect().top - feedRect.top,
-      fallbackScrollTop: feed.scrollTop,
-    });
-    const promptRect = promptElement.getBoundingClientRect();
-    const centeredTop =
-      feed.scrollTop +
-      promptRect.top -
-      feedRect.top -
-      Math.max(18, (feed.clientHeight - promptRect.height) / 2);
-    followLatestRef.current = false;
-    feed.scrollTo({
-      top: Math.max(0, centeredTop),
-      behavior: feedScrollBehavior(),
-    });
-    setFeedAwayFromLatest(true);
-  }
-
-  function returnToTurnResult(): void {
-    const feed = feedRef.current;
-    const anchor = feedReturnAnchor;
-    if (!feed || !anchor) return;
-    const target = messageElementsRef.current.get(anchor.messageId);
-    const top = target
-      ? feed.scrollTop +
-        target.getBoundingClientRect().top -
-        feed.getBoundingClientRect().top -
-        anchor.viewportOffset
-      : anchor.fallbackScrollTop;
-    followLatestRef.current = false;
-    feed.scrollTo({ top: Math.max(0, top), behavior: feedScrollBehavior() });
-    setFeedReturnAnchor(null);
-    window.requestAnimationFrame(() => {
-      const currentFeed = feedRef.current;
-      if (currentFeed) {
-        setFeedAwayFromLatest(!isNearFeedBottom(currentFeed));
-      }
-    });
-  }
-
   function activateLocalSession(
     sessionId: string | null,
     connection: MalinkClient | null = malinkClientRef.current,
@@ -3456,19 +3430,22 @@ function MalinkAppRuntime() {
     if (openedSession) {
       setSessionReadState((current) => markSessionRead(current, openedSession));
       if (sessionChanged && revealProject) {
-        const projectKey = gatewayProjectKey(
-          matrixConfig.gatewayId,
-          openedSession.projectId,
-        );
+        const projectKey = openedSession.scope === "scratch"
+          ? `${matrixConfig.gatewayId}\u0000${
+              (projectGatewaysById.get(openedSession.projectId) ?? fallbackProjectGateway)
+                .gatewayNodeId
+            }\u0000scratch`
+          : gatewayProjectKey(
+              matrixConfig.gatewayId,
+              openedSession.projectId,
+            );
         setCollapsedProjects((current) =>
           setProjectCollapsed(current, projectKey, false),
         );
       }
     }
     if (!sessionChanged) return;
-    setExpandedTurnId(null);
-    setFeedReturnAnchor(null);
-    setTurnHistoryLoad(null);
+    setExpandedProcessTurnIds(new Set());
     followLatestRef.current = true;
     setFeedAwayFromLatest(false);
     setFeedHasUnseenMessages(false);
@@ -3499,6 +3476,310 @@ function MalinkAppRuntime() {
     setPendingSessionCreate(null);
     setNewSessionBusy(false);
     setSessionCreateReloadBlocked(false);
+  }
+
+  function commitOptimisticProjectCreate(
+    record: OptimisticProjectCreateRecord,
+  ): void {
+    optimisticProjectCreateRef.current = record;
+    setOptimisticProjectCreate(record);
+    try {
+      writeOptimisticProjectCreate(window.localStorage, record);
+    } catch (error) {
+      showUiNotice(
+        "project:create-storage",
+        "session",
+        "warning",
+        `Project creation remains visible while this page stays open, but could not be saved for reload: ${formatUiError(error)}`,
+      );
+    }
+  }
+
+  function removeOptimisticProjectCreate(localId: string): void {
+    if (optimisticProjectCreateRef.current?.localId !== localId) return;
+    optimisticProjectCreateRef.current = null;
+    setOptimisticProjectCreate(null);
+    if (projectCreateRecoveryTimerRef.current !== null) {
+      window.clearTimeout(projectCreateRecoveryTimerRef.current);
+      projectCreateRecoveryTimerRef.current = null;
+    }
+    try {
+      clearOptimisticProjectCreate(window.localStorage, localId);
+    } catch (error) {
+      showUiNotice(
+        "project:create-storage",
+        "session",
+        "warning",
+        `The completed project creation marker could not be cleared: ${formatUiError(error)}`,
+      );
+    }
+  }
+
+  function markOptimisticProjectCreateFailed(
+    localId: string,
+    error: unknown,
+  ): void {
+    const record = optimisticProjectCreateRef.current;
+    if (!record || record.localId !== localId) return;
+    commitOptimisticProjectCreate(
+      failOptimisticProjectCreate(record, formatUiError(error)),
+    );
+  }
+
+  function holdProjectCreateForConflictReview(
+    localId: string,
+    commandId: string,
+  ): boolean {
+    const record = optimisticProjectCreateRef.current;
+    if (!record || record.localId !== localId) return false;
+    const bound = record.commandId
+      ? rebindOptimisticProjectCreate(
+          record,
+          record.commandId,
+          commandId,
+        )
+      : bindOptimisticProjectCreate(record, commandId);
+    if (!bound) return false;
+    commitOptimisticProjectCreate(
+      markOptimisticProjectCreateUncertain(
+        bound,
+        "Project creation is waiting for conflict review. Confirm or discard the saved command before retrying.",
+      ),
+    );
+    return true;
+  }
+
+  function schedulePendingProjectCreateRecovery(
+    connection: MalinkClient,
+  ): void {
+    if (projectCreateRecoveryTimerRef.current !== null) {
+      window.clearTimeout(projectCreateRecoveryTimerRef.current);
+    }
+    projectCreateRecoveryTimerRef.current = window.setTimeout(() => {
+      projectCreateRecoveryTimerRef.current = null;
+      if (
+        malinkClientRef.current === connection &&
+        connectionStatusRef.current === "connected"
+      ) {
+        continuePendingProjectCreate(connection);
+      }
+    }, 5_000);
+  }
+
+  function continuePendingProjectCreate(
+    connection: MalinkClient,
+    acknowledgedCommand?: MalinkCommandSendResult,
+  ): void {
+    const record = optimisticProjectCreateRef.current;
+    if (
+      !record?.commandId ||
+      record.phase === "syncing" ||
+      record.phase === "failed"
+    ) {
+      return;
+    }
+    if (
+      acknowledgedCommand &&
+      acknowledgedCommand.commandId !== record.commandId
+    ) {
+      return;
+    }
+    if (
+      projectCreateRecoveryInFlightRef.current?.commandId === record.commandId
+    ) {
+      return;
+    }
+    projectCreateRecoveryInFlightRef.current = {
+      commandId: record.commandId,
+      connection,
+    };
+    void (async () => {
+      let activeCommandId = record.commandId!;
+      try {
+        const sent = acknowledgedCommand ??
+          (await connection.recoverCommand(activeCommandId));
+        if (sent.commandId !== activeCommandId) {
+          const current = optimisticProjectCreateRef.current;
+          const rebound = current
+            ? rebindOptimisticProjectCreate(
+                current,
+                activeCommandId,
+                sent.commandId,
+              )
+            : null;
+          if (!rebound) return;
+          activeCommandId = rebound.commandId!;
+          commitOptimisticProjectCreate(rebound);
+          projectCreateRecoveryInFlightRef.current = {
+            commandId: activeCommandId,
+            connection,
+          };
+        }
+        recoverUiNotice("project:create");
+        const completion = await waitForCommandCompletion(
+          sent.completion,
+          PROJECT_CREATE_RESULT_TIMEOUT_MS,
+        );
+        await consumeProjectCreateCompletion(
+          connection,
+          activeCommandId,
+          completion,
+        );
+      } catch (error) {
+        const current = optimisticProjectCreateRef.current;
+        if (!current || current.commandId !== activeCommandId) return;
+        if (
+          error instanceof CommandRevisionConflictError ||
+          error instanceof CommandReviewRequiredError
+        ) {
+          const commandId = error instanceof CommandRevisionConflictError
+            ? error.commandId
+            : error.review.commandId;
+          holdProjectCreateForConflictReview(current.localId, commandId);
+          if (error instanceof CommandRevisionConflictError) {
+            const conflict: RevisionConflictNotice = {
+              commandId: error.commandId,
+              expectedRevision: error.expectedRevision,
+              payload: error.payload,
+              busy: false,
+            };
+            revisionConflictRef.current = conflict;
+            setRevisionConflict(conflict);
+          } else {
+            const review: NativeCommandReviewNotice = {
+              ...error.review,
+              busy: false,
+            };
+            nativeCommandReviewRef.current = review;
+            setNativeCommandReview(review);
+          }
+          showUiNotice(
+            "project:create",
+            "session",
+            "warning",
+            "Project creation is saved and needs conflict review before it can continue.",
+          );
+          return;
+        }
+        if (isMissingSessionCreateRecoveryCommand(error)) {
+          markOptimisticProjectCreateFailed(
+            current.localId,
+            "The saved project creation command is no longer available. The project may still appear if the Gateway completed it before local recovery was lost.",
+          );
+          showUiNotice(
+            "project:create",
+            "session",
+            "warning",
+            "The unfinished local project command is no longer available. Check the project list before retrying.",
+          );
+          return;
+        }
+        const uncertain =
+          error instanceof CommandCompletionTimeoutError ||
+          Date.now() - current.createdAt >= PROJECT_CREATE_RESULT_TIMEOUT_MS;
+        if (uncertain) {
+          commitOptimisticProjectCreate(
+            markOptimisticProjectCreateUncertain(
+              current,
+              "The Gateway accepted this project command, but its final result has not arrived yet. Malink will keep checking the same command.",
+            ),
+          );
+          showUiNotice(
+            "project:create",
+            "session",
+            "warning",
+            "Project creation is taking longer than expected. You can keep working while Malink checks the original command.",
+          );
+        } else {
+          commitOptimisticProjectCreate(
+            markOptimisticProjectCreateUncertain(
+              current,
+              `Malink could not confirm the project result yet: ${formatUiError(error)}`,
+            ),
+          );
+          showUiNotice(
+            "project:create",
+            "session",
+            "warning",
+            `Project result recovery hit an error and will retry the same command: ${formatUiError(error)}`,
+          );
+        }
+        if (
+          malinkClientRef.current === connection &&
+          connectionStatusRef.current === "connected"
+        ) {
+          schedulePendingProjectCreateRecovery(connection);
+        }
+      } finally {
+        if (
+          projectCreateRecoveryInFlightRef.current?.commandId === activeCommandId
+        ) {
+          projectCreateRecoveryInFlightRef.current = null;
+        }
+        const currentConnection = malinkClientRef.current;
+        if (
+          optimisticProjectCreateRef.current?.commandId === activeCommandId &&
+          currentConnection &&
+          currentConnection !== connection &&
+          connectionStatusRef.current === "connected"
+        ) {
+          continuePendingProjectCreate(currentConnection);
+        }
+      }
+    })();
+  }
+
+  async function consumeProjectCreateCompletion(
+    connection: MalinkClient,
+    commandId: string,
+    completion: CommandCompletion,
+  ): Promise<void> {
+    const record = optimisticProjectCreateRef.current;
+    if (!record || record.commandId !== commandId) return;
+    try {
+      completedCommandResultsRef.current.delete(commandId);
+      const failure = projectCreateFailureMessage(completion);
+      if (failure) {
+        markOptimisticProjectCreateFailed(record.localId, failure);
+        showUiNotice("project:create", "session", "error", failure);
+        return;
+      }
+      const projectId = completedProjectId(completion);
+      if (!projectId) {
+        markOptimisticProjectCreateFailed(
+          record.localId,
+          "The Gateway reported success without a project identity. Refresh before retrying.",
+        );
+        showUiNotice(
+          "project:create",
+          "session",
+          "error",
+          "The project result was incomplete. Refresh before retrying so the existing project is not duplicated.",
+        );
+        return;
+      }
+      commitOptimisticProjectCreate(
+        syncOptimisticProjectCreate(record, projectId),
+      );
+      showUiNotice(
+        "project:create",
+        "session",
+        "success",
+        `${record.input.name} was created. Its encrypted project view is syncing in the background.`,
+        7_000,
+      );
+    } finally {
+      try {
+        await connection.releaseCommand(commandId);
+      } catch (error) {
+        showUiNotice(
+          "project:create-release",
+          "session",
+          "warning",
+          `Project creation finished, but its completed local command could not be cleaned up yet: ${formatUiError(error)}`,
+        );
+      }
+    }
   }
 
   function commitOptimisticSession(record: OptimisticSessionRecord): void {
@@ -3831,6 +4112,19 @@ function MalinkAppRuntime() {
     if (storedSessionCreateRecovery && !sessionCreateRecovery) {
       forgetPendingSessionCreate(storedSessionCreateRecovery.commandId);
     }
+    const currentProjectCreate = optimisticProjectCreateRef.current;
+    const projectCreateForBinding = currentProjectCreate &&
+      projectCreateRecoveryMatches(currentProjectCreate, configInput)
+      ? currentProjectCreate
+      : readOptimisticProjectCreate(window.localStorage, configInput);
+    if (currentProjectCreate !== projectCreateForBinding) {
+      optimisticProjectCreateRef.current = projectCreateForBinding;
+      setOptimisticProjectCreate(projectCreateForBinding);
+      if (projectCreateRecoveryTimerRef.current !== null) {
+        window.clearTimeout(projectCreateRecoveryTimerRef.current);
+        projectCreateRecoveryTimerRef.current = null;
+      }
+    }
     const startupGeneration = matrixStartupGenerationRef.current + 1;
     matrixStartupGenerationRef.current = startupGeneration;
     const isCurrentStartup = () =>
@@ -3855,14 +4149,8 @@ function MalinkAppRuntime() {
       activePromptCommandsRef.current.clear();
       completedCommandResultsRef.current.clear();
       completionObservationOrderRef.current = 0;
-      turnPromptLookupRef.current.clear();
-      turnHistoryHydrationRef.current = null;
-      messageElementsRef.current.clear();
       setObservedCommandCompletions([]);
-      setTurnPromptCache(new Map());
-      setExpandedTurnId(null);
-      setTurnHistoryLoad(null);
-      setFeedReturnAnchor(null);
+      setExpandedProcessTurnIds(new Set());
       setRevisionConflict(null);
       setNativeCommandReview(null);
     }
@@ -4259,6 +4547,7 @@ function MalinkAppRuntime() {
       void connection.ready
         .then(() => {
           if (malinkClientRef.current !== connection) return;
+          continuePendingProjectCreate(connection);
           continuePendingSessionCreate(connection);
           const sessionId = selectedSessionIdRef.current;
           if (
@@ -4314,14 +4603,8 @@ function MalinkAppRuntime() {
     activePromptCommandsRef.current.clear();
     completedCommandResultsRef.current.clear();
     completionObservationOrderRef.current = 0;
-    turnPromptLookupRef.current.clear();
-    turnHistoryHydrationRef.current = null;
-    messageElementsRef.current.clear();
     setObservedCommandCompletions([]);
-    setTurnPromptCache(new Map());
-    setExpandedTurnId(null);
-    setTurnHistoryLoad(null);
-    setFeedReturnAnchor(null);
+    setExpandedProcessTurnIds(new Set());
     setFeedHasUnseenMessages(false);
     pendingCreatedSessionIdRef.current = null;
     updateSessionLifecycleBusy(new Map());
@@ -4331,6 +4614,10 @@ function MalinkAppRuntime() {
     if (sessionCreateRecoveryTimerRef.current !== null) {
       window.clearTimeout(sessionCreateRecoveryTimerRef.current);
       sessionCreateRecoveryTimerRef.current = null;
+    }
+    if (projectCreateRecoveryTimerRef.current !== null) {
+      window.clearTimeout(projectCreateRecoveryTimerRef.current);
+      projectCreateRecoveryTimerRef.current = null;
     }
     knownGatewaySessionIdsRef.current.clear();
     liveMessagesBySessionRef.current.clear();
@@ -5632,6 +5919,23 @@ function MalinkAppRuntime() {
       setGatewayRevision((current) =>
         current === null ? result.revision : Math.max(current, result.revision),
       );
+      if (conflict.payload.operation === "project.create") {
+        const record = optimisticProjectCreateRef.current;
+        if (record?.commandId === conflict.commandId) {
+          const rebound = rebindOptimisticProjectCreate(
+            record,
+            conflict.commandId,
+            result.commandId,
+          );
+          if (rebound) {
+            commitOptimisticProjectCreate(rebound);
+            revisionConflictRef.current = null;
+            setRevisionConflict(null);
+            continuePendingProjectCreate(connection, result);
+            return;
+          }
+        }
+      }
       if (
         conflict.optimisticMessageId &&
         optimisticMessage &&
@@ -5742,6 +6046,15 @@ function MalinkAppRuntime() {
         setSessionAgentActivity(conflict.payload.sessionId, null);
       }
       if (error instanceof CommandRevisionConflictError) {
+        if (conflict.payload.operation === "project.create") {
+          const record = optimisticProjectCreateRef.current;
+          if (record) {
+            holdProjectCreateForConflictReview(
+              record.localId,
+              error.commandId,
+            );
+          }
+        }
         const next: RevisionConflictNotice = {
           commandId: error.commandId,
           expectedRevision: error.expectedRevision,
@@ -5773,6 +6086,15 @@ function MalinkAppRuntime() {
     setRevisionConflict(busyConflict);
     try {
       await connection.discardRevisionConflict(conflict.commandId);
+      if (conflict.payload.operation === "project.create") {
+        const record = optimisticProjectCreateRef.current;
+        if (record?.commandId === conflict.commandId) {
+          markOptimisticProjectCreateFailed(
+            record.localId,
+            "Project creation was discarded after conflict review.",
+          );
+        }
+      }
       if (conflict.optimisticMessageId) {
         optimisticMessagesRef.current.delete(conflict.optimisticMessageId);
         reconciledOptimisticMessageIdsRef.current.delete(
@@ -5824,6 +6146,22 @@ function MalinkAppRuntime() {
     try {
       const sent = await connection.confirmRevisionRetry(review.commandId);
       retriedCommandId = sent.commandId;
+      const projectCreate = optimisticProjectCreateRef.current;
+      if (projectCreate?.commandId === review.commandId) {
+        const rebound = rebindOptimisticProjectCreate(
+          projectCreate,
+          review.commandId,
+          sent.commandId,
+        );
+        if (rebound) {
+          commitOptimisticProjectCreate(rebound);
+          retriedCommandId = null;
+          nativeCommandReviewRef.current = null;
+          setNativeCommandReview(null);
+          continuePendingProjectCreate(connection, sent);
+          return;
+        }
+      }
       const completion = await sent.completion;
       if (completion.outcome !== "succeeded") {
         throw new Error(
@@ -5836,6 +6174,13 @@ function MalinkAppRuntime() {
       }
     } catch (error) {
       if (error instanceof CommandReviewRequiredError) {
+        const projectCreate = optimisticProjectCreateRef.current;
+        if (projectCreate?.commandId === review.commandId) {
+          holdProjectCreateForConflictReview(
+            projectCreate.localId,
+            error.review.commandId,
+          );
+        }
         const next: NativeCommandReviewNotice = {
           ...error.review,
           busy: false,
@@ -5876,6 +6221,13 @@ function MalinkAppRuntime() {
     setNativeCommandReview(busyReview);
     try {
       await connection.discardRevisionConflict(review.commandId);
+      const projectCreate = optimisticProjectCreateRef.current;
+      if (projectCreate?.commandId === review.commandId) {
+        markOptimisticProjectCreateFailed(
+          projectCreate.localId,
+          "Project creation was discarded after conflict review.",
+        );
+      }
       if (nativeCommandReviewRef.current?.commandId === review.commandId) {
         nativeCommandReviewRef.current = null;
         setNativeCommandReview(null);
@@ -6308,58 +6660,127 @@ function MalinkAppRuntime() {
     });
   }
 
-  async function createProject(input: NewProjectInput): Promise<void> {
+  async function createProject(
+    input: NewProjectInput,
+    retryRecord?: OptimisticProjectCreateRecord,
+  ): Promise<void> {
     if (newProjectBusy) return;
+    if (optimisticProjectCreateRef.current && !retryRecord) {
+      showUiNotice(
+        "project:create",
+        "session",
+        "info",
+        "Finish or dismiss the current project creation before starting another one.",
+      );
+      setNewProjectOpen(false);
+      return;
+    }
+    const target = projectCreationGateways.find(gateway =>
+      gateway.gatewayNodeId === input.gatewayNodeId &&
+      gateway.targetProjectId === input.targetProjectId,
+    );
+    if (!target) {
+      showUiNotice(
+        "project:create",
+        "session",
+        "error",
+        "The selected Gateway route changed. Reopen project creation and try again.",
+      );
+      return;
+    }
+    const gatewayLabel = gatewayProjectOwner(
+      target.gatewayNodeId,
+      target.gatewayName,
+      target.computerName,
+    ).label;
+    const localRecord = retryRecord
+      ? retryOptimisticProjectCreate({
+          ...retryRecord,
+          gatewayLabel,
+          input,
+        })
+      : createOptimisticProjectCreate(
+          input,
+          {
+            gatewayId: matrixConfig.gatewayId,
+            conversationId: matrixConfig.conversationId,
+          },
+          gatewayLabel,
+          `local-project:${crypto.randomUUID()}`,
+        );
+    commitOptimisticProjectCreate(localRecord);
+    setNewProjectOpen(false);
     setNewProjectBusy(true);
     recoverUiNotice("project:create");
-    let completedCommandId: string | null = null;
+    showUiNotice(
+      "project:create",
+      "session",
+      "info",
+      `${input.name} is being created in the background. You can keep working.`,
+    );
+    let connection: MalinkClient | null = null;
     try {
-      const target = projectCreationGateways.find(gateway =>
-        gateway.gatewayNodeId === input.gatewayNodeId &&
-        gateway.targetProjectId === input.targetProjectId,
-      );
-      if (!target) {
-        throw new Error("The selected Gateway route changed. Reopen project creation and try again.");
-      }
+      await waitForUiCommit();
+      connection = malinkClientRef.current;
       const sent = await sendRealCommand({
         operation: "project.create",
         name: input.name,
         cwd: input.cwd,
         ...(input.provider ? { provider: input.provider } : {}),
         createDirectory: input.createDirectory,
-      }, target.targetProjectId, { propagateFailure: true });
-      if (!sent) return;
-      const completion = await waitForCommandCompletion(
-        sent.completion,
-        PROJECT_CREATE_RESULT_TIMEOUT_MS,
+      }, target.targetProjectId, {
+        autoRetryRevisionConflict: true,
+        propagateFailure: true,
+      });
+      if (!sent || !connection) {
+        throw new Error("The secure project command was not accepted.");
+      }
+      const current = optimisticProjectCreateRef.current;
+      if (!current || current.localId !== localRecord.localId) return;
+      commitOptimisticProjectCreate(
+        bindOptimisticProjectCreate(current, sent.commandId),
       );
-      completedCommandId = sent.commandId;
-      if (completion.outcome !== "succeeded") {
-        throw new Error(
-          completion.error?.message ?? "The Gateway could not create this project.",
+      continuePendingProjectCreate(connection, sent);
+    } catch (error) {
+      if (error instanceof CommandAcknowledgementTimeoutError && connection) {
+        const current = optimisticProjectCreateRef.current;
+        if (current?.localId === localRecord.localId) {
+          commitOptimisticProjectCreate(
+            bindOptimisticProjectCreate(current, error.commandId),
+          );
+        }
+        showUiNotice(
+          "project:create",
+          "session",
+          "warning",
+          "Project creation is queued securely. Malink will resume this same command without creating a duplicate.",
+        );
+        continuePendingProjectCreate(connection);
+      } else if (
+        error instanceof CommandRevisionConflictError ||
+        error instanceof CommandReviewRequiredError
+      ) {
+        const commandId = error instanceof CommandRevisionConflictError
+          ? error.commandId
+          : error.review.commandId;
+        if (holdProjectCreateForConflictReview(localRecord.localId, commandId)) {
+          showUiNotice(
+            "project:create",
+            "session",
+            "warning",
+            "Project creation is saved and needs conflict review before it can continue.",
+          );
+        }
+      } else {
+        markOptimisticProjectCreateFailed(localRecord.localId, error);
+        showUiNotice(
+          "project:create",
+          "session",
+          "error",
+          formatUiError(error),
         );
       }
-      setNewProjectOpen(false);
-      showUiNotice(
-        "project:create",
-        "session",
-        "success",
-        `${input.name} was created on the selected Gateway. It will appear after the encrypted project room syncs.`,
-        7_000,
-      );
-    } catch (error) {
-      showUiNotice(
-        "project:create",
-        "session",
-        "error",
-        formatUiError(error),
-      );
     } finally {
-      if (completedCommandId) {
-        completedCommandResultsRef.current.delete(completedCommandId);
-        await malinkClientRef.current?.releaseCommand(completedCommandId)
-          .catch(() => undefined);
-      }
       setNewProjectBusy(false);
     }
   }
@@ -6441,6 +6862,50 @@ function MalinkAppRuntime() {
       }
       setProjectSettingsBusy(false);
     }
+  }
+
+  function retryFailedOptimisticProjectCreate(): void {
+    const record = optimisticProjectCreateRef.current;
+    if (!record || record.phase !== "failed" || newProjectBusy) return;
+    void createProject(record.input, record);
+  }
+
+  function recheckUncertainOptimisticProjectCreate(): void {
+    const record = optimisticProjectCreateRef.current;
+    const connection = malinkClientRef.current;
+    if (
+      !record?.commandId ||
+      record.phase !== "uncertain" ||
+      !connection ||
+      connectionStatusRef.current !== "connected" ||
+      projectCreateRecoveryInFlightRef.current
+    ) {
+      return;
+    }
+    commitOptimisticProjectCreate({
+      ...record,
+      phase: "creating",
+      error: undefined,
+      updatedAt: Date.now(),
+    });
+    continuePendingProjectCreate(connection);
+  }
+
+  function dismissOptimisticProjectCreate(): void {
+    const record = optimisticProjectCreateRef.current;
+    if (!record || record.phase === "creating" || record.phase === "syncing") {
+      return;
+    }
+    if (
+      record.phase === "uncertain" &&
+      !window.confirm(
+        "Stop showing this pending project? The Gateway may still finish the original command, and the project will then appear normally.",
+      )
+    ) {
+      return;
+    }
+    removeOptimisticProjectCreate(record.localId);
+    recoverUiNotice("project:create");
   }
 
   async function createSession(
@@ -7567,7 +8032,11 @@ function MalinkAppRuntime() {
       setComposerOptionsOpen(false);
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (
+      event.key === "Enter" &&
+      (event.ctrlKey || event.metaKey) &&
+      !event.nativeEvent.isComposing
+    ) {
       event.preventDefault();
       void sendMessage();
     }
@@ -7968,7 +8437,7 @@ function MalinkAppRuntime() {
               title="New project"
               onClick={() => setNewProjectOpen(true)}
               disabled={
-                newProjectBusy ||
+                Boolean(optimisticProjectCreate) ||
                 !gatewayAvailable ||
                 projectCreationGateways.length === 0
               }
@@ -8045,6 +8514,24 @@ function MalinkAppRuntime() {
           <span className="gateway-more" aria-hidden="true">•••</span>
         </button>
 
+        {gatewayFilterOptions.length > 1 && (
+          <label className="gateway-filter-control">
+            <span>View</span>
+            <select
+              value={activeGatewayFilter}
+              aria-label="Filter conversations by Gateway"
+              onChange={(event) => selectGatewayFilter(event.target.value)}
+            >
+              <option value={ALL_GATEWAYS_FILTER}>All Gateways</option>
+              {gatewayFilterOptions.map(gateway => (
+                <option key={gateway.gatewayNodeId} value={gateway.gatewayNodeId}>
+                  {gateway.label} · {gateway.shortId}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
         <UiNoticeList
           notices={sessionNotices}
           className="session-notices"
@@ -8052,7 +8539,12 @@ function MalinkAppRuntime() {
         />
 
         <div className="session-list">
-          {optimisticSession && (
+          {optimisticSession && projectMatchesGatewayFilter(
+            activeGatewayFilter,
+            optimisticSession.input.projectId ?? gatewayState?.workspace.projectId ?? "",
+            projectGatewaysById,
+            fallbackProjectGateway.gatewayNodeId,
+          ) && (
             <button
               type="button"
               className={`session-row session-create-pending ${
@@ -8110,6 +8602,97 @@ function MalinkAppRuntime() {
               </span>
             </button>
           )}
+          {optimisticProjectCreate &&
+            (activeGatewayFilter === ALL_GATEWAYS_FILTER ||
+              optimisticProjectCreate.input.gatewayNodeId === activeGatewayFilter) &&
+            (!search.trim() ||
+              `${optimisticProjectCreate.input.name} ${optimisticProjectCreate.input.cwd} ${optimisticProjectCreate.gatewayLabel}`
+                .toLowerCase()
+                .includes(search.toLowerCase())) && (
+            <section
+              className={`project-session-group project-create-pending project-create-${optimisticProjectCreate.phase}`}
+              data-project-create-phase={optimisticProjectCreate.phase}
+              aria-label={`${optimisticProjectCreate.input.name}. ${
+                optimisticProjectCreate.phase === "failed"
+                  ? "Creation failed."
+                  : optimisticProjectCreate.phase === "uncertain"
+                    ? "Creation is taking longer than expected."
+                    : optimisticProjectCreate.phase === "syncing"
+                      ? "Created and syncing."
+                      : "Creating in the background."
+              }`}
+            >
+              <div
+                className="project-session-toggle project-create-status"
+                role="status"
+                aria-live="polite"
+              >
+                <span className="project-create-mark" aria-hidden="true">
+                  {optimisticProjectCreate.phase === "failed" ||
+                  optimisticProjectCreate.phase === "uncertain" ? (
+                    "!"
+                  ) : optimisticProjectCreate.phase === "syncing" ? (
+                    "✓"
+                  ) : (
+                    <i className="project-create-spinner" />
+                  )}
+                </span>
+                <span className="project-folder" aria-hidden="true">
+                  <ProjectFolderIcon temporary={false} />
+                </span>
+                <span className="project-copy">
+                  <strong>{optimisticProjectCreate.input.name}</strong>
+                  <small>
+                    {optimisticProjectCreate.gatewayLabel} · {optimisticProjectCreate.input.cwd}
+                  </small>
+                </span>
+                <span className="project-create-actions">
+                  {optimisticProjectCreate.phase === "failed" && (
+                    <button
+                      type="button"
+                      onClick={retryFailedOptimisticProjectCreate}
+                      disabled={!gatewayAvailable || newProjectBusy}
+                    >
+                      Retry
+                    </button>
+                  )}
+                  {optimisticProjectCreate.phase === "uncertain" && (
+                    <button
+                      type="button"
+                      onClick={recheckUncertainOptimisticProjectCreate}
+                      disabled={!gatewayAvailable}
+                    >
+                      Check
+                    </button>
+                  )}
+                  {(optimisticProjectCreate.phase === "failed" ||
+                    optimisticProjectCreate.phase === "uncertain") && (
+                    <button
+                      type="button"
+                      aria-label="Dismiss project creation"
+                      onClick={dismissOptimisticProjectCreate}
+                    >
+                      ×
+                    </button>
+                  )}
+                </span>
+                <b aria-hidden="true">
+                  {optimisticProjectCreate.phase === "failed"
+                    ? "failed"
+                    : optimisticProjectCreate.phase === "uncertain"
+                      ? "check"
+                      : optimisticProjectCreate.phase === "syncing"
+                        ? "sync"
+                        : "now"}
+                </b>
+              </div>
+              {optimisticProjectCreate.error && (
+                <p className="project-create-error">
+                  {optimisticProjectCreate.error}
+                </p>
+              )}
+            </section>
+          )}
           {conversationGroups.map((project) => {
             const expanded = isProjectExpanded({
               state: collapsedProjects,
@@ -8129,9 +8712,11 @@ function MalinkAppRuntime() {
                 className="project-session-toggle"
                 aria-expanded={expanded}
                 aria-controls={contentId}
-                title={project.temporary ? "Temporary workspace" : "Project"}
+                title={project.temporary
+                  ? `Temporary workspace on ${project.gatewayLabel}`
+                  : `Project on ${project.gatewayLabel}`}
                 aria-label={`${projectSessionSummaryLabel(
-                  project.projectName,
+                  `${project.projectName} on ${project.gatewayLabel}`,
                   projectSummary,
                 )}. ${expanded ? "Collapse project" : "Expand project"}`}
                 onClick={() =>
@@ -8152,9 +8737,7 @@ function MalinkAppRuntime() {
                 <span className="project-copy">
                   <strong>{project.projectName}</strong>
                   <small>
-                    {project.temporary
-                      ? project.cwd
-                      : `${project.gatewayLabel} · ${project.cwd}`}
+                    {project.gatewayLabel} · {project.cwd}
                   </small>
                 </span>
                 <span className="project-indicators" aria-hidden="true">
@@ -8220,10 +8803,14 @@ function MalinkAppRuntime() {
                 }${
                   session.reasoningEffort ? ` · ${session.reasoningEffort}` : ""
                 }`;
-                const visualSignal = lifecycleAction ? "working" : signal;
+                const visualSignal = lifecycleAction || activity
+                  ? "working"
+                  : signal;
                 const visualSignalLabel = lifecycleAction
                   ? statusSummary
-                  : sessionSignalLabel(signal);
+                  : activity?.label || sessionSignalLabel(signal);
+                const showStatusSummary =
+                  Boolean(lifecycleAction || activity) || signal !== "idle";
                 return (
                 <button
                   key={session.id}
@@ -8264,9 +8851,9 @@ function MalinkAppRuntime() {
                         )}
                       </span>
                     </span>
-                    {(lifecycleAction || session.extensions.length > 0) && (
+                    {(showStatusSummary || session.extensions.length > 0) && (
                       <span className="session-preview-line">
-                        {lifecycleAction && (
+                        {showStatusSummary && (
                           <span className="session-status-summary">
                             {statusSummary}
                           </span>
@@ -8355,7 +8942,6 @@ function MalinkAppRuntime() {
             </div>
           )}
           {gatewayState &&
-            activeSessionCount > 0 &&
             conversationGroups.length === 0 &&
             Boolean(search.trim()) && (
             <div className="empty-search">
@@ -8364,7 +8950,20 @@ function MalinkAppRuntime() {
             </div>
           )}
           {gatewayState &&
+            activeGatewayFilter !== ALL_GATEWAYS_FILTER &&
+            activeSessionCount === 0 &&
+            conversationGroups.length === 0 &&
+            !optimisticSession &&
+            !optimisticProjectCreate &&
+            !search.trim() && (
+              <div className="empty-search">
+                <span>G</span>
+                No conversations or projects on this Gateway
+              </div>
+            )}
+          {gatewayState &&
             gatewayState.sessions.length === 0 &&
+            activeGatewayFilter === ALL_GATEWAYS_FILTER &&
             connectionStatus === "connected" &&
             !optimisticSession &&
             !pendingSessionCreate && (
@@ -8577,53 +9176,57 @@ function MalinkAppRuntime() {
           {historyLoading && messages.length === 0 && (
             <div className="history-skeleton" aria-hidden="true" />
           )}
-          {timelineMessages.map((message, messageIndex) => {
+          {presentedTimeline.map((item, itemIndex) => {
+            if (item.kind === "process") {
+              const expanded = expandedProcessTurnIds.has(
+                item.process.commandId,
+              );
+              return (
+                <TurnProcessDisclosure
+                  process={item.process}
+                  expanded={expanded}
+                  key={`process:${item.process.commandId}`}
+                  onToggle={() =>
+                    setExpandedProcessTurnIds((current) => {
+                      const next = new Set(current);
+                      if (next.has(item.process.commandId)) {
+                        next.delete(item.process.commandId);
+                      } else {
+                        next.add(item.process.commandId);
+                      }
+                      return next;
+                    })
+                  }
+                />
+              );
+            }
+            const message = item.message;
             const isToolFocusContext =
               toolFocus?.contextMessage?.id === message.id;
             const isToolFocusSource =
               toolFocus?.toolMessage.id === message.id;
             const agentWork = isAgentWorkMessage(message);
+            const previousItem = presentedTimeline[itemIndex - 1];
+            const nextItem = presentedTimeline[itemIndex + 1];
             const previousIsAgentWork = isAgentWorkMessage(
-              timelineMessages[messageIndex - 1],
+              previousItem?.kind === "message" ? previousItem.message : undefined,
             );
             const nextIsAgentWork = isAgentWorkMessage(
-              timelineMessages[messageIndex + 1],
+              nextItem?.kind === "message" ? nextItem.message : undefined,
             );
             const agentTurnClass = agentWork
               ? `${previousIsAgentWork ? "agent-turn-continuation" : "agent-turn-start"} ${nextIsAgentWork ? "" : "agent-turn-end"}`
               : "";
-            const isCompletedTurnResult =
-              latestCompletedTurn?.result.id === message.id;
-            const isTurnResult = inferredCompletedTurnResultIds.has(message.id);
-            const turnPresentationClass = agentWork
-              ? isTurnResult
-                ? "turn-result"
-                : "turn-process"
-              : "";
-            const turnLocationPhase = latestCompletedTurn?.promptInTranscript
-              ? "ready"
-              : turnHistoryLoad &&
-                  turnHistoryLoad.commandId === latestCompletedTurn?.commandId
-                ? turnHistoryLoad.phase
-                : "loading";
-            const resultContext =
-              isCompletedTurnResult && latestCompletedTurn ? (
-                <TurnResultContext
-                  prompt={latestCompletedTurn.prompt}
-                  connection={malinkClientRef.current}
-                  expanded={expandedTurnId === latestCompletedTurn.commandId}
-                  locationPhase={turnLocationPhase}
-                  failed={latestCompletedTurn.completion.outcome === "failed"}
-                  onTogglePrompt={() =>
-                    setExpandedTurnId((current) =>
-                      current === latestCompletedTurn.commandId
-                        ? null
-                        : latestCompletedTurn.commandId,
-                    )
-                  }
-                  onLocatePrompt={jumpToTurnOrigin}
-                />
-              ) : null;
+            const result = completedTurns.resultByMessageId.get(message.id);
+            const isTurnResult = Boolean(result);
+            const isTurnProcess = completedTurns.processByMessageId.has(
+              message.id,
+            );
+            const turnPresentationClass = isTurnResult
+              ? "turn-result"
+              : isTurnProcess
+                ? "turn-process"
+                : "";
             if (message.kind === "notice") {
               return (
                 <div
@@ -8640,18 +9243,16 @@ function MalinkAppRuntime() {
             if (message.kind === "error") {
               return (
                 <div
-                  className={`message-row agent-row ${isTurnResult ? "turn-result" : ""} ${
+                  className={`message-row agent-row ${turnPresentationClass} ${
                     message.historical ? "" : "message-enter"
                   }`}
                   key={message.id}
-                  ref={(element) => bindMessageElement(message.id, element)}
                 >
                   <div className="agent-mark error-mark">!</div>
                   <div className="bubble agent-bubble error-bubble">
                     <span className="agent-label">TASK NEEDS ATTENTION</span>
                     <p>{message.text}</p>
                     <time>{message.time}</time>
-                    {resultContext}
                   </div>
                 </div>
               );
@@ -8660,13 +9261,19 @@ function MalinkAppRuntime() {
               const deliveryState =
                 message.deliveryState ??
                 (message.revision !== undefined ? "sent" : undefined);
+              const delivery = messageDeliveryPresentation(
+                userMessageDeliveryState(
+                  deliveryState,
+                  message.commandId,
+                  receivedPromptCommandIds,
+                ),
+              );
               return (
                 <div
                   className={`message-row user-row turn-prompt ${isToolFocusContext ? "tool-focus-context-message" : ""} ${
                     message.historical ? "" : "message-enter"
                   }`}
                   key={message.id}
-                  ref={(element) => bindMessageElement(message.id, element)}
                 >
                   <div className="bubble user-bubble">
                     {message.originDeviceName &&
@@ -8688,26 +9295,13 @@ function MalinkAppRuntime() {
                       }
                     >
                       {message.time}{" "}
-                      {deliveryState && (
+                      {delivery && (
                         <span
-                          className={`delivery-indicator ${deliveryState}`}
-                          aria-label={
-                            deliveryState === "queued"
-                              ? "Waiting for session creation"
-                              : deliveryState === "sending"
-                                ? "Sending"
-                                : deliveryState === "failed"
-                                  ? "Send failed"
-                                  : "Sent"
-                          }
+                          className={`delivery-indicator ${delivery.state}`}
+                          aria-label={delivery.label}
+                          title={delivery.label}
                         >
-                          {deliveryState === "queued"
-                            ? "◷"
-                            : deliveryState === "sending"
-                              ? "…"
-                              : deliveryState === "failed"
-                                ? "!"
-                                : "✓✓"}
+                          {delivery.symbol}
                         </span>
                       )}
                     </time>
@@ -8751,7 +9345,7 @@ function MalinkAppRuntime() {
               if (extensionView) {
                 return (
                   <div
-                    className={`message-row agent-row ${
+                    className={`message-row agent-row ${turnPresentationClass} ${
                       message.historical ? "" : "message-enter"
                     }`}
                     key={message.id}
@@ -8785,7 +9379,7 @@ function MalinkAppRuntime() {
               const privilegeRequest = message.raw?.decisionType === "privilege";
               return (
                 <div
-                  className={`message-row agent-row ${
+                  className={`message-row agent-row ${turnPresentationClass} ${
                     message.historical ? "" : "message-enter"
                   }`}
                   key={message.id}
@@ -8863,11 +9457,13 @@ function MalinkAppRuntime() {
                   message.historical ? "" : "message-enter"
                 }`}
                 key={message.id}
-                ref={(element) => bindMessageElement(message.id, element)}
               >
                 <div className="agent-mark">C</div>
                 <div className="bubble agent-bubble">
-                  <span className="agent-label">CODEX</span>
+                  <span className="agent-label">
+                    CODEX
+                    {result && <TurnResultState outcome={result.outcome} />}
+                  </span>
                   {message.format === "markdown" || !message.format ? (
                     <MarkdownContent content={message.text ?? ""} />
                   ) : (
@@ -8880,7 +9476,6 @@ function MalinkAppRuntime() {
                     connection={malinkClientRef.current}
                   />
                   <time>{message.time}</time>
-                  {resultContext}
                 </div>
               </div>
             );
@@ -8921,18 +9516,7 @@ function MalinkAppRuntime() {
         </div>
 
         <div className="composer-area">
-          {feedReturnAnchor?.sessionId === selectedSessionId ? (
-            <button
-              type="button"
-              className="jump-to-latest return-to-result"
-              aria-label="Return to the task result"
-              title="Return to task result"
-              onClick={returnToTurnResult}
-            >
-              <ArrowDownIcon />
-              <span className="return-result-dot" aria-hidden="true" />
-            </button>
-          ) : feedAwayFromLatest ? (
+          {feedAwayFromLatest ? (
             <button
               type="button"
               className="jump-to-latest"
@@ -9131,6 +9715,7 @@ function MalinkAppRuntime() {
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={onComposerKeyDown}
+              aria-keyshortcuts="Control+Enter Meta+Enter"
               placeholder={
                 gatewayAvailable
                   ? `Message ${activeProvider}…`
@@ -9139,7 +9724,7 @@ function MalinkAppRuntime() {
                     : "Connect a computer to start"
               }
               aria-label={`Message ${activeProvider}`}
-              rows={1}
+              rows={2}
               disabled={!composerState.canType}
             />
             <div className="composer-actions">
@@ -9370,6 +9955,9 @@ function MalinkAppRuntime() {
             aria-live="polite"
           >
             {composerState.reason}
+            <span className="composer-shortcut-hint" aria-hidden="true">
+              {" · Enter for new line · Ctrl/⌘ Enter to send"}
+            </span>
           </p>
         </div>
       </section>
@@ -9465,10 +10053,8 @@ function MalinkAppRuntime() {
         <NewProjectDialog
           open={newProjectOpen}
           busy={newProjectBusy}
-          gateways={projectCreationGateways}
-          onClose={() => {
-            if (!newProjectBusy) setNewProjectOpen(false);
-          }}
+          gateways={presentedProjectCreationGateways}
+          onClose={() => setNewProjectOpen(false)}
           onCreate={(input) => void createProject(input)}
         />
       )}
@@ -9511,12 +10097,14 @@ function MalinkAppRuntime() {
           busy={newSessionBusy}
           fallbackGateway={fallbackProjectGateway}
           projectGateways={projectGatewaysById}
-          workspace={activeWorkspace ?? gatewayState.workspace}
-          workspaces={gatewayState.projects ?? [gatewayState.workspace]}
+          workspace={gatewayFilterDefaultWorkspace ?? gatewayState.workspace}
+          workspaces={allWorkspaceProjects}
           models={gatewayState.capabilities.models}
           providers={gatewayState.capabilities.providers}
           extensions={gatewayState.capabilities.sessionExtensions}
-          defaultExtensions={gatewayState.workspace.defaultExtensions}
+          defaultExtensions={
+            (gatewayFilterDefaultWorkspace ?? gatewayState.workspace).defaultExtensions
+          }
           canUpdateProjectDefaults
           onClose={() => {
             if (!newSessionBusy) setNewSessionOpen(false);
@@ -9847,6 +10435,21 @@ function resolvedPermissionLabel(
   if (typeof state !== "object") return "Approved";
   return permissionActionOptions(raw)
     .find((option) => option.value === state.actionId)?.label ?? "Approved";
+}
+
+function resizeComposerTextarea(textarea: HTMLTextAreaElement | null): void {
+  if (!textarea) return;
+  textarea.style.height = "auto";
+  const style = window.getComputedStyle(textarea);
+  const minHeight = Number.parseFloat(style.minHeight) || 0;
+  const parsedMaxHeight = Number.parseFloat(style.maxHeight);
+  const maxHeight = Number.isFinite(parsedMaxHeight)
+    ? parsedMaxHeight
+    : Number.POSITIVE_INFINITY;
+  const contentHeight = textarea.scrollHeight;
+  const height = Math.max(minHeight, Math.min(contentHeight, maxHeight));
+  textarea.style.height = `${Math.ceil(height)}px`;
+  textarea.style.overflowY = contentHeight > height ? "auto" : "hidden";
 }
 
 async function persistMessageHistoryPage(

@@ -84,6 +84,7 @@ describe('MatrixMlp3Port', () => {
       now: () => 1,
     })
     expect(port.streamAssistantText).toBe(false)
+    expect(port.toolActivityDebounceMs).toBe(10_000)
 
     const sent = await port.send({
       text: 'first',
@@ -261,11 +262,6 @@ describe('MatrixMlp3Port', () => {
       ...projectedTool!.message,
       replyMarkup: { idempotencyKey: 'tool-message-1' },
     })
-    expect(transport.delivered).toHaveLength(toolStart)
-    await port.edit('tool-message-1', projectedTool!.message, {
-      terminal: true,
-      finalSnapshot: true,
-    })
     await waitFor(() => transport.delivered.length === toolStart + 1)
     const toolDelivery = transport.delivered[toolStart]!
     const toolExtension = toolDelivery.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
@@ -318,7 +314,7 @@ describe('MatrixMlp3Port', () => {
     await port.send({
       ...projectedInvocation!.message,
       replyMarkup: { idempotencyKey: 'long-invocation-message' },
-    }, { terminal: true, finalSnapshot: true })
+    })
     await waitFor(() => transport.delivered.length > invocationStart)
     const invocationExtension = transport.delivered[invocationStart]!
       .content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
@@ -364,14 +360,32 @@ describe('MatrixMlp3Port', () => {
       ...projectedOutputTool!.message,
       replyMarkup: { idempotencyKey: 'tool-output-message-1' },
     })
-    expect(transport.delivered).toHaveLength(completeOutputStart)
+    await waitFor(() => transport.delivered.length === completeOutputStart + 1)
+    const liveOutputDelivery = transport.delivered[completeOutputStart]!
+    const liveOutputExtension = liveOutputDelivery
+      .content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
+    const liveOutputEnvelope = await openMlp3Envelope(liveOutputExtension.envelope, {
+      projectKey: base64UrlDecode(projectKey.key),
+      roomId: room.roomId,
+      projectId: grant.projectId,
+      keyId: projectKey.keyId,
+    })
+    if (liveOutputEnvelope.plaintext.kind !== 'signed_event') throw new Error('expected event')
+    expect(liveOutputEnvelope.plaintext.value.event.payload).toMatchObject({
+      type: 'assistant.message',
+      body: expect.stringContaining('pnpm test'),
+      ui: {
+        kind: 'tool_group',
+        tools: [expect.not.objectContaining({ result: expect.anything() })],
+      },
+    })
 
     await port.edit('tool-output-message-1', projectedOutputTool!.message, {
       progressive: true,
       terminal: true,
       finalSnapshot: true,
     })
-    await waitFor(() => transport.delivered.length === completeOutputStart + 1)
+    await waitFor(() => transport.delivered.length === completeOutputStart + 2)
     const completeOutputDelivery = transport.delivered.at(-1)!
     const completeOutputExtension = completeOutputDelivery
       .content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
@@ -455,13 +469,13 @@ describe('MatrixMlp3Port', () => {
       ...projectedLargeOutputTool!.message,
       replyMarkup: { idempotencyKey: 'large-tool-output-message' },
     })
-    expect(transport.delivered).toHaveLength(largeOutputStart)
+    await waitFor(() => transport.delivered.length === largeOutputStart + 1)
     await port.edit('large-tool-output-message', projectedLargeOutputTool!.message, {
       progressive: true,
       terminal: true,
       finalSnapshot: true,
     })
-    await waitFor(() => transport.delivered.length === largeOutputStart + 1)
+    await waitFor(() => transport.delivered.length === largeOutputStart + 2)
     const largeOutputPayloads = await Promise.all(
       transport.delivered.slice(largeOutputStart).map(async delivery => {
         const extension = delivery.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown>
@@ -475,7 +489,7 @@ describe('MatrixMlp3Port', () => {
         return envelope.plaintext.value.event.payload
       }),
     )
-    expect(largeOutputPayloads).toHaveLength(1)
+    expect(largeOutputPayloads).toHaveLength(2)
     expect(JSON.stringify(largeOutputPayloads)).not.toContain('important large-output tail')
     expect(largeOutputPayloads).toEqual(expect.arrayContaining([
       expect.objectContaining({

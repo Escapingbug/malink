@@ -66,7 +66,6 @@ export type MalinkBackAction =
   | "block-delete-dialog"
   | "close-provider-history"
   | "close-new-project"
-  | "block-new-project"
   | "close-new-session"
   | "block-new-session"
   | "close-settings"
@@ -87,9 +86,7 @@ export function resolveMalinkBackAction(
     return "close-provider-history";
   }
   if (state.newProjectOpen) {
-    return state.newProjectBusy
-      ? "block-new-project"
-      : "close-new-project";
+    return "close-new-project";
   }
   if (state.newSessionOpen) {
     return state.newSessionBusy

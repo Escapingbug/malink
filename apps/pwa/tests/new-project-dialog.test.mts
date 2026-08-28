@@ -80,7 +80,7 @@ test("shows the owning Gateway for every project session route", () => {
   assert.match(html, /Archive — NAS Gateway · home-nas/);
 });
 
-test("blocks dismissal while a durable project command is pending", () => {
+test("keeps dismissal available while project creation continues", () => {
   const html = renderToStaticMarkup(createElement(NewProjectDialog, {
     open: true,
     busy: true,
@@ -93,7 +93,12 @@ test("blocks dismissal while a durable project command is pending", () => {
     /<button(?=[^>]*aria-label="Close new project")[^>]*>/,
   )?.[0];
   assert.ok(closeButton);
-  assert.match(closeButton, /disabled/);
+  assert.doesNotMatch(closeButton, /disabled/);
+  const cancelButton = html.match(
+    /<button(?=[^>]*class="secondary-button")[^>]*>Cancel<\/button>/,
+  )?.[0];
+  assert.ok(cancelButton);
+  assert.doesNotMatch(cancelButton, /disabled/);
   assert.match(html, /Creating…/);
 });
 

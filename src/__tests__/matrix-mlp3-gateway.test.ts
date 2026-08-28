@@ -1106,9 +1106,12 @@ describe('MatrixMlp3GatewayRunner', () => {
       .filter(event => event.causationCommandId === 'prompt-causal-barrier')
     expect(causalEvents.map(event => event.payload.type)).toEqual([
       'turn.queued',
+      'turn.started',
       'assistant.message',
       'turn.completed',
     ])
+    expect(causalEvents.find(event => event.payload.type === 'turn.started')?.payload)
+      .toMatchObject({ projection: { activity: 'working' } })
     expect(causalEvents.findIndex(event => event.payload.type === 'assistant.message'))
       .toBeLessThan(causalEvents.findIndex(event => event.payload.type === 'turn.completed'))
 

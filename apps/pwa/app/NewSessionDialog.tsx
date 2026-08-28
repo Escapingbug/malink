@@ -75,6 +75,16 @@ function NewSessionDialogContent({
   ) ?? workspace;
   const selectedGateway = projectGateways.get(selectedWorkspace.projectId)
     ?? fallbackGateway;
+  const gatewayChoices = availableWorkspaces.reduce<Array<{
+    gateway: GatewayProjectOwner;
+    workspace: GatewayWorkspaceState;
+  }>>((choices, candidate) => {
+    const gateway = projectGateways.get(candidate.projectId) ?? fallbackGateway;
+    if (!choices.some(choice => choice.gateway.gatewayNodeId === gateway.gatewayNodeId)) {
+      choices.push({ gateway, workspace: candidate });
+    }
+    return choices;
+  }, []);
   const models = selectedWorkspace.capabilities?.models ?? fallbackModels;
   const providers = selectedWorkspace.capabilities?.providers ?? fallbackProviders;
   const extensions = selectedWorkspace.capabilities?.sessionExtensions ?? fallbackExtensions;
@@ -149,6 +159,46 @@ function NewSessionDialogContent({
     if (!supported.some((level) => level.effort === reasoningEffort)) {
       setReasoningEffort(capability?.defaultReasoningLevel ?? supported[0]?.effort ?? "");
     }
+  };
+  const chooseWorkspace = (next: GatewayWorkspaceState) => {
+    const nextCapabilities = next.capabilities;
+    const nextProviders = nextCapabilities?.providers ?? fallbackProviders;
+    const nextModels = nextCapabilities?.models ?? fallbackModels;
+    const nextExtensions = nextCapabilities?.sessionExtensions ?? fallbackExtensions;
+    const nextProviderModels = nextProviders.find(
+      entry => entry.id === next.provider,
+    )?.models ?? nextModels;
+    setProjectId(next.projectId);
+    setProvider(next.provider);
+    setModel(next.model ?? "");
+    setReasoningEffort(
+      next.reasoningEffort ??
+        nextProviderModels.find(entry => entry.id === next.model)
+          ?.defaultReasoningLevel ??
+        "",
+    );
+    setSetAsProjectDefault(false);
+    setEnabledExtensions(Object.fromEntries(
+      (next.defaultExtensions ?? []).map(binding => [binding.id, true]),
+    ));
+    setExtensionConfig(Object.fromEntries(
+      nextExtensions.map(extension => {
+        const inherited = (next.defaultExtensions ?? []).find(
+          binding => binding.id === extension.id,
+        );
+        return [
+          extension.id,
+          {
+            ...Object.fromEntries(extension.settings.flatMap(setting =>
+              setting.defaultValue === undefined
+                ? []
+                : [[setting.id, setting.defaultValue]],
+            )),
+            ...(inherited?.config ?? {}),
+          },
+        ];
+      }),
+    ));
   };
 
   const submit = (event: FormEvent) => {
@@ -238,44 +288,7 @@ function NewSessionDialogContent({
                       candidate => candidate.projectId === event.target.value,
                     );
                     if (!next) return;
-                    const nextCapabilities = next.capabilities;
-                    const nextProviders = nextCapabilities?.providers ?? fallbackProviders;
-                    const nextModels = nextCapabilities?.models ?? fallbackModels;
-                    const nextExtensions = nextCapabilities?.sessionExtensions ?? fallbackExtensions;
-                    const nextProviderModels = nextProviders.find(
-                      entry => entry.id === next.provider,
-                    )?.models ?? nextModels;
-                    setProjectId(next.projectId);
-                    setProvider(next.provider);
-                    setModel(next.model ?? "");
-                    setReasoningEffort(
-                      next.reasoningEffort ??
-                        nextProviderModels.find(entry => entry.id === next.model)
-                          ?.defaultReasoningLevel ??
-                        "",
-                    );
-                    setSetAsProjectDefault(false);
-                    setEnabledExtensions(Object.fromEntries(
-                      (next.defaultExtensions ?? []).map(binding => [binding.id, true]),
-                    ));
-                    setExtensionConfig(Object.fromEntries(
-                      nextExtensions.map(extension => {
-                        const inherited = (next.defaultExtensions ?? []).find(
-                          binding => binding.id === extension.id,
-                        );
-                        return [
-                          extension.id,
-                          {
-                            ...Object.fromEntries(extension.settings.flatMap(setting =>
-                              setting.defaultValue === undefined
-                                ? []
-                                : [[setting.id, setting.defaultValue]],
-                            )),
-                            ...(inherited?.config ?? {}),
-                          },
-                        ];
-                      }),
-                    ));
+                    chooseWorkspace(next);
                   }}
                 >
                   {availableWorkspaces.map(candidate => (
@@ -299,12 +312,36 @@ function NewSessionDialogContent({
             Each project keeps its own durable Matrix room; all listed projects
             remain connected and manageable at the same time.
           </small>
-          </> : (
+          </> : <>
+            <div className="new-session-grid">
+              <label>
+                <span>Gateway</span>
+                <select
+                  value={selectedGateway.gatewayNodeId}
+                  disabled={busy || gatewayChoices.length < 2}
+                  onChange={(event) => {
+                    const next = gatewayChoices.find(
+                      choice => choice.gateway.gatewayNodeId === event.target.value,
+                    );
+                    if (next) chooseWorkspace(next.workspace);
+                  }}
+                >
+                  {gatewayChoices.map(choice => (
+                    <option
+                      key={choice.gateway.gatewayNodeId}
+                      value={choice.gateway.gatewayNodeId}
+                    >
+                      {choice.gateway.label} · {choice.gateway.shortId}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
             <small className="project-identity-note scratch-identity-note">
-              The Gateway creates a private working folder for this conversation.
+              The selected Gateway creates a private working folder for this conversation.
               Archiving removes it from Malink while provider history remains available.
             </small>
-          )}
+          </>}
 
           <div className="new-session-grid two-columns">
             <label>

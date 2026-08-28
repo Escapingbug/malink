@@ -650,6 +650,43 @@ select:focus-visible {
   letter-spacing: 1px;
 }
 
+.gateway-filter-control {
+  display: grid;
+  min-width: 0;
+  flex: 0 0 auto;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  margin: -7px 17px 12px;
+}
+
+.gateway-filter-control > span {
+  color: #858d9e;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.gateway-filter-control select {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 30px 0 10px;
+  border: 1px solid #e0e3eb;
+  border-radius: 10px;
+  outline: 0;
+  background: #f7f7fa;
+  color: #4f586b;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.gateway-filter-control select:focus-visible {
+  border-color: #a99ee9;
+  box-shadow: 0 0 0 3px rgb(105 87 229 / 12%);
+}
+
 .session-section-label {
   display: flex;
   flex: 0 0 auto;
@@ -827,6 +864,85 @@ select:focus-visible {
 
 .project-session-toggle:hover {
   background: #f0f1f6;
+}
+
+.project-create-pending {
+  margin: 0 0 8px;
+}
+
+.project-create-status {
+  background: var(--violet-soft);
+  cursor: default;
+}
+
+.project-create-status:hover {
+  background: var(--violet-soft);
+}
+
+.project-create-failed .project-create-status,
+.project-create-uncertain .project-create-status {
+  background: #fff3f4;
+  box-shadow: inset 0 0 0 1px rgb(194 81 92 / 18%);
+}
+
+.project-create-mark {
+  display: grid;
+  width: 15px;
+  height: 22px;
+  place-items: center;
+  color: #6b59d3;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.project-create-failed .project-create-mark,
+.project-create-uncertain .project-create-mark {
+  color: #b9505b;
+}
+
+.project-create-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgb(107 89 211 / 24%);
+  border-top-color: #6b59d3;
+  border-radius: 50%;
+  animation: session-create-spin 700ms linear infinite;
+}
+
+.project-create-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.project-create-actions button {
+  min-width: 28px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid rgb(107 89 211 / 20%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 78%);
+  color: #5d4fc0;
+  font-size: 8px;
+  font-weight: 750;
+}
+
+.project-create-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.project-create-error {
+  margin: -1px 20px 5px 56px;
+  color: #a3414c;
+  font-size: 8px;
+  line-height: 1.35;
+}
+
+.project-create-status > b {
+  width: auto;
+  padding: 0 6px;
 }
 
 .project-chevron {
@@ -1381,6 +1497,10 @@ select:focus-visible {
 
 .session-signal-failed .session-status-summary {
   color: #a64751;
+}
+
+.session-signal-working .session-status-summary {
+  color: #267859;
 }
 
 .session-preview-line b {
@@ -2322,6 +2442,11 @@ select:focus-visible {
   color: white;
 }
 
+.user-bubble p {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .user-bubble time {
   color: rgb(255 255 255 / 90%);
 }
@@ -2440,6 +2565,10 @@ select:focus-visible {
 .delivery-indicator.queued {
   color: #e5ddff;
   animation: delivery-pending 1200ms ease-in-out infinite alternate;
+}
+
+.delivery-indicator.received {
+  letter-spacing: -0.12em;
 }
 
 .delivery-indicator.failed {
@@ -2586,143 +2715,136 @@ select:focus-visible {
   color: #b64a54;
 }
 
-.turn-result-context {
-  margin-top: 9px;
-  padding-top: 7px;
-  border-top: 1px solid #ececf2;
-}
-
-.error-bubble .turn-result-context {
-  border-top-color: #f0d9dc;
-}
-
-.turn-result-toolbar {
+.turn-process-disclosure {
   display: flex;
+  width: 100%;
+  min-height: 28px;
   align-items: center;
-  justify-content: flex-end;
-  gap: 3px;
+  gap: 7px;
+  padding-left: 35px;
+  color: #8b92a1;
 }
 
-.turn-completion-mark,
-.turn-context-button {
-  display: grid;
-  width: 27px;
-  height: 27px;
-  place-items: center;
-  border-radius: 9px;
+.turn-process-disclosure::before {
+  width: 18px;
+  height: 1px;
+  flex: 0 0 auto;
+  background: #e2e4ea;
+  content: "";
 }
 
-.turn-completion-mark {
-  margin-right: auto;
-  color: #289276;
-  animation: state-confirm var(--motion-base) var(--motion-ease-out);
+.turn-process-disclosure button {
+  display: inline-flex;
+  min-height: 26px;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font-size: 9px;
+  font-weight: 680;
+  letter-spacing: 0.01em;
+  transition:
+    color var(--motion-fast) ease,
+    background var(--motion-fast) ease;
 }
 
-.turn-completion-mark.is-failed {
-  color: #b64a54;
-  font-size: 12px;
-  font-weight: 850;
+.turn-process-disclosure button:hover,
+.turn-process-disclosure button:focus-visible,
+.turn-process-disclosure.is-expanded button {
+  background: #f2f2f7;
+  color: #716b90;
 }
 
-.turn-completion-mark svg,
-.turn-context-button svg,
-.turn-origin-preview > svg,
-.jump-to-latest svg {
-  width: 17px;
-  height: 17px;
-}
-
-.turn-completion-mark svg,
-.turn-locate-button svg,
-.jump-to-latest svg {
+.turn-process-disclosure svg {
+  width: 14px;
+  height: 14px;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 1.8;
+  stroke-width: 1.65;
 }
 
-.turn-context-button {
-  position: relative;
-  border: 0;
-  background: transparent;
-  color: #81899a;
-  transition:
-    color var(--motion-fast) ease,
-    background var(--motion-fast) ease,
-    transform var(--motion-fast) ease;
+.turn-process-disclosure button > svg:last-child {
+  width: 12px;
+  height: 12px;
+  transition: transform var(--motion-fast) var(--motion-ease-out);
 }
 
-.turn-context-button:hover,
-.turn-context-button:focus-visible,
-.turn-result-context.is-expanded .turn-context-button:first-of-type {
-  background: #f0eefb;
-  color: var(--violet-dark);
+.turn-process-disclosure.is-expanded button > svg:last-child {
+  transform: rotate(180deg);
 }
 
-.turn-context-button:active {
-  transform: scale(0.92);
+.turn-process-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: #9a91ba;
+  font-size: 8px;
+  font-weight: 760;
 }
 
-.turn-context-button:disabled {
-  cursor: wait;
+.turn-process-attachment svg {
+  width: 10px;
+  height: 10px;
 }
 
-.turn-context-button:not(.turn-locate-button) svg,
-.turn-origin-preview > svg {
-  fill: currentColor;
-}
-
-.turn-locate-button.is-loading svg {
-  opacity: 0.32;
-}
-
-.turn-location-spinner {
-  position: absolute;
-  inset: 2px;
-  border: 1.5px solid rgb(105 87 229 / 15%);
-  border-top-color: var(--violet);
-  border-radius: 50%;
-  animation: motion-spin 720ms linear infinite;
-}
-
-.turn-location-error {
-  position: absolute;
-  top: 3px;
-  right: 3px;
+.turn-process-failure {
   width: 5px;
   height: 5px;
-  border: 1px solid white;
   border-radius: 50%;
   background: #c45662;
 }
 
-.turn-origin-preview {
+.turn-result .agent-label {
+  display: flex;
+  align-items: center;
+}
+
+.agent-row.turn-result.agent-turn-continuation {
+  padding-left: 0;
+}
+
+.agent-row.turn-result.agent-turn-continuation .agent-mark {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
-  gap: 8px;
-  margin-top: 6px;
-  padding: 8px 9px;
-  border: 1px solid #e8e6f4;
-  border-radius: 9px;
-  background: #f8f7fc;
-  color: #626a7c;
-  animation: notice-enter var(--motion-base) var(--motion-ease-out);
 }
 
-.turn-origin-preview > svg {
-  width: 13px;
-  height: 13px;
-  margin-top: 2px;
-  color: #9288c7;
+.agent-row.turn-result.agent-turn-continuation .agent-label {
+  display: flex;
 }
 
-.turn-origin-preview p {
-  white-space: pre-wrap;
+.turn-result-state {
+  display: inline-grid;
+  width: 14px;
+  height: 14px;
+  margin-left: 5px;
+  place-items: center;
+  color: #289276;
+  animation: state-confirm var(--motion-base) var(--motion-ease-out);
 }
 
-.turn-origin-preview .message-attachments {
-  margin-top: 6px;
+.turn-result-state svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.turn-result-state.is-cancelled {
+  color: #8b92a1;
+  font-size: 5px;
+}
+
+.turn-process .agent-bubble {
+  border-color: #eceef3;
+  background: #fcfcfd;
+  box-shadow: none;
 }
 
 .agent-label {
@@ -4036,19 +4158,14 @@ select:focus-visible {
   background: #f4f2fd;
 }
 
-.jump-to-latest.return-to-result {
-  border-color: #c9c3ee;
-}
-
-.return-result-dot {
-  position: absolute;
-  top: 5px;
-  right: 5px;
-  width: 6px;
-  height: 6px;
-  border: 1.5px solid white;
-  border-radius: 50%;
-  background: #2b9a7c;
+.jump-to-latest svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
 }
 
 .latest-message-dot {
@@ -4361,16 +4478,20 @@ select:focus-visible {
 
 .composer textarea {
   width: 100%;
-  min-height: 30px;
-  max-height: 100px;
-  flex: 1;
+  min-height: 46px;
+  max-height: min(36vh, 240px);
+  flex: 0 1 auto;
+  overflow-y: auto;
   resize: none;
   border: 0;
   outline: 0;
   background: transparent;
   color: #343c4e;
+  field-sizing: content;
   font-size: 11px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .composer textarea::placeholder {
@@ -7712,7 +7833,7 @@ body {
 }
 
 .composer textarea {
-  min-height: 30px;
+  min-height: 52px;
   font-size: 15px;
 }
 
@@ -7890,6 +8011,10 @@ body {
     height: 16px;
   }
 
+  .gateway-filter-control {
+    margin: -4px 13px 9px;
+  }
+
   .session-filters {
     margin: -2px 13px 7px;
   }
@@ -8032,22 +8157,8 @@ body {
     margin-top: 8px;
   }
 
-  .turn-process .agent-bubble {
-    border-color: #eceef3;
-    background: #fcfcfd;
-    box-shadow: none;
-  }
-
   .turn-process .agent-label {
     display: none;
-  }
-
-  .turn-result.agent-row.agent-turn-continuation {
-    padding-left: 0;
-  }
-
-  .turn-result.agent-row.agent-turn-continuation .agent-mark {
-    display: grid;
   }
 
   .turn-result .agent-bubble {
@@ -8586,9 +8697,20 @@ body {
     margin-bottom: 3px;
   }
 
-  .turn-result-context {
-    margin-top: 7px;
-    padding-top: 5px;
+  .turn-process-disclosure {
+    gap: 5px;
+    min-height: 36px;
+    padding-left: 30px;
+  }
+
+  .turn-process-disclosure::before {
+    width: 13px;
+  }
+
+  .turn-process-disclosure button {
+    min-height: 36px;
+    padding: 4px 7px;
+    font-size: 10px;
   }
 
   .tool-group-row {
@@ -8643,9 +8765,8 @@ body {
   }
 
   .composer textarea {
-    min-height: 24px;
-    max-height: 104px;
-    field-sizing: content;
+    min-height: 44px;
+    max-height: min(32dvh, 180px);
   }
 
   .composer-options-button {

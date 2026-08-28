@@ -1298,6 +1298,17 @@ export class MatrixMlp3GatewayRunner {
         this.client,
         `${this.config.replayLedgerPath}.v3-attachments`,
       )
+      await this.emitBestEffort(project, runtime.record, this.eventFor(
+        project,
+        runtime.record,
+        command,
+        'turn-started',
+        {
+          type: 'turn.started',
+          turnId: command.commandId,
+          projection: projection(runtime.record, runtime.activity.phase, this.extensions),
+        },
+      ))
       await runtime.session.dispatch({
         kind: 'user_message',
         text: prompt.text,

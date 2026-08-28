@@ -69,6 +69,7 @@ test("ships a complete installable offline shell", async () => {
     newSession,
     providerHistory,
     history,
+    messageDelivery,
     styles,
   ] = await Promise.all([
     readFile(new URL("public/manifest.webmanifest", appRoot), "utf8"),
@@ -78,6 +79,7 @@ test("ships a complete installable offline shell", async () => {
     readFile(new URL("app/NewSessionDialog.tsx", appRoot), "utf8"),
     readFile(new URL("app/ProviderHistoryDialog.tsx", appRoot), "utf8"),
     readFile(new URL("app/messageHistory.ts", appRoot), "utf8"),
+    readFile(new URL("app/messageDelivery.ts", appRoot), "utf8"),
     readFile(new URL("app/globals.css", appRoot), "utf8"),
   ]);
   const manifest = JSON.parse(manifestText);
@@ -159,9 +161,16 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /session-row session-create-pending/);
   assert.match(source, /function ProjectFolderIcon\(\{ temporary \}:/);
   assert.match(source, /className="project-folder-clock"/);
-  assert.match(source, /title=\{project\.temporary \? "Temporary workspace" : "Project"\}/);
+  assert.match(source, /Temporary workspace on \$\{project\.gatewayLabel\}/);
   assert.match(source, /<ProjectDisclosureIcon \/>/);
   assert.doesNotMatch(source, /project\.temporary \? "◇" : "▱"/);
+  assert.match(source, /aria-label="Filter conversations by Gateway"/);
+  assert.match(source, /<option value=\{ALL_GATEWAYS_FILTER\}>All Gateways<\/option>/);
+  assert.match(source, /projectMatchesGatewayFilter\(/);
+  assert.match(source, /scratchGroups/);
+  assert.match(newSession, /The selected Gateway creates a private working folder/);
+  assert.match(newSession, /choice\.gateway\.shortId/);
+  assert.match(styles, /\.gateway-filter-control\s*\{/);
   assert.match(
     styles,
     /\.project-chevron\.expanded svg\s*\{\s*transform:\s*rotate\(90deg\)/,
@@ -276,10 +285,19 @@ test("ships a complete installable offline shell", async () => {
     /moveSessionMessageHistory\(scope, localSessionId, remoteSessionId\)[\s\S]*?\.then\(\(\) => \{[\s\S]*?removeOptimisticSession\(localSessionId\);[\s\S]*?flushQueuedSessionMessages\(/,
     "queued history must migrate durably before the optimistic recovery marker is cleared and sending starts",
   );
-  assert.match(source, /Waiting for session creation/);
+  assert.match(messageDelivery, /Waiting for session creation/);
+  assert.match(messageDelivery, /Message sent successfully/);
+  assert.match(messageDelivery, /Agent received and started/);
   assert.match(source, /WAITING_AGENT_ACTIVITY/);
+  assert.match(source, /aria-keyshortcuts="Control\+Enter Meta\+Enter"/);
+  assert.match(source, /event\.ctrlKey \|\| event\.metaKey/);
+  assert.match(source, /Enter for new line · Ctrl\/⌘ Enter to send/);
+  assert.match(source, /resizeComposerTextarea\(composerTextareaRef\.current\)/);
+  assert.match(source, /const contentHeight = textarea\.scrollHeight/);
   assert.match(styles, /\.optimistic-session-card\s*\{/);
   assert.match(styles, /\.delivery-indicator\.queued\s*\{/);
+  assert.match(styles, /\.delivery-indicator\.received\s*\{/);
+  assert.match(styles, /\.user-bubble p\s*\{[\s\S]*?white-space:\s*pre-wrap/);
   assert.match(history, /reconcileMessageHistory/);
   assert.match(history, /\["scope", "sessionId", "timestamp", "id"\]/);
   assert.match(
@@ -295,6 +313,10 @@ test("ships a complete installable offline shell", async () => {
     /@media \(max-width: 900px\)[\s\S]*?\.composer textarea,[\s\S]*?font-size: 16px/,
   );
   assert.match(styles, /\.composer textarea \{[\s\S]*?field-sizing: content/);
+  assert.match(
+    styles,
+    /\.composer textarea \{[\s\S]*?max-height:\s*min\(36vh, 240px\)/,
+  );
   assert.match(styles, /\.mobile-back \{[\s\S]*?width: 44px;[\s\S]*?min-width: 44px/);
   assert.doesNotMatch(
     styles,
@@ -404,7 +426,9 @@ test("ships a complete installable offline shell", async () => {
     styles,
     /@media \(min-width: 901px\)[\s\S]*?\.composer\s*\{[\s\S]*?min-height:\s*82px/,
   );
-  assert.match(source, /inferredCompletedTurnResultIds/);
+  assert.match(source, /completedTurnPresentation/);
+  assert.match(source, /className={`turn-process-disclosure/);
+  assert.match(source, /<TurnResultState outcome={result\.outcome} \/>/);
   assert.match(source, /className=\{`message-row user-row turn-prompt/);
   assert.match(source, /turnPresentationClass/);
   assert.match(source, /className="activity-copy"/);
@@ -415,7 +439,9 @@ test("ships a complete installable offline shell", async () => {
   );
   assert.match(source, /aria-label=\{`\$\{session\.title\}\. \$\{statusSummary\}/);
   assert.match(source, /title=\{`\$\{session\.title\} · \$\{statusSummary\}`\}/);
-  assert.match(source, /title=\{completionLabel\}/);
+  assert.match(source, /const showStatusSummary =/);
+  assert.match(source, /\{showStatusSummary && \(\s*<span className="session-status-summary">/);
+  assert.doesNotMatch(source, /TurnResultContext/);
   assert.match(
     styles,
     /@media \(max-width: 900px\)[\s\S]*?\.new-session-dialog > header\s*\{[\s\S]*?position:\s*sticky;[\s\S]*?top:\s*0/,
@@ -836,11 +862,25 @@ test("pairs a Gateway without exposing Matrix fingerprints and signs strict comm
     app.indexOf("async function createProject"),
     app.indexOf("async function createSession"),
   );
+  assert.ok(
+    projectCreation.indexOf("setNewProjectOpen(false)") <
+      projectCreation.indexOf("await sendRealCommand"),
+    "project creation should leave the modal before waiting on secure transport",
+  );
+  assert.match(projectCreation, /continuePendingProjectCreate\(connection, sent\)/);
+  assert.match(projectCreation, /autoRetryRevisionConflict:\s*true/);
   assert.match(
     projectCreation,
-    /waitForCommandCompletion\([\s\S]*sent\.completion,[\s\S]*PROJECT_CREATE_RESULT_TIMEOUT_MS/,
+    /CommandRevisionConflictError[\s\S]*CommandReviewRequiredError[\s\S]*holdProjectCreateForConflictReview/,
   );
-  assert.match(projectCreation, /releaseCommand\(completedCommandId\)/);
+  assert.match(
+    app,
+    /function continuePendingProjectCreate[\s\S]*waitForCommandCompletion\([\s\S]*sent\.completion,[\s\S]*PROJECT_CREATE_RESULT_TIMEOUT_MS/,
+  );
+  assert.match(
+    app,
+    /async function consumeProjectCreateCompletion[\s\S]*releaseCommand\(commandId\)/,
+  );
   assert.match(
     app,
     /waitForCommandCompletion\([\s\S]*sent\.completion,[\s\S]*PROVIDER_HISTORY_RESULT_TIMEOUT_MS/,

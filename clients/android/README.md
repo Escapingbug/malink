@@ -23,6 +23,10 @@ one identity from being driven by both transports.
 - The service is `START_STICKY`, restores after reboot when persistent
   connection is enabled, and stays alive when the Activity/WebView is closed or
   replaced.
+- The service never holds a process-lifetime CPU wake lock. Matrix long polls
+  release immediately for new events, use a longer idle timeout, and retry with
+  bounded exponential backoff plus jitter so a sleeping or offline phone does
+  not enter a radio/CPU retry storm.
 - A visible ongoing `remoteMessaging` notification is mandatory. There is no
   battery-saving or connection-mode selector. Refusing notification permission
   blocks native connection startup with a visible explanation.

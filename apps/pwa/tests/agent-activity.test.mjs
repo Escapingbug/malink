@@ -90,7 +90,7 @@ test("keeps the delivery-to-execution gap explicit for MLP/3 turns", () => {
     reduceAgentActivity(STARTING_AGENT_ACTIVITY, {
       type: "assistant.message",
     }),
-    null,
+    WORKING_AGENT_ACTIVITY,
   );
   assert.equal(
     reduceAgentActivity(WORKING_AGENT_ACTIVITY, {
@@ -179,14 +179,20 @@ test("only live events for the selected session may drive activity", () => {
   );
 });
 
-test("visible tools replace activity while permissions provide useful detail", () => {
+test("visible tools keep the active turn visible while permissions provide useful detail", () => {
   assert.equal(
     reduceAgentActivity(STARTING_AGENT_ACTIVITY, {
       kind: "message",
       operation_id: "tool-message-1",
       ui: { kind: "tool_group" },
     }),
-    null,
+    WORKING_AGENT_ACTIVITY,
+  );
+  assert.equal(
+    reduceAgentActivity(WAITING_AGENT_ACTIVITY, {
+      type: "tool.activity",
+    }),
+    WORKING_AGENT_ACTIVITY,
   );
   assert.deepEqual(
     reduceAgentActivity(WORKING_AGENT_ACTIVITY, {
@@ -202,11 +208,18 @@ test("visible tools replace activity while permissions provide useful detail", (
   );
 });
 
-test("a visible reply clears transient activity", () => {
+test("a visible reply stays working until the turn terminates", () => {
   assert.equal(
     reduceAgentActivity(WORKING_AGENT_ACTIVITY, {
       kind: "message",
       operation_id: "message-1",
+    }),
+    WORKING_AGENT_ACTIVITY,
+  );
+  assert.equal(
+    reduceAgentActivity(WORKING_AGENT_ACTIVITY, {
+      type: "turn.completed",
+      turnId: "turn-1",
     }),
     null,
   );
