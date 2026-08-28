@@ -35,6 +35,7 @@ import {
   type GeneratedGatewayEnrollment,
 } from "./GatewayEnrollmentPanel";
 import { gatewayProjectOwner } from "./projectCatalog";
+import { injectedNativeBridgePort } from "./client/native/NativeRpcBridge";
 
 type Props = {
   open: boolean;
@@ -176,6 +177,7 @@ function MatrixSettingsDialog({
     status === "connected" ||
     status === "securing" ||
     status === "reconnecting";
+  const nativeHostDetected = injectedNativeBridgePort() !== null;
   const actionBusy =
     pairingBusy ||
     invitationBusy ||
@@ -757,7 +759,7 @@ function MatrixSettingsDialog({
                 <button type="button" onClick={onExportDiagnostics}>
                   Export diagnostics
                 </button>
-                {nativeRuntime && (
+                {nativeHostDetected && (
                   <button
                     type="button"
                     onClick={() => {

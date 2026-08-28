@@ -279,12 +279,19 @@ export type PublicMatrixSession = {
   userId: string;
   matrixDeviceId: string;
   roomBinding: MatrixRoomBinding;
+  /** v2 exposes every native-owned project binding to a newly loaded PWA origin. */
+  roomBindings?: MatrixRoomBinding[];
 };
 
 export type ClientBootstrapResult = {
   deviceId: string;
   session: PublicMatrixSession;
   snapshot: ClientSnapshot;
+};
+
+export type ClientSessionResult = {
+  /** Null means Android has not established a native Matrix session yet. */
+  session: PublicMatrixSession | null;
 };
 
 export type ClientDisconnectResult = {
@@ -521,6 +528,7 @@ export type NativeUpdateStatus = {
 export const REQUEST_METHODS = [
   "malink.bridge.hello",
   "malink.client.start",
+  "malink.client.session",
   "malink.client.bootstrap",
   "malink.matrix.loginToken",
   "malink.client.snapshot",
@@ -591,6 +599,7 @@ export type MatrixLoginTokenResult =
 export type BridgeMethodParams = {
   "malink.bridge.hello": HelloParams;
   "malink.client.start": IdempotentMutationParams;
+  "malink.client.session": ContextParams;
   "malink.client.bootstrap": IdempotentMutationParams & {
     homeserver: string;
     expectedUserId: string;
@@ -684,6 +693,7 @@ export type BridgeMethodParams = {
 export type BridgeMethodResults = {
   "malink.bridge.hello": HelloResult;
   "malink.client.start": ClientStartResult;
+  "malink.client.session": ClientSessionResult;
   "malink.client.bootstrap": ClientBootstrapResult;
   "malink.matrix.loginToken": MatrixLoginTokenResult;
   "malink.client.snapshot": ClientSnapshot;

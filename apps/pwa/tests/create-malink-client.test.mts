@@ -14,6 +14,8 @@ import {
   advanceNativeAppUpdate,
   bootstrapNativeMatrixSessionIfAvailable,
   createMalinkClient,
+  nativeMatrixSessionConfig,
+  resumeNativeMatrixSessionIfAvailable,
 } from "../app/client/createMalinkClient.ts";
 import {
   REQUIRED_NATIVE_CAPABILITIES,
@@ -219,6 +221,26 @@ test("consumes a one-time login token only after complete native negotiation", a
   assert.equal(complete.bootstrapToken, "single-use-secret");
 });
 
+test("recovers an existing native session without exporting credentials", async () => {
+  const port = new SessionPort(true);
+  const session = await resumeNativeMatrixSessionIfAvailable({
+    nativePort: () => port,
+    createBridge: (nativePort) => new NativeRpcBridge(nativePort),
+  });
+  assert.ok(session);
+  assert.equal(port.onmessage, null);
+  const recovered = nativeMatrixSessionConfig(session);
+  assert.equal(recovered.accessToken, NATIVE_MANAGED_ACCESS_TOKEN);
+  assert.equal(recovered.roomId, "!room:example.test");
+  assert.doesNotMatch(JSON.stringify(session), /accessToken|privateKey/iu);
+
+  const emptyPort = new SessionPort(false);
+  assert.equal(await resumeNativeMatrixSessionIfAvailable({
+    nativePort: () => emptyPort,
+    createBridge: (nativePort) => new NativeRpcBridge(nativePort),
+  }), null);
+});
+
 function quietHandlers(): MalinkClientHandlers {
   return {
     onMessage() {},
@@ -304,6 +326,47 @@ class BootstrapPort implements NativeBridgePort {
         },
       };
     }
+    queueMicrotask(() => {
+      this.onmessage?.({
+        data: JSON.stringify({ jsonrpc: "2.0", id: request.id, result }),
+      });
+    });
+  }
+}
+
+class SessionPort implements NativeBridgePort {
+  onmessage: NativeBridgePort["onmessage"] = null;
+
+  constructor(private readonly hasSession: boolean) {}
+
+  postMessage(message: string): void {
+    const request = JSON.parse(message) as { id: string; method: string };
+    const binding = nativeBootstrapInput().roomBinding;
+    const result = request.method === "malink.bridge.hello"
+      ? {
+          protocolVersion: 1,
+          bridgeSessionId: "bridge-session-reader-1",
+          native: {
+            runtimeVersion: "1.0.0",
+            runtimeBuild: "android-session-reader",
+            platform: "android",
+          },
+          capabilities: { "matrix.session-bootstrap": { version: 2 } },
+          limits: NATIVE_BRIDGE_LIMITS,
+        }
+      : request.method === "malink.client.session"
+        ? {
+            session: this.hasSession
+              ? {
+                  homeserver: "https://matrix.example.test",
+                  userId: "@device:example.test",
+                  matrixDeviceId: "NATIVE_MATRIX_DEVICE",
+                  roomBinding: binding,
+                  roomBindings: [binding],
+                }
+              : null,
+          }
+        : assert.fail(`Unexpected native method: ${request.method}`);
     queueMicrotask(() => {
       this.onmessage?.({
         data: JSON.stringify({ jsonrpc: "2.0", id: request.id, result }),

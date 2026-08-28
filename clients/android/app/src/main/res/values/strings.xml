@@ -7,6 +7,8 @@
     <string name="notification_runtime_version">%1$s · Background connection service active</string>
     <string name="notification_export_logs">Export logs</string>
     <string name="notification_static_service">Static service</string>
+    <string name="shortcut_static_service_short">PWA address</string>
+    <string name="shortcut_static_service_long">Change Malink PWA address</string>
     <string name="notification_disconnect">Disconnect</string>
     <string name="task_notification_channel_name">Agent task alerts</string>
     <string name="task_notification_channel_description">Sound, vibration, and on-screen alerts when background agent tasks finish</string>

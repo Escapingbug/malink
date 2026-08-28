@@ -19,6 +19,11 @@ import {
 } from "./nativeBackNavigation";
 import { useDialogFocus } from "./dialogFocus";
 import type { ConnectionRepairReason } from "./connectionPresentation";
+import {
+  downloadAuthorizationTransfer,
+  MAX_AUTHORIZATION_TRANSFER_BYTES,
+  parseAuthorizationTransfer,
+} from "./authorizationTransfer";
 
 type Props = {
   preview: PairingPreview | null;
@@ -65,8 +70,11 @@ export function PairingWizard({
   const [pasteBusy, setPasteBusy] = useState(false);
   const [imageScanBusy, setImageScanBusy] = useState(false);
   const [imageScanError, setImageScanError] = useState<string | null>(null);
+  const [authorizationFileBusy, setAuthorizationFileBusy] = useState(false);
+  const [authorizationFileError, setAuthorizationFileError] = useState<string | null>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
+  const authorizationFileInputRef = useRef<HTMLInputElement>(null);
 
   useNativeBackHandler(
     scannerOpen,
@@ -247,6 +255,24 @@ export function PairingWizard({
               )}
               <button
                 type="button"
+                className="paste-button"
+                disabled={shareBusy !== null}
+                onClick={() => {
+                  setShareStatus(null);
+                  try {
+                    downloadAuthorizationTransfer(deviceInvitation);
+                    setShareStatus(
+                      "Authorization file exported. It works once and expires with this invitation.",
+                    );
+                  } catch (error) {
+                    setShareStatus(error instanceof Error ? error.message : String(error));
+                  }
+                }}
+              >
+                Export authorization file
+              </button>
+              <button
+                type="button"
                 className="continue-link-button"
                 onClick={onClearInvitation}
                 disabled={shareBusy !== null}
@@ -413,6 +439,14 @@ export function PairingWizard({
           {pasteBusy ? "Pasting…" : "Paste from clipboard"}
         </button>
         <button
+          className="paste-button"
+          onClick={() => authorizationFileInputRef.current?.click()}
+          disabled={busy || pasteBusy || imageScanBusy || authorizationFileBusy}
+          type="button"
+        >
+          {authorizationFileBusy ? "Importing…" : "Import authorization file"}
+        </button>
+        <button
           className="continue-link-button"
           onClick={() => onLink(link)}
           disabled={!link.trim() || busy || pasteBusy || imageScanBusy}
@@ -424,6 +458,42 @@ export function PairingWizard({
       {clipboardError && (
         <p className="pairing-inline-error" role="alert">
           {clipboardError}
+        </p>
+      )}
+      <input
+        ref={authorizationFileInputRef}
+        type="file"
+        accept=".malink-auth,application/json"
+        hidden
+        disabled={busy || authorizationFileBusy}
+        onChange={(event) => {
+          const input = event.currentTarget;
+          const file = input.files?.[0];
+          input.value = "";
+          if (!file) return;
+          if (file.size > MAX_AUTHORIZATION_TRANSFER_BYTES) {
+            setAuthorizationFileError("The authorization file is too large.");
+            return;
+          }
+          setAuthorizationFileBusy(true);
+          setAuthorizationFileError(null);
+          void file.text()
+            .then((contents) => parseAuthorizationTransfer(contents))
+            .then((invitation) => {
+              setLink(invitation.link);
+              onLink(invitation.link);
+            })
+            .catch((error) => {
+              setAuthorizationFileError(
+                error instanceof Error ? error.message : String(error),
+              );
+            })
+            .finally(() => setAuthorizationFileBusy(false));
+        }}
+      />
+      {authorizationFileError && (
+        <p className="pairing-inline-error" role="alert">
+          {authorizationFileError}
         </p>
       )}
       {busy && (

@@ -23,6 +23,14 @@ The UI must never start a second Matrix client after native ownership has been
 established. Matrix events are persisted before projection, and the UI reads
 only the verified local projection.
 
+On Android, changing the static-service origin does not change authorization:
+the fresh origin discovers the existing native-owned Matrix session without
+receiving its access token or private keys. In a standalone browser, origin
+isolation remains intact. A connected PWA can export a `.malink-auth` file and
+another PWA can import it; the file wraps the same one-use, expiring Gateway
+device invitation used by QR pairing, so the destination creates its own
+device identity and receives no broader operation set than the inviter.
+
 ## Development
 
 From the repository root:

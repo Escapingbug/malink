@@ -12,6 +12,7 @@ import {
   type JsonValue,
   type MatrixGatewayCapabilities,
   type NativeClientRelease,
+  type PairingOperation,
   type ProviderCommand,
   type ProviderSessionEntry,
   type GatewayEnrollmentPending,
@@ -125,6 +126,7 @@ export interface MatrixMlp3GatewayDependencies {
     requestedByDeviceId: string
     commandId: string
     lifetimeMs?: number
+    allowedOperations?: PairingOperation[]
   }) => Promise<{ pairingLink: string; expiresAt: number }>
   createGatewayEnrollmentInvitation?: (input: {
     requestedByDeviceId: string
@@ -1624,12 +1626,20 @@ export class MatrixMlp3GatewayRunner {
     if (!this.dependencies.createDeviceInvitation) {
       throw new Error('This Gateway host does not support device invitations')
     }
+    const trustedDevices = await this.dependencies.listTrustedDevices?.()
+    const requestingDevice = trustedDevices?.find(device => device.deviceId === command.deviceId)
+    if (trustedDevices && !requestingDevice) {
+      throw new Error(`Device ${command.deviceId} is no longer authorized`)
+    }
     const invitation = await this.dependencies.createDeviceInvitation({
       requestedByDeviceId: command.deviceId,
       commandId: command.commandId,
       ...(command.payload.lifetimeMs === undefined
         ? {}
         : { lifetimeMs: command.payload.lifetimeMs }),
+      ...(requestingDevice?.allowedOperations === undefined
+        ? {}
+        : { allowedOperations: requestingDevice.allowedOperations }),
     })
     const event = this.eventFor(project, undefined, command, 'invitation-created', {
       type: 'device.invitation.created',

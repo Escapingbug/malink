@@ -39,6 +39,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
@@ -77,6 +78,8 @@ import id.my.anciety.malink.matrix.MatrixBootstrap
 import id.my.anciety.malink.matrix.PublicMatrixSession
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -101,6 +104,7 @@ class MainActivity : ComponentActivity() {
     private var nativeBackDispatchPending = false
     private var nativeBackDispatchGeneration = 0L
     private val staticServiceStore by lazy { StaticServiceStore(this) }
+    private var pendingStaticServiceTimeout: Job? = null
     private lateinit var trustedWebOrigin: TrustedWebOrigin
     private val diagnostics by lazy { NativeDiagnosticLog.get(this) }
     private val updateManager: NativeUpdateManager? by lazy {
@@ -218,6 +222,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         trustedWebOrigin = TrustedWebOrigin(staticServiceStore.selected)
+        monitorPendingStaticServiceSwitch()
         configureEdgeToEdgeContent()
         diagnostics.record("activity.created")
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -573,20 +578,54 @@ class MainActivity : ComponentActivity() {
                     "the native Matrix session remains on this device.",
             )
             .setPositiveButton("Use service") { _, _ ->
-                if (custom) staticServiceStore.select(endpoint) else staticServiceStore.useOfficial()
-                trustedWebOrigin = TrustedWebOrigin(staticServiceStore.selected)
-                updateManager?.onStaticServiceChanged()
-                lifecycleScope.launch(Dispatchers.IO) {
-                    updateManager?.checkStaticRelease(force = true)
-                }
+                val pending = staticServiceStore.beginSelection(endpoint, custom)
+                trustedWebOrigin = TrustedWebOrigin(pending.endpoint)
+                monitorPendingStaticServiceSwitch(pending.startedAt)
                 diagnostics.record(
-                    "activity.static_service_changed",
+                    "activity.static_service_switch_started",
                     mapOf("source" to if (custom) "custom" else "official"),
                 )
                 replaceWebHostForStaticService()
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun monitorPendingStaticServiceSwitch(expectedStartedAt: Long? = null) {
+        pendingStaticServiceTimeout?.cancel()
+        val pending = staticServiceStore.pending() ?: return
+        if (expectedStartedAt != null && pending.startedAt != expectedStartedAt) return
+        pendingStaticServiceTimeout = lifecycleScope.launch {
+            delay((pending.expiresAt - System.currentTimeMillis()).coerceAtLeast(1L))
+            if (!staticServiceStore.rollbackPending(pending.startedAt)) return@launch
+            trustedWebOrigin = TrustedWebOrigin(staticServiceStore.committed)
+            diagnostics.record(
+                "activity.static_service_switch_rolled_back",
+                mapOf("reason" to "presentation_activation_timeout"),
+            )
+            Toast.makeText(
+                this@MainActivity,
+                "The new PWA did not connect to Android. Restored the previous service.",
+                Toast.LENGTH_LONG,
+            ).show()
+            replaceWebHostForStaticService()
+        }
+    }
+
+    private fun commitPendingStaticServiceSwitch() {
+        val pending = staticServiceStore.pending() ?: return
+        if (!staticServiceStore.commitPending(pending.startedAt)) return
+        pendingStaticServiceTimeout?.cancel()
+        pendingStaticServiceTimeout = null
+        trustedWebOrigin = TrustedWebOrigin(staticServiceStore.committed)
+        updateManager?.onStaticServiceChanged()
+        lifecycleScope.launch(Dispatchers.IO) {
+            updateManager?.checkStaticRelease(force = true)
+        }
+        diagnostics.record(
+            "activity.static_service_switch_committed",
+            mapOf("source" to if (pending.usesCustom) "custom" else "official"),
+        )
     }
 
     private fun replaceWebHostForStaticService() {
@@ -1091,6 +1130,14 @@ class MainActivity : ComponentActivity() {
         override suspend fun bootstrap(
             input: MatrixBootstrap,
         ): Pair<PublicMatrixSession, ClientSnapshot> = awaitServiceBinder().bootstrap(input)
+
+        override suspend fun publicMatrixSession(): PublicMatrixSession? =
+            client().publicMatrixSession()
+
+        override suspend fun onPresentationActivated() =
+            withContext(Dispatchers.Main.immediate) {
+                commitPendingStaticServiceSwitch()
+            }
 
         override suspend fun completePairing(
             pairingId: String,

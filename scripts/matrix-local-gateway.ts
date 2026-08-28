@@ -588,7 +588,12 @@ runner = new MatrixMlp3GatewayRunner(config, {
         if (local?.workspaceGrant) return workspaceAuthorization.isActive(deviceId)
         return local?.status === 'active' || await workspaceAuthorization.isActive(deviceId)
     },
-    createDeviceInvitation: async ({ requestedByDeviceId, commandId, lifetimeMs }) => {
+    createDeviceInvitation: async ({
+        requestedByDeviceId,
+        commandId,
+        lifetimeMs,
+        allowedOperations,
+    }) => {
         const created = await invitationCoordinator.create({
             source: {
                 kind: 'paired-device',
@@ -597,6 +602,7 @@ runner = new MatrixMlp3GatewayRunner(config, {
             },
             matrixLogin: 'disabled',
             ...(lifetimeMs === undefined ? {} : { lifetimeMs }),
+            ...(allowedOperations === undefined ? {} : { allowedOperations }),
         })
         process.stdout.write(
             `Device ${requestedByDeviceId} authorized a new pairing invitation.\n`,

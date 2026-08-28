@@ -397,6 +397,8 @@ class NativeClientRuntime(
 
     fun snapshot(): ClientSnapshot = eventHub.snapshot()
 
+    fun publicMatrixSession(): PublicMatrixSession? = matrix.publicSession()
+
     fun trustState(): PublicTrustState = publicTrust()
 
     fun subscribe(

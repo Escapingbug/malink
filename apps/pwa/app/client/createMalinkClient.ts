@@ -3,6 +3,7 @@ import {
   type ClientBootstrapResult,
   type HelloResult,
   type NativeUpdateStatus,
+  type PublicMatrixSession,
 } from "@malink/native-bridge";
 import { MALINK_BUILD_VERSION } from "../buildInfo";
 import { ConnectionFailureError } from "../connectionFailure";
@@ -15,6 +16,7 @@ import {
   nativeCapabilityVersions,
   bootstrapNativeSession,
   createNativeBridgeClient,
+  readNativeMatrixSession,
   type NativeBootstrapInput,
 } from "./native/NativeBridgeClient";
 import {
@@ -200,6 +202,60 @@ export async function bootstrapNativeMatrixSessionIfAvailable(
   } finally {
     bridge.close();
   }
+}
+
+/**
+ * Lets a newly loaded Android WebView origin discover the Matrix session that
+ * already belongs to the native service. No token or private key crosses the
+ * bridge; the returned fields are presentation routing metadata only.
+ */
+export async function resumeNativeMatrixSessionIfAvailable(
+  dependencies: Pick<
+    CreateMalinkClientDependencies,
+    "nativePort" | "createBridge"
+  > = defaultDependencies,
+): Promise<PublicMatrixSession | null> {
+  const port = dependencies.nativePort();
+  if (!port) return null;
+  const bridge = await dependencies.createBridge(port);
+  try {
+    const hello = await bridge.hello({
+      webBuild: MALINK_BUILD_VERSION,
+      requiredCapabilities: [],
+      optionalCapabilities: [
+        ...REQUIRED_NATIVE_CAPABILITIES,
+        ...OPTIONAL_NATIVE_CAPABILITIES,
+      ].map((name) => ({
+        name,
+        versions: nativeCapabilityVersions(name),
+      })),
+    });
+    if (hello.capabilities["matrix.session-bootstrap"]?.version !== 2) {
+      return null;
+    }
+    return await readNativeMatrixSession(bridge);
+  } finally {
+    bridge.close();
+  }
+}
+
+export function nativeMatrixSessionConfig(
+  session: PublicMatrixSession,
+): MatrixConnectionConfig {
+  const binding = session.roomBinding;
+  return {
+    homeserver: session.homeserver,
+    userId: session.userId,
+    accessToken: NATIVE_MANAGED_ACCESS_TOKEN,
+    matrixDeviceId: session.matrixDeviceId,
+    roomId: binding.roomId,
+    gatewayId: binding.gatewayId,
+    gatewayNodeId: binding.gatewayId,
+    conversationId: binding.conversationId,
+    gatewayMatrixUserId: binding.gatewayUserId,
+    gatewayMatrixDeviceId: binding.gatewayDeviceId,
+    gatewayMatrixEd25519: binding.gatewayDeviceEd25519,
+  };
 }
 
 export function isNativeManagedMatrixConfig(

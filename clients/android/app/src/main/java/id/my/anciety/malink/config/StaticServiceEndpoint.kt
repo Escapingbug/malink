@@ -118,6 +118,13 @@ class StaticServiceEndpoint private constructor(
     }
 }
 
+data class PendingStaticServiceSelection(
+    val endpoint: StaticServiceEndpoint,
+    val usesCustom: Boolean,
+    val startedAt: Long,
+    val expiresAt: Long,
+)
+
 class StaticServiceStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
@@ -128,12 +135,15 @@ class StaticServiceStore(context: Context) {
         )
 
     val selected: StaticServiceEndpoint
-        get() {
-            if (!preferences.getBoolean(KEY_USE_CUSTOM, false)) return official
-            return custom ?: official
-        }
+        get() = pending()?.endpoint ?: committed
+
+    val committed: StaticServiceEndpoint
+        get() = if (committedUsesCustom) custom ?: official else official
 
     val usesCustom: Boolean
+        get() = pending()?.usesCustom ?: committedUsesCustom
+
+    private val committedUsesCustom: Boolean
         get() = preferences.getBoolean(KEY_USE_CUSTOM, false) && custom != null
 
     val custom: StaticServiceEndpoint?
@@ -150,20 +160,87 @@ class StaticServiceStore(context: Context) {
             }
         }
 
-    fun select(endpoint: StaticServiceEndpoint) {
-        preferences.edit()
-            .putString(KEY_CUSTOM_BASE_URL, endpoint.baseUrl)
-            .putBoolean(KEY_USE_CUSTOM, true)
-            .apply()
+    fun beginSelection(
+        endpoint: StaticServiceEndpoint,
+        usesCustom: Boolean,
+        now: Long = System.currentTimeMillis(),
+        timeoutMs: Long = SWITCH_CONFIRMATION_TIMEOUT_MS,
+    ): PendingStaticServiceSelection {
+        require(timeoutMs in 1L..MAX_SWITCH_CONFIRMATION_TIMEOUT_MS) {
+            "Static service switch timeout is invalid."
+        }
+        val pending = PendingStaticServiceSelection(
+            endpoint = endpoint,
+            usesCustom = usesCustom,
+            startedAt = now,
+            expiresAt = Math.addExact(now, timeoutMs),
+        )
+        check(preferences.edit()
+            .putString(KEY_PENDING_BASE_URL, endpoint.baseUrl)
+            .putBoolean(KEY_PENDING_USE_CUSTOM, usesCustom)
+            .putLong(KEY_PENDING_STARTED_AT, pending.startedAt)
+            .putLong(KEY_PENDING_EXPIRES_AT, pending.expiresAt)
+            .commit()) { "Could not persist the pending static service switch." }
+        return pending
     }
 
-    fun useOfficial() {
-        preferences.edit().putBoolean(KEY_USE_CUSTOM, false).apply()
+    fun pending(now: Long = System.currentTimeMillis()): PendingStaticServiceSelection? {
+        val baseUrl = preferences.getString(KEY_PENDING_BASE_URL, null) ?: return null
+        val startedAt = preferences.getLong(KEY_PENDING_STARTED_AT, -1L)
+        val expiresAt = preferences.getLong(KEY_PENDING_EXPIRES_AT, -1L)
+        val endpoint = runCatching {
+            StaticServiceEndpoint.parse(baseUrl, BuildConfig.ALLOW_INSECURE_E2E_LOOPBACK)
+        }.getOrNull()
+        if (endpoint == null || startedAt < 0L || expiresAt <= startedAt || now >= expiresAt) {
+            rollbackPending()
+            return null
+        }
+        return PendingStaticServiceSelection(
+            endpoint = endpoint,
+            usesCustom = preferences.getBoolean(KEY_PENDING_USE_CUSTOM, false),
+            startedAt = startedAt,
+            expiresAt = expiresAt,
+        )
     }
 
-    private companion object {
+    fun commitPending(expectedStartedAt: Long? = null): Boolean {
+        val pending = pending() ?: return false
+        if (expectedStartedAt != null && pending.startedAt != expectedStartedAt) return false
+        val editor = preferences.edit()
+        if (pending.usesCustom) {
+            editor
+                .putString(KEY_CUSTOM_BASE_URL, pending.endpoint.baseUrl)
+                .putBoolean(KEY_USE_CUSTOM, true)
+        } else {
+            editor.putBoolean(KEY_USE_CUSTOM, false)
+        }
+        clearPending(editor)
+        return editor.commit()
+    }
+
+    fun rollbackPending(expectedStartedAt: Long? = null): Boolean {
+        if (expectedStartedAt != null) {
+            val currentStartedAt = preferences.getLong(KEY_PENDING_STARTED_AT, -1L)
+            if (currentStartedAt != expectedStartedAt) return false
+        }
+        return clearPending(preferences.edit()).commit()
+    }
+
+    private fun clearPending(editor: android.content.SharedPreferences.Editor) = editor
+        .remove(KEY_PENDING_BASE_URL)
+        .remove(KEY_PENDING_USE_CUSTOM)
+        .remove(KEY_PENDING_STARTED_AT)
+        .remove(KEY_PENDING_EXPIRES_AT)
+
+    companion object {
+        const val SWITCH_CONFIRMATION_TIMEOUT_MS = 30_000L
+        private const val MAX_SWITCH_CONFIRMATION_TIMEOUT_MS = 5 * 60_000L
         const val PREFERENCES = "malink-static-service-v1"
         const val KEY_CUSTOM_BASE_URL = "custom-base-url"
         const val KEY_USE_CUSTOM = "use-custom"
+        const val KEY_PENDING_BASE_URL = "pending-base-url"
+        const val KEY_PENDING_USE_CUSTOM = "pending-use-custom"
+        const val KEY_PENDING_STARTED_AT = "pending-started-at"
+        const val KEY_PENDING_EXPIRES_AT = "pending-expires-at"
     }
 }

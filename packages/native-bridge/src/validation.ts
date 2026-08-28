@@ -416,6 +416,9 @@ function parseMethodResult<M extends RequestMethod>(
     case "malink.client.start":
       result = parseClientStartResult(input);
       break;
+    case "malink.client.session":
+      result = parseClientSessionResult(input);
+      break;
     case "malink.client.bootstrap":
       result = parseClientBootstrapResult(input);
       break;
@@ -593,33 +596,61 @@ function parseClientBootstrapResult(input: unknown): ClientBootstrapResult {
     "client bootstrap result",
   );
   const deviceId = opaqueId(value.deviceId, "bootstrap.deviceId");
-  const sessionValue = strictObject(
-    value.session,
-    ["homeserver", "userId", "matrixDeviceId", "roomBinding"],
-    "bootstrap.session",
-  );
   const snapshot = parseClientSnapshot(value.snapshot);
   if (snapshot.deviceId !== deviceId) {
     invalidParams("Bootstrap result deviceId must match snapshot.deviceId.");
   }
   return {
     deviceId,
-    session: {
-      homeserver: httpsHomeserver(
-        sessionValue.homeserver,
-        "bootstrap.session.homeserver",
-      ),
-      userId: matrixUserId(sessionValue.userId, "bootstrap.session.userId"),
-      matrixDeviceId: opaqueId(
-        sessionValue.matrixDeviceId,
-        "bootstrap.session.matrixDeviceId",
-      ),
-      roomBinding: parseMatrixRoomBinding(
-        sessionValue.roomBinding,
-        "bootstrap.session.roomBinding",
-      ),
-    },
+    session: parsePublicMatrixSession(value.session, "bootstrap.session"),
     snapshot,
+  };
+}
+
+function parseClientSessionResult(input: unknown): import("./types.js").ClientSessionResult {
+  const value = strictObject(input, ["session"], "client session result");
+  return {
+    session: value.session === null
+      ? null
+      : parsePublicMatrixSession(value.session, "client.session"),
+  };
+}
+
+function parsePublicMatrixSession(
+  input: unknown,
+  label: string,
+): import("./types.js").PublicMatrixSession {
+  const value = strictObject(
+    input,
+    ["homeserver", "userId", "matrixDeviceId", "roomBinding", "roomBindings"],
+    label,
+  );
+  const roomBinding = parseMatrixRoomBinding(value.roomBinding, `${label}.roomBinding`);
+  if (value.roomBindings !== undefined && !Array.isArray(value.roomBindings)) {
+    invalidParams(`${label}.roomBindings must be an array.`);
+  }
+  const roomBindings = value.roomBindings === undefined
+    ? undefined
+    : (value.roomBindings as unknown[]).map((binding, index) =>
+        parseMatrixRoomBinding(binding, `${label}.roomBindings[${index}]`));
+  if (roomBindings !== undefined) {
+    if (roomBindings.length === 0 || roomBindings.length > 1_000) {
+      invalidParams(`${label}.roomBindings must contain between 1 and 1000 bindings.`);
+    }
+    if (!roomBindings.some((binding) =>
+      JSON.stringify(binding) === JSON.stringify(roomBinding))) {
+      invalidParams(`${label}.roomBinding must be present in roomBindings.`);
+    }
+    if (new Set(roomBindings.map((binding) => binding.roomId)).size !== roomBindings.length) {
+      invalidParams(`${label}.roomBindings must be unique by room ID.`);
+    }
+  }
+  return {
+    homeserver: httpsHomeserver(value.homeserver, `${label}.homeserver`),
+    userId: matrixUserId(value.userId, `${label}.userId`),
+    matrixDeviceId: opaqueId(value.matrixDeviceId, `${label}.matrixDeviceId`),
+    roomBinding,
+    ...(roomBindings === undefined ? {} : { roomBindings }),
   };
 }
 
@@ -1412,6 +1443,8 @@ function parseMethodParams(method: RequestMethod, input: unknown): JsonObject {
   switch (method) {
     case "malink.client.start":
       return mutationParams(input, []);
+    case "malink.client.session":
+      return paramsWithContext(input, []);
     case "malink.client.bootstrap": {
       const params = mutationParams(input, [
         "homeserver",

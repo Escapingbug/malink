@@ -3,6 +3,7 @@ package id.my.anciety.malink.bridge
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -230,6 +231,9 @@ class BridgeProtocolTest {
             successResult(first).getValue("session").jsonObject
                 .getValue("matrixDeviceId").jsonPrimitive.content,
         )
+        assertFalse(
+            successResult(first).getValue("session").jsonObject.containsKey("roomBindings"),
+        )
 
         val conflict = failure(dispatch(
             dispatcher,
@@ -238,6 +242,49 @@ class BridgeProtocolTest {
         assertEquals(
             "IDEMPOTENCY_CONFLICT",
             conflict.getValue("data").jsonObject.getValue("errorCode").jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `session discovery is v2 gated and returns only public routing metadata`() {
+        val runtime = FakeRuntime()
+        val dispatcher = BridgeDispatcher(runtime, BRIDGE_SESSION_ID)
+        val capabilities = successResult(dispatch(
+            dispatcher,
+            helloRequest(
+                optionalCapabilities =
+                    """[{"name":"matrix.session-bootstrap","versions":[2,1]}]""",
+            ),
+        )).getValue("capabilities").jsonObject
+        assertEquals(
+            2,
+            capabilities.getValue("matrix.session-bootstrap").jsonObject
+                .getValue("version").jsonPrimitive.int,
+        )
+
+        val result = successResult(dispatch(
+            dispatcher,
+            """{"jsonrpc":"2.0","id":"session","method":"malink.client.session","params":{"context":{"bridgeSessionId":"$BRIDGE_SESSION_ID"}}}""",
+        )).getValue("session").jsonObject
+        assertEquals("MATRIX-DEVICE", result.getValue("matrixDeviceId").jsonPrimitive.content)
+        assertEquals(2, result.getValue("roomBindings").jsonArray.size)
+        assertFalse(result.toString().contains("accessToken", ignoreCase = true))
+
+        val v1Dispatcher = BridgeDispatcher(runtime, "bridge-v1")
+        successResult(dispatch(
+            v1Dispatcher,
+            helloRequest(
+                optionalCapabilities =
+                    """[{"name":"matrix.session-bootstrap","versions":[1]}]""",
+            ).replace(BRIDGE_SESSION_ID, "bridge-v1"),
+        ))
+        val rejected = failure(dispatch(
+            v1Dispatcher,
+            """{"jsonrpc":"2.0","id":"session-v1","method":"malink.client.session","params":{"context":{"bridgeSessionId":"bridge-v1"}}}""",
+        ))
+        assertEquals(
+            "CAPABILITY_UNAVAILABLE",
+            rejected.getValue("data").jsonObject.getValue("errorCode").jsonPrimitive.content,
         )
     }
 
@@ -445,6 +492,30 @@ class BridgeProtocolTest {
                 roomBinding = input.roomBinding,
             ) to snapshot()
         }
+
+        override suspend fun publicMatrixSession(): PublicMatrixSession = PublicMatrixSession(
+            homeserver = "https://matrix.example.org",
+            userId = "@alice:example.org",
+            matrixDeviceId = "MATRIX-DEVICE",
+            roomBindings = listOf(
+                MatrixRoomBinding(
+                    roomId = "!room:example.org",
+                    gatewayId = "gateway-1",
+                    conversationId = "conversation-1",
+                    gatewayUserId = "@gateway:example.org",
+                    gatewayDeviceId = "GATEWAY-DEVICE",
+                    gatewayDeviceEd25519 = "A".repeat(43),
+                ),
+                MatrixRoomBinding(
+                    roomId = "!room-two:example.org",
+                    gatewayId = "gateway-1",
+                    conversationId = "conversation-2",
+                    gatewayUserId = "@gateway:example.org",
+                    gatewayDeviceId = "GATEWAY-DEVICE",
+                    gatewayDeviceEd25519 = "A".repeat(43),
+                ),
+            ),
+        )
 
         override suspend fun issueMatrixLoginToken(
             invitationId: String,

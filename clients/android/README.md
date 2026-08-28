@@ -43,7 +43,11 @@ one identity from being driven by both transports.
   HTTPS base URL, including a regional mirror or self-hosted path. A native
   confirmation explains that this origin supplies executable UI code and
   receives the origin-restricted native bridge. If the selected service cannot
-  load, the native recovery screen retains the same setting action.
+  load, the native recovery screen retains the same setting action. A selected
+  address is first stored as a candidate; Android commits it only after the new
+  presentation restores and activates the native projection. Otherwise Android
+  restores the last-known-good address after 30 seconds. The launcher shortcut
+  also opens this setting without depending on a working PWA.
 - Explicit Disconnect finishes the native runtime before stopping the service.
   Remove This Device requires a native confirmation, logs the Matrix device out
   while online, and only then wipes local credentials. A failed remote logout
@@ -95,7 +99,8 @@ Bridge protocol version 1 currently implements:
 - `attachments.chunked`
 - `pairing.native`
 - `trust.native`
-- `matrix.session-bootstrap`
+- `matrix.session-bootstrap` v2 (v2 adds credential-free discovery of an
+  existing native-owned Matrix session for a newly loaded Web origin)
 - `background.foreground-service`
 
 The bridge has strict schemas, a 512 KiB RPC envelope limit, 256 KiB event
@@ -138,7 +143,9 @@ translate into a pairing cancellation.
   TLS/certificate errors fail closed.
 - Changing the static service rebuilds the WebView and bridge allowlist before
   loading the new base URL. Browser storage remains isolated by Web origin;
-  native Matrix credentials and private keys never move to JavaScript.
+  native Matrix credentials and private keys never move to JavaScript. The new
+  origin recovers only public routing metadata, then reads trust and Workspace
+  state from the native projection.
 
 ## Static APK updates
 

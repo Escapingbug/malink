@@ -40,7 +40,7 @@ class NativeUpdateManager private constructor(context: Context) {
         val now = System.currentTimeMillis()
         if (!staticReleaseCheckDue(now, store.lastStaticCheckAt, force)) return status
         store.lastStaticCheckAt = now
-        val endpoint = staticServices.selected
+        val endpoint = staticServices.committed
         diagnostics.record("update.static_check_started")
         return try {
             val manifest = http.readText(
@@ -390,7 +390,7 @@ class NativeUpdateManager private constructor(context: Context) {
         release.copy(encoded = "")
 
     private fun releaseParser(): NativeClientReleaseParser = NativeClientReleaseParser(
-        staticService = staticServices.selected,
+        staticService = staticServices.committed,
         allowLoopbackHttp = BuildConfig.ALLOW_INSECURE_E2E_LOOPBACK,
     )
 

@@ -13,6 +13,7 @@ import {
   type HelloResult,
   type JsonObject,
   type NativeUpdateStatus,
+  type PublicMatrixSession,
 } from "@malink/native-bridge";
 import type { MalinkAttachment, CommandPayload } from "@malink/protocol";
 import {
@@ -68,6 +69,7 @@ export function nativeCapabilityVersions(
   // APK can return an actionable update requirement instead of failing hello.
   if (name === "commands.durable") return [4, 3, 2, 1];
   if (name === "history.page") return [2, 1];
+  if (name === "matrix.session-bootstrap") return [2, 1];
   return [1];
 }
 
@@ -75,8 +77,18 @@ export function hasCurrentNativeCapability(
   hello: HelloResult,
   name: (typeof REQUIRED_NATIVE_CAPABILITIES)[number],
 ): boolean {
+  if (name === "matrix.session-bootstrap") {
+    // v2 adds origin-independent session discovery. v1 remains sufficient for
+    // an already configured Web origin during a staged PWA/APK rollout.
+    const version = hello.capabilities[name]?.version;
+    return version === 1 || version === 2;
+  }
   return hello.capabilities[name]?.version ===
-    (name === "commands.durable" ? 4 : name === "history.page" ? 2 : 1);
+    (name === "commands.durable"
+      ? 4
+      : name === "history.page"
+        ? 2
+        : 1);
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 24 * 60 * 60_000;
@@ -889,6 +901,15 @@ export async function bootstrapNativeSession(
     idempotencyKey: crypto.randomUUID(),
     ...input,
   });
+}
+
+export async function readNativeMatrixSession(
+  bridge: NativeRpcBridge,
+): Promise<PublicMatrixSession | null> {
+  const result = await bridge.request("malink.client.session", {
+    context: bridge.context(),
+  });
+  return result.session;
 }
 
 export function assertFullNativeCapabilities(hello: HelloResult): void {

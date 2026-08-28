@@ -300,6 +300,8 @@ import {
   bootstrapNativeMatrixSessionIfAvailable,
   createMalinkClient,
   isNativeManagedMatrixConfig,
+  nativeMatrixSessionConfig,
+  resumeNativeMatrixSessionIfAvailable,
 } from "./client/createMalinkClient";
 import { publicTrustFromWeb } from "./client/web/WebMalinkClient";
 import {
@@ -2811,6 +2813,16 @@ function MalinkAppRuntime() {
       // a stored native session at the same time would attach a second Web
       // client before the one-time Matrix bootstrap can acquire the port.
       if (deferStoredStartupForPairing) return;
+      const nativeSession = await resumeNativeMatrixSessionIfAvailable();
+      if (nativeSession) {
+        const nativeConfig = nativeMatrixSessionConfig(nativeSession);
+        clearPendingPairing();
+        setMatrixConfig(nativeConfig);
+        saveMatrixConfig(nativeConfig);
+        setSettingsOpen(false);
+        await connectMalinkClient(nativeConfig, true, true);
+        return;
+      }
       const identity = await getOrCreateDeviceIdentity();
       const trust = await loadTrustedGateway(identity);
       const savedTrusts = await loadTrustedGateways(identity);

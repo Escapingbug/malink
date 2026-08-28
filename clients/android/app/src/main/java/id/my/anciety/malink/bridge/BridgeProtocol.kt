@@ -133,6 +133,7 @@ object BridgeProtocol {
     private val methods = setOf(
         "malink.bridge.hello",
         "malink.client.start",
+        "malink.client.session",
         "malink.client.bootstrap",
         "malink.matrix.loginToken",
         "malink.client.snapshot",
@@ -302,7 +303,11 @@ interface BridgeRuntime {
 
     suspend fun start(): ClientSnapshot
 
+    suspend fun publicMatrixSession(): PublicMatrixSession? = client().publicMatrixSession()
+
     suspend fun bootstrap(input: MatrixBootstrap): Pair<PublicMatrixSession, ClientSnapshot>
+
+    suspend fun onPresentationActivated() = Unit
 
     suspend fun issueMatrixLoginToken(
         invitationId: String,
@@ -362,6 +367,19 @@ class BridgeDispatcher(
                     }
                 }
             }
+            "malink.client.session" -> {
+                requireContext(request.params, mutation = false)
+                if (negotiatedCapabilities[MATRIX_BOOTSTRAP_CAPABILITY] != 2) {
+                    throw BridgeDispatchException(
+                        BridgeError.CAPABILITY_UNAVAILABLE,
+                        "Native Matrix session discovery was not negotiated.",
+                        userAction = "update_native",
+                    )
+                }
+                buildJsonObject {
+                    put("session", runtime.publicMatrixSession()?.toJson(includeRoomBindings = true) ?: JsonNull)
+                }
+            }
             "malink.client.bootstrap" -> {
                 requireContext(
                     request.params,
@@ -386,7 +404,13 @@ class BridgeDispatcher(
                     val (session, snapshot) = runtime.bootstrap(bootstrap)
                     buildJsonObject {
                         put("deviceId", runtime.nativeDeviceId)
-                        put("session", session.toJson())
+                        put(
+                            "session",
+                            session.toJson(
+                                includeRoomBindings =
+                                    negotiatedCapabilities[MATRIX_BOOTSTRAP_CAPABILITY] == 2,
+                            ),
+                        )
                         put("snapshot", PublicClientJson.encodeSnapshot(snapshot))
                     }
                 }
@@ -479,10 +503,12 @@ class BridgeDispatcher(
                     mutation = false,
                     requiredExtra = setOf("subscriptionId", "throughCursor"),
                 )
-                cursorResultToJson(runtime.client().activate(
+                val activated = runtime.client().activate(
                     requiredString(request.params, "subscriptionId", 512),
                     requiredString(request.params, "throughCursor", 512),
-                ))
+                )
+                runtime.onPresentationActivated()
+                cursorResultToJson(activated)
             }
             "malink.events.ack" -> {
                 requireContext(
@@ -1366,6 +1392,7 @@ class BridgeDispatcher(
         fun supportedCapabilityVersions(name: String): Set<Int> = when {
             name == "history.page" -> setOf(1, 2)
             name == "commands.durable" -> setOf(1, 2, 3, 4)
+            name == MATRIX_BOOTSTRAP_CAPABILITY -> setOf(1, 2)
             name in SUPPORTED_CAPABILITIES -> setOf(1)
             else -> emptySet()
         }
@@ -1391,7 +1418,7 @@ class BridgeDispatcher(
     )
 }
 
-private fun PublicMatrixSession.toJson(): JsonObject = buildJsonObject {
+private fun PublicMatrixSession.toJson(includeRoomBindings: Boolean): JsonObject = buildJsonObject {
     put("homeserver", homeserver)
     put("userId", userId)
     put("matrixDeviceId", matrixDeviceId)
@@ -1403,6 +1430,20 @@ private fun PublicMatrixSession.toJson(): JsonObject = buildJsonObject {
         put("gatewayDeviceId", roomBinding.gatewayDeviceId)
         put("gatewayDeviceEd25519", roomBinding.gatewayDeviceEd25519)
     })
+    if (includeRoomBindings) {
+        put("roomBindings", buildJsonArray {
+            roomBindings.forEach { binding ->
+                add(buildJsonObject {
+                    put("roomId", binding.roomId)
+                    put("gatewayId", binding.gatewayId)
+                    put("conversationId", binding.conversationId)
+                    put("gatewayUserId", binding.gatewayUserId)
+                    put("gatewayDeviceId", binding.gatewayDeviceId)
+                    put("gatewayDeviceEd25519", binding.gatewayDeviceEd25519)
+                })
+            }
+        })
+    }
 }
 
 private fun matrixLoginTokenResultToJson(value: MatrixLoginTokenIssueResult): JsonObject =

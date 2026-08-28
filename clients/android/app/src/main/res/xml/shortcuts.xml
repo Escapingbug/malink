@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="static_service_settings"
+        android:enabled="true"
+        android:icon="@drawable/ic_malink_launcher"
+        android:shortcutShortLabel="@string/shortcut_static_service_short"
+        android:shortcutLongLabel="@string/shortcut_static_service_long">
+        <intent
+            android:action="id.my.anciety.malink.action.STATIC_SERVICE_SETTINGS"
+            android:targetPackage="id.my.anciety.malink"
+            android:targetClass="id.my.anciety.malink.web.MainActivity" />
+    </shortcut>
+</shortcuts>
