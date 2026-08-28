@@ -133,6 +133,20 @@ describe('Gateway local admin', () => {
       eventCounts: { session_init: 1, text: 1, result: 1 },
       truncated: false,
     }))
+    const preflightFilesystem = vi.fn(async (request: {
+      paths?: string[]
+      allowCreate?: boolean
+      timeoutMs?: number
+    }) => ({
+      mode: 'gateway-host' as const,
+      ready: true,
+      results: (request.paths ?? []).map(path => ({
+        version: 1 as const,
+        path,
+        state: 'ready' as const,
+        exists: true,
+      })),
+    }))
     const renameGateway = vi.fn(async (nextGatewayName: string) => {
       gatewayName = nextGatewayName
     })
@@ -150,6 +164,7 @@ describe('Gateway local admin', () => {
       sendSessionFile,
       publishNativeClientRelease,
       runProviderPrompt,
+      preflightFilesystem,
       now: () => now,
     })
     servers.push(server)
@@ -165,6 +180,25 @@ describe('Gateway local admin', () => {
       state: 'running',
       activeDeviceCount: 0,
       openInvitationCount: 0,
+    })
+    await expect(client.preflightFilesystem({
+      paths: ['/Users/alice/Documents/project'],
+      allowCreate: false,
+      timeoutMs: 1_000,
+    })).resolves.toEqual({
+      mode: 'gateway-host',
+      ready: true,
+      results: [{
+        version: 1,
+        path: '/Users/alice/Documents/project',
+        state: 'ready',
+        exists: true,
+      }],
+    })
+    expect(preflightFilesystem).toHaveBeenCalledWith({
+      paths: ['/Users/alice/Documents/project'],
+      allowCreate: false,
+      timeoutMs: 1_000,
     })
     await expect(client.renameGateway('Office Mac')).resolves.toEqual({
       workspaceId: 'gateway-one',

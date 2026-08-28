@@ -22,6 +22,37 @@ describe('macOS Matrix Gateway release activation', () => {
         }
     })
 
+    it('preserves a stable Gateway Host while switching the current entrypoint', async () => {
+        const root = await releaseFixture()
+        try {
+            const oldRelease = join(root, 'releases', 'old')
+            const nextRelease = join(root, 'releases', 'next')
+            await symlink(oldRelease, join(root, 'current'))
+            const plistPath = join(root, 'gateway.plist')
+            const host = join(root, 'Malink Gateway Host.app', 'Contents', 'MacOS', 'MalinkGatewayHost')
+            const plist = `<string>${host}</string>\n<string>${join(root, 'current', 'ops', 'matrix-local-gateway.js')}</string>`
+            await writeFile(plistPath, plist)
+            const restart = vi.fn(async () => undefined)
+
+            await activateMacosGatewayRelease({
+                releaseDirectory: nextRelease,
+                installRoot: root,
+                launchAgentPath: plistPath,
+                serviceLabel: 'com.malink.test-gateway',
+                adminSocketPath: join(root, 'admin.sock'),
+            }, {
+                restart,
+                healthCheck: async () => undefined,
+            })
+
+            expect(await readlink(join(root, 'current'))).toBe(nextRelease)
+            expect(await readFile(plistPath, 'utf8')).toBe(plist)
+            expect(restart).toHaveBeenCalledWith(false)
+        } finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    })
+
     it('migrates a direct-release LaunchAgent to the stable current link', async () => {
         const root = await releaseFixture()
         try {

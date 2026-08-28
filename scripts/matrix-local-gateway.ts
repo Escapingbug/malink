@@ -65,6 +65,10 @@ import type {
 import { createSessionExtensionRegistryFromEnvironment } from '../src/runtime/sessionExtensionConfig.js'
 import { UnixSocketPrivilegeExecutor } from '../src/privilege/index.js'
 import { GatewayUpdateSupervisorClient } from '../src/ops/gatewayUpdateSupervisorServer.js'
+import {
+    assertLocalDirectoryAccess,
+    probeLocalDirectoryAccess,
+} from '../src/ops/localFilesystemAccess.js'
 
 interface LocalMatrixFixture {
     homeserver: string
@@ -121,6 +125,10 @@ const gatewayUpdateSupervisor = process.env.MALINK_GATEWAY_UPDATE_SOCKET?.trim()
     ? new GatewayUpdateSupervisorClient(process.env.MALINK_GATEWAY_UPDATE_SOCKET.trim())
     : undefined
 const gatewayBuildId = await currentGatewayBuildId()
+const localFilesystemProbeTimeoutMs = positiveDurationFromEnvironment(
+    'MALINK_LOCAL_FILESYSTEM_PROBE_TIMEOUT_MS',
+    10_000,
+)
 const runId = Date.now().toString(36).toUpperCase()
 const loginUser = process.env.MALINK_MATRIX_GATEWAY_USER ?? 'gateway'
 const gatewayMatrixDeviceId = `MALINK_GATEWAY_${runId}`
@@ -559,6 +567,16 @@ runner = new MatrixMlp3GatewayRunner(config, {
     ...(deterministicE2eProvider
         ? { providerFactory: () => e2eProvider(providerName) }
         : {}),
+    ...(process.platform === 'darwin'
+        ? {
+            assertDirectoryAccess: async ({ cwd: directory }: { cwd: string }) => {
+                await assertLocalDirectoryAccess(directory, {
+                    allowCreate: false,
+                    timeoutMs: localFilesystemProbeTimeoutMs,
+                })
+            },
+        }
+        : {}),
     listTrustedDevices: async () =>
         deduplicateTrustedDevices([
             ...(await registry.listActive()).map(record =>
@@ -690,17 +708,25 @@ runner = new MatrixMlp3GatewayRunner(config, {
         if (catalogProjects.length >= 256) {
             throw new Error('This Gateway already has the maximum of 256 projects')
         }
-        try {
-            const details = await stat(projectCwd)
-            if (!details.isDirectory()) {
-                throw new Error(`Project working directory is not a directory: ${projectCwd}`)
+        if (process.platform === 'darwin') {
+            const probe = await assertLocalDirectoryAccess(projectCwd, {
+                allowCreate: input.createDirectory !== false,
+                timeoutMs: localFilesystemProbeTimeoutMs,
+            })
+            if (!probe.exists) await mkdir(projectCwd, { recursive: true, mode: 0o700 })
+        } else {
+            try {
+                const details = await stat(projectCwd)
+                if (!details.isDirectory()) {
+                    throw new Error(`Project working directory is not a directory: ${projectCwd}`)
+                }
+            } catch (error) {
+                if (!isMissingFile(error)) throw error
+                if (input.createDirectory === false) {
+                    throw new Error(`Project working directory does not exist: ${projectCwd}`)
+                }
+                await mkdir(projectCwd, { recursive: true, mode: 0o700 })
             }
-        } catch (error) {
-            if (!isMissingFile(error)) throw error
-            if (input.createDirectory === false) {
-                throw new Error(`Project working directory does not exist: ${projectCwd}`)
-            }
-            await mkdir(projectCwd, { recursive: true, mode: 0o700 })
         }
         const selectedProvider = input.provider ?? input.sourceRoom.providerName
         if (!getProvider(selectedProvider)) {
@@ -821,6 +847,31 @@ const adminServer = await startGatewayAdminServer({
         { provider: providerName, cwd },
         signal,
     ),
+    preflightFilesystem: async request => {
+        const results = []
+        const paths = request.paths ?? [...new Set(
+            (await projectCatalog.list()).map(project => project.cwd),
+        )]
+        for (const path of paths) {
+            const result = await probeLocalDirectoryAccess(path, {
+                allowCreate: request.allowCreate ?? false,
+                timeoutMs: request.timeoutMs ?? localFilesystemProbeTimeoutMs,
+            })
+            results.push({
+                path: result.path,
+                state: result.state,
+                ...(result.exists === undefined ? {} : { exists: result.exists }),
+                ...(result.code ? { code: result.code } : {}),
+                ...(result.detail ? { detail: result.detail } : {}),
+            })
+            if (result.state === 'denied' || result.state === 'timeout') break
+        }
+        return {
+            mode: 'gateway-host' as const,
+            ready: results.every(result => result.state === 'ready'),
+            results,
+        }
+    },
     ...(privilegeExecutor
         ? {
             onPrivilegedExecution: async ({ sessionId, ...request }) =>

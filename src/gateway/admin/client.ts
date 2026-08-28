@@ -17,6 +17,8 @@ import type {
   GatewayProviderPromptResponse,
   PublishNativeClientReleaseRequest,
   PublishNativeClientReleaseResponse,
+  GatewayFilesystemPreflightRequest,
+  GatewayFilesystemPreflightResponse,
   RenameGatewayRequest,
   RevokeDeviceRequest,
 } from './types.js'
@@ -128,6 +130,12 @@ export class GatewayAdminClient {
     input: GatewayProviderPromptRequest,
   ): Promise<GatewayProviderPromptResponse> {
     return this.request('POST', '/v1/provider-prompts', input)
+  }
+
+  preflightFilesystem(
+    input: GatewayFilesystemPreflightRequest,
+  ): Promise<GatewayFilesystemPreflightResponse> {
+    return this.request('POST', '/v1/filesystem-preflight', input)
   }
 
   private request<T>(

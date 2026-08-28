@@ -17,6 +17,7 @@ import {
   sendSessionFileRequestSchema,
   gatewayPrivilegedExecutionRequestSchema,
   gatewayProviderPromptRequestSchema,
+  gatewayFilesystemPreflightRequestSchema,
   publishNativeClientReleaseRequestSchema,
   renameGatewayRequestSchema,
   revokeDeviceRequestSchema,
@@ -35,6 +36,8 @@ import {
   type GatewayProviderPromptResponse,
   type PublishNativeClientReleaseRequest,
   type PublishNativeClientReleaseResponse,
+  type GatewayFilesystemPreflightRequest,
+  type GatewayFilesystemPreflightResponse,
 } from './types.js'
 
 const MAX_BODY_BYTES = 32 * 1024
@@ -84,6 +87,9 @@ export interface GatewayAdminServerOptions {
     request: GatewayProviderPromptRequest,
     signal: AbortSignal,
   ) => Promise<GatewayProviderPromptResponse>
+  preflightFilesystem?: (
+    request: GatewayFilesystemPreflightRequest,
+  ) => Promise<GatewayFilesystemPreflightResponse>
   now?: () => number
   rateLimitPerMinute?: number
   onLog?: (message: string) => void
@@ -287,6 +293,25 @@ export async function startGatewayAdminServer(
           + `${result.release.versionCode} projects=${result.projectCount}`,
         )
         sendJson(response, result.changed ? 201 : 200, result)
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/filesystem-preflight') {
+        if (!options.preflightFilesystem) {
+          throw new AdminHttpError(
+            503,
+            'filesystem_preflight_unavailable',
+            'Gateway filesystem preflight is unavailable',
+          )
+        }
+        const data = gatewayFilesystemPreflightRequestSchema.parse(
+          await readJsonBody(request),
+        )
+        const result = await options.preflightFilesystem(data)
+        options.onLog?.(
+          `[gateway-admin] filesystem preflight ${result.ready ? 'ready' : 'blocked'} `
+          + `paths=${result.results.length}`,
+        )
+        sendJson(response, 200, result)
         return
       }
       if (request.method === 'POST' && path === '/v1/device-invitations') {

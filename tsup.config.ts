@@ -10,6 +10,7 @@ export default defineConfig({
     'privilege/helperMain': 'src/privilege/helperMain.ts',
     'ops/gatewayUpdateSupervisorMain': 'src/ops/gatewayUpdateSupervisorMain.ts',
     'ops/gatewayAgentUpdateCli': 'src/ops/gatewayAgentUpdateCli.ts',
+    'ops/macosGatewayHostDoctor': 'scripts/macos-gateway-host-doctor.ts',
     'ops/matrix-local-gateway': 'scripts/matrix-local-gateway.ts',
   },
   format: ['esm'],

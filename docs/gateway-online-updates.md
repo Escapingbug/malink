@@ -57,8 +57,11 @@ The normal apply mode is `when_idle`:
   committed, and commands are journaled before execution.
 - Apply closes the business-command gate immediately. Existing Agent turns may
   finish; later commands remain durably queued and cannot postpone the switch.
-- The binary switch is one atomic `current` symlink rename. launchd always
-  starts `current/runtime/node current/ops/matrix-local-gateway.js`.
+- The binary switch is one atomic `current` symlink rename. On macOS, launchd
+  starts the stable `Malink Gateway Host.app` executable and passes
+  `current/ops/matrix-local-gateway.js` as its entrypoint. The changing
+  release runtime remains available for candidate construction and rollback,
+  but does not replace the TCC identity used by the active service.
 - A release commits only after the expected build reports `running`, Matrix has
   completed a fresh sync, the durable inbox is readable, and probation remains
   healthy.
@@ -149,7 +152,7 @@ pnpm install:gateway-update-supervisor -- \
   --install-root "$HOME/Library/Application Support/Malink/gateway" \
   --gateway-launch-agent "$HOME/Library/LaunchAgents/io.malink.gateway.plist" \
   --gateway-service-label io.malink.gateway \
-  --gateway-admin-socket "$HOME/Library/Application Support/Malink/gateway/admin.sock" \
+  --gateway-admin-socket "$HOME/.malink/gateway/admin.sock" \
   --current-build-id gateway-initial-arm64 \
   --agent-prompt-base-url https://rd.anciety.my.id/gateway-agent-updates/releases/ \
   --signer-file ./release-signer.json
@@ -162,6 +165,14 @@ contains a valid signed `release-prompt.json` or legacy
 otherwise the first installation needs `--current-build-id` so rollback can
 prove the baseline returned. Signer rotation remains an explicit offline
 migration.
+
+The installer also creates the stable self-hosted macOS permission app. Before
+it mutates either LaunchAgent, it runs a protected-folder probe through that
+app. The first run therefore stops safely when Full Disk Access has not yet
+been granted; add the printed app in System Settings and repeat the command.
+Use repeatable `--gateway-host-preflight-path` arguments for project roots on
+other locations or volumes. Complete setup and diagnostic commands are in
+[Unattended macOS Gateway access](macos-gateway-host.md).
 
 ## Product flow
 

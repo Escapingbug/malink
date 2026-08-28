@@ -150,6 +150,30 @@ export interface GatewayProviderPromptResponse {
   error?: string
 }
 
+export const gatewayFilesystemPreflightRequestSchema = z.object({
+  paths: z.array(z.string().min(1).max(8_192)).min(1).max(16).optional(),
+  allowCreate: z.boolean().optional(),
+  timeoutMs: z.number().int().min(100).max(120_000).optional(),
+}).strict()
+
+export type GatewayFilesystemPreflightRequest = z.infer<
+  typeof gatewayFilesystemPreflightRequestSchema
+>
+
+export interface GatewayFilesystemPreflightResult {
+  path: string
+  state: 'ready' | 'missing' | 'not_directory' | 'denied' | 'timeout' | 'error'
+  exists?: boolean
+  code?: string
+  detail?: string
+}
+
+export interface GatewayFilesystemPreflightResponse {
+  mode: 'gateway-host'
+  ready: boolean
+  results: GatewayFilesystemPreflightResult[]
+}
+
 export interface GatewayAdminStatus {
   version: 1
   /** Compatibility alias for workspaceId. */

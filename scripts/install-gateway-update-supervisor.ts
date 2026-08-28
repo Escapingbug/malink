@@ -11,6 +11,7 @@ import {
 } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
+import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
@@ -27,6 +28,11 @@ import {
   toArrayBuffer,
   webCrypto,
 } from '@malink/security'
+import {
+  defaultMacosGatewayHostAppPath,
+  installMacosGatewayHost,
+} from '../src/ops/macosGatewayHost.js'
+import { assertLocalDirectoryAccess } from '../src/ops/localFilesystemAccess.js'
 
 interface InstallOptions {
   installRoot: string
@@ -40,11 +46,27 @@ interface InstallOptions {
   supervisorServiceLabel: string
   updateSocket: string
   currentBuildId?: string
+  gatewayHostApp?: string
+  gatewayHostPreflightPaths?: readonly string[]
+  gatewayHostPreflightTimeoutMs?: number
 }
 
-type ResolvedInstallOptions = InstallOptions & { currentBuildId: string }
+type ResolvedInstallOptions = InstallOptions & {
+  currentBuildId: string
+  gatewayHostApp: string
+  gatewayHostExecutable: string
+}
 
-export async function installGatewayUpdateSupervisor(options: InstallOptions): Promise<void> {
+export interface GatewayUpdateSupervisorInstallResult {
+  gatewayHostApp: string
+  gatewayHostExecutable: string
+  gatewayHostCreated: boolean
+  gatewayHostPreflightPaths: string[]
+}
+
+export async function installGatewayUpdateSupervisor(
+  options: InstallOptions,
+): Promise<GatewayUpdateSupervisorInstallResult> {
   if (process.platform !== 'darwin') throw new Error('Gateway update supervisor installation requires macOS')
   const installRoot = resolve(options.installRoot)
   const currentRoot = join(installRoot, 'current')
@@ -101,6 +123,23 @@ export async function installGatewayUpdateSupervisor(options: InstallOptions): P
     signer,
     options.currentBuildId,
   )
+  const gatewayHost = await installMacosGatewayHost({
+    appPath: options.gatewayHostApp ?? defaultMacosGatewayHostAppPath(),
+    sourceNodePath: join(currentRoot, 'runtime', 'node'),
+  })
+  await validateGatewayHostNativeModules(gatewayHost.executablePath)
+  const gatewayHostPreflightPaths = (
+    options.gatewayHostPreflightPaths?.length
+      ? options.gatewayHostPreflightPaths
+      : [join(homedir(), 'Documents')]
+  ).map(path => resolve(path))
+  for (const path of gatewayHostPreflightPaths) {
+    await assertLocalDirectoryAccess(path, {
+      allowCreate: false,
+      nodeExecutable: gatewayHost.executablePath,
+      timeoutMs: options.gatewayHostPreflightTimeoutMs ?? 10_000,
+    })
+  }
   await mkdir(installRoot, { recursive: true, mode: 0o700 })
   const pinnedSignerPath = join(installRoot, 'release-signer.json')
   await writePinnedSigner(pinnedSignerPath, `${JSON.stringify(signer)}\n`)
@@ -113,8 +152,14 @@ export async function installGatewayUpdateSupervisor(options: InstallOptions): P
     gatewayLaunchAgent: resolve(options.gatewayLaunchAgent),
     gatewayAdminSocket: resolve(options.gatewayAdminSocket),
     updateSocket: resolve(options.updateSocket),
+    gatewayHostApp: gatewayHost.appPath,
+    gatewayHostExecutable: gatewayHost.executablePath,
   })
   await atomicWrite(resolve(options.supervisorLaunchAgent), supervisorPlist, 0o644)
+  await setLaunchAgentProgramExecutable(
+    resolve(options.gatewayLaunchAgent),
+    gatewayHost.executablePath,
+  )
   await setLaunchAgentEnvironment(
     resolve(options.gatewayLaunchAgent),
     'MALINK_GATEWAY_UPDATE_SOCKET',
@@ -124,6 +169,11 @@ export async function installGatewayUpdateSupervisor(options: InstallOptions): P
     resolve(options.gatewayLaunchAgent),
     'MALINK_GATEWAY_BUILD_ID',
     currentBuildId,
+  )
+  await setLaunchAgentEnvironment(
+    resolve(options.gatewayLaunchAgent),
+    'MALINK_GATEWAY_HOST_APP',
+    gatewayHost.appPath,
   )
   const domain = `gui/${process.getuid?.() ?? 0}`
   await run('/bin/launchctl', [
@@ -150,6 +200,12 @@ export async function installGatewayUpdateSupervisor(options: InstallOptions): P
     '-k',
     `${domain}/${options.gatewayServiceLabel}`,
   ])
+  return {
+    gatewayHostApp: gatewayHost.appPath,
+    gatewayHostExecutable: gatewayHost.executablePath,
+    gatewayHostCreated: gatewayHost.created,
+    gatewayHostPreflightPaths,
+  }
 }
 
 function supervisorLaunchAgentPlist(options: ResolvedInstallOptions): string {
@@ -168,6 +224,7 @@ function supervisorLaunchAgentPlist(options: ResolvedInstallOptions): string {
     MALINK_GATEWAY_ADMIN_SOCKET: options.gatewayAdminSocket,
     MALINK_GATEWAY_UPDATE_SOCKET: options.updateSocket,
     MALINK_GATEWAY_BUILD_ID: options.currentBuildId,
+    MALINK_GATEWAY_HOST_APP: options.gatewayHostApp,
   }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -176,7 +233,7 @@ function supervisorLaunchAgentPlist(options: ResolvedInstallOptions): string {
   <key>Label</key><string>${xml(options.supervisorServiceLabel)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${xml(join(currentRoot, 'runtime', 'node'))}</string>
+    <string>${xml(options.gatewayHostExecutable)}</string>
     <string>${xml(join(currentRoot, 'ops', 'gatewayUpdateSupervisorMain.js'))}</string>
   </array>
   <key>EnvironmentVariables</key>
@@ -284,6 +341,31 @@ async function setLaunchAgentEnvironment(path: string, key: string, value: strin
     ]))
 }
 
+async function setLaunchAgentProgramExecutable(path: string, executable: string): Promise<void> {
+  await run('/usr/libexec/PlistBuddy', [
+    '-c',
+    `Set :ProgramArguments:0 ${plistValue(executable)}`,
+    path,
+  ])
+  await run('/usr/libexec/PlistBuddy', [
+    '-c',
+    `Set :Program ${plistValue(executable)}`,
+    path,
+  ])
+    .catch(() => undefined)
+}
+
+async function validateGatewayHostNativeModules(executable: string): Promise<void> {
+  const entrypoint = createRequire(import.meta.url).resolve(
+    '@matrix-org/matrix-sdk-crypto-nodejs',
+  )
+  await run(executable, [
+    '--input-type=module',
+    '--eval',
+    `await import(${JSON.stringify(pathToFileURL(entrypoint).href)})`,
+  ])
+}
+
 function plistValue(value: string): string {
   return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
 }
@@ -363,13 +445,18 @@ function xml(value: string): string {
 
 function parseArguments(argv: readonly string[]): InstallOptions {
   const values = new Map<string, string>()
+  const gatewayHostPreflightPaths: string[] = []
   for (let index = 0; index < argv.length; index += 1) {
     const name = argv[index]!
     const value = argv[index + 1]
     if (!name.startsWith('--') || !value || value.startsWith('--')) {
       throw new Error(`Invalid installer argument near ${name}`)
     }
-    values.set(name.slice(2), value)
+    if (name === '--gateway-host-preflight-path') {
+      gatewayHostPreflightPaths.push(resolve(value))
+    } else {
+      values.set(name.slice(2), value)
+    }
     index += 1
   }
   const required = (name: string): string => {
@@ -378,6 +465,18 @@ function parseArguments(argv: readonly string[]): InstallOptions {
     return value
   }
   const installRoot = resolve(required('install-root'))
+  const gatewayHostPreflightTimeoutMs = Number(
+    values.get('gateway-host-preflight-timeout-ms') ?? 10_000,
+  )
+  if (
+    !Number.isSafeInteger(gatewayHostPreflightTimeoutMs)
+    || gatewayHostPreflightTimeoutMs < 100
+    || gatewayHostPreflightTimeoutMs > 120_000
+  ) {
+    throw new Error(
+      '--gateway-host-preflight-timeout-ms must be an integer between 100 and 120000',
+    )
+  }
   return {
     installRoot,
     gatewayLaunchAgent: resolve(required('gateway-launch-agent')),
@@ -401,10 +500,22 @@ function parseArguments(argv: readonly string[]): InstallOptions {
     ...(values.get('current-build-id')?.trim()
       ? { currentBuildId: values.get('current-build-id')!.trim() }
       : {}),
+    gatewayHostApp: resolve(
+      values.get('gateway-host-app') ?? defaultMacosGatewayHostAppPath(),
+    ),
+    ...(gatewayHostPreflightPaths.length > 0 ? { gatewayHostPreflightPaths } : {}),
+    gatewayHostPreflightTimeoutMs,
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await installGatewayUpdateSupervisor(parseArguments(process.argv.slice(2)))
-  process.stdout.write('Gateway update supervisor is installed and the Gateway is connected to it.\n')
+  const result = await installGatewayUpdateSupervisor(parseArguments(process.argv.slice(2)))
+  process.stdout.write(
+    'Gateway update supervisor is installed and the Gateway is connected to it.\n'
+    + `Gateway permission host: ${result.gatewayHostApp}\n`
+    + `Verified local access: ${result.gatewayHostPreflightPaths.join(', ')}\n`
+    + 'Confirm that this app is enabled in System Settings > Privacy & Security > '
+    + 'Full Disk Access, then run the Gateway Host doctor before relying on '
+    + 'unattended remote access.\n',
+  )
 }

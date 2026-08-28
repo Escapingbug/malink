@@ -10,6 +10,7 @@ import {
   mlp3CurrentPointerSchema,
   mlp3ProjectKeyGrantStateSchema,
   type Mlp3Command,
+  type Mlp3Event,
   type SessionExtensionDescriptor,
 } from '@malink/protocol'
 import {
@@ -280,9 +281,14 @@ describe('MatrixMlp3GatewayRunner', () => {
     const sessionCwds = new Map<string, string>()
     const rejected: unknown[] = []
     const notificationSubscriptions: string[] = []
-    const terminalNotifications: string[] = []
+    const terminalNotifications: Mlp3Event[] = []
     const createdProjectRequests: string[] = []
     const gatewayProfileUpdates: string[] = []
+    const filesystemAccessChecks: Array<{
+      cwd: string
+      operation: 'session.create' | 'prompt.submit' | 'provider.history'
+    }> = []
+    let blockFilesystemAccess = false
     let projectCreatedHooks = 0
     const gatewayUpdateCalls: string[] = []
     let gatewayAgentStaged = false
@@ -295,7 +301,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       removeSubscription: async () => undefined,
       async notifyTerminal(event) {
         if (event.payload.type === 'turn.completed' || event.payload.type === 'turn.failed') {
-          terminalNotifications.push(event.eventId)
+          terminalNotifications.push(event)
         }
       },
       flush: async () => undefined,
@@ -350,6 +356,17 @@ describe('MatrixMlp3GatewayRunner', () => {
       client,
       onRejected: (_event, error) => rejected.push(error),
       webPushService,
+      assertDirectoryAccess: async input => {
+        filesystemAccessChecks.push(input)
+        if (blockFilesystemAccess) {
+          throw Object.assign(new Error(
+            'Grant Full Disk Access to Malink Gateway Host, then retry.',
+          ), {
+            commandCode: 'local_permission_required',
+            retryable: true,
+          })
+        }
+      },
       createProject: async input => {
         createdProjectRequests.push(`${input.name}:${input.cwd}`)
         return {
@@ -948,6 +965,36 @@ describe('MatrixMlp3GatewayRunner', () => {
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
       .some(event => event.causationCommandId === 'create-b'))
 
+    blockFilesystemAccess = true
+    await send({
+      ...base,
+      commandId: 'prompt-blocked-by-macos',
+      sessionId: 'session-b',
+      operation: 'prompt.submit',
+      payload: { operation: 'prompt.submit', text: 'must not reach provider' },
+    }, '$prompt-blocked-by-macos')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'prompt-blocked-by-macos'
+        && event.payload.type === 'turn.failed'
+      ))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'prompt-blocked-by-macos'
+      && event.payload.type === 'turn.failed'
+    )?.payload).toMatchObject({
+      type: 'turn.failed',
+      turnId: 'prompt-blocked-by-macos',
+      code: 'local_permission_required',
+      message: expect.stringContaining('Malink Gateway Host'),
+    })
+    expect(dispatched.some(item => item.text === 'must not reach provider')).toBe(false)
+    blockFilesystemAccess = false
+    expect(filesystemAccessChecks).toEqual(expect.arrayContaining([
+      { cwd: '/repo', operation: 'provider.history' },
+      { cwd: '/repo', operation: 'session.create' },
+      { cwd: '/repo', operation: 'prompt.submit' },
+    ]))
+
     // An exact retry arrives as a different physical Matrix event. It remains
     // the same business command and must not run a second provider turn.
     await send(promptA, '$prompt-a-retry')
@@ -958,7 +1005,14 @@ describe('MatrixMlp3GatewayRunner', () => {
         && event.payload.type === 'turn.completed'
       ))
     expect(dispatched.filter(item => item.text === 'block A')).toHaveLength(1)
-    expect(terminalNotifications).toHaveLength(1)
+    expect(terminalNotifications.filter(event =>
+      event.causationCommandId === 'prompt-blocked-by-macos'
+      && event.payload.type === 'turn.failed'
+    )).toHaveLength(1)
+    expect(terminalNotifications.filter(event =>
+      event.causationCommandId === 'prompt-a'
+      && event.payload.type === 'turn.completed'
+    )).toHaveLength(1)
 
     await send({
       ...base,
@@ -1220,7 +1274,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       && event.payload.projection.activity === 'idle'
     )).toBe(true)
     await restarted.stop()
-  })
+  }, 15_000)
 })
 
 function nativeRelease(versionCode: number) {

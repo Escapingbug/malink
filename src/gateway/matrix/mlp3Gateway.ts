@@ -141,6 +141,10 @@ export interface MatrixMlp3GatewayDependencies {
   privilegeExecutor?: PrivilegeExecutor
   webPushService?: GatewayWebPushService
   workspaceGatewayDirectory?: () => Promise<import('@malink/protocol').SignedWorkspaceGatewayDirectory | undefined>
+  assertDirectoryAccess?: (input: {
+    cwd: string
+    operation: 'session.create' | 'prompt.submit' | 'provider.history'
+  }) => Promise<void>
   createProject?: (input: {
     sourceRoom: MatrixGatewayRoomConfig
     requestedByDeviceId: string
@@ -1110,6 +1114,12 @@ export class MatrixMlp3GatewayRunner {
     const cwd = scope === 'scratch'
       ? this.scratchSessionDirectory(command.sessionId)
       : project.project.cwd
+    if (scope === 'project') {
+      await this.dependencies.assertDirectoryAccess?.({
+        cwd,
+        operation: 'session.create',
+      })
+    }
     if (scope === 'scratch') await mkdir(cwd, { recursive: true, mode: 0o700 })
     const record: PersistedMlp3Session = {
       id: command.sessionId,
@@ -1193,6 +1203,12 @@ export class MatrixMlp3GatewayRunner {
     prompt: { text: string; attachments?: import('@malink/protocol').MalinkAttachment[] },
     options: { settleCommand?: boolean } = {},
   ): Promise<void> {
+    if (runtime.record.scope !== 'scratch') {
+      await this.dependencies.assertDirectoryAccess?.({
+        cwd: runtime.record.cwd,
+        operation: 'prompt.submit',
+      })
+    }
     this.transition(runtime, 'queued')
     await this.persist(project)
     await this.emitBestEffort(project, runtime.record, this.eventFor(
@@ -1666,6 +1682,10 @@ export class MatrixMlp3GatewayRunner {
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'provider.sessions.list'>,
   ): Promise<void> {
+    await this.dependencies.assertDirectoryAccess?.({
+      cwd: project.project.cwd,
+      operation: 'provider.history',
+    })
     const provider = createProviderInstance(command.payload.provider)
     if (!provider) throw new Error(`Provider ${command.payload.provider} is not configured`)
     try {
@@ -1710,6 +1730,10 @@ export class MatrixMlp3GatewayRunner {
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'provider.session.inspect'>,
   ): Promise<void> {
+    await this.dependencies.assertDirectoryAccess?.({
+      cwd: project.project.cwd,
+      operation: 'provider.history',
+    })
     const provider = createProviderInstance(command.payload.provider)
     if (!provider) throw new Error(`Provider ${command.payload.provider} is not configured`)
     try {
@@ -1753,6 +1777,7 @@ export class MatrixMlp3GatewayRunner {
     error: unknown,
   ): Promise<void> {
     const runtime = command.sessionId ? project.sessions.get(command.sessionId) : undefined
+    const failure = commandFailure(error)
     let payload: Mlp3EventPayload
     if (command.operation === 'prompt.submit' && runtime) {
       this.transition(runtime, 'failed')
@@ -1762,7 +1787,7 @@ export class MatrixMlp3GatewayRunner {
       payload = {
         type: 'turn.failed',
         turnId: command.commandId,
-        code: 'execution_failed',
+        code: failure.code,
         message: formatError(error),
         projection: terminalProjection(runtime.record, runtime.activity.phase, this.extensions),
       }
@@ -1770,9 +1795,9 @@ export class MatrixMlp3GatewayRunner {
       payload = {
         type: 'command.rejected',
         commandId: command.commandId,
-        code: 'execution_failed',
+        code: failure.code,
         message: formatError(error),
-        retryable: false,
+        retryable: failure.retryable,
       }
     }
     const event = this.eventFor(project, runtime?.record, command, 'command-failed', payload)
@@ -2777,4 +2802,21 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function commandFailure(error: unknown): { code: string; retryable: boolean } {
+  if (!error || typeof error !== 'object') {
+    return { code: 'execution_failed', retryable: false }
+  }
+  const candidate = error as { commandCode?: unknown; retryable?: unknown }
+  if (
+    typeof candidate.commandCode === 'string'
+    && /^[a-z][a-z0-9_]{0,127}$/u.test(candidate.commandCode)
+  ) {
+    return {
+      code: candidate.commandCode,
+      retryable: candidate.retryable === true,
+    }
+  }
+  return { code: 'execution_failed', retryable: false }
 }

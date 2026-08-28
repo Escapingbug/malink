@@ -10,6 +10,7 @@
     "scripts/gateway-update-release.ts",
     "scripts/gateway-agent-update-release.ts",
     "scripts/install-gateway-update-supervisor.ts",
+    "scripts/macos-gateway-host-doctor.ts",
     "scripts/generate-gateway-release-key.ts",
     "scripts/web-live-e2e.ts",
     "scripts/e2e/androidAlphaJourney.ts",

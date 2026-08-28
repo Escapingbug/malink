@@ -74,7 +74,11 @@ during its accepted time step. Transaction-bound approval signatures are a
 future hardening option, not a guarantee of this version. There is no
 multi-command or ten-minute privilege lease.
 macOS TCC and similar consent databases are outside this mechanism and are not
-bypassed.
+bypassed. A self-hosted macOS Gateway may use the stable, ad-hoc signed Malink
+Gateway Host app as the locally approved TCC identity. Full Disk Access remains
+a broad local trust grant: it lets Gateway and Agent code running as that user
+reach the user's protected files; it does not add protocol authority and it
+must be provisioned locally. Online releases do not replace the approved Host.
 
 ## Gateway acceptance rule
 

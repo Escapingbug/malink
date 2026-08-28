@@ -9,6 +9,10 @@ it is not execution authority and is not used as an application RPC queue.
 ## Product shape
 
 - A Gateway runs beside the coding agents on a workstation or server.
+- A self-hosted macOS Gateway is launched through a stable background Host app
+  so TCC consent survives online release-directory switches. Filesystem
+  preflights run out of process and fail remotely with a bounded, actionable
+  permission error instead of blocking the Matrix execution chain.
 - The same online-updatable PWA is the UI in desktop browsers and inside the
   first-party Android shell.
 - The Android foreground connection service owns durable background Matrix

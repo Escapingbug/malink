@@ -19,6 +19,7 @@
     "release:gateway-update": "tsx scripts/gateway-update-release.ts",
     "release:gateway-agent-update": "tsx scripts/gateway-agent-update-release.ts",
     "install:gateway-update-supervisor": "tsx scripts/install-gateway-update-supervisor.ts",
+    "doctor:gateway-host": "tsx scripts/macos-gateway-host-doctor.ts",
     "generate:gateway-release-key": "tsx scripts/generate-gateway-release-key.ts",
     "release:android-update": "tsx scripts/android-update-release.ts",
     "publish:android-update": "deploy/native-update/publish.sh",
