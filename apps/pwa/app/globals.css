@@ -2051,29 +2051,6 @@ select:focus-visible {
   min-height: 0;
 }
 
-.conversation-workspace.is-tool-focused:not(.show-focus-history)
-  .chat-feed > :not(.tool-focus-context-message) {
-  display: none;
-}
-
-.conversation-workspace.is-tool-focused:not(.show-focus-history)
-  .chat-feed > .tool-focus-context-message {
-  display: flex;
-  flex: 0 0 auto;
-}
-
-.conversation-workspace.is-tool-focused:not(.show-focus-history) .chat-feed {
-  justify-content: flex-end;
-}
-
-.conversation-workspace.is-tool-focused .tool-focus-source {
-  display: none;
-}
-
-.tool-focus-context-message .bubble {
-  max-width: min(780px, 92%);
-}
-
 .history-loader {
   display: flex;
   min-height: 24px;
@@ -3680,8 +3657,8 @@ select:focus-visible {
   z-index: 2;
   display: grid;
   min-height: 112px;
-  max-height: min(48vh, 440px);
-  flex: 0 0 auto;
+  max-height: 48%;
+  flex: 0 1 clamp(140px, 42%, 440px);
   grid-template-rows: 48px minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid #d8d3ef;
@@ -3856,6 +3833,7 @@ select:focus-visible {
       min-width: 0;
       min-height: 0;
       max-height: none;
+      flex-basis: auto;
       grid-column: 2;
       grid-row: 1;
       border-width: 0 0 0 1px;

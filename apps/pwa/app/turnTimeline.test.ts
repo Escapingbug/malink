@@ -123,7 +123,7 @@ describe("activeTurnToolMessage", () => {
 });
 
 describe("activeTurnToolFocus", () => {
-  it("keeps only the nearest user or Agent message as tool context", () => {
+  it("selects the latest active tool without reducing the transcript", () => {
     const messages = [
       message("prompt", "user", "turn-1", 1),
       message("reasoning-1", "agent", "turn-1", 2),
@@ -135,19 +135,13 @@ describe("activeTurnToolFocus", () => {
     const focus = activeTurnToolFocus(messages, true);
 
     expect(focus?.toolMessage.id).toBe("tools-2");
-    expect(focus?.contextMessage?.id).toBe("reasoning-2");
-  });
-
-  it("uses the current prompt when no Agent message precedes the tool", () => {
-    const focus = activeTurnToolFocus(
-      [
-        message("prompt", "user", "turn-1", 1),
-        toolMessage("tools", "turn-1", 2),
-      ],
-      true,
-    );
-
-    expect(focus?.contextMessage?.id).toBe("prompt");
+    expect(turnTimelineMessages(messages).map(({ id }) => id)).toEqual([
+      "prompt",
+      "reasoning-1",
+      "tools-1",
+      "reasoning-2",
+      "tools-2",
+    ]);
   });
 });
 

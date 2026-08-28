@@ -581,13 +581,14 @@ test("renders safe Markdown with phase-aware, responsive tool focus", async () =
   assert.doesNotMatch(toolGroup, /Waiting for output|No output was captured/);
   assert.match(app, /activeTurnToolFocus\(messages, isStreaming\)/);
   assert.match(app, /<ToolFocusPanel/);
-  assert.match(app, /tool-focus-context-message/);
+  assert.doesNotMatch(app, /tool-focus-context-message|tool-focus-source|show-focus-history/);
   assert.match(toolFocus, /className="tool-focus-invocation"/);
   assert.match(toolFocus, /outputOpen && tool\.result/);
   assert.match(toolFocus, /Show captured output/);
   assert.match(toolFocus, /\{toolIndex \+ 1\}\/\{group\.tools\.length\}/);
   assert.match(turnTimeline, /messageActivityAt\(message\)/);
   assert.match(styles, /\.conversation-workspace\.is-tool-focused/);
+  assert.doesNotMatch(styles, /tool-focus-context-message|tool-focus-source|show-focus-history/);
   assert.match(
     styles,
     /\.conversation-panel\s*\{[\s\S]*?container-type:\s*inline-size/,
@@ -597,7 +598,8 @@ test("renders safe Markdown with phase-aware, responsive tool focus", async () =
     styles,
     /grid-template-columns:\s*minmax\(0, 1fr\) clamp\(390px, 42%, 620px\)/,
   );
-  assert.match(styles, /max-height:\s*min\(48vh, 440px\)/);
+  assert.match(styles, /flex:\s*0 1 clamp\(140px, 42%, 440px\)/);
+  assert.match(styles, /max-height:\s*48%/);
   assert.match(presentation, /const TOOL_LIMIT = 200/);
   assert.match(packageJson, /"react-markdown"/);
   assert.match(packageJson, /"remark-gfm"/);

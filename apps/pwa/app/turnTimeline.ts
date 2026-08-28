@@ -13,7 +13,6 @@ export function turnTimelineMessages(
 
 export type ActiveTurnToolFocus = {
   toolMessage: ChatMessage;
-  contextMessage: ChatMessage | null;
 };
 
 /**
@@ -56,22 +55,7 @@ export function activeTurnToolFocus(
     return null;
   }
 
-  const contextMessage = turnMessages.reduce<ChatMessage | null>(
-    (latest, message) => {
-      if (
-        !belongsToPrompt(message, latestPrompt) ||
-        (message.kind !== "user" && message.kind !== "agent")
-      ) {
-        return latest;
-      }
-      return !latest || messageActivityAt(message) >= messageActivityAt(latest)
-        ? message
-        : latest;
-    },
-    null,
-  );
-
-  return { toolMessage, contextMessage };
+  return { toolMessage };
 }
 
 export function activeTurnToolMessage(

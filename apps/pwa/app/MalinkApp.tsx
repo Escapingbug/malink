@@ -104,10 +104,7 @@ import {
 } from "./gatewayUiCache";
 import { MarkdownContent } from "./MarkdownContent";
 import { ToolActivityCard } from "./ToolActivityCard";
-import {
-  focusedToolPresentation,
-  ToolFocusPanel,
-} from "./ToolFocusPanel";
+import { ToolFocusPanel } from "./ToolFocusPanel";
 import {
   ExtensionViewCard,
   type ExtensionViewDecisionState,
@@ -1156,9 +1153,6 @@ function MalinkAppRuntime() {
   const [expandedProcessTurnIds, setExpandedProcessTurnIds] = useState<
     Set<string>
   >(() => new Set());
-  const [toolFocusHistoryKey, setToolFocusHistoryKey] = useState<string | null>(
-    null,
-  );
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
     initialGatewayUi.selectedSessionId,
   );
@@ -1804,15 +1798,6 @@ function MalinkAppRuntime() {
     [isStreaming, messages],
   );
   const liveToolMessage = toolFocus?.toolMessage ?? null;
-  const toolFocusCurrentTool = toolFocus?.toolMessage.toolGroup
-    ? focusedToolPresentation(toolFocus.toolMessage.toolGroup.tools)
-    : undefined;
-  const toolFocusKey = toolFocus && toolFocusCurrentTool
-    ? `${selectedSessionId ?? "session"}:${toolFocus.toolMessage.id}:${toolFocusCurrentTool.id}`
-    : null;
-  const toolFocusHistoryOpen = Boolean(
-    toolFocusKey && toolFocusHistoryKey === toolFocusKey,
-  );
   const timelineMessages = useMemo(
     () => turnTimelineMessages(messages),
     [messages],
@@ -9170,7 +9155,7 @@ function MalinkAppRuntime() {
 
 
         <div
-          className={`conversation-workspace ${toolFocus ? "is-tool-focused" : ""} ${toolFocusHistoryOpen ? "show-focus-history" : ""}`}
+          className={`conversation-workspace ${toolFocus ? "is-tool-focused" : ""}`}
         >
           <div
             className="chat-feed"
@@ -9246,10 +9231,6 @@ function MalinkAppRuntime() {
             const artifactAttachmentIds = new Set(
               artifactReferences.map(reference => reference.id),
             );
-            const isToolFocusContext =
-              toolFocus?.contextMessage?.id === message.id;
-            const isToolFocusSource =
-              toolFocus?.toolMessage.id === message.id;
             const agentWork = isAgentWorkMessage(message);
             const previousItem = presentedTimeline[itemIndex - 1];
             const nextItem = presentedTimeline[itemIndex + 1];
@@ -9315,7 +9296,7 @@ function MalinkAppRuntime() {
               );
               return (
                 <div
-                  className={`message-row user-row turn-prompt ${isToolFocusContext ? "tool-focus-context-message" : ""} ${
+                  className={`message-row user-row turn-prompt ${
                     message.historical ? "" : "message-enter"
                   }`}
                   key={message.id}
@@ -9367,7 +9348,7 @@ function MalinkAppRuntime() {
               if (!message.toolGroup) return null;
               return (
                 <div
-                  className={`message-row tool-group-row ${isToolFocusSource ? "tool-focus-source" : ""} ${agentTurnClass} ${turnPresentationClass} ${
+                  className={`message-row tool-group-row ${agentTurnClass} ${turnPresentationClass} ${
                     message.historical ? "" : "message-enter"
                   }`}
                   key={message.id}
@@ -9498,7 +9479,7 @@ function MalinkAppRuntime() {
             }
             return (
               <div
-                className={`message-row agent-row ${isToolFocusContext ? "tool-focus-context-message" : ""} ${agentTurnClass} ${turnPresentationClass} ${
+                className={`message-row agent-row ${agentTurnClass} ${turnPresentationClass} ${
                   message.historical ? "" : "message-enter"
                 }`}
                 key={message.id}
@@ -9560,12 +9541,6 @@ function MalinkAppRuntime() {
           {toolFocus?.toolMessage.toolGroup && (
             <ToolFocusPanel
               group={toolFocus.toolMessage.toolGroup}
-              historyOpen={toolFocusHistoryOpen}
-              onToggleHistory={() =>
-                setToolFocusHistoryKey((current) =>
-                  current === toolFocusKey ? null : toolFocusKey,
-                )
-              }
             />
           )}
         </div>
