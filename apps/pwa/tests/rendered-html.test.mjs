@@ -965,7 +965,10 @@ test("pairs a Gateway without exposing Matrix fingerprints and signs strict comm
   );
   assert.match(settings, /Loading the current Gateway authorization/);
   assert.match(settings, /Build: \{gateway\.buildId \?\? "Not reported"\}/);
-  assert.match(app, /gateways: gatewayDirectory\?\.directory\.gateways/);
+  assert.match(
+    app,
+    /gateways: gatewayState\?\.gatewayDirectory\?\.directory\.gateways/,
+  );
   assert.doesNotMatch(
     settings,
     /savedGateways\.length > 0 && !pairingPreview && !repairRequired/,

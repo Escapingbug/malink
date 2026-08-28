@@ -209,6 +209,93 @@ test("returns a durable native receipt immediately and acknowledges event cursor
   replacement.close();
 });
 
+test("renders native local history before advancing a cache-cold Matrix page", async () => {
+  const historySources: string[] = [];
+  const port = new RuntimePort((request) => {
+    if (request.method !== "malink.history.page") return responseFor(request);
+    const params = request.params as BridgeMethodParams["malink.history.page"];
+    historySources.push(params.source);
+    return {
+      sessionId: params.sessionId,
+      messages: params.source === "local" ? [{
+        eventId: "native-local-history-1",
+        sender: "gateway",
+        timestamp: 1,
+        encrypted: true,
+        kind: "agent",
+        text: "Restored immediately",
+        sessionId: params.sessionId,
+        historical: true,
+        format: "markdown",
+      }] : [],
+      hasMore: false,
+      asOfCursor: `cursor-${params.source}`,
+    };
+  });
+  const client = await createTestClient(port);
+
+  const initial = await client.loadHistoryPage("session-history-1");
+  assert.deepEqual(initial.messages.map((message) => message.eventId), [
+    "native-local-history-1",
+  ]);
+  assert.equal(initial.hasMore, true);
+  assert.deepEqual(historySources, ["local"]);
+
+  const older = await client.loadHistoryPage("session-history-1");
+  assert.deepEqual(older.messages, []);
+  assert.equal(older.hasMore, false);
+  assert.deepEqual(historySources, ["local", "matrix"]);
+  client.dispose();
+});
+
+test("identifies a terminal native session creation for orphaned UI recovery", async () => {
+  const recovered: string[] = [];
+  const bridgePort = new RuntimePort();
+  const bridge = await acquireNativeRpcBridge(bridgePort);
+  const hello = await bridge.hello({
+    webBuild: "test-build",
+    requiredCapabilities: [],
+    optionalCapabilities: REQUIRED_NATIVE_CAPABILITIES.map((name) => ({
+      name,
+      versions: nativeCapabilityVersions(name),
+    })),
+  });
+  const client = new NativeBridgeClient(bridge, hello, {
+    onMessage() {},
+    onStatus() {},
+    onSessionCreateRecovered(recovery) {
+      recovered.push(
+        `${recovery.commandId}:${recovery.completion.sessionId}:${recovery.submittedAt}`,
+      );
+    },
+  });
+  await client.ready;
+
+  deliverCommand(bridgePort, {
+    operationId: "operation-create-orphaned",
+    commandId: "command-create-orphaned",
+    idempotencyKey: "00000000-0000-4000-8000-000000000021",
+    state: "succeeded",
+    submittedAt: 42,
+    updatedAt: 45,
+    sequence: 1,
+    revision: 0,
+    completion: {
+      commandId: "command-create-orphaned",
+      sequence: 1,
+      revision: 0,
+      outcome: "succeeded",
+      sessionId: "session-created-orphaned",
+    },
+  }, "cursor-create-orphaned");
+  await nextTurn();
+
+  assert.deepEqual(recovered, [
+    "command-create-orphaned:session-created-orphaned:42",
+  ]);
+  client.dispose();
+});
+
 test("projects Android native Gateway Directory ownership into the hosted UI", async () => {
   const gatewayState = nativeGatewayDirectoryState();
   let projectedGatewayState: Parameters<

@@ -4587,6 +4587,26 @@ function MalinkAppRuntime() {
           nativeCommandReviewRef.current = notice;
           setNativeCommandReview(notice);
         },
+        onSessionCreateRecovered(recovery) {
+          if (!isCurrentStartup()) return;
+          const draft = optimisticSessionRef.current;
+          if (
+            !draft ||
+            draft.commandId ||
+            draft.phase !== "failed" ||
+            recovery.submittedAt < draft.createdAt - 5_000
+          ) return;
+          rememberPendingSessionCreate(draft.input, recovery.commandId);
+          commitOptimisticSession(
+            bindOptimisticSession(
+              retryOptimisticSession(draft),
+              recovery.commandId,
+              recovery.completion.sessionId,
+            ),
+          );
+          const activeConnection = malinkClientRef.current;
+          if (activeConnection) continuePendingSessionCreate(activeConnection);
+        },
         onCommandResult(result) {
           if (!isCurrentStartup()) return;
           observeCommandCompletion(result);
@@ -5654,7 +5674,7 @@ function MalinkAppRuntime() {
       detail: connectionDetail,
       deviceKeyId,
       nativeRuntime,
-      gateways: gatewayDirectory?.directory.gateways,
+      gateways: gatewayState?.gatewayDirectory?.directory.gateways,
       online: navigator.onLine,
       visibility: document.visibilityState,
       userAgent: navigator.userAgent,
@@ -7022,6 +7042,10 @@ function MalinkAppRuntime() {
       // Let React commit the pending row before Matrix encryption, IndexedDB,
       // acknowledgement, and command-result work begins.
       await waitForUiCommit();
+      const connection = malinkClientRef.current;
+      if (!connection) {
+        throw new Error("The secure session command was not accepted.");
+      }
       if (input.setAsProjectDefault) {
         const settingsUpdate = await sendRealCommand({
           operation: "project.settings",
@@ -7046,10 +7070,14 @@ function MalinkAppRuntime() {
           : {}),
         ...(input.extensions ? { extensions: input.extensions } : {}),
       }, input.projectId);
-      if (!sent || !connection) {
+      if (!sent) {
         throw new Error("The secure session command was not accepted.");
       }
       rememberPendingSessionCreate(input, sent.commandId);
+      // The native client has durably accepted the command at this point. Set
+      // this before any presentation work so a later UI failure can never turn
+      // a real command into a retryable draft that creates a duplicate.
+      durableCommandRecorded = true;
       const currentDraft = optimisticSessionRef.current;
       if (currentDraft?.localSessionId === localRecord.localSessionId) {
         commitOptimisticSession(
@@ -7060,10 +7088,10 @@ function MalinkAppRuntime() {
           ),
         );
       }
-      durableCommandRecorded = true;
       continuePendingSessionCreate(connection, sent);
     } catch (error) {
-      if (error instanceof CommandAcknowledgementTimeoutError && connection) {
+      const connection = malinkClientRef.current;
+      if (error instanceof CommandAcknowledgementTimeoutError) {
         rememberPendingSessionCreate(input, error.commandId);
         const currentDraft = optimisticSessionRef.current;
         if (currentDraft?.localSessionId === localRecord.localSessionId) {
@@ -7080,7 +7108,7 @@ function MalinkAppRuntime() {
           "warning",
           "Session creation is queued securely. Malink will resume this same command without creating a duplicate.",
         );
-        continuePendingSessionCreate(connection);
+        if (connection) continuePendingSessionCreate(connection);
       } else {
         markOptimisticSessionFailed(localRecord.localSessionId, error);
         showUiNotice(

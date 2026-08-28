@@ -51,6 +51,12 @@ export type MalinkCommandReview = {
   expectedRevision?: number;
 };
 
+export type MalinkRecoveredSessionCreate = {
+  commandId: string;
+  submittedAt: number;
+  completion: CommandCompletion & { sessionId: string };
+};
+
 export class CommandReviewRequiredError extends Error {
   constructor(readonly review: MalinkCommandReview) {
     super(
@@ -67,6 +73,7 @@ export type MalinkClientHandlers = {
   onTrustUpdated?(trust: MalinkPublicTrust | null): void;
   onCollaborationState?(state: CollaborationState): void;
   onCommandResult?(result: CommandCompletion): void;
+  onSessionCreateRecovered?(recovery: MalinkRecoveredSessionCreate): void;
   onCommandReviewRequired?(review: MalinkCommandReview | null): void;
   onHistoryRecovered?(page: MalinkHistoryRecovery): void;
   onConvergenceRequired?(): void;
