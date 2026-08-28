@@ -7,19 +7,18 @@ import android.os.Build
 import androidx.core.app.NotificationManagerCompat
 import id.my.anciety.malink.BuildConfig
 import id.my.anciety.malink.bridge.BridgeProtocol
+import id.my.anciety.malink.config.StaticServiceStore
 import id.my.anciety.malink.diagnostics.NativeDiagnosticLog
 import java.io.File
 import java.net.URI
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 
 class NativeUpdateManager private constructor(context: Context) {
     private val appContext = context.applicationContext
-    private val parser = NativeClientReleaseParser(
-        trustedOrigin = URI(BuildConfig.NATIVE_UPDATE_ORIGIN),
-        allowLoopbackHttp = BuildConfig.ALLOW_INSECURE_E2E_LOOPBACK,
-    )
+    private val staticServices = StaticServiceStore(appContext)
     private val store = NativeUpdateStore(appContext)
     private val http = NativeUpdateHttpClient()
     private val artifactVerifier = NativeUpdateArtifactVerifier(appContext)
@@ -37,11 +36,52 @@ class NativeUpdateManager private constructor(context: Context) {
 
     fun status(): NativeUpdateStatus = status
 
-    /** Accepts release metadata only after the signed MLP workspace snapshot was verified. */
-    suspend fun acceptPublishedRelease(value: JsonObject): NativeUpdateStatus = mutex.withLock {
+    suspend fun checkStaticRelease(force: Boolean = false): NativeUpdateStatus {
+        val now = System.currentTimeMillis()
+        if (!staticReleaseCheckDue(now, store.lastStaticCheckAt, force)) return status
+        store.lastStaticCheckAt = now
+        val endpoint = staticServices.selected
+        diagnostics.record("update.static_check_started")
+        return try {
+            val manifest = http.readText(
+                endpoint.resolve("native-updates/channels/$UPDATE_CHANNEL/client-release.json"),
+                STATIC_MANIFEST_MAX_BYTES,
+            )
+            val value = kotlinx.serialization.json.Json
+                .parseToJsonElement(manifest)
+                .jsonObject
+            acceptPublishedRelease(value, metadataAuthenticated = false).also {
+                diagnostics.record("update.static_check_finished")
+            }
+        } catch (error: Exception) {
+            diagnostics.record(
+                "update.static_check_failed",
+                mapOf("reason" to detailCode(error)),
+            )
+            status
+        }
+    }
+
+    fun onStaticServiceChanged() {
+        store.lastStaticCheckAt = 0L
+    }
+
+    fun millisecondsUntilNextStaticCheck(now: Long = System.currentTimeMillis()): Long =
+        staticReleaseCheckDelay(now, store.lastStaticCheckAt)
+
+    /**
+     * Accepts bounded release metadata. Only verified MLP callers may use the
+     * authenticated default; static discovery advances rollback state after
+     * the downloaded APK passes the installed-application signer check.
+     */
+    suspend fun acceptPublishedRelease(
+        value: JsonObject,
+        metadataAuthenticated: Boolean = true,
+    ): NativeUpdateStatus = mutex.withLock {
         publish(baseStatus(NativeUpdatePhase.CHECKING))
-        diagnostics.record("update.gateway_release_received")
+        diagnostics.record("update.release_received")
         try {
+            val parser = releaseParser()
             val release = parser.parse(value)
             if (release.channel != UPDATE_CHANNEL) {
                 throw NativeClientReleaseException("release_channel_unsupported")
@@ -69,10 +109,10 @@ class NativeUpdateManager private constructor(context: Context) {
                 currentAndroidApi = Build.VERSION.SDK_INT,
                 supportedAbis = Build.SUPPORTED_ABIS.toSet(),
             )
-            retainPublishedRelease(release)
+            if (metadataAuthenticated) retainPublishedRelease(release)
             if (decision == NativeUpdateDecision.Current) {
                 clearReadyIfSuperseded()
-                diagnostics.record("update.gateway_release_current")
+                diagnostics.record("update.release_current")
                 return@withLock publish(baseStatus(
                     phase = NativeUpdatePhase.CURRENT,
                     checkedAt = System.currentTimeMillis(),
@@ -89,6 +129,7 @@ class NativeUpdateManager private constructor(context: Context) {
             if (existingReady != null && existingReadyApk?.isFile == true) {
                 val valid = runCatching { artifactVerifier.verify(existingReadyApk, release) }.isSuccess
                 if (valid) {
+                    retainPublishedRelease(release)
                     return@withLock publish(statusFor(release, NativeUpdatePhase.READY))
                 }
                 store.clearReady()
@@ -117,6 +158,10 @@ class NativeUpdateManager private constructor(context: Context) {
             }
             try {
                 artifactVerifier.verify(partial, release)
+                // A static manifest is discovery-only. Advance the durable
+                // anti-rollback watermark only after the actual APK is signed
+                // by the same application identity as the installed app.
+                retainPublishedRelease(release)
             } catch (error: Exception) {
                 partial.delete()
                 throw error
@@ -143,7 +188,7 @@ class NativeUpdateManager private constructor(context: Context) {
             result
         } catch (error: Exception) {
             val detail = detailCode(error)
-            diagnostics.record("update.gateway_release_failed", mapOf("reason" to detail))
+            diagnostics.record("update.release_failed", mapOf("reason" to detail))
             val ready = readyRelease
             val apk = readyApk
             if (ready != null && apk?.isFile == true) {
@@ -227,6 +272,7 @@ class NativeUpdateManager private constructor(context: Context) {
     }
 
     private fun retainPublishedRelease(release: NativeClientRelease) {
+        val parser = releaseParser()
         val accepted = store.acceptedRelease?.let { encoded ->
             runCatching { parser.parse(encoded) }.getOrNull()
         }
@@ -246,7 +292,7 @@ class NativeUpdateManager private constructor(context: Context) {
     private fun restoreReadyUpdate() {
         val stored = store.loadReady() ?: return
         runCatching {
-            val release = parser.parse(stored.release)
+            val release = releaseParser().parse(stored.release)
             val decision = NativeUpdatePolicy.decide(
                 release = release,
                 highestVersionCode = store.highestVersionCode,
@@ -342,14 +388,31 @@ class NativeUpdateManager private constructor(context: Context) {
     private fun comparable(release: NativeClientRelease): NativeClientRelease =
         release.copy(encoded = "")
 
+    private fun releaseParser(): NativeClientReleaseParser = NativeClientReleaseParser(
+        staticService = staticServices.selected,
+        allowLoopbackHttp = BuildConfig.ALLOW_INSECURE_E2E_LOOPBACK,
+    )
+
     companion object {
         private const val UPDATE_CHANNEL = "alpha"
+        const val STATIC_CHECK_INTERVAL_MS = 6 * 60 * 60_000L
+        private const val STATIC_MANIFEST_MAX_BYTES = 64 * 1024
         @Volatile private var instance: NativeUpdateManager? = null
 
         fun get(context: Context): NativeUpdateManager = instance ?: synchronized(this) {
             instance ?: NativeUpdateManager(context).also { instance = it }
         }
     }
+}
+
+internal fun staticReleaseCheckDue(now: Long, lastCheckAt: Long, force: Boolean): Boolean =
+    force || lastCheckAt <= 0L || lastCheckAt > now || now - lastCheckAt >=
+        NativeUpdateManager.STATIC_CHECK_INTERVAL_MS
+
+internal fun staticReleaseCheckDelay(now: Long, lastCheckAt: Long): Long = when {
+    lastCheckAt <= 0L || lastCheckAt > now -> 0L
+    else -> (NativeUpdateManager.STATIC_CHECK_INTERVAL_MS - (now - lastCheckAt))
+        .coerceAtLeast(0L)
 }
 
 internal fun canReusePublishedReleaseStatus(

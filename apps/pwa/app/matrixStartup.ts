@@ -36,11 +36,8 @@ export function matrixInitialSyncLimit(
 export function shouldDeferStoredMatrixStartupForPairing(input: {
   pairingLink: string | null;
   deviceInvitation: string | null;
-  shortInvitation: string | null;
 }): boolean {
-  return Boolean(
-    input.pairingLink || input.deviceInvitation || input.shortInvitation,
-  );
+  return Boolean(input.pairingLink || input.deviceInvitation);
 }
 
 export function shouldReloadInterruptedMatrixStartup(input: {

@@ -59,6 +59,7 @@ export function PairingWizard({
   const [clipboardError, setClipboardError] = useState<string | null>(null);
   const [reauthPassword, setReauthPassword] = useState("");
   const [qrCode, setQrCode] = useState({ link: "", dataUrl: "" });
+  const [qrErrorLink, setQrErrorLink] = useState("");
   const [shareStatus, setShareStatus] = useState<string | null>(null);
   const [shareBusy, setShareBusy] = useState<"copy" | "share" | null>(null);
   const [pasteBusy, setPasteBusy] = useState(false);
@@ -87,6 +88,8 @@ export function PairingWizard({
       if (!cancelled) {
         setQrCode({ link: deviceInvitation.link, dataUrl: value });
       }
+    }).catch(() => {
+      if (!cancelled) setQrErrorLink(deviceInvitation.link);
     });
     return () => {
       cancelled = true;
@@ -178,13 +181,16 @@ export function PairingWizard({
             {qrDataUrl ? (
               // QR codes are local data URLs; an image optimizer cannot improve
               // them and could accidentally move the invitation off-device.
-              // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={qrDataUrl}
                 width={256}
                 height={256}
                 alt="One-time Malink device invitation QR code"
               />
+            ) : qrErrorLink === deviceInvitation.link ? (
+              <div className="invitation-qr-loading">
+                This self-contained invitation is too large for one QR code. Copy or share the link instead.
+              </div>
             ) : (
               <div className="invitation-qr-loading">Generating QR code…</div>
             )}

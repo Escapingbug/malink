@@ -65,6 +65,11 @@ const pwaPort = await freePort()
 let matrixPort = await freePort()
 while (matrixPort === pwaPort) matrixPort = await freePort()
 const pwaUrl = `http://127.0.0.1:${pwaPort}`
+const pwaEnvironment = { ...process.env }
+delete pwaEnvironment.MALINK_GATEWAY_RELEASE_ID
+delete pwaEnvironment.MALINK_GATEWAY_BUILD_ID
+delete pwaEnvironment.MALINK_PWA_BASE_PATH
+delete pwaEnvironment.MALINK_BUILD_VERSION
 
 let browser: Browser | undefined
 let page: Page | undefined
@@ -92,28 +97,27 @@ try {
 
     process.stdout.write('[2/6] Building the real PWA and starting the deterministic Gateway…\n')
     pwaBuildOutput = await runProcess(
-        join(repositoryRoot, 'apps', 'pwa', 'node_modules', '.bin', 'vinext'),
+        join(repositoryRoot, 'apps', 'pwa', 'node_modules', '.bin', 'vite'),
         ['build'],
         {
             cwd: join(repositoryRoot, 'apps', 'pwa'),
-            env: process.env,
+            env: pwaEnvironment,
         },
         STARTUP_TIMEOUT_MS,
     )
     pwaProcess = managedProcess(
-        join(repositoryRoot, 'apps', 'pwa', 'node_modules', '.bin', 'wrangler'),
+        join(repositoryRoot, 'apps', 'pwa', 'node_modules', '.bin', 'vite'),
         [
-            'dev',
-            '--config',
-            'dist/server/wrangler.json',
+            'preview',
             '--port',
             String(pwaPort),
-            '--ip',
+            '--host',
             '127.0.0.1',
+            '--strictPort',
         ],
-        { cwd: join(repositoryRoot, 'apps', 'pwa'), env: process.env },
+        { cwd: join(repositoryRoot, 'apps', 'pwa'), env: pwaEnvironment },
     )
-    await waitForHttp(`${pwaUrl}/api/version`, STARTUP_TIMEOUT_MS)
+    await waitForHttp(`${pwaUrl}/version.json`, STARTUP_TIMEOUT_MS)
     gatewayProcess = startGateway({
         fixture: matrixFixture,
         providerDelayMs: 300_000,

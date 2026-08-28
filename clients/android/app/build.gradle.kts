@@ -46,7 +46,6 @@ val buildTimestamp = DateTimeFormatter
 val androidVersionName = "$androidBaseVersion-dev.$buildTimestamp+$sourceLabel"
 val androidNativeBuildId = "android-$buildTimestamp-$sourceLabel"
 val productionWebOrigin = "https://rd.anciety.my.id"
-val productionNativeUpdateOrigin = "https://rd.anciety.my.id"
 val releaseSigningValues = mapOf(
     "storeFile" to providers.environmentVariable("MALINK_ANDROID_SIGNING_STORE_FILE").orNull,
     "storePassword" to providers.environmentVariable("MALINK_ANDROID_SIGNING_STORE_PASSWORD").orNull,
@@ -89,11 +88,6 @@ android {
         versionName = androidVersionName
         buildConfigField("String", "NATIVE_BUILD_ID", "\"$androidNativeBuildId\"")
         buildConfigField("String", "APP_ORIGIN", "\"$productionWebOrigin\"")
-        buildConfigField(
-            "String",
-            "NATIVE_UPDATE_ORIGIN",
-            "\"$productionNativeUpdateOrigin\"",
-        )
         buildConfigField("boolean", "ALLOW_INSECURE_E2E_LOOPBACK", "false")
         buildConfigField("long", "MATRIX_FIRST_SYNC_TIMEOUT_MS", "45_000L")
 
@@ -138,18 +132,6 @@ android {
             applicationIdSuffix = ".e2e"
             versionNameSuffix = "-e2e"
             buildConfigField("String", "APP_ORIGIN", "\"$e2eWebOrigin\"")
-            val updateOrigin = providers
-                .environmentVariable("MALINK_ANDROID_E2E_UPDATE_ORIGIN")
-                .orNull
-                ?: "http://127.0.0.1:4173"
-            require(updateOrigin.matches(Regex("http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}"))) {
-                "MALINK_ANDROID_E2E_UPDATE_ORIGIN must use explicit loopback HTTP."
-            }
-            buildConfigField(
-                "String",
-                "NATIVE_UPDATE_ORIGIN",
-                "\"$updateOrigin\"",
-            )
             buildConfigField("boolean", "ALLOW_INSECURE_E2E_LOOPBACK", "true")
             // Keep the same watchdog path as production while making a
             // deliberately delayed first-sync regression finish quickly.

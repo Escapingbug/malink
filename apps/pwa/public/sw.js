@@ -1,10 +1,14 @@
-// v8 adds Web Push notification delivery. Changing the worker bytes makes
-// existing installations activate the updater once;
-// subsequent application builds are detected through /api/version.
-const CACHE_NAME = "malink-shell-v8";
+// v9 makes the application shell independent from an origin-root deployment.
+// Subsequent application builds are detected through static version.json.
+const CACHE_NAME = "malink-shell-v9";
 const PUSH_DEDUPE_CACHE = "malink-push-dedupe-v1";
 const PUSH_DEDUPE_LIMIT = 256;
-const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.svg"];
+const SCOPE_URL = new URL(self.registration.scope);
+const BASE_PATH = SCOPE_URL.pathname.endsWith("/")
+  ? SCOPE_URL.pathname
+  : `${SCOPE_URL.pathname}/`;
+const scopedUrl = (path) => new URL(path, SCOPE_URL).href;
+const APP_SHELL = [scopedUrl("./"), scopedUrl("manifest.webmanifest"), scopedUrl("favicon.svg")];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -46,12 +50,12 @@ self.addEventListener("fetch", (event) => {
     requestUrl.origin === self.location.origin &&
     (
       requestUrl.pathname.startsWith("/_matrix/") ||
-      requestUrl.pathname === "/api/version"
+      requestUrl.pathname === `${BASE_PATH}version.json`
     )
   ) {
     // The homeserver shares this origin in production. Matrix /sync is a
     // credentialed long poll and must never be cached or replayed by the app
-    // shell worker. The deployment version is also authoritative and must
+    // shell worker. The static deployment version is also authoritative and must
     // never fall back to a cached response; leaving these requests unhandled
     // sends them directly to the network.
     return;
@@ -63,18 +67,18 @@ self.addEventListener("fetch", (event) => {
         .then((response) => {
           if (response.ok) {
             const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put("/", copy));
+            caches.open(CACHE_NAME).then((cache) => cache.put(scopedUrl("./"), copy));
           }
           return response;
         })
-        .catch(() => caches.match("/")),
+        .catch(() => caches.match(scopedUrl("./"))),
     );
     return;
   }
 
   if (
     requestUrl.origin === self.location.origin &&
-    requestUrl.pathname.startsWith("/assets/")
+    requestUrl.pathname.startsWith(`${BASE_PATH}assets/`)
   ) {
     // Asset names contain their content hash and are immutable. Prefer the
     // Cache API so a slow origin cannot hold a warm client on the crypto WASM
@@ -149,8 +153,8 @@ async function handleMalinkPush(event) {
   const presentation = notificationPresentation(payload.status);
   await self.registration.showNotification(presentation.title, {
     body: presentation.body,
-    icon: "/favicon.svg",
-    badge: "/favicon.svg",
+    icon: scopedUrl("favicon.svg"),
+    badge: scopedUrl("favicon.svg"),
     tag: `malink-turn-${payload.eventId}`,
     renotify: false,
     data: {
@@ -184,7 +188,7 @@ async function openNotificationTarget(data) {
     data.type !== "malink.turn-terminal" ||
     !validOpaqueId(data.sessionId)
   ) return;
-  const route = `/#session=${encodeURIComponent(data.sessionId)}`;
+  const route = `${scopedUrl("./")}#session=${encodeURIComponent(data.sessionId)}`;
   const windows = await self.clients.matchAll({
     type: "window",
     includeUncontrolled: true,

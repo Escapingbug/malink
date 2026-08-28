@@ -13,8 +13,9 @@ it is not execution authority and is not used as an application RPC queue.
   so TCC consent survives online release-directory switches. Filesystem
   preflights run out of process and fail remotely with a bounded, actionable
   permission error instead of blocking the Matrix execution chain.
-- The same online-updatable PWA is the UI in desktop browsers and inside the
-  first-party Android shell.
+- The same statically hosted, online-updatable PWA is the UI in desktop browsers
+  and inside the first-party Android shell. The APK can select an official,
+  regional, or self-hosted HTTPS static-service base URL.
 - The Android foreground connection service owns durable background Matrix
   sync, command reconciliation, local projection, and task notifications.
 - A workspace is organized as project rooms; one encrypted room is exactly one
@@ -222,15 +223,16 @@ backgrounded. It owns:
 - notification emission when an Agent task reaches a user-relevant result;
 - versioned store migrations before connection starts.
 
-Native application releases are account state owned by the Gateway. Deployment
-stores an immutable APK first, then submits its metadata to the owner-only
-Gateway admin socket. The Gateway persists the latest release and includes it
-in the ordinary signed, encrypted `workspace.snapshot`; offline devices receive
-only that latest state when Matrix synchronization resumes. Android verifies
-the APK hash, package identity, monotonic version, architecture, and application
-signing certificate before `PackageInstaller` can replace it. Downloads are
-resumable and rebuildable; Matrix tokens, trust, commands, and history never
-enter update storage. There is no public update manifest or second update key.
+Native application releases are discovered from a bounded static Alpha channel
+manifest under the user-selected UI service. The service stores an immutable
+APK first, then atomically replaces the channel JSON; Android checks on startup
+and every six hours without requiring a Gateway or Matrix connection. A Gateway
+may also include the same metadata in its signed, encrypted
+`workspace.snapshot` for compatibility. Android verifies the APK hash, package
+identity, monotonic version, architecture, and application signing certificate
+before `PackageInstaller` can replace it. Downloads are resumable and
+rebuildable; Matrix tokens, trust, commands, and history never enter update
+storage. The public manifest is discovery metadata, not an update-signing key.
 
 The WebView subscribes to a versioned native bridge and renders service-owned
 state. Its `malink.events.ack` method advances only the local Native-to-WebView

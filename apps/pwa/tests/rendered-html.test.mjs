@@ -4,51 +4,8 @@ import test from "node:test";
 
 const appRoot = new URL("../", import.meta.url);
 
-async function render() {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-
-  return worker.fetch(
-    new Request("http://localhost/", {
-      headers: { accept: "text/html" },
-    }),
-    {
-      ASSETS: {
-        fetch: async () => new Response("Not found", { status: 404 }),
-      },
-    },
-    {
-      waitUntil() {},
-      passThroughOnException() {},
-    },
-  );
-}
-
-async function fetchBuiltRoute(pathname) {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-${pathname}`);
-  const { default: worker } = await import(workerUrl.href);
-  return worker.fetch(
-    new Request(`http://localhost${pathname}`),
-    {
-      ASSETS: {
-        fetch: async () => new Response("Not found", { status: 404 }),
-      },
-    },
-    {
-      waitUntil() {},
-      passThroughOnException() {},
-    },
-  );
-}
-
-test("server-renders the migration-safe Malink boot shell", async () => {
-  const response = await render();
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
-
-  const html = await response.text();
+test("builds a migration-safe static Malink boot shell", async () => {
+  const html = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
   assert.match(html, /<title>Your agents, anywhere · Malink<\/title>/i);
   assert.match(html, /Preparing this version/);
   assert.match(html, /Checking saved connection and recovery state before Malink starts/);
@@ -58,6 +15,12 @@ test("server-renders the migration-safe Malink boot shell", async () => {
   assert.doesNotMatch(html, /Connection mode/);
   assert.doesNotMatch(html, /Permission required/);
   assert.doesNotMatch(html, /Your site is taking shape|codex-preview/i);
+  await access(new URL("../dist/404.html", import.meta.url));
+  await access(new URL("../dist/.nojekyll", import.meta.url));
+  await assert.rejects(access(new URL("../dist/server/index.js", import.meta.url)));
+  await assert.rejects(access(new URL("app/api/version/route.ts", appRoot)));
+  await assert.rejects(access(new URL("app/api/invitations/route.ts", appRoot)));
+  await assert.rejects(access(new URL("worker/index.ts", appRoot)));
 });
 
 test("ships a complete installable offline shell", async () => {
@@ -86,23 +49,23 @@ test("ships a complete installable offline shell", async () => {
 
   assert.equal(manifest.name, "Malink — Secure Agent Workspace");
   assert.equal(manifest.display, "standalone");
-  assert.equal(manifest.start_url, "/");
+  assert.equal(manifest.start_url, "./");
   assert.ok(manifest.icons.length > 0);
-  assert.match(serviceWorker, /malink-shell-v8/);
+  assert.match(serviceWorker, /malink-shell-v9/);
   assert.match(serviceWorker, /caches\.open\(CACHE_NAME\)/);
   assert.match(serviceWorker, /event\.request\.mode === "navigate"/);
   assert.match(serviceWorker, /cache:\s*"no-store"/);
-  assert.match(serviceWorker, /requestUrl\.pathname\.startsWith\("\/assets\/"\)/);
+  assert.match(serviceWorker, /requestUrl\.pathname\.startsWith\(`\$\{BASE_PATH\}assets\/`\)/);
   assert.match(
     serviceWorker,
-    /pathname\.startsWith\("\/assets\/"\)[\s\S]*?caches\.match\(event\.request\)[\s\S]*?fetch\(event\.request\)/,
+    /pathname\.startsWith\(`\$\{BASE_PATH\}assets\/`\)[\s\S]*?caches\.match\(event\.request\)[\s\S]*?fetch\(event\.request\)/,
   );
   assert.match(serviceWorker, /pathname\.startsWith\("\/_matrix\/"\)/);
   assert.match(
     serviceWorker,
     /pathname\.startsWith\("\/_matrix\/"\)[\s\S]*?return;/,
   );
-  assert.match(serviceWorker, /pathname === "\/api\/version"/);
+  assert.match(serviceWorker, /pathname === `\$\{BASE_PATH\}version\.json`/);
   assert.match(serviceWorker, /addEventListener\("push"/);
   assert.match(serviceWorker, /showNotification/);
   assert.match(serviceWorker, /notificationclick/);
@@ -468,13 +431,10 @@ test("ships a complete installable offline shell", async () => {
   await assert.rejects(access(new URL("app/_sites-preview", appRoot)));
 });
 
-test("publishes an authoritative uncached build version", async () => {
-  const response = await fetchBuiltRoute("/api/version");
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type") ?? "", /^application\/json\b/i);
-  assert.match(response.headers.get("cache-control") ?? "", /no-store/i);
-  assert.equal(response.headers.get("cdn-cache-control"), "no-store");
-  const body = await response.json();
+test("publishes a static authoritative build version", async () => {
+  const body = JSON.parse(
+    await readFile(new URL("../dist/version.json", import.meta.url), "utf8"),
+  );
   assert.match(body.buildVersion, /^[A-Za-z0-9._+-]+$/u);
   if (process.env.MALINK_GATEWAY_RELEASE_ID && process.env.MALINK_GATEWAY_BUILD_ID) {
     assert.deepEqual(body.gatewayRelease, {
@@ -605,9 +565,6 @@ test("pairs a Gateway without exposing Matrix fingerprints and signs strict comm
     app,
     matrixAuth,
     chatMessages,
-    invitationRelay,
-    invitationRoute,
-    relayStore,
     packageJson,
     malinkClient,
     webMalinkClient,
@@ -623,12 +580,6 @@ test("pairs a Gateway without exposing Matrix fingerprints and signs strict comm
       readFile(new URL("app/MalinkApp.tsx", appRoot), "utf8"),
       readFile(new URL("app/matrixAuth.ts", appRoot), "utf8"),
       readFile(new URL("app/chatMessages.ts", appRoot), "utf8"),
-      readFile(new URL("app/invitationRelay.ts", appRoot), "utf8"),
-      readFile(new URL("app/api/invitations/route.ts", appRoot), "utf8"),
-      readFile(
-        new URL("app/api/invitations/relayStore.ts", appRoot),
-        "utf8",
-      ),
       readFile(new URL("package.json", appRoot), "utf8"),
       readFile(new URL("app/client/MalinkClient.ts", appRoot), "utf8"),
       readFile(
@@ -797,15 +748,9 @@ test("pairs a Gateway without exposing Matrix fingerprints and signs strict comm
   assert.match(wizard, /One-time Malink device invitation QR code/);
   assert.match(wizard, /margin: 4/);
   assert.match(wizard, /width: 256/);
-  assert.match(app, /shortenDeviceInvitation/);
-  assert.match(app, /resolveShortDeviceInvitation/);
-  assert.match(invitationRelay, /name: "AES-GCM"/);
-  assert.match(invitationRelay, /url\.hash = new URLSearchParams/);
-  assert.match(invitationRoute, /action === "store"/);
-  assert.match(invitationRoute, /action === "resolve"/);
-  assert.match(relayStore, /new Map<string, EncryptedInvitationRelayEntry>/);
-  assert.match(relayStore, /INVITATION_RELAY_MAX_ENTRIES = 256/);
-  assert.doesNotMatch(invitationRoute, /loginToken|accessToken|pairingLink/);
+  assert.match(wizard, /Copy or share the link instead/);
+  assert.doesNotMatch(app, /\/api\/invitations|shortenDeviceInvitation/);
+  assert.match(app, /return fullInvitation/);
   assert.match(settings, /"Sign in"/);
   assert.match(settings, /Advanced: use an access token/);
   assert.match(app, /operation: "device\.invite"/);

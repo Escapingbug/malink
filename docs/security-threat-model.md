@@ -23,12 +23,21 @@ Malink trust root.
   service definition and policy, plus the local Gateway account that holds its
   client credential.
 
-The PWA hosting origin is part of the trusted computing base. A production
-release must not load executable JavaScript from the Matrix homeserver. The
+The PWA hosting origin is part of the trusted computing base. In Android this
+means the user-selected static-service origin: changing it requires native
+confirmation, rebuilds the WebView bridge allowlist, and is recoverable from a
+native screen if that service stops loading. A production release must not load
+executable JavaScript from the Matrix homeserver. The
 Matrix SDK API receives only opaque Malink envelopes, but a compromised
 dependency executing arbitrary code in the same JavaScript realm remains a
 software-supply-chain compromise; process/Worker isolation is a separate
 hardening boundary.
+
+The APK's public static update manifest is discovery metadata rather than a
+trust root. A compromised mirror can suppress or delay discovery, but an APK is
+not offered to `PackageInstaller` until its real package, version, hash, size,
+and signing certificate have been checked against the installed application.
+Android independently enforces the application signature during installation.
 
 ## Untrusted inputs
 

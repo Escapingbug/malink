@@ -186,12 +186,6 @@ import {
   sessionsAvailableForAutomaticSelection,
 } from "./pendingSessionDeletion";
 import {
-  hasShortDeviceInvitation,
-  resolveShortDeviceInvitation,
-  shortenDeviceInvitation,
-  shortenEncryptedInvitation,
-} from "./invitationRelay";
-import {
   compareChatMessages,
   findOptimisticMessageId,
   isAgentWorkMessage,
@@ -902,7 +896,6 @@ function AttachmentCard({
       {previewUrl && isImage && (
         // Decrypted attachments use short-lived local blob: URLs, which are
         // intentionally outside the Next image optimization pipeline.
-        // eslint-disable-next-line @next/next/no-img-element
         <img src={previewUrl} alt={attachment.name} />
       )}
       <div className="attachment-card-copy">
@@ -2586,12 +2579,11 @@ function MalinkAppRuntime() {
     const route = pairingRouteFromUrl(window.location.href);
     const link = route.pairingLink;
     const invitation = route.deviceInvitation;
-    const shortInvitation = route.shortInvitation;
+    const legacyShortInvitation = route.legacyShortInvitation;
     const deferStoredStartupForPairing =
       shouldDeferStoredMatrixStartupForPairing({
         pairingLink: link,
         deviceInvitation: invitation,
-        shortInvitation,
       });
     const rejectedQueryPairing = route.rejectedQueryPairing;
     if (hasPairingRoute(route)) {
@@ -2603,12 +2595,19 @@ function MalinkAppRuntime() {
     }
     if (invitation) void openDeviceInvitation(invitation);
     else if (link) void openPairingLink(link);
-    else if (shortInvitation) void openPairingLink(shortInvitation);
     void (async () => {
       if (rejectedQueryPairing) {
         await Promise.resolve();
         setConnectionError(
           "Pairing links in the URL query are not accepted. Scan the QR code or use a fragment invitation.",
+        );
+        setSettingsOpen(true);
+        return;
+      }
+      if (legacyShortInvitation) {
+        await Promise.resolve();
+        setConnectionError(
+          "This invitation used the retired short-link service. Create and share a new self-contained invitation.",
         );
         setSettingsOpen(true);
         return;
@@ -2697,7 +2696,7 @@ function MalinkAppRuntime() {
   useEffect(() => {
     const openRuntimePairingRoute = () => {
       const route = pairingRouteFromUrl(window.location.href);
-      if (!route.pairingLink && !route.deviceInvitation && !route.shortInvitation) return;
+      if (!hasPairingRoute(route)) return;
       window.history.replaceState(
         window.history.state,
         "",
@@ -2705,7 +2704,12 @@ function MalinkAppRuntime() {
       );
       if (route.deviceInvitation) void openDeviceInvitation(route.deviceInvitation);
       else if (route.pairingLink) void openPairingLink(route.pairingLink);
-      else if (route.shortInvitation) void openPairingLink(route.shortInvitation);
+      else if (route.legacyShortInvitation) {
+        setConnectionError(
+          "This invitation used the retired short-link service. Create and share a new self-contained invitation.",
+        );
+        setSettingsOpen(true);
+      }
     };
     window.addEventListener("hashchange", openRuntimePairingRoute);
     return () => window.removeEventListener("hashchange", openRuntimePairingRoute);
@@ -4534,21 +4538,6 @@ function MalinkAppRuntime() {
     setConnectionError(null);
     setPairingError(null);
     try {
-      if (
-        hasShortDeviceInvitation(
-          link,
-          typeof window === "undefined"
-            ? "https://malink.invalid/"
-            : window.location.href,
-        )
-      ) {
-        const invitationLink = await resolveShortDeviceInvitation(
-          link,
-          window.location.href,
-        );
-        await openDeviceInvitation(invitationLink);
-        return;
-      }
       if (deviceInvitationFromLink(link)) {
         await openDeviceInvitation(link);
         return;
@@ -4839,11 +4828,7 @@ function MalinkAppRuntime() {
                 }
               : {}),
           });
-          const shortened = await shortenDeviceInvitation(
-            fullInvitation,
-            window.location.href,
-          );
-          if (shortened.expiresAt <= Date.now() + 15_000) {
+          if (fullInvitation.expiresAt <= Date.now() + 15_000) {
             await connection.releaseCommand(gatewayInvitation.commandId);
             pendingGatewayInvitationRef.current = null;
             matrixLoginTokenLifecycleRef.current.clear();
@@ -4854,7 +4839,7 @@ function MalinkAppRuntime() {
           await connection.releaseCommand(gatewayInvitation.commandId);
           pendingGatewayInvitationRef.current = null;
           matrixLoginTokenLifecycleRef.current.clear();
-          return shortened;
+          return fullInvitation;
         },
       );
       showDeviceInvitation(generated);
@@ -4924,12 +4909,10 @@ function MalinkAppRuntime() {
         );
       }
       const enrollment = parseGatewayEnrollmentInvitationResult(completion.result);
-      const link = await shortenEncryptedInvitation(
-        enrollment.enrollmentLink,
-        enrollment.expiresAt,
-        window.location.href,
-      );
-      setGatewayEnrollmentInvitation({ link, expiresAt: enrollment.expiresAt });
+      setGatewayEnrollmentInvitation({
+        link: enrollment.enrollmentLink,
+        expiresAt: enrollment.expiresAt,
+      });
     } catch (error) {
       setGatewayEnrollmentError(formatUiError(error));
     } finally {

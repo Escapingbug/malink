@@ -43,6 +43,10 @@ export function createNativeClientRelease(input: {
   artifactName: string;
 }): NativeClientRelease {
   const { metadata } = input;
+  const artifactUrl = new URL(
+    `native-updates/releases/android/${input.channel}/${metadata.versionCode}/${input.artifactName}`,
+    input.baseUrl.endsWith("/") ? input.baseUrl : `${input.baseUrl}/`,
+  );
   return nativeClientReleaseSchema.parse({
     platform: "android",
     channel: input.channel,
@@ -58,7 +62,7 @@ export function createNativeClientRelease(input: {
     importance: input.importance,
     releaseNotes: input.releaseNotes,
     artifact: {
-      url: `${input.baseUrl}/native-updates/releases/android/${input.channel}/${metadata.versionCode}/${input.artifactName}`,
+      url: artifactUrl.toString(),
       size: input.apkBytes.byteLength,
       sha256: createHash("sha256").update(input.apkBytes).digest("hex"),
       signingCertificateSha256: metadata.signingCertificateSha256,
@@ -91,10 +95,11 @@ function main(argv: string[]) {
   if (
     (baseUrl.protocol !== "https:" && !loopbackE2eOrigin) ||
     baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash ||
-    baseUrl.pathname !== "/"
+    !baseUrl.pathname.startsWith("/") || baseUrl.pathname.includes("//")
   ) {
-    throw new Error("--base-url must be a credential-free HTTPS origin.");
+    throw new Error("--base-url must be a credential-free HTTPS base URL.");
   }
+  if (!baseUrl.pathname.endsWith("/")) baseUrl.pathname = `${baseUrl.pathname}/`;
   const importance = options.importance ?? "recommended";
   if (importance !== "recommended" && importance !== "required") {
     throw new Error("--importance must be recommended or required.");
@@ -111,7 +116,7 @@ function main(argv: string[]) {
     buildId,
     channel,
     publishedAt,
-    baseUrl: baseUrl.origin,
+    baseUrl: baseUrl.toString(),
     importance,
     releaseNotes,
     artifactName,
@@ -125,6 +130,12 @@ function main(argv: string[]) {
     String(metadata.versionCode),
   );
   const releasePath = join(outputRoot, "client-release.json");
+  const staticReleasePath = join(
+    outputRoot,
+    "channels",
+    channel,
+    "client-release.json",
+  );
   mkdirSync(releaseDirectory, { recursive: true });
   mkdirSync(dirname(releasePath), { recursive: true });
   const destinationApk = join(releaseDirectory, artifactName);
@@ -137,8 +148,11 @@ function main(argv: string[]) {
     copyFileSync(apkPath, destinationApk);
   }
   atomicWrite(releasePath, `${JSON.stringify(release)}\n`);
+  mkdirSync(dirname(staticReleasePath), { recursive: true });
+  atomicWrite(staticReleasePath, `${JSON.stringify(release)}\n`);
   process.stdout.write(`${JSON.stringify({
     releasePath,
+    staticReleasePath,
     artifactPath: destinationApk,
     release,
   }, null, 2)}\n`);

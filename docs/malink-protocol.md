@@ -44,7 +44,7 @@ as the control plane that establishes device trust and distributes MLP/3 keys.
 | User prompt or mutation | ordinary `m.room.message` command event | device signature, certificate, stable `command_id` |
 | Agent/tool/status output | ordinary `m.room.message` thread event | Gateway signature and stable logical `event_id` |
 | Current project projection | ordinary signed snapshot event | `io.malink.project.current.v3` points to its physical event ID |
-| Current native client release | account-owned workspace snapshot field | Gateway admin publication, replicated to active project rooms |
+| Current native client release compatibility copy | account-owned workspace snapshot field | Gateway admin publication, replicated to active project rooms; primary discovery may use the selected static service |
 | Gateway release status | account-owned workspace snapshot field plus command result | pinned release signer and local update supervisor |
 | Project key grant | directly addressed Room State | `io.malink.project.key_grant.v3` keyed by device ID |
 | Transcript and audit | thread timeline and relations | append-only signed events |

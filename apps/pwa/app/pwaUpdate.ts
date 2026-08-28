@@ -1,4 +1,4 @@
-import { MALINK_BUILD_VERSION } from "./buildInfo";
+import { MALINK_BASE_PATH, MALINK_BUILD_VERSION } from "./buildInfo";
 
 const UPDATE_CHECK_INTERVAL_MS = 5 * 60_000;
 const UPDATE_MARKER_KEY = "malink:pwa-update-from";
@@ -193,7 +193,7 @@ export function installPwaUpdateFlow(
 
   void environment.serviceWorker
     .register(
-      `/sw.js?v=${encodeURIComponent(buildVersion)}`,
+      `${MALINK_BASE_PATH}sw.js?v=${encodeURIComponent(buildVersion)}`,
       { updateViaCache: "none" },
     )
     .then((nextRegistration) => {
@@ -279,7 +279,7 @@ export function registerPwaUpdates(
 }
 
 async function fetchLatestBuildVersion(currentVersion: string): Promise<string> {
-  const url = new URL("/api/version", window.location.origin);
+  const url = new URL(`${MALINK_BASE_PATH}version.json`, window.location.origin);
   url.searchParams.set("current", currentVersion);
   url.searchParams.set("request", crypto.randomUUID());
   const response = await fetch(url, {

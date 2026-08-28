@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
 :root {
+  --font-geist-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-geist-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --ink: #182033;
   --muted: #788399;
   --line: #e6e9f0;
@@ -36,7 +38,7 @@ body {
     radial-gradient(circle at 76% 0%, rgb(105 87 229 / 7%), transparent 28%),
     #eef0f5;
   color: var(--ink);
-  font-family: var(--font-geist-sans), Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-geist-sans);
   -webkit-font-smoothing: antialiased;
 }
 

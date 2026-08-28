@@ -1,8 +1,10 @@
 # Malink Android native host
 
-This is the Android-first native host for the continuously updated Malink UI
-at `https://rd.anciety.my.id`. It is a Kotlin Android application; it does not
-use Tauri and does not bundle a second offline frontend.
+This is the Android-first native host for the continuously updated static
+Malink UI. The official default is `https://rd.anciety.my.id`, but the user can
+select another HTTPS mirror or a self-hosted base URL without rebuilding the
+APK. It is a Kotlin Android application; it does not use Tauri and does not
+bundle a second offline frontend.
 
 The browser PWA remains a complete standalone client. Inside the APK, the same
 hosted UI selects the native client only after a strict capability handshake
@@ -12,9 +14,9 @@ one identity from being driven by both transports.
 
 ## Runtime and lifecycle
 
-- The main Activity loads only the exact production HTTPS origin in a secured
-  WebView. Compatible UI releases arrive through the existing online update
-  path without installing another APK.
+- The main Activity loads only the selected HTTPS static-service origin and
+  base path in a secured WebView. Compatible UI releases are ordinary static
+  file deployments and arrive without installing another APK.
 - AndroidX WebKit exposes an origin-restricted, main-frame-only JSON-RPC port.
   The application never uses `addJavascriptInterface`.
 - `MalinkConnectionService` owns Matrix SDK login, E2EE, native sliding sync,
@@ -36,6 +38,12 @@ one identity from being driven by both transports.
   lifecycle transitions, Matrix startup stages, timeouts, retries, and exception
   class names. Exported reports never include tokens, message content, room/user
   identifiers, device keys, raw SDK messages, or free-form exception messages.
+- The ongoing notification and PWA settings expose **Static service**. The user
+  can return to the built-in official endpoint or enter any credential-free
+  HTTPS base URL, including a regional mirror or self-hosted path. A native
+  confirmation explains that this origin supplies executable UI code and
+  receives the origin-restricted native bridge. If the selected service cannot
+  load, the native recovery screen retains the same setting action.
 - Explicit Disconnect finishes the native runtime before stopping the service.
   Remove This Device requires a native confirmation, logs the Matrix device out
   while online, and only then wipes local credentials. A failed remote logout
@@ -128,6 +136,32 @@ translate into a pairing cancellation.
 - Cleartext traffic, mixed content, file/content access, wildcard bridge
   origins, external frames, redirects during sensitive profile recovery, and
   TLS/certificate errors fail closed.
+- Changing the static service rebuilds the WebView and bridge allowlist before
+  loading the new base URL. Browser storage remains isolated by Web origin;
+  native Matrix credentials and private keys never move to JavaScript.
+
+## Static APK updates
+
+The foreground service checks the selected static service's Alpha channel on
+startup and every six hours:
+
+```text
+native-updates/channels/alpha/client-release.json
+```
+
+When the manifest names a newer compatible build, Android downloads the
+immutable APK from the same selected base URL, resumes partial downloads, and
+shows a native notification when it is ready. The static manifest is discovery
+metadata, not update authority: before installation Malink verifies its bounded
+size and SHA-256, package name, version code, ABI/Android/bridge compatibility,
+and that the APK's actual signing certificate matches the installed app.
+Android's `PackageInstaller` enforces the application signature again and keeps
+the final installation confirmation native.
+
+A mirror therefore hosts only files. It does not need a database, update API,
+Gateway, Matrix credentials, or a second release-signing key. It must preserve
+the `native-updates/` directory layout and disable caching for the channel
+manifest. See [the deployment guide](../../deploy/native-update/README.md).
 
 ## Build and validation
 
@@ -153,7 +187,8 @@ info, the persistent notification, and the PWA Gateway settings. This lets a
 pairing failure screenshot identify the installed native binary independently
 of the online PWA build.
 
-The JVM suite covers bridge negotiation and cancellation, pairing/trust and
+The JVM suite covers static-service URL/origin isolation and release rebasing,
+bridge negotiation and cancellation, pairing/trust and
 cross-language crypto fixtures, transport rotation recovery, durable commands,
 event persistence/replay, encrypted transfers, Matrix login/runtime recovery,
 and lifecycle policy. The PWA has separate bridge selection, conformance, and
@@ -188,7 +223,8 @@ after explicit approval.
 - Add session-specific notification deep links and product message
   notifications; the current ongoing notification opens the main Activity.
 - Complete stable Android application-signing key custody and the one-time
-  transition from existing debug-signed development installs. Gateway-published
-  releases already use the account workspace snapshot as their update channel.
+  transition from existing debug-signed development installs. Static channel
+  releases and the compatibility Gateway snapshot path use the same APK
+  signature acceptance boundary.
 - Validate the `remoteMessaging` classification with Google Play policy before
   Play distribution. Directly distributed APKs do not undergo that review.

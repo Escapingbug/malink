@@ -189,9 +189,9 @@ pnpm test:e2e:alpha-live
 ```
 
 The Web runner starts an official disposable Synapse fixture with a per-run
-container, data directory, and host port, builds the current PWA production
-artifact, serves it through the
-local Cloudflare Workers runtime, opens two isolated Chrome contexts, and
+container, data directory, and host port, builds the current static PWA
+production artifact, serves its files from the local fixture origin, opens two
+isolated Chrome contexts, and
 starts the current Gateway with a loopback-only deterministic provider. It
 never falls back to a fake port or development server. Concurrent worktrees
 therefore cannot replace each other's Synapse fixture or invalidate each
@@ -226,7 +226,7 @@ APK storage.
 | Gateway restart over a legacy durable Room State outbox | Enforced: the persisted Gateway state is downgraded to the pre-command-cursor shape before restart, then active work and a queued create must recover | Shared Gateway path is exercised by the isolated Alpha gate |
 | Retained APK data across replay-ledger rebuild and revision-epoch rotation | Gateway session inventory must survive the rebuild | Enforced: an offline durable prompt, background delivery, notification, the next prompt, Agent invocation, and browser/APK convergence must all complete exactly once without reinstalling or repairing the APK |
 | APK cover-install over a legacy encrypted submitted command | Not applicable | Enforced: ambiguous command is quarantined without replay, Gateway sequence is reconciled, new create/delete succeeds, and migration runs once across restart |
-| Gateway-published native release, download, cover-install, and data preservation | Gateway admin and MLP workspace snapshot publication are enforced | The APK download/install path is enforced independently by `scripts/android-update-live-e2e.ts` on the isolated `.e2e` package |
+| Static native release discovery, download, cover-install, and data preservation | Static bundle generation and optional Gateway compatibility publication are enforced | The APK download/install path is enforced independently by `scripts/android-update-live-e2e.ts` on the isolated `.e2e` package |
 | Stale cross-device command review, discard, and immediate retry | Not yet enforced | Enforced by the isolated Alpha gate |
 | Android foreground-service and completion notifications | Not applicable | Enforced by the isolated Alpha gate |
 | Privacy bind, exact review, deny, sanitize, restore, fail-closed, and encrypted local state | Enforced on two browsers | Enforced by the isolated Alpha gate, including process restart |

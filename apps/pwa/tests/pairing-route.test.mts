@@ -11,8 +11,17 @@ test("extracts a pairing invitation received by an already running app", () => {
   assert.equal(hasPairingRoute(route), true);
 });
 
-test("keeps short invitation material long enough to resolve it and then removes it from history", () => {
-  const route = pairingRouteFromUrl("https://malink.example/#i=abc&k=secret");
-  assert.match(route.shortInvitation ?? "", /#i=abc&k=secret$/u);
+test("extracts a self-contained device invitation and removes it from history", () => {
+  const route = pairingRouteFromUrl("https://malink.example/#invite=signed-payload");
+  assert.equal(route.deviceInvitation, "signed-payload");
   assert.equal(route.sanitizedPath, "/");
+});
+
+test("sanitizes a retired short invitation without trying to resolve it", () => {
+  const route = pairingRouteFromUrl("https://malink.example/#i=abc&k=secret");
+  assert.equal(route.legacyShortInvitation, true);
+  assert.equal(route.pairingLink, null);
+  assert.equal(route.deviceInvitation, null);
+  assert.equal(route.sanitizedPath, "/");
+  assert.equal(hasPairingRoute(route), true);
 });

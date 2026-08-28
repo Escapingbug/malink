@@ -28,6 +28,12 @@ internal class NativeUpdateStore(private val context: Context) {
             }
         }
 
+    var lastStaticCheckAt: Long
+        get() = preferences.getLong(KEY_LAST_STATIC_CHECK_AT, 0L)
+        set(value) {
+            preferences.edit(commit = true) { putLong(KEY_LAST_STATIC_CHECK_AT, value) }
+        }
+
     fun partialFile(versionCode: Long): File = File(directory, "$versionCode.apk.partial")
     fun readyFile(versionCode: Long): File = File(directory, "$versionCode.apk")
 
@@ -65,6 +71,7 @@ internal class NativeUpdateStore(private val context: Context) {
             require(File(directory, fileName).canonicalFile.parentFile == directory.canonicalFile)
         }
         require(highestVersionCode >= 0)
+        require(lastStaticCheckAt >= 0)
     }
 
     fun reset() {
@@ -88,6 +95,7 @@ internal class NativeUpdateStore(private val context: Context) {
         const val LEGACY_DIRECTORY = "native-update-v1"
         const val KEY_HIGHEST_VERSION_CODE = "highest-version-code"
         const val KEY_ACCEPTED_RELEASE = "accepted-release"
+        const val KEY_LAST_STATIC_CHECK_AT = "last-static-check-at"
         const val KEY_READY_RELEASE = "ready-release"
         const val KEY_READY_FILE = "ready-file"
         val READY_FILE_PATTERN = Regex("^[1-9][0-9]{0,10}\\.apk$")

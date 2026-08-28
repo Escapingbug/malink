@@ -30,6 +30,7 @@ import id.my.anciety.malink.matrix.MatrixBootstrap
 import id.my.anciety.malink.matrix.MatrixSdkPlatform
 import id.my.anciety.malink.matrix.PublicMatrixSession
 import id.my.anciety.malink.web.MainActivity
+import id.my.anciety.malink.update.NativeUpdateManager
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +38,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -86,6 +88,7 @@ class MalinkConnectionService : Service() {
         registerPowerReceiver()
         createNotificationChannel()
         recordTaskNotificationChannel(taskNotifier.createChannel())
+        startStaticUpdateChecks()
         initializeClientRuntime()
         if (
             preferences.restoreEnabled &&
@@ -175,6 +178,17 @@ class MalinkConnectionService : Service() {
                     "service.runtime_failed",
                     mapOf("error" to error.javaClass.simpleName.take(160)),
                 )
+            }
+        }
+    }
+
+    private fun startStaticUpdateChecks() {
+        serviceScope.launch(Dispatchers.IO) {
+            val manager = NativeUpdateManager.get(this@MalinkConnectionService)
+            while (currentCoroutineContext().isActive) {
+                val waitMillis = manager.millisecondsUntilNextStaticCheck()
+                if (waitMillis > 0L) delay(waitMillis)
+                manager.checkStaticRelease()
             }
         }
     }
@@ -340,8 +354,15 @@ class MalinkConnectionService : Service() {
                 )
                 .addAction(
                     0,
-                    getString(R.string.task_notification_settings),
-                    taskNotifier.channelSettingsPendingIntent(),
+                    getString(R.string.notification_static_service),
+                    PendingIntent.getActivity(
+                        this,
+                        3,
+                        Intent(this, MainActivity::class.java)
+                            .setAction(MainActivity.ACTION_STATIC_SERVICE_SETTINGS)
+                            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                    ),
                 )
                 .addAction(
                     0,

@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 describe("Android update publisher", () => {
-  it("uploads to the SSH artifact host and publishes through the local Gateway", () => {
+  it("publishes the static channel before the optional local Gateway", () => {
     const root = mkdtempSync(join(tmpdir(), "malink-update-publisher-"));
     temporaryDirectories.push(root);
     const fakeBin = join(root, "bin");
@@ -31,20 +31,27 @@ describe("Android update publisher", () => {
       `releases/android/alpha/${versionCode}/malink-native-alpha-42.apk`;
     const artifact = join(bundle, relativeArtifact);
     const releasePath = join(bundle, "client-release.json");
+    const staticReleasePath = join(
+      bundle,
+      "channels",
+      "alpha",
+      "client-release.json",
+    );
     const adminSocket = join(root, "gateway-data", "admin.sock");
     const identityFile = join(root, "deploy-key");
     const sshLog = join(root, "ssh.log");
     const scpLog = join(root, "scp.log");
     const curlLog = join(root, "curl.log");
+    const eventLog = join(root, "events.log");
     const bytes = Buffer.from("signed-apk-fixture");
     const artifactUrl =
-      `https://rd.anciety.my.id/native-updates/${relativeArtifact}`;
+      `https://pages.example/malink/native-updates/${relativeArtifact}`;
 
     mkdirSync(dirname(artifact), { recursive: true });
     mkdirSync(fakeBin, { recursive: true });
     writeFileSync(artifact, bytes);
     writeFileSync(identityFile, "test-only-key");
-    writeFileSync(releasePath, JSON.stringify({
+    const release = JSON.stringify({
       platform: "android",
       channel: "alpha",
       architecture: "arm64-v8a",
@@ -54,16 +61,22 @@ describe("Android update publisher", () => {
         size: bytes.byteLength,
         sha256: createHash("sha256").update(bytes).digest("hex"),
       },
-    }));
+    });
+    mkdirSync(dirname(staticReleasePath), { recursive: true });
+    writeFileSync(releasePath, release);
+    writeFileSync(staticReleasePath, release);
     writeExecutable(join(fakeBin, "ssh"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$MALINK_TEST_SSH_LOG"
+printf 'ssh %s\\n' "$*" >> "$MALINK_TEST_EVENT_LOG"
 cat >/dev/null || true
 `);
     writeExecutable(join(fakeBin, "scp"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$MALINK_TEST_SCP_LOG"
+printf 'scp %s\\n' "$*" >> "$MALINK_TEST_EVENT_LOG"
 `);
     writeExecutable(join(fakeBin, "curl"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$MALINK_TEST_CURL_LOG"
+printf 'curl %s\\n' "$*" >> "$MALINK_TEST_EVENT_LOG"
 printf '{"changed":true}'
 `);
 
@@ -79,6 +92,7 @@ printf '{"changed":true}'
         MALINK_TEST_SSH_LOG: sshLog,
         MALINK_TEST_SCP_LOG: scpLog,
         MALINK_TEST_CURL_LOG: curlLog,
+        MALINK_TEST_EVENT_LOG: eventLog,
         MALINK_NATIVE_UPDATE_SSH_IDENTITY_FILE: identityFile,
       },
       encoding: "utf8",
@@ -89,17 +103,30 @@ printf '{"changed":true}'
     const sshCalls = readFileSync(sshLog, "utf8");
     expect(scpCalls).toContain(`-i ${identityFile}`);
     expect(scpCalls).toContain("artifact.apk");
-    expect(scpCalls).not.toContain("client-release.json");
+    expect(scpCalls).toContain("client-release.json");
     expect(sshCalls).toContain(`-i ${identityFile}`);
     expect(sshCalls).not.toContain(adminSocket);
     const curlCalls = readFileSync(curlLog, "utf8");
     expect(curlCalls).toContain(`--head ${artifactUrl}`);
+    expect(curlCalls).toContain(
+      "https://pages.example/malink/native-updates/channels/alpha/client-release.json",
+    );
     expect(curlCalls).toContain(`--unix-socket ${adminSocket}`);
     expect(curlCalls).toContain(`--data-binary @${releasePath}`);
     expect(curlCalls).toContain("http://localhost/v1/client-releases/android");
-    expect(result.stdout).toContain(
-      "through the local Gateway",
+    const events = readFileSync(eventLog, "utf8").trim().split("\n");
+    const artifactPublicCheck = events.findIndex(
+      (event) => event.startsWith("curl ") && event.includes(`--head ${artifactUrl}`),
     );
+    const manifestPublish = events.findIndex(
+      (event, index) =>
+        index > artifactPublicCheck &&
+        event.startsWith("ssh ") &&
+        event.includes(" sudo sh -s -- "),
+    );
+    expect(artifactPublicCheck).toBeGreaterThan(-1);
+    expect(manifestPublish).toBeGreaterThan(artifactPublicCheck);
+    expect(result.stdout).toContain("to the static channel and local Gateway");
   });
 });
 

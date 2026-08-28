@@ -757,6 +757,16 @@ function MatrixSettingsDialog({
                 <button type="button" onClick={onExportDiagnostics}>
                   Export diagnostics
                 </button>
+                {nativeRuntime && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      window.location.href = "malink://static-service-settings";
+                    }}
+                  >
+                    Change static service
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={onCheckForUpdates}
@@ -869,7 +879,7 @@ function nativeUpdateStatusText(state: NativeUpdateStatus | null): string {
     case "failed":
       return "APK: the last update attempt failed; the current app remains unchanged";
     case "current":
-      return "APK: up to date; releases arrive through your Gateway";
+      return "APK: up to date; static releases are checked automatically";
   }
 }
 

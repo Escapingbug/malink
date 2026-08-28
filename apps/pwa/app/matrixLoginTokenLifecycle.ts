@@ -35,7 +35,7 @@ export class MatrixLoginTokenRequestCancelledError extends Error {
 
 /**
  * Keeps a one-time Matrix login token attached to its Gateway invitation until
- * the invitation has been relayed successfully. Rate limits wait and retry the
+ * the self-contained invitation has been generated. Rate limits wait and retry the
  * same transaction instead of consuming another Gateway invitation.
  */
 export class MatrixLoginTokenLifecycle {

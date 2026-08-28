@@ -75,6 +75,14 @@ const pwaPort = await freePort()
 let matrixPort = await freePort()
 while (matrixPort === pwaPort) matrixPort = await freePort()
 const pwaUrl = `http://127.0.0.1:${pwaPort}`
+const pwaEnvironment: NodeJS.ProcessEnv = {
+    ...process.env,
+    VITE_MALINK_GATEWAY_HEARTBEAT_STALE_MS: '12000',
+}
+delete pwaEnvironment.MALINK_GATEWAY_RELEASE_ID
+delete pwaEnvironment.MALINK_GATEWAY_BUILD_ID
+delete pwaEnvironment.MALINK_PWA_BASE_PATH
+delete pwaEnvironment.MALINK_BUILD_VERSION
 const projectName = `Malink Web E2E ${runId}`
 const secondProjectName = `Malink Web E2E second ${runId}`
 const prompt = `business E2E prompt ${runId}`
@@ -128,34 +136,30 @@ try {
 
     process.stdout.write('[2/8] Building and starting the current PWA and Gateway…\n')
     pwaBuildOutput = await runProcess(
-        join(repositoryRoot, 'apps', 'pwa', 'node_modules', '.bin', 'vinext'),
+        join(repositoryRoot, 'apps', 'pwa', 'node_modules', '.bin', 'vite'),
         ['build'],
         {
             cwd: join(repositoryRoot, 'apps', 'pwa'),
-            env: {
-                ...process.env,
-                VITE_MALINK_GATEWAY_HEARTBEAT_STALE_MS: '12000',
-            },
+            env: pwaEnvironment,
         },
         PWA_BUILD_TIMEOUT_MS,
     )
     pwaProcess = managedProcess(
-        join(repositoryRoot, 'apps', 'pwa', 'node_modules', '.bin', 'wrangler'),
+        join(repositoryRoot, 'apps', 'pwa', 'node_modules', '.bin', 'vite'),
         [
-            'dev',
-            '--config',
-            'dist/server/wrangler.json',
+            'preview',
             '--port',
             String(pwaPort),
-            '--ip',
+            '--host',
             '127.0.0.1',
+            '--strictPort',
         ],
         {
             cwd: join(repositoryRoot, 'apps', 'pwa'),
-            env: process.env,
+            env: pwaEnvironment,
         },
     )
-    await waitForHttp(`${pwaUrl}/api/version`, STARTUP_TIMEOUT_MS)
+    await waitForHttp(`${pwaUrl}/version.json`, STARTUP_TIMEOUT_MS)
 
     gatewayProcess = startGatewayProcess({
         fixture,
@@ -678,7 +682,7 @@ try {
                 'session.create',
             )
             const currentBuild = await firstPage!.evaluate(async () => {
-                const response = await fetch('/api/version', { cache: 'no-store' })
+                const response = await fetch('/version.json', { cache: 'no-store' })
                 if (!response.ok) throw new Error(`version HTTP ${response.status}`)
                 const body = await response.json() as { buildVersion?: unknown }
                 if (typeof body.buildVersion !== 'string') {
@@ -745,7 +749,7 @@ try {
                 })
             }
             firstPage!.on('framenavigated', onNavigation)
-            await firstPage!.route('**/api/version?**', versionRoute)
+            await firstPage!.route('**/version.json?**', versionRoute)
             try {
                 await firstPage!.reload({ waitUntil: 'domcontentloaded' })
                 await waitFor(async () => {
@@ -782,7 +786,7 @@ try {
                 })
             } finally {
                 firstPage!.off('framenavigated', onNavigation)
-                await firstPage!.unroute('**/api/version?**', versionRoute)
+                await firstPage!.unroute('**/version.json?**', versionRoute)
             }
 
             await assertEmptySessionState(firstPage!)

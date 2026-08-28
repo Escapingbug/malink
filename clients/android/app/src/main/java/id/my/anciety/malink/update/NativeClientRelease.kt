@@ -1,5 +1,6 @@
 package id.my.anciety.malink.update
 
+import id.my.anciety.malink.config.StaticServiceEndpoint
 import java.net.URI
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -49,9 +50,9 @@ data class NativeClientRelease(
 
 class NativeClientReleaseException(val detailCode: String) : IllegalArgumentException(detailCode)
 
-/** Parses the latest release already authenticated by the MLP Gateway snapshot. */
+/** Parses bounded release discovery and binds its artifact to the selected mirror. */
 class NativeClientReleaseParser(
-    private val trustedOrigin: URI,
+    private val staticService: StaticServiceEndpoint,
     private val allowLoopbackHttp: Boolean = false,
 ) {
     private val json = Json { isLenient = false; explicitNulls = false }
@@ -112,7 +113,7 @@ class NativeClientReleaseParser(
         )
         val artifactUri = runCatching { URI(requireString(artifactValue, "url", 2_048)) }
             .getOrElse { throw NativeClientReleaseException("release_artifact_url_invalid") }
-        validateArtifactUri(artifactUri, channel, versionCode)
+        val resolvedArtifactUri = validateArtifactUri(artifactUri, channel, versionCode)
         val sha256 = requireString(artifactValue, "sha256", 64).lowercase()
         val certificate = requireString(
             artifactValue,
@@ -136,7 +137,7 @@ class NativeClientReleaseParser(
             importance = NativeUpdateImportance.fromWire(requireString(value, "importance", 32)),
             releaseNotes = notes,
             artifact = NativeUpdateArtifact(
-                url = artifactUri.toASCIIString(),
+                url = resolvedArtifactUri.toASCIIString(),
                 size = requireLong(artifactValue, "size", 1, MAX_APK_BYTES),
                 sha256 = sha256,
                 signingCertificateSha256 = certificate,
@@ -145,21 +146,29 @@ class NativeClientReleaseParser(
         )
     }
 
-    private fun validateArtifactUri(uri: URI, channel: String, versionCode: Long) {
+    private fun validateArtifactUri(uri: URI, channel: String, versionCode: Long): URI {
         if (uri.userInfo != null || uri.query != null || uri.fragment != null) {
             throw NativeClientReleaseException("release_artifact_url_components_invalid")
         }
         val loopback = allowLoopbackHttp &&
             uri.scheme == "http" && uri.host == "127.0.0.1" && uri.port in 1..65_535
-        val trusted = uri.scheme == "https" &&
-            uri.host == trustedOrigin.host && normalizedPort(uri) == normalizedPort(trustedOrigin)
-        if (!loopback && !trusted) {
+        val https = uri.scheme == "https" &&
+            !uri.host.isNullOrBlank() &&
+            (uri.port == -1 || uri.port in 1..65_535)
+        if (!loopback && !https) {
             throw NativeClientReleaseException("release_artifact_origin_untrusted")
         }
         val expectedPrefix = "/native-updates/releases/android/$channel/$versionCode/"
-        if (!uri.path.startsWith(expectedPrefix) || uri.path.substringAfterLast('/').isBlank()) {
+        val artifactName = uri.path.substringAfterLast('/')
+        if (
+            !uri.path.endsWith("$expectedPrefix$artifactName") ||
+            !ARTIFACT_NAME_PATTERN.matches(artifactName)
+        ) {
             throw NativeClientReleaseException("release_artifact_path_invalid")
         }
+        return staticService.resolve(
+            "native-updates/releases/android/$channel/$versionCode/$artifactName",
+        )
     }
 
     private fun parseObject(text: String): JsonObject = runCatching {
@@ -195,18 +204,12 @@ class NativeClientReleaseParser(
             ?.takeIf { it.size <= maximum }
             ?: throw NativeClientReleaseException("release_${name}_invalid")
 
-    private fun normalizedPort(uri: URI): Int = when {
-        uri.port >= 0 -> uri.port
-        uri.scheme == "https" -> 443
-        uri.scheme == "http" -> 80
-        else -> -1
-    }
-
     companion object {
         const val MAX_APK_BYTES = 100L * 1024 * 1024
         private const val MAX_RELEASE_NOTES = 20
         private const val MAX_RELEASE_NOTE_LENGTH = 500
         private val CHANNEL_PATTERN = Regex("^[a-z][a-z0-9-]{0,31}$")
+        private val ARTIFACT_NAME_PATTERN = Regex("^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}\\.apk$")
         private val SHA256_PATTERN = Regex("^[0-9a-f]{64}$")
     }
 }

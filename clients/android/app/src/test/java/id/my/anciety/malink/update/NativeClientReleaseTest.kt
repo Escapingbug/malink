@@ -1,6 +1,6 @@
 package id.my.anciety.malink.update
 
-import java.net.URI
+import id.my.anciety.malink.config.StaticServiceEndpoint
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -8,6 +8,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NativeClientReleaseTest {
+    @Test
+    fun `static discovery waits six hours but recovers from clock rollback`() {
+        val interval = NativeUpdateManager.STATIC_CHECK_INTERVAL_MS
+        assertTrue(staticReleaseCheckDue(10_000L, 0L, force = false))
+        assertFalse(staticReleaseCheckDue(10_000L, 9_000L, force = false))
+        assertEquals(interval - 1_000L, staticReleaseCheckDelay(10_000L, 9_000L))
+        assertTrue(staticReleaseCheckDue(9_000L + interval, 9_000L, force = false))
+        assertTrue(staticReleaseCheckDue(8_000L, 9_000L, force = false))
+        assertEquals(0L, staticReleaseCheckDelay(8_000L, 9_000L))
+        assertTrue(staticReleaseCheckDue(10_000L, 9_999L, force = true))
+    }
+
     @Test
     fun `an accepted release resumes after process death until the APK is actually ready`() {
         val interrupted = NativeUpdateStatus(
@@ -28,10 +40,12 @@ class NativeClientReleaseTest {
         assertFalse(canReusePublishedReleaseStatus(43, 41, ready))
     }
 
-    private val parser = NativeClientReleaseParser(URI("https://updates.example"))
+    private val parser = NativeClientReleaseParser(
+        StaticServiceEndpoint.parse("https://updates.example"),
+    )
 
     @Test
-    fun `parses Gateway-published immutable Android release`() {
+    fun `parses a static immutable Android release`() {
         val release = parser.parse(releaseJson())
 
         assertEquals(42L, release.versionCode)
@@ -43,12 +57,13 @@ class NativeClientReleaseTest {
     }
 
     @Test
-    fun `rejects artifact outside the deployment origin`() {
+    fun `rebases a portable manifest onto the selected static mirror`() {
         val external = releaseJson().replace("https://updates.example", "https://attacker.example")
 
-        assertThrows(NativeClientReleaseException::class.java) {
-            parser.parse(external)
-        }
+        assertEquals(
+            "https://updates.example/native-updates/releases/android/alpha/42/malink.apk",
+            parser.parse(external).artifact.url,
+        )
     }
 
     @Test
@@ -60,6 +75,18 @@ class NativeClientReleaseTest {
 
         assertThrows(NativeClientReleaseException::class.java) {
             parser.parse(unsafe)
+        }
+    }
+
+    @Test
+    fun `rejects a manifest artifact without a remote HTTPS authority`() {
+        listOf(
+            releaseJson().replace("https://updates.example", "http://updates.example"),
+            releaseJson().replace("https://updates.example", "https:////updates.example"),
+        ).forEach { unsafe ->
+            assertThrows(NativeClientReleaseException::class.java) {
+                parser.parse(unsafe)
+            }
         }
     }
 

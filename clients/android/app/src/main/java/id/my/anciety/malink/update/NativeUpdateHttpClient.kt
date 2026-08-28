@@ -4,11 +4,44 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URI
+import java.nio.charset.StandardCharsets
 
 internal class NativeUpdateHttpClient(
     private val connectTimeoutMs: Int = 15_000,
     private val readTimeoutMs: Int = 30_000,
 ) {
+    fun readText(uri: URI, maximumBytes: Int): String {
+        require(maximumBytes in 1..256 * 1024)
+        val connection = open(uri)
+        try {
+            connection.setRequestProperty("Accept", "application/json")
+            val response = connection.responseCode
+            if (response != HttpURLConnection.HTTP_OK) {
+                throw NativeUpdateDownloadException("manifest_http_$response")
+            }
+            val advertised = connection.contentLengthLong
+            if (advertised > maximumBytes) {
+                throw NativeUpdateDownloadException("manifest_size_exceeded")
+            }
+            val bytes = connection.inputStream.use { input ->
+                val output = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    if (output.size() + count > maximumBytes) {
+                        throw NativeUpdateDownloadException("manifest_size_exceeded")
+                    }
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
+            }
+            return bytes.toString(StandardCharsets.UTF_8)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     fun download(
         uri: URI,
         target: File,

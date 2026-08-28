@@ -12,10 +12,30 @@ CANDIDATE="$(mktemp)"
 trap 'rm -f "$CANDIDATE"' EXIT
 
 install -d -o root -g root -m 755 \
-    /srv/malink-native-updates/releases/android/alpha
+    /srv/malink-native-updates/releases/android/alpha \
+    /srv/malink-native-updates/channels/alpha
 
-if grep -q '# Malink native updates' "$CONFIG"; then
+if grep -q 'handle_path /native-updates/channels/\*' "$CONFIG"; then
     cp "$CONFIG" "$CANDIDATE"
+elif grep -q '# Malink native updates' "$CONFIG"; then
+    awk '
+        BEGIN { inserted = 0 }
+        {
+            print $0
+            line = $0
+            sub(/^[[:space:]]*/, "", line)
+            sub(/[[:space:]]*$/, "", line)
+            if (!inserted && line == "# Malink native updates") {
+                print "\thandle_path /native-updates/channels/* {"
+                print "\t\troot * /srv/malink-native-updates/channels"
+                print "\t\theader Cache-Control \"no-store, no-cache, must-revalidate, max-age=0\""
+                print "\t\tfile_server"
+                print "\t}"
+                inserted = 1
+            }
+        }
+        END { if (!inserted) exit 42 }
+    ' "$CONFIG" > "$CANDIDATE"
 else
     awk -v site_address="$SITE_ADDRESS" '
         BEGIN { inserted = 0 }
@@ -29,6 +49,11 @@ else
                 print "\thandle_path /native-updates/releases/* {"
                 print "\t\troot * /srv/malink-native-updates/releases"
                 print "\t\theader Cache-Control \"public, max-age=31536000, immutable\""
+                print "\t\tfile_server"
+                print "\t}"
+                print "\thandle_path /native-updates/channels/* {"
+                print "\t\troot * /srv/malink-native-updates/channels"
+                print "\t\theader Cache-Control \"no-store, no-cache, must-revalidate, max-age=0\""
                 print "\t\tfile_server"
                 print "\t}"
                 print ""

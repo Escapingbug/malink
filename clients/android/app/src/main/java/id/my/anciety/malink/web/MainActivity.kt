@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.provider.Settings
+import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -34,6 +35,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -60,6 +62,8 @@ import id.my.anciety.malink.client.NativeClientRuntime
 import id.my.anciety.malink.client.NativePairingRejectedException
 import id.my.anciety.malink.client.events.ClientSnapshot
 import id.my.anciety.malink.client.events.PublicTrustState
+import id.my.anciety.malink.config.StaticServiceEndpoint
+import id.my.anciety.malink.config.StaticServiceStore
 import id.my.anciety.malink.diagnostics.NativeDiagnosticLog
 import id.my.anciety.malink.service.MalinkConnectionService
 import id.my.anciety.malink.service.ActivityLaunchDecision
@@ -96,6 +100,8 @@ class MainActivity : ComponentActivity() {
     private var pendingSessionId: String? = null
     private var nativeBackDispatchPending = false
     private var nativeBackDispatchGeneration = 0L
+    private val staticServiceStore by lazy { StaticServiceStore(this) }
+    private lateinit var trustedWebOrigin: TrustedWebOrigin
     private val diagnostics by lazy { NativeDiagnosticLog.get(this) }
     private val updateManager: NativeUpdateManager? by lazy {
         runCatching { NativeUpdateManager.get(this) }
@@ -120,7 +126,7 @@ class MainActivity : ComponentActivity() {
         if (request != null) {
             if (
                 granted &&
-                TrustedWebOrigin.isTrustedOrigin(request.origin.toString()) &&
+                trustedWebOrigin.isTrustedOrigin(request.origin.toString()) &&
                 request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
             ) {
                 request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
@@ -211,6 +217,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        trustedWebOrigin = TrustedWebOrigin(staticServiceStore.selected)
         configureEdgeToEdgeContent()
         diagnostics.record("activity.created")
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -486,6 +493,124 @@ class MainActivity : ComponentActivity() {
             }
     }
 
+    private fun showStaticServiceSettings() {
+        val selected = staticServiceStore.selected
+        val official = staticServiceStore.official
+        AlertDialog.Builder(this)
+            .setTitle("Static service")
+            .setMessage(
+                "Malink loads its static UI and checks APK updates from this service. " +
+                    "Current: ${selected.baseUrl}",
+            )
+            .setItems(
+                arrayOf(
+                    "Official service\n${official.baseUrl}",
+                    "Custom or self-hosted service…",
+                ),
+            ) { _, index ->
+                if (index == 0) {
+                    confirmStaticService(official, custom = false)
+                } else {
+                    showCustomStaticServiceDialog(staticServiceStore.custom ?: selected)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showCustomStaticServiceDialog(current: StaticServiceEndpoint) {
+        val input = EditText(this).apply {
+            setText(current.baseUrl)
+            selectAll()
+            hint = "https://static.example/malink/"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setSingleLine(true)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Custom static service")
+            .setMessage(
+                "Enter the base URL that contains the Malink index page, version.json, " +
+                    "and optionally native-updates/.",
+            )
+            .setView(input)
+            .setPositiveButton("Continue", null)
+            .setNegativeButton("Cancel", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val endpoint = runCatching {
+                    StaticServiceEndpoint.parse(
+                        input.text.toString(),
+                        BuildConfig.ALLOW_INSECURE_E2E_LOOPBACK,
+                    )
+                }.getOrElse { error ->
+                    input.error = error.message ?: "Invalid static service URL."
+                    return@setOnClickListener
+                }
+                dialog.dismiss()
+                confirmStaticService(endpoint, custom = true)
+            }
+        }
+        dialog.show()
+    }
+
+    private fun confirmStaticService(endpoint: StaticServiceEndpoint, custom: Boolean) {
+        if (
+            endpoint.baseUrl == staticServiceStore.selected.baseUrl &&
+            custom == staticServiceStore.usesCustom
+        ) return
+        val trustWarning = if (custom) {
+            "Only continue if you trust this service. Its JavaScript receives the Malink native " +
+                "bridge and can issue actions allowed by this device. Private keys and Matrix " +
+                "access tokens still remain in Android.\n\n"
+        } else {
+            ""
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Use this static service?")
+            .setMessage(
+                "$trustWarning${endpoint.baseUrl}\n\n" +
+                    "The UI will reload. Browser storage belongs to each service origin, while " +
+                    "the native Matrix session remains on this device.",
+            )
+            .setPositiveButton("Use service") { _, _ ->
+                if (custom) staticServiceStore.select(endpoint) else staticServiceStore.useOfficial()
+                trustedWebOrigin = TrustedWebOrigin(staticServiceStore.selected)
+                updateManager?.onStaticServiceChanged()
+                lifecycleScope.launch(Dispatchers.IO) {
+                    updateManager?.checkStaticRelease(force = true)
+                }
+                diagnostics.record(
+                    "activity.static_service_changed",
+                    mapOf("source" to if (custom) "custom" else "official"),
+                )
+                replaceWebHostForStaticService()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun replaceWebHostForStaticService() {
+        nativeBridge?.close()
+        nativeBridge = null
+        webView?.apply {
+            stopLoading()
+            loadUrl("about:blank")
+            clearHistory()
+            removeAllViews()
+            destroy()
+        }
+        webView = null
+        showWebHost()
+    }
+
+    private fun isStaticServiceSettingsUrl(uri: Uri): Boolean =
+        uri.scheme == "malink" &&
+            uri.host == "static-service-settings" &&
+            uri.path.isNullOrEmpty() &&
+            uri.query == null &&
+            uri.fragment == null
+
     private fun showWebHost(reloadExisting: Boolean = false) {
         val existing = webView
         when (webHostActionAfterServiceConnected(existing != null, reloadExisting)) {
@@ -500,7 +625,7 @@ class MainActivity : ComponentActivity() {
                 showContent(existing)
                 diagnostics.record("activity.web_host_reloading_after_bind")
                 val target = pendingWebAppUrl()
-                if (target == TrustedWebOrigin.APP_URL) existing.reload() else existing.loadUrl(target)
+                if (target == trustedWebOrigin.appUrl) existing.reload() else existing.loadUrl(target)
                 return
             }
             WebHostBindingAction.CREATE -> Unit
@@ -509,7 +634,7 @@ class MainActivity : ComponentActivity() {
         val created = WebView(this)
         webView = created
         configureWebView(created)
-        val bridge = NativeWebBridge(created, ActivityBridgeRuntime())
+        val bridge = NativeWebBridge(created, ActivityBridgeRuntime(), trustedWebOrigin)
         if (!bridge.install()) {
             created.destroy()
             webView = null
@@ -603,7 +728,14 @@ class MainActivity : ComponentActivity() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 if (!request.isForMainFrame) return false
                 val url = request.url.toString()
-                if (TrustedWebOrigin.isTrustedUrl(url)) return false
+                if (
+                    isStaticServiceSettingsUrl(request.url) &&
+                    trustedWebOrigin.isTrustedUrl(view.url)
+                ) {
+                    showStaticServiceSettings()
+                    return true
+                }
+                if (trustedWebOrigin.isTrustedUrl(url)) return false
                 openExternalUrl(request.url)
                 return true
             }
@@ -640,7 +772,7 @@ class MainActivity : ComponentActivity() {
             override fun onPermissionRequest(request: PermissionRequest) {
                 runOnUiThread {
                     if (
-                        !TrustedWebOrigin.isTrustedOrigin(request.origin.toString()) ||
+                        !trustedWebOrigin.isTrustedOrigin(request.origin.toString()) ||
                         !request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
                     ) {
                         request.deny()
@@ -672,7 +804,7 @@ class MainActivity : ComponentActivity() {
                 filePathCallback: ValueCallback<Array<Uri>>,
                 fileChooserParams: FileChooserParams,
             ): Boolean {
-                if (!TrustedWebOrigin.isTrustedUrl(webView.url.orEmpty())) return false
+                if (!trustedWebOrigin.isTrustedUrl(webView.url.orEmpty())) return false
 
                 pendingFileChooser?.onReceiveValue(null)
                 pendingFileChooser = filePathCallback
@@ -743,6 +875,10 @@ class MainActivity : ComponentActivity() {
     private fun handleIntent(intent: Intent?) {
         when (intent?.action) {
             ACTION_EXPORT_DIAGNOSTICS -> exportDiagnostics(intent)
+            ACTION_STATIC_SERVICE_SETTINGS -> {
+                intent.action = null
+                showStaticServiceSettings()
+            }
             ACTION_OPEN_SESSION -> openSessionFromNotification(intent)
             ACTION_INSTALL_NATIVE_UPDATE -> {
                 intent.action = null
@@ -806,9 +942,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun pendingWebAppUrl(): String {
-        val sessionId = pendingSessionId ?: return TrustedWebOrigin.APP_URL
+        val sessionId = pendingSessionId ?: return trustedWebOrigin.appUrl
         pendingSessionId = null
-        return "${TrustedWebOrigin.APP_URL}#session=${Uri.encode(sessionId)}"
+        return "${trustedWebOrigin.appUrl}#session=${Uri.encode(sessionId)}"
     }
 
     private fun exportDiagnostics(intent: Intent) {
@@ -847,6 +983,8 @@ class MainActivity : ComponentActivity() {
             title = "Malink is temporarily unavailable",
             detail = detail,
             action = "Retry",
+            secondaryAction = "Change static service",
+            onSecondaryAction = ::showStaticServiceSettings,
         ) {
             if (serviceBinder == null) {
                 ensureHostBound()
@@ -870,6 +1008,8 @@ class MainActivity : ComponentActivity() {
         title: String,
         detail: String,
         action: String,
+        secondaryAction: String? = null,
+        onSecondaryAction: (() -> Unit)? = null,
         onAction: () -> Unit,
     ): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -899,6 +1039,12 @@ class MainActivity : ComponentActivity() {
             text = action
             setOnClickListener { onAction() }
         })
+        if (secondaryAction != null && onSecondaryAction != null) {
+            addView(Button(context).apply {
+                text = secondaryAction
+                setOnClickListener { onSecondaryAction() }
+            })
+        }
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
@@ -1038,6 +1184,8 @@ class MainActivity : ComponentActivity() {
         private const val SERVICE_BIND_TIMEOUT_MS = 10_000L
         const val ACTION_EXPORT_DIAGNOSTICS =
             "id.my.anciety.malink.action.EXPORT_DIAGNOSTICS"
+        const val ACTION_STATIC_SERVICE_SETTINGS =
+            "id.my.anciety.malink.action.STATIC_SERVICE_SETTINGS"
         const val ACTION_INSTALL_NATIVE_UPDATE =
             "id.my.anciety.malink.action.INSTALL_NATIVE_UPDATE"
         const val ACTION_E2E_PUBLISH_NATIVE_RELEASE =

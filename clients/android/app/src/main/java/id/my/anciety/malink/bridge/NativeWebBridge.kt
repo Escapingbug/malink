@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 class NativeWebBridge(
     private val webView: WebView,
     runtime: BridgeRuntime,
+    private val trustedWebOrigin: TrustedWebOrigin,
 ) {
     @Volatile private var notificationSink: ((String) -> Unit)? = null
     private val dispatcher = BridgeDispatcher(runtime) { notification ->
@@ -26,11 +27,11 @@ class NativeWebBridge(
         WebViewCompat.addWebMessageListener(
             webView,
             BRIDGE_OBJECT_NAME,
-            setOf(TrustedWebOrigin.APP_ORIGIN),
+            setOf(trustedWebOrigin.appOrigin),
         ) { _, message, sourceOrigin, isMainFrame, replyProxy ->
             val messageData = message.data
             val immediateFailure = when {
-                !isMainFrame || !TrustedWebOrigin.isTrustedOrigin(sourceOrigin.toString()) ->
+                !isMainFrame || !trustedWebOrigin.isTrustedOrigin(sourceOrigin.toString()) ->
                     BridgeProtocol.failure(
                         null,
                         BridgeError.UNAUTHORIZED_ORIGIN,

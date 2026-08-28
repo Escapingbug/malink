@@ -62,6 +62,11 @@ const pwaPort = await freePort()
 let matrixPort = await freePort()
 while (matrixPort === pwaPort) matrixPort = await freePort()
 const pwaUrl = `http://127.0.0.1:${pwaPort}`
+const pwaEnvironment = { ...process.env }
+delete pwaEnvironment.MALINK_GATEWAY_RELEASE_ID
+delete pwaEnvironment.MALINK_GATEWAY_BUILD_ID
+delete pwaEnvironment.MALINK_PWA_BASE_PATH
+delete pwaEnvironment.MALINK_BUILD_VERSION
 
 let fixture: DisposableMatrixFixture | undefined
 let pwa: ManagedProcess | undefined
@@ -90,18 +95,19 @@ try {
     }, null, 2), 'utf8')
     process.stdout.write('[2/7] Building the actual PWA and starting the MLP/3 Gateway…\n')
     await runProcess(
-        join(repositoryRoot, 'apps', 'pwa', 'node_modules', '.bin', 'vinext'),
+        join(repositoryRoot, 'apps', 'pwa', 'node_modules', '.bin', 'vite'),
         ['build'],
         join(repositoryRoot, 'apps', 'pwa'),
         180_000,
+        pwaEnvironment,
     )
     pwa = managedProcess(
-        join(repositoryRoot, 'apps', 'pwa', 'node_modules', '.bin', 'wrangler'),
-        ['dev', '--config', 'dist/server/wrangler.json', '--port', String(pwaPort), '--ip', '127.0.0.1'],
+        join(repositoryRoot, 'apps', 'pwa', 'node_modules', '.bin', 'vite'),
+        ['preview', '--port', String(pwaPort), '--host', '127.0.0.1', '--strictPort'],
         join(repositoryRoot, 'apps', 'pwa'),
-        process.env,
+        pwaEnvironment,
     )
-    await waitFor(async () => (await fetch(`${pwaUrl}/api/version`).catch(() => null))?.ok ?? false, {
+    await waitFor(async () => (await fetch(`${pwaUrl}/version.json`).catch(() => null))?.ok ?? false, {
         description: 'PWA server',
         timeoutMs: STARTUP_TIMEOUT_MS,
     })
@@ -636,7 +642,7 @@ async function suspendAndSeedLegacyMlp3Database(page: Page): Promise<void> {
     // Simulate the deployed build whose MLP/3 database predates its entries in
     // the PWA storage manifest. The migration must clear Matrix-derived state
     // while retaining an independent outbox row in the same physical DB.
-    await page.goto(`${pwaUrl}/api/version`, { waitUntil: 'domcontentloaded' })
+    await page.goto(`${pwaUrl}/version.json`, { waitUntil: 'domcontentloaded' })
     await page.evaluate(async ({ outboxKey, inboxKey, projectionKey, manifestKey }) => {
         const rawManifest = localStorage.getItem(manifestKey)
         if (!rawManifest) throw new Error('The IndexedDB upgrade manifest is unavailable.')
@@ -754,7 +760,7 @@ async function suspendAndPoisonMlp3ReadModel(page: Page): Promise<void> {
     // A structurally incompatible projection and its inbox are one rebuildable
     // unit. Startup must discard both, retain the outbox, and continue directly
     // to bounded authoritative Matrix recovery.
-    await page.goto(`${pwaUrl}/api/version`, { waitUntil: 'domcontentloaded' })
+    await page.goto(`${pwaUrl}/version.json`, { waitUntil: 'domcontentloaded' })
     const projectionRows = await page.evaluate(async (projectionStateVersion) => {
         return new Promise<number>((resolve, reject) => {
             const opened = indexedDB.open('malink-matrix-v3', 2)
@@ -821,7 +827,7 @@ async function suspendAndClearMlp3ReadModel(page: Page): Promise<void> {
     // identity, crypto store, and pinned Gateway trust must all survive. The
     // same-origin JSON route unloads the PWA before its MLP/3 IndexedDB read
     // model is cleared, so the live client cannot immediately repopulate it.
-    await page.goto(`${pwaUrl}/api/version`, { waitUntil: 'domcontentloaded' })
+    await page.goto(`${pwaUrl}/version.json`, { waitUntil: 'domcontentloaded' })
     const clearedProjectionRows = await page.evaluate(async () => {
         return new Promise<number>((resolve, reject) => {
             const opened = indexedDB.open('malink-matrix-v3', 2)
@@ -959,7 +965,7 @@ async function assertProjectAuthorizationRepair(
     admin: GatewayAdminClient,
     expectedSessionIds: string[],
 ): Promise<void> {
-    await page.goto(`${pwaUrl}/api/version`, { waitUntil: 'domcontentloaded' })
+    await page.goto(`${pwaUrl}/version.json`, { waitUntil: 'domcontentloaded' })
     let originalCertificateId: string | null = null
     let injectedMismatches = 0
     const pattern = '**/*'
@@ -1478,8 +1484,14 @@ async function waitForOutput(
     })
 }
 
-async function runProcess(command: string, args: string[], cwd: string, timeoutMs: number): Promise<void> {
-    const process = managedProcess(command, args, cwd, globalThis.process.env)
+async function runProcess(
+    command: string,
+    args: string[],
+    cwd: string,
+    timeoutMs: number,
+    env: NodeJS.ProcessEnv = globalThis.process.env,
+): Promise<void> {
+    const process = managedProcess(command, args, cwd, env)
     const exited = await Promise.race([
         new Promise<{ code: number | null }>(resolve =>
             process.child.once('exit', code => resolve({ code })),

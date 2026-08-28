@@ -111,7 +111,6 @@ test("defers stored native startup while an invitation owns the bridge", () => {
     shouldDeferStoredMatrixStartupForPairing({
       pairingLink: null,
       deviceInvitation: "device-invitation",
-      shortInvitation: null,
     }),
     true,
   );
@@ -119,7 +118,6 @@ test("defers stored native startup while an invitation owns the bridge", () => {
     shouldDeferStoredMatrixStartupForPairing({
       pairingLink: "gateway-pairing",
       deviceInvitation: null,
-      shortInvitation: null,
     }),
     true,
   );
@@ -127,7 +125,6 @@ test("defers stored native startup while an invitation owns the bridge", () => {
     shouldDeferStoredMatrixStartupForPairing({
       pairingLink: null,
       deviceInvitation: null,
-      shortInvitation: null,
     }),
     false,
   );

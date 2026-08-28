@@ -11,17 +11,15 @@ test("decodes a dense Malink invitation with the browser fallback", () => {
   assert.equal(decodeQrPixels(pixels, width, width), link);
 });
 
-test("keeps a short encrypted invitation compact and scannable", () => {
+test("keeps a representative self-contained fragment invitation scannable", () => {
   const link =
-    "https://rd.anciety.my.id/#i=" +
-    "a".repeat(22) +
-    "&k=" +
-    "b".repeat(43);
+    "https://rd.anciety.my.id/#invite=" +
+    Buffer.from("signed-self-contained-invitation".repeat(22)).toString("base64url");
   const qr = QRCode.create(link, { errorCorrectionLevel: "L" });
   const { pixels, width } = renderQrPixels(link);
 
-  assert.ok(link.length < 100);
-  assert.ok(qr.modules.size <= 41);
+  assert.ok(link.length > 500);
+  assert.ok(qr.modules.size <= 121);
   assert.equal(decodeQrPixels(pixels, width, width), link);
 });
 
