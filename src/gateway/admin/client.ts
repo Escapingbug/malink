@@ -13,6 +13,8 @@ import type {
   SendSessionFileResponse,
   GatewayPrivilegedExecutionRequest,
   GatewayPrivilegedExecutionResponse,
+  GatewayProviderPromptRequest,
+  GatewayProviderPromptResponse,
   PublishNativeClientReleaseRequest,
   PublishNativeClientReleaseResponse,
   RenameGatewayRequest,
@@ -120,6 +122,12 @@ export class GatewayAdminClient {
     input: PublishNativeClientReleaseRequest,
   ): Promise<PublishNativeClientReleaseResponse> {
     return this.request('POST', '/v1/client-releases/android', input)
+  }
+
+  runProviderPrompt(
+    input: GatewayProviderPromptRequest,
+  ): Promise<GatewayProviderPromptResponse> {
+    return this.request('POST', '/v1/provider-prompts', input)
   }
 
   private request<T>(

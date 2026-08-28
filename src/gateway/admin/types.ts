@@ -7,6 +7,7 @@ import {
   privilegedExecutionInputSchema,
   type PrivilegedExecutionResult,
 } from '@/privilege'
+import type { AgentEvent } from '@/providers/types'
 
 export const createInvitationRequestSchema = z
   .object({
@@ -110,6 +111,43 @@ export interface PublishNativeClientReleaseResponse {
   changed: boolean
   release: NativeClientRelease
   projectCount: number
+}
+
+export const gatewayProviderPromptRequestSchema = z.object({
+  prompt: z.string().min(1).max(32 * 1024),
+  provider: z.string().trim().min(1).max(128).optional(),
+  cwd: z.string().trim().min(1).max(8_192).optional(),
+  providerSessionId: z.string().trim().min(1).max(256).optional(),
+  model: z.string().trim().min(1).max(256).optional(),
+  reasoningEffort: z.string().trim().min(1).max(64).optional(),
+  permissionMode: z.enum(['default', 'acceptEdits', 'bypassPermissions']).optional(),
+  timeoutMs: z.number().int().min(1_000).max(10 * 60_000).optional(),
+}).strict()
+
+export type GatewayProviderPromptRequest = z.infer<
+  typeof gatewayProviderPromptRequestSchema
+>
+
+export interface GatewayProviderPromptEvent {
+  elapsedMs: number
+  event: AgentEvent
+}
+
+export interface GatewayProviderPromptResponse {
+  provider: string
+  cwd: string
+  requestedProviderSessionId?: string
+  providerSessionId?: string
+  startedAt: number
+  completedAt: number
+  durationMs: number
+  sessionOpenMs?: number
+  outcome: 'success' | 'error' | 'max_turns' | 'timed_out' | 'cancelled'
+  text: string
+  events: GatewayProviderPromptEvent[]
+  eventCounts: Record<string, number>
+  truncated: boolean
+  error?: string
 }
 
 export interface GatewayAdminStatus {

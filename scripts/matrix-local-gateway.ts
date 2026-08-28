@@ -40,6 +40,7 @@ import {
 } from '../src/gateway/pairing/index.js'
 import {
     FileMatrixLoginTokenIssuer,
+    runGatewayProviderPrompt,
     startGatewayAdminServer,
 } from '../src/gateway/admin/index.js'
 import {
@@ -815,6 +816,11 @@ const adminServer = await startGatewayAdminServer({
         if (!runner) throw new Error('Gateway runtime is unavailable')
         return runner.publishNativeClientRelease(release)
     },
+    runProviderPrompt: (request, signal) => runGatewayProviderPrompt(
+        request,
+        { provider: providerName, cwd },
+        signal,
+    ),
     ...(privilegeExecutor
         ? {
             onPrivilegedExecution: async ({ sessionId, ...request }) =>

@@ -16,6 +16,7 @@ import {
   receiveWorkspaceFileRequestSchema,
   sendSessionFileRequestSchema,
   gatewayPrivilegedExecutionRequestSchema,
+  gatewayProviderPromptRequestSchema,
   publishNativeClientReleaseRequestSchema,
   renameGatewayRequestSchema,
   revokeDeviceRequestSchema,
@@ -30,6 +31,8 @@ import {
   type SendSessionFileResponse,
   type GatewayPrivilegedExecutionRequest,
   type GatewayPrivilegedExecutionResponse,
+  type GatewayProviderPromptRequest,
+  type GatewayProviderPromptResponse,
   type PublishNativeClientReleaseRequest,
   type PublishNativeClientReleaseResponse,
 } from './types.js'
@@ -77,6 +80,10 @@ export interface GatewayAdminServerOptions {
   publishNativeClientRelease?: (
     request: PublishNativeClientReleaseRequest,
   ) => Promise<PublishNativeClientReleaseResponse>
+  runProviderPrompt?: (
+    request: GatewayProviderPromptRequest,
+    signal: AbortSignal,
+  ) => Promise<GatewayProviderPromptResponse>
   now?: () => number
   rateLimitPerMinute?: number
   onLog?: (message: string) => void
@@ -233,6 +240,34 @@ export async function startGatewayAdminServer(
           await readJsonBody(request),
         )
         sendJson(response, 200, await options.onPrivilegedExecution(data))
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/provider-prompts') {
+        if (!options.runProviderPrompt) {
+          throw new AdminHttpError(
+            503,
+            'provider_prompt_unavailable',
+            'Local Provider prompt execution is unavailable',
+          )
+        }
+        const data = gatewayProviderPromptRequestSchema.parse(
+          await readJsonBody(request),
+        )
+        const controller = new AbortController()
+        const abort = () => controller.abort()
+        request.once('aborted', abort)
+        response.once('close', abort)
+        try {
+          const result = await options.runProviderPrompt(data, controller.signal)
+          options.onLog?.(
+            `[gateway-admin] Provider prompt ${result.provider} ${result.outcome} `
+            + `durationMs=${result.durationMs}`,
+          )
+          sendJson(response, 200, result)
+        } finally {
+          request.off('aborted', abort)
+          response.off('close', abort)
+        }
         return
       }
       if (request.method === 'POST' && path === '/v1/client-releases/android') {
