@@ -4,13 +4,19 @@ import {
   clearPendingSessionCreateRecovery,
   completedSessionCreateTarget,
   isMissingSessionCreateRecoveryCommand,
+  pendingSessionCreateRecoveryFromOptimistic,
   readPendingSessionCreateRecovery,
   rebindPendingSessionCreateRecovery,
+  sessionCreateFailureMessage,
   sessionCreateRecoveryMatches,
   writePendingSessionCreateRecovery,
   type PendingSessionCreateRecovery,
 } from "../app/sessionCreateRecovery.ts";
 import { CommandRecoveryNotFoundError } from "../app/matrix.ts";
+import {
+  bindOptimisticSession,
+  createOptimisticSessionRecord,
+} from "../app/optimisticSession.ts";
 
 test("does not leave a pending selection when the session root arrives first", () => {
   assert.deepEqual(
@@ -83,6 +89,84 @@ test("persists the durable session-create identity across a reload", () => {
       conversationId: "room-1",
     }),
     false,
+  );
+});
+
+test("rebuilds a missing recovery marker from a bound creating draft", () => {
+  const optimistic = bindOptimisticSession(
+    createOptimisticSessionRecord(
+      {
+        projectId: "project-1",
+        cwd: "/workspace/malink",
+        projectName: "Malink",
+        provider: "codex",
+        model: "gpt-5",
+        reasoningEffort: "high",
+        extensions: [],
+      },
+      { gatewayId: "gateway-1", conversationId: "room-1" },
+      "local-session-1",
+      1_785_000_000_000,
+    ),
+    "command-create-1",
+    "remote-session-1",
+    1_785_000_000_100,
+  );
+
+  assert.deepEqual(pendingSessionCreateRecoveryFromOptimistic(optimistic), {
+    version: 1,
+    commandId: "command-create-1",
+    gatewayId: "gateway-1",
+    conversationId: "room-1",
+    createdAt: 1_785_000_000_000,
+    input: optimistic.input,
+  });
+  assert.equal(
+    pendingSessionCreateRecoveryFromOptimistic({
+      ...optimistic,
+      phase: "failed",
+    }),
+    null,
+  );
+  assert.equal(
+    pendingSessionCreateRecoveryFromOptimistic({
+      ...optimistic,
+      commandId: undefined,
+    }),
+    null,
+  );
+});
+
+test("turns every non-success session-create completion into a readable failure", () => {
+  const base = {
+    commandId: "command-create-1",
+    sequence: 1,
+    revision: 2,
+  };
+
+  assert.equal(
+    sessionCreateFailureMessage({ ...base, outcome: "succeeded" }),
+    null,
+  );
+  assert.equal(
+    sessionCreateFailureMessage({
+      ...base,
+      outcome: "failed",
+      error: {
+        code: "execution_interrupted",
+        message: "The Gateway restarted after dispatch.",
+        retryable: true,
+      },
+    }),
+    "The Gateway restarted after dispatch.",
+  );
+  assert.equal(
+    sessionCreateFailureMessage({ ...base, outcome: "failed" }),
+    "Your computer could not create the session.",
+  );
+  assert.equal(
+    sessionCreateFailureMessage({ ...base, outcome: "cancelled" }),
+    "Session creation was cancelled.",
   );
 });
 

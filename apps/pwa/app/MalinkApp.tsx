@@ -140,8 +140,10 @@ import {
   clearPendingSessionCreateRecovery,
   completedSessionCreateTarget,
   isMissingSessionCreateRecoveryCommand,
+  pendingSessionCreateRecoveryFromOptimistic,
   readPendingSessionCreateRecovery,
   rebindPendingSessionCreateRecovery,
+  sessionCreateFailureMessage,
   sessionCreateRecoveryMatches,
   writePendingSessionCreateRecovery,
   type PendingSessionCreateRecovery,
@@ -2085,11 +2087,23 @@ function MalinkAppRuntime() {
   }, [uiNotices]);
 
   useEffect(() => {
-    const recovery = readPendingSessionCreateRecovery(window.localStorage);
+    let recovery = readPendingSessionCreateRecovery(window.localStorage);
     let optimistic = readOptimisticSession(window.localStorage, {
       gatewayId: matrixConfig.gatewayId,
       conversationId: matrixConfig.conversationId,
     });
+    if (!recovery && optimistic) {
+      recovery = pendingSessionCreateRecoveryFromOptimistic(optimistic);
+      if (recovery) {
+        try {
+          writePendingSessionCreateRecovery(window.localStorage, recovery);
+        } catch {
+          // The in-memory recovery still reconciles this page. A later missing
+          // command result converts the stale local row into a discardable
+          // failed draft instead of leaving it in `creating` forever.
+        }
+      }
+    }
     if (!optimistic && recovery) {
       optimistic = {
         ...createOptimisticSessionRecord(
@@ -5225,7 +5239,20 @@ function MalinkAppRuntime() {
     let skipHistoryRestore = false;
     try {
       completedCommandResultsRef.current.delete(commandId);
-      if (completion.outcome !== "succeeded") return;
+      const failureMessage = sessionCreateFailureMessage(completion);
+      if (failureMessage) {
+        const draft = optimisticSessionRef.current;
+        if (draft) {
+          markOptimisticSessionFailed(draft.localSessionId, failureMessage);
+        }
+        showUiNotice(
+          "session:create",
+          "session",
+          "error",
+          failureMessage,
+        );
+        return;
+      }
       if (completion.sessionId) {
         const draft = optimisticSessionRef.current;
         if (draft) {
@@ -6322,21 +6349,6 @@ function MalinkAppRuntime() {
         connection,
         sent,
       );
-      if (completion.outcome !== "succeeded") {
-        const draft = optimisticSessionRef.current;
-        if (draft) {
-          markOptimisticSessionFailed(
-            draft.localSessionId,
-            completion.error?.message ?? "Your computer could not create the session.",
-          );
-        }
-        showUiNotice(
-          "session:create",
-          "session",
-          "error",
-          "Your computer could not create the session.",
-        );
-      }
       await consumeSessionCreateCompletion(
         connection,
         sent.commandId,

@@ -1,4 +1,6 @@
 import type { NewSessionInput } from "./NewSessionDialog";
+import type { CommandCompletion } from "./commandLifecycle";
+import type { OptimisticSessionRecord } from "./optimisticSession";
 
 export const PENDING_SESSION_CREATE_STORAGE_KEY =
   "malink:pending-session-create:v1";
@@ -22,6 +24,38 @@ export type CompletedSessionCreateTarget = {
   sessionToReveal: string | null;
   skipHistoryRestore: boolean;
 };
+
+/**
+ * Rebuilds the durable recovery marker when an older PWA consumed or lost the
+ * marker but left its bound optimistic session behind. Without this inverse
+ * repair, a reload has a command ID to display but no recovery operation to
+ * settle it, so the browser-only row remains in `creating` forever.
+ */
+export function pendingSessionCreateRecoveryFromOptimistic(
+  record: OptimisticSessionRecord,
+): PendingSessionCreateRecovery | null {
+  if (record.phase !== "creating" || !record.commandId) return null;
+  return {
+    version: 1,
+    commandId: record.commandId,
+    gatewayId: record.gatewayId,
+    conversationId: record.conversationId,
+    createdAt: record.createdAt,
+    input: record.input,
+  };
+}
+
+/** Returns the user-facing failure for every non-success terminal outcome. */
+export function sessionCreateFailureMessage(
+  completion: CommandCompletion,
+): string | null {
+  if (completion.outcome === "succeeded") return null;
+  const detail = completion.error?.message.trim();
+  if (detail) return detail;
+  return completion.outcome === "cancelled"
+    ? "Session creation was cancelled."
+    : "Your computer could not create the session.";
+}
 
 /**
  * Resolves both valid Matrix event orders for a completed session creation.
