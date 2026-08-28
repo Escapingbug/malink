@@ -1491,16 +1491,36 @@ select:focus-visible {
   color: #747d90;
 }
 
-.session-signal-ready .session-status-summary {
+.session-status-summary.session-status-ready {
   color: #6256bd;
 }
 
-.session-signal-failed .session-status-summary {
+.session-status-summary.session-status-failed {
   color: #a64751;
 }
 
-.session-signal-working .session-status-summary {
+.session-status-summary.session-status-sending {
+  color: #3569b2;
+}
+
+.session-status-summary.session-status-waiting {
+  color: #8a671d;
+}
+
+.session-status-summary.session-status-starting {
+  color: #397286;
+}
+
+.session-status-summary.session-status-working {
   color: #267859;
+}
+
+.session-status-summary.session-status-stopping {
+  color: #a3542d;
+}
+
+.session-status-summary.session-status-paused {
+  color: #747d90;
 }
 
 .session-preview-line b {
@@ -4607,6 +4627,10 @@ select:focus-visible {
 
 .composer textarea::placeholder {
   color: #a2a8b5;
+}
+
+.composer-send-shortcut {
+  display: none;
 }
 
 .composer-actions {
@@ -8324,7 +8348,34 @@ body {
 
   .composer textarea {
     min-height: 24px;
+    padding-right: 156px;
     font-size: 14.5px;
+  }
+
+  .composer-send-shortcut {
+    position: absolute;
+    top: 9px;
+    right: 11px;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    color: #7f8797;
+    font-size: 9px;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+
+  .composer-send-shortcut kbd {
+    padding: 2px 5px;
+    border: 1px solid #dfe2e9;
+    border-bottom-color: #cfd3dc;
+    border-radius: 5px;
+    background: #f7f8fb;
+    box-shadow: 0 1px 0 #e4e6ec;
+    color: #596275;
+    font-family: var(--font-geist-sans);
+    font-size: 9px;
+    font-weight: 680;
   }
 
   .composer-hint {

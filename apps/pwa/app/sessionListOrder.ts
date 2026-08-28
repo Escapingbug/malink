@@ -1,10 +1,37 @@
 import type { GatewaySessionSummary } from "./gatewayState";
+import type { AgentActivityPhase } from "./agentActivity";
 import {
   sessionIndicator,
   type SessionReadState,
 } from "./sessionIndicators";
 
 export type SessionListSignal = "failed" | "ready" | "working" | "idle";
+
+export type SessionStatusTone =
+  | SessionListSignal
+  | AgentActivityPhase
+  | "paused";
+
+export function sessionStatusTone({
+  signal,
+  activityPhase,
+  lifecycleBusy,
+  gatewayConnected,
+}: {
+  signal: SessionListSignal;
+  activityPhase?: AgentActivityPhase;
+  lifecycleBusy: boolean;
+  gatewayConnected: boolean;
+}): SessionStatusTone {
+  if (
+    !gatewayConnected &&
+    (lifecycleBusy || activityPhase !== undefined || signal === "working")
+  ) {
+    return "paused";
+  }
+  if (lifecycleBusy) return "stopping";
+  return activityPhase ?? signal;
+}
 
 export type ProjectSessionSummary = Readonly<{
   failed: number;

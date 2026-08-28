@@ -233,6 +233,9 @@ test("ships a complete installable offline shell", async () => {
     /disabled=\{isStopping \|\| !selected\?\.activeTurnId\}/,
   );
   assert.match(source, /disabled=\{!composerState\.canSend\}/);
+  assert.match(source, /id="composer-send-shortcut"/);
+  assert.match(source, /<kbd>Ctrl\/⌘<\/kbd>[\s\S]*?<kbd>Enter<\/kbd>[\s\S]*?to send/);
+  assert.match(source, /aria-describedby="composer-status composer-send-shortcut"/);
   assert.match(source, /aria-label="Agent options"/);
   assert.match(source, /aria-controls="composer-agent-options"/);
   assert.doesNotMatch(
@@ -291,7 +294,6 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /WAITING_AGENT_ACTIVITY/);
   assert.match(source, /aria-keyshortcuts="Control\+Enter Meta\+Enter"/);
   assert.match(source, /event\.ctrlKey \|\| event\.metaKey/);
-  assert.match(source, /Enter for new line · Ctrl\/⌘ Enter to send/);
   assert.match(source, /resizeComposerTextarea\(composerTextareaRef\.current\)/);
   assert.match(source, /const contentHeight = textarea\.scrollHeight/);
   assert.match(styles, /\.optimistic-session-card\s*\{/);
@@ -440,7 +442,6 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /aria-label=\{`\$\{session\.title\}\. \$\{statusSummary\}/);
   assert.match(source, /title=\{`\$\{session\.title\} · \$\{statusSummary\}`\}/);
   assert.match(source, /const showStatusSummary =/);
-  assert.match(source, /\{showStatusSummary && \(\s*<span className="session-status-summary">/);
   assert.doesNotMatch(source, /TurnResultContext/);
   assert.match(
     styles,
@@ -461,6 +462,8 @@ test("ships a complete installable offline shell", async () => {
   assert.match(styles, /\.agent-controls select \{[\s\S]*?min-height: 44px/);
   assert.match(source, /function SessionSignalIcon\(/);
   assert.match(source, /data-session-signal=\{visualSignal\}/);
+  assert.match(source, /session-signal-\$\{visualSignal\}/);
+  assert.match(source, /session-status-summary session-status-\$\{statusTone\}/);
   assert.match(source, /className=\{`session-signal-mark signal-\$\{visualSignal\}/);
   assert.match(source, /title=\{visualSignalLabel \?\? undefined\}/);
   assert.doesNotMatch(source, /className="agent-ready"/);
@@ -470,6 +473,11 @@ test("ships a complete installable offline shell", async () => {
   assert.match(styles, /\.session-signal-mark\.signal-ready \{[\s\S]*?background: var\(--violet\)/);
   assert.match(styles, /\.session-signal-mark\.signal-working \{[\s\S]*?background: #e4f5ed/);
   assert.match(styles, /\.session-signal-spinner \{[\s\S]*?animation: session-status-spin/);
+  assert.match(styles, /\.session-status-summary\.session-status-sending \{[\s\S]*?color: #3569b2/);
+  assert.match(styles, /\.session-status-summary\.session-status-waiting \{[\s\S]*?color: #8a671d/);
+  assert.match(styles, /\.session-status-summary\.session-status-working \{[\s\S]*?color: #267859/);
+  assert.match(styles, /\.session-status-summary\.session-status-stopping \{[\s\S]*?color: #a3542d/);
+  assert.match(styles, /@media \(min-width: 901px\)[\s\S]*?\.composer-send-shortcut \{[\s\S]*?display: inline-flex/);
   assert.doesNotMatch(styles, /inset 3px 0 0 var\(--violet\)/);
   assert.match(styles, /\.matrix-settings > footer \{[\s\S]*?position: sticky;[\s\S]*?bottom: 0/);
   await assert.rejects(access(new URL("app/_sites-preview", appRoot)));

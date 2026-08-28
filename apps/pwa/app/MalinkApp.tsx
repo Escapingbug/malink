@@ -261,6 +261,7 @@ import {
   projectSessionSummaryLabel,
   sessionListSignal,
   sessionSignalLabel,
+  sessionStatusTone,
   summarizeProjectSessions,
   type SessionListSignal,
 } from "./sessionListOrder";
@@ -8835,6 +8836,12 @@ function MalinkAppRuntime() {
                 const visualSignalLabel = lifecycleAction
                   ? statusSummary
                   : activity?.label || sessionSignalLabel(signal);
+                const statusTone = sessionStatusTone({
+                  signal,
+                  activityPhase: activity?.phase,
+                  lifecycleBusy: Boolean(lifecycleAction),
+                  gatewayConnected,
+                });
                 const showStatusSummary =
                   Boolean(lifecycleAction || activity) || signal !== "idle";
                 return (
@@ -8850,7 +8857,7 @@ function MalinkAppRuntime() {
                     selectedSessionId === session.id
                       ? "selected"
                       : ""
-                  } session-state-${indicator.activity} session-signal-${signal} ${indicator.unread ? "unread" : ""} ${lifecycleAction ? "is-busy" : ""}`}
+                  } session-state-${indicator.activity} session-signal-${visualSignal} ${indicator.unread ? "unread" : ""} ${lifecycleAction ? "is-busy" : ""}`}
                   onClick={() => void chooseSession(session.id)}
                   disabled={lifecycleAction === "delete"}
                 >
@@ -8880,7 +8887,9 @@ function MalinkAppRuntime() {
                     {(showStatusSummary || session.extensions.length > 0) && (
                       <span className="session-preview-line">
                         {showStatusSummary && (
-                          <span className="session-status-summary">
+                          <span
+                            className={`session-status-summary session-status-${statusTone}`}
+                          >
                             {statusSummary}
                           </span>
                         )}
@@ -9757,6 +9766,15 @@ function MalinkAppRuntime() {
               rows={2}
               disabled={!composerState.canType}
             />
+            <span
+              id="composer-send-shortcut"
+              className="composer-send-shortcut"
+            >
+              <kbd>Ctrl/⌘</kbd>
+              <span>+</span>
+              <kbd>Enter</kbd>
+              <span>to send</span>
+            </span>
             <div className="composer-actions">
               <input
                 ref={attachmentInputRef}
@@ -9970,7 +9988,7 @@ function MalinkAppRuntime() {
                       ? "Queue message"
                       : "Send message"
                   }
-                  aria-describedby="composer-status"
+                  aria-describedby="composer-status composer-send-shortcut"
                   title={composerState.reason}
                 >
                   ↑
@@ -9985,9 +10003,6 @@ function MalinkAppRuntime() {
             aria-live="polite"
           >
             {composerState.reason}
-            <span className="composer-shortcut-hint" aria-hidden="true">
-              {" · Enter for new line · Ctrl/⌘ Enter to send"}
-            </span>
           </p>
         </div>
       </section>
