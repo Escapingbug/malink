@@ -2,8 +2,8 @@ import type { ChatMessage } from "./chatMessages";
 
 /**
  * Tool activity stays at its original transcript position for its entire
- * lifecycle. Running and completed activity use the same presentation, so a
- * status update never moves the user's reading target.
+ * lifecycle. This function preserves the verified transcript order; the UI's
+ * result-first layer may later fold completed work without rewriting history.
  */
 export function turnTimelineMessages(
   messages: readonly ChatMessage[],

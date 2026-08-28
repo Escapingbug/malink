@@ -419,7 +419,9 @@ test("ships a complete installable offline shell", async () => {
     styles,
     /@media \(min-width: 901px\)[\s\S]*?\.composer\s*\{[\s\S]*?min-height:\s*82px/,
   );
-  assert.match(source, /inferredCompletedTurnResultIds/);
+  assert.match(source, /completedTurnPresentation/);
+  assert.match(source, /className={`turn-process-disclosure/);
+  assert.match(source, /<TurnResultState outcome={result\.outcome} \/>/);
   assert.match(source, /className=\{`message-row user-row turn-prompt/);
   assert.match(source, /turnPresentationClass/);
   assert.match(source, /className="activity-copy"/);
@@ -432,7 +434,7 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /title=\{`\$\{session\.title\} · \$\{statusSummary\}`\}/);
   assert.match(source, /const showStatusSummary =/);
   assert.match(source, /\{showStatusSummary && \(\s*<span className="session-status-summary">/);
-  assert.match(source, /title=\{completionLabel\}/);
+  assert.doesNotMatch(source, /TurnResultContext/);
   assert.match(
     styles,
     /@media \(max-width: 900px\)[\s\S]*?\.new-session-dialog > header\s*\{[\s\S]*?position:\s*sticky;[\s\S]*?top:\s*0/,

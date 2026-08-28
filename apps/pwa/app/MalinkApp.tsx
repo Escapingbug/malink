@@ -285,7 +285,6 @@ import {
   deleteMessageHistory,
   loadMessageHistoryPage,
   loadQueuedSessionMessages,
-  loadTurnPromptHistory,
   matrixHistoryScope,
   moveSessionMessageHistory,
   reconcileMessageHistory,
@@ -293,12 +292,10 @@ import {
   type MessageHistoryCursor,
 } from "./messageHistory";
 import {
-  latestCompletedTurnContext,
-  nextTurnPromptLookup,
-  trimHistoryPageToTurn,
-  turnPrompt,
+  completedTurnPresentation,
+  type CompletedTurnProcess,
   type ObservedCommandCompletion,
-} from "./turnContext";
+} from "./turnPresentation";
 import {
   activeTurnToolFocus,
   turnTimelineMessages,
@@ -380,11 +377,6 @@ type SendRealCommandOptions = {
   propagateFailure?: boolean;
 };
 
-type TurnHistoryLoadState = {
-  commandId: string;
-  phase: "loading" | "ready" | "error";
-};
-
 type ProviderHistoryLoadState = ProviderHistoryRouteIdentity & {
   id: number;
   provider: string;
@@ -409,12 +401,9 @@ type OpenProviderHistoryRequest = {
   provider?: string;
 };
 
-type FeedReturnAnchor = {
-  sessionId: string;
-  messageId: string;
-  viewportOffset: number;
-  fallbackScrollTop: number;
-};
+type TimelinePresentationItem =
+  | { kind: "message"; message: ChatMessage }
+  | { kind: "process"; process: CompletedTurnProcess };
 
 type PendingSessionLifecycleRecovery = {
   commandId: string;
@@ -554,19 +543,29 @@ function CheckCircleIcon() {
   );
 }
 
-function QuoteIcon() {
+function ProcessDisclosureIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M5.5 8.2h5v5.1H7.6c0 1.7.8 2.7 2.4 3.1v2c-3-.5-4.5-2.4-4.5-5.7V8.2Zm8 0h5v5.1h-2.9c0 1.7.8 2.7 2.4 3.1v2c-3-.5-4.5-2.4-4.5-5.7V8.2Z" />
+      <path d="M7 6.5h10M7 12h10M7 17.5h10" />
+      <circle cx="4" cy="6.5" r="1" />
+      <circle cx="4" cy="12" r="1" />
+      <circle cx="4" cy="17.5" r="1" />
     </svg>
   );
 }
 
-function LocateIcon() {
+function ProcessChevronIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 3v3M12 18v3M3 12h3M18 12h3" />
+      <path d="m8 10 4 4 4-4" />
+    </svg>
+  );
+}
+
+function AttachmentGlyph() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path d="m8.2 12.8 5.9-5.9a3 3 0 0 1 4.2 4.2l-7.5 7.5a4.5 4.5 0 0 1-6.4-6.4l7-7" />
     </svg>
   );
 }
@@ -749,80 +748,89 @@ function AttachmentList({
   );
 }
 
-function TurnResultContext({
-  prompt,
-  connection,
+function TurnProcessDisclosure({
+  process,
   expanded,
-  locationPhase,
-  failed,
-  onTogglePrompt,
-  onLocatePrompt,
+  onToggle,
 }: {
-  prompt: ChatMessage;
-  connection: MalinkClient | null;
+  process: CompletedTurnProcess;
   expanded: boolean;
-  locationPhase: TurnHistoryLoadState["phase"];
-  failed: boolean;
-  onTogglePrompt(): void;
-  onLocatePrompt(): void;
+  onToggle(): void;
 }) {
-  const locating = locationPhase === "loading";
-  const completionLabel = failed ? "Task ended with an error" : "Task completed";
-  const locateLabel = locating
-    ? "Loading the original message"
-    : locationPhase === "error"
-      ? "Retry loading the original message"
-      : "Jump to the original message";
+  const stepLabel = `${process.stepCount} ${
+    process.stepCount === 1 ? "step" : "steps"
+  }`;
+  const processDetails = [
+    process.attachmentCount > 0
+      ? `${process.attachmentCount} ${
+          process.attachmentCount === 1 ? "attachment" : "attachments"
+        }`
+      : null,
+    process.failedStepCount > 0
+      ? `${process.failedStepCount} failed`
+      : null,
+  ].filter(Boolean);
+  const actionLabel = `${expanded ? "Hide" : "Show"} ${stepLabel} from this task${
+    processDetails.length > 0 ? `. ${processDetails.join(", ")}` : ""
+  }`;
   return (
-    <div className={`turn-result-context ${expanded ? "is-expanded" : ""}`}>
-      <div className="turn-result-toolbar" aria-label="Completed task context">
-        <span
-          className={`turn-completion-mark ${failed ? "is-failed" : ""}`}
-          aria-label={completionLabel}
-          title={completionLabel}
-          role="img"
-        >
-          {failed ? "!" : <CheckCircleIcon />}
-        </span>
-        <button
-          type="button"
-          className="turn-context-button"
-          aria-label={expanded ? "Hide the original message" : "Show the original message"}
-          aria-expanded={expanded}
-          title={expanded ? "Hide original message" : "Show original message"}
-          onClick={onTogglePrompt}
-        >
-          <QuoteIcon />
-        </button>
-        <button
-          type="button"
-          className={`turn-context-button turn-locate-button is-${locationPhase}`}
-          aria-label={locateLabel}
-          aria-busy={locating}
-          disabled={locating}
-          title={locateLabel}
-          onClick={onLocatePrompt}
-        >
-          <LocateIcon />
-          {locating && <span className="turn-location-spinner" aria-hidden="true" />}
-          {locationPhase === "error" && (
-            <span className="turn-location-error" aria-hidden="true" />
-          )}
-        </button>
-      </div>
-      {expanded && (
-        <div className="turn-origin-preview">
-          <QuoteIcon />
-          <div>
-            {prompt.text ? <p>{prompt.text}</p> : null}
-            <AttachmentList
-              attachments={prompt.attachments}
-              connection={connection}
-            />
-          </div>
-        </div>
-      )}
+    <div className={`turn-process-disclosure ${expanded ? "is-expanded" : ""}`}>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-label={actionLabel}
+        title={actionLabel}
+        onClick={onToggle}
+      >
+        <ProcessDisclosureIcon />
+        <span>{stepLabel}</span>
+        {process.attachmentCount > 0 && (
+          <span
+            className="turn-process-attachment"
+            aria-label={`${process.attachmentCount} ${
+              process.attachmentCount === 1 ? "attachment" : "attachments"
+            }`}
+            title={`${process.attachmentCount} ${
+              process.attachmentCount === 1 ? "attachment" : "attachments"
+            }`}
+          >
+            <AttachmentGlyph />
+            {process.attachmentCount}
+          </span>
+        )}
+        {process.failedStepCount > 0 && (
+          <span
+            className="turn-process-failure"
+            aria-label={`${process.failedStepCount} failed`}
+            title={`${process.failedStepCount} failed`}
+          />
+        )}
+        <ProcessChevronIcon />
+      </button>
     </div>
+  );
+}
+
+function TurnResultState({
+  outcome,
+}: {
+  outcome: ObservedCommandCompletion["outcome"];
+}) {
+  if (outcome === "failed") return null;
+  const label = outcome === "cancelled" ? "Task stopped" : "Task completed";
+  return (
+    <span
+      className={`turn-result-state is-${outcome}`}
+      aria-label={label}
+      title={label}
+      role="img"
+    >
+      {outcome === "cancelled" ? (
+        <span aria-hidden="true">■</span>
+      ) : (
+        <CheckCircleIcon />
+      )}
+    </span>
   );
 }
 
@@ -1104,17 +1112,12 @@ function MalinkAppRuntime() {
   const [observedCommandCompletions, setObservedCommandCompletions] = useState<
     ObservedCommandCompletion[]
   >([]);
-  const [turnPromptCache, setTurnPromptCache] = useState<
-    Map<string, ChatMessage | null>
-  >(() => new Map());
-  const [expandedTurnId, setExpandedTurnId] = useState<string | null>(null);
+  const [expandedProcessTurnIds, setExpandedProcessTurnIds] = useState<
+    Set<string>
+  >(() => new Set());
   const [toolFocusHistoryKey, setToolFocusHistoryKey] = useState<string | null>(
     null,
   );
-  const [turnHistoryLoad, setTurnHistoryLoad] =
-    useState<TurnHistoryLoadState | null>(null);
-  const [feedReturnAnchor, setFeedReturnAnchor] =
-    useState<FeedReturnAnchor | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
     initialGatewayUi.selectedSessionId,
   );
@@ -1327,9 +1330,7 @@ function MalinkAppRuntime() {
   const activePromptCommandsRef = useRef(new Map<string, string>());
   const completedCommandResultsRef = useRef(new Set<string>());
   const completionObservationOrderRef = useRef(0);
-  const turnPromptLookupRef = useRef(new Set<string>());
-  const turnHistoryHydrationRef = useRef<string | null>(null);
-  const messageElementsRef = useRef(new Map<string, HTMLDivElement>());
+  const presentedCompletedTurnIdsRef = useRef(new Set<string>());
   const optimisticMessagesRef = useRef(
     new Map<string, OptimisticMessageReference>(),
   );
@@ -1397,37 +1398,15 @@ function MalinkAppRuntime() {
     ? sessionLifecycleBusy.get(gatewaySelected.id) ?? null
     : null;
   const selectedLifecycleBusy = selectedLifecycleAction !== null;
-  const latestCompletedTurn = useMemo(
+  const completedTurns = useMemo(
     () =>
-      latestCompletedTurnContext(
+      completedTurnPresentation(
         messages,
         observedCommandCompletions,
-        turnPromptCache,
         selectedSessionId,
       ),
-    [
-      messages,
-      observedCommandCompletions,
-      selectedSessionId,
-      turnPromptCache,
-    ],
+    [messages, observedCommandCompletions, selectedSessionId],
   );
-  const inferredCompletedTurnResultIds = useMemo(() => {
-    const resultIds = new Set<string>();
-    let latestAgentResultId: string | null = null;
-    for (const message of messages) {
-      if (message.kind === "user") {
-        if (latestAgentResultId) resultIds.add(latestAgentResultId);
-        latestAgentResultId = null;
-        continue;
-      }
-      if (message.kind === "agent" || message.kind === "error") {
-        latestAgentResultId = message.id;
-      }
-    }
-    if (latestCompletedTurn) resultIds.add(latestCompletedTurn.result.id);
-    return resultIds;
-  }, [latestCompletedTurn, messages]);
   const nativeBackAction = resolveMalinkBackAction({
     deleteDialogOpen: false,
     deleteDialogBusy: false,
@@ -1686,6 +1665,41 @@ function MalinkAppRuntime() {
     () => turnTimelineMessages(messages),
     [messages],
   );
+  const presentedTimeline = useMemo<TimelinePresentationItem[]>(() => {
+    const items: TimelinePresentationItem[] = [];
+    for (const message of timelineMessages) {
+      const process = completedTurns.processByMessageId.get(message.id);
+      if (!process) {
+        items.push({ kind: "message", message });
+        continue;
+      }
+      const expanded = expandedProcessTurnIds.has(process.commandId);
+      if (message.id === process.firstMessageId) {
+        items.push({ kind: "process", process });
+      }
+      if (expanded) items.push({ kind: "message", message });
+    }
+    return items;
+  }, [completedTurns, expandedProcessTurnIds, timelineMessages]);
+  useLayoutEffect(() => {
+    const completedTurnIds = new Set(
+      [...completedTurns.resultByMessageId.values()].map(
+        (result) => result.commandId,
+      ),
+    );
+    const newlyCompleted = [...completedTurnIds].filter(
+      (commandId) => !presentedCompletedTurnIdsRef.current.has(commandId),
+    );
+    presentedCompletedTurnIdsRef.current = completedTurnIds;
+    if (newlyCompleted.length === 0 || followLatestRef.current) return;
+    // Preserve a user's reading target if a turn finishes while they are
+    // inspecting earlier output. History and follow-latest views stay compact.
+    setExpandedProcessTurnIds((current) => {
+      const next = new Set(current);
+      for (const commandId of newlyCompleted) next.add(commandId);
+      return next;
+    });
+  }, [completedTurns]);
   const isStopping = Boolean(
     selectedSessionId && stoppingSessionIds.has(selectedSessionId),
   );
@@ -2085,17 +2099,6 @@ function MalinkAppRuntime() {
         ? current
         : [...current, observed],
     );
-    const prompt = turnPrompt(
-      liveMessagesBySessionRef.current.get(result.sessionId) ?? [],
-      result.commandId,
-    );
-    if (prompt) {
-      setTurnPromptCache((current) => {
-        const next = new Map(current);
-        next.set(result.commandId, prompt);
-        return next;
-      });
-    }
   }
 
   useEffect(() => {
@@ -2105,67 +2108,6 @@ function MalinkAppRuntime() {
   useEffect(() => {
     writeSessionReadState(window.localStorage, sessionReadState);
   }, [sessionReadState]);
-
-  useEffect(() => {
-    const sessionId = selectedSessionId;
-    const scope = historyScopeRef.current;
-    if (!sessionId || !scope) return;
-    const unresolved = nextTurnPromptLookup(
-      [
-        ...messages,
-        ...(liveMessagesBySessionRef.current.get(sessionId) ?? []),
-      ],
-      observedCommandCompletions,
-      turnPromptCache,
-      sessionId,
-    );
-    if (!unresolved) return;
-    const lookupKey = `${sessionId}:${unresolved.commandId}`;
-    if (turnPromptLookupRef.current.has(lookupKey)) return;
-    turnPromptLookupRef.current.add(lookupKey);
-    void loadTurnPromptHistory(scope, sessionId, unresolved.commandId)
-      .then((prompt) => {
-        if (historyScopeRef.current !== scope) return;
-        setTurnPromptCache((current) => {
-          const next = new Map(current);
-          next.set(
-            unresolved.commandId,
-            prompt ? { ...prompt, sessionId, historical: true } : null,
-          );
-          return next;
-        });
-      })
-      .catch((error) => {
-        showUiNotice(
-          "history:turn-prompt",
-          "history",
-          "warning",
-          `The task's original message could not be read: ${formatUiError(error)}`,
-        );
-      })
-      .finally(() => turnPromptLookupRef.current.delete(lookupKey));
-  }, [
-    messages,
-    observedCommandCompletions,
-    selectedSessionId,
-    turnPromptCache,
-  ]);
-
-  useEffect(() => {
-    const turn = latestCompletedTurn;
-    if (!turn) return;
-    if (turn.promptInTranscript) return;
-    if (
-      historyLoading ||
-      turnHistoryHydrationRef.current === turn.commandId ||
-      (turnHistoryLoad?.commandId === turn.commandId &&
-        (turnHistoryLoad.phase === "loading" ||
-          turnHistoryLoad.phase === "error"))
-    ) {
-      return;
-    }
-    void hydrateTurnHistory(turn.completion.sessionId!, turn.commandId);
-  }, [historyLoading, latestCompletedTurn, turnHistoryLoad]);
 
   useEffect(() => {
     if (!Object.values(uiNotices).some((notice) => notice.expiresAt !== null)) {
@@ -3180,150 +3122,6 @@ function MalinkAppRuntime() {
     }
   }
 
-  async function hydrateTurnHistory(
-    sessionId: string,
-    commandId: string,
-  ): Promise<void> {
-    const scope = historyScopeRef.current;
-    if (
-      !scope ||
-      historySessionIdRef.current !== sessionId ||
-      historyLoadingRef.current ||
-      turnHistoryHydrationRef.current === commandId
-    ) {
-      return;
-    }
-    const generation = historyGenerationRef.current;
-    turnHistoryHydrationRef.current = commandId;
-    historyLoadingRef.current = true;
-    setTurnHistoryLoad({ commandId, phase: "loading" });
-    setHistoryError(null);
-    setHistoryRetryMode(null);
-    try {
-      while (
-        generation === historyGenerationRef.current &&
-        historySessionIdRef.current === sessionId
-      ) {
-        const cached = await loadMessageHistoryPage(scope, sessionId, {
-          before: historyCursorRef.current,
-          limit: 100,
-        });
-        if (
-          generation !== historyGenerationRef.current ||
-          historySessionIdRef.current !== sessionId
-        ) {
-          return;
-        }
-        if (cached.messages.length > 0) {
-          const cachedMessages = cached.messages.map((message) => ({
-            ...message,
-            sessionId,
-            historical: true,
-          }));
-          const turnPage = trimHistoryPageToTurn(cachedMessages, commandId);
-          prepareHistoryPrepend(feedRef.current, prependScrollRef);
-          historyCursorRef.current = turnPage.prompt
-            ? olderHistoryCursor(
-                historyCursorRef.current,
-                [turnPage.prompt],
-              )
-            : cached.cursor;
-          setMessages((current) =>
-            mergeChatMessages(
-              current,
-              withoutReconciledOptimisticCopies(
-                turnPage.messages,
-                reconciledOptimisticMessageIdsRef.current,
-              ),
-            ),
-          );
-          const connection = malinkClientRef.current;
-          connection?.markHistoryLoaded(
-            sessionId,
-            cachedMessages.flatMap((message) =>
-              message.eventId ? [message.eventId] : [],
-            ),
-          );
-          if (turnPage.prompt) {
-            setHistoryHasMore(
-              turnPage.hasEarlierMessages ||
-                cached.hasMore ||
-                Boolean(connection),
-            );
-            setTurnHistoryLoad({ commandId, phase: "ready" });
-            return;
-          }
-          if (cached.hasMore) {
-            setHistoryHasMore(true);
-            continue;
-          }
-        }
-
-        const connection = malinkClientRef.current;
-        if (!connection) {
-          setHistoryHasMore(false);
-          setTurnHistoryLoad({ commandId, phase: "error" });
-          return;
-        }
-        const remote = await connection.loadHistoryPage(sessionId, 100);
-        const remoteMessages = remote.messages.map((message) =>
-          chatMessageFromIncoming(
-            { ...incomingMessageFromClient(message), historical: true },
-            message.sessionId ?? sessionId,
-          ),
-        );
-        if (remoteMessages.length > 0) {
-          await persistMessageHistoryPage(scope, sessionId, remoteMessages);
-        }
-        if (
-          generation !== historyGenerationRef.current ||
-          historySessionIdRef.current !== sessionId
-        ) {
-          return;
-        }
-        if (remoteMessages.length > 0) {
-          const turnPage = trimHistoryPageToTurn(remoteMessages, commandId);
-          prepareHistoryPrepend(feedRef.current, prependScrollRef);
-          historyCursorRef.current = olderHistoryCursor(
-            historyCursorRef.current,
-            turnPage.prompt ? [turnPage.prompt] : remoteMessages,
-          );
-          setMessages((current) =>
-            mergeChatMessages(current, turnPage.messages),
-          );
-          if (turnPage.prompt) {
-            setHistoryHasMore(turnPage.hasEarlierMessages || remote.hasMore);
-            setTurnHistoryLoad({ commandId, phase: "ready" });
-            return;
-          }
-        }
-        setHistoryHasMore(remote.hasMore);
-        if (!remote.hasMore) {
-          setTurnHistoryLoad({ commandId, phase: "error" });
-          return;
-        }
-      }
-    } catch (error) {
-      if (
-        generation === historyGenerationRef.current &&
-        historySessionIdRef.current === sessionId
-      ) {
-        setTurnHistoryLoad({ commandId, phase: "error" });
-        setHistoryError(
-          `The task's original position could not be loaded: ${formatUiError(error)}`,
-        );
-        setHistoryRetryMode("older");
-      }
-    } finally {
-      if (turnHistoryHydrationRef.current === commandId) {
-        turnHistoryHydrationRef.current = null;
-      }
-      if (generation === historyGenerationRef.current) {
-        historyLoadingRef.current = false;
-      }
-    }
-  }
-
   function handleFeedScroll() {
     const feed = feedRef.current;
     if (!feed) return;
@@ -3346,76 +3144,6 @@ function MalinkAppRuntime() {
     feed.scrollTo({ top: feed.scrollHeight, behavior: "auto" });
     setFeedAwayFromLatest(false);
     setFeedHasUnseenMessages(false);
-  }
-
-  function bindMessageElement(
-    messageId: string,
-    element: HTMLDivElement | null,
-  ): void {
-    if (element) messageElementsRef.current.set(messageId, element);
-    else messageElementsRef.current.delete(messageId);
-  }
-
-  function feedScrollBehavior(): ScrollBehavior {
-    return window.matchMedia("(prefers-reduced-motion: reduce)").matches
-      ? "auto"
-      : "smooth";
-  }
-
-  function jumpToTurnOrigin(): void {
-    const turn = latestCompletedTurn;
-    const feed = feedRef.current;
-    const promptId = turn?.promptInTranscript?.id;
-    if (!turn || !feed || !promptId) {
-      if (turn && turnHistoryLoad?.phase === "error") {
-        void hydrateTurnHistory(turn.completion.sessionId!, turn.commandId);
-      }
-      return;
-    }
-    const promptElement = messageElementsRef.current.get(promptId);
-    const resultElement = messageElementsRef.current.get(turn.result.id);
-    if (!promptElement || !resultElement) return;
-    const feedRect = feed.getBoundingClientRect();
-    setFeedReturnAnchor({
-      sessionId: turn.completion.sessionId!,
-      messageId: turn.result.id,
-      viewportOffset: resultElement.getBoundingClientRect().top - feedRect.top,
-      fallbackScrollTop: feed.scrollTop,
-    });
-    const promptRect = promptElement.getBoundingClientRect();
-    const centeredTop =
-      feed.scrollTop +
-      promptRect.top -
-      feedRect.top -
-      Math.max(18, (feed.clientHeight - promptRect.height) / 2);
-    followLatestRef.current = false;
-    feed.scrollTo({
-      top: Math.max(0, centeredTop),
-      behavior: feedScrollBehavior(),
-    });
-    setFeedAwayFromLatest(true);
-  }
-
-  function returnToTurnResult(): void {
-    const feed = feedRef.current;
-    const anchor = feedReturnAnchor;
-    if (!feed || !anchor) return;
-    const target = messageElementsRef.current.get(anchor.messageId);
-    const top = target
-      ? feed.scrollTop +
-        target.getBoundingClientRect().top -
-        feed.getBoundingClientRect().top -
-        anchor.viewportOffset
-      : anchor.fallbackScrollTop;
-    followLatestRef.current = false;
-    feed.scrollTo({ top: Math.max(0, top), behavior: feedScrollBehavior() });
-    setFeedReturnAnchor(null);
-    window.requestAnimationFrame(() => {
-      const currentFeed = feedRef.current;
-      if (currentFeed) {
-        setFeedAwayFromLatest(!isNearFeedBottom(currentFeed));
-      }
-    });
   }
 
   function activateLocalSession(
@@ -3450,9 +3178,7 @@ function MalinkAppRuntime() {
       }
     }
     if (!sessionChanged) return;
-    setExpandedTurnId(null);
-    setFeedReturnAnchor(null);
-    setTurnHistoryLoad(null);
+    setExpandedProcessTurnIds(new Set());
     followLatestRef.current = true;
     setFeedAwayFromLatest(false);
     setFeedHasUnseenMessages(false);
@@ -3839,14 +3565,8 @@ function MalinkAppRuntime() {
       activePromptCommandsRef.current.clear();
       completedCommandResultsRef.current.clear();
       completionObservationOrderRef.current = 0;
-      turnPromptLookupRef.current.clear();
-      turnHistoryHydrationRef.current = null;
-      messageElementsRef.current.clear();
       setObservedCommandCompletions([]);
-      setTurnPromptCache(new Map());
-      setExpandedTurnId(null);
-      setTurnHistoryLoad(null);
-      setFeedReturnAnchor(null);
+      setExpandedProcessTurnIds(new Set());
       setRevisionConflict(null);
       setNativeCommandReview(null);
     }
@@ -4298,14 +4018,8 @@ function MalinkAppRuntime() {
     activePromptCommandsRef.current.clear();
     completedCommandResultsRef.current.clear();
     completionObservationOrderRef.current = 0;
-    turnPromptLookupRef.current.clear();
-    turnHistoryHydrationRef.current = null;
-    messageElementsRef.current.clear();
     setObservedCommandCompletions([]);
-    setTurnPromptCache(new Map());
-    setExpandedTurnId(null);
-    setTurnHistoryLoad(null);
-    setFeedReturnAnchor(null);
+    setExpandedProcessTurnIds(new Set());
     setFeedHasUnseenMessages(false);
     pendingCreatedSessionIdRef.current = null;
     updateSessionLifecycleBusy(new Map());
@@ -8487,53 +8201,57 @@ function MalinkAppRuntime() {
           {historyLoading && messages.length === 0 && (
             <div className="history-skeleton" aria-hidden="true" />
           )}
-          {timelineMessages.map((message, messageIndex) => {
+          {presentedTimeline.map((item, itemIndex) => {
+            if (item.kind === "process") {
+              const expanded = expandedProcessTurnIds.has(
+                item.process.commandId,
+              );
+              return (
+                <TurnProcessDisclosure
+                  process={item.process}
+                  expanded={expanded}
+                  key={`process:${item.process.commandId}`}
+                  onToggle={() =>
+                    setExpandedProcessTurnIds((current) => {
+                      const next = new Set(current);
+                      if (next.has(item.process.commandId)) {
+                        next.delete(item.process.commandId);
+                      } else {
+                        next.add(item.process.commandId);
+                      }
+                      return next;
+                    })
+                  }
+                />
+              );
+            }
+            const message = item.message;
             const isToolFocusContext =
               toolFocus?.contextMessage?.id === message.id;
             const isToolFocusSource =
               toolFocus?.toolMessage.id === message.id;
             const agentWork = isAgentWorkMessage(message);
+            const previousItem = presentedTimeline[itemIndex - 1];
+            const nextItem = presentedTimeline[itemIndex + 1];
             const previousIsAgentWork = isAgentWorkMessage(
-              timelineMessages[messageIndex - 1],
+              previousItem?.kind === "message" ? previousItem.message : undefined,
             );
             const nextIsAgentWork = isAgentWorkMessage(
-              timelineMessages[messageIndex + 1],
+              nextItem?.kind === "message" ? nextItem.message : undefined,
             );
             const agentTurnClass = agentWork
               ? `${previousIsAgentWork ? "agent-turn-continuation" : "agent-turn-start"} ${nextIsAgentWork ? "" : "agent-turn-end"}`
               : "";
-            const isCompletedTurnResult =
-              latestCompletedTurn?.result.id === message.id;
-            const isTurnResult = inferredCompletedTurnResultIds.has(message.id);
-            const turnPresentationClass = agentWork
-              ? isTurnResult
-                ? "turn-result"
-                : "turn-process"
-              : "";
-            const turnLocationPhase = latestCompletedTurn?.promptInTranscript
-              ? "ready"
-              : turnHistoryLoad &&
-                  turnHistoryLoad.commandId === latestCompletedTurn?.commandId
-                ? turnHistoryLoad.phase
-                : "loading";
-            const resultContext =
-              isCompletedTurnResult && latestCompletedTurn ? (
-                <TurnResultContext
-                  prompt={latestCompletedTurn.prompt}
-                  connection={malinkClientRef.current}
-                  expanded={expandedTurnId === latestCompletedTurn.commandId}
-                  locationPhase={turnLocationPhase}
-                  failed={latestCompletedTurn.completion.outcome === "failed"}
-                  onTogglePrompt={() =>
-                    setExpandedTurnId((current) =>
-                      current === latestCompletedTurn.commandId
-                        ? null
-                        : latestCompletedTurn.commandId,
-                    )
-                  }
-                  onLocatePrompt={jumpToTurnOrigin}
-                />
-              ) : null;
+            const result = completedTurns.resultByMessageId.get(message.id);
+            const isTurnResult = Boolean(result);
+            const isTurnProcess = completedTurns.processByMessageId.has(
+              message.id,
+            );
+            const turnPresentationClass = isTurnResult
+              ? "turn-result"
+              : isTurnProcess
+                ? "turn-process"
+                : "";
             if (message.kind === "notice") {
               return (
                 <div
@@ -8550,18 +8268,16 @@ function MalinkAppRuntime() {
             if (message.kind === "error") {
               return (
                 <div
-                  className={`message-row agent-row ${isTurnResult ? "turn-result" : ""} ${
+                  className={`message-row agent-row ${turnPresentationClass} ${
                     message.historical ? "" : "message-enter"
                   }`}
                   key={message.id}
-                  ref={(element) => bindMessageElement(message.id, element)}
                 >
                   <div className="agent-mark error-mark">!</div>
                   <div className="bubble agent-bubble error-bubble">
                     <span className="agent-label">TASK NEEDS ATTENTION</span>
                     <p>{message.text}</p>
                     <time>{message.time}</time>
-                    {resultContext}
                   </div>
                 </div>
               );
@@ -8583,7 +8299,6 @@ function MalinkAppRuntime() {
                     message.historical ? "" : "message-enter"
                   }`}
                   key={message.id}
-                  ref={(element) => bindMessageElement(message.id, element)}
                 >
                   <div className="bubble user-bubble">
                     {message.originDeviceName &&
@@ -8655,7 +8370,7 @@ function MalinkAppRuntime() {
               if (extensionView) {
                 return (
                   <div
-                    className={`message-row agent-row ${
+                    className={`message-row agent-row ${turnPresentationClass} ${
                       message.historical ? "" : "message-enter"
                     }`}
                     key={message.id}
@@ -8689,7 +8404,7 @@ function MalinkAppRuntime() {
               const privilegeRequest = message.raw?.decisionType === "privilege";
               return (
                 <div
-                  className={`message-row agent-row ${
+                  className={`message-row agent-row ${turnPresentationClass} ${
                     message.historical ? "" : "message-enter"
                   }`}
                   key={message.id}
@@ -8767,11 +8482,13 @@ function MalinkAppRuntime() {
                   message.historical ? "" : "message-enter"
                 }`}
                 key={message.id}
-                ref={(element) => bindMessageElement(message.id, element)}
               >
                 <div className="agent-mark">C</div>
                 <div className="bubble agent-bubble">
-                  <span className="agent-label">CODEX</span>
+                  <span className="agent-label">
+                    CODEX
+                    {result && <TurnResultState outcome={result.outcome} />}
+                  </span>
                   {message.format === "markdown" || !message.format ? (
                     <MarkdownContent content={message.text ?? ""} />
                   ) : (
@@ -8784,7 +8501,6 @@ function MalinkAppRuntime() {
                     connection={malinkClientRef.current}
                   />
                   <time>{message.time}</time>
-                  {resultContext}
                 </div>
               </div>
             );
@@ -8825,18 +8541,7 @@ function MalinkAppRuntime() {
         </div>
 
         <div className="composer-area">
-          {feedReturnAnchor?.sessionId === selectedSessionId ? (
-            <button
-              type="button"
-              className="jump-to-latest return-to-result"
-              aria-label="Return to the task result"
-              title="Return to task result"
-              onClick={returnToTurnResult}
-            >
-              <ArrowDownIcon />
-              <span className="return-result-dot" aria-hidden="true" />
-            </button>
-          ) : feedAwayFromLatest ? (
+          {feedAwayFromLatest ? (
             <button
               type="button"
               className="jump-to-latest"
