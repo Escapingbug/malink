@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   canonicalJsonBytes,
@@ -13,9 +15,13 @@ import {
   toArrayBuffer,
   webCrypto,
 } from '@malink/security'
-import { publishGatewayAgentUpdate } from '../../scripts/gateway-agent-update-release.js'
+import {
+  assertLocalGitCommit,
+  publishGatewayAgentUpdate,
+} from '../../scripts/gateway-agent-update-release.js'
 
 const temporaryDirectories: string[] = []
+const execFileAsync = promisify(execFile)
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map(path =>
@@ -31,6 +37,9 @@ describe('Gateway Agent update publisher', () => {
     const output = join(root, 'published')
     await writeFile(keyPath, JSON.stringify(await exportDeviceKeyPair(keys)), { mode: 0o600 })
     await writeFile(promptPath, 'Build, test, and stage this exact Malink commit.\n')
+    const commit = (await execFileAsync('git', ['rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+    })).stdout.trim()
 
     const result = await publishGatewayAgentUpdate({
       output,
@@ -38,7 +47,7 @@ describe('Gateway Agent update publisher', () => {
       versionName: '2.0.0',
       buildId: 'build-2',
       repositoryUrl: 'https://github.com/Escapingbug/malink.git',
-      commit: '0123456789abcdef0123456789abcdef01234567',
+      commit,
       promptFile: promptPath,
       privateKeyFile: keyPath,
       publishedAt: 42,
@@ -52,7 +61,7 @@ describe('Gateway Agent update publisher', () => {
       buildId: 'build-2',
       repository: {
         url: 'https://github.com/Escapingbug/malink.git',
-        commit: '0123456789abcdef0123456789abcdef01234567',
+        commit,
       },
       prompt: 'Build, test, and stage this exact Malink commit.',
     })
@@ -77,11 +86,17 @@ describe('Gateway Agent update publisher', () => {
       versionName: '2.0.0',
       buildId: 'build-2',
       repositoryUrl: 'https://github.com/Escapingbug/malink.git',
-      commit: '0123456789abcdef0123456789abcdef01234567',
+      commit,
       promptFile: promptPath,
       privateKeyFile: keyPath,
       publishedAt: 42,
     })).rejects.toThrow(/replace immutable update Prompt/u)
+  })
+
+  it('refuses to sign a well-formed SHA that is not a local Git commit', async () => {
+    await expect(assertLocalGitCommit(
+      '0123456789abcdef0123456789abcdef01234567',
+    )).rejects.toThrow(/is not a local Git commit/u)
   })
 })
 

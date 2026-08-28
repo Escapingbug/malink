@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import {
   link,
   mkdir,
@@ -9,6 +10,7 @@ import {
 } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { promisify } from 'node:util'
 import {
   canonicalJsonBytes,
   gatewayAgentUpdatePromptSchema,
@@ -25,6 +27,7 @@ import {
 import { GATEWAY_STATE_CATALOG } from '../src/gateway/matrix/stateUpgradeCatalog.js'
 
 const DEFAULT_REPOSITORY_URL = 'https://github.com/Escapingbug/malink.git'
+const execFileAsync = promisify(execFile)
 
 interface GatewayAgentUpdateReleaseOptions {
   output: string
@@ -41,6 +44,7 @@ interface GatewayAgentUpdateReleaseOptions {
 export async function publishGatewayAgentUpdate(
   options: GatewayAgentUpdateReleaseOptions,
 ): Promise<{ releasePath: string; latestPath: string; signerPath: string }> {
+  await assertLocalGitCommit(options.commit)
   const serialized = JSON.parse(
     await readFile(resolve(options.privateKeyFile), 'utf8'),
   ) as SerializedDeviceKeyPair
@@ -93,6 +97,26 @@ export async function publishGatewayAgentUpdate(
   await writeImmutableJson(signerPath, signer)
   await writeAtomicJson(latestPath, signed)
   return { releasePath, latestPath, signerPath }
+}
+
+export async function assertLocalGitCommit(commit: string, cwd = process.cwd()): Promise<void> {
+  if (!/^[0-9a-f]{40}$/u.test(commit)) {
+    throw new Error('Gateway Agent update commit must be an exact 40-character lowercase Git SHA')
+  }
+  try {
+    const { stdout } = await execFileAsync('git', ['cat-file', '-t', commit], {
+      cwd,
+      encoding: 'utf8',
+    })
+    if (stdout.trim() !== 'commit') {
+      throw new Error(`Git object is ${stdout.trim() || 'unknown'}, not a commit`)
+    }
+  } catch (error) {
+    throw new Error(
+      `Refusing to sign Gateway update: ${commit} is not a local Git commit`,
+      { cause: error },
+    )
+  }
 }
 
 async function writeImmutableJson(path: string, value: unknown): Promise<void> {

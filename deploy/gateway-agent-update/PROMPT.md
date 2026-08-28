@@ -1,8 +1,10 @@
 Update this Malink Gateway from the exact signed Git commit supplied above.
 
 1. Initialize or refresh the supplied source directory using only the supplied
-   credential-free HTTPS repository. Fetch the exact 40-character commit and
-   verify that `git rev-parse HEAD` equals it. Do not build a branch name or a
+   credential-free HTTPS repository. Fetch its advertised branch refs with full
+   history, then check out the exact authorized 40-character commit and verify
+   that `git rev-parse HEAD` equals it. Do not use a shallow fetch or request an
+   unadvertised raw SHA as the only fetch. Do not build a branch name or use a
    different commit.
 2. Read `AGENTS.md`, `docs/architecture.md`, the package-manager declaration,
    and the target commit's diff before changing the candidate. Install with the
