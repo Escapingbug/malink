@@ -140,6 +140,7 @@ import {
   clearPendingSessionCreateRecovery,
   completedSessionCreateTarget,
   isMissingSessionCreateRecoveryCommand,
+  isSessionCreateRecoveryUncertain,
   readPendingSessionCreateRecovery,
   rebindPendingSessionCreateRecovery,
   sessionCreateRecoveryMatches,
@@ -151,6 +152,7 @@ import {
   clearOptimisticSession,
   createOptimisticSessionRecord,
   failOptimisticSession,
+  markOptimisticSessionUncertain,
   readOptimisticSession,
   retryOptimisticSession,
   writeOptimisticSession,
@@ -1702,13 +1704,20 @@ function MalinkAppRuntime() {
           mode: "blocked" as const,
           reason: "Session creation failed · Retry creation to send queued messages",
         }
-      : derivedComposerState.canSend
+      : optimisticSession.phase === "uncertain"
         ? {
-            ...derivedComposerState,
-            mode: "queue" as const,
-            reason: "Creating conversation · Send queues this message safely",
+            canType: true,
+            canSend: false,
+            mode: "blocked" as const,
+            reason: "Creation result not confirmed · Check the result or stop waiting",
           }
-        : derivedComposerState
+        : derivedComposerState.canSend
+          ? {
+              ...derivedComposerState,
+              mode: "queue" as const,
+              reason: "Creating conversation · Send queues this message safely",
+            }
+          : derivedComposerState
     : derivedComposerState;
   const conversationTitle =
     selected?.title ??
@@ -2124,6 +2133,32 @@ function MalinkAppRuntime() {
         // The in-memory failed draft remains usable for this page lifetime.
       }
     }
+    if (
+      optimistic?.phase === "creating" &&
+      recovery &&
+      isSessionCreateRecoveryUncertain(recovery)
+    ) {
+      optimistic = markOptimisticSessionUncertain(
+        optimistic,
+        "Your computer accepted the secure command, but Malink could not confirm its final result. Check again, or stop waiting to create a different conversation.",
+      );
+      try {
+        writeOptimisticSession(window.localStorage, optimistic);
+      } catch {
+        // The in-memory uncertain draft remains actionable for this page lifetime.
+      }
+    }
+    if (optimistic?.phase === "uncertain" && !recovery) {
+      optimistic = failOptimisticSession(
+        optimistic,
+        "The saved creation command is no longer available. Stop waiting and create the session again.",
+      );
+      try {
+        writeOptimisticSession(window.localStorage, optimistic);
+      } catch {
+        // The in-memory failed draft remains usable for this page lifetime.
+      }
+    }
     if (recovery) pendingSessionCreateRecoveryRef.current = recovery;
     if (optimistic) optimisticSessionRef.current = optimistic;
     let active = true;
@@ -2144,7 +2179,7 @@ function MalinkAppRuntime() {
           );
         }
       }
-      if (recovery) {
+      if (recovery && optimistic?.phase !== "uncertain") {
         setPendingSessionCreate(recovery.input);
         setNewSessionBusy(true);
       }
@@ -3623,13 +3658,34 @@ function MalinkAppRuntime() {
           );
           return;
         }
-        showUiNotice(
-          "session:create",
-          "session",
-          "warning",
-          "Session creation is still queued securely. Malink will resume the same command when your computer reconnects.",
+        const draft = optimisticSessionRef.current;
+        const resultIsUncertain = Boolean(
+          draft && isSessionCreateRecoveryUncertain(recovery),
         );
+        if (draft && resultIsUncertain) {
+          commitOptimisticSession(
+            markOptimisticSessionUncertain(
+              draft,
+              "Your computer accepted the secure command, but Malink could not confirm its final result. Check again, or stop waiting to create a different conversation.",
+            ),
+          );
+          clearPendingSessionCreateUi();
+          showUiNotice(
+            "session:create",
+            "session",
+            "warning",
+            "Session creation did not reach a confirmed result. The original command remains safe to check again and will not be submitted twice.",
+          );
+        } else {
+          showUiNotice(
+            "session:create",
+            "session",
+            "warning",
+            "Session creation is still queued securely. Malink will resume the same command when your computer reconnects.",
+          );
+        }
         if (
+          !resultIsUncertain &&
           malinkClientRef.current === connection &&
           connectionStatusRef.current === "connected"
         ) {
@@ -5368,7 +5424,10 @@ function MalinkAppRuntime() {
       // connection refuses to reserve a new command if that exact outbox entry
       // is unavailable, so this can never create a second session.
       const recovered = await connection.recoverCommand(sent.commandId);
-      return waitForCommandCompletion(recovered.completion);
+      return waitForCommandCompletion(
+        recovered.completion,
+        SESSION_CREATE_RESULT_RECOVERY_MS,
+      );
     }
   }
 
@@ -6268,6 +6327,69 @@ function MalinkAppRuntime() {
     const record = optimisticSessionRef.current;
     if (!record || record.phase !== "failed" || newSessionBusy) return;
     void createSession(record.input, record);
+  }
+
+  function recheckUncertainOptimisticSession(): void {
+    const record = optimisticSessionRef.current;
+    const recovery = pendingSessionCreateRecoveryRef.current;
+    const connection = malinkClientRef.current;
+    if (
+      !record ||
+      record.phase !== "uncertain" ||
+      !recovery ||
+      !connection ||
+      connectionStatusRef.current !== "connected" ||
+      sessionCreateRecoveryInFlightRef.current
+    ) return;
+    commitOptimisticSession({
+      ...record,
+      phase: "creating",
+      error: undefined,
+      updatedAt: Date.now(),
+    });
+    setPendingSessionCreate(recovery.input);
+    setNewSessionBusy(true);
+    continuePendingSessionCreate(connection);
+  }
+
+  async function stopWaitingForUncertainSession(): Promise<void> {
+    const record = optimisticSessionRef.current;
+    const recovery = pendingSessionCreateRecoveryRef.current;
+    if (!record || record.phase !== "uncertain" || !recovery) return;
+    const confirmed = window.confirm(
+      "Stop waiting for this creation result? This removes the local draft and its queued messages. If the original command later succeeds, the conversation will still appear from your computer.",
+    );
+    if (!confirmed) return;
+    forgetPendingSessionCreate(recovery.commandId);
+    const localSessionId = record.localSessionId;
+    const wasSelected = selectedSessionIdRef.current === localSessionId;
+    removeOptimisticSession(localSessionId);
+    clearPendingSessionCreateUi();
+    liveMessagesBySessionRef.current.delete(localSessionId);
+    if (wasSelected) {
+      const fallback = gatewayState?.sessions.find(
+        (session) => session.status !== "archived",
+      ) ?? null;
+      activateLocalSession(fallback?.id ?? null);
+      if (!fallback) setMobileChatOpen(false);
+    }
+    const scope = historyScopeRef.current;
+    if (scope) {
+      await clearSessionMessageHistory(scope, localSessionId).catch((error) => {
+        showUiNotice(
+          "session:create-queue-storage",
+          "composer",
+          "warning",
+          `The stopped draft's local messages could not be cleared: ${formatUiError(error)}`,
+        );
+      });
+    }
+    showUiNotice(
+      "session:create",
+      "session",
+      "info",
+      "The local creating placeholder was removed. You can create another conversation now.",
+    );
   }
 
   async function discardFailedOptimisticSession(): Promise<void> {
@@ -7705,7 +7827,7 @@ function MalinkAppRuntime() {
             <button
               type="button"
               className={`session-row session-create-pending ${
-                optimisticSession.phase === "failed" ? "is-failed" : ""
+                optimisticSession.phase === "creating" ? "" : "is-failed"
               } ${selectedSessionId === optimisticSession.localSessionId ? "selected" : ""}`}
               data-session-id={optimisticSession.localSessionId}
               data-session-phase={optimisticSession.phase}
@@ -7713,7 +7835,9 @@ function MalinkAppRuntime() {
               aria-label={`${optimisticSession.input.title?.trim() || "New session"}. ${
                 optimisticSession.phase === "failed"
                   ? "Creation failed. Open to retry."
-                  : "Creating. You can already send messages."
+                  : optimisticSession.phase === "uncertain"
+                    ? "Creation result not confirmed. Open to check again or stop waiting."
+                    : "Creating. You can already send messages."
               }`}
               onClick={() => {
                 setPrimaryView("chats");
@@ -7738,14 +7862,20 @@ function MalinkAppRuntime() {
                 <span className="session-title-line">
                   <strong>{optimisticSession.input.title?.trim() || "New session"}</strong>
                   <time>
-                    {optimisticSession.phase === "failed" ? "failed" : "now"}
+                    {optimisticSession.phase === "failed"
+                      ? "failed"
+                      : optimisticSession.phase === "uncertain"
+                        ? "check"
+                        : "now"}
                   </time>
                 </span>
                 <span className="session-preview-line">
                   <span>
                     {optimisticSession.phase === "failed"
                       ? "Creation failed · Open to retry"
-                      : "Creating · Ready for messages"}
+                      : optimisticSession.phase === "uncertain"
+                        ? "Result not confirmed · Open to resolve"
+                        : "Creating · Ready for messages"}
                   </span>
                 </span>
               </span>
@@ -8652,7 +8782,7 @@ function MalinkAppRuntime() {
           {optimisticSelected && optimisticSession && (
             <section
               className={`optimistic-session-card phase-${optimisticSession.phase}`}
-              role={optimisticSession.phase === "failed" ? "alert" : "status"}
+              role={optimisticSession.phase === "creating" ? "status" : "alert"}
               aria-live="polite"
             >
               <span className="optimistic-session-mark" aria-hidden="true">
@@ -8666,7 +8796,9 @@ function MalinkAppRuntime() {
                 <strong>
                   {optimisticSession.phase === "creating"
                     ? "Creating this conversation"
-                    : "Conversation creation failed"}
+                    : optimisticSession.phase === "uncertain"
+                      ? "Creation result not confirmed"
+                      : "Conversation creation failed"}
                 </strong>
                 <p>
                   {optimisticSession.phase === "creating"
@@ -8690,6 +8822,23 @@ function MalinkAppRuntime() {
                     disabled={newSessionBusy}
                   >
                     Discard
+                  </button>
+                </div>
+              )}
+              {optimisticSession.phase === "uncertain" && (
+                <div className="optimistic-session-actions">
+                  <button
+                    type="button"
+                    onClick={recheckUncertainOptimisticSession}
+                    disabled={connectionStatus !== "connected"}
+                  >
+                    Check result again
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void stopWaitingForUncertainSession()}
+                  >
+                    Stop waiting
                   </button>
                 </div>
               )}
@@ -9332,8 +9481,8 @@ function optimisticSessionSummary(
     id: record.localSessionId,
     title: record.input.title?.trim() || "New session",
     updatedAt: record.updatedAt,
-    status: record.phase === "failed" ? "failed" : "idle",
-    activityPhase: record.phase === "failed" ? "failed" : "starting",
+    status: record.phase === "creating" ? "idle" : "failed",
+    activityPhase: record.phase === "creating" ? "starting" : "failed",
     scope: record.input.scope ?? "project",
     projectId:
       record.input.projectId ?? workspace?.projectId ?? "pending-project",

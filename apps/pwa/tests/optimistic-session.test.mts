@@ -5,6 +5,7 @@ import {
   clearOptimisticSession,
   createOptimisticSessionRecord,
   failOptimisticSession,
+  markOptimisticSessionUncertain,
   readOptimisticSession,
   retryOptimisticSession,
   writeOptimisticSession,
@@ -86,6 +87,35 @@ test("keeps the local identity and queued UI across bind, failure, and retry", (
   assert.equal(retried.phase, "creating");
   assert.equal(retried.error, undefined);
   assert.equal(retried.localSessionId, created.localSessionId);
+});
+
+test("keeps the durable command identity while its final result is uncertain", () => {
+  const created = createOptimisticSessionRecord(
+    input,
+    { gatewayId: "gateway-1", conversationId: "room-1" },
+    "local-session-1",
+    100,
+  );
+  const bound = bindOptimisticSession(
+    created,
+    "command-1",
+    "remote-session-1",
+    110,
+  );
+  const uncertain = markOptimisticSessionUncertain(
+    bound,
+    "Result not confirmed",
+    120,
+  );
+
+  assert.equal(uncertain.phase, "uncertain");
+  assert.equal(uncertain.commandId, "command-1");
+  assert.equal(uncertain.remoteSessionId, "remote-session-1");
+  assert.equal(uncertain.error, "Result not confirmed");
+
+  const storage = new MemoryStorage();
+  writeOptimisticSession(storage, uncertain);
+  assert.deepEqual(readOptimisticSession(storage), uncertain);
 });
 
 test("only clears the matching optimistic session", () => {

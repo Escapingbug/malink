@@ -3,6 +3,8 @@ import type { NewSessionInput } from "./NewSessionDialog";
 export const PENDING_SESSION_CREATE_STORAGE_KEY =
   "malink:pending-session-create:v1";
 
+export const SESSION_CREATE_UNCERTAIN_AFTER_MS = 60_000;
+
 type SessionCreateRecoveryStorage = Pick<
   Storage,
   "getItem" | "setItem" | "removeItem"
@@ -114,6 +116,14 @@ export function isMissingSessionCreateRecoveryCommand(error: unknown): boolean {
       "errorCode" in error &&
       (error as { errorCode?: unknown }).errorCode === "OPERATION_NOT_FOUND",
   );
+}
+
+export function isSessionCreateRecoveryUncertain(
+  recovery: Pick<PendingSessionCreateRecovery, "createdAt">,
+  now = Date.now(),
+  thresholdMs = SESSION_CREATE_UNCERTAIN_AFTER_MS,
+): boolean {
+  return now - recovery.createdAt >= thresholdMs;
 }
 
 function parsePendingSessionCreateRecovery(
