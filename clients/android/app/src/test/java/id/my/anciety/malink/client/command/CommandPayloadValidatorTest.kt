@@ -262,10 +262,10 @@ class CommandPayloadValidatorTest {
             put("scope", "scratch")
             put("extensions", buildJsonArray {
                 add(buildJsonObject {
-                    put("id", "has-privacy")
+                    put("id", "review-gate")
                     put("config", buildJsonObject {
-                        put("contextId", "metapp-payroll")
-                        put("reviewRequired", true)
+                        put("policyId", "standard-review")
+                        put("requireApproval", true)
                     })
                 })
             })
@@ -274,11 +274,11 @@ class CommandPayloadValidatorTest {
 
         assertEquals("scratch", parsed.scope)
         assertEquals(1, parsed.extensions.size)
-        assertEquals("has-privacy", parsed.extensions.single().id)
-        assertEquals("metapp-payroll", parsed.extensions.single().config?.get("contextId")?.let {
+        assertEquals("review-gate", parsed.extensions.single().id)
+        assertEquals("standard-review", parsed.extensions.single().config?.get("policyId")?.let {
             (it as JsonPrimitive).content
         })
-        assertFalse(parsed.toString().contains("metapp-payroll"))
+        assertFalse(parsed.toString().contains("standard-review"))
 
         assertInvalid(buildJsonObject {
             put("operation", "session.create")

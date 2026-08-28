@@ -14,7 +14,6 @@
     "scripts/generate-gateway-release-key.ts",
     "scripts/web-live-e2e.ts",
     "scripts/e2e/androidAlphaJourney.ts",
-    "scripts/e2e/privacyBusinessJourney.ts",
     "scripts/matrix-local-gateway.ts"
   ]
 }

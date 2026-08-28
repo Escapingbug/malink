@@ -305,22 +305,22 @@ describe('SemanticSessionRuntime', () => {
         expect(statuses.map(s => s.state)).toEqual(['querying', 'idle'])
     })
 
-    it('sends only prepared input to the provider and journals canonical sanitized events', async () => {
+    it('sends only extension-prepared input and journals canonical provider events', async () => {
         const sent: ChannelMessage[] = []
         const provider = createProvider([
-            { kind: 'text', text: 'Hello Alias' },
+            { kind: 'text', text: 'Hello TRANSFORMED' },
             { kind: 'result', status: 'success' },
         ])
         const extension: SessionExtensionInstance = {
-            id: 'privacy',
-            summary: { id: 'privacy', name: 'Privacy', version: '1' },
+            id: 'text-transform',
+            summary: { id: 'text-transform', name: 'Text transform', version: '1' },
             prepareTurn: async () => ({
                 kind: 'ready',
-                input: 'Ask about Alias',
-                stateRef: 'mapping-v1',
+                input: '[prepared] Ask about subject',
+                stateRef: 'transform-v1',
             }),
             presentEvent: async value => value.kind === 'assistant_text_delta'
-                ? [{ ...value, text: value.text.replace('Alias', 'Original Name') }]
+                ? [{ ...value, text: value.text.replace('TRANSFORMED', 'PRESENTED') }]
                 : [value],
             lifecycle: async () => undefined,
         }
@@ -335,29 +335,29 @@ describe('SemanticSessionRuntime', () => {
 
         await runtime.dispatch({
             kind: 'user_message',
-            text: 'Ask about Original Name',
+            text: 'Ask about subject',
             source: 'channel',
         })
 
         expect(provider.startQuery).toHaveBeenCalledWith(
-            'Ask about Alias',
+            '[prepared] Ask about subject',
             expect.objectContaining({ cwd: '/repo' }),
         )
         expect(runtime.journal.list()).toEqual(expect.arrayContaining([
-            expect.objectContaining({ kind: 'assistant_text_delta', text: 'Hello Alias' }),
+            expect.objectContaining({ kind: 'assistant_text_delta', text: 'Hello TRANSFORMED' }),
         ]))
-        expect(sent.map(message => message.text)).toEqual(['Hello Original Name'])
+        expect(sent.map(message => message.text)).toEqual(['Hello PRESENTED'])
     })
 
     it('does not start the provider when an extension preview is denied', async () => {
         const sent: ChannelMessage[] = []
         const channel = createChannel(sent, [])
         vi.mocked(channel.requestDecision).mockResolvedValue({ value: 'deny' })
-        const approve = vi.fn(async () => ({ kind: 'ready' as const, input: 'sanitized' }))
+        const approve = vi.fn(async () => ({ kind: 'ready' as const, input: 'prepared' }))
         const reject = vi.fn(async () => undefined)
         const extension: SessionExtensionInstance = {
-            id: 'privacy',
-            summary: { id: 'privacy', name: 'Privacy', version: '1' },
+            id: 'review-gate',
+            summary: { id: 'review-gate', name: 'Review gate', version: '1' },
             prepareTurn: async () => ({
                 kind: 'approval_required',
                 approval: { title: 'Review outbound prompt' },
@@ -377,7 +377,7 @@ describe('SemanticSessionRuntime', () => {
             extensions: [extension],
         })
 
-        await runtime.dispatch({ kind: 'user_message', text: 'private', source: 'channel' })
+        await runtime.dispatch({ kind: 'user_message', text: 'review me', source: 'channel' })
 
         expect(provider.startQuery).not.toHaveBeenCalled()
         expect(approve).not.toHaveBeenCalled()
@@ -392,22 +392,22 @@ describe('SemanticSessionRuntime', () => {
     it('lets an extension flush retained display text when the provider stream fails', async () => {
         let pending = ''
         const extension: SessionExtensionInstance = {
-            id: 'privacy',
-            summary: { id: 'privacy', name: 'Privacy', version: '1' },
-            prepareTurn: async input => ({ kind: 'ready', input, stateRef: 'mapping-v1' }),
+            id: 'buffered-presenter',
+            summary: { id: 'buffered-presenter', name: 'Buffered presenter', version: '1' },
+            prepareTurn: async input => ({ kind: 'ready', input, stateRef: 'buffer-v1' }),
             presentEvent: async value => {
                 if (value.kind === 'assistant_text_delta') {
                     pending += value.text
                     return []
                 }
                 if (value.kind === 'turn_finished' && pending) {
-                    const text = pending.replace('Alias', 'Original')
+                    const text = pending.replace('BUFFERED', 'FLUSHED')
                     pending = ''
                     return [{
                         ...value,
                         kind: 'assistant_text_delta',
                         text,
-                        messageId: `${value.meta.turnId}:privacy-tail`,
+                        messageId: `${value.meta.turnId}:buffered-tail`,
                     }, value]
                 }
                 return [value]
@@ -418,7 +418,7 @@ describe('SemanticSessionRuntime', () => {
             ...createProvider([]),
             startQuery: vi.fn(() => ({
                 events: (async function* () {
-                    yield { kind: 'text', text: 'Alias tail' } as AgentEvent
+                    yield { kind: 'text', text: 'BUFFERED tail' } as AgentEvent
                     throw new Error('provider stream failed')
                 })(),
                 interrupt: vi.fn(),
@@ -436,7 +436,7 @@ describe('SemanticSessionRuntime', () => {
 
         await runtime.dispatch({ kind: 'user_message', text: 'prompt', source: 'channel' })
 
-        expect(sent.map(message => message.text).join('\n')).toContain('Original tail')
+        expect(sent.map(message => message.text).join('\n')).toContain('FLUSHED tail')
         expect(sent.map(message => message.text).join('\n')).toContain('Agent error')
         expect(runtime.journal.list().at(-1)).toMatchObject({
             kind: 'turn_finished',

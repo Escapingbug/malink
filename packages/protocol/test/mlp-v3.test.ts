@@ -500,7 +500,7 @@ describe('Malink Protocol v3 (MLP/3)', () => {
     }).payload).toMatchObject({ computerName: 'alice-macbook' })
   })
 
-  it('models extension-owned views and project defaults without privacy-specific fields', () => {
+  it('models extension-owned views and project defaults without implementation-specific fields', () => {
     const command = mlp3CommandSchema.parse({
       kind: 'malink.command',
       version: 3,

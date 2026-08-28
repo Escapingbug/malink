@@ -116,28 +116,6 @@ Android APK. Cross-device steps use two independently paired Matrix devices.
      a simulated 410 response also removes an expired endpoint.
    - Restarting the Gateway preserves the VAPID public key, subscriptions,
      pending deliveries, and notification event deduplication.
-8. **Privacy-protected session**
-   - The installed HaS extension is visible but off by default; direct sessions
-     remain usable while it is disabled. Enabling it requires its declarative
-     privacy context, and review defaults to on.
-   - The immutable privacy binding and safe badge converge across devices. No
-     extension endpoint, bearer token, context ID, mapping version, or process
-     detail appears in PWA Gateway state.
-   - Before every protected Agent request, the shipped UI shows the exact
-     sanitized text and the extension-provided **Send to Agent** and **Cancel**
-     actions. The preview contains the pseudonym and not the source entity.
-   - Cancelling the preview produces zero provider invocations. Approval sends
-     only the sanitized text to the provider, while streamed provider output is
-     restored locally before display on both collaborating devices.
-   - Stopping the bound extension blocks the protected turn with a visible
-     error and zero provider invocations. An unbound session continues to work;
-     restarting the extension resumes the protected session without removing
-     or changing its binding.
-   - Browser reload and APK process restart restore the protected transcript.
-     Deleting the protected session converges across devices.
-   - The mapping vault contains authenticated ciphertext, and its audit log is
-     metadata-only. Neither artifact may contain the source entity, privacy
-     context ID, or prompt plaintext.
 
 ## Pass and failure rules
 
@@ -149,8 +127,8 @@ Android APK. Cross-device steps use two independently paired Matrix devices.
 - Each run uses uniquely named disposable sessions and cleans only those
   sessions.
 - On failure the runner records build identities, the last DOM state, native
-  diagnostics, Gateway and privacy-extension logs, screenshots, and the
-  failing command ID. Provider-boundary assertions use content digests so the
+  diagnostics, Gateway logs, screenshots, and the failing command ID.
+  Provider-boundary assertions use content digests so the
   Gateway log does not become another plaintext sink.
 - Deployment is complete only after release acceptance passes against the
   newly started Gateway process. Running tests against source code while an
@@ -202,14 +180,6 @@ negotiated one-time Matrix login when the homeserver supports that capability,
 and otherwise requires the documented new-device username/password fallback
 to complete before pairing can continue.
 
-The privacy fixture is not a fake extension port. The live runner starts the
-shipped `extensions/has-privacy` service as a child process, communicates with
-it over the authenticated loopback HTTP boundary, and gives it a deterministic
-loopback OpenAI-compatible recognition server. The request still crosses the
-production PWA, encrypted Matrix room, Gateway, session runtime, extension
-process, provider boundary, durable Matrix history, and independent browser or
-APK storage.
-
 ## Automated coverage status
 
 | Journey | Web live runner | Android live runner |
@@ -229,7 +199,6 @@ APK storage.
 | Gateway-published native release, download, cover-install, and data preservation | Gateway admin and MLP workspace snapshot publication are enforced | The APK download/install path is enforced independently by `scripts/android-update-live-e2e.ts` on the isolated `.e2e` package |
 | Stale cross-device command review, discard, and immediate retry | Not yet enforced | Enforced by the isolated Alpha gate |
 | Android foreground-service and completion notifications | Not applicable | Enforced by the isolated Alpha gate |
-| Privacy bind, exact review, deny, sanitize, restore, fail-closed, and encrypted local state | Enforced on two browsers | Enforced by the isolated Alpha gate, including process restart |
 
 An unimplemented cell is not implicitly passed. Web local business E2E may be
 green while the overall release acceptance remains incomplete. The Alpha gate

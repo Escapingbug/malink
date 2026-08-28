@@ -187,60 +187,16 @@ session.
 Old persisted MLP/3 records migrate to empty project defaults and empty session
 bindings. Existing unbound behavior is unchanged.
 
-## Reference privacy extension
+## Extension ownership and verification boundary
 
-`extensions/has-privacy` is an independently runnable reference extension and
-is intentionally outside the pnpm workspace/product build. It demonstrates
-that the generic contract is sufficient for privacy protection; Malink core
-does not import its implementation.
+Malink does not bundle a first-party extension implementation. Extension
+projects own their implementation, packaging, model or service dependencies,
+state, policy, and implementation-specific tests. They consume the protocol
+published by Malink and may run their own compatibility and product acceptance
+suites against a Malink Gateway.
 
-The extension, not Malink, owns:
-
-- local HaS model communication and privacy policy;
-- exact sanitized-input preview and its button labels/actions;
-- preview freshness and commit decisions;
-- encrypted immutable mapping versions and reverse mapping;
-- output restoration, privacy audit, and retention.
-
-Its first slice protects text prompts and text-bearing provider events. A bound
-privacy session rejects file, image, and audio input until an extension-owned
-artifact adapter handles those kinds. This is deliberate fail-closed behavior.
-
-## Local installation
-
-Start the privacy model and extension separately, with extension-owned secrets:
-
-```text
-HAS_EXTENSION_TOKEN=<random shared secret, at least 32 bytes>
-HAS_PRIVACY_VAULT_KEY=<base64 encoded 32-byte key>
-HAS_MODEL_REVISION=<immutable model artifact digest>
-HAS_ENDPOINT=http://127.0.0.1:18080/v1/chat/completions
-HAS_PRIVACY_STATE_DIR=/private/malink-has-state
-```
-
-Then register only the generic connection in the Gateway:
-
-```text
-MALINK_SESSION_EXTENSIONS_JSON=[
-  {
-    "endpoint": "http://127.0.0.1:8791",
-    "bearerToken": "<same random shared secret>",
-    "expectedExtensionId": "has-privacy"
-  }
-]
-```
-
-The endpoint and token remain local Gateway configuration. Only the discovered
-safe descriptor is advertised to clients.
-
-## Verification boundary
-
-Core conformance tests use a non-privacy `prefix-transform` fake extension to
-prove the platform does not depend on privacy-specific action names or data.
-`e2e/session-extension-has.test.ts` separately starts the real reference
-extension process and verifies sanitize/preview/action/provider/restore,
-cancellation, and offline fail-closed behavior over authenticated loopback HTTP.
-
-The product privacy journey remains specified in
-`docs/business-e2e-acceptance.md`; it validates the reference extension as a
-consumer of the platform, not as logic embedded in Malink core.
+Malink's conformance tests use in-memory, implementation-neutral fixtures such
+as `prefix-transform` and `review-gate`. They verify the host lifecycle,
+authenticated loopback HTTP boundary, declarative interaction routing,
+provider isolation, persistence, and fail-closed behavior without starting or
+requiring any external extension process.

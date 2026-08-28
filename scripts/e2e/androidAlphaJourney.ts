@@ -267,10 +267,7 @@ class AndroidWebView {
         await this.clickButtonText('Sign in', '.matrix-settings')
     }
 
-    async createSession(
-        projectName: string,
-        options: { privacyContextId?: string } = {},
-    ): Promise<void> {
+    async createSession(projectName: string): Promise<void> {
         await this.clickAria('New conversation')
         await this.waitFor(
             'new-session dialog',
@@ -315,58 +312,6 @@ class AndroidWebView {
             description: 'enabled Android Alpha working directory',
             timeoutMs: 5_000,
         })
-        if (options.privacyContextId) {
-            const defaults = await this.evaluate<{
-                available: boolean
-                offByDefault: boolean
-                directCreationEnabled: boolean
-            }>(`(() => {
-                const dialog = document.querySelector('.new-session-dialog');
-                const option = Array.from(dialog?.querySelectorAll('.session-extension-option') || [])
-                    .find(item => item.textContent?.includes('HaS privacy'));
-                const toggle = option?.querySelector('.session-extension-toggle input[type="checkbox"]');
-                const create = Array.from(dialog?.querySelectorAll('button') || [])
-                    .find(item => item.textContent?.trim() === 'Create session');
-                return {
-                    available: Boolean(option && toggle),
-                    offByDefault: Boolean(toggle && !toggle.checked),
-                    directCreationEnabled: Boolean(create && !create.disabled),
-                };
-            })()`)
-            assert.deepEqual(defaults, {
-                available: true,
-                offByDefault: true,
-                directCreationEnabled: true,
-            })
-            await this.evaluate(`(() => {
-                const dialog = document.querySelector('.new-session-dialog');
-                const option = Array.from(dialog?.querySelectorAll('.session-extension-option') || [])
-                    .find(item => item.textContent?.includes('HaS privacy'));
-                option?.querySelector('.session-extension-toggle input[type="checkbox"]')?.click();
-            })()`)
-            await waitFor(async () => this.evaluate<boolean>(`(() => {
-                const dialog = document.querySelector('.new-session-dialog');
-                const option = Array.from(dialog?.querySelectorAll('.session-extension-option') || [])
-                    .find(item => item.textContent?.includes('HaS privacy'));
-                const context = option?.querySelector('input[placeholder="payroll-system-id"]');
-                const review = option?.querySelector('.session-extension-boolean input[type="checkbox"]');
-                const create = Array.from(dialog?.querySelectorAll('button') || [])
-                    .find(item => item.textContent?.trim() === 'Create session');
-                return Boolean(context && review?.checked && create?.disabled);
-            })()`), {
-                description: 'required Android privacy context and review default',
-                timeoutMs: 5_000,
-            })
-            const configured = await this.evaluate<boolean>(`(() => {
-                const context = document.querySelector('.new-session-dialog input[placeholder="payroll-system-id"]');
-                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-                if (!context || !setter) return false;
-                setter.call(context, ${json(options.privacyContextId)});
-                context.dispatchEvent(new Event('input', { bubbles: true }));
-                return true;
-            })()`)
-            assert.equal(configured, true, 'Could not configure the Android privacy context')
-        }
         await waitFor(async () => this.evaluate<boolean>(`(() => {
             const dialog = document.querySelector('.new-session-dialog');
             const button = Array.from(dialog?.querySelectorAll('button') || [])
@@ -557,33 +502,6 @@ class AndroidWebView {
         )
     }
 
-    async decidePrivacy(expectedSanitizedPrompt: string, action: 'Cancel' | 'Send to Agent'): Promise<void> {
-        await waitFor(async () => this.evaluate<boolean>(`(() => {
-            const cards = Array.from(document.querySelectorAll('.permission-card'));
-            const card = cards.reverse().find(item => item.textContent?.includes('Review privacy-protected Agent request'));
-            const details = card?.querySelector('.permission-details')?.textContent || '';
-            const button = Array.from(card?.querySelectorAll('button') || [])
-                .find(item => item.textContent?.trim() === ${json(action)});
-            return Boolean(
-                card && button && !button.disabled &&
-                details.includes('The Agent will receive exactly:') &&
-                details.includes(${json(expectedSanitizedPrompt)}) &&
-                !details.includes('张三')
-            );
-        })()`), {
-            description: `exact Android privacy preview for ${action}`,
-            timeoutMs: CONVERGENCE_TIMEOUT_MS,
-        })
-        await this.click(`(() => {
-            const cards = Array.from(document.querySelectorAll('.permission-card'));
-            const card = cards.reverse().find(item =>
-                item.querySelector('.permission-details')?.textContent?.includes(${json(expectedSanitizedPrompt)}));
-            const target = Array.from(card?.querySelectorAll('button') || [])
-                .find(item => normalized(item.textContent) === ${json(action)} && visible(item));
-             return clickResult(target);
-         })()`)
-    }
-
     private async click(expression: string): Promise<void> {
         const result = await this.evaluate<{ found: boolean; disabled: boolean }>(
             `(() => { ${DOM_HELPERS} return ${expression}; })()`,
@@ -630,14 +548,12 @@ export async function runAndroidAlphaJourney(
     const largeResponseBegin = `MALINK-E2E-LARGE-BEGIN-${options.runId}`
     const largeResponseEnd = `MALINK-E2E-LARGE-END-${options.runId}`
     const stalePromptToLinearize = `Android stale prompt to linearize ${options.runId}`
-    const privacyProjectName = `Malink Alpha Privacy ${options.runId}`
     // Keep this shell-injected fixture value token-safe. The behavior under
     // test is durable command recovery, not adb shell argument quoting.
     const queuedRestartProjectName = `MalinkAlphaQueuedRestart-${options.runId}`
     const acceptedRestartProjectName = `MalinkAlphaAcceptedRestart-${options.runId}`
     const terminalRestartProjectName = `MalinkAlphaTerminalRestart-${options.runId}`
     const migrationProjectName = `Malink Alpha Upgrade ${options.runId}`
-    const privacyContextId = `android-private-${options.runId}`
     const apkPath = join(
         options.repositoryRoot,
         'clients',
@@ -653,7 +569,6 @@ export async function runAndroidAlphaJourney(
     let forwardedDevtoolsPort: string | undefined
     let sessionCreated = false
     let syncGate: MatrixSyncGate | undefined
-    let privacySessionCreated = false
     let queuedRestartSessionCreated = false
     let acceptedRestartSessionCreated = false
     let terminalRestartSessionCreated = false
@@ -1384,8 +1299,8 @@ export async function runAndroidAlphaJourney(
 
         // Separate a pure transport-loss assertion from the preceding
         // cross-device revision race. Foregrounding explicitly requests an
-        // authoritative Room State before the independent privacy journey
-        // advances the shared state again.
+        // authoritative Room State before transport recovery advances the
+        // shared state again.
         const stateResponseBaseline = await gatewayStateResponseCount(serial)
         const backgroundLifecycleBaseline = await diagnosticCount(
             serial,
@@ -1434,7 +1349,7 @@ export async function runAndroidAlphaJourney(
         await waitFor(
             async () => await gatewayStateResponseCount(serial) > stateResponseBaseline,
             {
-                description: 'authoritative Android Gateway state before privacy and transport recovery',
+                description: 'authoritative Android Gateway state before transport recovery',
                 timeoutMs: CONNECT_TIMEOUT_MS,
             },
         )
@@ -1443,82 +1358,6 @@ export async function runAndroidAlphaJourney(
             state => state.connection.endsWith('Connected'),
             CONNECT_TIMEOUT_MS,
         )
-
-        process.stdout.write('  [AP/11] Enforcing privacy sanitize/review/restore through the installed APK…\n')
-        await android.createSession(privacyProjectName, { privacyContextId })
-        await android.waitFor(
-            'immediate native privacy session creation feedback',
-            state => state.sessionCreatePending,
-            UI_FEEDBACK_TIMEOUT_MS,
-        )
-        await android.waitFor(
-            `Android privacy session ${privacyProjectName}`,
-            state => state.projectNames.includes(privacyProjectName)
-                && state.selectedProject === privacyProjectName,
-        )
-        privacySessionCreated = true
-        await waitForBrowserProject(options.browserPage, privacyProjectName)
-        await openBrowserProject(options.browserPage, privacyProjectName)
-
-        const deniedPrivacyPrompt = `请联系张三处理 Android 隐私拒绝 ${options.runId}`
-        const deniedSanitized = deniedPrivacyPrompt.replaceAll('张三', '李四')
-        const beforeDenied = providerInvocationCount(options.gatewayOutput())
-        await android.sendPrompt(deniedPrivacyPrompt)
-        await android.decidePrivacy(deniedSanitized, 'Cancel')
-        await android.waitFor(
-            'Android privacy denial before Agent egress',
-            state => state.bodyText.includes('Request cancelled before it reached the Agent.'),
-        )
-        assert.equal(providerInvocationCount(options.gatewayOutput()), beforeDenied)
-
-        const approvedPrivacyPrompt = `请联系张三处理 Android 隐私批准 ${options.runId}`
-        const approvedSanitized = approvedPrivacyPrompt.replaceAll('张三', '李四')
-        const beforeApproved = providerInvocationCount(options.gatewayOutput())
-        await android.sendPrompt(approvedPrivacyPrompt)
-        await android.decidePrivacy(approvedSanitized, 'Send to Agent')
-        await waitForProviderDigest(
-            options.gatewayOutput,
-            approvedSanitized,
-            beforeApproved + 1,
-        )
-        const restoredPrivacyResponse = `Agent received exactly: ${approvedPrivacyPrompt}`
-        await android.waitFor(
-            'locally restored private Agent response on Android',
-            state => state.bodyText.includes(restoredPrivacyResponse)
-                && !state.bodyText.includes(`Agent received exactly: ${approvedSanitized}`),
-        )
-        await waitForBrowserText(options.browserPage, restoredPrivacyResponse)
-
-        android.close()
-        android = undefined
-        if (forwardedDevtoolsPort) {
-            await adbMaybe(serial, 'forward', '--remove', `tcp:${forwardedDevtoolsPort}`)
-            forwardedDevtoolsPort = undefined
-        }
-        await adb(serial, 'shell', 'am', 'force-stop', PACKAGE_NAME)
-        await startMainActivity(serial)
-        ;({ page: android, port: forwardedDevtoolsPort } = await attachWebView(serial, options.pwaUrl))
-        await android.waitFor(
-            'privacy session inventory after Android process restart',
-            state => state.connection.endsWith('Connected')
-                && state.projectNames.includes(privacyProjectName),
-            CONNECT_TIMEOUT_MS,
-        )
-        await android.openProject(privacyProjectName)
-        await android.waitFor(
-            'privacy history after Android process restart',
-            state => state.bodyText.includes(restoredPrivacyResponse),
-            CONNECT_TIMEOUT_MS,
-        )
-        await deleteBrowserSession(options.browserPage, privacyProjectName)
-        await android.waitFor(
-            'privacy session deletion on Android',
-            state => !state.projectNames.includes(privacyProjectName)
-                && !state.archivedProjects.includes(privacyProjectName),
-        )
-        privacySessionCreated = false
-        await openBrowserProject(options.browserPage, projectName)
-        await android.openProject(projectName)
 
         process.stdout.write('  [A5n/12] Flapping Android connectivity while native Matrix sync remains alive…\n')
         let offlineTransitions = await diagnosticCount(
@@ -2291,7 +2130,6 @@ export async function runAndroidAlphaJourney(
                 'chunked-large-agent-output-survives-process-death',
                 'nullable-matrix-sync-sections-advance-native-cursor',
                 'limited-matrix-sync-gap-backfilled-exactly-once',
-                'android-privacy-sanitize-review-deny-restore-restart',
                 'pre-delivery-matrix-recovery-exactly-once',
                 'post-commit-delete-result-loss-recovery-exactly-once',
                 'post-commit-create-result-loss-recovery-exactly-once',
@@ -2326,9 +2164,6 @@ export async function runAndroidAlphaJourney(
         }
         if (sessionCreated) {
             await cleanupBrowserProject(options.browserPage, projectName).catch(() => undefined)
-        }
-        if (privacySessionCreated) {
-            await cleanupBrowserProject(options.browserPage, privacyProjectName).catch(() => undefined)
         }
         if (queuedRestartSessionCreated) {
             await cleanupBrowserProject(options.browserPage, queuedRestartProjectName).catch(() => undefined)
@@ -3739,27 +3574,6 @@ async function waitFor(
         `Timed out waiting for ${options.description}`
         + (lastError ? `: ${formatError(lastError)}` : ''),
     )
-}
-
-async function waitForProviderDigest(
-    gatewayOutput: () => string,
-    expectedInput: string,
-    expectedCount: number,
-): Promise<void> {
-    const marker = `[e2e-provider] invocation sha256=${sha256(expectedInput)}`
-    await waitFor(() => gatewayOutput().includes(marker), {
-        description: `Android privacy Agent invocation ${marker}`,
-        timeoutMs: CONVERGENCE_TIMEOUT_MS,
-    })
-    assert.equal(
-        providerInvocationCount(gatewayOutput()),
-        expectedCount,
-        'The Android privacy journey produced an unexpected Agent invocation',
-    )
-}
-
-function providerInvocationCount(output: string): number {
-    return output.split('[e2e-provider] invocation sha256=').length - 1
 }
 
 function providerDigestCount(output: string, input: string): number {
