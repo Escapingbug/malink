@@ -18,6 +18,10 @@ import {
 } from "./pairing";
 import { PROJECT_DISCLOSURE_STORAGE_KEY } from "./projectDisclosureState";
 import {
+  OPTIMISTIC_PROJECT_CREATE_STORAGE_KEY,
+  readOptimisticProjectCreate,
+} from "./projectCreateRecovery";
+import {
   PENDING_SESSION_CREATE_STORAGE_KEY,
   readPendingSessionCreateRecovery,
 } from "./sessionCreateRecovery";
@@ -147,6 +151,17 @@ export const PWA_STATE_CATALOG: readonly PwaStateCatalogEntry[] = Object.freeze(
     validate: storage =>
       storage.getItem(PENDING_SESSION_CREATE_STORAGE_KEY) === null ||
       readPendingSessionCreateRecovery(storage) !== null,
+  },
+  {
+    id: "pending-project-create-projection",
+    key: OPTIMISTIC_PROJECT_CREATE_STORAGE_KEY,
+    prefix: false,
+    stateClass: "rebuildable-projection",
+    schemaVersion: 1,
+    legacySchemaVersion: 1,
+    validate: storage =>
+      storage.getItem(OPTIMISTIC_PROJECT_CREATE_STORAGE_KEY) === null ||
+      readOptimisticProjectCreate(storage) !== null,
   },
   {
     id: "native-event-cursor",

@@ -54,13 +54,13 @@ function NewProjectDialogContent({ open, busy, gateways, onClose, onCreate }: Pr
   const nameRef = useRef<HTMLInputElement>(null);
 
   const requestClose = () => {
-    if (!busy) onClose();
+    onClose();
   };
   useDialogFocus({
     open,
     containerRef: dialogRef,
     initialFocusRef: nameRef,
-    escapeDisabled: busy,
+    escapeDisabled: false,
     onEscape: requestClose,
   });
 
@@ -95,7 +95,7 @@ function NewProjectDialogContent({ open, busy, gateways, onClose, onCreate }: Pr
             <h2 id="new-project-title">Create a project</h2>
             <p>The project will stay attached to the selected Gateway.</p>
           </div>
-          <button type="button" onClick={requestClose} aria-label="Close new project" disabled={busy}>
+          <button type="button" onClick={requestClose} aria-label="Close new project">
             ×
           </button>
         </header>
@@ -178,7 +178,7 @@ function NewProjectDialogContent({ open, busy, gateways, onClose, onCreate }: Pr
           </label>
 
           <footer>
-            <button type="button" className="secondary-button" onClick={requestClose} disabled={busy}>
+            <button type="button" className="secondary-button" onClick={requestClose}>
               Cancel
             </button>
             <button

@@ -3,18 +3,6 @@ import { AgentProvider, parseAgentModels } from '@/providers/agent'
 import { modelKeyboard, modelProviderDetailKeyboard, modelProviderKeyboard, providerKeyboard } from '@/channel/telegram/keyboard'
 import type { ModelEntry } from '@/providers/provider'
 
-const { spawnSyncMock } = vi.hoisted(() => ({
-    spawnSyncMock: vi.fn(),
-}))
-
-vi.mock('node:child_process', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('node:child_process')>()
-    return {
-        ...actual,
-        spawnSync: spawnSyncMock,
-    }
-})
-
 vi.mock('@/providers/acp', () => ({
     AcpProvider: class {
         readonly name: string
@@ -42,43 +30,35 @@ function buttonRows(keyboard: unknown): Array<Array<{ text: string; callback_dat
 describe('AgentProvider model discovery integration', () => {
     afterEach(() => {
         vi.restoreAllMocks()
-        spawnSyncMock.mockReset()
     })
 
-    it('lists Cursor Agent models on Windows where the agent command is a .cmd shim', () => {
-        vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
-        spawnSyncMock.mockImplementation((command: string, argsOrOptions: unknown) => {
-            if (command === 'agent') {
-                return {
-                    status: null,
-                    error: new Error('spawnSync agent ENOENT'),
-                    stdout: '',
-                    stderr: '',
-                }
-            }
-            if (command === 'agent models' && !Array.isArray(argsOrOptions) && (argsOrOptions as { shell?: boolean }).shell === true) {
-                return {
-                    status: 0,
-                    error: undefined,
-                    stdout: [
-                        'Available models',
-                        '',
-                        'auto - Auto',
-                        'composer-2-fast - Composer 2 Fast (default)',
-                        'gpt-5.5-medium - GPT-5.5 1M',
-                        '',
-                        'Tip: use --model <id> (or /model <id> in interactive mode) to switch.',
-                    ].join('\n'),
-                    stderr: '',
-                }
-            }
-            throw new Error(`unexpected spawnSync call: ${command}`)
+    it('refreshes Cursor models in the background without blocking capability reads', async () => {
+        let resolveModels!: (value: string) => void
+        const modelsReader = vi.fn(() => new Promise<string>(resolve => {
+            resolveModels = resolve
+        }))
+        const provider = new AgentProvider({
+            modelsCommand: 'agent',
+            modelsArgs: ['models'],
+            modelsReader,
         })
 
-        const models = new AgentProvider().getAvailableModels()
-
-        expect(spawnSyncMock).toHaveBeenCalledWith('agent models', expect.objectContaining({ shell: true }))
-        expect(models).toEqual([
+        expect(provider.getAvailableModels()).toEqual([])
+        expect(modelsReader).toHaveBeenCalledWith({
+            command: 'agent',
+            args: ['models'],
+        })
+        resolveModels([
+            'Available models',
+            '',
+            'auto - Auto',
+            'composer-2-fast - Composer 2 Fast (default)',
+            'gpt-5.5-medium - GPT-5.5 1M',
+            '',
+            'Tip: use --model <id> (or /model <id> in interactive mode) to switch.',
+        ].join('\n'))
+        await provider.refreshAvailableModels()
+        expect(provider.getAvailableModels()).toEqual([
             { id: 'auto', name: 'Auto', provider: 'cursor' },
             { id: 'composer-2-fast', name: 'Composer 2 Fast (default)', provider: 'cursor' },
             { id: 'gpt-5.5-medium', name: 'GPT-5.5 1M', provider: 'cursor' },

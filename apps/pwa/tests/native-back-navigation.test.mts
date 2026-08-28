@@ -92,7 +92,7 @@ test("selects the topmost visible Malink UI layer", () => {
   assert.equal(resolveMalinkBackAction(emptyState), null);
 });
 
-test("consumes Back without closing destructive or create dialogs while busy", () => {
+test("only blocks Back for operations whose dialog is the safety boundary", () => {
   assert.equal(
     resolveMalinkBackAction({
       ...emptyState,
@@ -107,7 +107,7 @@ test("consumes Back without closing destructive or create dialogs while busy", (
       newProjectOpen: true,
       newProjectBusy: true,
     }),
-    "block-new-project",
+    "close-new-project",
   );
   assert.equal(
     resolveMalinkBackAction({

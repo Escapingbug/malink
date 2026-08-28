@@ -165,6 +165,23 @@ import {
   type OptimisticSessionRecord,
 } from "./optimisticSession";
 import {
+  bindOptimisticProjectCreate,
+  clearOptimisticProjectCreate,
+  completedProjectId,
+  createOptimisticProjectCreate,
+  failOptimisticProjectCreate,
+  markOptimisticProjectCreateUncertain,
+  optimisticProjectMatchesProjection,
+  projectCreateRecoveryMatches,
+  projectCreateFailureMessage,
+  readOptimisticProjectCreate,
+  rebindOptimisticProjectCreate,
+  retryOptimisticProjectCreate,
+  syncOptimisticProjectCreate,
+  writeOptimisticProjectCreate,
+  type OptimisticProjectCreateRecord,
+} from "./projectCreateRecovery";
+import {
   pendingSessionLifecycleIds,
   sessionsAvailableForAutomaticSelection,
 } from "./pendingSessionDeletion";
@@ -1239,6 +1256,15 @@ function MalinkAppRuntime() {
   const [forgetDialogOpen, setForgetDialogOpen] = useState(false);
   const [newSessionBusy, setNewSessionBusy] = useState(false);
   const [newProjectBusy, setNewProjectBusy] = useState(false);
+  const [optimisticProjectCreate, setOptimisticProjectCreate] =
+    useState<OptimisticProjectCreateRecord | null>(() =>
+      typeof window === "undefined"
+        ? null
+        : readOptimisticProjectCreate(window.localStorage, {
+            gatewayId: initialGatewayUi.config.gatewayId,
+            conversationId: initialGatewayUi.config.conversationId,
+          }),
+    );
   const [sessionSettingsUpdate, setSessionSettingsUpdate] =
     useState<SessionSettingsUpdate | null>(null);
   const [pendingSessionCreate, setPendingSessionCreate] =
@@ -1304,6 +1330,13 @@ function MalinkAppRuntime() {
   const matrixSessionRepairRequiredRef = useRef(false);
   const pendingSessionCreateRecoveryRef =
     useRef<PendingSessionCreateRecovery | null>(null);
+  const optimisticProjectCreateRef =
+    useRef<OptimisticProjectCreateRecord | null>(optimisticProjectCreate);
+  const projectCreateRecoveryInFlightRef = useRef<{
+    commandId: string;
+    connection: MalinkClient;
+  } | null>(null);
+  const projectCreateRecoveryTimerRef = useRef<number | null>(null);
   const sessionCreateRecoveryInFlightRef = useRef<{
     commandId: string;
     connection: MalinkClient;
@@ -1453,8 +1486,6 @@ function MalinkAppRuntime() {
           break;
         case "close-new-project":
           setNewProjectOpen(false);
-          break;
-        case "block-new-project":
           break;
         case "close-new-session":
           setNewSessionOpen(false);
@@ -2176,6 +2207,35 @@ function MalinkAppRuntime() {
     }, 1_000);
     return () => window.clearInterval(timer);
   }, [uiNotices]);
+
+  useEffect(() => {
+    const record = optimisticProjectCreateRef.current;
+    if (!record) return;
+    if (record.phase === "submitting" && !record.commandId) {
+      commitOptimisticProjectCreate(
+        failOptimisticProjectCreate(
+          record,
+          "Project creation stopped before its secure command was saved. Retry creation to continue.",
+        ),
+      );
+      return;
+    }
+    setOptimisticProjectCreate(record);
+    // This restores one local record for the initial Matrix binding. Recovery
+    // resumes when the connection's ready promise settles below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const record = optimisticProjectCreateRef.current;
+    if (!record || record.phase !== "syncing" || !gatewayState) return;
+    const projects = gatewayState.projects ?? [gatewayState.workspace];
+    if (!optimisticProjectMatchesProjection(record, projects)) return;
+    removeOptimisticProjectCreate(record.localId);
+    recoverUiNotice("project:create");
+    // The helpers intentionally update refs and storage atomically.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gatewayState, optimisticProjectCreate]);
 
   useEffect(() => {
     let recovery = readPendingSessionCreateRecovery(window.localStorage);
@@ -3485,6 +3545,310 @@ function MalinkAppRuntime() {
     setSessionCreateReloadBlocked(false);
   }
 
+  function commitOptimisticProjectCreate(
+    record: OptimisticProjectCreateRecord,
+  ): void {
+    optimisticProjectCreateRef.current = record;
+    setOptimisticProjectCreate(record);
+    try {
+      writeOptimisticProjectCreate(window.localStorage, record);
+    } catch (error) {
+      showUiNotice(
+        "project:create-storage",
+        "session",
+        "warning",
+        `Project creation remains visible while this page stays open, but could not be saved for reload: ${formatUiError(error)}`,
+      );
+    }
+  }
+
+  function removeOptimisticProjectCreate(localId: string): void {
+    if (optimisticProjectCreateRef.current?.localId !== localId) return;
+    optimisticProjectCreateRef.current = null;
+    setOptimisticProjectCreate(null);
+    if (projectCreateRecoveryTimerRef.current !== null) {
+      window.clearTimeout(projectCreateRecoveryTimerRef.current);
+      projectCreateRecoveryTimerRef.current = null;
+    }
+    try {
+      clearOptimisticProjectCreate(window.localStorage, localId);
+    } catch (error) {
+      showUiNotice(
+        "project:create-storage",
+        "session",
+        "warning",
+        `The completed project creation marker could not be cleared: ${formatUiError(error)}`,
+      );
+    }
+  }
+
+  function markOptimisticProjectCreateFailed(
+    localId: string,
+    error: unknown,
+  ): void {
+    const record = optimisticProjectCreateRef.current;
+    if (!record || record.localId !== localId) return;
+    commitOptimisticProjectCreate(
+      failOptimisticProjectCreate(record, formatUiError(error)),
+    );
+  }
+
+  function holdProjectCreateForConflictReview(
+    localId: string,
+    commandId: string,
+  ): boolean {
+    const record = optimisticProjectCreateRef.current;
+    if (!record || record.localId !== localId) return false;
+    const bound = record.commandId
+      ? rebindOptimisticProjectCreate(
+          record,
+          record.commandId,
+          commandId,
+        )
+      : bindOptimisticProjectCreate(record, commandId);
+    if (!bound) return false;
+    commitOptimisticProjectCreate(
+      markOptimisticProjectCreateUncertain(
+        bound,
+        "Project creation is waiting for conflict review. Confirm or discard the saved command before retrying.",
+      ),
+    );
+    return true;
+  }
+
+  function schedulePendingProjectCreateRecovery(
+    connection: MalinkClient,
+  ): void {
+    if (projectCreateRecoveryTimerRef.current !== null) {
+      window.clearTimeout(projectCreateRecoveryTimerRef.current);
+    }
+    projectCreateRecoveryTimerRef.current = window.setTimeout(() => {
+      projectCreateRecoveryTimerRef.current = null;
+      if (
+        malinkClientRef.current === connection &&
+        connectionStatusRef.current === "connected"
+      ) {
+        continuePendingProjectCreate(connection);
+      }
+    }, 5_000);
+  }
+
+  function continuePendingProjectCreate(
+    connection: MalinkClient,
+    acknowledgedCommand?: MalinkCommandSendResult,
+  ): void {
+    const record = optimisticProjectCreateRef.current;
+    if (
+      !record?.commandId ||
+      record.phase === "syncing" ||
+      record.phase === "failed"
+    ) {
+      return;
+    }
+    if (
+      acknowledgedCommand &&
+      acknowledgedCommand.commandId !== record.commandId
+    ) {
+      return;
+    }
+    if (
+      projectCreateRecoveryInFlightRef.current?.commandId === record.commandId
+    ) {
+      return;
+    }
+    projectCreateRecoveryInFlightRef.current = {
+      commandId: record.commandId,
+      connection,
+    };
+    void (async () => {
+      let activeCommandId = record.commandId!;
+      try {
+        const sent = acknowledgedCommand ??
+          (await connection.recoverCommand(activeCommandId));
+        if (sent.commandId !== activeCommandId) {
+          const current = optimisticProjectCreateRef.current;
+          const rebound = current
+            ? rebindOptimisticProjectCreate(
+                current,
+                activeCommandId,
+                sent.commandId,
+              )
+            : null;
+          if (!rebound) return;
+          activeCommandId = rebound.commandId!;
+          commitOptimisticProjectCreate(rebound);
+          projectCreateRecoveryInFlightRef.current = {
+            commandId: activeCommandId,
+            connection,
+          };
+        }
+        recoverUiNotice("project:create");
+        const completion = await waitForCommandCompletion(
+          sent.completion,
+          PROJECT_CREATE_RESULT_TIMEOUT_MS,
+        );
+        await consumeProjectCreateCompletion(
+          connection,
+          activeCommandId,
+          completion,
+        );
+      } catch (error) {
+        const current = optimisticProjectCreateRef.current;
+        if (!current || current.commandId !== activeCommandId) return;
+        if (
+          error instanceof CommandRevisionConflictError ||
+          error instanceof CommandReviewRequiredError
+        ) {
+          const commandId = error instanceof CommandRevisionConflictError
+            ? error.commandId
+            : error.review.commandId;
+          holdProjectCreateForConflictReview(current.localId, commandId);
+          if (error instanceof CommandRevisionConflictError) {
+            const conflict: RevisionConflictNotice = {
+              commandId: error.commandId,
+              expectedRevision: error.expectedRevision,
+              payload: error.payload,
+              busy: false,
+            };
+            revisionConflictRef.current = conflict;
+            setRevisionConflict(conflict);
+          } else {
+            const review: NativeCommandReviewNotice = {
+              ...error.review,
+              busy: false,
+            };
+            nativeCommandReviewRef.current = review;
+            setNativeCommandReview(review);
+          }
+          showUiNotice(
+            "project:create",
+            "session",
+            "warning",
+            "Project creation is saved and needs conflict review before it can continue.",
+          );
+          return;
+        }
+        if (isMissingSessionCreateRecoveryCommand(error)) {
+          markOptimisticProjectCreateFailed(
+            current.localId,
+            "The saved project creation command is no longer available. The project may still appear if the Gateway completed it before local recovery was lost.",
+          );
+          showUiNotice(
+            "project:create",
+            "session",
+            "warning",
+            "The unfinished local project command is no longer available. Check the project list before retrying.",
+          );
+          return;
+        }
+        const uncertain =
+          error instanceof CommandCompletionTimeoutError ||
+          Date.now() - current.createdAt >= PROJECT_CREATE_RESULT_TIMEOUT_MS;
+        if (uncertain) {
+          commitOptimisticProjectCreate(
+            markOptimisticProjectCreateUncertain(
+              current,
+              "The Gateway accepted this project command, but its final result has not arrived yet. Malink will keep checking the same command.",
+            ),
+          );
+          showUiNotice(
+            "project:create",
+            "session",
+            "warning",
+            "Project creation is taking longer than expected. You can keep working while Malink checks the original command.",
+          );
+        } else {
+          commitOptimisticProjectCreate(
+            markOptimisticProjectCreateUncertain(
+              current,
+              `Malink could not confirm the project result yet: ${formatUiError(error)}`,
+            ),
+          );
+          showUiNotice(
+            "project:create",
+            "session",
+            "warning",
+            `Project result recovery hit an error and will retry the same command: ${formatUiError(error)}`,
+          );
+        }
+        if (
+          malinkClientRef.current === connection &&
+          connectionStatusRef.current === "connected"
+        ) {
+          schedulePendingProjectCreateRecovery(connection);
+        }
+      } finally {
+        if (
+          projectCreateRecoveryInFlightRef.current?.commandId === activeCommandId
+        ) {
+          projectCreateRecoveryInFlightRef.current = null;
+        }
+        const currentConnection = malinkClientRef.current;
+        if (
+          optimisticProjectCreateRef.current?.commandId === activeCommandId &&
+          currentConnection &&
+          currentConnection !== connection &&
+          connectionStatusRef.current === "connected"
+        ) {
+          continuePendingProjectCreate(currentConnection);
+        }
+      }
+    })();
+  }
+
+  async function consumeProjectCreateCompletion(
+    connection: MalinkClient,
+    commandId: string,
+    completion: CommandCompletion,
+  ): Promise<void> {
+    const record = optimisticProjectCreateRef.current;
+    if (!record || record.commandId !== commandId) return;
+    try {
+      completedCommandResultsRef.current.delete(commandId);
+      const failure = projectCreateFailureMessage(completion);
+      if (failure) {
+        markOptimisticProjectCreateFailed(record.localId, failure);
+        showUiNotice("project:create", "session", "error", failure);
+        return;
+      }
+      const projectId = completedProjectId(completion);
+      if (!projectId) {
+        markOptimisticProjectCreateFailed(
+          record.localId,
+          "The Gateway reported success without a project identity. Refresh before retrying.",
+        );
+        showUiNotice(
+          "project:create",
+          "session",
+          "error",
+          "The project result was incomplete. Refresh before retrying so the existing project is not duplicated.",
+        );
+        return;
+      }
+      commitOptimisticProjectCreate(
+        syncOptimisticProjectCreate(record, projectId),
+      );
+      showUiNotice(
+        "project:create",
+        "session",
+        "success",
+        `${record.input.name} was created. Its encrypted project view is syncing in the background.`,
+        7_000,
+      );
+    } finally {
+      try {
+        await connection.releaseCommand(commandId);
+      } catch (error) {
+        showUiNotice(
+          "project:create-release",
+          "session",
+          "warning",
+          `Project creation finished, but its completed local command could not be cleaned up yet: ${formatUiError(error)}`,
+        );
+      }
+    }
+  }
+
   function commitOptimisticSession(record: OptimisticSessionRecord): void {
     optimisticSessionRef.current = record;
     setOptimisticSession(record);
@@ -3814,6 +4178,19 @@ function MalinkAppRuntime() {
         : null;
     if (storedSessionCreateRecovery && !sessionCreateRecovery) {
       forgetPendingSessionCreate(storedSessionCreateRecovery.commandId);
+    }
+    const currentProjectCreate = optimisticProjectCreateRef.current;
+    const projectCreateForBinding = currentProjectCreate &&
+      projectCreateRecoveryMatches(currentProjectCreate, configInput)
+      ? currentProjectCreate
+      : readOptimisticProjectCreate(window.localStorage, configInput);
+    if (currentProjectCreate !== projectCreateForBinding) {
+      optimisticProjectCreateRef.current = projectCreateForBinding;
+      setOptimisticProjectCreate(projectCreateForBinding);
+      if (projectCreateRecoveryTimerRef.current !== null) {
+        window.clearTimeout(projectCreateRecoveryTimerRef.current);
+        projectCreateRecoveryTimerRef.current = null;
+      }
     }
     const startupGeneration = matrixStartupGenerationRef.current + 1;
     matrixStartupGenerationRef.current = startupGeneration;
@@ -4243,6 +4620,7 @@ function MalinkAppRuntime() {
       void connection.ready
         .then(() => {
           if (malinkClientRef.current !== connection) return;
+          continuePendingProjectCreate(connection);
           continuePendingSessionCreate(connection);
           const sessionId = selectedSessionIdRef.current;
           if (
@@ -4315,6 +4693,10 @@ function MalinkAppRuntime() {
     if (sessionCreateRecoveryTimerRef.current !== null) {
       window.clearTimeout(sessionCreateRecoveryTimerRef.current);
       sessionCreateRecoveryTimerRef.current = null;
+    }
+    if (projectCreateRecoveryTimerRef.current !== null) {
+      window.clearTimeout(projectCreateRecoveryTimerRef.current);
+      projectCreateRecoveryTimerRef.current = null;
     }
     knownGatewaySessionIdsRef.current.clear();
     liveMessagesBySessionRef.current.clear();
@@ -5616,6 +5998,23 @@ function MalinkAppRuntime() {
       setGatewayRevision((current) =>
         current === null ? result.revision : Math.max(current, result.revision),
       );
+      if (conflict.payload.operation === "project.create") {
+        const record = optimisticProjectCreateRef.current;
+        if (record?.commandId === conflict.commandId) {
+          const rebound = rebindOptimisticProjectCreate(
+            record,
+            conflict.commandId,
+            result.commandId,
+          );
+          if (rebound) {
+            commitOptimisticProjectCreate(rebound);
+            revisionConflictRef.current = null;
+            setRevisionConflict(null);
+            continuePendingProjectCreate(connection, result);
+            return;
+          }
+        }
+      }
       if (
         conflict.optimisticMessageId &&
         optimisticMessage &&
@@ -5726,6 +6125,15 @@ function MalinkAppRuntime() {
         setSessionAgentActivity(conflict.payload.sessionId, null);
       }
       if (error instanceof CommandRevisionConflictError) {
+        if (conflict.payload.operation === "project.create") {
+          const record = optimisticProjectCreateRef.current;
+          if (record) {
+            holdProjectCreateForConflictReview(
+              record.localId,
+              error.commandId,
+            );
+          }
+        }
         const next: RevisionConflictNotice = {
           commandId: error.commandId,
           expectedRevision: error.expectedRevision,
@@ -5757,6 +6165,15 @@ function MalinkAppRuntime() {
     setRevisionConflict(busyConflict);
     try {
       await connection.discardRevisionConflict(conflict.commandId);
+      if (conflict.payload.operation === "project.create") {
+        const record = optimisticProjectCreateRef.current;
+        if (record?.commandId === conflict.commandId) {
+          markOptimisticProjectCreateFailed(
+            record.localId,
+            "Project creation was discarded after conflict review.",
+          );
+        }
+      }
       if (conflict.optimisticMessageId) {
         optimisticMessagesRef.current.delete(conflict.optimisticMessageId);
         reconciledOptimisticMessageIdsRef.current.delete(
@@ -5808,6 +6225,22 @@ function MalinkAppRuntime() {
     try {
       const sent = await connection.confirmRevisionRetry(review.commandId);
       retriedCommandId = sent.commandId;
+      const projectCreate = optimisticProjectCreateRef.current;
+      if (projectCreate?.commandId === review.commandId) {
+        const rebound = rebindOptimisticProjectCreate(
+          projectCreate,
+          review.commandId,
+          sent.commandId,
+        );
+        if (rebound) {
+          commitOptimisticProjectCreate(rebound);
+          retriedCommandId = null;
+          nativeCommandReviewRef.current = null;
+          setNativeCommandReview(null);
+          continuePendingProjectCreate(connection, sent);
+          return;
+        }
+      }
       const completion = await sent.completion;
       if (completion.outcome !== "succeeded") {
         throw new Error(
@@ -5820,6 +6253,13 @@ function MalinkAppRuntime() {
       }
     } catch (error) {
       if (error instanceof CommandReviewRequiredError) {
+        const projectCreate = optimisticProjectCreateRef.current;
+        if (projectCreate?.commandId === review.commandId) {
+          holdProjectCreateForConflictReview(
+            projectCreate.localId,
+            error.review.commandId,
+          );
+        }
         const next: NativeCommandReviewNotice = {
           ...error.review,
           busy: false,
@@ -5860,6 +6300,13 @@ function MalinkAppRuntime() {
     setNativeCommandReview(busyReview);
     try {
       await connection.discardRevisionConflict(review.commandId);
+      const projectCreate = optimisticProjectCreateRef.current;
+      if (projectCreate?.commandId === review.commandId) {
+        markOptimisticProjectCreateFailed(
+          projectCreate.localId,
+          "Project creation was discarded after conflict review.",
+        );
+      }
       if (nativeCommandReviewRef.current?.commandId === review.commandId) {
         nativeCommandReviewRef.current = null;
         setNativeCommandReview(null);
@@ -6292,60 +6739,173 @@ function MalinkAppRuntime() {
     });
   }
 
-  async function createProject(input: NewProjectInput): Promise<void> {
+  async function createProject(
+    input: NewProjectInput,
+    retryRecord?: OptimisticProjectCreateRecord,
+  ): Promise<void> {
     if (newProjectBusy) return;
+    if (optimisticProjectCreateRef.current && !retryRecord) {
+      showUiNotice(
+        "project:create",
+        "session",
+        "info",
+        "Finish or dismiss the current project creation before starting another one.",
+      );
+      setNewProjectOpen(false);
+      return;
+    }
+    const target = projectCreationGateways.find(gateway =>
+      gateway.gatewayNodeId === input.gatewayNodeId &&
+      gateway.targetProjectId === input.targetProjectId,
+    );
+    if (!target) {
+      showUiNotice(
+        "project:create",
+        "session",
+        "error",
+        "The selected Gateway route changed. Reopen project creation and try again.",
+      );
+      return;
+    }
+    const gatewayLabel = gatewayProjectOwner(
+      target.gatewayNodeId,
+      target.gatewayName,
+      target.computerName,
+    ).label;
+    const localRecord = retryRecord
+      ? retryOptimisticProjectCreate({
+          ...retryRecord,
+          gatewayLabel,
+          input,
+        })
+      : createOptimisticProjectCreate(
+          input,
+          {
+            gatewayId: matrixConfig.gatewayId,
+            conversationId: matrixConfig.conversationId,
+          },
+          gatewayLabel,
+          `local-project:${crypto.randomUUID()}`,
+        );
+    commitOptimisticProjectCreate(localRecord);
+    setNewProjectOpen(false);
     setNewProjectBusy(true);
     recoverUiNotice("project:create");
-    let completedCommandId: string | null = null;
+    showUiNotice(
+      "project:create",
+      "session",
+      "info",
+      `${input.name} is being created in the background. You can keep working.`,
+    );
+    let connection: MalinkClient | null = null;
     try {
-      const target = projectCreationGateways.find(gateway =>
-        gateway.gatewayNodeId === input.gatewayNodeId &&
-        gateway.targetProjectId === input.targetProjectId,
-      );
-      if (!target) {
-        throw new Error("The selected Gateway route changed. Reopen project creation and try again.");
-      }
+      await waitForUiCommit();
+      connection = malinkClientRef.current;
       const sent = await sendRealCommand({
         operation: "project.create",
         name: input.name,
         cwd: input.cwd,
         ...(input.provider ? { provider: input.provider } : {}),
         createDirectory: input.createDirectory,
-      }, target.targetProjectId, { propagateFailure: true });
-      if (!sent) return;
-      const completion = await waitForCommandCompletion(
-        sent.completion,
-        PROJECT_CREATE_RESULT_TIMEOUT_MS,
+      }, target.targetProjectId, {
+        autoRetryRevisionConflict: true,
+        propagateFailure: true,
+      });
+      if (!sent || !connection) {
+        throw new Error("The secure project command was not accepted.");
+      }
+      const current = optimisticProjectCreateRef.current;
+      if (!current || current.localId !== localRecord.localId) return;
+      commitOptimisticProjectCreate(
+        bindOptimisticProjectCreate(current, sent.commandId),
       );
-      completedCommandId = sent.commandId;
-      if (completion.outcome !== "succeeded") {
-        throw new Error(
-          completion.error?.message ?? "The Gateway could not create this project.",
+      continuePendingProjectCreate(connection, sent);
+    } catch (error) {
+      if (error instanceof CommandAcknowledgementTimeoutError && connection) {
+        const current = optimisticProjectCreateRef.current;
+        if (current?.localId === localRecord.localId) {
+          commitOptimisticProjectCreate(
+            bindOptimisticProjectCreate(current, error.commandId),
+          );
+        }
+        showUiNotice(
+          "project:create",
+          "session",
+          "warning",
+          "Project creation is queued securely. Malink will resume this same command without creating a duplicate.",
+        );
+        continuePendingProjectCreate(connection);
+      } else if (
+        error instanceof CommandRevisionConflictError ||
+        error instanceof CommandReviewRequiredError
+      ) {
+        const commandId = error instanceof CommandRevisionConflictError
+          ? error.commandId
+          : error.review.commandId;
+        if (holdProjectCreateForConflictReview(localRecord.localId, commandId)) {
+          showUiNotice(
+            "project:create",
+            "session",
+            "warning",
+            "Project creation is saved and needs conflict review before it can continue.",
+          );
+        }
+      } else {
+        markOptimisticProjectCreateFailed(localRecord.localId, error);
+        showUiNotice(
+          "project:create",
+          "session",
+          "error",
+          formatUiError(error),
         );
       }
-      setNewProjectOpen(false);
-      showUiNotice(
-        "project:create",
-        "session",
-        "success",
-        `${input.name} was created on the selected Gateway. It will appear after the encrypted project room syncs.`,
-        7_000,
-      );
-    } catch (error) {
-      showUiNotice(
-        "project:create",
-        "session",
-        "error",
-        formatUiError(error),
-      );
     } finally {
-      if (completedCommandId) {
-        completedCommandResultsRef.current.delete(completedCommandId);
-        await malinkClientRef.current?.releaseCommand(completedCommandId)
-          .catch(() => undefined);
-      }
       setNewProjectBusy(false);
     }
+  }
+
+  function retryFailedOptimisticProjectCreate(): void {
+    const record = optimisticProjectCreateRef.current;
+    if (!record || record.phase !== "failed" || newProjectBusy) return;
+    void createProject(record.input, record);
+  }
+
+  function recheckUncertainOptimisticProjectCreate(): void {
+    const record = optimisticProjectCreateRef.current;
+    const connection = malinkClientRef.current;
+    if (
+      !record?.commandId ||
+      record.phase !== "uncertain" ||
+      !connection ||
+      connectionStatusRef.current !== "connected" ||
+      projectCreateRecoveryInFlightRef.current
+    ) {
+      return;
+    }
+    commitOptimisticProjectCreate({
+      ...record,
+      phase: "creating",
+      error: undefined,
+      updatedAt: Date.now(),
+    });
+    continuePendingProjectCreate(connection);
+  }
+
+  function dismissOptimisticProjectCreate(): void {
+    const record = optimisticProjectCreateRef.current;
+    if (!record || record.phase === "creating" || record.phase === "syncing") {
+      return;
+    }
+    if (
+      record.phase === "uncertain" &&
+      !window.confirm(
+        "Stop showing this pending project? The Gateway may still finish the original command, and the project will then appear normally.",
+      )
+    ) {
+      return;
+    }
+    removeOptimisticProjectCreate(record.localId);
+    recoverUiNotice("project:create");
   }
 
   async function createSession(
@@ -7888,7 +8448,7 @@ function MalinkAppRuntime() {
               title="New project"
               onClick={() => setNewProjectOpen(true)}
               disabled={
-                newProjectBusy ||
+                Boolean(optimisticProjectCreate) ||
                 !gatewayAvailable ||
                 projectCreationGateways.length === 0
               }
@@ -8029,6 +8589,95 @@ function MalinkAppRuntime() {
                 </span>
               </span>
             </button>
+          )}
+          {optimisticProjectCreate &&
+            (!search.trim() ||
+              `${optimisticProjectCreate.input.name} ${optimisticProjectCreate.input.cwd} ${optimisticProjectCreate.gatewayLabel}`
+                .toLowerCase()
+                .includes(search.toLowerCase())) && (
+            <section
+              className={`project-session-group project-create-pending project-create-${optimisticProjectCreate.phase}`}
+              data-project-create-phase={optimisticProjectCreate.phase}
+              aria-label={`${optimisticProjectCreate.input.name}. ${
+                optimisticProjectCreate.phase === "failed"
+                  ? "Creation failed."
+                  : optimisticProjectCreate.phase === "uncertain"
+                    ? "Creation is taking longer than expected."
+                    : optimisticProjectCreate.phase === "syncing"
+                      ? "Created and syncing."
+                      : "Creating in the background."
+              }`}
+            >
+              <div
+                className="project-session-toggle project-create-status"
+                role="status"
+                aria-live="polite"
+              >
+                <span className="project-create-mark" aria-hidden="true">
+                  {optimisticProjectCreate.phase === "failed" ||
+                  optimisticProjectCreate.phase === "uncertain" ? (
+                    "!"
+                  ) : optimisticProjectCreate.phase === "syncing" ? (
+                    "✓"
+                  ) : (
+                    <i className="project-create-spinner" />
+                  )}
+                </span>
+                <span className="project-folder" aria-hidden="true">
+                  <ProjectFolderIcon temporary={false} />
+                </span>
+                <span className="project-copy">
+                  <strong>{optimisticProjectCreate.input.name}</strong>
+                  <small>
+                    {optimisticProjectCreate.gatewayLabel} · {optimisticProjectCreate.input.cwd}
+                  </small>
+                </span>
+                <span className="project-create-actions">
+                  {optimisticProjectCreate.phase === "failed" && (
+                    <button
+                      type="button"
+                      onClick={retryFailedOptimisticProjectCreate}
+                      disabled={!gatewayAvailable || newProjectBusy}
+                    >
+                      Retry
+                    </button>
+                  )}
+                  {optimisticProjectCreate.phase === "uncertain" && (
+                    <button
+                      type="button"
+                      onClick={recheckUncertainOptimisticProjectCreate}
+                      disabled={!gatewayAvailable}
+                    >
+                      Check
+                    </button>
+                  )}
+                  {(optimisticProjectCreate.phase === "failed" ||
+                    optimisticProjectCreate.phase === "uncertain") && (
+                    <button
+                      type="button"
+                      aria-label="Dismiss project creation"
+                      onClick={dismissOptimisticProjectCreate}
+                    >
+                      ×
+                    </button>
+                  )}
+                </span>
+                <b aria-hidden="true">
+                  {optimisticProjectCreate.phase === "failed"
+                    ? "failed"
+                    : optimisticProjectCreate.phase === "uncertain"
+                      ? "check"
+                      : optimisticProjectCreate.phase === "syncing"
+                        ? "sync"
+                        : "now"}
+                </b>
+              </div>
+              {optimisticProjectCreate.error && (
+                <p className="project-create-error">
+                  {optimisticProjectCreate.error}
+                </p>
+              )}
+            </section>
           )}
           {conversationGroups.map((project) => {
             const expanded = isProjectExpanded({
@@ -9374,9 +10023,7 @@ function MalinkAppRuntime() {
           open={newProjectOpen}
           busy={newProjectBusy}
           gateways={projectCreationGateways}
-          onClose={() => {
-            if (!newProjectBusy) setNewProjectOpen(false);
-          }}
+          onClose={() => setNewProjectOpen(false)}
           onCreate={(input) => void createProject(input)}
         />
       )}

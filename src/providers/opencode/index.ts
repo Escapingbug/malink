@@ -12,12 +12,24 @@
  * - prompt must include sessionId, no implicit new session creation
  */
 
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { AcpProvider } from '@/providers/acp'
 import type { ModelEntry, SessionEntry } from '@/providers/provider'
 
 const OPENCODE_ACP_COMMAND = 'opencode'
 const OPENCODE_ACP_ARGS = ['acp']
+const OPENCODE_MODELS_REFRESH_MS = 5 * 60_000
+const OPENCODE_MODELS_RETRY_MS = 30_000
+
+export interface OpencodeModelsReaderInput {
+    command: string
+    env?: Record<string, string>
+    cwd?: string
+}
+
+export type OpencodeModelsReader = (
+    input: OpencodeModelsReaderInput,
+) => Promise<string>
 
 export interface OpencodeProviderOptions {
     name?: string
@@ -26,6 +38,7 @@ export interface OpencodeProviderOptions {
     env?: Record<string, string>
     cwd?: string
     modelProviders?: string[]
+    modelsReader?: OpencodeModelsReader
 }
 
 function mergeProcessEnv(env?: Record<string, string>): NodeJS.ProcessEnv {
@@ -69,6 +82,10 @@ export class OpencodeProvider extends AcpProvider {
     private readonly env?: Record<string, string>
     private readonly processCwd?: string
     private readonly modelProviders: Set<string>
+    private readonly modelsReader: OpencodeModelsReader
+    private modelCatalog: ModelEntry[] = []
+    private modelRefreshPromise?: Promise<ModelEntry[]>
+    private nextModelRefreshAt = 0
 
     constructor(options: OpencodeProviderOptions = {}) {
         const command = options.command ?? OPENCODE_ACP_COMMAND
@@ -84,6 +101,15 @@ export class OpencodeProvider extends AcpProvider {
         this.env = options.env
         this.processCwd = options.cwd
         this.modelProviders = new Set((options.modelProviders ?? []).map(provider => provider.toLowerCase()))
+        this.modelsReader = options.modelsReader ?? (input => spawnJson(
+            input.command,
+            ['models'],
+            {
+                timeoutMs: 10_000,
+                ...(input.cwd ? { cwd: input.cwd } : {}),
+                ...(input.env ? { env: input.env } : {}),
+            },
+        ))
     }
 
     async listSessions(cwd: string): Promise<SessionEntry[]> {
@@ -135,34 +161,56 @@ export class OpencodeProvider extends AcpProvider {
     }
 
     getAvailableModels(): ModelEntry[] {
-        try {
-            const output = spawnSync(this.command, ['models'], {
-                encoding: 'utf-8',
-                timeout: 10_000,
-                windowsHide: true,
-                env: mergeProcessEnv(this.env),
-                ...(this.processCwd ? { cwd: this.processCwd } : {}),
-            })
-            if (output.error || output.status !== 0) {
-                console.error(`[opencode] Failed to list models: ${output.error?.message || `exit code ${output.status}`}`)
-                return []
-            }
-            const lines = output.stdout.trim().split('\n').filter(line => line.includes('/'))
-            return lines.map(line => {
-                const id = line.trim()
-                const parts = id.split('/')
-                const name = parts.length > 1 ? parts.slice(1).join('/') : id
-                return { id, name, provider: parts[0] }
-            }).filter(model => this.modelProviders.size === 0 || this.modelProviders.has((model.provider ?? '').toLowerCase()))
-        } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e)
-            console.error(`[opencode] Failed to list models: ${msg}`)
-            return []
+        if (!this.modelRefreshPromise && Date.now() >= this.nextModelRefreshAt) {
+            // Capability snapshots run synchronously on the Gateway event loop.
+            // A slow or missing opencode binary must never block project
+            // creation, Matrix sync, or command completion.
+            void this.refreshAvailableModels()
         }
+        return this.modelCatalog.map(model => ({ ...model }))
+    }
+
+    async refreshAvailableModels(): Promise<ModelEntry[]> {
+        if (this.modelRefreshPromise) return this.modelRefreshPromise
+        this.nextModelRefreshAt = Date.now() + OPENCODE_MODELS_RETRY_MS
+        const refresh = this.modelsReader({
+            command: this.command,
+            ...(this.env ? { env: this.env } : {}),
+            ...(this.processCwd ? { cwd: this.processCwd } : {}),
+        }).then(output => {
+            this.modelCatalog = parseOpencodeModels(output, this.modelProviders)
+            this.nextModelRefreshAt = Date.now() + OPENCODE_MODELS_REFRESH_MS
+            return this.modelCatalog.map(model => ({ ...model }))
+        }).catch(error => {
+            const message = error instanceof Error ? error.message : String(error)
+            console.error(`[opencode] Failed to list models: ${message}`)
+            return this.modelCatalog.map(model => ({ ...model }))
+        }).finally(() => {
+            delete this.modelRefreshPromise
+        })
+        this.modelRefreshPromise = refresh
+        return refresh
     }
 
     resolveModel(model: string): string | undefined {
         const normalized = model.trim()
         return normalized || undefined
     }
+}
+
+export function parseOpencodeModels(
+    output: string,
+    modelProviders: ReadonlySet<string> = new Set(),
+): ModelEntry[] {
+    return output.trim().split('\n')
+        .filter(line => line.includes('/'))
+        .map(line => {
+            const id = line.trim()
+            const parts = id.split('/')
+            const name = parts.length > 1 ? parts.slice(1).join('/') : id
+            return { id, name, provider: parts[0] }
+        })
+        .filter(model => modelProviders.size === 0 || modelProviders.has(
+            (model.provider ?? '').toLowerCase(),
+        ))
 }

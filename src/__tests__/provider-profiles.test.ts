@@ -22,18 +22,9 @@ import type { ChannelPort, DecisionRequest, DecisionResponse } from '@/bridge/ch
 import type { AgentEvent } from '@/providers/types'
 import type { AgentProvider, AgentQueryConfig, AgentQueryHandle } from '@/providers/provider'
 
-const { spawnSyncMock, acpProviderConfigs } = vi.hoisted(() => ({
-    spawnSyncMock: vi.fn(),
+const { acpProviderConfigs } = vi.hoisted(() => ({
     acpProviderConfigs: [] as Array<{ name: string; command: string; args: string[]; env?: Record<string, string>; cwd?: string }>,
 }))
-
-vi.mock('node:child_process', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('node:child_process')>()
-    return {
-        ...actual,
-        spawnSync: spawnSyncMock,
-    }
-})
 
 vi.mock('@/providers/acp', () => ({
     AcpProvider: class {
@@ -49,7 +40,6 @@ vi.mock('@/providers/acp', () => ({
 describe('provider profiles', () => {
     afterEach(() => {
         clearProviderRegistryForTesting()
-        spawnSyncMock.mockReset()
         acpProviderConfigs.splice(0, acpProviderConfigs.length)
     })
 
@@ -175,46 +165,42 @@ describe('provider profiles', () => {
         expect(normalizeLegacyCodexProfile(profile)).toEqual(profile)
     })
 
-    it('uses profile env when listing opencode models', () => {
-        spawnSyncMock.mockReturnValue({
-            status: 0,
-            error: undefined,
-            stdout: 'anthropic/claude-sonnet\n',
-            stderr: '',
-        })
-
+    it('uses profile env while refreshing opencode models in the background', async () => {
+        const modelsReader = vi.fn().mockResolvedValue('anthropic/claude-sonnet\n')
         const provider = new OpencodeProvider({
             name: 'opencode-fast',
             env: { OPENCODE_CONFIG: 'C:\\opencode-fast.json' },
+            modelsReader,
         })
 
+        expect(provider.getAvailableModels()).toEqual([])
+        await provider.refreshAvailableModels()
         expect(provider.getAvailableModels()).toEqual([
             { id: 'anthropic/claude-sonnet', name: 'claude-sonnet', provider: 'anthropic' },
         ])
-        expect(spawnSyncMock).toHaveBeenCalledWith('opencode', ['models'], expect.objectContaining({
-            env: expect.objectContaining({ OPENCODE_CONFIG: 'C:\\opencode-fast.json' }),
-        }))
+        expect(modelsReader).toHaveBeenCalledWith({
+            command: 'opencode',
+            env: { OPENCODE_CONFIG: 'C:\\opencode-fast.json' },
+        })
     })
 
-    it('filters opencode models to configured model providers', () => {
-        spawnSyncMock.mockReturnValue({
-            status: 0,
-            error: undefined,
-            stdout: [
+    it('filters opencode models to configured model providers', async () => {
+        const modelsReader = vi.fn().mockResolvedValue([
                 'opencode/big-pickle',
                 'ark/doubao-seed-2-0-code-preview-260215',
                 'ark/deepseek-v4-pro-260425',
                 'openai/gpt-5',
-            ].join('\n'),
-            stderr: '',
-        })
+            ].join('\n'))
 
         const provider = new OpencodeProvider({
             name: 'opencode-ark',
             env: { OPENCODE_CONFIG: 'C:\\ark.json' },
             modelProviders: ['ark'],
+            modelsReader,
         })
 
+        expect(provider.getAvailableModels()).toEqual([])
+        await provider.refreshAvailableModels()
         expect(provider.getAvailableModels()).toEqual([
             {
                 id: 'ark/doubao-seed-2-0-code-preview-260215',

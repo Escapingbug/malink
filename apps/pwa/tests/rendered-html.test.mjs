@@ -853,11 +853,25 @@ test("pairs a Gateway without exposing Matrix fingerprints and signs strict comm
     app.indexOf("async function createProject"),
     app.indexOf("async function createSession"),
   );
+  assert.ok(
+    projectCreation.indexOf("setNewProjectOpen(false)") <
+      projectCreation.indexOf("await sendRealCommand"),
+    "project creation should leave the modal before waiting on secure transport",
+  );
+  assert.match(projectCreation, /continuePendingProjectCreate\(connection, sent\)/);
+  assert.match(projectCreation, /autoRetryRevisionConflict:\s*true/);
   assert.match(
     projectCreation,
-    /waitForCommandCompletion\([\s\S]*sent\.completion,[\s\S]*PROJECT_CREATE_RESULT_TIMEOUT_MS/,
+    /CommandRevisionConflictError[\s\S]*CommandReviewRequiredError[\s\S]*holdProjectCreateForConflictReview/,
   );
-  assert.match(projectCreation, /releaseCommand\(completedCommandId\)/);
+  assert.match(
+    app,
+    /function continuePendingProjectCreate[\s\S]*waitForCommandCompletion\([\s\S]*sent\.completion,[\s\S]*PROJECT_CREATE_RESULT_TIMEOUT_MS/,
+  );
+  assert.match(
+    app,
+    /async function consumeProjectCreateCompletion[\s\S]*releaseCommand\(commandId\)/,
+  );
   assert.match(
     app,
     /waitForCommandCompletion\([\s\S]*sent\.completion,[\s\S]*PROVIDER_HISTORY_RESULT_TIMEOUT_MS/,
