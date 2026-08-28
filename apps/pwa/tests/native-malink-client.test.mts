@@ -23,6 +23,8 @@ import {
   CommandReviewRequiredError,
   type MalinkCommandReview,
 } from "../app/client/MalinkClient.ts";
+import { gatewayStateExtension } from "../app/gatewayState.ts";
+import { gatewayProjectOwners } from "../app/projectCatalog.ts";
 
 type Request = {
   jsonrpc: "2.0";
@@ -205,6 +207,52 @@ test("returns a durable native receipt immediately and acknowledges event cursor
   );
   const replacement = await acquireNativeRpcBridge(port);
   replacement.close();
+});
+
+test("projects Android native Gateway Directory ownership into the hosted UI", async () => {
+  const gatewayState = nativeGatewayDirectoryState();
+  let projectedGatewayState: Parameters<
+    NonNullable<ConstructorParameters<typeof NativeBridgeClient>[2]["onCollaborationState"]>
+  >[0]["gatewayState"] | undefined;
+  const port = new RuntimePort((request) => {
+    if (request.method === "malink.client.start") {
+      return {
+        deviceId: "native-device-1",
+        snapshot: snapshot(gatewayState),
+      };
+    }
+    return responseFor(request);
+  });
+  const bridge = await acquireNativeRpcBridge(port);
+  const hello = await bridge.hello({
+    webBuild: "test-build",
+    requiredCapabilities: [],
+    optionalCapabilities: REQUIRED_NATIVE_CAPABILITIES.map((name) => ({
+      name,
+      versions: nativeCapabilityVersions(name),
+    })),
+  });
+  const client = new NativeBridgeClient(bridge, hello, {
+    onMessage() {},
+    onStatus() {},
+    onCollaborationState(state) {
+      projectedGatewayState = state.gatewayState;
+    },
+  });
+  await client.ready;
+
+  assert.ok(projectedGatewayState?.gatewayDirectory);
+  const owners = gatewayProjectOwners(
+    projectedGatewayState.gatewayDirectory.directory.gateways,
+  );
+  assert.deepEqual(owners.get("project-phone"), {
+    gatewayNodeId: "gateway-home",
+    gatewayName: "Home Gateway",
+    computerName: "home-mac",
+    shortId: "EWAYHOME",
+    label: "Home Gateway · home-mac",
+  });
+  client.dispose();
 });
 
 test("keeps the durable receipt identity while Gateway progress arrives", async () => {
@@ -850,7 +898,7 @@ function helloResult(): HelloResult {
   };
 }
 
-function snapshot(): ClientSnapshot {
+function snapshot(gatewayState?: ClientSnapshot["gatewayState"]): ClientSnapshot {
   return {
     schemaVersion: 1,
     deviceId: "native-device-1",
@@ -863,6 +911,88 @@ function snapshot(): ClientSnapshot {
       notificationVisible: true,
     },
     trust: { state: "unpaired" },
+    ...(gatewayState ? { gatewayState } : {}),
     commands: [],
   };
+}
+
+function nativeGatewayDirectoryState(): NonNullable<ClientSnapshot["gatewayState"]> {
+  const keyId = "A".repeat(43);
+  return gatewayStateExtension({
+    stateVersion: 1,
+    revision: 0,
+    revisionEpoch: "matrix-native-v3",
+    revisionEpochGeneration: 1,
+    activeDeviceCount: 1,
+    updatedAt: 1,
+    currentSessionId: null,
+    sessions: [],
+    workspace: {
+      projectId: "project-phone",
+      projectName: "Malink",
+      cwd: "/workspace/malink",
+      provider: "agent",
+      permissionMode: "default",
+    },
+    projects: [{
+      projectId: "project-phone",
+      projectName: "Malink",
+      cwd: "/workspace/malink",
+      provider: "agent",
+      permissionMode: "default",
+    }],
+    capabilities: {
+      models: [],
+      providers: [],
+      permissionModes: [],
+      canCreateSession: true,
+      canSelectSession: true,
+      sessionExtensions: [],
+    },
+    gatewayDirectory: {
+      directory: {
+        kind: "malink.workspace.gateway-directory",
+        version: 1,
+        directoryId: "directory-1",
+        workspaceId: "workspace-1",
+        revision: 1,
+        gateways: [{
+          gatewayNodeId: "gateway-home",
+          workspaceId: "workspace-1",
+          gatewayName: "Home Gateway",
+          computerName: "home-mac",
+          transport: {
+            homeserver: "https://matrix.example.test",
+            roomId: "!project-phone:example.test",
+            userId: "@gateway:example.test",
+            deviceId: "GATEWAYHOME",
+            ed25519: "gateway-ed25519-key",
+          },
+          publicKey: {
+            version: 1,
+            algorithm: "ES256",
+            keyId,
+            publicKey: {
+              kty: "EC",
+              crv: "P-256",
+              x: keyId,
+              y: keyId,
+            },
+          },
+          projects: [{
+            projectId: "project-phone",
+            roomId: "!project-phone:example.test",
+            conversationId: "conversation-phone",
+          }],
+          issuedAt: 1,
+        }],
+        issuedAt: 1,
+      },
+      signature: {
+        algorithm: "ES256",
+        keyId,
+        value: "signature",
+      },
+    },
+  }) as NonNullable<ClientSnapshot["gatewayState"]>;
 }
