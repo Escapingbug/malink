@@ -415,6 +415,8 @@ test("ships a complete installable offline shell", async () => {
   );
   assert.match(source, /aria-label=\{`\$\{session\.title\}\. \$\{statusSummary\}/);
   assert.match(source, /title=\{`\$\{session\.title\} · \$\{statusSummary\}`\}/);
+  assert.match(source, /const showStatusSummary =/);
+  assert.match(source, /\{showStatusSummary && \(\s*<span className="session-status-summary">/);
   assert.match(source, /title=\{completionLabel\}/);
   assert.match(
     styles,

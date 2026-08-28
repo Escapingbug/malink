@@ -1351,6 +1351,10 @@ select:focus-visible {
   color: #a64751;
 }
 
+.session-signal-working .session-status-summary {
+  color: #267859;
+}
+
 .session-preview-line b {
   display: grid;
   min-width: 18px;

@@ -7989,10 +7989,14 @@ function MalinkAppRuntime() {
                 }${
                   session.reasoningEffort ? ` · ${session.reasoningEffort}` : ""
                 }`;
-                const visualSignal = lifecycleAction ? "working" : signal;
+                const visualSignal = lifecycleAction || activity
+                  ? "working"
+                  : signal;
                 const visualSignalLabel = lifecycleAction
                   ? statusSummary
-                  : sessionSignalLabel(signal);
+                  : activity?.label || sessionSignalLabel(signal);
+                const showStatusSummary =
+                  Boolean(lifecycleAction || activity) || signal !== "idle";
                 return (
                 <button
                   key={session.id}
@@ -8033,9 +8037,9 @@ function MalinkAppRuntime() {
                         )}
                       </span>
                     </span>
-                    {(lifecycleAction || session.extensions.length > 0) && (
+                    {(showStatusSummary || session.extensions.length > 0) && (
                       <span className="session-preview-line">
-                        {lifecycleAction && (
+                        {showStatusSummary && (
                           <span className="session-status-summary">
                             {statusSummary}
                           </span>
