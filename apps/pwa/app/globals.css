@@ -650,6 +650,43 @@ select:focus-visible {
   letter-spacing: 1px;
 }
 
+.gateway-filter-control {
+  display: grid;
+  min-width: 0;
+  flex: 0 0 auto;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  margin: -7px 17px 12px;
+}
+
+.gateway-filter-control > span {
+  color: #858d9e;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.gateway-filter-control select {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 30px 0 10px;
+  border: 1px solid #e0e3eb;
+  border-radius: 10px;
+  outline: 0;
+  background: #f7f7fa;
+  color: #4f586b;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.gateway-filter-control select:focus-visible {
+  border-color: #a99ee9;
+  box-shadow: 0 0 0 3px rgb(105 87 229 / 12%);
+}
+
 .session-section-label {
   display: flex;
   flex: 0 0 auto;
@@ -7894,6 +7931,10 @@ body {
   .gateway-card .gateway-status-copy .mobile-connection-icon svg {
     width: 16px;
     height: 16px;
+  }
+
+  .gateway-filter-control {
+    margin: -4px 13px 9px;
   }
 
   .session-filters {

@@ -161,9 +161,16 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /session-row session-create-pending/);
   assert.match(source, /function ProjectFolderIcon\(\{ temporary \}:/);
   assert.match(source, /className="project-folder-clock"/);
-  assert.match(source, /title=\{project\.temporary \? "Temporary workspace" : "Project"\}/);
+  assert.match(source, /Temporary workspace on \$\{project\.gatewayLabel\}/);
   assert.match(source, /<ProjectDisclosureIcon \/>/);
   assert.doesNotMatch(source, /project\.temporary \? "◇" : "▱"/);
+  assert.match(source, /aria-label="Filter conversations by Gateway"/);
+  assert.match(source, /<option value=\{ALL_GATEWAYS_FILTER\}>All Gateways<\/option>/);
+  assert.match(source, /projectMatchesGatewayFilter\(/);
+  assert.match(source, /scratchGroups/);
+  assert.match(newSession, /The selected Gateway creates a private working folder/);
+  assert.match(newSession, /choice\.gateway\.shortId/);
+  assert.match(styles, /\.gateway-filter-control\s*\{/);
   assert.match(
     styles,
     /\.project-chevron\.expanded svg\s*\{\s*transform:\s*rotate\(90deg\)/,

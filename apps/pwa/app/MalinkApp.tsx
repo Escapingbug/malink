@@ -266,6 +266,13 @@ import {
   gatewayProjectOwners,
 } from "./projectCatalog";
 import {
+  ALL_GATEWAYS_FILTER,
+  normalizeGatewayFilter,
+  projectMatchesGatewayFilter,
+  readGatewayFilter,
+  writeGatewayFilter,
+} from "./gatewayFilter";
+import {
   EMPTY_UI_NOTICE_STATE,
   noticesForScope,
   reduceUiNotices,
@@ -1113,6 +1120,16 @@ function MalinkAppRuntime() {
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
   const [primaryView, setPrimaryView] = useState<"chats" | "files">("chats");
   const [search, setSearch] = useState("");
+  // This is client-local inventory view state, not an active Gateway or
+  // transport switch. Commands still route through each project's signed
+  // Gateway Directory owner.
+  const [gatewayFilterSelection, setGatewayFilterSelection] = useState(() => ({
+    workspaceId: initialGatewayUi.config.gatewayId,
+    gatewayNodeId: readGatewayFilter(
+      typeof window === "undefined" ? null : window.localStorage,
+      initialGatewayUi.config.gatewayId,
+    ),
+  }));
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -1157,6 +1174,16 @@ function MalinkAppRuntime() {
   const [matrixConfig, setMatrixConfig] = useState<MatrixConnectionConfig>(
     initialGatewayUi.config,
   );
+  const storedGatewayFilter = useMemo(
+    () => readGatewayFilter(
+      typeof window === "undefined" ? null : window.localStorage,
+      matrixConfig.gatewayId,
+    ),
+    [matrixConfig.gatewayId],
+  );
+  const gatewayFilter = gatewayFilterSelection.workspaceId === matrixConfig.gatewayId
+    ? gatewayFilterSelection.gatewayNodeId
+    : storedGatewayFilter;
   const [connectionStatus, setConnectionStatus] =
     useState<MatrixConnectionStatus>("offline");
   const [connectionDetail, setConnectionDetail] = useState<string | null>(null);
@@ -1525,28 +1552,83 @@ function MalinkAppRuntime() {
     ),
     [gatewayState?.gatewayDirectory],
   );
+  const gatewayFilterOptions = useMemo(
+    () => (gatewayState?.gatewayDirectory?.directory.gateways ?? [])
+      .map(gateway => gatewayProjectOwner(
+        gateway.gatewayNodeId,
+        gateway.gatewayName,
+        gateway.computerName,
+      ))
+      .sort((left, right) =>
+        left.label.localeCompare(right.label) ||
+        left.gatewayNodeId.localeCompare(right.gatewayNodeId),
+      ),
+    [gatewayState?.gatewayDirectory],
+  );
+  const activeGatewayFilter = gatewayFilterOptions.length > 0
+    ? normalizeGatewayFilter(
+        gatewayFilter,
+        gatewayFilterOptions.map(gateway => gateway.gatewayNodeId),
+      )
+    : ALL_GATEWAYS_FILTER;
+  const gatewayScopedSessions = useMemo(
+    () => visibleGatewaySessions.filter(session => projectMatchesGatewayFilter(
+      activeGatewayFilter,
+      session.projectId,
+      projectGatewaysById,
+      fallbackProjectGateway.gatewayNodeId,
+    )),
+    [
+      activeGatewayFilter,
+      fallbackProjectGateway.gatewayNodeId,
+      projectGatewaysById,
+      visibleGatewaySessions,
+    ],
+  );
   const filteredSessions = useMemo(
     () =>
-      visibleGatewaySessions.filter((session) => {
+      gatewayScopedSessions.filter((session) => {
         const owner = projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway;
         return `${session.title} ${session.projectName} ${session.cwd} ${session.provider} ${session.model ?? ""} ${owner.gatewayName} ${owner.computerName} ${owner.gatewayNodeId}`
           .toLowerCase()
           .includes(search.toLowerCase());
       }),
-    [fallbackProjectGateway, projectGatewaysById, search, visibleGatewaySessions],
+    [fallbackProjectGateway, gatewayScopedSessions, projectGatewaysById, search],
   );
   const activeFilteredSessions = filteredSessions;
-  const activeSessionCount = visibleGatewaySessions.length;
+  const activeSessionCount = gatewayScopedSessions.length;
+  const gatewayScopedProjects = useMemo(
+    () => (gatewayState?.projects ?? []).filter(project => projectMatchesGatewayFilter(
+      activeGatewayFilter,
+      project.projectId,
+      projectGatewaysById,
+      fallbackProjectGateway.gatewayNodeId,
+    )),
+    [
+      activeGatewayFilter,
+      fallbackProjectGateway.gatewayNodeId,
+      gatewayState?.projects,
+      projectGatewaysById,
+    ],
+  );
+  const gatewayScopedWorkspace = gatewayState?.workspace && projectMatchesGatewayFilter(
+    activeGatewayFilter,
+    gatewayState.workspace.projectId,
+    projectGatewaysById,
+    fallbackProjectGateway.gatewayNodeId,
+  )
+    ? gatewayState.workspace
+    : undefined;
   const canonicalProjectsById = useMemo(
     () =>
       new Map(
         canonicalGatewayProjects(
-          gatewayState?.workspace,
-          visibleGatewaySessions,
-          gatewayState?.projects ?? [],
+          gatewayScopedWorkspace,
+          gatewayScopedSessions,
+          gatewayScopedProjects,
         ).map((project) => [project.projectId, project]),
       ),
-    [gatewayState?.workspace, gatewayState?.projects, visibleGatewaySessions],
+    [gatewayScopedProjects, gatewayScopedSessions, gatewayScopedWorkspace],
   );
   const projectGroups = useMemo(() => {
     const groups = new Map<
@@ -1616,26 +1698,56 @@ function MalinkAppRuntime() {
     search,
     sessionReadState,
   ]);
-  const scratchSessions = useMemo(
-    () => activeFilteredSessions
-      .filter((session) => session.scope === "scratch")
-      .sort((left, right) => compareSessionsForAction(left, right, sessionReadState)),
-    [activeFilteredSessions, sessionReadState],
-  );
+  const scratchGroups = useMemo(() => {
+    const groups = new Map<string, {
+      key: string;
+      projectId: string;
+      projectName: string;
+      cwd: string;
+      gatewayLabel: string;
+      sessions: NonNullable<typeof gatewayState>["sessions"];
+      temporary: true;
+    }>();
+    for (const session of activeFilteredSessions) {
+      if (session.scope !== "scratch") continue;
+      const owner = projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway;
+      const group = groups.get(owner.gatewayNodeId) ?? {
+        key: `${matrixConfig.gatewayId}\u0000${owner.gatewayNodeId}\u0000scratch`,
+        projectId: `scratch:${owner.gatewayNodeId}`,
+        projectName: "Temporary",
+        cwd: "Isolated workspace · not linked to a project",
+        gatewayLabel: owner.label,
+        sessions: [],
+        temporary: true,
+      };
+      group.sessions.push(session);
+      groups.set(owner.gatewayNodeId, group);
+    }
+    const ordered = [...groups.values()];
+    for (const group of ordered) {
+      group.sessions.sort((left, right) =>
+        compareSessionsForAction(left, right, sessionReadState),
+      );
+    }
+    ordered.sort((left, right) =>
+      compareProjectSessionsForAction(
+        left.sessions,
+        right.sessions,
+        sessionReadState,
+      ) || left.gatewayLabel.localeCompare(right.gatewayLabel),
+    );
+    return ordered;
+  }, [
+    activeFilteredSessions,
+    fallbackProjectGateway,
+    matrixConfig.gatewayId,
+    projectGatewaysById,
+    sessionReadState,
+  ]);
   const conversationGroups = useMemo(() => [
-    ...(scratchSessions.length > 0
-      ? [{
-          key: `${matrixConfig.gatewayId}\u0000scratch`,
-          projectId: "scratch",
-          projectName: "Temporary",
-          cwd: "Isolated workspace · not linked to a project",
-          gatewayLabel: null,
-          sessions: scratchSessions,
-          temporary: true,
-        }]
-      : []),
-    ...projectGroups.map((project) => ({ ...project, temporary: false })),
-  ], [matrixConfig.gatewayId, projectGroups, scratchSessions]);
+    ...scratchGroups,
+    ...projectGroups.map((project) => ({ ...project, temporary: false as const })),
+  ], [projectGroups, scratchGroups]);
   const inboxFiles = gatewayState?.inboxFiles ?? [];
   const matrixConnectionPresentation = useMemo(
     () => deriveConnectionPresentation(connectionStatus, connectionDetail),
@@ -1818,6 +1930,25 @@ function MalinkAppRuntime() {
         permissionMode: selectedProjectWorkspace?.permissionMode ?? "default",
       }
     : gatewayState?.workspace;
+  const allWorkspaceProjects = gatewayState?.projects ??
+    (gatewayState ? [gatewayState.workspace] : []);
+  const preferredSessionCreationWorkspace = selected
+    ? allWorkspaceProjects.find(project => project.projectId === selected.projectId)
+    : gatewayState?.workspace;
+  const gatewayFilterDefaultWorkspace = activeGatewayFilter === ALL_GATEWAYS_FILTER ||
+      (preferredSessionCreationWorkspace && projectMatchesGatewayFilter(
+        activeGatewayFilter,
+        preferredSessionCreationWorkspace.projectId,
+        projectGatewaysById,
+        fallbackProjectGateway.gatewayNodeId,
+      ))
+    ? preferredSessionCreationWorkspace ?? gatewayState?.workspace
+    : allWorkspaceProjects.find(project => projectMatchesGatewayFilter(
+        activeGatewayFilter,
+        project.projectId,
+        projectGatewaysById,
+        fallbackProjectGateway.gatewayNodeId,
+      ));
   const activeProjectGateway = activeWorkspace
     ? projectGatewaysById.get(activeWorkspace.projectId) ?? fallbackProjectGateway
     : fallbackProjectGateway;
@@ -1836,7 +1967,13 @@ function MalinkAppRuntime() {
         ? fallbackProjectGateway.label
       : "Connect a computer";
   const activeCapabilities = activeWorkspace?.capabilities ?? gatewayState?.capabilities;
-  const canCreateAnySession = (gatewayState?.projects ?? (gatewayState ? [gatewayState.workspace] : []))
+  const canCreateAnySession = allWorkspaceProjects
+    .filter(project => projectMatchesGatewayFilter(
+      activeGatewayFilter,
+      project.projectId,
+      projectGatewaysById,
+      fallbackProjectGateway.gatewayNodeId,
+    ))
     .some(project => (project.capabilities ?? gatewayState?.capabilities)?.canCreateSession);
   const projectCreationGateways = useMemo<ProjectCreationGateway[]>(() => {
     if (!gatewayState) return [];
@@ -1889,6 +2026,15 @@ function MalinkAppRuntime() {
     matrixConfig.gatewayNodeId,
     trustedGateway,
   ]);
+  const presentedProjectCreationGateways = useMemo(
+    () => activeGatewayFilter === ALL_GATEWAYS_FILTER
+      ? projectCreationGateways
+      : [...projectCreationGateways].sort((left, right) =>
+          Number(right.gatewayNodeId === activeGatewayFilter) -
+          Number(left.gatewayNodeId === activeGatewayFilter),
+        ),
+    [activeGatewayFilter, projectCreationGateways],
+  );
   const gatewayUpdatePlan = useMemo(() =>
     buildGatewayUpdatePlan({
       directory: gatewayState?.gatewayDirectory,
@@ -2003,6 +2149,28 @@ function MalinkAppRuntime() {
       now: Date.now(),
       ...(autoDismissMs === undefined ? {} : { autoDismissMs }),
     });
+  }
+
+  function selectGatewayFilter(gatewayNodeId: string): void {
+    setGatewayFilterSelection({
+      workspaceId: matrixConfig.gatewayId,
+      gatewayNodeId,
+    });
+    try {
+      writeGatewayFilter(
+        window.localStorage,
+        matrixConfig.gatewayId,
+        gatewayNodeId,
+      );
+      recoverUiNotice("gateway-filter-storage");
+    } catch (error) {
+      showUiNotice(
+        "gateway-filter-storage",
+        "session",
+        "warning",
+        `This Gateway view is active for now, but the preference could not be saved: ${formatUiError(error)}`,
+      );
+    }
   }
 
   function updateSessionLifecycleBusy(
@@ -3228,10 +3396,15 @@ function MalinkAppRuntime() {
     if (openedSession) {
       setSessionReadState((current) => markSessionRead(current, openedSession));
       if (sessionChanged && revealProject) {
-        const projectKey = gatewayProjectKey(
-          matrixConfig.gatewayId,
-          openedSession.projectId,
-        );
+        const projectKey = openedSession.scope === "scratch"
+          ? `${matrixConfig.gatewayId}\u0000${
+              (projectGatewaysById.get(openedSession.projectId) ?? fallbackProjectGateway)
+                .gatewayNodeId
+            }\u0000scratch`
+          : gatewayProjectKey(
+              matrixConfig.gatewayId,
+              openedSession.projectId,
+            );
         setCollapsedProjects((current) =>
           setProjectCollapsed(current, projectKey, false),
         );
@@ -8239,6 +8412,24 @@ function MalinkAppRuntime() {
           <span className="gateway-more" aria-hidden="true">•••</span>
         </button>
 
+        {gatewayFilterOptions.length > 1 && (
+          <label className="gateway-filter-control">
+            <span>View</span>
+            <select
+              value={activeGatewayFilter}
+              aria-label="Filter conversations by Gateway"
+              onChange={(event) => selectGatewayFilter(event.target.value)}
+            >
+              <option value={ALL_GATEWAYS_FILTER}>All Gateways</option>
+              {gatewayFilterOptions.map(gateway => (
+                <option key={gateway.gatewayNodeId} value={gateway.gatewayNodeId}>
+                  {gateway.label} · {gateway.shortId}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
         <UiNoticeList
           notices={sessionNotices}
           className="session-notices"
@@ -8246,7 +8437,12 @@ function MalinkAppRuntime() {
         />
 
         <div className="session-list">
-          {optimisticSession && (
+          {optimisticSession && projectMatchesGatewayFilter(
+            activeGatewayFilter,
+            optimisticSession.input.projectId ?? gatewayState?.workspace.projectId ?? "",
+            projectGatewaysById,
+            fallbackProjectGateway.gatewayNodeId,
+          ) && (
             <button
               type="button"
               className={`session-row session-create-pending ${
@@ -8305,6 +8501,8 @@ function MalinkAppRuntime() {
             </button>
           )}
           {optimisticProjectCreate &&
+            (activeGatewayFilter === ALL_GATEWAYS_FILTER ||
+              optimisticProjectCreate.input.gatewayNodeId === activeGatewayFilter) &&
             (!search.trim() ||
               `${optimisticProjectCreate.input.name} ${optimisticProjectCreate.input.cwd} ${optimisticProjectCreate.gatewayLabel}`
                 .toLowerCase()
@@ -8411,9 +8609,11 @@ function MalinkAppRuntime() {
                 className="project-session-toggle"
                 aria-expanded={expanded}
                 aria-controls={contentId}
-                title={project.temporary ? "Temporary workspace" : "Project"}
+                title={project.temporary
+                  ? `Temporary workspace on ${project.gatewayLabel}`
+                  : `Project on ${project.gatewayLabel}`}
                 aria-label={`${projectSessionSummaryLabel(
-                  project.projectName,
+                  `${project.projectName} on ${project.gatewayLabel}`,
                   projectSummary,
                 )}. ${expanded ? "Collapse project" : "Expand project"}`}
                 onClick={() =>
@@ -8434,9 +8634,7 @@ function MalinkAppRuntime() {
                 <span className="project-copy">
                   <strong>{project.projectName}</strong>
                   <small>
-                    {project.temporary
-                      ? project.cwd
-                      : `${project.gatewayLabel} · ${project.cwd}`}
+                    {project.gatewayLabel} · {project.cwd}
                   </small>
                 </span>
                 <span className="project-indicators" aria-hidden="true">
@@ -8628,7 +8826,6 @@ function MalinkAppRuntime() {
             </div>
           )}
           {gatewayState &&
-            activeSessionCount > 0 &&
             conversationGroups.length === 0 &&
             Boolean(search.trim()) && (
             <div className="empty-search">
@@ -8637,7 +8834,20 @@ function MalinkAppRuntime() {
             </div>
           )}
           {gatewayState &&
+            activeGatewayFilter !== ALL_GATEWAYS_FILTER &&
+            activeSessionCount === 0 &&
+            conversationGroups.length === 0 &&
+            !optimisticSession &&
+            !optimisticProjectCreate &&
+            !search.trim() && (
+              <div className="empty-search">
+                <span>G</span>
+                No conversations or projects on this Gateway
+              </div>
+            )}
+          {gatewayState &&
             gatewayState.sessions.length === 0 &&
+            activeGatewayFilter === ALL_GATEWAYS_FILTER &&
             connectionStatus === "connected" &&
             !optimisticSession &&
             !pendingSessionCreate && (
@@ -9727,7 +9937,7 @@ function MalinkAppRuntime() {
         <NewProjectDialog
           open={newProjectOpen}
           busy={newProjectBusy}
-          gateways={projectCreationGateways}
+          gateways={presentedProjectCreationGateways}
           onClose={() => setNewProjectOpen(false)}
           onCreate={(input) => void createProject(input)}
         />
@@ -9754,12 +9964,14 @@ function MalinkAppRuntime() {
           busy={newSessionBusy}
           fallbackGateway={fallbackProjectGateway}
           projectGateways={projectGatewaysById}
-          workspace={activeWorkspace ?? gatewayState.workspace}
-          workspaces={gatewayState.projects ?? [gatewayState.workspace]}
+          workspace={gatewayFilterDefaultWorkspace ?? gatewayState.workspace}
+          workspaces={allWorkspaceProjects}
           models={gatewayState.capabilities.models}
           providers={gatewayState.capabilities.providers}
           extensions={gatewayState.capabilities.sessionExtensions}
-          defaultExtensions={gatewayState.workspace.defaultExtensions}
+          defaultExtensions={
+            (gatewayFilterDefaultWorkspace ?? gatewayState.workspace).defaultExtensions
+          }
           canUpdateProjectDefaults
           onClose={() => {
             if (!newSessionBusy) setNewSessionOpen(false);
