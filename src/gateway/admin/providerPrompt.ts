@@ -1,5 +1,9 @@
-import { access, realpath, stat } from 'node:fs/promises'
-import { constants as fsConstants } from 'node:fs'
+import {
+  accessSync,
+  constants as fsConstants,
+  realpathSync,
+  statSync,
+} from 'node:fs'
 import { isAbsolute } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type {
@@ -41,7 +45,7 @@ export async function runGatewayProviderPrompt(
 ): Promise<GatewayProviderPromptResponse> {
   const now = options.now ?? Date.now
   const providerName = request.provider ?? defaults.provider
-  const cwd = await validatePromptCwd(request.cwd ?? defaults.cwd)
+  const cwd = validatePromptCwd(request.cwd ?? defaults.cwd)
   const provider = (options.providerFactory ?? createProviderInstance)(providerName) as
     | InitializableProvider
     | undefined
@@ -168,11 +172,17 @@ export async function runGatewayProviderPrompt(
   }
 }
 
-async function validatePromptCwd(input: string): Promise<string> {
+function validatePromptCwd(input: string): string {
   if (!isAbsolute(input)) throw new Error('Provider prompt cwd must be absolute')
-  await access(input, fsConstants.R_OK | fsConstants.X_OK)
-  const resolved = await realpath(input)
-  if (!(await stat(resolved)).isDirectory()) {
+  // Keep the owner-only diagnostic route independent from libuv filesystem
+  // worker completion. In the long-lived Matrix process, an asynchronous
+  // realpath callback can remain pending after native crypto/sync startup even
+  // though the same path is locally readable, preventing provider.init() from
+  // ever running. These local checks are bounded to one caller-supplied
+  // absolute path and complete before any ACP process is launched.
+  accessSync(input, fsConstants.R_OK | fsConstants.X_OK)
+  const resolved = realpathSync(input)
+  if (!statSync(resolved).isDirectory()) {
     throw new Error('Provider prompt cwd must be a directory')
   }
   return resolved

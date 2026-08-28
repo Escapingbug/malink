@@ -115,15 +115,19 @@ pnpm generate:gateway-release-key -- \
 Push the exact release commit first, then publish its Prompt:
 
 ```sh
-pnpm release:gateway-agent-update -- \
+pnpm release:gateway-agent-update \
   --out ./dist/gateway-agent-update \
-  --release-id 2026.08.26.4 \
-  --version-name 2026.08.26.4 \
-  --build-id gateway-2026.08.26.4 \
   --commit "$(git rev-parse HEAD)" \
   --prompt-file deploy/gateway-agent-update/PROMPT.md \
   --private-key /secure/malink-gateway-release-private.json
 ```
+
+The publisher derives all three human-facing identifiers from the UTC publish
+time and target commit, for example
+`2026.08.28-020315Z-12b086d` and
+`gateway-2026.08.28-020315Z-12b086d`. This is sortable, collision-resistant,
+and directly traceable to Git. `--release-id`, `--version-name`, and
+`--build-id` remain available only for an intentional compatibility override.
 
 The publisher refuses to replace an immutable release file. Upload the version
 file first and atomically replace `latest.json` last. Server routing and the

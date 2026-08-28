@@ -17,6 +17,8 @@ import {
 } from '@malink/security'
 import {
   assertLocalGitCommit,
+  defaultGatewayReleaseVersion,
+  parseGatewayAgentUpdateArguments,
   publishGatewayAgentUpdate,
 } from '../../scripts/gateway-agent-update-release.js'
 
@@ -29,6 +31,27 @@ afterEach(async () => {
 })
 
 describe('Gateway Agent update publisher', () => {
+  it('derives a sortable timestamp and commit based release version', () => {
+    expect(defaultGatewayReleaseVersion(
+      '12b086dc33867a4a4205d4d1938b694d7634a020',
+      Date.UTC(2026, 7, 28, 2, 3, 15, 987),
+    )).toBe('2026.08.28-020315Z-12b086d')
+  })
+
+  it('uses the timestamp version for omitted CLI identifiers', () => {
+    expect(parseGatewayAgentUpdateArguments([
+      '--out', '/tmp/published',
+      '--commit', '12b086dc33867a4a4205d4d1938b694d7634a020',
+      '--published-at', String(Date.UTC(2026, 7, 28, 2, 3, 15)),
+      '--prompt-file', '/tmp/PROMPT.md',
+      '--private-key', '/tmp/release-key.json',
+    ])).toMatchObject({
+      releaseId: '2026.08.28-020315Z-12b086d',
+      versionName: '2026.08.28-020315Z-12b086d',
+      buildId: 'gateway-2026.08.28-020315Z-12b086d',
+    })
+  })
+
   it('publishes an immutable signed Prompt and a replaceable latest pointer', async () => {
     const root = await temporaryDirectory()
     const keys = await generateDeviceKeyPair()

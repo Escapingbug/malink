@@ -29,7 +29,7 @@ import { GATEWAY_STATE_CATALOG } from '../src/gateway/matrix/stateUpgradeCatalog
 const DEFAULT_REPOSITORY_URL = 'https://github.com/Escapingbug/malink.git'
 const execFileAsync = promisify(execFile)
 
-interface GatewayAgentUpdateReleaseOptions {
+export interface GatewayAgentUpdateReleaseOptions {
   output: string
   releaseId: string
   versionName: string
@@ -39,6 +39,22 @@ interface GatewayAgentUpdateReleaseOptions {
   promptFile: string
   privateKeyFile: string
   publishedAt: number
+}
+
+export function defaultGatewayReleaseVersion(commit: string, publishedAt: number): string {
+  if (!/^[0-9a-f]{40}$/u.test(commit)) {
+    throw new Error('Gateway Agent update commit must be an exact 40-character lowercase Git SHA')
+  }
+  const instant = new Date(publishedAt)
+  if (!Number.isFinite(instant.getTime())) {
+    throw new Error('Gateway Agent update publication time is invalid')
+  }
+  const timestamp = instant.toISOString()
+    .replace(
+      /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.\d{3}Z$/u,
+      '$1.$2.$3-$4$5$6Z',
+    )
+  return `${timestamp}-${commit.slice(0, 7)}`
 }
 
 export async function publishGatewayAgentUpdate(
@@ -150,7 +166,9 @@ async function writeAtomicJson(path: string, value: unknown): Promise<void> {
   await rename(temporary, path)
 }
 
-function parseArguments(argv: readonly string[]): GatewayAgentUpdateReleaseOptions {
+export function parseGatewayAgentUpdateArguments(
+  argv: readonly string[],
+): GatewayAgentUpdateReleaseOptions {
   const values = new Map<string, string>()
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!
@@ -171,13 +189,18 @@ function parseArguments(argv: readonly string[]): GatewayAgentUpdateReleaseOptio
   if (!Number.isSafeInteger(publishedAt) || publishedAt < 0) {
     throw new Error('--published-at must be a non-negative integer')
   }
+  const commit = required('commit')
+  const defaultVersion = defaultGatewayReleaseVersion(commit, publishedAt)
+  const releaseId = values.get('release-id')?.trim() || defaultVersion
+  const versionName = values.get('version-name')?.trim() || releaseId
+  const buildId = values.get('build-id')?.trim() || `gateway-${releaseId}`
   return {
     output: values.get('out') ?? 'dist/gateway-agent-update',
-    releaseId: required('release-id'),
-    versionName: required('version-name'),
-    buildId: required('build-id'),
+    releaseId,
+    versionName,
+    buildId,
     repositoryUrl: values.get('repository-url') ?? DEFAULT_REPOSITORY_URL,
-    commit: required('commit'),
+    commit,
     promptFile: required('prompt-file'),
     privateKeyFile: required('private-key'),
     publishedAt,
@@ -185,6 +208,8 @@ function parseArguments(argv: readonly string[]): GatewayAgentUpdateReleaseOptio
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const result = await publishGatewayAgentUpdate(parseArguments(process.argv.slice(2)))
+  const result = await publishGatewayAgentUpdate(
+    parseGatewayAgentUpdateArguments(process.argv.slice(2)),
+  )
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
 }
