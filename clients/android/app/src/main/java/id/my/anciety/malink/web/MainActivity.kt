@@ -496,18 +496,17 @@ class MainActivity : ComponentActivity() {
     private fun showStaticServiceSettings() {
         val selected = staticServiceStore.selected
         val official = staticServiceStore.official
+        val choices = staticServiceSettingsChoices(
+            selected = selected,
+            official = official,
+            usesCustom = staticServiceStore.usesCustom,
+        )
         AlertDialog.Builder(this)
-            .setTitle("Static service")
-            .setMessage(
-                "Malink loads its static UI and checks APK updates from this service. " +
-                    "Current: ${selected.baseUrl}",
-            )
-            .setItems(
-                arrayOf(
-                    "Official service\n${official.baseUrl}",
-                    "Custom or self-hosted service…",
-                ),
-            ) { _, index ->
+            .setTitle("PWA address")
+            // AlertDialog cannot reliably render a message and a list together:
+            // when both are configured, the platform message panel can replace
+            // the list and leave the user with no selectable address.
+            .setItems(choices) { _, index ->
                 if (index == 0) {
                     confirmStaticService(official, custom = false)
                 } else {
@@ -527,7 +526,7 @@ class MainActivity : ComponentActivity() {
             setSingleLine(true)
         }
         val dialog = AlertDialog.Builder(this)
-            .setTitle("Custom static service")
+            .setTitle("Custom PWA address")
             .setMessage(
                 "Enter the base URL that contains the Malink index page, version.json, " +
                     "and optionally native-updates/.",
@@ -567,7 +566,7 @@ class MainActivity : ComponentActivity() {
             ""
         }
         AlertDialog.Builder(this)
-            .setTitle("Use this static service?")
+            .setTitle("Use this PWA address?")
             .setMessage(
                 "$trustWarning${endpoint.baseUrl}\n\n" +
                     "The UI will reload. Browser storage belongs to each service origin, while " +
