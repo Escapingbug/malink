@@ -376,4 +376,91 @@ describe('DeliveryOutbox', () => {
             vi.useRealTimers()
         }
     })
+
+    it('flushes a terminal progressive edit without waiting for the live-update window', async () => {
+        vi.useFakeTimers()
+        try {
+            const sent: string[] = []
+            const channel = createChannelPort(sent)
+            const outbox = new DeliveryOutbox({
+                channelPort: channel,
+                progressiveEditDebounceMs: 10_000,
+            })
+
+            const live = outbox.edit(1, { text: 'running', format: 'html' }, false, {
+                lane: 'progressive-edit',
+                coalesceKey: 'tool:1',
+            })
+            const terminal = outbox.edit(1, { text: 'completed', format: 'html' }, false, {
+                lane: 'progressive-edit',
+                coalesceKey: 'tool:1',
+                terminal: true,
+                finalSnapshot: true,
+            })
+
+            await vi.advanceTimersByTimeAsync(0)
+
+            await expect(live).resolves.toMatchObject({
+                status: 'skipped',
+                skippedReason: 'coalesced',
+            })
+            await expect(terminal).resolves.toMatchObject({ status: 'edited' })
+            expect(channel.edit).toHaveBeenCalledTimes(1)
+            expect(channel.edit).toHaveBeenCalledWith(1, {
+                text: 'completed',
+                format: 'html',
+            }, {
+                terminal: true,
+                progressive: true,
+                finalSnapshot: true,
+            })
+
+            await vi.advanceTimersByTimeAsync(10_000)
+            expect(channel.edit).toHaveBeenCalledTimes(1)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('does not flush another live tool when a terminal edit wakes the queue', async () => {
+        vi.useFakeTimers()
+        try {
+            const sent: string[] = []
+            const channel = createChannelPort(sent)
+            const outbox = new DeliveryOutbox({
+                channelPort: channel,
+                progressiveEditDebounceMs: 10_000,
+            })
+
+            void outbox.edit(1, { text: 'tool one running', format: 'html' }, false, {
+                lane: 'progressive-edit',
+                coalesceKey: 'tool:1',
+            })
+            const secondLive = outbox.edit(2, { text: 'tool two running', format: 'html' }, false, {
+                lane: 'progressive-edit',
+                coalesceKey: 'tool:2',
+            })
+            const terminal = outbox.edit(1, { text: 'tool one completed', format: 'html' }, false, {
+                lane: 'progressive-edit',
+                coalesceKey: 'tool:1',
+                terminal: true,
+                finalSnapshot: true,
+            })
+
+            await vi.advanceTimersByTimeAsync(0)
+            await expect(terminal).resolves.toMatchObject({ status: 'edited' })
+            expect(sent).toEqual(['edit:tool one completed'])
+
+            await vi.advanceTimersByTimeAsync(9_999)
+            expect(sent).toEqual(['edit:tool one completed'])
+            await vi.advanceTimersByTimeAsync(1)
+            await expect(secondLive).resolves.toMatchObject({ status: 'edited' })
+            expect(sent).toEqual([
+                'edit:tool one completed',
+                'edit:tool two running',
+            ])
+        } finally {
+            vi.useRealTimers()
+        }
+    })
 })

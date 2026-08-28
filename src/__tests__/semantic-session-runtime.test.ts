@@ -1320,6 +1320,116 @@ describe('SemanticSessionRuntime', () => {
         expect(JSON.stringify(toolOperations)).not.toContain('raw-output-')
     })
 
+    it('publishes live tools immediately, coalesces updates, and flushes the final snapshot', async () => {
+        vi.useFakeTimers()
+        try {
+            const operations: DeliveryOperation[] = []
+            let releaseLiveUpdates!: () => void
+            let releaseTurnFinish!: () => void
+            let markLiveUpdatesQueued!: () => void
+            const liveUpdates = new Promise<void>(resolve => {
+                releaseLiveUpdates = resolve
+            })
+            const turnFinish = new Promise<void>(resolve => {
+                releaseTurnFinish = resolve
+            })
+            const liveUpdatesQueued = new Promise<void>(resolve => {
+                markLiveUpdatesQueued = resolve
+            })
+            const channel = {
+                ...createChannel([], [], operations),
+                coalesceAssistantText: true,
+                toolActivityDebounceMs: 10_000,
+            }
+            const provider: AgentProvider = {
+                ...createProvider([]),
+                startQuery: vi.fn((): AgentQueryHandle => ({
+                    events: (async function* () {
+                        yield {
+                            kind: 'tool_use',
+                            toolUseId: 'tool-1',
+                            toolName: 'Bash',
+                            input: { command: 'command-1' },
+                            status: 'running',
+                        } as AgentEvent
+                        await liveUpdates
+                        yield {
+                            kind: 'tool_use',
+                            toolUseId: 'tool-1',
+                            toolName: 'Bash',
+                            input: { command: 'command-2' },
+                            status: 'running',
+                        } as AgentEvent
+                        yield {
+                            kind: 'tool_use',
+                            toolUseId: 'tool-1',
+                            toolName: 'Bash',
+                            input: { command: 'command-3' },
+                            status: 'running',
+                        } as AgentEvent
+                        markLiveUpdatesQueued()
+                        await turnFinish
+                        yield {
+                            kind: 'tool_use',
+                            toolUseId: 'tool-1',
+                            toolName: 'Bash',
+                            input: { command: 'command-4' },
+                            status: 'running',
+                        } as AgentEvent
+                        yield { kind: 'result', status: 'success' } as AgentEvent
+                    })(),
+                    interrupt: vi.fn(),
+                })),
+            }
+            const runtime = new SemanticSessionRuntime({
+                sessionId: 'session-1',
+                cwd: '/repo',
+                provider,
+                providerName: 'test-acp',
+                channelPort: channel,
+                providerSettings: { verboseLevel: 1 },
+            })
+            const toolOperations = () =>
+                operations.filter(operation => operation.message.presentation)
+
+            const running = runtime.dispatch({
+                kind: 'user_message',
+                text: 'run live tools',
+                source: 'channel',
+            })
+            await vi.waitFor(() => expect(toolOperations()).toHaveLength(1))
+            expect(toolOperations()[0]?.message.presentation).toMatchObject({
+                tools: [{ detail: 'command-1', phase: 'updated' }],
+            })
+
+            releaseLiveUpdates()
+            await liveUpdatesQueued
+            expect(toolOperations()).toHaveLength(1)
+
+            await vi.advanceTimersByTimeAsync(9_999)
+            expect(toolOperations()).toHaveLength(1)
+            await vi.advanceTimersByTimeAsync(1)
+            await vi.waitFor(() => expect(toolOperations()).toHaveLength(2))
+            expect(toolOperations()[1]?.message.presentation).toMatchObject({
+                tools: [{ detail: 'command-3', phase: 'updated' }],
+            })
+
+            releaseTurnFinish()
+            await vi.advanceTimersByTimeAsync(0)
+            await running
+
+            expect(toolOperations()).toHaveLength(3)
+            expect(toolOperations()[2]?.message.presentation).toMatchObject({
+                tools: [{ detail: 'command-4', phase: 'completed' }],
+            })
+
+            await vi.advanceTimersByTimeAsync(10_000)
+            expect(toolOperations()).toHaveLength(3)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
     it('suppresses all tool output in quiet mode while preserving assistant text', async () => {
         const sent: ChannelMessage[] = []
         const statuses: SessionStatus[] = []

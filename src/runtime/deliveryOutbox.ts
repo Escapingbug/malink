@@ -73,6 +73,7 @@ export class DeliveryOutbox {
     private pendingControl = 0
     private pendingNormal = 0
     private progressiveEditLoop: Promise<void> | null = null
+    private progressiveEditDebounceWake: (() => void) | null = null
     private progressiveEditBlockedUntil = 0
     private progressiveEdits = new Map<string, ProgressiveEditTask>()
     private lastRateLimitError: string | undefined
@@ -343,6 +344,7 @@ export class DeliveryOutbox {
                 attempts: 0,
                 resolve,
             })
+            if (record.terminal) this.progressiveEditDebounceWake?.()
             this.ensureProgressiveEditLoop()
         })
     }
@@ -369,8 +371,9 @@ export class DeliveryOutbox {
         while (this.progressiveEdits.size > 0) {
             const debounceMs = this.config.progressiveEditDebounceMs ?? 1500
             const hasOnlyTerminalEdits = [...this.progressiveEdits.values()].every(task => task.record.terminal)
+            let terminalWake = false
             if (!hasOnlyTerminalEdits && debounceMs > 0) {
-                await delay(debounceMs)
+                terminalWake = await this.waitForProgressiveEditDebounce(debounceMs)
             }
 
             const blockedForMs = this.progressiveEditBlockedUntil - Date.now()
@@ -378,12 +381,33 @@ export class DeliveryOutbox {
                 await delay(blockedForMs)
             }
 
-            const tasks = [...this.progressiveEdits.values()]
-            this.progressiveEdits.clear()
+            const tasks = [...this.progressiveEdits.values()].filter(task =>
+                !terminalWake || task.record.terminal
+            )
+            for (const task of tasks) this.progressiveEdits.delete(task.key)
             for (const task of tasks) {
                 await this.performProgressiveEdit(task)
             }
         }
+    }
+
+    private waitForProgressiveEditDebounce(delayMs: number): Promise<boolean> {
+        return new Promise(resolve => {
+            let timer: ReturnType<typeof setTimeout>
+            let settled = false
+            const finish = (terminal: boolean) => {
+                if (settled) return
+                settled = true
+                clearTimeout(timer)
+                if (this.progressiveEditDebounceWake === wakeForTerminal) {
+                    this.progressiveEditDebounceWake = null
+                }
+                resolve(terminal)
+            }
+            const wakeForTerminal = () => finish(true)
+            timer = setTimeout(() => finish(false), delayMs)
+            this.progressiveEditDebounceWake = wakeForTerminal
+        })
     }
 
     private async performProgressiveEdit(task: ProgressiveEditTask): Promise<void> {

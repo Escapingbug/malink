@@ -263,8 +263,10 @@ Traffic scales with visible business activity:
 - one Matrix command event per user action;
 - one canonical queued projection and one terminal event for a prompt; there is
   no separate durable `turn.started` transition;
-- one bounded final tool-group snapshot per completed tool group; intermediate
-  tool telemetry stays in the Gateway runtime and never enters Matrix;
+- one bounded tool-group snapshot when current work first becomes visible, at
+  most one coalesced progressive replacement per ten-second window while its
+  visible state changes, and one terminal snapshot when the group completes;
+  raw high-frequency tool telemetry stays inside the Gateway runtime;
 - one snapshot event plus one pointer replacement when the current projection
   materially changes;
 - one workspace snapshot plus one pointer replacement per active project when
