@@ -2398,6 +2398,139 @@ select:focus-visible {
   text-underline-offset: 2px;
 }
 
+.markdown-content img {
+  max-width: 100%;
+}
+
+.artifact-reference {
+  display: inline-flex;
+  max-width: 100%;
+  flex-direction: column;
+  gap: 6px;
+  vertical-align: text-bottom;
+}
+
+.artifact-reference-trigger {
+  width: fit-content;
+  max-width: 100%;
+  padding: 1px 4px;
+  border: 0;
+  border-radius: 5px;
+  background: #f0effb;
+  color: var(--violet-dark);
+  font: inherit;
+  font-weight: 650;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: rgb(86 66 209 / 34%);
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.artifact-reference-trigger:hover {
+  background: #e7e5f8;
+}
+
+.artifact-reference-details {
+  display: grid;
+  width: min(360px, 72vw);
+  max-width: 100%;
+  gap: 4px;
+  padding: 9px;
+  border: 1px solid #dfe2e9;
+  border-radius: 9px;
+  background: #f8f9fb;
+  color: #596175;
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.artifact-reference-details > b {
+  color: #2f3749;
+  font-size: 11px;
+}
+
+.artifact-reference-details > button,
+.artifact-preview-header > button {
+  width: fit-content;
+  padding: 4px 8px;
+  border: 1px solid #d9dce5;
+  border-radius: 6px;
+  background: white;
+  color: #596175;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.artifact-reference-details > button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.artifact-reference-error {
+  color: #b64a54;
+  font-size: 9px;
+}
+
+.artifact-inline-image {
+  display: block;
+  width: auto;
+  max-width: min(100%, 720px);
+  max-height: 520px;
+  margin: 6px 0;
+  border-radius: 9px;
+  object-fit: contain;
+  background: rgb(0 0 0 / 5%);
+}
+
+.artifact-preview {
+  display: grid;
+  width: min(680px, 74vw);
+  max-width: 100%;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 9px;
+  border: 1px solid #dfe2e9;
+  border-radius: 9px;
+  background: #f8f9fb;
+}
+
+.artifact-preview-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.artifact-preview-text {
+  display: block;
+  max-height: 420px;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 7px;
+  background: #282b39;
+  color: #e1e5ef;
+  font-family: var(--font-geist-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.artifact-preview iframe,
+.artifact-preview video {
+  width: 100%;
+  min-height: 360px;
+  border: 0;
+  border-radius: 7px;
+  background: white;
+}
+
+.artifact-preview audio {
+  width: 100%;
+}
+
 .markdown-content table {
   display: block;
   max-width: 100%;

@@ -547,7 +547,10 @@ test("renders safe Markdown with phase-aware, responsive tool focus", async () =
       readFile(new URL("app/globals.css", appRoot), "utf8"),
     ]);
 
-  assert.match(app, /<MarkdownContent content=\{message\.text \?\? ""\}/);
+  assert.match(
+    app,
+    /<MarkdownContent[\s\S]*?content=\{message\.text \?\? ""\}[\s\S]*?artifactReferences=\{artifactReferences\}[\s\S]*?onMaterializeArtifact=/,
+  );
   assert.match(
     app,
     /<ToolActivityCard[\s\S]*?group=\{message\.toolGroup\}[\s\S]*?fullText=\{fullToolTranscript\(message\.text\)\}[\s\S]*?live=\{liveToolMessage\?\.id === message\.id\}/,
@@ -562,6 +565,11 @@ test("renders safe Markdown with phase-aware, responsive tool focus", async () =
   assert.match(markdown, /rel="noopener noreferrer"/);
   assert.match(markdown, /MarkdownCodeBlock/);
   assert.match(markdown, /navigator\.clipboard\.writeText/);
+  assert.match(markdown, /url\.startsWith\(ARTIFACT_SCHEME\)/);
+  assert.match(markdown, /The file changed\. Review the updated size and confirm again\./);
+  assert.match(markdown, /connection\.downloadAttachment\(attachment\)/);
+  assert.match(styles, /\.artifact-reference-details\s*\{/);
+  assert.match(styles, /\.artifact-inline-image\s*\{/);
   assert.match(toolGroup, /aria-expanded=\{expanded\}/);
   assert.match(toolGroup, /toolStages\(group\.tools\)/);
   assert.match(toolGroup, /Diagnostics · Raw transcript/);

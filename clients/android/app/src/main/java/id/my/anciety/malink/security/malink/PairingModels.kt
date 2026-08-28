@@ -73,6 +73,7 @@ enum class PairingOperation(val wireName: String) {
     PROMPT("prompt"),
     CANCEL("cancel"),
     DECISION("decision"),
+    ARTIFACT_MATERIALIZE("artifact.materialize"),
     SESSION_SETTINGS("session.settings"),
     SESSION_CREATE("session.create"),
     PROJECT_CREATE("project.create"),

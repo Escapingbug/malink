@@ -76,7 +76,7 @@ describe('MatrixMlp3CommandAuthorizer', () => {
     )).resolves.toMatchObject({ claim: { kind: 'duplicate' } })
   })
 
-  it('uses the existing device-invite grant for Gateway enrollment', async () => {
+  it('uses the existing device-invite grant for current ordinary operations', async () => {
     const keys = await generateDeviceKeyPair()
     const journal = new FileMlp3CommandJournal(
       join(await mkdtemp(join(tmpdir(), 'malink-v3-gateway-auth-')), 'journal.jsonl'),
@@ -117,6 +117,33 @@ describe('MatrixMlp3CommandAuthorizer', () => {
       'project-1',
     )).resolves.toMatchObject({
       command: { operation: 'gateway.enrollment.invitation.create' },
+      claim: { kind: 'accepted' },
+    })
+
+    const artifactCommand = await signMlp3Command({
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'artifact-materialize-command-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      deviceId: 'device-1',
+      certificateId: 'certificate-1',
+      createdAt: 2,
+      operation: 'artifact.materialize',
+      payload: {
+        operation: 'artifact.materialize',
+        referenceId: 'reference-1',
+        expectedStatRevision: 'revision-1',
+      },
+    }, keys.privateKey, keys.keyId)
+    await expect(authorizer.authorize(
+      artifactCommand,
+      policy,
+      '!project:example.org',
+      'project-1',
+    )).resolves.toMatchObject({
+      command: { operation: 'artifact.materialize' },
       claim: { kind: 'accepted' },
     })
   })

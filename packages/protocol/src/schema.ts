@@ -211,6 +211,21 @@ export const attachmentSchema = z
 
 export type MalinkAttachment = z.infer<typeof attachmentSchema>
 
+export const artifactReferenceSchema = z
+  .object({
+    id: opaqueId,
+    kind: z.enum(['file', 'image']),
+    name: z.string().min(1).max(1_024),
+    relativePath: z.string().min(1).max(4_096),
+    mimeType: z.string().min(1).max(256),
+    size: z.number().int().nonnegative().max(MAX_MALINK_ATTACHMENT_BYTES),
+    modifiedAt: timestamp,
+    statRevision: opaqueId,
+  })
+  .strict()
+
+export type MalinkArtifactReference = z.infer<typeof artifactReferenceSchema>
+
 export const commandPayloadSchema = z.discriminatedUnion('operation', [
   z
     .object({
@@ -234,6 +249,14 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
       requestId: opaqueId,
       decision: sessionExtensionActionIdSchema,
       totp: z.string().regex(/^\d{6}$/u).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('artifact.materialize'),
+      sessionId: opaqueId,
+      referenceId: opaqueId,
+      expectedStatRevision: opaqueId,
     })
     .strict(),
   z

@@ -17,9 +17,13 @@ import type {
 } from '@/privilege'
 
 export interface ChannelAttachment {
+    /** Stable application identity used by deferred artifact references. */
+    id?: string
     type: 'document' | 'photo'
     path: string
     filename?: string
+    /** A failed eager image upload may fall back to the signed lazy reference. */
+    optionalArtifact?: boolean
 }
 
 export type ChannelToolCategory =

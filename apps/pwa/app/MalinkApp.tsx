@@ -15,11 +15,13 @@ import {
   MAX_MALINK_ATTACHMENTS,
   MAX_MALINK_ATTACHMENT_BYTES,
   MAX_MALINK_PROMPT_ATTACHMENT_BYTES,
+  artifactReferenceSchema,
   encodePairingLink,
   providerHistoryMessageSchema,
   providerSessionEntrySchema,
   gatewayUpdateStatusSchema,
   type MalinkAttachment,
+  type MalinkArtifactReference,
   type CommandPayload,
   type GatewayUpdateStatus,
   type ProviderHistoryMessage,
@@ -208,6 +210,7 @@ import {
   type OptimisticMessageReference,
 } from "./chatMessages";
 import {
+  createArtifactMaterializeCommandPayload,
   createCancelCommandPayload,
   createPromptCommandPayload,
 } from "./commandPayloads";
@@ -8103,6 +8106,44 @@ function MalinkAppRuntime() {
     }
   }
 
+  async function materializeArtifact(
+    sessionId: string,
+    reference: MalinkArtifactReference,
+  ): Promise<"materialized" | "changed"> {
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand(
+        createArtifactMaterializeCommandPayload(
+          sessionId,
+          reference.id,
+          reference.statRevision,
+        ),
+        activeWorkspace?.projectId,
+        { propagateFailure: true },
+      );
+      if (!sent) throw new Error("The referenced file request was not queued.");
+      commandId = sent.commandId;
+      const completion = await waitForCommandCompletion(sent.completion, 30 * 60_000);
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message ?? "The referenced file could not be prepared.",
+        );
+      }
+      const result = completion.result;
+      return result
+        && typeof result === "object"
+        && !Array.isArray(result)
+        && result.status === "changed"
+        ? "changed"
+        : "materialized";
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+    }
+  }
+
   async function decidePermission(
     message: ChatMessage,
     decision: string,
@@ -9201,6 +9242,10 @@ function MalinkAppRuntime() {
               );
             }
             const message = item.message;
+            const artifactReferences = artifactReferencesFromRaw(message.raw);
+            const artifactAttachmentIds = new Set(
+              artifactReferences.map(reference => reference.id),
+            );
             const isToolFocusContext =
               toolFocus?.contextMessage?.id === message.id;
             const isToolFocusSource =
@@ -9465,14 +9510,24 @@ function MalinkAppRuntime() {
                     {result && <TurnResultState outcome={result.outcome} />}
                   </span>
                   {message.format === "markdown" || !message.format ? (
-                    <MarkdownContent content={message.text ?? ""} />
+                    <MarkdownContent
+                      content={message.text ?? ""}
+                      artifactReferences={artifactReferences}
+                      attachments={message.attachments}
+                      connection={malinkClientRef.current}
+                      onMaterializeArtifact={message.sessionId
+                        ? reference => materializeArtifact(message.sessionId!, reference)
+                        : undefined}
+                    />
                   ) : (
                     <p className="message-copy">
                       {message.text}
                     </p>
                   )}
                   <AttachmentList
-                    attachments={message.attachments}
+                    attachments={message.attachments?.filter(
+                      attachment => !artifactAttachmentIds.has(attachment.id),
+                    )}
                     connection={malinkClientRef.current}
                   />
                   <time>{message.time}</time>
@@ -10285,6 +10340,9 @@ function commandNoticeFor(payload: CommandPayload): {
   if (payload.operation === "prompt") {
     return { key: "composer:send", scope: "composer" };
   }
+  if (payload.operation === "artifact.materialize") {
+    return { key: `artifact:${payload.referenceId}`, scope: "session" };
+  }
   if (payload.operation.startsWith("project.")) {
     return {
       key: `project:${payload.operation.slice("project.".length)}`,
@@ -10298,6 +10356,16 @@ function commandNoticeFor(payload: CommandPayload): {
     };
   }
   return { key: `composer:${payload.operation}`, scope: "composer" };
+}
+
+function artifactReferencesFromRaw(
+  raw: Record<string, unknown> | undefined,
+): MalinkArtifactReference[] {
+  if (!Array.isArray(raw?.artifactReferences)) return [];
+  return raw.artifactReferences.flatMap(value => {
+    const parsed = artifactReferenceSchema.safeParse(value);
+    return parsed.success ? [parsed.data] : [];
+  });
 }
 
 function agentLifecycleFailureText(
@@ -10557,6 +10625,8 @@ function describeConflictedAction(payload: CommandPayload): string {
       return "The cancel action";
     case "decision":
       return `The ${payload.decision.replaceAll("_", " ")} permission decision`;
+    case "artifact.materialize":
+      return "The referenced file request";
     case "session.settings":
       return "The session settings change";
     case "session.create":

@@ -5,6 +5,7 @@ import { gatewayEnrollmentPendingSchema } from './gateway-enrollment.js'
 import { gatewayUpdateStatusSchema } from './gateway-release.js'
 import {
   attachmentSchema,
+  artifactReferenceSchema,
   jsonValueSchema,
   sessionExtensionActionIdSchema,
   sessionExtensionBindingSchema,
@@ -257,6 +258,21 @@ const decisionAnswerPayloadSchema = z
     totp: z.string().regex(/^\d{6}$/u).optional(),
   })
   .strict()
+const artifactMaterializePayloadSchema = z
+  .object({
+    operation: z.literal('artifact.materialize'),
+    referenceId: opaqueId,
+    expectedStatRevision: opaqueId,
+  })
+  .strict()
+const artifactMaterializationUiSchema = z
+  .object({
+    kind: z.literal('artifact_materialization'),
+    version: z.literal(1),
+    referenceId: opaqueId,
+    status: z.enum(['materialized', 'changed']),
+  })
+  .strict()
 const sessionUpdatePayloadSchema = z
   .object({ operation: z.literal('session.update'), patch: sessionSettingsPatchSchema })
   .strict()
@@ -367,6 +383,7 @@ export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   promptSubmitPayloadSchema,
   turnCancelPayloadSchema,
   decisionAnswerPayloadSchema,
+  artifactMaterializePayloadSchema,
   sessionUpdatePayloadSchema,
   sessionLifecyclePayloadSchema,
   projectCreatePayloadSchema,
@@ -455,6 +472,11 @@ export const mlp3CommandSchema = z.union([
     ...sessionCommandCommon,
     operation: z.literal('decision.answer'),
     payload: decisionAnswerPayloadSchema,
+  }).strict(),
+  z.object({
+    ...sessionCommandCommon,
+    operation: z.literal('artifact.materialize'),
+    payload: artifactMaterializePayloadSchema,
   }).strict(),
   z.object({
     ...sessionCommandCommon,
@@ -666,6 +688,7 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       projection: sessionProjectionSchema,
       ui: jsonValueSchema.optional(),
       attachments: z.array(attachmentSchema).max(10).optional(),
+      artifactReferences: z.array(artifactReferenceSchema).max(10).optional(),
     })
     .strict()
     .superRefine((value, context) => {
@@ -685,6 +708,46 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
           path: ['partIndex'],
           message: 'Message part index must be smaller than part count',
         })
+      }
+      if (
+        value.ui
+        && typeof value.ui === 'object'
+        && !Array.isArray(value.ui)
+        && value.ui.kind === 'artifact_materialization'
+      ) {
+        const marker = artifactMaterializationUiSchema.safeParse(value.ui)
+        if (!marker.success) {
+          context.addIssue({
+            code: 'custom',
+            path: ['ui'],
+            message: 'Artifact materialization UI metadata is invalid',
+          })
+          return
+        }
+        if (!value.artifactReferences?.some(item => item.id === marker.data.referenceId)) {
+          context.addIssue({
+            code: 'custom',
+            path: ['artifactReferences'],
+            message: 'Artifact materialization must include its referenced stat metadata',
+          })
+        }
+        const hasAttachment = value.attachments?.some(
+          attachment => attachment.id === marker.data.referenceId,
+        ) === true
+        if (marker.data.status === 'materialized' && !hasAttachment) {
+          context.addIssue({
+            code: 'custom',
+            path: ['attachments'],
+            message: 'A materialized artifact must include its attachment descriptor',
+          })
+        }
+        if (marker.data.status === 'changed' && hasAttachment) {
+          context.addIssue({
+            code: 'custom',
+            path: ['attachments'],
+            message: 'A changed artifact must require confirmation before attachment delivery',
+          })
+        }
       }
     }),
   z

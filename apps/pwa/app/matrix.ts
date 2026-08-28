@@ -643,7 +643,11 @@ async function createSignedCommand(
   reservation: CommandReservation,
   sequenceEpoch: string,
 ): Promise<SignedCommand> {
-  if (payload.operation === "project.create" || payload.operation === "gateway.profile.update") {
+  if (
+    payload.operation === "project.create"
+    || payload.operation === "gateway.profile.update"
+    || payload.operation === "artifact.materialize"
+  ) {
     throw new Error(`${fallbackBody(payload)} requires the Matrix MLP/3 transport.`);
   }
   const config = normalizeMatrixConfig(configInput);
@@ -5406,6 +5410,8 @@ function fallbackBody(payload: CommandPayload): string {
       return "Stop the current agent task";
     case "decision":
       return `Permission decision: ${payload.decision}`;
+    case "artifact.materialize":
+      return "Prepare a referenced file for download";
     case "session.settings":
       return "Update agent session settings";
     case "session.create":

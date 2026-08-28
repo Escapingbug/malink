@@ -12,6 +12,7 @@ enum class CommandOperation(val wireName: String) {
     PROMPT("prompt"),
     CANCEL("cancel"),
     DECISION("decision"),
+    ARTIFACT_MATERIALIZE("artifact.materialize"),
     SESSION_SETTINGS("session.settings"),
     SESSION_CREATE("session.create"),
     PROJECT_CREATE("project.create"),
@@ -95,6 +96,14 @@ data class DecisionCommandPayload(
 
     override fun toString(): String =
         "DecisionCommandPayload(sessionId=$sessionId, requestId=$requestId, decision=$decision, totp=<redacted>)"
+}
+
+data class ArtifactMaterializeCommandPayload(
+    override val sessionId: String,
+    val referenceId: String,
+    val expectedStatRevision: String,
+) : ValidatedCommandPayload {
+    override val operation = CommandOperation.ARTIFACT_MATERIALIZE
 }
 
 enum class CommandPermissionMode(val wireName: String) {
@@ -270,6 +279,7 @@ object CommandPayloadValidator {
             CommandOperation.PROMPT -> validatePrompt(value)
             CommandOperation.CANCEL -> validateCancel(value)
             CommandOperation.DECISION -> validateDecision(value)
+            CommandOperation.ARTIFACT_MATERIALIZE -> validateArtifactMaterialize(value)
             CommandOperation.SESSION_SETTINGS -> validateSessionSettings(value)
             CommandOperation.SESSION_CREATE -> validateSessionCreate(value)
             CommandOperation.PROJECT_CREATE -> validateProjectCreate(value)
@@ -342,6 +352,17 @@ object CommandPayloadValidator {
             requestId = value.requiredOpaqueId("requestId"),
             decision = decision,
             totp = totp,
+        )
+    }
+
+    private fun validateArtifactMaterialize(value: JsonObject): ArtifactMaterializeCommandPayload {
+        value.requireExactKeys(
+            required = setOf("operation", "sessionId", "referenceId", "expectedStatRevision"),
+        )
+        return ArtifactMaterializeCommandPayload(
+            sessionId = value.requiredOpaqueId("sessionId"),
+            referenceId = value.requiredOpaqueId("referenceId"),
+            expectedStatRevision = value.requiredOpaqueId("expectedStatRevision"),
         )
     }
 

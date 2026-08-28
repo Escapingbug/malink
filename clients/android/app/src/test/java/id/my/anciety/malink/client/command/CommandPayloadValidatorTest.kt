@@ -33,6 +33,12 @@ class CommandPayloadValidatorTest {
                 put("totp", "123456")
             },
             buildJsonObject {
+                put("operation", "artifact.materialize")
+                put("sessionId", "session-1")
+                put("referenceId", "reference-1")
+                put("expectedStatRevision", "revision-1")
+            },
+            buildJsonObject {
                 put("operation", "session.settings")
                 put("sessionId", "session-1")
                 put("model", "gpt-5")
@@ -108,9 +114,10 @@ class CommandPayloadValidatorTest {
             "123456",
             (CommandPayloadValidator.validate(payloads[2]) as DecisionCommandPayload).totp,
         )
-        assertTrue(CommandPayloadValidator.validate(payloads[4]) is SessionCreateCommandPayload)
-        assertTrue(CommandPayloadValidator.validate(payloads[5]) is ProjectCreateCommandPayload)
-        assertTrue(CommandPayloadValidator.validate(payloads[10]) is SessionLifecycleCommandPayload)
+        assertTrue(CommandPayloadValidator.validate(payloads[3]) is ArtifactMaterializeCommandPayload)
+        assertTrue(CommandPayloadValidator.validate(payloads[5]) is SessionCreateCommandPayload)
+        assertTrue(CommandPayloadValidator.validate(payloads[6]) is ProjectCreateCommandPayload)
+        assertTrue(CommandPayloadValidator.validate(payloads[11]) is SessionLifecycleCommandPayload)
     }
 
     @Test

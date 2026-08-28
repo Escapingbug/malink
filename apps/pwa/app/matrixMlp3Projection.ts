@@ -871,6 +871,17 @@ function requireUnique(values: string[], name: string): void {
 function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
   const commandId = event.causationCommandId;
   if (!commandId) return null;
+  if (
+    event.payload.type === "assistant.message"
+    && artifactMaterializationResult(event.payload.ui)
+  ) {
+    return {
+      commandId,
+      outcome: "succeeded",
+      ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      event,
+    };
+  }
   switch (event.payload.type) {
     case "session.ready":
     case "session.updated":
@@ -903,6 +914,21 @@ function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
     default:
       return null;
   }
+}
+
+function artifactMaterializationResult(
+  value: unknown,
+): { status: "materialized" | "changed"; referenceId: string } | null {
+  const marker = record(value);
+  const status = marker?.status;
+  const referenceId = marker?.referenceId;
+  return marker?.kind === "artifact_materialization"
+    && marker.version === 1
+    && (status === "materialized" || status === "changed")
+    && typeof referenceId === "string"
+    && referenceId.length > 0
+    ? { status, referenceId }
+    : null;
 }
 
 function titleFromPrompt(text: string): string {

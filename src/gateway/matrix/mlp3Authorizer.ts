@@ -36,6 +36,7 @@ const CURRENT_WORKSPACE_MEMBER_OPERATIONS = [
   'prompt.submit',
   'turn.cancel',
   'decision.answer',
+  'artifact.materialize',
   'session.update',
   'session.set_lifecycle',
   'project.create',
@@ -137,6 +138,7 @@ function v3AllowedOperations(
       case 'prompt': result.add('prompt.submit'); break
       case 'cancel': result.add('turn.cancel'); break
       case 'decision': result.add('decision.answer'); break
+      case 'artifact.materialize': result.add('artifact.materialize'); break
       case 'session.settings':
         result.add('session.update')
         result.add('notification.subscribe')

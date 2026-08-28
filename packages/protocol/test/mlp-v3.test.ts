@@ -8,6 +8,85 @@ import {
 import { matrixGatewayCapabilitiesSchema } from '../src/matrix-native.js'
 
 describe('Malink Protocol v3 (MLP/3)', () => {
+  it('models lazy artifact materialization and bounded assistant stat metadata', () => {
+    const command = mlp3CommandSchema.parse({
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'artifact-command-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      deviceId: 'device-1',
+      certificateId: 'certificate-1',
+      createdAt: 1,
+      operation: 'artifact.materialize',
+      payload: {
+        operation: 'artifact.materialize',
+        referenceId: 'reference-1',
+        expectedStatRevision: 'revision-1',
+      },
+    })
+    expect(command.payload).toMatchObject({ referenceId: 'reference-1' })
+
+    const event = mlp3EventSchema.parse({
+      kind: 'malink.event',
+      version: 3,
+      eventId: 'artifact-event-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      causationCommandId: 'artifact-command-1',
+      occurredAt: 2,
+      payload: {
+        type: 'assistant.message',
+        messageId: 'message-1',
+        messageVersion: 1,
+        body: '[report](malink-artifact:reference-1)',
+        format: 'markdown',
+        final: true,
+        projection: {
+          title: 'Session',
+          lifecycle: 'active',
+          activity: 'idle',
+          updatedAt: 2,
+          stateVersion: 1,
+        },
+        artifactReferences: [{
+          id: 'reference-1',
+          kind: 'file',
+          name: 'report.txt',
+          relativePath: 'report.txt',
+          mimeType: 'text/plain',
+          size: 12,
+          modifiedAt: 1,
+          statRevision: 'revision-1',
+        }],
+        ui: {
+          kind: 'artifact_materialization',
+          version: 1,
+          referenceId: 'reference-1',
+          status: 'changed',
+        },
+      },
+    })
+    expect(event.payload).toMatchObject({
+      artifactReferences: [{ id: 'reference-1', size: 12 }],
+    })
+    expect(() => mlp3EventSchema.parse({
+      ...event,
+      eventId: 'artifact-event-invalid',
+      payload: {
+        ...event.payload,
+        ui: {
+          kind: 'artifact_materialization',
+          version: 1,
+          referenceId: 'reference-1',
+          status: 'materialized',
+        },
+      },
+    })).toThrow('must include its attachment descriptor')
+  })
+
   it('uses a client-allocated session id without sequence or revision fields', () => {
     const command = mlp3CommandSchema.parse({
       kind: 'malink.command',

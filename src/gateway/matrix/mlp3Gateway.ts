@@ -65,6 +65,10 @@ import {
 } from './mlp3Authorizer'
 import { GatewayMlp3ContentLayer } from './mlp3Content'
 import { FileNativeClientReleaseStore } from './fileNativeClientReleaseStore'
+import {
+  FileMlp3ArtifactStore,
+  type ArtifactMessageContext,
+} from './fileMlp3ArtifactStore'
 import { gatewayProjectIdentity } from './project'
 import { materializePromptInput } from './media'
 import { SessionExtensionRegistry } from '@/runtime/sessionExtensions'
@@ -245,6 +249,7 @@ export class MatrixMlp3GatewayRunner {
   private readonly journal: FileMlp3CommandJournal
   private readonly runtimeState: FileMlp3RuntimeStateStore
   private readonly nativeClientReleases: FileNativeClientReleaseStore
+  private readonly artifacts: FileMlp3ArtifactStore
   private readonly authorizer: MatrixMlp3CommandAuthorizer
   private readonly content: GatewayMlp3ContentLayer
   private readonly extensions: SessionExtensionRegistry
@@ -285,6 +290,11 @@ export class MatrixMlp3GatewayRunner {
     this.nativeClientReleases = new FileNativeClientReleaseStore(
       `${config.replayLedgerPath}.v3-client-releases.json`,
       config.gatewayId,
+    )
+    this.artifacts = new FileMlp3ArtifactStore(
+      `${config.replayLedgerPath}.v3-artifacts.json`,
+      config.gatewayId,
+      { onLog: dependencies.onLog },
     )
     this.authorizer = new MatrixMlp3CommandAuthorizer(config.gatewayId, this.journal)
     this.content = new GatewayMlp3ContentLayer(
@@ -369,6 +379,7 @@ export class MatrixMlp3GatewayRunner {
       await this.journal.initialize()
       await this.runtimeState.initialize(this.config.rooms)
       await this.nativeClientReleases.initialize()
+      await this.artifacts.initialize()
       this.publishedClientReleases = await this.nativeClientReleases.releases()
       await this.content.initialize()
       await this.createProjectRuntimes()
@@ -738,6 +749,9 @@ export class MatrixMlp3GatewayRunner {
         return
       case 'decision.answer':
         await this.answerDecision(project, command)
+        return
+      case 'artifact.materialize':
+        await this.materializeArtifact(project, command)
         return
       case 'session.update':
         await this.updateSession(project, command)
@@ -1435,6 +1449,61 @@ export class MatrixMlp3GatewayRunner {
         projection: projection(runtime.record, runtime.activity.phase, this.extensions),
       })
     await this.settleAndDeliver(project, command, resolved, 'succeeded')
+  }
+
+  private async materializeArtifact(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'artifact.materialize'>,
+  ): Promise<void> {
+    const runtime = this.requireActiveSession(project, command.sessionId)
+    const artifactContext: ArtifactMessageContext = {
+      roomId: project.config.roomId,
+      projectId: project.project.projectId,
+      sessionId: runtime.record.id,
+      threadRootEventId: runtime.record.threadRootEventId,
+      cwd: runtime.record.cwd,
+    }
+    const materialized = await this.artifacts.materialize(
+      artifactContext,
+      command.payload.referenceId,
+      command.payload.expectedStatRevision,
+      this.client,
+    )
+    runtime.port.observeMessageVersion(
+      materialized.messageId,
+      materialized.messageVersion,
+    )
+    const event = this.eventFor(
+      project,
+      runtime.record,
+      command,
+      materialized.status === 'changed' ? 'artifact-stat-changed' : 'artifact-materialized',
+      {
+        type: 'assistant.message',
+        messageId: materialized.messageId,
+        messageVersion: materialized.messageVersion,
+        body: materialized.body,
+        format: materialized.format,
+        final: materialized.final,
+        ...(materialized.partIndex === undefined ? {} : { partIndex: materialized.partIndex }),
+        ...(materialized.partCount === undefined ? {} : { partCount: materialized.partCount }),
+        projection: projection(runtime.record, runtime.activity.phase, this.extensions),
+        ui: {
+          kind: 'artifact_materialization',
+          version: 1,
+          referenceId: materialized.referenceId,
+          status: materialized.status,
+        },
+        ...(materialized.attachments.length > 0
+          ? { attachments: materialized.attachments }
+          : {}),
+        artifactReferences: materialized.references,
+      },
+    )
+    await this.settleAndDeliver(project, command, event, 'succeeded', {
+      status: materialized.status,
+      referenceId: materialized.referenceId,
+    })
   }
 
   private async updateSession(
@@ -2239,6 +2308,13 @@ export class MatrixMlp3GatewayRunner {
   ): Mlp3SessionRuntime {
     const activity = { phase: 'idle' as Mlp3SessionProjection['activity'] }
     let runtime: Mlp3SessionRuntime | undefined
+    const artifactContext: ArtifactMessageContext = {
+      roomId: project.config.roomId,
+      projectId: project.project.projectId,
+      sessionId: record.id,
+      threadRootEventId: record.threadRootEventId,
+      cwd: record.cwd,
+    }
     const port = new MatrixMlp3Port({
       contentLayer: this.content,
       transport: this.client,
@@ -2250,6 +2326,12 @@ export class MatrixMlp3GatewayRunner {
       projection: () => projection(record, activity.phase, this.extensions),
       now: () => this.now(),
       onLog: this.dependencies.onLog,
+      artifactReferences: {
+        prepare: (messageId, message) =>
+          this.artifacts.prepare(artifactContext, messageId, message),
+        published: input => this.artifacts.published(artifactContext, input),
+        upload: attachment => this.artifacts.uploadEagerAttachment(this.client, attachment),
+      },
       onStatusChange: status => {
         activity.phase = activityFromStatus(status.activity, status.state)
         if (runtime) runtime.activity.phase = activity.phase

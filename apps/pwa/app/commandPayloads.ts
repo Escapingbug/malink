@@ -10,6 +10,11 @@ type CancelCommandPayload = Extract<
   { operation: "cancel" }
 >;
 
+type ArtifactMaterializeCommandPayload = Extract<
+  CommandPayload,
+  { operation: "artifact.materialize" }
+>;
+
 export function createPromptCommandPayload(
   input: Omit<PromptCommandPayload, "operation">,
 ): PromptCommandPayload {
@@ -29,5 +34,18 @@ export function createCancelCommandPayload(
     operation: "cancel",
     sessionId,
     targetCommandId,
+  };
+}
+
+export function createArtifactMaterializeCommandPayload(
+  sessionId: string,
+  referenceId: string,
+  expectedStatRevision: string,
+): ArtifactMaterializeCommandPayload {
+  return {
+    operation: "artifact.materialize",
+    sessionId,
+    referenceId,
+    expectedStatRevision,
   };
 }
