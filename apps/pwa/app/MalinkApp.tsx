@@ -76,8 +76,8 @@ import {
   findProviderHistorySource,
   findProviderHistorySourceByKey,
   firstMatchingProviderHistorySource,
+  providerHistoryCommandKey,
   providerHistoryRequestKey,
-  providerHistoryRequestMatches,
   type ProviderHistoryRouteIdentity,
   type ProviderHistorySource,
 } from "./providerHistoryRouting";
@@ -1419,8 +1419,12 @@ function MalinkAppRuntime() {
   const providerHistoryLoadIdRef = useRef(0);
   const providerHistoryLoadedProviderRef = useRef<string | null>(null);
   const providerHistoryFocusRef = useRef<ProviderHistoryFocus | null>(null);
-  const providerHistoryPendingCommandRef =
-    useRef<ProviderHistoryPendingCommand | null>(null);
+  const providerHistoryPendingCommandsRef = useRef(
+    new Map<string, ProviderHistoryPendingCommand>(),
+  );
+  const providerHistoryCommandFlightsRef = useRef(
+    new Map<string, Promise<CommandCompletion>>(),
+  );
   const deviceInvitationLifecycleRef = useRef(
     new DeviceInvitationLifecycle<GeneratedDeviceInvitation>(),
   );
@@ -6223,13 +6227,6 @@ function MalinkAppRuntime() {
     activateLocalSession(id);
   }
 
-  function providerHistoryPendingCommandMatches(
-    pending: ProviderHistoryPendingCommand,
-    load: ProviderHistoryLoadState,
-  ): boolean {
-    return providerHistoryRequestMatches(pending, load);
-  }
-
   async function sendOrRecoverProviderHistoryCommand(
     load: ProviderHistoryLoadState,
     payload: Extract<
@@ -6243,22 +6240,18 @@ function MalinkAppRuntime() {
         "The selected computer or project route changed. Choose the source again before loading Provider History.",
       );
     }
-    const pending = providerHistoryPendingCommandRef.current;
+    const requestKey = providerHistoryCommandKey(load);
+    const pending = providerHistoryPendingCommandsRef.current.get(requestKey);
     if (pending) {
-      if (!providerHistoryPendingCommandMatches(pending, load)) {
-        throw new Error(
-          "Retry the previous provider history request before loading a different provider or session.",
-        );
-      }
       const connection = malinkClientRef.current;
       if (!connection || connectionStatus !== "connected") {
         throw new Error("Reconnect to your computer before retrying provider history.");
       }
       const recovered = await connection.recoverCommand(pending.commandId);
-      providerHistoryPendingCommandRef.current = {
+      providerHistoryPendingCommandsRef.current.set(requestKey, {
         ...pending,
         commandId: recovered.commandId,
-      };
+      });
       return recovered;
     }
     const sent = await sendRealCommand(payload, load.projectId);
@@ -6267,7 +6260,7 @@ function MalinkAppRuntime() {
         "Provider history could not be sent. Check the connection notice, then retry.",
       );
     }
-    providerHistoryPendingCommandRef.current = {
+    providerHistoryPendingCommandsRef.current.set(requestKey, {
       commandId: sent.commandId,
       gatewayNodeId: load.gatewayNodeId,
       projectId: load.projectId,
@@ -6276,20 +6269,22 @@ function MalinkAppRuntime() {
       ...(load.providerSessionId === undefined
         ? {}
         : { providerSessionId: load.providerSessionId }),
-    };
+    });
     return sent;
   }
 
   async function finishProviderHistoryCommand(
+    load: ProviderHistoryLoadState,
     sent: MalinkCommandSendResult,
   ): Promise<CommandCompletion> {
     const completion = await waitForCommandCompletion(
       sent.completion,
       PROVIDER_HISTORY_RESULT_TIMEOUT_MS,
     );
-    const pending = providerHistoryPendingCommandRef.current;
+    const requestKey = providerHistoryCommandKey(load);
+    const pending = providerHistoryPendingCommandsRef.current.get(requestKey);
     if (pending?.commandId === sent.commandId) {
-      providerHistoryPendingCommandRef.current = null;
+      providerHistoryPendingCommandsRef.current.delete(requestKey);
     }
     try {
       await malinkClientRef.current?.releaseCommand(sent.commandId);
@@ -6302,6 +6297,30 @@ function MalinkAppRuntime() {
       );
     }
     return completion;
+  }
+
+  async function executeProviderHistoryCommand(
+    load: ProviderHistoryLoadState,
+    payload: Extract<
+      CommandPayload,
+      { operation: "provider.sessions.list" | "provider.session.inspect" }
+    >,
+  ): Promise<CommandCompletion> {
+    const requestKey = providerHistoryCommandKey(load);
+    const currentFlight = providerHistoryCommandFlightsRef.current.get(requestKey);
+    if (currentFlight) return currentFlight;
+    const flight = (async () => {
+      const sent = await sendOrRecoverProviderHistoryCommand(load, payload);
+      return finishProviderHistoryCommand(load, sent);
+    })();
+    providerHistoryCommandFlightsRef.current.set(requestKey, flight);
+    try {
+      return await flight;
+    } finally {
+      if (providerHistoryCommandFlightsRef.current.get(requestKey) === flight) {
+        providerHistoryCommandFlightsRef.current.delete(requestKey);
+      }
+    }
   }
 
   async function openProviderHistory(request: OpenProviderHistoryRequest = {}) {
@@ -6454,11 +6473,10 @@ function MalinkAppRuntime() {
     setProviderHistoryLoad(load);
     let focusedSession: ProviderSessionEntry | null = null;
     try {
-      const sent = await sendOrRecoverProviderHistoryCommand(
+      const completion = await executeProviderHistoryCommand(
         load,
         { operation: "provider.sessions.list", provider },
       );
-      const completion = await finishProviderHistoryCommand(sent);
       if (completion.outcome !== "succeeded") {
         throw new Error(completion.error?.message || "Provider history could not be loaded.");
       }
@@ -6506,7 +6524,7 @@ function MalinkAppRuntime() {
 
   async function inspectProviderHistorySession(session: ProviderSessionEntry) {
     const provider = providerHistoryProviderRef.current;
-    if (!provider || providerHistoryLoadRef.current) return;
+    if (!provider) return;
     setProviderHistorySelected(session);
     setProviderHistoryMessages([]);
     setProviderHistoryError(null);
@@ -6521,7 +6539,7 @@ function MalinkAppRuntime() {
     providerHistoryLoadRef.current = load;
     setProviderHistoryLoad(load);
     try {
-      const sent = await sendOrRecoverProviderHistoryCommand(
+      const completion = await executeProviderHistoryCommand(
         load,
         {
           operation: "provider.session.inspect",
@@ -6529,7 +6547,6 @@ function MalinkAppRuntime() {
           providerSessionId: session.sessionId,
         },
       );
-      const completion = await finishProviderHistoryCommand(sent);
       if (completion.outcome !== "succeeded") {
         throw new Error(completion.error?.message || "Provider session could not be inspected.");
       }

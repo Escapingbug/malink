@@ -138,7 +138,6 @@ function ProviderHistoryDialogContent({
               <select
                 ref={sourceRef}
                 value={sourceKey}
-                disabled={loading !== null}
                 onChange={(event) => onSourceChange(event.target.value)}
               >
                 {sourceGroups.map(group => (
@@ -157,7 +156,6 @@ function ProviderHistoryDialogContent({
               <select
                 ref={providerRef}
                 value={provider}
-                disabled={loading !== null}
                 onChange={(event) => onProviderChange(event.target.value)}
               >
                 {providers.map(option => (
@@ -197,7 +195,10 @@ function ProviderHistoryDialogContent({
                       key={session.sessionId}
                       className={selected?.sessionId === session.sessionId ? "selected" : ""}
                       onClick={() => onInspect(session)}
-                      disabled={loading !== null}
+                      disabled={
+                        loading === "session"
+                        && selected?.sessionId === session.sessionId
+                      }
                     >
                       <strong>{session.title}</strong>
                       <small>

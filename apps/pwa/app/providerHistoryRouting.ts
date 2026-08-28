@@ -32,6 +32,18 @@ export function providerHistoryRequestKey(
   return `${providerHistorySourceKey(source)}\u0000${provider}`;
 }
 
+export function providerHistoryCommandKey(
+  request: ProviderHistoryRequestIdentity,
+): string {
+  return JSON.stringify([
+    request.gatewayNodeId,
+    request.projectId,
+    request.provider,
+    request.kind,
+    request.providerSessionId ?? null,
+  ]);
+}
+
 export function buildProviderHistorySources(input: {
   workspaces: readonly GatewayWorkspaceState[];
   projectOwners: ReadonlyMap<string, GatewayProjectOwner>;

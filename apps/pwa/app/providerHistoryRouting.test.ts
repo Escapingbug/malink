@@ -4,6 +4,7 @@ import { gatewayProjectOwner } from "./projectCatalog";
 import {
   buildProviderHistorySources,
   firstMatchingProviderHistorySource,
+  providerHistoryCommandKey,
   providerHistoryRequestMatches,
 } from "./providerHistoryRouting";
 
@@ -151,5 +152,32 @@ describe("Provider History routing", () => {
       ...request,
       projectId: "project-web",
     })).toBe(false);
+  });
+
+  it("keeps pending commands distinct across Project, Provider, and session", () => {
+    const request = {
+      gatewayNodeId: "gateway-office",
+      projectId: "project-api",
+      provider: "codex",
+      kind: "sessions" as const,
+    };
+    const keys = [
+      providerHistoryCommandKey(request),
+      providerHistoryCommandKey({ ...request, projectId: "project-web" }),
+      providerHistoryCommandKey({ ...request, gatewayNodeId: "gateway-home" }),
+      providerHistoryCommandKey({ ...request, provider: "cursor" }),
+      providerHistoryCommandKey({
+        ...request,
+        kind: "session",
+        providerSessionId: "session-one",
+      }),
+      providerHistoryCommandKey({
+        ...request,
+        kind: "session",
+        providerSessionId: "session-two",
+      }),
+    ];
+
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });

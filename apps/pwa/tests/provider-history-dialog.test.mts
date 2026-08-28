@@ -45,8 +45,55 @@ test("keeps provider history dismissible while sessions load", () => {
   )?.[0];
   assert.ok(closeButton);
   assert.doesNotMatch(closeButton, /disabled/);
+  const selects = html.match(/<select\b[^>]*>/g) ?? [];
+  assert.equal(selects.length, 2);
+  assert.ok(selects.every(select => !select.includes("disabled")));
   assert.match(html, /Loading provider sessions in the background/);
   assert.match(html, /You can close this window while sessions load/);
+});
+
+test("keeps other provider sessions selectable while one session loads", () => {
+  const sessions = [{
+    sessionId: "session-one",
+    title: "Session one",
+    updatedAt: 200,
+  }, {
+    sessionId: "session-two",
+    title: "Session two",
+    updatedAt: 100,
+  }];
+  const html = renderToStaticMarkup(createElement(ProviderHistoryDialog, {
+    open: true,
+    sourceKey: defaultSource.key,
+    sources: [defaultSource],
+    provider: "codex",
+    providers: [{
+      id: "codex",
+      name: "Codex",
+      canListSessions: true,
+      canInspectSessions: true,
+    }],
+    sessions,
+    selected: sessions[0],
+    messages: [],
+    loading: "session",
+    error: null,
+    onClose() {},
+    onSourceChange() {},
+    onProviderChange() {},
+    onInspect() {},
+    onRetry() {},
+    onOpenManaged() {},
+    onContinue() {},
+  }));
+
+  const buttons = html.match(/<button\b[^>]*>[\s\S]*?<\/button>/g) ?? [];
+  const selectedButton = buttons.find(button => button.includes("Session one"));
+  const otherButton = buttons.find(button => button.includes("Session two"));
+  assert.ok(selectedButton);
+  assert.ok(otherButton);
+  assert.match(selectedButton, /disabled/);
+  assert.doesNotMatch(otherButton, /disabled/);
 });
 
 test("keeps the provider history retry action after a background failure", () => {

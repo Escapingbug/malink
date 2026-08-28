@@ -848,7 +848,8 @@ test("pairs a Gateway without exposing Matrix fingerprints and signs strict comm
     app,
     /waitForCommandCompletion\([\s\S]*sent\.completion,[\s\S]*PROVIDER_HISTORY_RESULT_TIMEOUT_MS/,
   );
-  assert.match(app, /providerHistoryPendingCommandRef/);
+  assert.match(app, /providerHistoryPendingCommandsRef/);
+  assert.match(app, /providerHistoryCommandFlightsRef/);
   assert.match(app, /recoverCommand\(pending\.commandId\)/);
   assert.match(app, /mobile-history-button\$\{providerHistoryLoad \? " is-loading"/);
   assert.match(app, /connection\.recoverCommand\(sent\.commandId\)/);
