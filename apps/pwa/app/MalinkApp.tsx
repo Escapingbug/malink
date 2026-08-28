@@ -306,6 +306,10 @@ import {
 import { injectedNativeBridgePort } from "./client/native/NativeRpcBridge";
 import { publicTrustFromWeb } from "./client/web/WebMalinkClient";
 import {
+  NATIVE_UPDATE_POLL_INTERVAL_MS,
+  shouldPollNativeUpdateStatus,
+} from "./nativeUpdatePolling";
+import {
   clearMessageHistoryScope,
   clearSessionMessageHistory,
   deleteMessageHistory,
@@ -1195,6 +1199,8 @@ function MalinkAppRuntime() {
     useState<NativeUpdateStatus | null>(null);
   const [nativeUpdateBusy, setNativeUpdateBusy] = useState(false);
   const nativeUpdateBusyRef = useRef(false);
+  const nativeUpdatePollInFlightRef = useRef(false);
+  const nativeUpdateStateRef = useRef<NativeUpdateStatus | null>(null);
   const [pageLinkCopyBusy, setPageLinkCopyBusy] = useState(false);
   const [pwaUpdateState, setPwaUpdateState] = useState<PwaUpdateState>({
     phase: "current",
@@ -2781,13 +2787,57 @@ function MalinkAppRuntime() {
     // has no saved Workspace authorization.
     void advanceNativeAppUpdate({ installReady: false })
       .then((status) => {
-        if (active) setNativeUpdateState(status);
+        if (active) {
+          nativeUpdateStateRef.current = status;
+          setNativeUpdateState(status);
+        }
       })
       .catch(() => undefined);
     return () => {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!settingsOpen || !injectedNativeBridgePort()) return;
+    let active = true;
+    const startedAt = Date.now();
+    const poll = async () => {
+      if (
+        !active ||
+        nativeUpdateBusyRef.current ||
+        nativeUpdatePollInFlightRef.current ||
+        !shouldPollNativeUpdateStatus(
+          nativeUpdateStateRef.current,
+          Date.now() - startedAt,
+        )
+      ) return;
+      const connection = malinkClientRef.current;
+      // A persistent native client may be acquiring the only WebView bridge.
+      // Wait until it is attached, then read through that client instead of
+      // queuing a short lease behind a connection that may live indefinitely.
+      if (!connection && matrixStartupRef.current !== null) return;
+      nativeUpdatePollInFlightRef.current = true;
+      try {
+        const status = await requestNativeUpdateStatus(connection, false);
+        if (active) {
+          nativeUpdateStateRef.current = status;
+          setNativeUpdateState(status);
+        }
+      } catch {
+        // The manual action remains available. A transient bridge handoff must
+        // not turn an optional status refresh into a connection error.
+      } finally {
+        nativeUpdatePollInFlightRef.current = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), NATIVE_UPDATE_POLL_INTERVAL_MS);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [settingsOpen]);
 
   useEffect(() => {
     const route = pairingRouteFromUrl(window.location.href);
@@ -5536,20 +5586,11 @@ function MalinkAppRuntime() {
     nativeUpdateBusyRef.current = true;
     setNativeUpdateBusy(true);
     try {
-      const connection = malinkClientRef.current;
-      let status: NativeUpdateStatus;
-      if (connection?.nativeUpdateStatus) {
-        status = await connection.nativeUpdateStatus();
-        if (
-          installReady &&
-          connection.installNativeUpdate &&
-          (status.phase === "ready" || status.phase === "permission_required")
-        ) {
-          status = await connection.installNativeUpdate();
-        }
-      } else {
-        status = await advanceNativeAppUpdate({ installReady });
-      }
+      const status = await requestNativeUpdateStatus(
+        malinkClientRef.current,
+        installReady,
+      );
+      nativeUpdateStateRef.current = status;
       setNativeUpdateState(status);
       if (
         status.phase === "current" &&
@@ -5564,11 +5605,15 @@ function MalinkAppRuntime() {
         );
       }
     } catch {
-      setNativeUpdateState((current) => current ? {
-        ...current,
-        phase: "failed",
-        detailCode: "bridge_request_failed",
-      } : current);
+      setNativeUpdateState((current) => {
+        const failed = current ? {
+          ...current,
+          phase: "failed" as const,
+          detailCode: "bridge_request_failed",
+        } : current;
+        nativeUpdateStateRef.current = failed;
+        return failed;
+      });
       setConnectionError(
         "The native updater did not respond. Restart Malink and try again; if it still fails, export diagnostics.",
       );
@@ -10342,6 +10387,24 @@ function MalinkAppRuntime() {
       />
     </main>
   );
+}
+
+async function requestNativeUpdateStatus(
+  connection: MalinkClient | null,
+  installReady: boolean,
+): Promise<NativeUpdateStatus> {
+  if (!connection?.nativeUpdateStatus) {
+    return advanceNativeAppUpdate({ installReady });
+  }
+  let status = await connection.nativeUpdateStatus();
+  if (
+    installReady &&
+    connection.installNativeUpdate &&
+    (status.phase === "ready" || status.phase === "permission_required")
+  ) {
+    status = await connection.installNativeUpdate();
+  }
+  return status;
 }
 
 function commandNoticeFor(payload: CommandPayload): {

@@ -36,6 +36,7 @@ import {
 } from "./GatewayEnrollmentPanel";
 import { gatewayProjectOwner } from "./projectCatalog";
 import { injectedNativeBridgePort } from "./client/native/NativeRpcBridge";
+import { nativeUpdateDownloadProgress } from "./nativeUpdatePolling";
 
 type Props = {
   open: boolean;
@@ -850,6 +851,7 @@ export function NativeUpdateSettings({
   const installable =
     state?.phase === "ready" || state?.phase === "permission_required";
   const installing = state?.phase === "installing";
+  const downloadProgress = nativeUpdateDownloadProgress(state);
   const label = installing
     ? "Installing APK…"
     : busy
@@ -870,6 +872,13 @@ export function NativeUpdateSettings({
       <span>
         <strong>Android app</strong>
         <small>{nativeUpdateStatusText(state)}</small>
+        {downloadProgress && (
+          <progress
+            aria-label="APK download progress"
+            max={downloadProgress.totalBytes}
+            value={downloadProgress.downloadedBytes}
+          />
+        )}
         <small>Uses the selected static service; Workspace authorization is not required.</small>
       </span>
       <button
@@ -888,13 +897,11 @@ export function nativeUpdateStatusText(state: NativeUpdateStatus | null): string
   const latest = state.latestVersionName ?? "the latest APK";
   switch (state.phase) {
     case "checking":
-      return "APK: receiving the latest release from your Gateway…";
+      return "APK: checking the selected static release channel…";
     case "available":
       return `APK: ${latest} is available`;
     case "downloading":
-      return state.totalBytes
-        ? `APK: downloading ${Math.floor(((state.downloadedBytes ?? 0) / state.totalBytes) * 100)}%`
-        : "APK: downloading…";
+      return nativeUpdateDownloadProgress(state)?.label ?? "APK: downloading…";
     case "ready":
       return `APK: ${latest} is ready to install`;
     case "installing":
