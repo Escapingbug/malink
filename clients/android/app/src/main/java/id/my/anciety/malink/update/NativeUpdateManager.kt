@@ -148,6 +148,7 @@ class NativeUpdateManager private constructor(context: Context) {
                     URI(release.artifact.url),
                     partial,
                     release.artifact.size,
+                    release.artifact.source,
                 ) { downloaded ->
                     publish(statusFor(
                         release,

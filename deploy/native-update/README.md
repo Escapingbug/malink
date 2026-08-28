@@ -3,7 +3,8 @@
 An Android update is a static channel manifest plus an immutable APK. The APK
 checks the currently selected static service on startup and every six hours, so
 automatic update discovery does not require a web application, database,
-Gateway, or Matrix connection.
+Gateway, or Matrix connection. The APK may live either beside the manifest or
+as a fixed-version asset in the `Escapingbug/malink` GitHub Releases repository.
 
 The client reads:
 
@@ -11,17 +12,28 @@ The client reads:
 <static-base>/native-updates/channels/alpha/client-release.json
 ```
 
-It rebases the immutable APK path onto that same selected base URL. This makes
-one portable release tree mirrorable across an international CDN, a regional
-service, GitHub Pages, or a private static host. The compatibility path that
+By default Android rebases the immutable APK path onto that same selected base
+URL. This makes one portable release tree mirrorable across an international
+CDN, a regional service, GitHub Pages, or a private static host. A manifest may
+instead name exactly this immutable GitHub Release shape:
+
+```text
+https://github.com/Escapingbug/malink/releases/download/
+  android-alpha-<versionCode>/<immutable-apk-name>.apk
+```
+
+Mutable `latest` links, other repositories, mismatched version tags, and URL
+credentials/query parameters are rejected. The compatibility path that
 receives a release from a signed Gateway workspace snapshot remains supported,
 but is no longer required for discovery.
 
-The manifest is not a code-signing key. The client bounds and parses it, refuses
-redirects, verifies the downloaded size and SHA-256, inspects the real APK
-package/version, and requires the APK signing certificate to match the
-currently installed app. Android verifies the application signature again
-before installation.
+The manifest is not a code-signing key. The client bounds and parses it and
+refuses manifest redirects. Same-service APKs also refuse redirects. A fixed
+GitHub Release APK may follow at most three HTTPS redirects, only to GitHub or
+`*.githubusercontent.com`, while retaining its resume range. Malink then
+verifies the downloaded size and SHA-256, inspects the real APK package/version,
+and requires the APK signing certificate to match the currently installed app.
+Android verifies the application signature again before installation.
 
 ## One-time Caddy setup
 
@@ -69,10 +81,36 @@ Use `--base-url https://host.example/path/` when generating a tree intended for
 a path-based host. Android still resolves the artifact against the service the
 user selected.
 
+To keep the APK out of Git and GitHub Pages, generate a GitHub Release-backed
+manifest instead:
+
+```sh
+pnpm release:android-update -- \
+  --apk clients/android/app/build/outputs/apk/release/app-release.apk \
+  --artifact-host github-release \
+  --release-note "Background connection reliability improvements"
+```
+
+The output JSON contains the exact asset filename and URL. Create the immutable
+tag `android-alpha-<versionCode>`, upload that APK to the GitHub Release, and do
+not replace the asset under the same tag. Then publish only
+`channels/alpha/client-release.json` below the selected static service's
+`native-updates/` directory. For a `/malink/` GitHub Pages site, the public
+manifest is therefore:
+
+```text
+https://escapingbug.github.io/malink/native-updates/channels/alpha/client-release.json
+```
+
+The local `releases/` copy remains in the generated bundle so the operator can
+upload the exact inspected APK to GitHub Release; it does not need to be copied
+to Pages.
+
 ## Upload the static channel
 
-The checked publisher uploads the APK and atomically replaces the Alpha
-manifest on the SSH artifact host. Two arguments are enough:
+For same-service static artifacts, the checked publisher uploads the APK and
+atomically replaces the Alpha manifest on the SSH artifact host. Two arguments
+are enough:
 
 ```sh
 pnpm publish:android-update -- \
@@ -80,7 +118,10 @@ pnpm publish:android-update -- \
   ubuntu@rd.anciety.my.id
 ```
 
-This bundled publisher targets the origin-root Caddy layout installed above.
+This bundled publisher targets the origin-root Caddy layout installed above
+and intentionally accepts only same-service artifact URLs. GitHub Release-backed
+manifests are published through GitHub Releases plus the static host's own
+manifest deployment mechanism.
 For a CDN, Pages, or base-path deployment, upload the generated `channels/` and
 `releases/` directories with the host's own static deployment mechanism.
 

@@ -150,8 +150,12 @@ native-updates/channels/alpha/client-release.json
 ```
 
 When the manifest names a newer compatible build, Android downloads the
-immutable APK from the same selected base URL, resumes partial downloads, and
-shows a native notification when it is ready. The static manifest is discovery
+immutable APK, resumes partial downloads, and shows a native notification when
+it is ready. The APK normally comes from the same selected base URL. It may
+instead use the exact fixed tag
+`Escapingbug/malink/releases/download/android-alpha-<versionCode>/...apk`;
+mutable or foreign GitHub Release links are rejected, and only bounded HTTPS
+redirects to GitHub asset hosts are followed. The static manifest is discovery
 metadata, not update authority: before installation Malink verifies its bounded
 size and SHA-256, package name, version code, ABI/Android/bridge compatibility,
 and that the APK's actual signing certificate matches the installed app.
@@ -160,8 +164,10 @@ the final installation confirmation native.
 
 A mirror therefore hosts only files. It does not need a database, update API,
 Gateway, Matrix credentials, or a second release-signing key. It must preserve
-the `native-updates/` directory layout and disable caching for the channel
-manifest. See [the deployment guide](../../deploy/native-update/README.md).
+the `native-updates/channels/` layout and disable caching for the channel
+manifest. When GitHub Releases stores the APK, the mirror does not need a
+`native-updates/releases/` tree. See
+[the deployment guide](../../deploy/native-update/README.md).
 
 ## Build and validation
 

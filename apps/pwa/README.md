@@ -56,13 +56,17 @@ The host should serve `index.html` for unknown application paths, avoid caching
 the fragment never reaches the static host. If an unusually large invitation
 cannot fit in one QR code, the UI asks the user to copy or share the full link.
 
-An Android-selectable static service may also publish APK discovery files under
-the same base URL:
+An Android-selectable static service may also publish APK discovery under the
+same base URL:
 
 ```text
 native-updates/channels/alpha/client-release.json
-native-updates/releases/android/alpha/<versionCode>/<immutable>.apk
 ```
+
+The immutable APK can either remain under
+`native-updates/releases/android/alpha/<versionCode>/` on that service or use
+the fixed-version `Escapingbug/malink` GitHub Release URL accepted by the native
+updater. This lets GitHub Pages host only the small manifest rather than the APK.
 
 See [native update deployment](../../deploy/native-update/README.md) for the
 acceptance and signing rules.

@@ -224,10 +224,12 @@ backgrounded. It owns:
 - versioned store migrations before connection starts.
 
 Native application releases are discovered from a bounded static Alpha channel
-manifest under the user-selected UI service. The service stores an immutable
-APK first, then atomically replaces the channel JSON; Android checks on startup
-and every six hours without requiring a Gateway or Matrix connection. A Gateway
-may also include the same metadata in its signed, encrypted
+manifest under the user-selected UI service. The immutable APK may be stored
+beside that manifest or as an exact fixed-version asset under the official
+`Escapingbug/malink` GitHub Releases repository. The publisher installs or
+uploads the APK first, then atomically replaces the channel JSON; Android checks
+on startup and every six hours without requiring a Gateway or Matrix connection.
+A Gateway may also include the same metadata in its signed, encrypted
 `workspace.snapshot` for compatibility. Android verifies the APK hash, package
 identity, monotonic version, architecture, and application signing certificate
 before `PackageInstaller` can replace it. Downloads are resumable and

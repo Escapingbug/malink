@@ -29,7 +29,13 @@ data class NativeUpdateArtifact(
     val size: Long,
     val sha256: String,
     val signingCertificateSha256: String,
+    val source: NativeUpdateArtifactSource,
 )
+
+enum class NativeUpdateArtifactSource {
+    STATIC_SERVICE,
+    GITHUB_RELEASE,
+}
 
 data class NativeClientRelease(
     val channel: String,
@@ -50,7 +56,7 @@ data class NativeClientRelease(
 
 class NativeClientReleaseException(val detailCode: String) : IllegalArgumentException(detailCode)
 
-/** Parses bounded release discovery and binds its artifact to the selected mirror. */
+/** Parses bounded release discovery and binds its artifact to the selected mirror or official release. */
 class NativeClientReleaseParser(
     private val staticService: StaticServiceEndpoint,
     private val allowLoopbackHttp: Boolean = false,
@@ -113,7 +119,11 @@ class NativeClientReleaseParser(
         )
         val artifactUri = runCatching { URI(requireString(artifactValue, "url", 2_048)) }
             .getOrElse { throw NativeClientReleaseException("release_artifact_url_invalid") }
-        val resolvedArtifactUri = validateArtifactUri(artifactUri, channel, versionCode)
+        val (resolvedArtifactUri, artifactSource) = validateArtifactUri(
+            artifactUri,
+            channel,
+            versionCode,
+        )
         val sha256 = requireString(artifactValue, "sha256", 64).lowercase()
         val certificate = requireString(
             artifactValue,
@@ -141,12 +151,17 @@ class NativeClientReleaseParser(
                 size = requireLong(artifactValue, "size", 1, MAX_APK_BYTES),
                 sha256 = sha256,
                 signingCertificateSha256 = certificate,
+                source = artifactSource,
             ),
             encoded = value.toString(),
         )
     }
 
-    private fun validateArtifactUri(uri: URI, channel: String, versionCode: Long): URI {
+    private fun validateArtifactUri(
+        uri: URI,
+        channel: String,
+        versionCode: Long,
+    ): Pair<URI, NativeUpdateArtifactSource> {
         if (uri.userInfo != null || uri.query != null || uri.fragment != null) {
             throw NativeClientReleaseException("release_artifact_url_components_invalid")
         }
@@ -158,17 +173,35 @@ class NativeClientReleaseParser(
         if (!loopback && !https) {
             throw NativeClientReleaseException("release_artifact_origin_untrusted")
         }
-        val expectedPrefix = "/native-updates/releases/android/$channel/$versionCode/"
-        val artifactName = uri.path.substringAfterLast('/')
+        val artifactName = uri.rawPath.substringAfterLast('/')
+        if (!ARTIFACT_NAME_PATTERN.matches(artifactName)) {
+            throw NativeClientReleaseException("release_artifact_path_invalid")
+        }
+        val githubPath =
+            "/Escapingbug/malink/releases/download/android-$channel-$versionCode/$artifactName"
         if (
-            !uri.path.endsWith("$expectedPrefix$artifactName") ||
-            !ARTIFACT_NAME_PATTERN.matches(artifactName)
+            uri.scheme.equals("https", ignoreCase = true) &&
+            uri.host.equals(GITHUB_RELEASE_HOST, ignoreCase = true) &&
+            (uri.port == -1 || uri.port == 443) &&
+            uri.rawPath == githubPath
         ) {
+            return URI(
+                "https",
+                null,
+                GITHUB_RELEASE_HOST,
+                -1,
+                githubPath,
+                null,
+                null,
+            ) to NativeUpdateArtifactSource.GITHUB_RELEASE
+        }
+        val expectedPrefix = "/native-updates/releases/android/$channel/$versionCode/"
+        if (!uri.rawPath.endsWith("$expectedPrefix$artifactName")) {
             throw NativeClientReleaseException("release_artifact_path_invalid")
         }
         return staticService.resolve(
             "native-updates/releases/android/$channel/$versionCode/$artifactName",
-        )
+        ) to NativeUpdateArtifactSource.STATIC_SERVICE
     }
 
     private fun parseObject(text: String): JsonObject = runCatching {
@@ -208,6 +241,7 @@ class NativeClientReleaseParser(
         const val MAX_APK_BYTES = 100L * 1024 * 1024
         private const val MAX_RELEASE_NOTES = 20
         private const val MAX_RELEASE_NOTE_LENGTH = 500
+        private const val GITHUB_RELEASE_HOST = "github.com"
         private val CHANNEL_PATTERN = Regex("^[a-z][a-z0-9-]{0,31}$")
         private val ARTIFACT_NAME_PATTERN = Regex("^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}\\.apk$")
         private val SHA256_PATTERN = Regex("^[0-9a-f]{64}$")

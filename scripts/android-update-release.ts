@@ -21,6 +21,7 @@ import {
 const DEFAULT_BASE_URL = "https://rd.anciety.my.id";
 const DEFAULT_CHANNEL = "alpha";
 const MAX_APK_BYTES = 100 * 1024 * 1024;
+const GITHUB_RELEASE_REPOSITORY = "Escapingbug/malink";
 
 export type AndroidApkMetadata = {
   packageName: string;
@@ -37,16 +38,30 @@ export function createNativeClientRelease(input: {
   buildId: string;
   channel: string;
   publishedAt: number;
-  baseUrl: string;
+  baseUrl?: string;
+  artifactUrl?: string;
   importance: "recommended" | "required";
   releaseNotes: string[];
   artifactName: string;
 }): NativeClientRelease {
   const { metadata } = input;
-  const artifactUrl = new URL(
-    `native-updates/releases/android/${input.channel}/${metadata.versionCode}/${input.artifactName}`,
-    input.baseUrl.endsWith("/") ? input.baseUrl : `${input.baseUrl}/`,
-  );
+  if ((input.baseUrl === undefined) === (input.artifactUrl === undefined)) {
+    throw new Error("Provide exactly one Android artifact location.");
+  }
+  const expectedGitHubUrl = githubReleaseArtifactUrl({
+    channel: input.channel,
+    versionCode: metadata.versionCode,
+    artifactName: input.artifactName,
+  });
+  if (input.artifactUrl !== undefined && input.artifactUrl !== expectedGitHubUrl) {
+    throw new Error("The GitHub Release artifact URL is not the immutable Malink release path.");
+  }
+  const artifactUrl = input.artifactUrl
+    ? new URL(expectedGitHubUrl)
+    : new URL(
+        `native-updates/releases/android/${input.channel}/${metadata.versionCode}/${input.artifactName}`,
+        input.baseUrl!.endsWith("/") ? input.baseUrl : `${input.baseUrl}/`,
+      );
   return nativeClientReleaseSchema.parse({
     platform: "android",
     channel: input.channel,
@@ -70,6 +85,24 @@ export function createNativeClientRelease(input: {
   });
 }
 
+export function githubReleaseArtifactUrl(input: {
+  channel: string;
+  versionCode: number;
+  artifactName: string;
+}): string {
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(input.channel)) {
+    throw new Error("Invalid Android release channel.");
+  }
+  if (!Number.isSafeInteger(input.versionCode) || input.versionCode < 1) {
+    throw new Error("Invalid Android release version code.");
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}\.apk$/.test(input.artifactName)) {
+    throw new Error("Invalid Android release artifact name.");
+  }
+  return `https://github.com/${GITHUB_RELEASE_REPOSITORY}/releases/download/` +
+    `android-${input.channel}-${input.versionCode}/${input.artifactName}`;
+}
+
 function main(argv: string[]) {
   const options = parseArguments(argv);
   const sdkRoot = androidSdkRoot(options.sdk);
@@ -87,19 +120,30 @@ function main(argv: string[]) {
   if (!/^[a-z][a-z0-9-]{0,31}$/.test(channel)) throw new Error("Invalid update channel.");
   const publishedAt = integerOption(options["published-at"], Date.now(), "published-at");
   const buildId = options["build-id"] ?? deriveNativeBuildId(metadata.versionName);
-  const baseUrl = new URL(options["base-url"] ?? DEFAULT_BASE_URL);
+  const artifactHost = options["artifact-host"] ?? "static";
+  if (artifactHost !== "static" && artifactHost !== "github-release") {
+    throw new Error("--artifact-host must be static or github-release.");
+  }
+  if (artifactHost === "github-release" && options["base-url"] !== undefined) {
+    throw new Error("--base-url applies only when --artifact-host is static.");
+  }
+  const baseUrl = artifactHost === "static"
+    ? new URL(options["base-url"] ?? DEFAULT_BASE_URL)
+    : null;
   const allowLoopbackE2e = options["allow-loopback-e2e"] === "true";
-  const loopbackE2eOrigin = allowLoopbackE2e &&
+  const loopbackE2eOrigin = baseUrl !== null && allowLoopbackE2e &&
     baseUrl.protocol === "http:" && baseUrl.hostname === "127.0.0.1" &&
     Number(baseUrl.port) >= 1 && Number(baseUrl.port) <= 65_535;
-  if (
+  if (baseUrl !== null && (
     (baseUrl.protocol !== "https:" && !loopbackE2eOrigin) ||
     baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash ||
     !baseUrl.pathname.startsWith("/") || baseUrl.pathname.includes("//")
-  ) {
+  )) {
     throw new Error("--base-url must be a credential-free HTTPS base URL.");
   }
-  if (!baseUrl.pathname.endsWith("/")) baseUrl.pathname = `${baseUrl.pathname}/`;
+  if (baseUrl !== null && !baseUrl.pathname.endsWith("/")) {
+    baseUrl.pathname = `${baseUrl.pathname}/`;
+  }
   const importance = options.importance ?? "recommended";
   if (importance !== "recommended" && importance !== "required") {
     throw new Error("--importance must be recommended or required.");
@@ -110,13 +154,20 @@ function main(argv: string[]) {
   }
   const safeVersion = metadata.versionName.replace(/[^A-Za-z0-9._+-]/g, "_").slice(0, 160);
   const artifactName = `malink-native-${safeVersion}-arm64.apk`;
+  const artifactUrl = artifactHost === "github-release"
+    ? githubReleaseArtifactUrl({
+        channel,
+        versionCode: metadata.versionCode,
+        artifactName,
+      })
+    : undefined;
   const release = createNativeClientRelease({
     metadata,
     apkBytes,
     buildId,
     channel,
     publishedAt,
-    baseUrl: baseUrl.toString(),
+    ...(baseUrl ? { baseUrl: baseUrl.toString() } : { artifactUrl }),
     importance,
     releaseNotes,
     artifactName,
@@ -154,6 +205,7 @@ function main(argv: string[]) {
     releasePath,
     staticReleasePath,
     artifactPath: destinationApk,
+    artifactHost,
     release,
   }, null, 2)}\n`);
 }

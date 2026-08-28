@@ -54,6 +54,38 @@ class NativeClientReleaseTest {
             "https://updates.example/native-updates/releases/android/alpha/42/malink.apk",
             release.artifact.url,
         )
+        assertEquals(NativeUpdateArtifactSource.STATIC_SERVICE, release.artifact.source)
+    }
+
+    @Test
+    fun `keeps an exact immutable GitHub Release asset`() {
+        val githubUrl =
+            "https://github.com/Escapingbug/malink/releases/download/android-alpha-42/malink.apk"
+        val release = parser.parse(
+            releaseJson().replace(
+                "https://updates.example/native-updates/releases/android/alpha/42/malink.apk",
+                githubUrl,
+            ),
+        )
+
+        assertEquals(githubUrl, release.artifact.url)
+        assertEquals(NativeUpdateArtifactSource.GITHUB_RELEASE, release.artifact.source)
+    }
+
+    @Test
+    fun `rejects mutable or foreign GitHub Release assets`() {
+        val original =
+            "https://updates.example/native-updates/releases/android/alpha/42/malink.apk"
+        listOf(
+            "https://github.com/Escapingbug/malink/releases/latest/download/malink.apk",
+            "https://github.com/Escapingbug/malink/releases/download/android-alpha-43/malink.apk",
+            "https://github.com/another/malink/releases/download/android-alpha-42/malink.apk",
+            "https://github.com/Escapingbug/malink/releases/download/android-alpha-42/malink.apk?raw=1",
+        ).forEach { githubUrl ->
+            assertThrows(NativeClientReleaseException::class.java) {
+                parser.parse(releaseJson().replace(original, githubUrl))
+            }
+        }
     }
 
     @Test

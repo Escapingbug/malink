@@ -207,9 +207,12 @@ then publishes its bounded metadata through the owner-only local admin socket.
 The Gateway replaces `workspace.snapshot` in each active project room, so an
 online Android service receives it through ordinary incremental sync and an
 offline device receives only the current release on recovery. The artifact URL
-is not a discovery API: Android accepts metadata only from the authenticated
-MLP snapshot, then independently verifies the APK hash, identity, version, ABI,
-and Android application-signing certificate before installation.
+is not a discovery API. Android receives bounded metadata from either the
+selected static service or this authenticated compatibility snapshot, then
+accepts only a same-service immutable path or the exact fixed-version
+`Escapingbug/malink` GitHub Release shape. It independently verifies the APK
+hash, identity, version, ABI, and Android application-signing certificate before
+installation.
 
 Android owns this process in its foreground connection service. The service
 keeps `/sync`, raw-inbox persistence, projection, outbox reconciliation, and

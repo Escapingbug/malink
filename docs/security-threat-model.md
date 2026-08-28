@@ -38,6 +38,13 @@ trust root. A compromised mirror can suppress or delay discovery, but an APK is
 not offered to `PackageInstaller` until its real package, version, hash, size,
 and signing certificate have been checked against the installed application.
 Android independently enforces the application signature during installation.
+An APK normally remains bound to that selected static service. The only
+cross-origin exception is an exact fixed-version asset under
+`Escapingbug/malink` GitHub Releases; mutable tags and other repositories are
+rejected. Manifest and same-service redirects remain disabled. A GitHub Release
+download may follow at most three HTTPS redirects to GitHub asset origins while
+retaining the resume range, and the final bytes still pass every package,
+version, hash, size, ABI, and signer check.
 
 ## Untrusted inputs
 
