@@ -330,6 +330,15 @@ function MatrixSettingsDialog({
           </p>
         </div>
 
+        {nativeHostDetected && (
+          <NativeUpdateSettings
+            state={nativeUpdateState}
+            busy={nativeUpdateBusy}
+            onRefresh={onRefreshNativeUpdate}
+            onInstall={onInstallNativeUpdate}
+          />
+        )}
+
         {showGatewayManagement && (
           <section className="gateway-profile-list" aria-label="Workspace Gateways">
             <header>
@@ -746,7 +755,7 @@ function MatrixSettingsDialog({
                   </>
                 )}
                 <small>{updateStatusText(updateState)}</small>
-                {nativeRuntime && (
+                {nativeHostDetected && (
                   <small>{nativeUpdateStatusText(nativeUpdateState)}</small>
                 )}
                 {gatewayRelease && (
@@ -780,39 +789,6 @@ function MatrixSettingsDialog({
                 >
                   {updateState.phase === "checking" ? "Checking…" : "Check for updates"}
                 </button>
-                {nativeRuntime && nativeUpdateState && (
-                  <button
-                    type="button"
-                    onClick={onRefreshNativeUpdate}
-                    disabled={
-                      nativeUpdateState.phase === "checking" ||
-                      nativeUpdateState.phase === "downloading" ||
-                      nativeUpdateState.phase === "installing" ||
-                      nativeUpdateBusy
-                    }
-                  >
-                    {nativeUpdateState.phase === "checking" ||
-                    nativeUpdateState.phase === "downloading"
-                      ? "Receiving APK release…"
-                      : "Refresh APK status"}
-                  </button>
-                )}
-                {nativeRuntime && nativeUpdateState && (
-                  nativeUpdateState.phase === "ready" ||
-                  nativeUpdateState.phase === "permission_required"
-                ) && (
-                  <button
-                    type="button"
-                    onClick={onInstallNativeUpdate}
-                    disabled={nativeUpdateBusy}
-                  >
-                    {nativeUpdateBusy
-                      ? "Installing APK…"
-                      : nativeUpdateState.phase === "permission_required"
-                      ? "Allow and install APK"
-                      : "Install APK update"}
-                  </button>
-                )}
               </div>
             </div>
           </details>
@@ -860,8 +836,55 @@ function updateStatusText(state: PwaUpdateState): string {
   }
 }
 
-function nativeUpdateStatusText(state: NativeUpdateStatus | null): string {
-  if (!state) return "APK update channel unavailable in this native build";
+export function NativeUpdateSettings({
+  state,
+  busy,
+  onRefresh,
+  onInstall,
+}: {
+  state: NativeUpdateStatus | null;
+  busy: boolean;
+  onRefresh(): void;
+  onInstall(): void;
+}) {
+  const installable =
+    state?.phase === "ready" || state?.phase === "permission_required";
+  const installing = state?.phase === "installing";
+  const label = installing
+    ? "Installing APK…"
+    : busy
+      ? installable
+        ? "Installing APK…"
+        : "Checking APK…"
+    : state?.phase === "permission_required"
+      ? "Allow and install"
+      : state?.phase === "ready"
+        ? "Install APK update"
+        : state?.phase === "failed"
+          ? "Retry APK check"
+          : state
+            ? "Refresh APK status"
+            : "Check APK update";
+  return (
+    <section className="native-update-settings" aria-live="polite">
+      <span>
+        <strong>Android app</strong>
+        <small>{nativeUpdateStatusText(state)}</small>
+        <small>Uses the selected static service; Workspace authorization is not required.</small>
+      </span>
+      <button
+        type="button"
+        disabled={busy || installing}
+        onClick={installable ? onInstall : onRefresh}
+      >
+        {label}
+      </button>
+    </section>
+  );
+}
+
+export function nativeUpdateStatusText(state: NativeUpdateStatus | null): string {
+  if (!state) return "APK: check the native update channel from this device";
   const latest = state.latestVersionName ?? "the latest APK";
   switch (state.phase) {
     case "checking":

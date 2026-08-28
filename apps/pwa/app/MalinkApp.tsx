@@ -303,6 +303,7 @@ import {
   nativeMatrixSessionConfig,
   resumeNativeMatrixSessionIfAvailable,
 } from "./client/createMalinkClient";
+import { injectedNativeBridgePort } from "./client/native/NativeRpcBridge";
 import { publicTrustFromWeb } from "./client/web/WebMalinkClient";
 import {
   clearMessageHistoryScope,
@@ -2770,6 +2771,22 @@ function MalinkAppRuntime() {
     openRequestedSession();
     window.addEventListener("hashchange", openRequestedSession);
     return () => window.removeEventListener("hashchange", openRequestedSession);
+  }, []);
+
+  useEffect(() => {
+    if (!injectedNativeBridgePort()) return;
+    let active = true;
+    // The updater owns a short native-bridge lease before Matrix restoration
+    // starts below. This keeps APK recovery available even when this origin
+    // has no saved Workspace authorization.
+    void advanceNativeAppUpdate({ installReady: false })
+      .then((status) => {
+        if (active) setNativeUpdateState(status);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {

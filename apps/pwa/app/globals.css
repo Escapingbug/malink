@@ -5260,7 +5260,8 @@ select:focus-visible {
   line-height: 1.45;
 }
 
-.web-push-settings {
+.web-push-settings,
+.native-update-settings {
   display: flex;
   align-items: center;
   gap: 14px;
@@ -5271,7 +5272,8 @@ select:focus-visible {
   background: white;
 }
 
-.web-push-settings > span {
+.web-push-settings > span,
+.native-update-settings > span {
   display: flex;
   min-width: 0;
   flex: 1;
@@ -5279,13 +5281,15 @@ select:focus-visible {
   gap: 3px;
 }
 
-.web-push-settings strong {
+.web-push-settings strong,
+.native-update-settings strong {
   color: #454d5f;
   font-size: 10px;
 }
 
 .web-push-settings small,
-.web-push-settings em {
+.web-push-settings em,
+.native-update-settings small {
   color: #7a8394;
   font-size: 8px;
   font-style: normal;
@@ -5296,7 +5300,8 @@ select:focus-visible {
   color: #a14949;
 }
 
-.web-push-settings button {
+.web-push-settings button,
+.native-update-settings button {
   min-height: 36px;
   padding: 0 12px;
   border-radius: 9px;
@@ -5306,7 +5311,8 @@ select:focus-visible {
   font-weight: 700;
 }
 
-.web-push-settings button:disabled {
+.web-push-settings button:disabled,
+.native-update-settings button:disabled {
   cursor: default;
   opacity: 0.55;
 }
