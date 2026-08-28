@@ -54,6 +54,7 @@ describe('Gateway Provider prompt runner', () => {
       truncated: false,
     })
     expect(provider.initCalls).toBe(1)
+    expect(provider.preparedCwd).toBe(await realpath(cwd))
     expect(provider.destroyCalls).toBe(1)
     expect(provider.lastPrompt).toBe('diagnose')
     expect(provider.lastConfig).toMatchObject({
@@ -98,12 +99,17 @@ class ProbeProvider implements AgentProvider {
   destroyCalls = 0
   lastPrompt: AgentQueryInput | undefined
   lastConfig: AgentQueryConfig | undefined
+  preparedCwd: string | undefined
 
   constructor(private readonly emitted: AgentEvent[]) {}
 
   async init(): Promise<void> {
     this.initCalls += 1
     this.ready = true
+  }
+
+  prepareWorkingDirectory(cwd: string): void {
+    this.preparedCwd = cwd
   }
 
   startQuery(prompt: AgentQueryInput, config: AgentQueryConfig): AgentQueryHandle {

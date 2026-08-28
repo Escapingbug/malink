@@ -46,6 +46,7 @@ export async function runGatewayProviderPrompt(
     | InitializableProvider
     | undefined
   if (!provider) throw new Error(`Provider ${providerName} is not configured on this Gateway`)
+  provider.prepareWorkingDirectory?.(cwd)
 
   const startedAt = now()
   const timeoutMs = request.timeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS

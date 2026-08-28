@@ -445,6 +445,7 @@ export class AcpProvider implements AgentProvider {
     private activeAbortSignal: AbortSignal | null = null
 
     async listSessions(cwd: string): Promise<SessionEntry[]> {
+        this.prepareWorkingDirectory(cwd)
         await this.init()
         if (!this.isReady()) {
             throw new Error(this.getInitError() ?? `Provider ${this.name} is unavailable`)
@@ -468,6 +469,7 @@ export class AcpProvider implements AgentProvider {
     }
 
     async getSessionHistory(sessionId: string, cwd: string): Promise<ProviderSessionHistory> {
+        this.prepareWorkingDirectory(cwd)
         await this.init()
         if (!this.isReady()) {
             throw new Error(this.getInitError() ?? `Provider ${this.name} is unavailable`)
@@ -507,6 +509,15 @@ export class AcpProvider implements AgentProvider {
 
     protected createClientManager(): AcpClientManager {
         return new AcpClientManager(this.clientManagerConfig)
+    }
+
+    prepareWorkingDirectory(cwd: string): void {
+        // An explicit provider-profile cwd remains authoritative. Otherwise,
+        // bind this session-owned ACP process to the project's stable cwd
+        // instead of inheriting an atomically switched Gateway release path.
+        if (this.clientManagerConfig.cwd || this.initialized || this.initPromise) return
+        this.clientManagerConfig.cwd = cwd
+        this.clientManager = this.createClientManager()
     }
 
     private async runSessionOpenOperation<T>(operation: string, request: () => Promise<T>): Promise<T> {

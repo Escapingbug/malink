@@ -1428,19 +1428,22 @@ export class MatrixGatewayRunner {
                 model.id === requestedModel || model.name === requestedModel,
             )
             : undefined
-        if (requestedModel && !selectedModel) {
+        if (requestedModel && availableModels.length > 0 && !selectedModel) {
             throw new Error(
                 `Model ${requestedModel} is not available for provider ${providerName}`,
             )
         }
-        const modelId = selectedModel?.id ?? null
+        // Model discovery is an eventually refreshed capability cache. When it
+        // is temporarily empty, preserve the provider-owned opaque id and let
+        // the ACP session validate it instead of blocking execution.
+        const modelId = selectedModel?.id ?? requestedModel ?? null
         const modelChanged = modelId !== current.model
         const requestedReasoningEffort = settings.reasoningEffort !== undefined
             ? settings.reasoningEffort
             : providerChanged || modelChanged
                 ? selectedModel?.defaultReasoningLevel ?? null
                 : current.reasoningEffort
-        if (requestedReasoningEffort) {
+        if (requestedReasoningEffort && availableModels.length > 0) {
             if (!selectedModel) {
                 throw new Error('Select a model before setting reasoning effort')
             }
@@ -2735,19 +2738,19 @@ async function resolveWorkspaceSettings(
             model.id === requestedModel || model.name === requestedModel,
         )
         : undefined
-    if (requestedModel && !selectedModel) {
+    if (requestedModel && availableModels.length > 0 && !selectedModel) {
         throw new Error(
             `Model ${requestedModel} is not available for provider ${providerName}`,
         )
     }
-    const model = selectedModel?.id ?? null
+    const model = selectedModel?.id ?? requestedModel ?? null
     const modelChanged = model !== current.model
     const reasoningEffort = settings.reasoningEffort !== undefined
         ? settings.reasoningEffort
         : providerChanged || modelChanged
             ? selectedModel?.defaultReasoningLevel ?? null
             : current.reasoningEffort
-    if (reasoningEffort) {
+    if (reasoningEffort && availableModels.length > 0) {
         if (!selectedModel) {
             throw new Error('Select a model before setting reasoning effort')
         }

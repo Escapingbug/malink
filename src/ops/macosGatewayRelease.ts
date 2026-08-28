@@ -60,6 +60,7 @@ export async function activateMacosGatewayRelease(
     const stablePlist = stableLaunchAgentPlist(
         originalPlist,
         currentLink,
+        installRoot,
         dirname(releaseDirectory),
         [previousTarget, releaseDirectory].filter((value): value is string => Boolean(value)),
     )
@@ -170,22 +171,45 @@ export async function validateMacosGatewayRelease(releaseDirectory: string): Pro
 function stableLaunchAgentPlist(
     plist: string,
     currentLink: string,
+    installRoot: string,
     releasesRoot: string,
     releaseDirectories: readonly string[],
 ): string {
-    if (plist.includes(currentLink)) return plist
-    for (const releaseDirectory of releaseDirectories) {
-        if (!plist.includes(releaseDirectory)) continue
-        return plist.replaceAll(releaseDirectory, currentLink)
+    let migrated = plist
+    if (!migrated.includes(currentLink)) {
+        for (const releaseDirectory of releaseDirectories) {
+            if (!migrated.includes(releaseDirectory)) continue
+            migrated = migrated.replaceAll(releaseDirectory, currentLink)
+            break
+        }
+        if (migrated === plist) {
+            const releasePath = new RegExp(
+                `${escapeRegExp(releasesRoot)}/[^/\\s<]+`,
+                'gu',
+            )
+            migrated = plist.replace(releasePath, currentLink)
+        }
     }
-    const releasePath = new RegExp(
-        `${escapeRegExp(releasesRoot)}/[^/\\s<]+`,
-        'gu',
-    )
-    const migrated = plist.replace(releasePath, currentLink)
-    if (migrated !== plist) return migrated
-    throw new Error(
-        'LaunchAgent does not reference either the stable current link or the release being activated.',
+    if (!migrated.includes(currentLink)) {
+        throw new Error(
+            'LaunchAgent does not reference either the stable current link or the release being activated.',
+        )
+    }
+
+    // Never leave a long-running Gateway inside the atomically switched
+    // `current` symlink. macOS descendants can block in getcwd() after a
+    // release swap, starving ACP stdio and turning healthy session opens into
+    // timeouts. Executables remain release-pinned through absolute paths while
+    // the process cwd stays on the stable install root.
+    return migrated.replace(
+        /(<key>WorkingDirectory<\/key>\s*<string>)([^<]*)(<\/string>)/u,
+        (_match, prefix: string, workingDirectory: string, suffix: string) => {
+            const isReleaseDirectory = workingDirectory === currentLink
+                || workingDirectory.startsWith(`${releasesRoot}/`)
+            return isReleaseDirectory
+                ? `${prefix}${installRoot}${suffix}`
+                : `${prefix}${workingDirectory}${suffix}`
+        },
     )
 }
 

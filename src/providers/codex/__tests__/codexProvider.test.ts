@@ -1,24 +1,12 @@
 import { createRequire } from 'node:module'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { parseCodexModels } from '../index'
+import { clearCodexModelCatalogCacheForTesting, parseCodexModels } from '../index'
 import { CodexHistoryUnavailableError } from '../history'
 
 const { acpProviderConfigs, fallbackHistoryCalls } = vi.hoisted(() => ({
     acpProviderConfigs: [] as Array<{ name: string; command: string; args: string[] }>,
     fallbackHistoryCalls: [] as Array<{ sessionId: string; cwd: string }>,
 }))
-
-const { spawnSyncMock } = vi.hoisted(() => ({
-    spawnSyncMock: vi.fn(),
-}))
-
-vi.mock('node:child_process', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('node:child_process')>()
-    return {
-        ...actual,
-        spawnSync: spawnSyncMock,
-    }
-})
 
 vi.mock('@/providers/acp', () => ({
     AcpProvider: class {
@@ -44,6 +32,7 @@ describe('CodexProvider', () => {
     afterEach(() => {
         acpProviderConfigs.splice(0, acpProviderConfigs.length)
         fallbackHistoryCalls.splice(0, fallbackHistoryCalls.length)
+        clearCodexModelCatalogCacheForTesting()
     })
 
     it('launches the release-pinned codex-acp with the Gateway Node runtime', async () => {
@@ -110,10 +99,7 @@ describe('CodexProvider', () => {
 
     it('lists subscription models from codex debug models', async () => {
         const { CodexProvider } = await import('../index')
-        spawnSyncMock.mockReturnValue({
-            status: 0,
-            error: undefined,
-            stdout: JSON.stringify({
+        const modelsReader = vi.fn().mockResolvedValue(JSON.stringify({
                 models: [
                     {
                         slug: 'gpt-5.5',
@@ -127,11 +113,13 @@ describe('CodexProvider', () => {
                     },
                     { slug: 'gpt-hidden', display_name: 'Hidden', visibility: 'hidden' },
                 ],
-            }),
-            stderr: '',
-        })
+            }))
+        const provider = new CodexProvider({ modelsReader })
 
-        expect(new CodexProvider().getAvailableModels()).toEqual([
+        // Snapshot reads never synchronously wait for the external Codex CLI.
+        expect(provider.getAvailableModels()).toEqual([])
+        await provider.refreshAvailableModels()
+        expect(provider.getAvailableModels()).toEqual([
             {
                 id: 'gpt-5.5',
                 name: 'GPT-5.5',
@@ -143,14 +131,11 @@ describe('CodexProvider', () => {
                 ],
             },
         ])
-        const codexAcpEntrypoint = createRequire(import.meta.url).resolve(
-            '@agentclientprotocol/codex-acp',
-        )
-        expect(spawnSyncMock).toHaveBeenCalledWith(
-            process.execPath,
-            [codexAcpEntrypoint, 'cli', 'debug', 'models'],
-            expect.objectContaining({ encoding: 'utf-8', timeout: 10_000 }),
-        )
+        expect(modelsReader).toHaveBeenCalledWith(expect.objectContaining({
+            command: process.execPath,
+            args: expect.arrayContaining(['cli', 'debug', 'models']),
+        }))
+        expect(modelsReader).toHaveBeenCalledTimes(1)
     })
 
     it('reads provider history through the Codex read-only history path', async () => {
