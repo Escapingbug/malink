@@ -2,15 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { SignedWorkspaceGatewayDirectory } from "@malink/protocol";
 import {
-  automaticGatewayUpdateTargets,
-  hasAttemptedAutomaticGatewayUpdate,
-  recordAutomaticGatewayUpdateAttempt,
-  triggerAutomaticGatewayUpdate,
+  gatewayUpdatePlan,
+  gatewayUpdateTarget,
+  triggerGatewayUpdate,
 } from "../app/gatewayUpdateTrigger.ts";
 
 const release = { releaseId: "2026.08.26.2", buildId: "gateway-next-arm64" };
 
-test("selects each update-capable old Gateway through one of its known projects", () => {
+test("classifies every Gateway without starting an update", () => {
   const directory = {
     directory: {
       gateways: [
@@ -18,40 +17,54 @@ test("selects each update-capable old Gateway through one of its known projects"
         gateway("node-current", "Server", release.buildId, true, "project-current"),
         gateway("node-manual", "Legacy Mac", "gateway-legacy", false, "project-manual"),
         gateway("node-unrouted", "Other Mac", "gateway-other", true, "project-other"),
+        gateway("node-unknown", "Unknown Mac", undefined, true, "project-unknown"),
       ],
     },
   } as unknown as SignedWorkspaceGatewayDirectory;
 
-  assert.deepEqual(automaticGatewayUpdateTargets({
+  assert.deepEqual(gatewayUpdatePlan({
     directory,
-    knownProjectIds: new Set(["project-old", "project-current", "project-manual"]),
+    knownProjectIds: new Set([
+      "project-old",
+      "project-current",
+      "project-manual",
+      "project-unknown",
+    ]),
     release,
-  }), [{
+  }).map(node => ({ id: node.gatewayNodeId, state: node.state })), [
+    { id: "node-old", state: "available" },
+    { id: "node-current", state: "current" },
+    { id: "node-manual", state: "manual" },
+    { id: "node-unrouted", state: "unrouted" },
+    { id: "node-unknown", state: "unknown" },
+  ]);
+});
+
+test("returns an exact routed target only for an online-update node", () => {
+  const [available, manual] = gatewayUpdatePlan({
+    directory: {
+      directory: {
+        gateways: [
+          gateway("node-old", "Office Mac", "gateway-old-arm64", true, "project-old"),
+          gateway("node-manual", "Legacy Mac", "gateway-legacy", false, "project-manual"),
+        ],
+      },
+    } as unknown as SignedWorkspaceGatewayDirectory,
+    knownProjectIds: new Set(["project-old", "project-manual"]),
+    release,
+  });
+  assert.deepEqual(gatewayUpdateTarget(available!), {
     gatewayNodeId: "node-old",
     gatewayName: "Office Mac",
     currentBuildId: "gateway-old-arm64",
     targetProjectId: "project-old",
-  }]);
+  });
+  assert.equal(gatewayUpdateTarget(manual!), null);
 });
 
-test("records one automatic attempt per Gateway and paired release", () => {
-  const values = new Map<string, string>();
-  const storage = {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { values.set(key, value); },
-  };
-  assert.equal(hasAttemptedAutomaticGatewayUpdate(storage, "node-1", release), false);
-  recordAutomaticGatewayUpdateAttempt(storage, "node-1", release);
-  assert.equal(hasAttemptedAutomaticGatewayUpdate(storage, "node-1", release), true);
-  assert.equal(hasAttemptedAutomaticGatewayUpdate(storage, "node-1", {
-    ...release,
-    buildId: "gateway-later-arm64",
-  }), false);
-});
-
-test("stages and schedules the PWA-paired release on the target Gateway", async () => {
+test("creates the maintenance session and schedules the confirmed Gateway", async () => {
   const commands: Array<{ operation: string; projectId: string }> = [];
-  const result = await triggerAutomaticGatewayUpdate({
+  const result = await triggerGatewayUpdate({
     release,
     target: {
       gatewayNodeId: "node-1",
@@ -76,7 +89,7 @@ test("stages and schedules the PWA-paired release on the target Gateway", async 
 
 test("treats a duplicate already-scheduled release as successful", async () => {
   let calls = 0;
-  const result = await triggerAutomaticGatewayUpdate({
+  const result = await triggerGatewayUpdate({
     release,
     target: {
       gatewayNodeId: "node-1",
@@ -97,14 +110,14 @@ test("treats a duplicate already-scheduled release as successful", async () => {
 function gateway(
   gatewayNodeId: string,
   gatewayName: string,
-  buildId: string,
+  buildId: string | undefined,
   onlineUpdate: boolean,
   projectId: string,
 ) {
   return {
     gatewayNodeId,
     gatewayName,
-    buildId,
+    ...(buildId ? { buildId } : {}),
     ...(onlineUpdate ? { onlineUpdate: true } : {}),
     projects: [{ projectId }],
   };

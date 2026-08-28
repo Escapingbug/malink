@@ -181,6 +181,16 @@ The wire operations remain `gateway.update.stage`, `gateway.update.apply`, and
 need no separate Gateway implementation. Their shared `gateway.update` grant
 authorizes only requests—the local pinned signer remains the release authority.
 
+Release discovery never starts an update. The PWA presents a node-level update
+notice, and its review panel identifies the exact Gateway name, stable short
+node ID, current build, target build, and update capability. Opening the panel
+sends a read-only `gateway.update.status` command to each routed capable node;
+only a recent signed terminal reply is shown as `Online now`. A connected
+Matrix client or an old cached snapshot is not Gateway liveness. The user then
+confirms one exact node, which sends `stage` and creates the visible maintenance
+Agent session for that Gateway and release. Multiple nodes are updated as
+separate confirmed operations so it is always clear which node is executing.
+
 `stage` now progresses through:
 
 ```text
@@ -194,9 +204,11 @@ waiting_for_idle -> scheduled -> activating -> probation -> committed
 ```
 
 The maintenance Agent's session is deterministic per Gateway and release, so a
-retry resumes the same visible session and supervisor workspace. Advanced
-diagnostics contains status and a single retry action; users never enter a
-release ID or manually transfer Gateway credentials or artifacts.
+retry resumes the same visible session and supervisor workspace. The normal
+Gateway software panel links to that session and owns the confirmation and
+retry actions; advanced diagnostics is not the product update entry point.
+Users never enter a release ID or manually transfer Gateway credentials or
+artifacts.
 
 ## Recovery
 

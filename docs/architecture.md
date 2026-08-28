@@ -313,12 +313,16 @@ in the default update mode, and keeps durably staging new Matrix events. The
 replacement process resumes that inbox before the Matrix sync cursor can skip
 an accepted event.
 
-There is no release-channel poller. Each node publishes its current build ID
-and supervised-update capability in the root-signed Gateway Directory. A
-manually deployed PWA may embed one exact signed Gateway release and, after it
-connects, send one stage/apply request through a project owned by every older
-capable node. The public website stores immutable files but does not become
-execution or release-signing authority.
+There is no Gateway-side release-channel poller. Each node publishes its
+current build ID and supervised-update capability in the root-signed Gateway
+Directory. A manually deployed PWA may discover one exact signed Gateway
+release, but discovery is presentation-only: it lists every node that is
+current, outdated, manual-only, or unrouted and waits for explicit user
+confirmation. Before enabling the per-node update action, the client requires
+a recent terminal reply to a signed `gateway.update.status` command through a
+project owned by that node. Matrix connectivity alone is never presented as
+proof that the Gateway process is online. The public website stores immutable
+files but does not become execution or release-signing authority.
 
 Activation requires the expected build ID, a ready and recent Matrix sync, and
 a readable durable inbox throughout probation. Failure restores the previous

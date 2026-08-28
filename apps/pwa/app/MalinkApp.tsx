@@ -76,6 +76,10 @@ import {
   type ProviderHistorySource,
 } from "./providerHistoryRouting";
 import { GatewayForgetDialog } from "./GatewayForgetDialog";
+import {
+  GatewayUpdateDialog,
+  type GatewayUpdateNodeRuntime,
+} from "./GatewayUpdateDialog";
 import { PrivilegeTotpDialog } from "./PrivilegeTotpDialog";
 import {
   enrollPrivilegeTotp,
@@ -109,10 +113,10 @@ import {
 } from "./buildInfo";
 import { discoverLatestGatewayAgentUpdate } from "./gatewayAgentUpdateDiscovery";
 import {
-  automaticGatewayUpdateTargets as selectAutomaticGatewayUpdateTargets,
-  hasAttemptedAutomaticGatewayUpdate,
-  recordAutomaticGatewayUpdateAttempt,
-  triggerAutomaticGatewayUpdate,
+  gatewayUpdatePlan as buildGatewayUpdatePlan,
+  gatewayUpdateTarget,
+  triggerGatewayUpdate,
+  type GatewayUpdatePlanNode,
 } from "./gatewayUpdateTrigger";
 import {
   registerPwaUpdates,
@@ -1182,8 +1186,14 @@ function MalinkAppRuntime() {
   const [gatewayEnrollmentError, setGatewayEnrollmentError] = useState<string | null>(null);
   const [gatewayProfileBusy, setGatewayProfileBusy] = useState<string | null>(null);
   const [gatewayProfileError, setGatewayProfileError] = useState<string | null>(null);
-  const [gatewayUpdateBusy, setGatewayUpdateBusy] = useState(false);
-  const [gatewayUpdateError, setGatewayUpdateError] = useState<string | null>(null);
+  const [gatewayUpdateDialogOpen, setGatewayUpdateDialogOpen] = useState(false);
+  const [dismissedGatewayUpdateNoticeKey, setDismissedGatewayUpdateNoticeKey] =
+    useState<string | null>(null);
+  const [gatewayUpdateActiveNodeId, setGatewayUpdateActiveNodeId] =
+    useState<string | null>(null);
+  const [gatewayUpdateRuntimeByNode, setGatewayUpdateRuntimeByNode] = useState<
+    Record<string, GatewayUpdateNodeRuntime>
+  >({});
   const [gatewayUpdateDiscoveryError, setGatewayUpdateDiscoveryError] =
     useState<string | null>(null);
   const [gatewayRelease, setGatewayRelease] = useState(MALINK_GATEWAY_RELEASE);
@@ -1276,11 +1286,11 @@ function MalinkAppRuntime() {
   } | null>(null);
   const pwaUpdateRef = useRef<PwaUpdateHandle | null>(null);
   const pwaReloadBlockedRef = useRef(false);
-  const componentMountedRef = useRef(true);
-  const automaticGatewayUpdateAttemptsRef = useRef(new Set<string>());
+  const gatewayUpdateProbeKeysRef = useRef(new Set<string>());
   const executeGatewayUpdateRef = useRef<(
     payload: Extract<CommandPayload, { operation: `gateway.update.${string}` }>,
     targetProjectId: string,
+    timeoutMs?: number,
   ) => Promise<GatewayUpdateStatus>>(async () => {
     throw new Error("Gateway update runtime is not ready.");
   });
@@ -1816,8 +1826,8 @@ function MalinkAppRuntime() {
     matrixConfig.gatewayNodeId,
     trustedGateway,
   ]);
-  const automaticGatewayUpdateTargets = useMemo(() =>
-    selectAutomaticGatewayUpdateTargets({
+  const gatewayUpdatePlan = useMemo(() =>
+    buildGatewayUpdatePlan({
       directory: gatewayState?.gatewayDirectory,
       knownProjectIds: new Set(
         (gatewayState?.projects ?? (gatewayState ? [gatewayState.workspace] : []))
@@ -1825,6 +1835,60 @@ function MalinkAppRuntime() {
       ),
       release: gatewayRelease,
     }), [gatewayRelease, gatewayState]);
+  const gatewayUpdateAvailableCount = gatewayUpdatePlan.filter(
+    node => node.state === "available",
+  ).length;
+  const gatewayUpdateReleaseKey = gatewayRelease
+    ? `${gatewayRelease.releaseId}\0${gatewayRelease.buildId}`
+    : null;
+  const gatewayUpdateRuntimeForRelease = useMemo(
+    () => Object.fromEntries(
+      Object.entries(gatewayUpdateRuntimeByNode).filter(
+        ([, runtime]) => runtime.releaseKey === gatewayUpdateReleaseKey,
+      ),
+    ),
+    [gatewayUpdateReleaseKey, gatewayUpdateRuntimeByNode],
+  );
+  const gatewayUpdateRuntimePresentation = useMemo(() => {
+    if (!gatewayRelease || !gatewayState) return gatewayUpdateRuntimeForRelease;
+    let presentation = gatewayUpdateRuntimeForRelease;
+    for (const node of gatewayUpdatePlan) {
+      const runtime = gatewayUpdateRuntimeForRelease[node.gatewayNodeId];
+      const startedAt = runtime?.startedAt;
+      if (!node.targetProjectId || !startedAt || runtime.maintenanceSessionId) continue;
+      const candidates = gatewayState.sessions
+        .filter(session =>
+          session.projectId === node.targetProjectId &&
+          session.scope === "scratch" &&
+          session.title.startsWith("Gateway update "),
+        )
+        .sort((left, right) => right.updatedAt - left.updatedAt);
+      const session = candidates.find(candidate =>
+        candidate.title.includes(gatewayRelease.releaseId),
+      ) ?? candidates.find(candidate => candidate.updatedAt >= startedAt - 5_000);
+      if (!session) continue;
+      presentation = {
+        ...presentation,
+        [node.gatewayNodeId]: {
+          ...runtime,
+          maintenanceSessionId: session.id,
+        },
+      };
+    }
+    return presentation;
+  }, [
+    gatewayRelease,
+    gatewayState,
+    gatewayUpdatePlan,
+    gatewayUpdateRuntimeForRelease,
+  ]);
+  const gatewayUpdateNoticeKey = gatewayRelease && gatewayUpdateAvailableCount > 0
+    ? `${gatewayRelease.releaseId}\0${gatewayRelease.buildId}\0${gatewayUpdatePlan
+        .filter(node => node.state === "available")
+        .map(node => `${node.gatewayNodeId}:${node.currentBuildId ?? "unknown"}`)
+        .sort()
+        .join("\0")}`
+    : null;
   const providerHistorySources = useMemo<ProviderHistorySource[]>(() => {
     if (!gatewayState) return [];
     return buildProviderHistorySources({
@@ -2253,78 +2317,22 @@ function MalinkAppRuntime() {
   }, []);
 
   useEffect(() => {
-    componentMountedRef.current = true;
-    return () => {
-      componentMountedRef.current = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (connectionStatus !== "connected" || !gatewayRelease) return;
-    const release = gatewayRelease;
-    const targets = automaticGatewayUpdateTargets.filter((target) =>
-      !automaticGatewayUpdateAttemptsRef.current.has(
-        `${target.gatewayNodeId}\0${release.releaseId}\0${release.buildId}`,
-      ) &&
-      !hasAttemptedAutomaticGatewayUpdate(
-        window.localStorage,
-        target.gatewayNodeId,
-        release,
-      ),
-    );
-    if (targets.length === 0) return;
-    for (const target of targets) {
-      // This tab must also remain one-shot when localStorage is unavailable.
-      automaticGatewayUpdateAttemptsRef.current.add(
-        `${target.gatewayNodeId}\0${release.releaseId}\0${release.buildId}`,
-      );
+    if (
+      !gatewayUpdateDialogOpen ||
+      connectionStatus !== "connected" ||
+      !gatewayRelease
+    ) return;
+    for (const node of gatewayUpdatePlan) {
+      if (!gatewayUpdateTarget(node)) continue;
+      const key = `${gatewayRelease.releaseId}\0${gatewayRelease.buildId}\0${node.gatewayNodeId}`;
+      if (gatewayUpdateProbeKeysRef.current.has(key)) continue;
+      gatewayUpdateProbeKeysRef.current.add(key);
+      void probeGatewayUpdateNode(node);
     }
-    void (async () => {
-      setGatewayUpdateBusy(true);
-      setGatewayUpdateError(null);
-      try {
-        await Promise.all(targets.map(async (target) => {
-          recordAutomaticGatewayUpdateAttempt(
-            window.localStorage,
-            target.gatewayNodeId,
-            release,
-          );
-          try {
-            const status = await triggerAutomaticGatewayUpdate({
-              release,
-              target,
-              send: (command, targetProjectId) =>
-                executeGatewayUpdateRef.current(command, targetProjectId),
-            });
-            if (componentMountedRef.current) {
-              showUiNotice(
-                `gateway-update:${target.gatewayNodeId}`,
-                "connection",
-                "success",
-                status.phase === "committed"
-                  ? `${target.gatewayName} already runs the Gateway release paired with this PWA.`
-                  : `${target.gatewayName} stopped starting new tasks and will switch after its current Agent work finishes.`,
-                8_000,
-              );
-            }
-          } catch (error) {
-            if (componentMountedRef.current) {
-              const detail = formatUiError(error);
-              setGatewayUpdateError(detail);
-              showUiNotice(
-                `gateway-update:${target.gatewayNodeId}`,
-                "connection",
-                "warning",
-                `${target.gatewayName} could not start its paired Gateway update: ${detail}`,
-              );
-            }
-          }
-        }));
-      } finally {
-        if (componentMountedRef.current) setGatewayUpdateBusy(false);
-      }
-    })();
-  }, [automaticGatewayUpdateTargets, connectionStatus, gatewayRelease]);
+    // The probe function deliberately reads the current command refs. The
+    // immutable release/node key above prevents state replies from re-probing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionStatus, gatewayRelease, gatewayUpdateDialogOpen, gatewayUpdatePlan]);
 
   useEffect(() => {
     let active = true;
@@ -4925,61 +4933,168 @@ function MalinkAppRuntime() {
     }
   }
 
-  async function runGatewayUpdate(
-    payload: Extract<CommandPayload, { operation: `gateway.update.${string}` }>,
-    targetProjectId: string | undefined = activeWorkspace?.projectId,
-  ): Promise<void> {
-    setGatewayUpdateBusy(true);
-    setGatewayUpdateError(null);
+  function setGatewayUpdateNodeRuntime(
+    gatewayNodeId: string,
+    update: (current: GatewayUpdateNodeRuntime) => GatewayUpdateNodeRuntime,
+  ): void {
+    setGatewayUpdateRuntimeByNode(current => ({
+      ...current,
+      [gatewayNodeId]: {
+        ...update(
+          current[gatewayNodeId]?.releaseKey === gatewayUpdateReleaseKey
+            ? current[gatewayNodeId]
+            : { state: "unchecked" },
+        ),
+        ...(gatewayUpdateReleaseKey ? { releaseKey: gatewayUpdateReleaseKey } : {}),
+      },
+    }));
+  }
+
+  async function probeGatewayUpdateNode(
+    node: GatewayUpdatePlanNode,
+  ): Promise<GatewayUpdateStatus | null> {
+    const target = gatewayUpdateTarget(node);
+    if (!target || connectionStatusRef.current !== "connected") return null;
+    setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
+      ...current,
+      state: "checking",
+      detail: undefined,
+    }));
+    let commandId: string | null = null;
     try {
-      await executeGatewayUpdate(payload, targetProjectId);
+      const sent = await sendRealCommand({
+        operation: "gateway.update.status",
+      }, target.targetProjectId, {
+        autoRetryRevisionConflict: true,
+        propagateFailure: true,
+      });
+      if (!sent) {
+        throw new Error("The client could not send the signed live-status request.");
+      }
+      commandId = sent.commandId;
+      const completion = await waitForCommandCompletion(sent.completion, 12_000);
+      const checkedAt = Date.now();
+      if (completion.outcome !== "succeeded") {
+        setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
+          ...current,
+          state: "online",
+          checkedAt,
+          detail: completion.error?.message
+            ? `Gateway replied, but its update supervisor reported: ${completion.error.message}`
+            : "Gateway replied, but its update supervisor is unavailable.",
+        }));
+        return null;
+      }
+      const status = gatewayUpdateStatusSchema.parse(completion.result);
+      setGatewayState(current => current ? { ...current, gatewayUpdate: status } : current);
+      setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
+        ...current,
+        state: "online",
+        checkedAt,
+        status,
+        ...(status.releaseId === gatewayRelease?.releaseId && status.maintenanceSessionId
+          ? { maintenanceSessionId: status.maintenanceSessionId }
+          : {}),
+        detail: undefined,
+      }));
+      return status;
     } catch (error) {
-      setGatewayUpdateError(formatUiError(error));
+      const detail = error instanceof CommandCompletionTimeoutError
+        ? "No signed reply arrived within 12 seconds. The command remains durable, but this Gateway is not proven online now."
+        : formatUiError(error);
+      setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
+        ...current,
+        state: "failed",
+        checkedAt: Date.now(),
+        detail,
+      }));
+      return null;
     } finally {
-      setGatewayUpdateBusy(false);
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
     }
   }
 
-  async function runPublishedGatewayUpdate(): Promise<void> {
-    if (!gatewayRelease) {
-      setGatewayUpdateError("No signed Gateway update Prompt is currently published.");
-      return;
-    }
-    setGatewayUpdateBusy(true);
-    setGatewayUpdateError(null);
+  async function startGatewayUpdateNode(node: GatewayUpdatePlanNode): Promise<void> {
+    if (!gatewayRelease || gatewayUpdateActiveNodeId) return;
+    const target = gatewayUpdateTarget(node);
+    if (!target || node.state !== "available") return;
+    setGatewayUpdateActiveNodeId(node.gatewayNodeId);
     try {
-      const targetProjectId = activeWorkspace?.projectId;
-      const staged = await executeGatewayUpdate({
-        operation: "gateway.update.stage",
-        releaseId: gatewayRelease.releaseId,
-      }, targetProjectId);
-      if (["scheduled", "activating", "probation", "committed"].includes(staged.phase)) {
-        return;
+      const runtime = gatewayUpdateRuntimeForRelease[node.gatewayNodeId];
+      const recentlyOnline =
+        runtime?.state === "online" &&
+        runtime.status !== undefined &&
+        runtime.checkedAt !== undefined &&
+        Date.now() - runtime.checkedAt <= 30_000;
+      const liveStatus = recentlyOnline
+        ? runtime.status
+        : await probeGatewayUpdateNode(node);
+      if (!liveStatus) return;
+      if (gatewayUpdateNoticeKey) {
+        setDismissedGatewayUpdateNoticeKey(gatewayUpdateNoticeKey);
       }
-      if (
-        staged.phase !== "staged" ||
-        staged.releaseId !== gatewayRelease.releaseId ||
-        staged.targetBuildId !== gatewayRelease.buildId
-      ) {
-        throw new Error(
-          `The Gateway did not prepare published release ${gatewayRelease.releaseId}.`,
-        );
-      }
-      await executeGatewayUpdate({
-        operation: "gateway.update.apply",
-        releaseId: gatewayRelease.releaseId,
-        mode: "when_idle",
-      }, targetProjectId);
+      setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
+        ...current,
+        state: "starting",
+        startedAt: Date.now(),
+        detail: undefined,
+      }));
+      const status = await triggerGatewayUpdate({
+        release: gatewayRelease,
+        target,
+        send: (command, targetProjectId) =>
+          executeGatewayUpdateRef.current(command, targetProjectId),
+      });
+      setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
+        ...current,
+        state: "online",
+        checkedAt: Date.now(),
+        status,
+        ...(status.maintenanceSessionId
+          ? { maintenanceSessionId: status.maintenanceSessionId }
+          : {}),
+      }));
+      showUiNotice(
+        `gateway-update:${node.gatewayNodeId}`,
+        "connection",
+        "success",
+        status.phase === "committed"
+          ? `${node.gatewayName} already runs release ${gatewayRelease.releaseId}.`
+          : `${node.gatewayName} created its maintenance session and will switch after current Agent work finishes.`,
+        8_000,
+      );
     } catch (error) {
-      setGatewayUpdateError(formatUiError(error));
+      const detail = formatUiError(error);
+      setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
+        ...current,
+        state: "error",
+        detail,
+      }));
+      showUiNotice(
+        `gateway-update:${node.gatewayNodeId}`,
+        "connection",
+        "warning",
+        `${node.gatewayName} could not complete its Gateway update request: ${detail}`,
+      );
     } finally {
-      setGatewayUpdateBusy(false);
+      setGatewayUpdateActiveNodeId(null);
     }
+  }
+
+  function openGatewayUpdateSession(sessionId: string): void {
+    setGatewayUpdateDialogOpen(false);
+    setPrimaryView("chats");
+    setMobileChatOpen(true);
+    activateLocalSession(sessionId);
   }
 
   async function executeGatewayUpdate(
     payload: Extract<CommandPayload, { operation: `gateway.update.${string}` }>,
     targetProjectId: string | undefined,
+    timeoutMs?: number,
   ) {
     let commandId: string | null = null;
     try {
@@ -4991,7 +5106,7 @@ function MalinkAppRuntime() {
       commandId = sent.commandId;
       const completion = await waitForCommandCompletion(
         sent.completion,
-        payload.operation === "gateway.update.status" ? 60_000 : 30 * 60_000,
+        timeoutMs ?? (payload.operation === "gateway.update.status" ? 60_000 : 30 * 60_000),
       );
       if (completion.outcome !== "succeeded") {
         throw new Error(
@@ -9183,6 +9298,38 @@ function MalinkAppRuntime() {
         </div>
       )}
 
+      {gatewayRelease &&
+        gatewayUpdateNoticeKey &&
+        dismissedGatewayUpdateNoticeKey !== gatewayUpdateNoticeKey &&
+        !gatewayUpdateDialogOpen && (
+        <div className="gateway-update-toast" role="status" aria-live="polite">
+          <span aria-hidden="true">G</span>
+          <span>
+            <strong>Gateway update available</strong>
+            <small>
+              {gatewayUpdateAvailableCount} {gatewayUpdateAvailableCount === 1
+                ? "Gateway needs"
+                : "Gateways need"} release {gatewayRelease.releaseId}. Nothing starts without your approval.
+            </small>
+          </span>
+          <button
+            type="button"
+            className="gateway-update-toast-review"
+            onClick={() => setGatewayUpdateDialogOpen(true)}
+          >
+            Review
+          </button>
+          <button
+            type="button"
+            className="gateway-update-toast-dismiss"
+            aria-label="Dismiss Gateway update notice"
+            onClick={() => setDismissedGatewayUpdateNoticeKey(gatewayUpdateNoticeKey)}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {(pairingError ?? connectionError) && !settingsOpen && (
         <button
           className="connection-toast"
@@ -9207,6 +9354,21 @@ function MalinkAppRuntime() {
             if (!newProjectBusy) setNewProjectOpen(false);
           }}
           onCreate={(input) => void createProject(input)}
+        />
+      )}
+
+      {gatewayRelease && gatewayUpdatePlan.length > 0 && (
+        <GatewayUpdateDialog
+          open={gatewayUpdateDialogOpen}
+          connected={connectionStatus === "connected"}
+          release={gatewayRelease}
+          nodes={gatewayUpdatePlan}
+          runtimeByNode={gatewayUpdateRuntimePresentation}
+          activeGatewayNodeId={gatewayUpdateActiveNodeId}
+          onClose={() => setGatewayUpdateDialogOpen(false)}
+          onProbe={(node) => void probeGatewayUpdateNode(node)}
+          onStart={(node) => void startGatewayUpdateNode(node)}
+          onOpenSession={openGatewayUpdateSession}
         />
       )}
 
@@ -9283,10 +9445,10 @@ function MalinkAppRuntime() {
         gatewayEnrollmentError={gatewayEnrollmentError}
         gatewayProfileBusy={gatewayProfileBusy}
         gatewayProfileError={gatewayProfileError}
-        gatewayUpdate={gatewayState?.gatewayUpdate ?? null}
         gatewayRelease={gatewayRelease}
-        gatewayUpdateBusy={gatewayUpdateBusy}
-        gatewayUpdateError={gatewayUpdateError ?? gatewayUpdateDiscoveryError}
+        gatewayUpdateAvailableCount={gatewayUpdateAvailableCount}
+        gatewayUpdateNodeCount={gatewayUpdatePlan.length}
+        gatewayUpdateDiscoveryError={gatewayUpdateDiscoveryError}
         updateState={pwaUpdateState}
         nativeUpdateState={nativeUpdateState}
         nativeUpdateBusy={nativeUpdateBusy}
@@ -9339,10 +9501,10 @@ function MalinkAppRuntime() {
           setGatewayEnrollmentError(null);
         }}
         onRenameGateway={renameGateway}
-        onRefreshGatewayUpdate={() => void runGatewayUpdate({
-          operation: "gateway.update.status",
-        })}
-        onStartGatewayUpdate={() => void runPublishedGatewayUpdate()}
+        onReviewGatewayUpdates={() => {
+          setSettingsOpen(false);
+          setGatewayUpdateDialogOpen(true);
+        }}
         onCheckForUpdates={() => void pwaUpdateRef.current?.checkNow()}
         onUpdateNativeApp={() => void recoverNativeAppUpdate(true)}
         onRestartApp={() => window.location.reload()}

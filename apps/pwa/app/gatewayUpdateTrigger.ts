@@ -4,14 +4,25 @@ import type {
 } from "@malink/protocol";
 import type { GatewayReleaseBuild } from "./buildInfo";
 
-export type AutomaticGatewayUpdateTarget = {
+export type GatewayUpdatePlanNode = {
   gatewayNodeId: string;
   gatewayName: string;
+  computerName?: string;
+  currentBuildId?: string;
+  targetProjectId?: string;
+  onlineUpdate: boolean;
+  state: "current" | "available" | "manual" | "unrouted" | "unknown";
+};
+
+export type GatewayUpdateTarget = {
+  gatewayNodeId: string;
+  gatewayName: string;
+  computerName?: string;
   currentBuildId: string;
   targetProjectId: string;
 };
 
-export type AutomaticGatewayUpdateCommand =
+export type GatewayUpdateCommand =
   | { operation: "gateway.update.stage"; releaseId: string }
   | {
       operation: "gateway.update.apply";
@@ -19,64 +30,64 @@ export type AutomaticGatewayUpdateCommand =
       mode: "when_idle";
     };
 
-type AttemptStorage = Pick<Storage, "getItem" | "setItem">;
-
-const ATTEMPT_KEY_PREFIX = "malink:gateway-update-attempt:v1:";
-
-export function automaticGatewayUpdateTargets(input: {
+/**
+ * Build a node-level update plan from the signed Gateway Directory. This is
+ * intentionally presentation-only: discovering a release must never mutate a
+ * Gateway until the user confirms one exact node.
+ */
+export function gatewayUpdatePlan(input: {
   directory: SignedWorkspaceGatewayDirectory | undefined;
   knownProjectIds: ReadonlySet<string>;
   release: GatewayReleaseBuild | null;
-}): AutomaticGatewayUpdateTarget[] {
+}): GatewayUpdatePlanNode[] {
   if (!input.directory || !input.release) return [];
-  return input.directory.directory.gateways.flatMap((gateway) => {
-    if (
-      gateway.onlineUpdate !== true ||
-      !gateway.buildId ||
-      gateway.buildId === input.release?.buildId
-    ) return [];
+  const release = input.release;
+  return input.directory.directory.gateways.map((gateway) => {
     const route = (gateway.projects ?? []).find((candidate) =>
       input.knownProjectIds.has(candidate.projectId),
     );
-    if (!route) return [];
-    return [{
+    const base = {
       gatewayNodeId: gateway.gatewayNodeId,
       gatewayName: gateway.gatewayName,
-      currentBuildId: gateway.buildId,
-      targetProjectId: route.projectId,
-    }];
+      ...(gateway.computerName ? { computerName: gateway.computerName } : {}),
+      ...(gateway.buildId ? { currentBuildId: gateway.buildId } : {}),
+      ...(route ? { targetProjectId: route.projectId } : {}),
+      onlineUpdate: gateway.onlineUpdate === true,
+    };
+    if (gateway.buildId === release.buildId) {
+      return { ...base, state: "current" as const };
+    }
+    if (!gateway.buildId) return { ...base, state: "unknown" as const };
+    if (gateway.onlineUpdate !== true) {
+      return { ...base, state: "manual" as const };
+    }
+    if (!route) return { ...base, state: "unrouted" as const };
+    return { ...base, state: "available" as const };
   });
 }
 
-export function hasAttemptedAutomaticGatewayUpdate(
-  storage: AttemptStorage,
-  gatewayNodeId: string,
-  release: GatewayReleaseBuild,
-): boolean {
-  try {
-    return storage.getItem(attemptStorageKey(gatewayNodeId)) === attemptValue(release);
-  } catch {
-    return false;
-  }
+export function gatewayUpdateTarget(
+  node: GatewayUpdatePlanNode,
+): GatewayUpdateTarget | null {
+  if (
+    !node.onlineUpdate ||
+    !node.currentBuildId ||
+    !node.targetProjectId
+  ) return null;
+  return {
+    gatewayNodeId: node.gatewayNodeId,
+    gatewayName: node.gatewayName,
+    ...(node.computerName ? { computerName: node.computerName } : {}),
+    currentBuildId: node.currentBuildId,
+    targetProjectId: node.targetProjectId,
+  };
 }
 
-export function recordAutomaticGatewayUpdateAttempt(
-  storage: AttemptStorage,
-  gatewayNodeId: string,
-  release: GatewayReleaseBuild,
-): void {
-  try {
-    storage.setItem(attemptStorageKey(gatewayNodeId), attemptValue(release));
-  } catch {
-    // The caller retains a page-lifetime attempt guard when storage is unavailable.
-  }
-}
-
-export async function triggerAutomaticGatewayUpdate(input: {
+export async function triggerGatewayUpdate(input: {
   release: GatewayReleaseBuild;
-  target: AutomaticGatewayUpdateTarget;
+  target: GatewayUpdateTarget;
   send(
-    command: AutomaticGatewayUpdateCommand,
+    command: GatewayUpdateCommand,
     targetProjectId: string,
   ): Promise<GatewayUpdateStatus>;
 }): Promise<GatewayUpdateStatus> {
@@ -118,12 +129,4 @@ function updateAlreadyScheduled(
     status.targetBuildId === release.buildId &&
     ["scheduled", "activating", "probation", "committed"].includes(status.phase)
   );
-}
-
-function attemptStorageKey(gatewayNodeId: string): string {
-  return `${ATTEMPT_KEY_PREFIX}${gatewayNodeId}`;
-}
-
-function attemptValue(release: GatewayReleaseBuild): string {
-  return JSON.stringify(release);
 }

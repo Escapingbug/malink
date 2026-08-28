@@ -28,7 +28,6 @@ import type { WebPushNotificationState } from "./webPushNotifications";
 import type {
   GatewayEnrollmentPending,
   SignedWorkspaceGatewayDirectory,
-  GatewayUpdateStatus,
 } from "@malink/protocol";
 import {
   GatewayEnrollmentPanel,
@@ -60,10 +59,10 @@ type Props = {
   gatewayEnrollmentError: string | null;
   gatewayProfileBusy: string | null;
   gatewayProfileError: string | null;
-  gatewayUpdate: GatewayUpdateStatus | null;
   gatewayRelease: GatewayReleaseBuild | null;
-  gatewayUpdateBusy: boolean;
-  gatewayUpdateError: string | null;
+  gatewayUpdateAvailableCount: number;
+  gatewayUpdateNodeCount: number;
+  gatewayUpdateDiscoveryError: string | null;
   updateState: PwaUpdateState;
   nativeUpdateState: NativeUpdateStatus | null;
   nativeUpdateBusy: boolean;
@@ -89,8 +88,7 @@ type Props = {
     gatewayName: string,
     targetProjectId: string,
   ): Promise<void>;
-  onRefreshGatewayUpdate(): void;
-  onStartGatewayUpdate(): void;
+  onReviewGatewayUpdates(): void;
   onCheckForUpdates(): void;
   onUpdateNativeApp(): void;
   onRestartApp(): void;
@@ -130,10 +128,10 @@ function MatrixSettingsDialog({
   gatewayEnrollmentError,
   gatewayProfileBusy,
   gatewayProfileError,
-  gatewayUpdate,
   gatewayRelease,
-  gatewayUpdateBusy,
-  gatewayUpdateError,
+  gatewayUpdateAvailableCount,
+  gatewayUpdateNodeCount,
+  gatewayUpdateDiscoveryError,
   updateState,
   nativeUpdateState,
   nativeUpdateBusy,
@@ -155,8 +153,7 @@ function MatrixSettingsDialog({
   onApproveGatewayEnrollment,
   onClearGatewayEnrollment,
   onRenameGateway,
-  onRefreshGatewayUpdate,
-  onStartGatewayUpdate,
+  onReviewGatewayUpdates,
   onCheckForUpdates,
   onUpdateNativeApp,
   onRestartApp,
@@ -695,6 +692,25 @@ function MatrixSettingsDialog({
           </section>
         )}
 
+        {trustedGateway && gatewayRelease && gatewayUpdateNodeCount > 0 && (
+          <section className="gateway-update-settings" aria-live="polite">
+            <span>
+              <strong>Gateway software</strong>
+              <small>
+                {gatewayUpdateAvailableCount > 0
+                  ? `${gatewayUpdateAvailableCount} ${gatewayUpdateAvailableCount === 1 ? "Gateway needs" : "Gateways need"} release ${gatewayRelease.releaseId}.`
+                  : `Review ${gatewayUpdateNodeCount} ${gatewayUpdateNodeCount === 1 ? "Gateway" : "Gateways"} and their live status.`}
+              </small>
+              {gatewayUpdateDiscoveryError && (
+                <em role="alert">Update discovery: {gatewayUpdateDiscoveryError}</em>
+              )}
+            </span>
+            <button type="button" onClick={onReviewGatewayUpdates}>
+              {gatewayUpdateAvailableCount > 0 ? "Review update" : "View versions"}
+            </button>
+          </section>
+        )}
+
         {error && (
           <div className="connection-error" role="alert">
             <strong>
@@ -731,14 +747,10 @@ function MatrixSettingsDialog({
                 {nativeRuntime && (
                   <small>{nativeUpdateStatusText(nativeUpdateState)}</small>
                 )}
-                <small>{gatewayUpdateStatusText(gatewayUpdate)}</small>
                 {gatewayRelease && (
                   <small>
                     Published Gateway update <code>{gatewayRelease.releaseId}</code>
                   </small>
-                )}
-                {gatewayUpdateError && (
-                  <small role="alert">Gateway update: {gatewayUpdateError}</small>
                 )}
               </span>
               <div className="settings-build-actions">
@@ -789,26 +801,6 @@ function MatrixSettingsDialog({
                       : "Install APK update"}
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={onRefreshGatewayUpdate}
-                  disabled={gatewayUpdateBusy || status !== "connected"}
-                >
-                  Refresh Gateway status
-                </button>
-                <button
-                  type="button"
-                  onClick={onStartGatewayUpdate}
-                  disabled={
-                    gatewayUpdateBusy ||
-                    status !== "connected" ||
-                    !gatewayRelease
-                  }
-                >
-                  {gatewayUpdateBusy
-                    ? "Running Gateway update…"
-                    : "Update Gateway with local Agent"}
-                </button>
               </div>
             </div>
           </details>
@@ -878,39 +870,6 @@ function nativeUpdateStatusText(state: NativeUpdateStatus | null): string {
       return "APK: the last update attempt failed; the current app remains unchanged";
     case "current":
       return "APK: up to date; releases arrive through your Gateway";
-  }
-}
-
-function gatewayUpdateStatusText(state: GatewayUpdateStatus | null): string {
-  if (!state) return "Gateway update supervisor status has not been synchronized";
-  const release = state.releaseId ? ` ${state.releaseId}` : "";
-  switch (state.phase) {
-    case "idle":
-      return `Gateway ${state.currentBuildId ?? "build unknown"}: no update staged`;
-    case "staging":
-      return `Gateway: verifying the signed update Prompt${release}`;
-    case "agent_required":
-      return `Gateway release${release}: waiting for its local maintenance Agent`;
-    case "agent_running":
-      return `Gateway release${release}: local maintenance Agent is updating and testing it`;
-    case "agent_validating":
-      return `Gateway release${release}: supervisor is validating the Agent-built result`;
-    case "staged":
-      return `Gateway release${release} is verified and ready`;
-    case "waiting_for_idle":
-      return `Gateway release${release}: new tasks are queued while ${state.activeTurns ?? "active"} current agent turn(s) finish`;
-    case "scheduled":
-    case "activating":
-    case "probation":
-      return `Gateway release${release} is being activated; this page may reconnect briefly`;
-    case "committed":
-      return `Gateway release${release} passed health checks`;
-    case "rolled_back":
-      return `Gateway release${release} failed health checks and was rolled back`;
-    case "failed":
-      return `Gateway release${release} could not be prepared; the current version is unchanged`;
-    case "repair_required":
-      return "Gateway update needs local repair; automatic switching is stopped";
   }
 }
 
