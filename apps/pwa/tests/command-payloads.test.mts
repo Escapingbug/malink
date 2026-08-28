@@ -35,6 +35,20 @@ test("preserves defined attachments in prompt commands", () => {
   assert.doesNotThrow(() => canonicalJson(payload));
 });
 
+test("preserves composer line breaks in prompt commands", () => {
+  const payload = commandPayloadSchema.parse(
+    createPromptCommandPayload({
+      sessionId: "session-1",
+      text: "first line\nsecond line\n\nfinal paragraph",
+    }),
+  );
+
+  if (payload.operation !== "prompt") {
+    assert.fail("Expected a prompt command payload.");
+  }
+  assert.equal(payload.text, "first line\nsecond line\n\nfinal paragraph");
+});
+
 test("creates canonical session lifecycle commands", () => {
   for (const operation of [
     "session.archive",
