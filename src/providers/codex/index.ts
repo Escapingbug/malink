@@ -5,9 +5,8 @@
  * The Agent Client Protocol codex-acp adapter as a stdio ACP agent.
  */
 
-import { accessSync, constants } from 'node:fs'
-import { delimiter, join } from 'node:path'
-import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { AcpProvider } from '@/providers/acp'
 import type { ModelEntry, ProviderSessionHistory } from '@/providers/provider'
 import {
@@ -16,12 +15,19 @@ import {
     type CodexSessionHistoryReader,
 } from './history'
 
-const CODEX_ACP_COMMAND = 'npx'
-const CODEX_ACP_ARGS = ['-y', '@agentclientprotocol/codex-acp']
-const INSTALLED_CODEX_ACP_COMMAND = 'codex-acp'
-const CODEX_MODELS_COMMAND = 'codex'
+const CODEX_ACP_PACKAGE = '@agentclientprotocol/codex-acp'
+const CODEX_CLI_SUBCOMMAND = 'cli'
 const CODEX_MODELS_ARGS = ['debug', 'models']
 const CODEX_MODEL_PROVIDER = 'openai'
+const CODEX_MODELS_TIMEOUT_MS = 10_000
+const CODEX_MODELS_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+const CODEX_MODELS_REFRESH_MS = 5 * 60_000
+const CODEX_MODELS_RETRY_MS = 30_000
+
+interface CommandLaunch {
+    command: string
+    args: string[]
+}
 
 export interface CodexProviderOptions {
     name?: string
@@ -31,8 +37,18 @@ export interface CodexProviderOptions {
     cwd?: string
     modelsCommand?: string
     modelsArgs?: string[]
+    modelsReader?: CodexModelsReader
     historyReader?: CodexSessionHistoryReader
 }
+
+export interface CodexModelsReaderInput {
+    command: string
+    args: string[]
+    env?: Record<string, string>
+    cwd?: string
+}
+
+export type CodexModelsReader = (input: CodexModelsReaderInput) => Promise<string>
 
 interface CodexModelCatalog {
     models?: Array<{
@@ -45,16 +61,28 @@ interface CodexModelCatalog {
     }>
 }
 
+interface CachedCodexModelCatalog {
+    models: ModelEntry[]
+    nextRefreshAt: number
+    refreshPromise?: Promise<ModelEntry[]>
+}
+
+const modelCatalogCache = new Map<string, CachedCodexModelCatalog>()
+
 export class CodexProvider extends AcpProvider {
     private readonly modelsCommand: string
     private readonly modelsArgs: string[]
     private readonly env?: Record<string, string>
     private readonly cwd?: string
+    private readonly modelsReader: CodexModelsReader
+    private readonly modelCatalogKey: string
     private readonly historyCommand: string
+    private readonly historyArgs: string[]
     private readonly historyReader: CodexSessionHistoryReader
 
     constructor(options: CodexProviderOptions = {}) {
-        const defaultLaunch = resolveDefaultCodexAcpLaunch(options.env)
+        const defaultLaunch = resolveDefaultCodexAcpLaunch()
+        const defaultCodexCli = resolveDefaultCodexCliLaunch(options.env)
         super({
             name: options.name ?? 'codex',
             command: options.command ?? defaultLaunch.command,
@@ -62,11 +90,24 @@ export class CodexProvider extends AcpProvider {
             ...(options.env ? { env: options.env } : {}),
             ...(options.cwd ? { cwd: options.cwd } : {}),
         })
-        this.modelsCommand = options.modelsCommand ?? CODEX_MODELS_COMMAND
-        this.modelsArgs = options.modelsArgs ?? CODEX_MODELS_ARGS
+        const usesDefaultCodexCli = options.modelsCommand === undefined
+        this.modelsCommand = options.modelsCommand ?? defaultCodexCli.command
+        this.modelsArgs = [
+            ...(usesDefaultCodexCli ? defaultCodexCli.args : []),
+            ...(options.modelsArgs ?? CODEX_MODELS_ARGS),
+        ]
         this.env = options.env
         this.cwd = options.cwd
-        this.historyCommand = options.env?.CODEX_PATH?.trim() || this.modelsCommand
+        this.modelsReader = options.modelsReader ?? readCodexModels
+        this.modelCatalogKey = codexModelCatalogKey({
+            command: this.modelsCommand,
+            args: this.modelsArgs,
+            ...(this.env ? { env: this.env } : {}),
+            ...(this.cwd ? { cwd: this.cwd } : {}),
+        })
+        const customHistoryCommand = options.env?.CODEX_PATH?.trim() || options.modelsCommand
+        this.historyCommand = customHistoryCommand || defaultCodexCli.command
+        this.historyArgs = customHistoryCommand ? [] : defaultCodexCli.args
         this.historyReader = options.historyReader ?? readCodexSessionHistory
     }
 
@@ -76,6 +117,7 @@ export class CodexProvider extends AcpProvider {
                 sessionId,
                 cwd,
                 command: this.historyCommand,
+                commandArgs: this.historyArgs,
                 ...(this.env ? { env: this.env } : {}),
                 ...(this.cwd ? { processCwd: this.cwd } : {}),
             })
@@ -86,63 +128,165 @@ export class CodexProvider extends AcpProvider {
     }
 
     getAvailableModels(): ModelEntry[] {
-        try {
-            const output = spawnCodexModels(this.modelsCommand, this.modelsArgs, this.env, this.cwd)
-            if (output.error || output.status !== 0) {
-                console.error(`[codex] Failed to list models: ${output.error?.message || `exit code ${output.status}`}`)
-                return []
-            }
-            return parseCodexModels(output.stdout)
-        } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e)
-            console.error(`[codex] Failed to list models: ${msg}`)
-            return []
+        const cached = this.cachedModelCatalog()
+        if (!cached.refreshPromise && Date.now() >= cached.nextRefreshAt) {
+            // Capability snapshots are synchronous and run on the Gateway main
+            // event loop. Refresh in the background so a slow Codex process can
+            // never starve Matrix sync, admin requests, or ACP stdio handling.
+            void this.refreshAvailableModels()
         }
+        return cached.models.map(model => ({ ...model }))
+    }
+
+    async refreshAvailableModels(): Promise<ModelEntry[]> {
+        const cached = this.cachedModelCatalog()
+        if (cached.refreshPromise) return cached.refreshPromise
+
+        cached.nextRefreshAt = Date.now() + CODEX_MODELS_RETRY_MS
+        const refresh = this.modelsReader({
+            command: this.modelsCommand,
+            args: [...this.modelsArgs],
+            ...(this.env ? { env: this.env } : {}),
+            ...(this.cwd ? { cwd: this.cwd } : {}),
+        }).then(stdout => {
+            const models = parseCodexModels(stdout)
+            cached.models = models
+            cached.nextRefreshAt = Date.now() + CODEX_MODELS_REFRESH_MS
+            return models.map(model => ({ ...model }))
+        }).catch(error => {
+            const message = error instanceof Error ? error.message : String(error)
+            console.error(`[codex] Failed to list models: ${message}`)
+            return cached.models.map(model => ({ ...model }))
+        }).finally(() => {
+            delete cached.refreshPromise
+        })
+        cached.refreshPromise = refresh
+        return refresh
+    }
+
+    private cachedModelCatalog(): CachedCodexModelCatalog {
+        let cached = modelCatalogCache.get(this.modelCatalogKey)
+        if (!cached) {
+            cached = { models: [], nextRefreshAt: 0 }
+            modelCatalogCache.set(this.modelCatalogKey, cached)
+        }
+        return cached
     }
 }
 
-export function resolveDefaultCodexAcpLaunch(env?: Record<string, string>): { command: string; args: string[] } {
-    const mergedEnv = mergeProcessEnv(env)
-    if (findExecutableOnPath(INSTALLED_CODEX_ACP_COMMAND, mergedEnv.PATH)) {
-        return { command: INSTALLED_CODEX_ACP_COMMAND, args: [] }
+export function resolveDefaultCodexAcpLaunch(): CommandLaunch {
+    return {
+        command: process.execPath,
+        args: [resolveCodexAcpEntrypoint()],
     }
-    return { command: CODEX_ACP_COMMAND, args: [...CODEX_ACP_ARGS] }
 }
 
-function findExecutableOnPath(command: string, pathValue: string | undefined): boolean {
-    if (!pathValue) return false
-    return pathValue.split(delimiter).some(directory => {
-        if (!directory) return false
-        try {
-            accessSync(join(directory, command), constants.X_OK)
-            return true
-        } catch {
-            return false
-        }
-    })
+function resolveDefaultCodexCliLaunch(env?: Record<string, string>): CommandLaunch {
+    const configuredCodex = env?.CODEX_PATH?.trim()
+    if (configuredCodex) return { command: configuredCodex, args: [] }
+    const acp = resolveDefaultCodexAcpLaunch()
+    return {
+        command: acp.command,
+        args: [...acp.args, CODEX_CLI_SUBCOMMAND],
+    }
+}
+
+function resolveCodexAcpEntrypoint(): string {
+    return createRequire(import.meta.url).resolve(CODEX_ACP_PACKAGE)
 }
 
 function mergeProcessEnv(env?: Record<string, string>): NodeJS.ProcessEnv {
     return env ? { ...process.env, ...env } : process.env
 }
 
-function spawnCodexModels(command: string, args: string[], env?: Record<string, string>, cwd?: string) {
-    const options: SpawnSyncOptionsWithStringEncoding = {
-        encoding: 'utf-8',
-        timeout: 10_000,
-        windowsHide: true,
-        env: mergeProcessEnv(env),
-        ...(cwd ? { cwd } : {}),
-    }
+export function readCodexModels(input: CodexModelsReaderInput): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const isWindows = process.platform === 'win32'
+        const child = spawn(
+            isWindows ? `${input.command} ${input.args.join(' ')}` : input.command,
+            isWindows ? [] : input.args,
+            {
+                stdio: ['ignore', 'pipe', 'pipe'],
+                windowsHide: true,
+                env: mergeProcessEnv(input.env),
+                ...(input.cwd ? { cwd: input.cwd } : {}),
+                detached: !isWindows,
+                shell: isWindows,
+            },
+        )
+        const stdout: Buffer[] = []
+        const stderr: Buffer[] = []
+        let outputBytes = 0
+        let settled = false
+        const finish = (error?: Error) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timeout)
+            if (error) reject(error)
+            else resolve(Buffer.concat(stdout).toString('utf-8'))
+        }
+        const rejectForOutputLimit = () => {
+            terminateModelProcess(child)
+            finish(new Error(
+                `Codex model catalog exceeded ${CODEX_MODELS_MAX_OUTPUT_BYTES} bytes`,
+            ))
+        }
 
-    if (process.platform !== 'win32') {
-        return spawnSync(command, args, options)
-    }
-
-    return spawnSync(`${command} ${args.join(' ')}`, {
-        ...options,
-        shell: true,
+        child.stdout?.on('data', (chunk: Buffer) => {
+            outputBytes += chunk.length
+            if (outputBytes > CODEX_MODELS_MAX_OUTPUT_BYTES) {
+                rejectForOutputLimit()
+                return
+            }
+            stdout.push(chunk)
+        })
+        child.stderr?.on('data', (chunk: Buffer) => {
+            if (Buffer.concat(stderr).length < 32 * 1024) stderr.push(chunk)
+        })
+        child.once('error', error => finish(error))
+        child.once('close', code => {
+            if (code === 0) {
+                finish()
+                return
+            }
+            const detail = Buffer.concat(stderr).toString('utf-8').trim()
+            finish(new Error(
+                `${input.command} ${input.args.join(' ')} exited with code ${code}`
+                + (detail ? `: ${detail.slice(0, 1_000)}` : ''),
+            ))
+        })
+        const timeout = setTimeout(() => {
+            terminateModelProcess(child)
+            finish(new Error(`Codex model catalog timed out after ${CODEX_MODELS_TIMEOUT_MS}ms`))
+        }, CODEX_MODELS_TIMEOUT_MS)
+        timeout.unref()
     })
+}
+
+function terminateModelProcess(child: ChildProcess): void {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    if (process.platform !== 'win32' && child.pid) {
+        try {
+            process.kill(-child.pid, 'SIGKILL')
+            return
+        } catch {
+            // Fall back to the direct child when the process group is gone.
+        }
+    }
+    child.kill('SIGKILL')
+}
+
+function codexModelCatalogKey(input: CodexModelsReaderInput): string {
+    return JSON.stringify({
+        command: input.command,
+        args: input.args,
+        cwd: input.cwd ?? '',
+        env: Object.entries(input.env ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+    })
+}
+
+export function clearCodexModelCatalogCacheForTesting(): void {
+    modelCatalogCache.clear()
 }
 
 export function parseCodexModels(stdout: string): ModelEntry[] {

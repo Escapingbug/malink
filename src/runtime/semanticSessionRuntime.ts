@@ -413,6 +413,7 @@ export class SemanticSessionRuntime {
     }
 
     private async runTurn(prompt: string | RichUserInput): Promise<void> {
+        this.config.provider.prepareWorkingDirectory?.(this.config.cwd)
         if (!this.config.provider.isReady()) {
             await this.handleProviderNotReady()
             if (!this.config.provider.isReady()) return

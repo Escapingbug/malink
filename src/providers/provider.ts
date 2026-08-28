@@ -97,6 +97,9 @@ export interface ProviderSessionHistory {
 export interface AgentProvider {
     readonly name: string
 
+    /** Bind a subprocess-backed provider to this session's fixed project cwd before initialization. */
+    prepareWorkingDirectory?(cwd: string): void
+
     startQuery(prompt: AgentQueryInput, config: AgentQueryConfig): AgentQueryHandle
 
     isReady(): boolean

@@ -4,7 +4,7 @@ const OPTIMISTIC_SESSION_STORAGE_KEY = "malink:optimistic-session:v1";
 
 type SessionStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
-export type OptimisticSessionPhase = "creating" | "failed";
+export type OptimisticSessionPhase = "creating" | "uncertain" | "failed";
 
 export type OptimisticSessionRecord = {
   version: 1;
@@ -67,6 +67,19 @@ export function failOptimisticSession(
   delete next.commandId;
   delete next.remoteSessionId;
   return next;
+}
+
+export function markOptimisticSessionUncertain(
+  record: OptimisticSessionRecord,
+  error: string,
+  now = Date.now(),
+): OptimisticSessionRecord {
+  return {
+    ...record,
+    phase: "uncertain",
+    error,
+    updatedAt: now,
+  };
 }
 
 export function retryOptimisticSession(
@@ -138,7 +151,11 @@ function parseOptimisticSession(value: unknown): OptimisticSessionRecord | null 
     !isNonEmptyString(record.localSessionId) ||
     !isOptionalString(record.remoteSessionId) ||
     !isOptionalString(record.commandId) ||
-    !(record.phase === "creating" || record.phase === "failed") ||
+    !(
+      record.phase === "creating" ||
+      record.phase === "uncertain" ||
+      record.phase === "failed"
+    ) ||
     !isOptionalString(record.error) ||
     !isFiniteNumber(record.createdAt) ||
     !isFiniteNumber(record.updatedAt) ||

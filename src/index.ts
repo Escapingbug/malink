@@ -77,6 +77,13 @@ async function main() {
             caption: { type: 'string' },
             filename: { type: 'string' },
             source: { type: 'string' },
+            provider: { type: 'string' },
+            cwd: { type: 'string' },
+            session: { type: 'string' },
+            model: { type: 'string' },
+            'reasoning-effort': { type: 'string' },
+            'permission-mode': { type: 'string' },
+            timeout: { type: 'string' },
             'idempotency-key': { type: 'string' },
             'privilege-approval': { type: 'boolean', default: false },
             'gateway-data-dir': { type: 'string' },
@@ -495,6 +502,11 @@ async function handleGatewayCommand(
   malink gateway revoke <device-id> [--reason TEXT] [--socket PATH]
   malink gateway send-file <path> [--caption TEXT] [--filename NAME]
       [--source LABEL] [--idempotency-key KEY] [--socket PATH] [--json]
+  malink gateway prompt <text> [--provider NAME] [--cwd ABSOLUTE_PATH]
+      [--session PROVIDER_SESSION_ID] [--model ID]
+      [--reasoning-effort LEVEL]
+      [--permission-mode default|acceptEdits|bypassPermissions]
+      [--timeout SECONDS] [--socket PATH] [--json]
 `)
         return
     }
@@ -505,8 +517,51 @@ async function handleGatewayCommand(
         ?? defaultGatewayAdminSocket()
     const client = new GatewayAdminClient({
         socketPath,
-        timeoutMs: subcommand === 'send-file' ? 120_000 : 5_000,
+        timeoutMs: subcommand === 'send-file'
+            ? 120_000
+            : subcommand === 'prompt'
+                ? (parsePromptTimeoutMs(values.timeout) ?? 180_000) + 15_000
+                : 5_000,
     })
+
+    if (subcommand === 'prompt') {
+        const prompt = positionals.slice(1).join(' ').trim()
+        if (!prompt) throw new Error('Usage: malink gateway prompt <text> [options]')
+        const timeoutMs = parsePromptTimeoutMs(values.timeout)
+        const result = await client.runProviderPrompt({
+            prompt,
+            ...(stringOption(values.provider) ? { provider: stringOption(values.provider)! } : {}),
+            ...(stringOption(values.cwd) ? { cwd: resolve(stringOption(values.cwd)!) } : {}),
+            ...(stringOption(values.session)
+                ? { providerSessionId: stringOption(values.session)! }
+                : {}),
+            ...(stringOption(values.model) ? { model: stringOption(values.model)! } : {}),
+            ...(stringOption(values['reasoning-effort'])
+                ? { reasoningEffort: stringOption(values['reasoning-effort'])! }
+                : {}),
+            ...(parsePermissionMode(values['permission-mode'])
+                ? { permissionMode: parsePermissionMode(values['permission-mode'])! }
+                : {}),
+            ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        })
+        if (values.json) {
+            console.log(JSON.stringify(result, null, 2))
+            return
+        }
+        console.log(`Provider: ${result.provider}`)
+        console.log(`Working directory: ${result.cwd}`)
+        console.log(`Outcome: ${result.outcome}`)
+        console.log(`Duration: ${result.durationMs}ms`)
+        if (result.sessionOpenMs !== undefined) {
+            console.log(`Session open: ${result.sessionOpenMs}ms`)
+        }
+        if (result.providerSessionId) {
+            console.log(`Provider session: ${result.providerSessionId}`)
+        }
+        if (result.error) console.log(`Error: ${result.error}`)
+        if (result.text) console.log(`\n${result.text}`)
+        return
+    }
 
     if (subcommand === 'invite-gateway') {
         const dataDirectory = gatewayDataDirectory(values)
@@ -808,6 +863,27 @@ function parseLifetimeMs(value: unknown): number | undefined {
         throw new Error('--lifetime must be an integer between 30 and 600 seconds')
     }
     return seconds * 1_000
+}
+
+function parsePromptTimeoutMs(value: unknown): number | undefined {
+    const text = stringOption(value)
+    if (!text) return undefined
+    const seconds = Number(text)
+    if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 600) {
+        throw new Error('--timeout must be an integer between 1 and 600 seconds')
+    }
+    return seconds * 1_000
+}
+
+function parsePermissionMode(
+    value: unknown,
+): 'default' | 'acceptEdits' | 'bypassPermissions' | undefined {
+    const mode = stringOption(value)
+    if (!mode) return undefined
+    if (mode !== 'default' && mode !== 'acceptEdits' && mode !== 'bypassPermissions') {
+        throw new Error('--permission-mode must be default, acceptEdits, or bypassPermissions')
+    }
+    return mode
 }
 
 function parseMatrixLoginMode(

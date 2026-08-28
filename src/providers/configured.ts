@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { getDaemonBaseDir } from '@/config'
 import { AcpProvider } from '@/providers/acp'
@@ -129,7 +130,8 @@ export function registerConfiguredProviders(path: string = getProviderProfilesPa
     return loaded
 }
 
-export function createProviderFromProfile(profile: ProviderProfile): AgentProvider {
+export function createProviderFromProfile(input: ProviderProfile): AgentProvider {
+    const profile = normalizeLegacyCodexProfile(input)
     switch (profile.type) {
         case 'opencode':
             return new OpencodeProvider({
@@ -180,6 +182,47 @@ export function createProviderFromProfile(profile: ProviderProfile): AgentProvid
                 ...(profile.cwd ? { cwd: profile.cwd } : {}),
             })
     }
+}
+
+/**
+ * Older Malink installers persisted their ambient Codex adapter paths as if
+ * they were user overrides. Release-pinned Gateways must ignore only those
+ * exact generated defaults while preserving genuinely custom commands.
+ */
+export function normalizeLegacyCodexProfile(
+    profile: ProviderProfile,
+    homeDirectory: string = homedir(),
+): ProviderProfile {
+    if (profile.id !== 'codex' || profile.type !== 'codex') return profile
+
+    const legacyAcpCommand = join(
+        homeDirectory,
+        '.local',
+        'share',
+        'codever-adapters',
+        'node_modules',
+        '.bin',
+        'codex-acp',
+    )
+    const legacyCodexCommand = join(homeDirectory, '.local', 'bin', 'codex')
+    const normalized: ProviderProfile = {
+        ...profile,
+        ...(profile.env ? { env: { ...profile.env } } : {}),
+    }
+
+    if (normalized.command === legacyAcpCommand) {
+        delete normalized.command
+        delete normalized.args
+    }
+    if (normalized.modelsCommand === legacyCodexCommand) {
+        delete normalized.modelsCommand
+        delete normalized.modelsArgs
+    }
+    if (normalized.env?.CODEX_PATH === legacyCodexCommand) {
+        delete normalized.env.CODEX_PATH
+        if (Object.keys(normalized.env).length === 0) delete normalized.env
+    }
+    return normalized
 }
 
 function parseProviderProfile(entry: unknown, source: string): ProviderProfile {

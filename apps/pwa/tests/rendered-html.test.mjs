@@ -175,6 +175,9 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /Creating · Ready for messages/);
   assert.match(source, /Conversation creation failed/);
   assert.match(source, /Retry creation/);
+  assert.match(source, /Creation result not confirmed/);
+  assert.match(source, /Check result again/);
+  assert.match(source, /Stop waiting/);
   assert.match(source, /discardFailedOptimisticSession/);
   assert.match(
     source,

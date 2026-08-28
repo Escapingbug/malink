@@ -8,6 +8,10 @@ type SessionResponse = {
     models?: undefined
 }
 
+type SessionRequest = {
+    mcpServers?: unknown[]
+}
+
 class RecoveryClientManager {
     connected = true
     supportsResumeSession = true
@@ -24,10 +28,12 @@ class RecoveryClientManager {
     permissionHandlerCalls = 0
     extensionHandlerCalls = 0
     promptSessionIds: string[] = []
+    resumeMcpServerCounts: number[] = []
+    newSessionMcpServerCounts: number[] = []
 
-    resumeBehavior: (call: number) => Promise<SessionResponse> = async () => ({})
+    resumeBehavior: (call: number, request: SessionRequest) => Promise<SessionResponse> = async () => ({})
     loadBehavior: (call: number) => Promise<SessionResponse> = async () => ({})
-    newSessionBehavior: (call: number) => Promise<SessionResponse> = async () => ({ sessionId: 'new-session' })
+    newSessionBehavior: (call: number, request: SessionRequest) => Promise<SessionResponse> = async () => ({ sessionId: 'new-session' })
 
     private pendingOperationRejects = new Set<(error: Error) => void>()
 
@@ -66,14 +72,16 @@ class RecoveryClientManager {
         })
     }
 
-    async newSession(): Promise<SessionResponse> {
+    async newSession(request: SessionRequest): Promise<SessionResponse> {
         this.newSessionCalls += 1
-        return this.newSessionBehavior(this.newSessionCalls)
+        this.newSessionMcpServerCounts.push(request.mcpServers?.length ?? 0)
+        return this.newSessionBehavior(this.newSessionCalls, request)
     }
 
-    async resumeSession(): Promise<SessionResponse> {
+    async resumeSession(request: SessionRequest): Promise<SessionResponse> {
         this.resumeSessionCalls += 1
-        return this.resumeBehavior(this.resumeSessionCalls)
+        this.resumeMcpServerCounts.push(request.mcpServers?.length ?? 0)
+        return this.resumeBehavior(this.resumeSessionCalls, request)
     }
 
     async loadSession(): Promise<SessionResponse> {
@@ -113,16 +121,28 @@ class RecoveryClientManager {
     }
 }
 
-function providerWith(manager: RecoveryClientManager, timeoutMs = 10): AcpProvider {
+function providerWithManagers(managers: RecoveryClientManager[], timeoutMs = 10): AcpProvider {
+    if (managers.length === 0) throw new Error('At least one fake manager is required')
     const provider = new AcpProvider({
         name: 'recovery-test-acp',
         command: 'fake',
         args: [],
         sessionOpenTimeoutMs: timeoutMs,
     })
-    ;(provider as any).clientManager = manager
+    let nextManager = 1
+    ;(provider as any).clientManager = managers[0]
+    ;(provider as any).createClientManager = () => {
+        const manager = managers[nextManager]
+        nextManager += 1
+        if (!manager) throw new Error(`Unexpected ACP manager replacement #${nextManager}`)
+        return manager
+    }
     ;(provider as any).initialized = true
     return provider
+}
+
+function providerWith(manager: RecoveryClientManager, timeoutMs = 10): AcpProvider {
+    return providerWithManagers([manager], timeoutMs)
 }
 
 async function collectEvents(provider: AcpProvider, sessionId: string | null = 'existing-session'): Promise<AgentEvent[]> {
@@ -138,22 +158,23 @@ async function collectEvents(provider: AcpProvider, sessionId: string | null = '
 
 describe('AcpProvider session-open recovery', () => {
     it('restarts a wedged ACP process and resumes the same provider session before prompting', async () => {
-        const manager = new RecoveryClientManager()
-        manager.resumeBehavior = call => call === 1
-            ? manager.hangUntilClose()
-            : Promise.resolve({})
-        const provider = providerWith(manager)
+        const wedgedManager = new RecoveryClientManager()
+        const recoveredManager = new RecoveryClientManager()
+        wedgedManager.resumeBehavior = () => wedgedManager.hangUntilClose()
+        const provider = providerWithManagers([wedgedManager, recoveredManager])
 
         const events = await collectEvents(provider)
 
-        expect(manager.closeCalls).toBe(1)
-        expect(manager.initCalls).toBe(1)
-        expect(manager.resumeSessionCalls).toBe(2)
-        expect(manager.newSessionCalls).toBe(0)
-        expect(manager.promptCalls).toBe(1)
-        expect(manager.promptSessionIds).toEqual(['existing-session'])
-        expect(manager.permissionHandlerCalls).toBe(2)
-        expect(manager.extensionHandlerCalls).toBe(2)
+        expect(wedgedManager.closeCalls).toBe(1)
+        expect(wedgedManager.resumeSessionCalls).toBe(1)
+        expect(recoveredManager.initCalls).toBe(1)
+        expect(recoveredManager.resumeSessionCalls).toBe(1)
+        expect(recoveredManager.newSessionCalls).toBe(0)
+        expect(recoveredManager.promptCalls).toBe(1)
+        expect(recoveredManager.promptSessionIds).toEqual(['existing-session'])
+        expect(wedgedManager.permissionHandlerCalls).toBe(1)
+        expect(recoveredManager.permissionHandlerCalls).toBe(1)
+        expect(recoveredManager.extensionHandlerCalls).toBe(1)
         expect(events).toEqual(expect.arrayContaining([
             expect.objectContaining({
                 kind: 'session_init',
@@ -165,25 +186,27 @@ describe('AcpProvider session-open recovery', () => {
     })
 
     it('creates a replacement only after the restarted process explicitly rejects the old session', async () => {
-        const manager = new RecoveryClientManager()
-        manager.agentCapabilities = { agentCapabilities: { loadSession: true } }
-        manager.resumeBehavior = call => call === 1
-            ? manager.hangUntilClose()
-            : Promise.reject(new Error('session not found'))
-        manager.loadBehavior = async () => {
+        const wedgedManager = new RecoveryClientManager()
+        const recoveredManager = new RecoveryClientManager()
+        wedgedManager.resumeBehavior = () => wedgedManager.hangUntilClose()
+        recoveredManager.agentCapabilities = { agentCapabilities: { loadSession: true } }
+        recoveredManager.resumeBehavior = () => Promise.reject(new Error('session not found'))
+        recoveredManager.loadBehavior = async () => {
             throw new Error('session not found')
         }
-        manager.newSessionBehavior = async () => ({ sessionId: 'replacement-session' })
-        const provider = providerWith(manager)
+        recoveredManager.newSessionBehavior = async () => ({ sessionId: 'replacement-session' })
+        const provider = providerWithManagers([wedgedManager, recoveredManager])
 
         const events = await collectEvents(provider)
 
-        expect(manager.closeCalls).toBe(1)
-        expect(manager.resumeSessionCalls).toBe(2)
-        expect(manager.loadSessionCalls).toBe(1)
-        expect(manager.newSessionCalls).toBe(1)
-        expect(manager.promptCalls).toBe(1)
-        expect(manager.promptSessionIds).toEqual(['replacement-session'])
+        expect(wedgedManager.closeCalls).toBe(1)
+        expect(wedgedManager.resumeSessionCalls).toBe(1)
+        expect(recoveredManager.initCalls).toBe(1)
+        expect(recoveredManager.resumeSessionCalls).toBe(1)
+        expect(recoveredManager.loadSessionCalls).toBe(1)
+        expect(recoveredManager.newSessionCalls).toBe(1)
+        expect(recoveredManager.promptCalls).toBe(1)
+        expect(recoveredManager.promptSessionIds).toEqual(['replacement-session'])
         expect(events).toEqual(expect.arrayContaining([
             expect.objectContaining({
                 kind: 'session_init',
@@ -194,42 +217,108 @@ describe('AcpProvider session-open recovery', () => {
         ]))
     })
 
-    it('uses a clean process for replacement when both resume attempts time out', async () => {
-        const manager = new RecoveryClientManager()
-        manager.resumeBehavior = () => manager.hangUntilClose()
-        manager.newSessionBehavior = async () => ({ sessionId: 'replacement-session' })
-        const provider = providerWith(manager)
+    it('preserves the same session without MCP when both full recovery attempts time out', async () => {
+        const firstManager = new RecoveryClientManager()
+        const secondManager = new RecoveryClientManager()
+        const degradedManager = new RecoveryClientManager()
+        firstManager.resumeBehavior = () => firstManager.hangUntilClose()
+        secondManager.resumeBehavior = () => secondManager.hangUntilClose()
+        const provider = providerWithManagers([firstManager, secondManager, degradedManager])
+
+        const events = await collectEvents(provider)
+
+        expect(firstManager.closeCalls).toBe(1)
+        expect(secondManager.closeCalls).toBe(1)
+        expect(firstManager.resumeMcpServerCounts).toEqual([1])
+        expect(secondManager.resumeMcpServerCounts).toEqual([1])
+        expect(degradedManager.resumeMcpServerCounts).toEqual([0])
+        expect(degradedManager.newSessionCalls).toBe(0)
+        expect(degradedManager.promptSessionIds).toEqual(['existing-session'])
+        expect(events).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                kind: 'text',
+                text: expect.stringContaining('recovered without Malink tools'),
+            }),
+            expect.objectContaining({ kind: 'result', status: 'success' }),
+        ]))
+    })
+
+    it('uses a clean process for replacement when full and degraded recovery time out', async () => {
+        const firstManager = new RecoveryClientManager()
+        const secondManager = new RecoveryClientManager()
+        const degradedManager = new RecoveryClientManager()
+        const replacementManager = new RecoveryClientManager()
+        firstManager.resumeBehavior = () => firstManager.hangUntilClose()
+        secondManager.resumeBehavior = () => secondManager.hangUntilClose()
+        degradedManager.resumeBehavior = () => degradedManager.hangUntilClose()
+        replacementManager.newSessionBehavior = async () => ({ sessionId: 'replacement-session' })
+        const provider = providerWithManagers([
+            firstManager,
+            secondManager,
+            degradedManager,
+            replacementManager,
+        ])
 
         await collectEvents(provider)
 
-        expect(manager.closeCalls).toBe(2)
-        expect(manager.initCalls).toBe(2)
-        expect(manager.resumeSessionCalls).toBe(2)
-        expect(manager.newSessionCalls).toBe(1)
-        expect(manager.promptCalls).toBe(1)
-        expect(manager.promptSessionIds).toEqual(['replacement-session'])
+        expect(firstManager.closeCalls).toBe(1)
+        expect(secondManager.closeCalls).toBe(1)
+        expect(degradedManager.closeCalls).toBe(1)
+        expect(replacementManager.initCalls).toBe(1)
+        expect(replacementManager.newSessionMcpServerCounts).toEqual([1])
+        expect(replacementManager.promptSessionIds).toEqual(['replacement-session'])
     })
 
     it('restarts and retries when initial session creation times out', async () => {
-        const manager = new RecoveryClientManager()
-        manager.supportsResumeSession = false
-        manager.newSessionBehavior = call => call === 1
-            ? manager.hangUntilClose()
-            : Promise.resolve({ sessionId: 'created-after-restart' })
-        const provider = providerWith(manager)
+        const wedgedManager = new RecoveryClientManager()
+        const recoveredManager = new RecoveryClientManager()
+        wedgedManager.supportsResumeSession = false
+        recoveredManager.supportsResumeSession = false
+        wedgedManager.newSessionBehavior = () => wedgedManager.hangUntilClose()
+        recoveredManager.newSessionBehavior = () => Promise.resolve({ sessionId: 'created-after-restart' })
+        const provider = providerWithManagers([wedgedManager, recoveredManager])
 
         const events = await collectEvents(provider, null)
 
-        expect(manager.closeCalls).toBe(1)
-        expect(manager.initCalls).toBe(1)
-        expect(manager.newSessionCalls).toBe(2)
-        expect(manager.promptCalls).toBe(1)
-        expect(manager.promptSessionIds).toEqual(['created-after-restart'])
+        expect(wedgedManager.closeCalls).toBe(1)
+        expect(wedgedManager.newSessionCalls).toBe(1)
+        expect(recoveredManager.initCalls).toBe(1)
+        expect(recoveredManager.newSessionCalls).toBe(1)
+        expect(recoveredManager.promptCalls).toBe(1)
+        expect(recoveredManager.promptSessionIds).toEqual(['created-after-restart'])
         expect(events).toEqual(expect.arrayContaining([
             expect.objectContaining({
                 kind: 'session_init',
                 sessionId: 'created-after-restart',
                 isNewSession: false,
+            }),
+            expect.objectContaining({ kind: 'result', status: 'success' }),
+        ]))
+    })
+
+    it('continues a newly created session without MCP after both full creation attempts time out', async () => {
+        const firstManager = new RecoveryClientManager()
+        const secondManager = new RecoveryClientManager()
+        const degradedManager = new RecoveryClientManager()
+        firstManager.supportsResumeSession = false
+        secondManager.supportsResumeSession = false
+        degradedManager.supportsResumeSession = false
+        firstManager.newSessionBehavior = () => firstManager.hangUntilClose()
+        secondManager.newSessionBehavior = () => secondManager.hangUntilClose()
+        degradedManager.newSessionBehavior = () => Promise.resolve({ sessionId: 'degraded-session' })
+        const provider = providerWithManagers([firstManager, secondManager, degradedManager])
+
+        const events = await collectEvents(provider, null)
+
+        expect(firstManager.newSessionMcpServerCounts).toEqual([1])
+        expect(secondManager.newSessionMcpServerCounts).toEqual([1])
+        expect(degradedManager.newSessionMcpServerCounts).toEqual([0])
+        expect(degradedManager.resumeSessionCalls).toBe(0)
+        expect(degradedManager.promptSessionIds).toEqual(['degraded-session'])
+        expect(events).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                kind: 'text',
+                text: expect.stringContaining('recovered without Malink tools'),
             }),
             expect.objectContaining({ kind: 'result', status: 'success' }),
         ]))

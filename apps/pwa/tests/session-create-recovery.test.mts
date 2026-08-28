@@ -4,6 +4,7 @@ import {
   clearPendingSessionCreateRecovery,
   completedSessionCreateTarget,
   isMissingSessionCreateRecoveryCommand,
+  isSessionCreateRecoveryUncertain,
   pendingSessionCreateRecoveryFromOptimistic,
   readPendingSessionCreateRecovery,
   rebindPendingSessionCreateRecovery,
@@ -259,4 +260,15 @@ test("stops restoring an old browser marker when its durable command no longer e
 
   assert.equal(error.errorCode, "OPERATION_NOT_FOUND");
   assert.equal(isMissingSessionCreateRecoveryCommand(error), true);
+});
+
+test("marks a durable create as uncertain only after its bounded recovery window", () => {
+  assert.equal(
+    isSessionCreateRecoveryUncertain(recovery, recovery.createdAt + 59_999),
+    false,
+  );
+  assert.equal(
+    isSessionCreateRecoveryUncertain(recovery, recovery.createdAt + 60_000),
+    true,
+  );
 });

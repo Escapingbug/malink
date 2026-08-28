@@ -45,6 +45,7 @@ export interface CodexSessionHistoryReadOptions {
     sessionId: string
     cwd: string
     command: string
+    commandArgs?: string[]
     env?: Record<string, string>
     processCwd?: string
     timeoutMs?: number
@@ -165,7 +166,7 @@ async function readCodexThread(options: CodexSessionHistoryReadOptions): Promise
     try {
         child = spawnProcess(
             options.command,
-            ['app-server', '--listen', 'stdio://'],
+            [...(options.commandArgs ?? []), 'app-server', '--listen', 'stdio://'],
             {
                 ...(options.processCwd ? { cwd: options.processCwd } : {}),
                 env: { ...process.env, ...options.env },

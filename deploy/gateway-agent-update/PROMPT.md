@@ -1,8 +1,10 @@
 Update this Malink Gateway from the exact signed Git commit supplied above.
 
 1. Initialize or refresh the supplied source directory using only the supplied
-   credential-free HTTPS repository. Fetch the exact 40-character commit and
-   verify that `git rev-parse HEAD` equals it. Do not build a branch name or a
+   credential-free HTTPS repository. Fetch its advertised branch refs with full
+   history, then check out the exact authorized 40-character commit and verify
+   that `git rev-parse HEAD` equals it. Do not use a shallow fetch or request an
+   unadvertised raw SHA as the only fetch. Do not build a branch name or use a
    different commit.
 2. Read `AGENTS.md`, `docs/architecture.md`, the package-manager declaration,
    and the target commit's diff before changing the candidate. Install with the
@@ -16,6 +18,9 @@ Update this Malink Gateway from the exact signed Git commit supplied above.
    its Gateway and update-supervisor bundles with the target commit's production
    bundles, including `ops/matrix-local-gateway.js`,
    `ops/gatewayUpdateSupervisorMain.js`, and `ops/gatewayAgentUpdateCli.js`.
+   Replace the target commit's `dist/mcp/stdio.js` bundle at
+   `mcp/stdio.js` in the candidate as well; ACP sessions cannot open without
+   this release-pinned subprocess entrypoint.
    Preserve unchanged production dependencies locally. If the target lockfile
    changes a runtime dependency, install and dereference the exact production
    dependency tree into the candidate; no symlink may remain.

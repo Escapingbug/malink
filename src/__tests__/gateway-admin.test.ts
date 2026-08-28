@@ -119,6 +119,20 @@ describe('Gateway local admin', () => {
       release,
       projectCount: 1,
     }))
+    const runProviderPrompt = vi.fn(async () => ({
+      provider: 'codex',
+      cwd: '/tmp/project',
+      providerSessionId: 'provider-session-1',
+      startedAt: now,
+      completedAt: now + 25,
+      durationMs: 25,
+      sessionOpenMs: 10,
+      outcome: 'success' as const,
+      text: 'probe ok',
+      events: [],
+      eventCounts: { session_init: 1, text: 1, result: 1 },
+      truncated: false,
+    }))
     const renameGateway = vi.fn(async (nextGatewayName: string) => {
       gatewayName = nextGatewayName
     })
@@ -135,6 +149,7 @@ describe('Gateway local admin', () => {
       receiveWorkspaceFile,
       sendSessionFile,
       publishNativeClientRelease,
+      runProviderPrompt,
       now: () => now,
     })
     servers.push(server)
@@ -192,6 +207,26 @@ describe('Gateway local admin', () => {
       caption: 'Generated image',
       type: 'image',
     })
+    await expect(client.runProviderPrompt({
+      prompt: 'Respond with probe ok',
+      provider: 'codex',
+      cwd: '/tmp/project',
+      timeoutMs: 30_000,
+    })).resolves.toMatchObject({
+      provider: 'codex',
+      outcome: 'success',
+      text: 'probe ok',
+      sessionOpenMs: 10,
+    })
+    expect(runProviderPrompt).toHaveBeenCalledWith(
+      {
+        prompt: 'Respond with probe ok',
+        provider: 'codex',
+        cwd: '/tmp/project',
+        timeoutMs: 30_000,
+      },
+      expect.any(AbortSignal),
+    )
     await expect(client.sendFile(
       { path: '/tmp/other.pdf' },
       'workspace-file-key-0001',

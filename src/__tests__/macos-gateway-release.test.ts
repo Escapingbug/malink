@@ -2,9 +2,26 @@ import { mkdtemp, mkdir, readFile, readlink, rm, symlink, writeFile } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { activateMacosGatewayRelease } from '@/ops/macosGatewayRelease'
+import {
+    activateMacosGatewayRelease,
+    validateMacosGatewayRelease,
+} from '@/ops/macosGatewayRelease'
 
 describe('macOS Matrix Gateway release activation', () => {
+    it('rejects a release without its MCP stdio entrypoint', async () => {
+        const root = await releaseFixture()
+        try {
+            const nextRelease = join(root, 'releases', 'next')
+            await rm(join(nextRelease, 'mcp', 'stdio.js'))
+
+            await expect(validateMacosGatewayRelease(nextRelease)).rejects.toThrow(
+                /Required Gateway release path is missing: .*mcp\/stdio\.js/u,
+            )
+        } finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    })
+
     it('migrates a direct-release LaunchAgent to the stable current link', async () => {
         const root = await releaseFixture()
         try {
@@ -13,7 +30,9 @@ describe('macOS Matrix Gateway release activation', () => {
             const plistPath = join(root, 'gateway.plist')
             await writeFile(
                 plistPath,
-                `<string>${join(oldRelease, 'runtime', 'node')}</string>\n<string>${join(oldRelease, 'ops', 'matrix-local-gateway.js')}</string>`,
+                `<string>${join(oldRelease, 'runtime', 'node')}</string>\n`
+                + `<string>${join(oldRelease, 'ops', 'matrix-local-gateway.js')}</string>\n`
+                + `<key>WorkingDirectory</key>\n<string>${oldRelease}</string>`,
             )
             const restart = vi.fn(async () => undefined)
 
@@ -31,6 +50,44 @@ describe('macOS Matrix Gateway release activation', () => {
             expect(await readlink(join(root, 'current'))).toBe(nextRelease)
             expect(await readFile(plistPath, 'utf8')).toContain(join(root, 'current'))
             expect(await readFile(plistPath, 'utf8')).not.toContain(oldRelease)
+            expect(await readFile(plistPath, 'utf8')).toContain(
+                `<key>WorkingDirectory</key>\n<string>${root}</string>`,
+            )
+            expect(restart).toHaveBeenCalledWith(true)
+        } finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    })
+
+    it('reloads a stable-link LaunchAgent whose working directory is still release-switched', async () => {
+        const root = await releaseFixture()
+        try {
+            const nextRelease = join(root, 'releases', 'next')
+            const current = join(root, 'current')
+            await symlink(join(root, 'releases', 'old'), current)
+            const plistPath = join(root, 'gateway.plist')
+            await writeFile(
+                plistPath,
+                `<string>${join(current, 'runtime', 'node')}</string>\n`
+                + `<string>${join(current, 'ops', 'matrix-local-gateway.js')}</string>\n`
+                + `<key>WorkingDirectory</key>\n<string>${current}</string>`,
+            )
+            const restart = vi.fn(async () => undefined)
+
+            await activateMacosGatewayRelease({
+                releaseDirectory: nextRelease,
+                installRoot: root,
+                launchAgentPath: plistPath,
+                serviceLabel: 'com.malink.test-gateway',
+                adminSocketPath: join(root, 'admin.sock'),
+            }, {
+                restart,
+                healthCheck: async () => undefined,
+            })
+
+            expect(await readFile(plistPath, 'utf8')).toContain(
+                `<key>WorkingDirectory</key>\n<string>${root}</string>`,
+            )
             expect(restart).toHaveBeenCalledWith(true)
         } finally {
             await rm(root, { recursive: true, force: true })
@@ -129,8 +186,10 @@ async function releaseFixture(): Promise<string> {
         const release = join(root, 'releases', name)
         await mkdir(join(release, 'runtime'), { recursive: true })
         await mkdir(join(release, 'ops'), { recursive: true })
+        await mkdir(join(release, 'mcp'), { recursive: true })
         await writeFile(join(release, 'runtime', 'node'), '#!/bin/sh\n')
         await writeFile(join(release, 'ops', 'matrix-local-gateway.js'), '// gateway\n')
+        await writeFile(join(release, 'mcp', 'stdio.js'), '// mcp\n')
     }))
     return root
 }

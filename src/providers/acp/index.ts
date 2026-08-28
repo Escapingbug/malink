@@ -84,6 +84,9 @@ export function resolveMalinkMcpServerCommand(options: MalinkMcpResolutionOption
 
     const builtCandidates = [
         ...(moduleDir ? [resolve(moduleDir, 'mcp', 'stdio.js')] : []),
+        // A self-contained Gateway release keeps runtime entrypoints beside
+        // ops/ instead of preserving the source dist/ directory.
+        ...(moduleDir ? [resolve(moduleDir, '..', 'mcp', 'stdio.js')] : []),
         resolve(cwd, 'dist', 'mcp', 'stdio.js'),
     ]
 
@@ -427,6 +430,7 @@ export interface AcpProviderConfig {
 
 export class AcpProvider implements AgentProvider {
     readonly name: string
+    private readonly clientManagerConfig: AcpClientManagerConfig
     private clientManager: AcpClientManager
     private _initError: string | null = null
     private initialized = false
@@ -441,6 +445,7 @@ export class AcpProvider implements AgentProvider {
     private activeAbortSignal: AbortSignal | null = null
 
     async listSessions(cwd: string): Promise<SessionEntry[]> {
+        this.prepareWorkingDirectory(cwd)
         await this.init()
         if (!this.isReady()) {
             throw new Error(this.getInitError() ?? `Provider ${this.name} is unavailable`)
@@ -464,6 +469,7 @@ export class AcpProvider implements AgentProvider {
     }
 
     async getSessionHistory(sessionId: string, cwd: string): Promise<ProviderSessionHistory> {
+        this.prepareWorkingDirectory(cwd)
         await this.init()
         if (!this.isReady()) {
             throw new Error(this.getInitError() ?? `Provider ${this.name} is unavailable`)
@@ -492,13 +498,26 @@ export class AcpProvider implements AgentProvider {
             && (config.sessionOpenTimeoutMs ?? 0) > 0
             ? config.sessionOpenTimeoutMs!
             : DEFAULT_ACP_SESSION_OPEN_TIMEOUT_MS
-        const managerConfig: AcpClientManagerConfig = {
+        this.clientManagerConfig = {
             command: config.command,
             args: config.args,
             env: config.env,
             cwd: config.cwd,
         }
-        this.clientManager = new AcpClientManager(managerConfig)
+        this.clientManager = this.createClientManager()
+    }
+
+    protected createClientManager(): AcpClientManager {
+        return new AcpClientManager(this.clientManagerConfig)
+    }
+
+    prepareWorkingDirectory(cwd: string): void {
+        // An explicit provider-profile cwd remains authoritative. Otherwise,
+        // bind this session-owned ACP process to the project's stable cwd
+        // instead of inheriting an atomically switched Gateway release path.
+        if (this.clientManagerConfig.cwd || this.initialized || this.initPromise) return
+        this.clientManagerConfig.cwd = cwd
+        this.clientManager = this.createClientManager()
     }
 
     private async runSessionOpenOperation<T>(operation: string, request: () => Promise<T>): Promise<T> {
@@ -674,11 +693,17 @@ export class AcpProvider implements AgentProvider {
      */
     async reinit(): Promise<void> {
         console.error(`[acp:${this.name}] Reinitializing provider after crash...`)
+        const previousManager = this.clientManager
         try {
-            await this.clientManager.close()
+            await previousManager.close()
         } catch (e) {
             console.error(`[acp:${this.name}] close() during reinit failed: ${e instanceof Error ? e.message : String(e)}`)
+            previousManager.dispose()
         }
+        // Never reuse a ClientSideConnection after a session-open timeout. The
+        // timed-out JSON-RPC promise and late process callbacks belong to the old
+        // connection generation and must not be able to poison its replacement.
+        this.clientManager = this.createClientManager()
         this.initialized = false
         this.initPromise = null
         this._initError = null
@@ -700,7 +725,6 @@ export class AcpProvider implements AgentProvider {
 
     startQuery(prompt: AgentQueryInput, config: AgentQueryConfig): AgentQueryHandle {
         const events = new PushableAsyncIterable<AgentEvent>()
-        const clientManager = this.clientManager
         let queryCancelled = false
 
         // Set per-turn handlers on the client manager.
@@ -710,7 +734,7 @@ export class AcpProvider implements AgentProvider {
         const runQuery = async () => {
             // Clear stderr buffer at the start of each query so we only
             // capture errors from the current turn.
-            clientManager.clearStderrBuffer()
+            this.clientManager.clearStderrBuffer()
 
             let updateConsumerAbort: AbortController | null = null
             let sessionId = config.sessionId
@@ -720,6 +744,7 @@ export class AcpProvider implements AgentProvider {
                 /** Whether the session was resumed via loadSession (which replays history).
                  *  resumeSession does NOT replay history, so drain logic is not needed. */
                 let needsHistoryDrain = false
+                let mcpAttached = true
                 let sessionConfigOptions: readonly SessionConfigOption[] = []
                 let sessionModels: SessionModelState | null | undefined
 
@@ -731,7 +756,8 @@ export class AcpProvider implements AgentProvider {
 
                 const recoverSessionOnce = async (
                     targetSessionId: string,
-                    attempt: 'initial' | 'after-restart',
+                    attempt: 'initial' | 'after-restart' | 'without-mcp',
+                    includeMcp = true,
                 ): Promise<{
                     configOptions: readonly SessionConfigOption[]
                     models: SessionModelState | null | undefined
@@ -740,14 +766,16 @@ export class AcpProvider implements AgentProvider {
                     throwIfQueryCancelled()
                     this.activeSessionId = targetSessionId
 
-                    if (clientManager.supportsResumeSession) {
+                    if (this.clientManager.supportsResumeSession) {
                         try {
                             const resumed = await this.runSessionOpenOperation(
                                 `session/resume (${attempt})`,
-                                () => clientManager.resumeSession({
+                                () => this.clientManager.resumeSession({
                                     sessionId: targetSessionId,
                                     cwd: config.cwd,
-                                    mcpServers: buildMalinkMcpFullConfig(targetSessionId, config),
+                                    mcpServers: includeMcp
+                                        ? buildMalinkMcpFullConfig(targetSessionId, config)
+                                        : [],
                                 }),
                             )
                             console.error(`[acp:${this.name}] Resumed session ${targetSessionId} (${attempt}, no history replay)`)
@@ -764,14 +792,16 @@ export class AcpProvider implements AgentProvider {
                     }
 
                     throwIfQueryCancelled()
-                    if (clientManager.agentCapabilities?.agentCapabilities?.loadSession) {
+                    if (this.clientManager.agentCapabilities?.agentCapabilities?.loadSession) {
                         try {
                             const loaded = await this.runSessionOpenOperation(
                                 `session/load (${attempt})`,
-                                () => clientManager.loadSession({
+                                () => this.clientManager.loadSession({
                                     sessionId: targetSessionId,
                                     cwd: config.cwd,
-                                    mcpServers: buildMalinkMcpFullConfig(targetSessionId, config),
+                                    mcpServers: includeMcp
+                                        ? buildMalinkMcpFullConfig(targetSessionId, config)
+                                        : [],
                                 }),
                             )
                             console.error(`[acp:${this.name}] Loaded session ${targetSessionId} (${attempt}, will drain history)`)
@@ -794,11 +824,13 @@ export class AcpProvider implements AgentProvider {
                 const recoverSession = async (targetSessionId: string): Promise<{
                     result: Awaited<ReturnType<typeof recoverSessionOnce>>
                     restarted: boolean
+                    mcpAttached: boolean
                 }> => {
                     try {
                         return {
                             result: await recoverSessionOnce(targetSessionId, 'initial'),
                             restarted: false,
+                            mcpAttached: true,
                         }
                     } catch (error) {
                         if (!(error instanceof AcpSessionOpenTimeoutError)) throw error
@@ -813,38 +845,68 @@ export class AcpProvider implements AgentProvider {
                         return {
                             result: await recoverSessionOnce(targetSessionId, 'after-restart'),
                             restarted: true,
+                            mcpAttached: true,
                         }
                     } catch (error) {
                         if (!(error instanceof AcpSessionOpenTimeoutError)) throw error
                         console.error(`[acp:${this.name}] ${error.message}; the same session could not be recovered after an ACP restart`)
                         throwIfQueryCancelled()
-                        // The retry timed out too, so this connection is also wedged. Restart
-                        // once more before creating a replacement session on a clean process.
+                        // The retry timed out too, so this connection is also wedged.
+                        // Restart once more and preserve the same Codex session without
+                        // optional MCP startup. The next turn will retry the full MCP
+                        // attachment, while this turn remains usable for normal prompts.
                         await this.restartClientForSessionRecovery(events, config)
                         throwIfQueryCancelled()
-                        return { result: null, restarted: true }
+                        console.error(`[acp:${this.name}] Retrying session ${targetSessionId} without MCP after repeated full recovery timeouts`)
+                        try {
+                            return {
+                                result: await recoverSessionOnce(targetSessionId, 'without-mcp', false),
+                                restarted: true,
+                                mcpAttached: false,
+                            }
+                        } catch (fallbackError) {
+                            if (!(fallbackError instanceof AcpSessionOpenTimeoutError)) throw fallbackError
+                            console.error(`[acp:${this.name}] ${fallbackError.message}; replacing the unrecoverable session on a clean ACP process`)
+                            await this.restartClientForSessionRecovery(events, config)
+                            throwIfQueryCancelled()
+                            return { result: null, restarted: true, mcpAttached: false }
+                        }
                     }
                 }
 
-                const createSession = async (reason: 'initial' | 'replacement') => {
+                const createSession = async (reason: 'initial' | 'replacement'): Promise<{
+                    response: Awaited<ReturnType<AcpClientManager['newSession']>>
+                    mcpAttached: boolean
+                }> => {
                     throwIfQueryCancelled()
-                    const request = () => this.runSessionOpenOperation(
-                        `session/new (${reason})`,
-                        () => clientManager.newSession({
+                    const request = (includeMcp: boolean, attempt: string) => this.runSessionOpenOperation(
+                        `session/new (${reason}${attempt})`,
+                        () => this.clientManager.newSession({
                             cwd: config.cwd,
-                            mcpServers: buildMalinkMcpBaseConfig(config),
+                            mcpServers: includeMcp ? buildMalinkMcpBaseConfig(config) : [],
                         }),
                     )
 
                     try {
-                        return await request()
+                        return { response: await request(true, ''), mcpAttached: true }
                     } catch (error) {
                         if (!(error instanceof AcpSessionOpenTimeoutError)) throw error
                         console.error(`[acp:${this.name}] ${error.message}; restarting ACP before retrying session creation`)
                         throwIfQueryCancelled()
                         await this.restartClientForSessionRecovery(events, config)
                         throwIfQueryCancelled()
-                        return await request()
+                        try {
+                            return { response: await request(true, ' after-restart'), mcpAttached: true }
+                        } catch (retryError) {
+                            if (!(retryError instanceof AcpSessionOpenTimeoutError)) throw retryError
+                            console.error(`[acp:${this.name}] ${retryError.message}; retrying session creation without MCP on a clean ACP process`)
+                            await this.restartClientForSessionRecovery(events, config)
+                            throwIfQueryCancelled()
+                            return {
+                                response: await request(false, ' without-mcp'),
+                                mcpAttached: false,
+                            }
+                        }
                     }
                 }
 
@@ -855,7 +917,9 @@ export class AcpProvider implements AgentProvider {
                     // Two-phase session creation:
                     // Phase 1: newSession with base MCP config (no session-dependent tools).
                     //   At this point sessionId doesn't exist yet, so we can't inject it into env.
-                    const sessionResponse = await createSession('initial')
+                    const created = await createSession('initial')
+                    const sessionResponse = created.response
+                    mcpAttached = created.mcpAttached
                     sessionId = sessionResponse.sessionId
                     sessionConfigOptions = sessionResponse.configOptions ?? []
                     sessionModels = sessionResponse.models
@@ -874,24 +938,32 @@ export class AcpProvider implements AgentProvider {
                     //   Some agents (e.g. Cursor's `agent` CLI) don't support resumeSession, and
                     //   their loadSession only works on persisted sessions (after a prompt completes).
                     //   For those, we skip Phase 2 and inject full MCP config after the first prompt.
-                    const phaseTwo = await recoverSession(sessionId)
-                    if (phaseTwo.result) {
-                        sessionConfigOptions = phaseTwo.result.configOptions.length > 0
-                            ? phaseTwo.result.configOptions
-                            : sessionConfigOptions
-                        sessionModels = phaseTwo.result.models ?? sessionModels
-                        needsHistoryDrain = phaseTwo.result.viaLoad
-                    } else if (phaseTwo.restarted) {
-                        // The original new session only existed on the process that timed out.
-                        // If it cannot be recovered after restart, create a clean replacement
-                        // instead of prompting an unknown session ID.
-                        const replacement = await createSession('replacement')
-                        sessionId = replacement.sessionId
-                        sessionConfigOptions = replacement.configOptions ?? []
-                        sessionModels = replacement.models
-                        this.activeSessionId = sessionId
-                        needsHistoryDrain = false
-                        console.error(`[acp:${this.name}] Replaced unrecoverable fresh session with ${sessionId}`)
+                    // If even session/new required the no-MCP fallback, do not
+                    // immediately repeat the operation that just wedged twice.
+                    // Prompt this healthy session now and retry full MCP on the
+                    // next user turn through the normal resume path.
+                    if (mcpAttached) {
+                        const phaseTwo = await recoverSession(sessionId)
+                        if (phaseTwo.result) {
+                            mcpAttached = phaseTwo.mcpAttached
+                            sessionConfigOptions = phaseTwo.result.configOptions.length > 0
+                                ? phaseTwo.result.configOptions
+                                : sessionConfigOptions
+                            sessionModels = phaseTwo.result.models ?? sessionModels
+                            needsHistoryDrain = phaseTwo.result.viaLoad
+                        } else if (phaseTwo.restarted) {
+                            // The original new session only existed on the process that timed out.
+                            // If it cannot be recovered after restart, create a clean replacement
+                            // instead of prompting an unknown session ID.
+                            const replacement = await createSession('replacement')
+                            sessionId = replacement.response.sessionId
+                            sessionConfigOptions = replacement.response.configOptions ?? []
+                            sessionModels = replacement.response.models
+                            mcpAttached = replacement.mcpAttached
+                            this.activeSessionId = sessionId
+                            needsHistoryDrain = false
+                            console.error(`[acp:${this.name}] Replaced unrecoverable fresh session with ${sessionId}`)
+                        }
                     }
 
                     await this.applyProviderModel(sessionId!, config.model, sessionModels, sessionConfigOptions)
@@ -905,6 +977,7 @@ export class AcpProvider implements AgentProvider {
                     const sessionRecovered = recovered.result !== null
 
                     if (recovered.result) {
+                        mcpAttached = recovered.mcpAttached
                         sessionConfigOptions = recovered.result.configOptions
                         sessionModels = recovered.result.models
                         this.activeSessionId = sessionId
@@ -917,7 +990,9 @@ export class AcpProvider implements AgentProvider {
                         // The agent may have been restarted or the session data was lost.
                         // Create a new session so the user can continue working.
                         console.error(`[acp:${this.name}] Could not recover session ${sessionId}. Creating a new session.`)
-                        const sessionResponse = await createSession('replacement')
+                        const created = await createSession('replacement')
+                        const sessionResponse = created.response
+                        mcpAttached = created.mcpAttached
                         sessionId = sessionResponse.sessionId
                         sessionConfigOptions = sessionResponse.configOptions ?? []
                         sessionModels = sessionResponse.models
@@ -933,6 +1008,11 @@ export class AcpProvider implements AgentProvider {
                     await this.applyProviderConfigOptions(sessionId!, config, sessionConfigOptions)
                 }
 
+                // Session-open recovery may replace the entire manager. From this
+                // point onward the selected session belongs to this stable manager
+                // generation for the rest of the prompt lifecycle.
+                const clientManager = this.clientManager
+
                 // 2. Push session_init event
                 if (!events.done) {
                     events.push({
@@ -944,6 +1024,12 @@ export class AcpProvider implements AgentProvider {
                         // use this to notify the user that previous context was lost.
                         isNewSession: !isResumingSession && !!config.sessionId,
                     })
+                    if (!mcpAttached) {
+                        events.push({
+                            kind: 'text',
+                            text: '⚠️ The Agent session recovered without Malink tools after MCP startup stalled. This turn can continue normally; Malink will retry attaching its tools on the next turn.\n\n',
+                        })
+                    }
                 }
 
                 // 3. Start consuming session updates in background.

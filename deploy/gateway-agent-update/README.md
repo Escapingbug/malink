@@ -24,15 +24,18 @@ Use the existing offline Gateway release signing key and the exact pushed Git
 commit:
 
 ```sh
-pnpm release:gateway-agent-update -- \
+pnpm release:gateway-agent-update \
   --out ./dist/gateway-agent-update \
-  --release-id 2026.08.26.4 \
-  --version-name 2026.08.26.4 \
-  --build-id gateway-2026.08.26.4 \
   --commit "$(git rev-parse HEAD)" \
   --prompt-file deploy/gateway-agent-update/PROMPT.md \
   --private-key /secure/malink-gateway-release-private.json
 ```
+
+By default the release, version, and build identifiers are derived from the
+UTC publication timestamp plus the target commit, for example
+`2026.08.28-020315Z-12b086d` and
+`gateway-2026.08.28-020315Z-12b086d`. Explicit identifier flags are reserved
+for compatibility releases.
 
 Upload `releases/<release-id>.json` without replacing an existing file. Upload
 `release-signer.json` only when initially provisioning the route. Replace

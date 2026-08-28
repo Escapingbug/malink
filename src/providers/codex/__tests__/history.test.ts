@@ -91,6 +91,7 @@ describe('readCodexSessionHistory', () => {
             sessionId: 'thread-active',
             cwd: '/project',
             command: '/opt/codex/bin/codex',
+            commandArgs: ['/opt/malink/codex-acp.js', 'cli'],
             spawnProcess,
         })).resolves.toEqual({
             sessionId: 'thread-active',
@@ -102,7 +103,13 @@ describe('readCodexSessionHistory', () => {
         })
         expect(spawnCalls).toEqual([{
             command: '/opt/codex/bin/codex',
-            args: ['app-server', '--listen', 'stdio://'],
+            args: [
+                '/opt/malink/codex-acp.js',
+                'cli',
+                'app-server',
+                '--listen',
+                'stdio://',
+            ],
         }])
         expect(process.requests.map(request => request.method)).toEqual([
             'initialize',

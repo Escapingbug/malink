@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   canonicalJsonBytes,
@@ -13,9 +15,15 @@ import {
   toArrayBuffer,
   webCrypto,
 } from '@malink/security'
-import { publishGatewayAgentUpdate } from '../../scripts/gateway-agent-update-release.js'
+import {
+  assertLocalGitCommit,
+  defaultGatewayReleaseVersion,
+  parseGatewayAgentUpdateArguments,
+  publishGatewayAgentUpdate,
+} from '../../scripts/gateway-agent-update-release.js'
 
 const temporaryDirectories: string[] = []
+const execFileAsync = promisify(execFile)
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map(path =>
@@ -23,6 +31,27 @@ afterEach(async () => {
 })
 
 describe('Gateway Agent update publisher', () => {
+  it('derives a sortable timestamp and commit based release version', () => {
+    expect(defaultGatewayReleaseVersion(
+      '12b086dc33867a4a4205d4d1938b694d7634a020',
+      Date.UTC(2026, 7, 28, 2, 3, 15, 987),
+    )).toBe('2026.08.28-020315Z-12b086d')
+  })
+
+  it('uses the timestamp version for omitted CLI identifiers', () => {
+    expect(parseGatewayAgentUpdateArguments([
+      '--out', '/tmp/published',
+      '--commit', '12b086dc33867a4a4205d4d1938b694d7634a020',
+      '--published-at', String(Date.UTC(2026, 7, 28, 2, 3, 15)),
+      '--prompt-file', '/tmp/PROMPT.md',
+      '--private-key', '/tmp/release-key.json',
+    ])).toMatchObject({
+      releaseId: '2026.08.28-020315Z-12b086d',
+      versionName: '2026.08.28-020315Z-12b086d',
+      buildId: 'gateway-2026.08.28-020315Z-12b086d',
+    })
+  })
+
   it('publishes an immutable signed Prompt and a replaceable latest pointer', async () => {
     const root = await temporaryDirectory()
     const keys = await generateDeviceKeyPair()
@@ -31,6 +60,9 @@ describe('Gateway Agent update publisher', () => {
     const output = join(root, 'published')
     await writeFile(keyPath, JSON.stringify(await exportDeviceKeyPair(keys)), { mode: 0o600 })
     await writeFile(promptPath, 'Build, test, and stage this exact Malink commit.\n')
+    const commit = (await execFileAsync('git', ['rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+    })).stdout.trim()
 
     const result = await publishGatewayAgentUpdate({
       output,
@@ -38,7 +70,7 @@ describe('Gateway Agent update publisher', () => {
       versionName: '2.0.0',
       buildId: 'build-2',
       repositoryUrl: 'https://github.com/Escapingbug/malink.git',
-      commit: '0123456789abcdef0123456789abcdef01234567',
+      commit,
       promptFile: promptPath,
       privateKeyFile: keyPath,
       publishedAt: 42,
@@ -52,7 +84,7 @@ describe('Gateway Agent update publisher', () => {
       buildId: 'build-2',
       repository: {
         url: 'https://github.com/Escapingbug/malink.git',
-        commit: '0123456789abcdef0123456789abcdef01234567',
+        commit,
       },
       prompt: 'Build, test, and stage this exact Malink commit.',
     })
@@ -77,11 +109,17 @@ describe('Gateway Agent update publisher', () => {
       versionName: '2.0.0',
       buildId: 'build-2',
       repositoryUrl: 'https://github.com/Escapingbug/malink.git',
-      commit: '0123456789abcdef0123456789abcdef01234567',
+      commit,
       promptFile: promptPath,
       privateKeyFile: keyPath,
       publishedAt: 42,
     })).rejects.toThrow(/replace immutable update Prompt/u)
+  })
+
+  it('refuses to sign a well-formed SHA that is not a local Git commit', async () => {
+    await expect(assertLocalGitCommit(
+      '0123456789abcdef0123456789abcdef01234567',
+    )).rejects.toThrow(/is not a local Git commit/u)
   })
 })
 

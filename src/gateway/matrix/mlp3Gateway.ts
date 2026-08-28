@@ -1362,17 +1362,17 @@ export class MatrixMlp3GatewayRunner {
     const selectedModel = requestedModel
       ? availableModels.find(item => item.id === requestedModel || item.name === requestedModel)
       : undefined
-    if (requestedModel && !selectedModel) {
+    if (requestedModel && availableModels.length > 0 && !selectedModel) {
       throw new Error(`Model ${requestedModel} is not available for provider ${provider}`)
     }
-    const model = selectedModel?.id ?? null
+    const model = selectedModel?.id ?? requestedModel ?? null
     const modelChanged = model !== runtime.record.model
     const reasoningEffort = patch.reasoningEffort === undefined
       ? modelChanged
         ? selectedModel?.defaultReasoningLevel ?? null
         : runtime.record.reasoningEffort
       : patch.reasoningEffort
-    if (catalog) validateReasoningEffort(selectedModel, reasoningEffort)
+    if (availableModels.length > 0) validateReasoningEffort(selectedModel, reasoningEffort)
     const permissionMode = patch.permissionMode ?? runtime.record.permissionMode
     if (!isAgentPermissionMode(permissionMode)) {
       throw new Error(`Permission mode ${permissionMode} is not currently available`)
@@ -1569,7 +1569,7 @@ export class MatrixMlp3GatewayRunner {
       selectedModel = patch.model
         ? availableModels.find(model => model.id === patch.model || model.name === patch.model)
         : undefined
-      if (patch.model && catalog && !selectedModel) {
+      if (patch.model && availableModels.length > 0 && !selectedModel) {
         throw new Error(
           `Model ${patch.model} is not available for provider ${project.project.provider}`,
         )
@@ -1580,7 +1580,9 @@ export class MatrixMlp3GatewayRunner {
       }
     }
     if (patch.reasoningEffort !== undefined) {
-      if (catalog) validateReasoningEffort(selectedModel, patch.reasoningEffort)
+      if (availableModels.length > 0) {
+        validateReasoningEffort(selectedModel, patch.reasoningEffort)
+      }
       project.project.reasoningEffort = patch.reasoningEffort
     }
     if (patch.defaultExtensions !== undefined) {
@@ -2175,12 +2177,13 @@ export class MatrixMlp3GatewayRunner {
       : providerChanged
         ? null
         : project.project.model
-    const selectedModel = requestedModel && catalog
-      ? catalog.getAvailableModels().find(item =>
+    const availableModels = catalog?.getAvailableModels() ?? []
+    const selectedModel = requestedModel
+      ? availableModels.find(item =>
         item.id === requestedModel || item.name === requestedModel
       )
       : undefined
-    if (requestedModel && catalog && !selectedModel) {
+    if (requestedModel && availableModels.length > 0 && !selectedModel) {
       throw new Error(`Model ${requestedModel} is not available for provider ${provider}`)
     }
     const model = selectedModel?.id ?? requestedModel
@@ -2192,7 +2195,7 @@ export class MatrixMlp3GatewayRunner {
       : usesProjectModel
         ? project.project.reasoningEffort
         : selectedModel?.defaultReasoningLevel ?? null
-    if (catalog) validateReasoningEffort(selectedModel, reasoningEffort)
+    if (availableModels.length > 0) validateReasoningEffort(selectedModel, reasoningEffort)
     const permissionMode = command.payload.permissionMode ?? project.project.permissionMode
     if (!isAgentPermissionMode(permissionMode)) {
       throw new Error(`Permission mode ${permissionMode} is not currently available`)

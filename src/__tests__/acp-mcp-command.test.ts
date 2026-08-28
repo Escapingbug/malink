@@ -4,6 +4,24 @@ import { pathToFileURL } from 'node:url'
 import { resolveMalinkMcpServerCommand } from '@/providers/acp'
 
 describe('resolveMalinkMcpServerCommand', () => {
+    it('uses the release-pinned MCP stdio entry beside the ops directory', () => {
+        const root = resolve('fake-release')
+        const nodePath = resolve(root, 'runtime', 'node')
+        const builtEntry = resolve(root, 'mcp', 'stdio.js')
+
+        const command = resolveMalinkMcpServerCommand({
+            moduleUrl: pathToFileURL(resolve(root, 'ops', 'matrix-local-gateway.js')).href,
+            cwd: root,
+            nodePath,
+            pathExists: path => path === builtEntry,
+        })
+
+        expect(command).toEqual({
+            command: nodePath,
+            args: [builtEntry],
+        })
+    })
+
     it('uses the built MCP stdio entry when dist exists', () => {
         const root = resolve('fake-project')
         const nodePath = resolve(root, 'node')

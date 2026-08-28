@@ -1,26 +1,12 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { createRequire } from 'node:module'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { parseCodexModels } from '../index'
+import { clearCodexModelCatalogCacheForTesting, parseCodexModels } from '../index'
 import { CodexHistoryUnavailableError } from '../history'
 
 const { acpProviderConfigs, fallbackHistoryCalls } = vi.hoisted(() => ({
     acpProviderConfigs: [] as Array<{ name: string; command: string; args: string[] }>,
     fallbackHistoryCalls: [] as Array<{ sessionId: string; cwd: string }>,
 }))
-
-const { spawnSyncMock } = vi.hoisted(() => ({
-    spawnSyncMock: vi.fn(),
-}))
-
-vi.mock('node:child_process', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('node:child_process')>()
-    return {
-        ...actual,
-        spawnSync: spawnSyncMock,
-    }
-})
 
 vi.mock('@/providers/acp', () => ({
     AcpProvider: class {
@@ -43,18 +29,17 @@ vi.mock('@/providers/acp', () => ({
 }))
 
 describe('CodexProvider', () => {
-    const temporaryDirectories: string[] = []
-
     afterEach(() => {
-        for (const directory of temporaryDirectories.splice(0)) {
-            rmSync(directory, { recursive: true, force: true })
-        }
         acpProviderConfigs.splice(0, acpProviderConfigs.length)
         fallbackHistoryCalls.splice(0, fallbackHistoryCalls.length)
+        clearCodexModelCatalogCacheForTesting()
     })
 
-    it('falls back to npx when codex-acp is not installed on PATH', async () => {
+    it('launches the release-pinned codex-acp with the Gateway Node runtime', async () => {
         const { CodexProvider } = await import('../index')
+        const codexAcpEntrypoint = createRequire(import.meta.url).resolve(
+            '@agentclientprotocol/codex-acp',
+        )
 
         const provider = new CodexProvider({ env: { PATH: '' } })
 
@@ -62,29 +47,38 @@ describe('CodexProvider', () => {
         expect(acpProviderConfigs).toEqual([
             {
                 name: 'codex',
-                command: 'npx',
-                args: ['-y', '@agentclientprotocol/codex-acp'],
+                command: process.execPath,
+                args: [codexAcpEntrypoint],
                 env: { PATH: '' },
             },
         ])
     })
 
-    it('launches an installed codex-acp directly', async () => {
-        const { CodexProvider } = await import('../index')
-        const directory = mkdtempSync(join(tmpdir(), 'malink-codex-acp-'))
-        temporaryDirectories.push(directory)
-        const command = join(directory, 'codex-acp')
-        writeFileSync(command, '#!/bin/sh\n')
-        chmodSync(command, 0o755)
+    it('ships the supported Codex ACP and Codex CLI version pair', () => {
+        const testRequire = createRequire(import.meta.url)
+        const codexAcp = testRequire('@agentclientprotocol/codex-acp/package.json') as {
+            version: string
+        }
+        const codex = testRequire('@openai/codex/package.json') as { version: string }
 
-        new CodexProvider({ env: { PATH: directory } })
+        expect(codexAcp.version).toBe('1.7.0')
+        expect(codex.version).toBe('0.148.0')
+    })
+
+    it('ignores an ambient codex-acp on PATH', async () => {
+        const { CodexProvider } = await import('../index')
+        const codexAcpEntrypoint = createRequire(import.meta.url).resolve(
+            '@agentclientprotocol/codex-acp',
+        )
+
+        new CodexProvider({ env: { PATH: '/ambient/bin' } })
 
         expect(acpProviderConfigs).toEqual([
             {
                 name: 'codex',
-                command: 'codex-acp',
-                args: [],
-                env: { PATH: directory },
+                command: process.execPath,
+                args: [codexAcpEntrypoint],
+                env: { PATH: '/ambient/bin' },
             },
         ])
     })
@@ -105,10 +99,7 @@ describe('CodexProvider', () => {
 
     it('lists subscription models from codex debug models', async () => {
         const { CodexProvider } = await import('../index')
-        spawnSyncMock.mockReturnValue({
-            status: 0,
-            error: undefined,
-            stdout: JSON.stringify({
+        const modelsReader = vi.fn().mockResolvedValue(JSON.stringify({
                 models: [
                     {
                         slug: 'gpt-5.5',
@@ -122,11 +113,13 @@ describe('CodexProvider', () => {
                     },
                     { slug: 'gpt-hidden', display_name: 'Hidden', visibility: 'hidden' },
                 ],
-            }),
-            stderr: '',
-        })
+            }))
+        const provider = new CodexProvider({ modelsReader })
 
-        expect(new CodexProvider().getAvailableModels()).toEqual([
+        // Snapshot reads never synchronously wait for the external Codex CLI.
+        expect(provider.getAvailableModels()).toEqual([])
+        await provider.refreshAvailableModels()
+        expect(provider.getAvailableModels()).toEqual([
             {
                 id: 'gpt-5.5',
                 name: 'GPT-5.5',
@@ -138,7 +131,11 @@ describe('CodexProvider', () => {
                 ],
             },
         ])
-        expect(spawnSyncMock).toHaveBeenCalled()
+        expect(modelsReader).toHaveBeenCalledWith(expect.objectContaining({
+            command: process.execPath,
+            args: expect.arrayContaining(['cli', 'debug', 'models']),
+        }))
+        expect(modelsReader).toHaveBeenCalledTimes(1)
     })
 
     it('reads provider history through the Codex read-only history path', async () => {
@@ -163,10 +160,34 @@ describe('CodexProvider', () => {
             sessionId: 'thread-1',
             cwd: '/project',
             command: '/opt/codex/bin/codex',
+            commandArgs: [],
             env: { PATH: '', CODEX_PATH: '/opt/codex/bin/codex' },
             processCwd: '/gateway',
         })
         expect(fallbackHistoryCalls).toEqual([])
+    })
+
+    it('reads provider history through the release-pinned Codex CLI', async () => {
+        const { CodexProvider } = await import('../index')
+        const codexAcpEntrypoint = createRequire(import.meta.url).resolve(
+            '@agentclientprotocol/codex-acp',
+        )
+        const historyReader = vi.fn().mockResolvedValue({
+            sessionId: 'thread-bundled',
+            title: 'Pinned thread',
+            messages: [],
+        })
+        const provider = new CodexProvider({ env: { PATH: '/ambient/bin' }, historyReader })
+
+        await provider.getSessionHistory('thread-bundled', '/project')
+
+        expect(historyReader).toHaveBeenCalledWith({
+            sessionId: 'thread-bundled',
+            cwd: '/project',
+            command: process.execPath,
+            commandArgs: [codexAcpEntrypoint, 'cli'],
+            env: { PATH: '/ambient/bin' },
+        })
     })
 
     it('falls back to ACP session loading when Codex thread/read is unavailable', async () => {
