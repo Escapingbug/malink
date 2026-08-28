@@ -51,9 +51,14 @@ class CommandPayloadValidatorTest {
             },
             buildJsonObject {
                 put("operation", "project.settings")
+                put("name", "Renamed project")
                 put("model", "gpt-5")
                 put("reasoningEffort", "high")
+                put("defaultExtensions", buildJsonArray {
+                    add(buildJsonObject { put("id", "review") })
+                })
             },
+            buildJsonObject { put("operation", "project.delete") },
             buildJsonObject {
                 put("operation", "provider.sessions.list")
                 put("provider", "codex")
@@ -105,7 +110,7 @@ class CommandPayloadValidatorTest {
         )
         assertTrue(CommandPayloadValidator.validate(payloads[4]) is SessionCreateCommandPayload)
         assertTrue(CommandPayloadValidator.validate(payloads[5]) is ProjectCreateCommandPayload)
-        assertTrue(CommandPayloadValidator.validate(payloads[9]) is SessionLifecycleCommandPayload)
+        assertTrue(CommandPayloadValidator.validate(payloads[10]) is SessionLifecycleCommandPayload)
     }
 
     @Test

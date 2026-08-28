@@ -723,12 +723,22 @@ function toMlp3Command(
         payload: {
           operation: "project.update",
           patch: {
+            ...(payload.name === undefined ? {} : { name: payload.name }),
             ...(payload.model === undefined ? {} : { model: payload.model }),
             ...(payload.reasoningEffort === undefined
               ? {}
               : { reasoningEffort: payload.reasoningEffort }),
+            ...(payload.defaultExtensions === undefined
+              ? {}
+              : { defaultExtensions: payload.defaultExtensions }),
           },
         },
+      };
+    case "project.delete":
+      return {
+        ...common,
+        operation: "project.delete",
+        payload: { operation: "project.delete" },
       };
     case "project.create":
       return {

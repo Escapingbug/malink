@@ -233,6 +233,21 @@ export class FileMlp3CommandJournal {
     })
   }
 
+  terminalByOperation<TOperation extends Mlp3Command['operation']>(
+    operation: TOperation,
+  ): Promise<Array<Mlp3CommandJournalRecord & {
+    command: Extract<Mlp3Command, { operation: TOperation }>
+  }>> {
+    return this.serial(async () => {
+      if (!this.initialized) await this.load()
+      return [...this.records.values()]
+        .filter((record): record is Mlp3CommandJournalRecord & {
+          command: Extract<Mlp3Command, { operation: TOperation }>
+        } => record.status === 'terminal' && record.command.operation === operation)
+        .map(record => structuredClone(record))
+    })
+  }
+
   markTerminalDelivered(
     command: Mlp3Command,
     matrixEventId: string,

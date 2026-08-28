@@ -333,6 +333,59 @@ describe('Malink Protocol v3 (MLP/3)', () => {
     expect(event.payload).toMatchObject({ type: 'project.created', projectId: 'new-project' })
   })
 
+  it('updates project metadata and defaults atomically and deletes with one command', () => {
+    const common = {
+      kind: 'malink.command' as const,
+      version: 3 as const,
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      deviceId: 'device-1',
+      certificateId: 'certificate-1',
+      createdAt: 1,
+    }
+    expect(mlp3CommandSchema.parse({
+      ...common,
+      commandId: 'project-update-1',
+      operation: 'project.update',
+      payload: {
+        operation: 'project.update',
+        patch: {
+          name: 'Renamed project',
+          model: 'gpt-5.6-sol',
+          reasoningEffort: 'high',
+          defaultExtensions: [{ id: 'review' }],
+        },
+      },
+    }).payload).toMatchObject({
+      patch: {
+        name: 'Renamed project',
+        model: 'gpt-5.6-sol',
+        reasoningEffort: 'high',
+        defaultExtensions: [{ id: 'review' }],
+      },
+    })
+    expect(mlp3CommandSchema.parse({
+      ...common,
+      commandId: 'project-delete-1',
+      operation: 'project.delete',
+      payload: { operation: 'project.delete' },
+    }).payload).toEqual({ operation: 'project.delete' })
+    expect(mlp3EventSchema.parse({
+      kind: 'malink.event',
+      version: 3,
+      eventId: 'project-deleted-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      occurredAt: 2,
+      causationCommandId: 'project-delete-1',
+      payload: {
+        type: 'project.deleted',
+        projectId: 'project-1',
+        name: 'Renamed project',
+      },
+    }).payload).toMatchObject({ type: 'project.deleted', projectId: 'project-1' })
+  })
+
   it('models a targeted Gateway profile update and result', () => {
     const command = mlp3CommandSchema.parse({
       kind: 'malink.command',

@@ -63,6 +63,10 @@ import {
   type NewProjectInput,
   type ProjectCreationGateway,
 } from "./NewProjectDialog";
+import {
+  ProjectSettingsDialog,
+  type ProjectSettingsInput,
+} from "./ProjectSettingsDialog";
 import { ProviderHistoryDialog } from "./ProviderHistoryDialog";
 import { findRecentlyArchivedProviderSession } from "./providerHistorySessions";
 import {
@@ -1221,6 +1225,7 @@ function MalinkAppRuntime() {
   }, [approvedGatewayEnrollmentIds, pendingGatewayEnrollments]);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [projectSettingsProjectId, setProjectSettingsProjectId] = useState<string | null>(null);
   const [providerHistoryOpen, setProviderHistoryOpen] = useState(false);
   const [providerHistoryGatewayNodeId, setProviderHistoryGatewayNodeId] = useState("");
   const [providerHistoryProjectId, setProviderHistoryProjectId] = useState("");
@@ -1234,6 +1239,7 @@ function MalinkAppRuntime() {
   const [forgetDialogOpen, setForgetDialogOpen] = useState(false);
   const [newSessionBusy, setNewSessionBusy] = useState(false);
   const [newProjectBusy, setNewProjectBusy] = useState(false);
+  const [projectSettingsBusy, setProjectSettingsBusy] = useState(false);
   const [sessionSettingsUpdate, setSessionSettingsUpdate] =
     useState<SessionSettingsUpdate | null>(null);
   const [pendingSessionCreate, setPendingSessionCreate] =
@@ -1758,6 +1764,34 @@ function MalinkAppRuntime() {
   const activeProjectGateway = activeWorkspace
     ? projectGatewaysById.get(activeWorkspace.projectId) ?? fallbackProjectGateway
     : fallbackProjectGateway;
+  const projectSettingsWorkspace = projectSettingsProjectId
+    ? gatewayState?.projects?.find(project => project.projectId === projectSettingsProjectId)
+      ?? (gatewayState?.workspace.projectId === projectSettingsProjectId
+        ? gatewayState.workspace
+        : null)
+    : null;
+  const projectSettingsGateway = projectSettingsWorkspace
+    ? projectGatewaysById.get(projectSettingsWorkspace.projectId) ?? fallbackProjectGateway
+    : fallbackProjectGateway;
+  const projectSettingsGatewayDescriptor = gatewayState?.gatewayDirectory?.directory.gateways
+    .find(gateway => gateway.gatewayNodeId === projectSettingsGateway.gatewayNodeId);
+  const projectSettingsRoute = projectSettingsGatewayDescriptor?.projects
+    ?.find(project => project.projectId === projectSettingsWorkspace?.projectId);
+  const projectSettingsIsControlRoute = Boolean(
+    (projectSettingsRoute
+      && projectSettingsGatewayDescriptor
+      && projectSettingsRoute.roomId === projectSettingsGatewayDescriptor.transport.roomId)
+    || (!projectSettingsGatewayDescriptor
+      && projectSettingsWorkspace?.projectId === matrixConfig.projectId),
+  );
+  const projectSettingsCanDelete = projectSettingsWorkspace
+    ? !projectSettingsIsControlRoute
+      && (gatewayState?.projects ?? [gatewayState?.workspace].filter(Boolean)).filter(project => {
+        if (!project) return false;
+        const owner = projectGatewaysById.get(project.projectId) ?? fallbackProjectGateway;
+        return owner.gatewayNodeId === projectSettingsGateway.gatewayNodeId;
+      }).length > 1
+    : false;
   const workspaceGatewayCount = gatewayState?.gatewayDirectory?.directory.gateways.length
     ?? (trustedGateway ? 1 : 0);
   const onlyWorkspaceGateway = gatewayState?.gatewayDirectory?.directory.gateways[0];
@@ -6330,6 +6364,85 @@ function MalinkAppRuntime() {
     }
   }
 
+  async function updateProjectSettings(input: ProjectSettingsInput): Promise<void> {
+    const project = projectSettingsWorkspace;
+    if (!project || projectSettingsBusy) return;
+    setProjectSettingsBusy(true);
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand({
+        operation: "project.settings",
+        name: input.name,
+        model: input.model,
+        reasoningEffort: input.reasoningEffort,
+      }, project.projectId, { propagateFailure: true });
+      if (!sent) return;
+      commandId = sent.commandId;
+      const completion = await sent.completion;
+      if (completion.outcome !== "succeeded") {
+        throw new Error(completion.error?.message ?? "The project settings could not be updated.");
+      }
+      setProjectSettingsProjectId(null);
+      showUiNotice(
+        "project:settings",
+        "session",
+        "success",
+        `${input.name} was updated. New conversations will use its new defaults.`,
+        6_000,
+      );
+    } catch (error) {
+      showUiNotice("project:settings", "session", "error", formatUiError(error));
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+      setProjectSettingsBusy(false);
+    }
+  }
+
+  async function deleteProject(): Promise<void> {
+    const project = projectSettingsWorkspace;
+    if (!project || projectSettingsBusy || !projectSettingsCanDelete) return;
+    setProjectSettingsBusy(true);
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand(
+        { operation: "project.delete" },
+        project.projectId,
+        { propagateFailure: true },
+      );
+      if (!sent) return;
+      commandId = sent.commandId;
+      const completion = await sent.completion;
+      if (completion.outcome !== "succeeded") {
+        throw new Error(completion.error?.message ?? "The project could not be deleted.");
+      }
+      const nextSession = gatewayState?.sessions.find(session =>
+        session.projectId !== project.projectId && session.status !== "archived"
+      );
+      if (selected?.projectId === project.projectId) {
+        activateLocalSession(nextSession?.id ?? null);
+      }
+      setProjectSettingsProjectId(null);
+      showUiNotice(
+        "project:delete",
+        "session",
+        "success",
+        `${project.projectName} was removed from Malink. Its working directory was not erased.`,
+        7_000,
+      );
+    } catch (error) {
+      showUiNotice("project:delete", "session", "error", formatUiError(error));
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+      setProjectSettingsBusy(false);
+    }
+  }
+
   async function createSession(
     input: NewSessionInput,
     retryRecord?: OptimisticSessionRecord,
@@ -6377,30 +6490,19 @@ function MalinkAppRuntime() {
     setMobileChatOpen(true);
     recoverUiNotice("session:create");
     let durableCommandRecorded = false;
-    let connection: MalinkClient | null = null;
     try {
       // Let React commit the pending row before Matrix encryption, IndexedDB,
       // acknowledgement, and command-result work begins.
       await waitForUiCommit();
-      connection = malinkClientRef.current;
       if (input.setAsProjectDefault) {
         const settingsUpdate = await sendRealCommand({
           operation: "project.settings",
           model: input.model ?? null,
           reasoningEffort: input.reasoningEffort ?? null,
+          defaultExtensions: input.extensions ?? [],
         }, input.projectId);
         if (!settingsUpdate || (await settingsUpdate.completion).outcome !== "succeeded") {
-          throw new Error("The project model and reasoning defaults could not be updated.");
-        }
-        if (connection?.updateProjectExtensions) {
-          const update = await connection.updateProjectExtensions(
-            input.extensions ?? [],
-            input.projectId,
-          );
-          const completion = await update.completion;
-          if (completion.outcome !== "succeeded") {
-            throw new Error("The project extension defaults could not be updated.");
-          }
+          throw new Error("The project defaults could not be updated.");
         }
       }
       const sent = await sendRealCommand({
@@ -8021,6 +8123,7 @@ function MalinkAppRuntime() {
             const contentId = `project-sessions-${encodeURIComponent(project.key)}`;
             return (
             <section className="project-session-group" key={project.key}>
+              <div className="project-session-heading">
               <button
                 type="button"
                 className="project-session-toggle"
@@ -8085,6 +8188,19 @@ function MalinkAppRuntime() {
                 </span>
                 <b aria-hidden="true">{project.sessions.length}</b>
               </button>
+              {!project.temporary && (
+                <button
+                  type="button"
+                  className="project-manage-button"
+                  aria-label={`Manage ${project.projectName}`}
+                  title="Project settings"
+                  disabled={projectSettingsBusy}
+                  onClick={() => setProjectSettingsProjectId(project.projectId)}
+                >
+                  <span aria-hidden="true">•••</span>
+                </button>
+              )}
+              </div>
               {expanded && (
                 <div id={contentId} className="project-session-list">
               {project.sessions.map((session) => {
@@ -9357,6 +9473,23 @@ function MalinkAppRuntime() {
         />
       )}
 
+      {projectSettingsWorkspace && (
+        <ProjectSettingsDialog
+          key={projectSettingsWorkspace.projectId}
+          open
+          busy={projectSettingsBusy}
+          project={projectSettingsWorkspace}
+          gatewayLabel={projectSettingsGateway.label}
+          fallbackModels={gatewayState?.capabilities.models ?? []}
+          canDelete={projectSettingsCanDelete}
+          onClose={() => {
+            if (!projectSettingsBusy) setProjectSettingsProjectId(null);
+          }}
+          onSave={(input) => void updateProjectSettings(input)}
+          onDelete={() => void deleteProject()}
+        />
+      )}
+
       {gatewayRelease && gatewayUpdatePlan.length > 0 && (
         <GatewayUpdateDialog
           open={gatewayUpdateDialogOpen}
@@ -9829,6 +9962,8 @@ function describeConflictedAction(payload: CommandPayload): string {
       return "The new project request";
     case "project.settings":
       return "The project settings request";
+    case "project.delete":
+      return "The project deletion request";
     case "provider.sessions.list":
       return "The provider history request";
     case "provider.session.inspect":

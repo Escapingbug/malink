@@ -36,6 +36,9 @@ export class FileGatewayProjectCatalog {
             continue
           }
           const replacement = structuredClone(room)
+          if (replacement.projectName === undefined && state.projects[index]?.projectName) {
+            replacement.projectName = state.projects[index].projectName
+          }
           if (canonicalJson(state.projects[index]) !== canonicalJson(replacement)) {
             state.projects[index] = replacement
             changed = true
@@ -89,6 +92,39 @@ export class FileGatewayProjectCatalog {
         state.projects.sort((left, right) => left.roomId.localeCompare(right.roomId))
         validateState(state, this.gatewayNodeId)
         return { result: structuredClone(room), changed: true }
+      },
+    )
+  }
+
+  updateProjectName(projectId: string, nameInput: string): Promise<MatrixGatewayRoomConfig> {
+    const name = nameInput.trim()
+    if (!name) throw new TypeError('Gateway project name is required')
+    return this.file.transaction(
+      () => initialState(this.gatewayNodeId),
+      state => {
+        validateState(state, this.gatewayNodeId)
+        const project = state.projects.find(candidate => roomProjectId(candidate) === projectId)
+        if (!project) throw new Error(`Unknown Gateway project ${projectId}`)
+        if (project.projectName === name) {
+          return { result: structuredClone(project), changed: false }
+        }
+        project.projectName = name
+        validateState(state, this.gatewayNodeId)
+        return { result: structuredClone(project), changed: true }
+      },
+    )
+  }
+
+  remove(projectId: string): Promise<MatrixGatewayRoomConfig | undefined> {
+    return this.file.transaction(
+      () => initialState(this.gatewayNodeId),
+      state => {
+        validateState(state, this.gatewayNodeId)
+        const index = state.projects.findIndex(project => roomProjectId(project) === projectId)
+        if (index < 0) return { result: undefined, changed: false }
+        const [removed] = state.projects.splice(index, 1)
+        validateState(state, this.gatewayNodeId)
+        return { result: structuredClone(removed), changed: true }
       },
     )
   }

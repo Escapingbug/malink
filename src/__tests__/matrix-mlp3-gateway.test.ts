@@ -283,6 +283,9 @@ describe('MatrixMlp3GatewayRunner', () => {
     const notificationSubscriptions: string[] = []
     const terminalNotifications: Mlp3Event[] = []
     const createdProjectRequests: string[] = []
+    const updatedProjectNames: string[] = []
+    const validatedProjectDeletions: string[] = []
+    const deletedProjects: string[] = []
     const gatewayProfileUpdates: string[] = []
     const filesystemAccessChecks: Array<{
       cwd: string
@@ -383,6 +386,11 @@ describe('MatrixMlp3GatewayRunner', () => {
         }
       },
       onProjectCreated: async () => { projectCreatedHooks += 1 },
+      updateProjectMetadata: async input => {
+        updatedProjectNames.push(input.name)
+        return { ...input.sourceRoom, projectName: input.name }
+      },
+      deleteProject: async input => { deletedProjects.push(input.projectId) },
       updateGatewayProfile: async input => {
         gatewayProfileUpdates.push(`${input.gatewayNodeId}:${input.gatewayName}`)
         return {
@@ -863,12 +871,25 @@ describe('MatrixMlp3GatewayRunner', () => {
       payload: {
         operation: 'project.update',
         patch: {
+          name: 'Renamed project',
+          model: 'model-selectable',
+          reasoningEffort: 'high',
           defaultExtensions: [{ id: 'prefix-transform', config: { prefix: 'SAFE:' } }],
         },
       },
     }, '$project-defaults-1')
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
       .some(event => event.causationCommandId === 'project-defaults-1'))
+    const projectUpdateEvents = (await events(client, activeKey.key, roomId, projectId))
+      .filter(event => event.causationCommandId === 'project-defaults-1')
+    expect(projectUpdateEvents).toHaveLength(1)
+    expect(projectUpdateEvents[0]?.payload).toMatchObject({
+      type: 'project.snapshot',
+      name: 'Renamed project',
+      model: 'model-selectable',
+      reasoningEffort: 'high',
+    })
+    expect(updatedProjectNames).toEqual(['Renamed project'])
     const createA: Mlp3Command = {
       ...base,
       commandId: 'create-a',
@@ -1217,6 +1238,10 @@ describe('MatrixMlp3GatewayRunner', () => {
     const restarted = new MatrixMlp3GatewayRunner(config, {
       client,
       webPushService,
+      validateProjectDeletion: async input => {
+        validatedProjectDeletions.push(input.projectId)
+      },
+      deleteProject: async input => { deletedProjects.push(input.projectId) },
       sessionExtensionRegistry: new SessionExtensionRegistry([extensionProvider]),
       sessionFactory: (room, port, session) => {
         const sessionRecord = createTopicSessionRecord({
@@ -1273,8 +1298,26 @@ describe('MatrixMlp3GatewayRunner', () => {
       event.payload.type === 'session.ready'
       && event.payload.projection.activity === 'idle'
     )).toBe(true)
+    await send({
+      ...base,
+      commandId: 'project-delete-1',
+      operation: 'project.delete',
+      payload: { operation: 'project.delete' },
+    }, '$project-delete-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'project-delete-1'))
+    const projectDeleteEvents = (await events(client, activeKey.key, roomId, projectId))
+      .filter(event => event.causationCommandId === 'project-delete-1')
+    expect(projectDeleteEvents).toHaveLength(1)
+    expect(projectDeleteEvents[0]?.payload).toMatchObject({
+      type: 'project.deleted',
+      projectId,
+      name: 'Renamed project',
+    })
+    expect(validatedProjectDeletions).toContain(projectId)
+    await waitFor(() => Promise.resolve(deletedProjects.includes(projectId)))
     await restarted.stop()
-  }, 15_000)
+  }, 30_000)
 })
 
 function nativeRelease(versionCode: number) {

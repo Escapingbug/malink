@@ -184,6 +184,18 @@ export class FileMlp3RuntimeStateStore {
       },
     )
   }
+
+  deleteProject(roomId: string): Promise<void> {
+    return this.file.transaction(
+      () => defaultState(this.workspaceId),
+      state => {
+        validateState(state, this.workspaceId)
+        if (!state.projects[roomId]) return { result: undefined, changed: false }
+        delete state.projects[roomId]
+        return { result: undefined, changed: true }
+      },
+    )
+  }
 }
 
 function defaultState(workspaceId: string): V3RuntimeState {

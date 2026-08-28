@@ -62,13 +62,20 @@ test("preserves the scratch scope on session creation", () => {
 test("creates project defaults and provider-history commands", () => {
   assert.deepEqual(commandPayloadSchema.parse({
     operation: "project.settings",
+    name: "Renamed",
     model: "gpt-5",
     reasoningEffort: "high",
+    defaultExtensions: [{ id: "review" }],
   }), {
     operation: "project.settings",
+    name: "Renamed",
     model: "gpt-5",
     reasoningEffort: "high",
+    defaultExtensions: [{ id: "review" }],
   });
+  assert.deepEqual(commandPayloadSchema.parse({
+    operation: "project.delete",
+  }), { operation: "project.delete" });
   assert.deepEqual(commandPayloadSchema.parse({
     operation: "provider.sessions.list",
     provider: "codex",

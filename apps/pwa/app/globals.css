@@ -779,18 +779,50 @@ select:focus-visible {
   margin-bottom: 8px;
 }
 
+.project-session-heading {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 9px 2px 13px;
+}
+
 .project-session-toggle {
   display: grid;
-  width: calc(100% - 26px);
+  width: auto;
+  min-width: 0;
+  flex: 1;
   min-height: 48px;
   grid-template-columns: 15px 22px minmax(0, 1fr) auto 22px;
   align-items: center;
   gap: 6px;
-  margin: 0 13px 2px;
+  margin: 0;
   padding: 5px 6px;
   border-radius: 10px;
   background: transparent;
   text-align: left;
+}
+
+.project-manage-button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 9px;
+  background: transparent;
+  color: #858d9f;
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+
+.project-manage-button:hover {
+  background: #ebeaf3;
+  color: #5f55a7;
+}
+
+.project-manage-button:disabled {
+  cursor: wait;
+  opacity: 0.5;
 }
 
 .project-session-toggle:hover {
@@ -6222,6 +6254,52 @@ select:focus-visible {
 .new-session-dialog .primary-button:disabled {
   opacity: 0.55;
   cursor: wait;
+}
+
+.project-settings-danger {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px solid #ecdadd;
+  border-radius: 12px;
+  background: #fffafa;
+}
+
+.project-settings-danger > div {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+}
+
+.project-settings-danger strong {
+  color: #713b43;
+  font-size: 11px;
+}
+
+.project-settings-danger small {
+  color: #8a7075;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.project-settings-danger .danger-outline-button {
+  min-width: 88px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid #e4b8bf;
+  border-radius: 9px;
+  background: white;
+  color: #a33f4c;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.project-settings-danger .danger-outline-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .gateway-update-backdrop {

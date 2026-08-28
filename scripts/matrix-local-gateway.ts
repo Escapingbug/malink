@@ -773,6 +773,45 @@ runner = new MatrixMlp3GatewayRunner(config, {
     onProjectCreated: async () => {
         await synchronizeWorkspaceControl(publishLocalWorkspaceDirectory)
     },
+    updateProjectMetadata: async input => {
+        const room = await projectCatalog.updateProjectName(
+            input.sourceRoom.projectId
+                ?? gatewayProjectIdentity(
+                    input.sourceRoom.cwd,
+                    input.sourceRoom.projectName,
+                ).id,
+            input.name,
+        )
+        process.stdout.write(
+            `Device ${input.requestedByDeviceId} renamed project ${input.name}.\n`,
+        )
+        return room
+    },
+    validateProjectDeletion: async input => {
+        if (input.sourceRoom.roomId === currentTransport.roomId) {
+            throw new Error(
+                'The Gateway bootstrap project is its stable Workspace control route and cannot be deleted',
+            )
+        }
+        const projects = await projectCatalog.list()
+        if (projects.length <= 1) {
+            throw new Error(
+                'The only project on a Gateway cannot be deleted because it is the control route',
+            )
+        }
+    },
+    deleteProject: async input => {
+        await projectCatalog.remove(input.projectId)
+        localRoomIds.splice(0, localRoomIds.length, ...(
+            await projectCatalog.list()
+        ).map(project => project.roomId))
+        process.stdout.write(
+            `Device ${input.requestedByDeviceId} deleted project ${input.projectId}.\n`,
+        )
+    },
+    onProjectDeleted: async () => {
+        await synchronizeWorkspaceControl(publishLocalWorkspaceDirectory)
+    },
     onRejected: (event, error) => {
         process.stderr.write(
             `[matrix-gateway] rejected ${event.eventId}: ${formatError(error)}\n`,

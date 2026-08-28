@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { NewProjectDialog } from "../app/NewProjectDialog.tsx";
 import { NewSessionDialog } from "../app/NewSessionDialog.tsx";
+import { ProjectSettingsDialog } from "../app/ProjectSettingsDialog.tsx";
 import { gatewayProjectOwner } from "../app/projectCatalog.ts";
 
 const gateways = [{
@@ -94,4 +95,45 @@ test("blocks dismissal while a durable project command is pending", () => {
   assert.ok(closeButton);
   assert.match(closeButton, /disabled/);
   assert.match(html, /Creating…/);
+});
+
+test("manages project metadata and defaults in one settings surface", () => {
+  const html = renderToStaticMarkup(createElement(ProjectSettingsDialog, {
+    open: true,
+    busy: false,
+    project: {
+      projectId: "project-office",
+      projectName: "Malink",
+      cwd: "/work/malink",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      permissionMode: "default",
+      capabilities: {
+        models: [{
+          id: "gpt-5.6-sol",
+          name: "GPT-5.6 Sol",
+          supportedReasoningLevels: [{ effort: "high" }],
+        }],
+        providers: [],
+        permissionModes: [],
+        canCreateSession: true,
+        canSelectSession: false,
+        sessionExtensions: [],
+      },
+    },
+    gatewayLabel: "Office Gateway · alice-macbook",
+    fallbackModels: [],
+    canDelete: true,
+    onClose() {},
+    onSave() {},
+    onDelete() {},
+  }));
+
+  assert.match(html, /Manage project/);
+  assert.match(html, /Office Gateway · alice-macbook/);
+  assert.match(html, /Default model/);
+  assert.match(html, /GPT-5.6 Sol/);
+  assert.match(html, /One save sends one atomic project command/);
+  assert.match(html, /Delete project/);
 });

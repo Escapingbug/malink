@@ -5414,6 +5414,8 @@ function fallbackBody(payload: CommandPayload): string {
       return "Create a new project";
     case "project.settings":
       return "Update project defaults";
+    case "project.delete":
+      return "Delete a project from Malink";
     case "provider.sessions.list":
       return "List provider sessions";
     case "provider.session.inspect":
@@ -5441,10 +5443,11 @@ function fallbackBody(payload: CommandPayload): string {
   }
 }
 
-function requiredPairingOperation(operation: CommandOperation): PairingOperation {
+export function requiredPairingOperation(operation: CommandOperation): PairingOperation {
   if (operation.startsWith("gateway.enrollment.")) return "device.invite";
   if (operation.startsWith("gateway.profile.")) return "device.invite";
   if (operation.startsWith("gateway.update.")) return "gateway.update";
+  if (operation === "project.delete") return "project.settings";
   return operation as PairingOperation;
 }
 

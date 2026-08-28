@@ -1463,10 +1463,17 @@ class NativeClientRuntime(
                 v3Payload = buildJsonObject {
                     put("operation", v3Operation)
                     put("patch", buildJsonObject {
+                        raw.string("name")?.let { put("name", it) }
                         raw["model"]?.let { put("model", it) }
                         raw["reasoningEffort"]?.let { put("reasoningEffort", it) }
+                        raw["defaultExtensions"]?.let { put("defaultExtensions", it) }
                     })
                 }
+            }
+            "project.delete" -> {
+                v3Operation = "project.delete"
+                v3SessionId = null
+                v3Payload = buildJsonObject { put("operation", v3Operation) }
             }
             "project.create" -> {
                 v3Operation = "project.create"

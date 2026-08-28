@@ -305,6 +305,7 @@ const projectUpdatePayloadSchema = z
     operation: z.literal('project.update'),
     patch: z
       .object({
+        name: z.string().trim().min(1).max(256).optional(),
         model: z.string().min(1).max(256).nullable().optional(),
         reasoningEffort: z.string().min(1).max(64).nullable().optional(),
         defaultExtensions: z.array(mlp3SessionExtensionBindingSchema).max(8).optional(),
@@ -314,6 +315,9 @@ const projectUpdatePayloadSchema = z
         message: 'A project update requires at least one changed field',
       }),
   })
+  .strict()
+const projectDeletePayloadSchema = z
+  .object({ operation: z.literal('project.delete') })
   .strict()
 const providerSessionsListPayloadSchema = z
   .object({
@@ -367,6 +371,7 @@ export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   sessionLifecyclePayloadSchema,
   projectCreatePayloadSchema,
   projectUpdatePayloadSchema,
+  projectDeletePayloadSchema,
   providerSessionsListPayloadSchema,
   providerSessionInspectPayloadSchema,
   deviceInvitationPayloadSchema,
@@ -422,6 +427,12 @@ export const mlp3CommandSchema = z.union([
     sessionId: z.undefined().optional(),
     operation: z.literal('project.update'),
     payload: projectUpdatePayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('project.delete'),
+    payload: projectDeletePayloadSchema,
   }).strict(),
   z.object({
     ...projectCommandCommon,
@@ -767,6 +778,13 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       name: z.string().min(1).max(256),
       cwd: z.string().min(1).max(8_192),
       alreadyExisted: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('project.deleted'),
+      projectId: opaqueId,
+      name: z.string().min(1).max(256),
     })
     .strict(),
   z

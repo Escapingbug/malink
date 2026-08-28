@@ -16,6 +16,7 @@ enum class CommandOperation(val wireName: String) {
     SESSION_CREATE("session.create"),
     PROJECT_CREATE("project.create"),
     PROJECT_SETTINGS("project.settings"),
+    PROJECT_DELETE("project.delete"),
     PROVIDER_SESSIONS_LIST("provider.sessions.list"),
     PROVIDER_SESSION_INSPECT("provider.session.inspect"),
     SESSION_ARCHIVE("session.archive"),
@@ -148,10 +149,17 @@ data class SessionCreateCommandPayload(
 }
 
 data class ProjectSettingsCommandPayload(
+    val name: String?,
     val model: String?,
     val reasoningEffort: String?,
+    val defaultExtensions: List<SessionExtensionBindingPayload>?,
 ) : ValidatedCommandPayload {
     override val operation = CommandOperation.PROJECT_SETTINGS
+    override val sessionId: String? = null
+}
+
+data object ProjectDeleteCommandPayload : ValidatedCommandPayload {
+    override val operation = CommandOperation.PROJECT_DELETE
     override val sessionId: String? = null
 }
 
@@ -266,6 +274,7 @@ object CommandPayloadValidator {
             CommandOperation.SESSION_CREATE -> validateSessionCreate(value)
             CommandOperation.PROJECT_CREATE -> validateProjectCreate(value)
             CommandOperation.PROJECT_SETTINGS -> validateProjectSettings(value)
+            CommandOperation.PROJECT_DELETE -> validateProjectDelete(value)
             CommandOperation.PROVIDER_SESSIONS_LIST -> validateProviderSessionsList(value)
             CommandOperation.PROVIDER_SESSION_INSPECT -> validateProviderSessionInspect(value)
             CommandOperation.SESSION_ARCHIVE,
@@ -391,17 +400,34 @@ object CommandPayloadValidator {
     }
 
     private fun validateProjectSettings(value: JsonObject): ProjectSettingsCommandPayload {
+        val settings = setOf("name", "model", "reasoningEffort", "defaultExtensions")
         value.requireExactKeys(
             required = setOf("operation"),
-            optional = setOf("model", "reasoningEffort"),
+            optional = settings,
         )
-        require("model" in value || "reasoningEffort" in value) {
+        require(value.keys.any(settings::contains)) {
             "At least one project setting is required."
         }
+        val defaultExtensions = value.optionalArray("defaultExtensions")?.also {
+            require(it.size <= 8) { "Project contains too many default extensions." }
+        }?.map(::validateSessionExtension)?.also { extensions ->
+            require(extensions.map { it.id }.toSet().size == extensions.size) {
+                "Project default extension IDs must be unique."
+            }
+        }
         return ProjectSettingsCommandPayload(
+            name = value.optionalBoundedString("name", 256)?.trim()?.also {
+                require(it.isNotEmpty()) { "Project name is invalid." }
+            },
             model = value.optionalNullableBoundedString("model", 256),
             reasoningEffort = value.optionalNullableBoundedString("reasoningEffort", 64),
+            defaultExtensions = defaultExtensions,
         )
+    }
+
+    private fun validateProjectDelete(value: JsonObject): ProjectDeleteCommandPayload {
+        value.requireExactKeys(setOf("operation"))
+        return ProjectDeleteCommandPayload
     }
 
     private fun validateProjectCreate(value: JsonObject): ProjectCreateCommandPayload {
@@ -702,6 +728,7 @@ object CommandAuthorizationPolicy {
  */
 internal fun requiredCertificateOperation(operation: CommandOperation): PairingOperation =
     when (operation) {
+        CommandOperation.PROJECT_DELETE -> PairingOperation.PROJECT_SETTINGS
         CommandOperation.GATEWAY_ENROLLMENT_INVITE,
         CommandOperation.GATEWAY_ENROLLMENT_APPROVE,
         CommandOperation.GATEWAY_PROFILE_UPDATE,

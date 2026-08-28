@@ -271,6 +271,21 @@ export class MatrixMlp3Projection {
     }
     if (this.seenLogicalEvents.has(event.eventId)) return false;
     this.seenLogicalEvents.add(event.eventId);
+    if (payload.type === "project.deleted" && event.projectId) {
+      if (this.project?.projectId === event.projectId) this.project = null;
+      const deletedSessionIds = new Set(
+        [...this.sessions.values()]
+          .filter(session => session.projectId === event.projectId)
+          .map(session => session.sessionId),
+      );
+      for (const sessionId of deletedSessionIds) this.sessions.delete(sessionId);
+      for (const [logicalId, message] of this.messages) {
+        if (deletedSessionIds.has(message.sessionId)) this.messages.delete(logicalId);
+      }
+      for (const [fileId, file] of this.inboxFiles) {
+        if (file.projectId === event.projectId) this.inboxFiles.delete(fileId);
+      }
+    }
     if (payload.type === "project.snapshot" && event.projectId) {
       if (!this.project || payload.snapshotVersion >= this.project.snapshotVersion) {
         this.project = {
@@ -864,6 +879,7 @@ function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
     case "extension.interaction.resolved":
     case "project.snapshot":
     case "project.created":
+    case "project.deleted":
     case "device.invitation.created":
     case "gateway.enrollment.invitation.created":
     case "gateway.enrollment.approved":

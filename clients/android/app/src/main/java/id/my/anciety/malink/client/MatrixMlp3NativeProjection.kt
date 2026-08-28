@@ -273,6 +273,22 @@ internal class MatrixMlp3NativeProjection(
 
         if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
 
+        if (type == "project.deleted" && projectId != null) {
+            projects.remove(projectId)
+            projectCapabilities.remove(projectId)
+            workspacePendingGatewayEnrollmentsByProject.remove(projectId)
+            val deletedSessionIds = sessions.values
+                .filter { it.projectId == projectId }
+                .map { it.id }
+                .toSet()
+            sessions.keys.removeAll(deletedSessionIds)
+            assistantMessageVersions.keys.removeAll { it.sessionId in deletedSessionIds }
+            return MatrixMlp3NativeProjectionResult(
+                terminal = terminal(type, event, payload, causation, sessionId),
+                changed = true,
+            )
+        }
+
         if (type == "project.snapshot" && projectId != null) {
             val version = payload.requiredPositiveLong("snapshotVersion")
             val current = projects[projectId]
@@ -1077,7 +1093,7 @@ internal class MatrixMlp3NativeProjection(
         commandId ?: return null
         return when (type) {
             "session.ready", "session.updated", "session.lifecycle", "decision.resolved",
-            "extension.interaction.resolved", "project.snapshot",
+            "extension.interaction.resolved", "project.snapshot", "project.deleted",
             "notification.subscription.changed" ->
                 MatrixMlp3NativeTerminal(commandId, "succeeded", sessionId)
             "provider.sessions.listed", "provider.session.inspected" ->

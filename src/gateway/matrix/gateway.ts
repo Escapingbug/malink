@@ -1110,6 +1110,8 @@ export class MatrixGatewayRunner {
         switch (command.payload.operation) {
             case 'project.create':
                 throw new Error('Project creation requires the Matrix MLP/3 Gateway')
+            case 'project.delete':
+                throw new Error('Project deletion requires the Matrix MLP/3 Gateway')
             case 'gateway.profile.update':
                 throw new Error('Gateway profile updates require the MLP/3 Gateway runtime')
             case 'gateway.update.stage':
@@ -2323,6 +2325,7 @@ function commandSessionId(command: MalinkCommand): string | null {
         case 'gateway.update.apply':
         case 'gateway.update.status':
         case 'project.settings':
+        case 'project.delete':
         case 'provider.sessions.list':
         case 'provider.session.inspect':
             return null

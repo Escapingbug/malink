@@ -642,6 +642,7 @@ function isCommandOperation(value: unknown): value is CommandOperation {
         || value === 'session.settings'
         || value === 'session.create'
         || value === 'project.settings'
+        || value === 'project.delete'
         || value === 'provider.sessions.list'
         || value === 'provider.session.inspect'
         || value === 'session.archive'
