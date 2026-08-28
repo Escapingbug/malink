@@ -124,9 +124,16 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /session-row session-create-pending/);
   assert.match(source, /function ProjectFolderIcon\(\{ temporary \}:/);
   assert.match(source, /className="project-folder-clock"/);
-  assert.match(source, /title=\{project\.temporary \? "Temporary workspace" : "Project"\}/);
+  assert.match(source, /Temporary workspace on \$\{project\.gatewayLabel\}/);
   assert.match(source, /<ProjectDisclosureIcon \/>/);
   assert.doesNotMatch(source, /project\.temporary \? "◇" : "▱"/);
+  assert.match(source, /aria-label="Filter conversations by Gateway"/);
+  assert.match(source, /<option value=\{ALL_GATEWAYS_FILTER\}>All Gateways<\/option>/);
+  assert.match(source, /projectMatchesGatewayFilter\(/);
+  assert.match(source, /scratchGroups/);
+  assert.match(newSession, /The selected Gateway creates a private working folder/);
+  assert.match(newSession, /choice\.gateway\.shortId/);
+  assert.match(styles, /\.gateway-filter-control\s*\{/);
   assert.match(
     styles,
     /\.project-chevron\.expanded svg\s*\{\s*transform:\s*rotate\(90deg\)/,
@@ -189,6 +196,9 @@ test("ships a complete installable offline shell", async () => {
     /disabled=\{isStopping \|\| !selected\?\.activeTurnId\}/,
   );
   assert.match(source, /disabled=\{!composerState\.canSend\}/);
+  assert.match(source, /id="composer-send-shortcut"/);
+  assert.match(source, /<kbd>Ctrl\/⌘<\/kbd>[\s\S]*?<kbd>Enter<\/kbd>[\s\S]*?to send/);
+  assert.match(source, /aria-describedby="composer-status composer-send-shortcut"/);
   assert.match(source, /aria-label="Agent options"/);
   assert.match(source, /aria-controls="composer-agent-options"/);
   assert.doesNotMatch(
@@ -247,7 +257,6 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /WAITING_AGENT_ACTIVITY/);
   assert.match(source, /aria-keyshortcuts="Control\+Enter Meta\+Enter"/);
   assert.match(source, /event\.ctrlKey \|\| event\.metaKey/);
-  assert.match(source, /Enter for new line · Ctrl\/⌘ Enter to send/);
   assert.match(source, /resizeComposerTextarea\(composerTextareaRef\.current\)/);
   assert.match(source, /const contentHeight = textarea\.scrollHeight/);
   assert.match(styles, /\.optimistic-session-card\s*\{/);
@@ -396,7 +405,6 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /aria-label=\{`\$\{session\.title\}\. \$\{statusSummary\}/);
   assert.match(source, /title=\{`\$\{session\.title\} · \$\{statusSummary\}`\}/);
   assert.match(source, /const showStatusSummary =/);
-  assert.match(source, /\{showStatusSummary && \(\s*<span className="session-status-summary">/);
   assert.doesNotMatch(source, /TurnResultContext/);
   assert.match(
     styles,
@@ -417,6 +425,8 @@ test("ships a complete installable offline shell", async () => {
   assert.match(styles, /\.agent-controls select \{[\s\S]*?min-height: 44px/);
   assert.match(source, /function SessionSignalIcon\(/);
   assert.match(source, /data-session-signal=\{visualSignal\}/);
+  assert.match(source, /session-signal-\$\{visualSignal\}/);
+  assert.match(source, /session-status-summary session-status-\$\{statusTone\}/);
   assert.match(source, /className=\{`session-signal-mark signal-\$\{visualSignal\}/);
   assert.match(source, /title=\{visualSignalLabel \?\? undefined\}/);
   assert.doesNotMatch(source, /className="agent-ready"/);
@@ -426,6 +436,11 @@ test("ships a complete installable offline shell", async () => {
   assert.match(styles, /\.session-signal-mark\.signal-ready \{[\s\S]*?background: var\(--violet\)/);
   assert.match(styles, /\.session-signal-mark\.signal-working \{[\s\S]*?background: #e4f5ed/);
   assert.match(styles, /\.session-signal-spinner \{[\s\S]*?animation: session-status-spin/);
+  assert.match(styles, /\.session-status-summary\.session-status-sending \{[\s\S]*?color: #3569b2/);
+  assert.match(styles, /\.session-status-summary\.session-status-waiting \{[\s\S]*?color: #8a671d/);
+  assert.match(styles, /\.session-status-summary\.session-status-working \{[\s\S]*?color: #267859/);
+  assert.match(styles, /\.session-status-summary\.session-status-stopping \{[\s\S]*?color: #a3542d/);
+  assert.match(styles, /@media \(min-width: 901px\)[\s\S]*?\.composer-send-shortcut \{[\s\S]*?display: inline-flex/);
   assert.doesNotMatch(styles, /inset 3px 0 0 var\(--violet\)/);
   assert.match(styles, /\.matrix-settings > footer \{[\s\S]*?position: sticky;[\s\S]*?bottom: 0/);
   await assert.rejects(access(new URL("app/_sites-preview", appRoot)));
@@ -500,7 +515,10 @@ test("renders safe Markdown with phase-aware, responsive tool focus", async () =
       readFile(new URL("app/globals.css", appRoot), "utf8"),
     ]);
 
-  assert.match(app, /<MarkdownContent content=\{message\.text \?\? ""\}/);
+  assert.match(
+    app,
+    /<MarkdownContent[\s\S]*?content=\{message\.text \?\? ""\}[\s\S]*?artifactReferences=\{artifactReferences\}[\s\S]*?onMaterializeArtifact=/,
+  );
   assert.match(
     app,
     /<ToolActivityCard[\s\S]*?group=\{message\.toolGroup\}[\s\S]*?fullText=\{fullToolTranscript\(message\.text\)\}[\s\S]*?live=\{liveToolMessage\?\.id === message\.id\}/,
@@ -515,6 +533,11 @@ test("renders safe Markdown with phase-aware, responsive tool focus", async () =
   assert.match(markdown, /rel="noopener noreferrer"/);
   assert.match(markdown, /MarkdownCodeBlock/);
   assert.match(markdown, /navigator\.clipboard\.writeText/);
+  assert.match(markdown, /url\.startsWith\(ARTIFACT_SCHEME\)/);
+  assert.match(markdown, /The file changed\. Review the updated size and confirm again\./);
+  assert.match(markdown, /connection\.downloadAttachment\(attachment\)/);
+  assert.match(styles, /\.artifact-reference-details\s*\{/);
+  assert.match(styles, /\.artifact-inline-image\s*\{/);
   assert.match(toolGroup, /aria-expanded=\{expanded\}/);
   assert.match(toolGroup, /toolStages\(group\.tools\)/);
   assert.match(toolGroup, /Diagnostics · Raw transcript/);
@@ -526,13 +549,14 @@ test("renders safe Markdown with phase-aware, responsive tool focus", async () =
   assert.doesNotMatch(toolGroup, /Waiting for output|No output was captured/);
   assert.match(app, /activeTurnToolFocus\(messages, isStreaming\)/);
   assert.match(app, /<ToolFocusPanel/);
-  assert.match(app, /tool-focus-context-message/);
+  assert.doesNotMatch(app, /tool-focus-context-message|tool-focus-source|show-focus-history/);
   assert.match(toolFocus, /className="tool-focus-invocation"/);
   assert.match(toolFocus, /outputOpen && tool\.result/);
   assert.match(toolFocus, /Show captured output/);
   assert.match(toolFocus, /\{toolIndex \+ 1\}\/\{group\.tools\.length\}/);
   assert.match(turnTimeline, /messageActivityAt\(message\)/);
   assert.match(styles, /\.conversation-workspace\.is-tool-focused/);
+  assert.doesNotMatch(styles, /tool-focus-context-message|tool-focus-source|show-focus-history/);
   assert.match(
     styles,
     /\.conversation-panel\s*\{[\s\S]*?container-type:\s*inline-size/,
@@ -542,7 +566,8 @@ test("renders safe Markdown with phase-aware, responsive tool focus", async () =
     styles,
     /grid-template-columns:\s*minmax\(0, 1fr\) clamp\(390px, 42%, 620px\)/,
   );
-  assert.match(styles, /max-height:\s*min\(48vh, 440px\)/);
+  assert.match(styles, /flex:\s*0 1 clamp\(140px, 42%, 440px\)/);
+  assert.match(styles, /max-height:\s*48%/);
   assert.match(presentation, /const TOOL_LIMIT = 200/);
   assert.match(packageJson, /"react-markdown"/);
   assert.match(packageJson, /"remark-gfm"/);

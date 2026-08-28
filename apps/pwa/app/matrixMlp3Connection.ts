@@ -1239,6 +1239,9 @@ export function toLegacyCompletion(
   completion: import("./matrixMlp3Projection").Mlp3CommandCompletion,
 ): CommandCompletion {
   const payload = completion.event.payload;
+  const artifactResult = payload.type === "assistant.message"
+    ? artifactMaterializationResult(payload.ui)
+    : null;
   return {
     commandId: completion.commandId,
     sequence: 1,
@@ -1270,6 +1273,8 @@ export function toLegacyCompletion(
         ? { result: payload.status }
       : payload.type === "provider.sessions.listed" || payload.type === "provider.session.inspected"
         ? { result: payload }
+      : artifactResult
+        ? { result: artifactResult }
       : {}),
     ...(payload.type === "turn.failed"
       ? { error: { code: payload.code, message: payload.message, retryable: false } }
@@ -1277,6 +1282,21 @@ export function toLegacyCompletion(
         ? { error: { code: payload.code, message: payload.message, retryable: payload.retryable } }
         : {}),
   };
+}
+
+function artifactMaterializationResult(
+  value: unknown,
+): { status: "materialized" | "changed"; referenceId: string } | null {
+  const marker = asRecord(value);
+  const status = marker?.status;
+  const referenceId = marker?.referenceId;
+  return marker?.kind === "artifact_materialization"
+    && marker.version === 1
+    && (status === "materialized" || status === "changed")
+    && typeof referenceId === "string"
+    && referenceId.length > 0
+    ? { status, referenceId }
+    : null;
 }
 
 function gatewayState(

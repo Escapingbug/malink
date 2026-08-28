@@ -1289,7 +1289,6 @@ async function copyAgentReleaseTree(
         throw new Error(`Agent-built Gateway release contains a non-regular file: ${path}`)
       }
       const metadata = await lstat(source)
-      if (metadata.size < 1) throw new Error(`Agent-built Gateway release file is empty: ${path}`)
       files += 1
       bytes += metadata.size
       if (files > MAX_AGENT_RELEASE_FILES || bytes > MAX_AGENT_RELEASE_BYTES) {
@@ -1318,6 +1317,9 @@ async function validateAgentReleaseEntrypoints(releaseDirectory: string): Promis
     if (metadata.isSymbolicLink() || !metadata.isFile()) {
       throw new Error(`Agent-built Gateway release path is not a regular file: ${relativePath}`)
     }
+    if (metadata.size < 1) {
+      throw new Error(`Agent-built Gateway release entrypoint is empty: ${relativePath}`)
+    }
   }
 }
 
@@ -1344,7 +1346,6 @@ async function createAgentReleaseSeal(
         throw new Error(`Agent-built Gateway release contains a non-regular file: ${path}`)
       }
       const metadata = await lstat(absolute)
-      if (metadata.size < 1) throw new Error(`Agent-built Gateway release file is empty: ${path}`)
       totalBytes += metadata.size
       if (files.length >= MAX_AGENT_RELEASE_FILES || totalBytes > MAX_AGENT_RELEASE_BYTES) {
         throw new Error('Agent-built Gateway release exceeds its file-count or size limit')
@@ -1408,7 +1409,7 @@ function parseAgentReleaseSeal(input: unknown): GatewayAgentReleaseSeal {
       || !isSafeRelativeReleasePath(file.path)
       || typeof file.size !== 'number'
       || !Number.isSafeInteger(file.size)
-      || file.size < 1
+      || file.size < 0
       || typeof file.sha256 !== 'string'
       || !/^[0-9a-f]{64}$/u.test(file.sha256)
       || (file.executable !== undefined && file.executable !== true)

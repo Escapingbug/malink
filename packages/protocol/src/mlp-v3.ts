@@ -5,6 +5,7 @@ import { gatewayEnrollmentPendingSchema } from './gateway-enrollment.js'
 import { gatewayUpdateStatusSchema } from './gateway-release.js'
 import {
   attachmentSchema,
+  artifactReferenceSchema,
   jsonValueSchema,
   sessionExtensionActionIdSchema,
   sessionExtensionBindingSchema,
@@ -257,6 +258,21 @@ const decisionAnswerPayloadSchema = z
     totp: z.string().regex(/^\d{6}$/u).optional(),
   })
   .strict()
+const artifactMaterializePayloadSchema = z
+  .object({
+    operation: z.literal('artifact.materialize'),
+    referenceId: opaqueId,
+    expectedStatRevision: opaqueId,
+  })
+  .strict()
+const artifactMaterializationUiSchema = z
+  .object({
+    kind: z.literal('artifact_materialization'),
+    version: z.literal(1),
+    referenceId: opaqueId,
+    status: z.enum(['materialized', 'changed']),
+  })
+  .strict()
 const sessionUpdatePayloadSchema = z
   .object({ operation: z.literal('session.update'), patch: sessionSettingsPatchSchema })
   .strict()
@@ -305,6 +321,7 @@ const projectUpdatePayloadSchema = z
     operation: z.literal('project.update'),
     patch: z
       .object({
+        name: z.string().trim().min(1).max(256).optional(),
         model: z.string().min(1).max(256).nullable().optional(),
         reasoningEffort: z.string().min(1).max(64).nullable().optional(),
         defaultExtensions: z.array(mlp3SessionExtensionBindingSchema).max(8).optional(),
@@ -314,6 +331,9 @@ const projectUpdatePayloadSchema = z
         message: 'A project update requires at least one changed field',
       }),
   })
+  .strict()
+const projectDeletePayloadSchema = z
+  .object({ operation: z.literal('project.delete') })
   .strict()
 const providerSessionsListPayloadSchema = z
   .object({
@@ -363,10 +383,12 @@ export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   promptSubmitPayloadSchema,
   turnCancelPayloadSchema,
   decisionAnswerPayloadSchema,
+  artifactMaterializePayloadSchema,
   sessionUpdatePayloadSchema,
   sessionLifecyclePayloadSchema,
   projectCreatePayloadSchema,
   projectUpdatePayloadSchema,
+  projectDeletePayloadSchema,
   providerSessionsListPayloadSchema,
   providerSessionInspectPayloadSchema,
   deviceInvitationPayloadSchema,
@@ -426,6 +448,12 @@ export const mlp3CommandSchema = z.union([
   z.object({
     ...projectCommandCommon,
     sessionId: z.undefined().optional(),
+    operation: z.literal('project.delete'),
+    payload: projectDeletePayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
     operation: z.literal('provider.sessions.list'),
     payload: providerSessionsListPayloadSchema,
   }).strict(),
@@ -444,6 +472,11 @@ export const mlp3CommandSchema = z.union([
     ...sessionCommandCommon,
     operation: z.literal('decision.answer'),
     payload: decisionAnswerPayloadSchema,
+  }).strict(),
+  z.object({
+    ...sessionCommandCommon,
+    operation: z.literal('artifact.materialize'),
+    payload: artifactMaterializePayloadSchema,
   }).strict(),
   z.object({
     ...sessionCommandCommon,
@@ -655,6 +688,7 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       projection: sessionProjectionSchema,
       ui: jsonValueSchema.optional(),
       attachments: z.array(attachmentSchema).max(10).optional(),
+      artifactReferences: z.array(artifactReferenceSchema).max(10).optional(),
     })
     .strict()
     .superRefine((value, context) => {
@@ -674,6 +708,46 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
           path: ['partIndex'],
           message: 'Message part index must be smaller than part count',
         })
+      }
+      if (
+        value.ui
+        && typeof value.ui === 'object'
+        && !Array.isArray(value.ui)
+        && value.ui.kind === 'artifact_materialization'
+      ) {
+        const marker = artifactMaterializationUiSchema.safeParse(value.ui)
+        if (!marker.success) {
+          context.addIssue({
+            code: 'custom',
+            path: ['ui'],
+            message: 'Artifact materialization UI metadata is invalid',
+          })
+          return
+        }
+        if (!value.artifactReferences?.some(item => item.id === marker.data.referenceId)) {
+          context.addIssue({
+            code: 'custom',
+            path: ['artifactReferences'],
+            message: 'Artifact materialization must include its referenced stat metadata',
+          })
+        }
+        const hasAttachment = value.attachments?.some(
+          attachment => attachment.id === marker.data.referenceId,
+        ) === true
+        if (marker.data.status === 'materialized' && !hasAttachment) {
+          context.addIssue({
+            code: 'custom',
+            path: ['attachments'],
+            message: 'A materialized artifact must include its attachment descriptor',
+          })
+        }
+        if (marker.data.status === 'changed' && hasAttachment) {
+          context.addIssue({
+            code: 'custom',
+            path: ['attachments'],
+            message: 'A changed artifact must require confirmation before attachment delivery',
+          })
+        }
       }
     }),
   z
@@ -767,6 +841,13 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       name: z.string().min(1).max(256),
       cwd: z.string().min(1).max(8_192),
       alreadyExisted: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('project.deleted'),
+      projectId: opaqueId,
+      name: z.string().min(1).max(256),
     })
     .strict(),
   z

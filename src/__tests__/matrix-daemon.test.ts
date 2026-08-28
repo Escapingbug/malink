@@ -545,14 +545,14 @@ describe('MatrixGatewayRunner', () => {
         let createdSessionId: string | undefined
         const extensionProvider: SessionExtensionProvider = {
             descriptor: {
-                id: 'has-privacy',
-                name: 'HaS privacy',
-                description: 'Local prompt privacy',
+                id: 'review-gate',
+                name: 'Review gate',
+                description: 'Requires review before provider input.',
                 version: '1',
                 settings: [{
-                    id: 'contextId',
+                    id: 'policyId',
                     type: 'text',
-                    label: 'Privacy context',
+                    label: 'Review policy',
                     required: true,
                 }],
             },
@@ -595,8 +595,8 @@ describe('MatrixGatewayRunner', () => {
                 model: 'gpt-project',
                 reasoningEffort: 'high',
                 extensions: [{
-                    id: 'has-privacy',
-                    config: { contextId: ' metapp-system-1 ' },
+                    id: 'review-gate',
+                    config: { policyId: ' standard-review ' },
                 }],
             },
         }
@@ -625,8 +625,8 @@ describe('MatrixGatewayRunner', () => {
                 model: 'gpt-project',
                 reasoningEffort: 'high',
                 extensions: [{
-                    id: 'has-privacy',
-                    config: { contextId: 'metapp-system-1' },
+                    id: 'review-gate',
+                    config: { policyId: 'standard-review' },
                 }],
             }),
         ])
@@ -637,17 +637,17 @@ describe('MatrixGatewayRunner', () => {
             }>
         }).gatewayStateSnapshot(runtime)
         expect(advertisedState.sessions[0]?.extensions).toEqual([
-            expect.objectContaining({ id: 'has-privacy' }),
+            expect.objectContaining({ id: 'review-gate' }),
         ])
         expect(advertisedState.capabilities.sessionExtensions).toEqual([
-            expect.objectContaining({ id: 'has-privacy' }),
+            expect.objectContaining({ id: 'review-gate' }),
         ])
         const persistedExtensions = (Reflect.get(runner, 'runtimeStateStore') as {
             getRoom(roomId: string): { appSessions: Array<{ extensions: unknown[] }> }
         }).getRoom(fixture.config.rooms[0]!.roomId).appSessions[0]?.extensions
         expect(persistedExtensions).toEqual([{
-            id: 'has-privacy',
-            config: { contextId: 'metapp-system-1' },
+            id: 'review-gate',
+            config: { policyId: 'standard-review' },
         }])
 
         await expect((runner as unknown as {

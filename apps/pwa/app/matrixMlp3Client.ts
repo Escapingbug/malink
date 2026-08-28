@@ -698,6 +698,17 @@ function toMlp3Command(
           ...(payload.totp ? { totp: payload.totp } : {}),
         },
       };
+    case "artifact.materialize":
+      return {
+        ...common,
+        sessionId: payload.sessionId,
+        operation: "artifact.materialize",
+        payload: {
+          operation: "artifact.materialize",
+          referenceId: payload.referenceId,
+          expectedStatRevision: payload.expectedStatRevision,
+        },
+      };
     case "session.settings": {
       if (payload.cwd || payload.projectName) {
         throw new Error("Project directory changes belong to a project room in MLP/3.");
@@ -723,12 +734,22 @@ function toMlp3Command(
         payload: {
           operation: "project.update",
           patch: {
+            ...(payload.name === undefined ? {} : { name: payload.name }),
             ...(payload.model === undefined ? {} : { model: payload.model }),
             ...(payload.reasoningEffort === undefined
               ? {}
               : { reasoningEffort: payload.reasoningEffort }),
+            ...(payload.defaultExtensions === undefined
+              ? {}
+              : { defaultExtensions: payload.defaultExtensions }),
           },
         },
+      };
+    case "project.delete":
+      return {
+        ...common,
+        operation: "project.delete",
+        payload: { operation: "project.delete" },
       };
     case "project.create":
       return {

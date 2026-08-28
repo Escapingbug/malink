@@ -3,6 +3,7 @@ import test from "node:test";
 import { MALINK_MATRIX_APPLICATION_CONTROL_EVENT_TYPE } from "@malink/protocol";
 import {
   parseMalinkEvent,
+  requiredPairingOperation,
   sendMalinkApplicationControlEvent,
   type MatrixConnectionConfig,
   processGatewayTimelineEvent,
@@ -13,6 +14,10 @@ import {
   InMemoryReplayStore,
   sealSecureEnvelope,
 } from "@malink/security";
+
+test("uses the existing project-settings certificate grant for project deletion", () => {
+  assert.equal(requiredPairingOperation("project.delete"), "project.settings");
+});
 
 function structuredToolEvent(input: {
   phase: "started" | "updated" | "completed" | "failed";

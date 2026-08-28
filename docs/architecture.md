@@ -270,10 +270,30 @@ Matrix media is storage only. A sender encrypts every attachment with a fresh
 AES-256-GCM key before upload and signs the `mxc://` locator, key, IV, hashes,
 name, MIME type, and bounded size inside the application event. The Gateway
 downloads only signed descriptors, enforces limits, authenticates/decrypts the
-bytes, and converts supported media to ACP rich content. Explicit `send_file`
-is the only Agent-to-client local-file delivery authority. Its MCP entry is
-available from the first turn and routes by the fixed Malink session ID through
-the owner-only Gateway socket into the owning `SemanticSessionRuntime`.
+bytes, and converts supported media to ACP rich content.
+
+Agent Markdown local-file destinations are never exposed as browser URLs. The
+Gateway resolves each candidate against the session's fixed working directory,
+rejects paths outside that directory, records bounded stat metadata, and
+rewrites the destination to an opaque `malink-artifact:` reference. This
+metadata travels inside the original `assistant.message`; no extra stat event
+is emitted. Up to four safe raster images no larger than 4 MiB each and 12 MiB
+in total are encrypted/uploaded before that assistant event and embedded by
+reference. Larger images use the file path below.
+
+A file reference expands to the already-projected stat locally. Only explicit
+confirmation sends one signed `artifact.materialize` command as an ordinary
+Matrix timeline message. The Gateway verifies that the reference belongs to
+the command's room/project/session and re-stats the canonical path. A changed
+file produces a higher-version `assistant.message` containing the new stat and
+requires another confirmation; an unchanged file is encrypted/uploaded and
+the same higher-version message gains its signed attachment descriptor. That
+replacement is also the command's terminal event, so there is no RPC,
+acknowledgement, or progress-message lane. Artifact media uploads share one
+serial lane and honor Matrix 429 retry hints locally without adding timeline
+events. Explicit `send_file` and authenticated artifact materialization are the
+two Agent-to-client local-file delivery authorities; both terminate in the
+same signed attachment model.
 
 ## Delivery and recovery ownership
 

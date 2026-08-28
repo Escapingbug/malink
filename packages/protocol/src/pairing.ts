@@ -17,6 +17,7 @@ export const pairingOperationSchema = z.enum([
   'project.settings',
   'provider.sessions.list',
   'provider.session.inspect',
+  'artifact.materialize',
   'session.archive',
   'session.restore',
   'session.delete',

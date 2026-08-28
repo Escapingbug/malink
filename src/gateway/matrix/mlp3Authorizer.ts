@@ -36,10 +36,12 @@ const CURRENT_WORKSPACE_MEMBER_OPERATIONS = [
   'prompt.submit',
   'turn.cancel',
   'decision.answer',
+  'artifact.materialize',
   'session.update',
   'session.set_lifecycle',
   'project.create',
   'project.update',
+  'project.delete',
   'provider.sessions.list',
   'provider.session.inspect',
   'device.invitation.create',
@@ -136,6 +138,7 @@ function v3AllowedOperations(
       case 'prompt': result.add('prompt.submit'); break
       case 'cancel': result.add('turn.cancel'); break
       case 'decision': result.add('decision.answer'); break
+      case 'artifact.materialize': result.add('artifact.materialize'); break
       case 'session.settings':
         result.add('session.update')
         result.add('notification.subscribe')
@@ -143,7 +146,10 @@ function v3AllowedOperations(
         break
       case 'session.create': result.add('session.create'); break
       case 'project.create': result.add('project.create'); break
-      case 'project.settings': result.add('project.update'); break
+      case 'project.settings':
+        result.add('project.update')
+        result.add('project.delete')
+        break
       case 'provider.sessions.list': result.add('provider.sessions.list'); break
       case 'provider.session.inspect': result.add('provider.session.inspect'); break
       case 'session.archive':

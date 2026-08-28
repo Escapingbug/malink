@@ -90,7 +90,7 @@ Bridge protocol version 1 currently implements:
 - `client.lifecycle`
 - `events.replay`
 - `state.snapshot`
-- `commands.durable` v3 (v2 adds project settings/provider history; v3 adds explicit project routing for simultaneous multi-Gateway management)
+- `commands.durable` v4 (v2 adds project settings/provider history; v3 adds explicit project routing for simultaneous multi-Gateway management; v4 adds atomic project metadata/default updates and deletion)
 - `history.page` v2 (`source=local` is network-free; `source=matrix` is explicit pagination)
 - `attachments.chunked`
 - `pairing.native`

@@ -2,9 +2,28 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { canonicalJson, commandPayloadSchema } from "@malink/protocol";
 import {
+  createArtifactMaterializeCommandPayload,
   createCancelCommandPayload,
   createPromptCommandPayload,
 } from "../app/commandPayloads";
+
+test("creates a stat-bound artifact materialization command", () => {
+  const payload = commandPayloadSchema.parse(
+    createArtifactMaterializeCommandPayload(
+      "session-1",
+      "reference-1",
+      "revision-1",
+    ),
+  );
+
+  assert.deepEqual(payload, {
+    operation: "artifact.materialize",
+    sessionId: "session-1",
+    referenceId: "reference-1",
+    expectedStatRevision: "revision-1",
+  });
+  assert.doesNotThrow(() => canonicalJson(payload));
+});
 
 test("omits undefined attachments from plain-text prompt commands", () => {
   const payload = commandPayloadSchema.parse(
@@ -76,13 +95,20 @@ test("preserves the scratch scope on session creation", () => {
 test("creates project defaults and provider-history commands", () => {
   assert.deepEqual(commandPayloadSchema.parse({
     operation: "project.settings",
+    name: "Renamed",
     model: "gpt-5",
     reasoningEffort: "high",
+    defaultExtensions: [{ id: "review" }],
   }), {
     operation: "project.settings",
+    name: "Renamed",
     model: "gpt-5",
     reasoningEffort: "high",
+    defaultExtensions: [{ id: "review" }],
   });
+  assert.deepEqual(commandPayloadSchema.parse({
+    operation: "project.delete",
+  }), { operation: "project.delete" });
   assert.deepEqual(commandPayloadSchema.parse({
     operation: "provider.sessions.list",
     provider: "codex",

@@ -33,6 +33,12 @@ class CommandPayloadValidatorTest {
                 put("totp", "123456")
             },
             buildJsonObject {
+                put("operation", "artifact.materialize")
+                put("sessionId", "session-1")
+                put("referenceId", "reference-1")
+                put("expectedStatRevision", "revision-1")
+            },
+            buildJsonObject {
                 put("operation", "session.settings")
                 put("sessionId", "session-1")
                 put("model", "gpt-5")
@@ -51,9 +57,14 @@ class CommandPayloadValidatorTest {
             },
             buildJsonObject {
                 put("operation", "project.settings")
+                put("name", "Renamed project")
                 put("model", "gpt-5")
                 put("reasoningEffort", "high")
+                put("defaultExtensions", buildJsonArray {
+                    add(buildJsonObject { put("id", "review") })
+                })
             },
+            buildJsonObject { put("operation", "project.delete") },
             buildJsonObject {
                 put("operation", "provider.sessions.list")
                 put("provider", "codex")
@@ -103,9 +114,10 @@ class CommandPayloadValidatorTest {
             "123456",
             (CommandPayloadValidator.validate(payloads[2]) as DecisionCommandPayload).totp,
         )
-        assertTrue(CommandPayloadValidator.validate(payloads[4]) is SessionCreateCommandPayload)
-        assertTrue(CommandPayloadValidator.validate(payloads[5]) is ProjectCreateCommandPayload)
-        assertTrue(CommandPayloadValidator.validate(payloads[9]) is SessionLifecycleCommandPayload)
+        assertTrue(CommandPayloadValidator.validate(payloads[3]) is ArtifactMaterializeCommandPayload)
+        assertTrue(CommandPayloadValidator.validate(payloads[5]) is SessionCreateCommandPayload)
+        assertTrue(CommandPayloadValidator.validate(payloads[6]) is ProjectCreateCommandPayload)
+        assertTrue(CommandPayloadValidator.validate(payloads[11]) is SessionLifecycleCommandPayload)
     }
 
     @Test
@@ -250,10 +262,10 @@ class CommandPayloadValidatorTest {
             put("scope", "scratch")
             put("extensions", buildJsonArray {
                 add(buildJsonObject {
-                    put("id", "has-privacy")
+                    put("id", "review-gate")
                     put("config", buildJsonObject {
-                        put("contextId", "metapp-payroll")
-                        put("reviewRequired", true)
+                        put("policyId", "standard-review")
+                        put("requireApproval", true)
                     })
                 })
             })
@@ -262,11 +274,11 @@ class CommandPayloadValidatorTest {
 
         assertEquals("scratch", parsed.scope)
         assertEquals(1, parsed.extensions.size)
-        assertEquals("has-privacy", parsed.extensions.single().id)
-        assertEquals("metapp-payroll", parsed.extensions.single().config?.get("contextId")?.let {
+        assertEquals("review-gate", parsed.extensions.single().id)
+        assertEquals("standard-review", parsed.extensions.single().config?.get("policyId")?.let {
             (it as JsonPrimitive).content
         })
-        assertFalse(parsed.toString().contains("metapp-payroll"))
+        assertFalse(parsed.toString().contains("standard-review"))
 
         assertInvalid(buildJsonObject {
             put("operation", "session.create")

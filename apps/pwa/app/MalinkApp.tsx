@@ -15,11 +15,13 @@ import {
   MAX_MALINK_ATTACHMENTS,
   MAX_MALINK_ATTACHMENT_BYTES,
   MAX_MALINK_PROMPT_ATTACHMENT_BYTES,
+  artifactReferenceSchema,
   encodePairingLink,
   providerHistoryMessageSchema,
   providerSessionEntrySchema,
   gatewayUpdateStatusSchema,
   type MalinkAttachment,
+  type MalinkArtifactReference,
   type CommandPayload,
   type GatewayUpdateStatus,
   type ProviderHistoryMessage,
@@ -63,6 +65,10 @@ import {
   type NewProjectInput,
   type ProjectCreationGateway,
 } from "./NewProjectDialog";
+import {
+  ProjectSettingsDialog,
+  type ProjectSettingsInput,
+} from "./ProjectSettingsDialog";
 import { ProviderHistoryDialog } from "./ProviderHistoryDialog";
 import { findRecentlyArchivedProviderSession } from "./providerHistorySessions";
 import {
@@ -98,10 +104,7 @@ import {
 } from "./gatewayUiCache";
 import { MarkdownContent } from "./MarkdownContent";
 import { ToolActivityCard } from "./ToolActivityCard";
-import {
-  focusedToolPresentation,
-  ToolFocusPanel,
-} from "./ToolFocusPanel";
+import { ToolFocusPanel } from "./ToolFocusPanel";
 import {
   ExtensionViewCard,
   type ExtensionViewDecisionState,
@@ -198,6 +201,7 @@ import {
   type OptimisticMessageReference,
 } from "./chatMessages";
 import {
+  createArtifactMaterializeCommandPayload,
   createCancelCommandPayload,
   createPromptCommandPayload,
 } from "./commandPayloads";
@@ -251,6 +255,7 @@ import {
   projectSessionSummaryLabel,
   sessionListSignal,
   sessionSignalLabel,
+  sessionStatusTone,
   summarizeProjectSessions,
   type SessionListSignal,
 } from "./sessionListOrder";
@@ -259,6 +264,13 @@ import {
   gatewayProjectOwner,
   gatewayProjectOwners,
 } from "./projectCatalog";
+import {
+  ALL_GATEWAYS_FILTER,
+  normalizeGatewayFilter,
+  projectMatchesGatewayFilter,
+  readGatewayFilter,
+  writeGatewayFilter,
+} from "./gatewayFilter";
 import {
   EMPTY_UI_NOTICE_STATE,
   noticesForScope,
@@ -1106,6 +1118,16 @@ function MalinkAppRuntime() {
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
   const [primaryView, setPrimaryView] = useState<"chats" | "files">("chats");
   const [search, setSearch] = useState("");
+  // This is client-local inventory view state, not an active Gateway or
+  // transport switch. Commands still route through each project's signed
+  // Gateway Directory owner.
+  const [gatewayFilterSelection, setGatewayFilterSelection] = useState(() => ({
+    workspaceId: initialGatewayUi.config.gatewayId,
+    gatewayNodeId: readGatewayFilter(
+      typeof window === "undefined" ? null : window.localStorage,
+      initialGatewayUi.config.gatewayId,
+    ),
+  }));
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -1125,9 +1147,6 @@ function MalinkAppRuntime() {
   const [expandedProcessTurnIds, setExpandedProcessTurnIds] = useState<
     Set<string>
   >(() => new Set());
-  const [toolFocusHistoryKey, setToolFocusHistoryKey] = useState<string | null>(
-    null,
-  );
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
     initialGatewayUi.selectedSessionId,
   );
@@ -1150,6 +1169,16 @@ function MalinkAppRuntime() {
   const [matrixConfig, setMatrixConfig] = useState<MatrixConnectionConfig>(
     initialGatewayUi.config,
   );
+  const storedGatewayFilter = useMemo(
+    () => readGatewayFilter(
+      typeof window === "undefined" ? null : window.localStorage,
+      matrixConfig.gatewayId,
+    ),
+    [matrixConfig.gatewayId],
+  );
+  const gatewayFilter = gatewayFilterSelection.workspaceId === matrixConfig.gatewayId
+    ? gatewayFilterSelection.gatewayNodeId
+    : storedGatewayFilter;
   const [connectionStatus, setConnectionStatus] =
     useState<MatrixConnectionStatus>("offline");
   const [connectionDetail, setConnectionDetail] = useState<string | null>(null);
@@ -1239,6 +1268,7 @@ function MalinkAppRuntime() {
   }, [approvedGatewayEnrollmentIds, pendingGatewayEnrollments]);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [projectSettingsProjectId, setProjectSettingsProjectId] = useState<string | null>(null);
   const [providerHistoryOpen, setProviderHistoryOpen] = useState(false);
   const [providerHistoryGatewayNodeId, setProviderHistoryGatewayNodeId] = useState("");
   const [providerHistoryProjectId, setProviderHistoryProjectId] = useState("");
@@ -1252,6 +1282,7 @@ function MalinkAppRuntime() {
   const [forgetDialogOpen, setForgetDialogOpen] = useState(false);
   const [newSessionBusy, setNewSessionBusy] = useState(false);
   const [newProjectBusy, setNewProjectBusy] = useState(false);
+  const [projectSettingsBusy, setProjectSettingsBusy] = useState(false);
   const [optimisticProjectCreate, setOptimisticProjectCreate] =
     useState<OptimisticProjectCreateRecord | null>(() =>
       typeof window === "undefined"
@@ -1518,28 +1549,83 @@ function MalinkAppRuntime() {
     ),
     [gatewayState?.gatewayDirectory],
   );
+  const gatewayFilterOptions = useMemo(
+    () => (gatewayState?.gatewayDirectory?.directory.gateways ?? [])
+      .map(gateway => gatewayProjectOwner(
+        gateway.gatewayNodeId,
+        gateway.gatewayName,
+        gateway.computerName,
+      ))
+      .sort((left, right) =>
+        left.label.localeCompare(right.label) ||
+        left.gatewayNodeId.localeCompare(right.gatewayNodeId),
+      ),
+    [gatewayState?.gatewayDirectory],
+  );
+  const activeGatewayFilter = gatewayFilterOptions.length > 0
+    ? normalizeGatewayFilter(
+        gatewayFilter,
+        gatewayFilterOptions.map(gateway => gateway.gatewayNodeId),
+      )
+    : ALL_GATEWAYS_FILTER;
+  const gatewayScopedSessions = useMemo(
+    () => visibleGatewaySessions.filter(session => projectMatchesGatewayFilter(
+      activeGatewayFilter,
+      session.projectId,
+      projectGatewaysById,
+      fallbackProjectGateway.gatewayNodeId,
+    )),
+    [
+      activeGatewayFilter,
+      fallbackProjectGateway.gatewayNodeId,
+      projectGatewaysById,
+      visibleGatewaySessions,
+    ],
+  );
   const filteredSessions = useMemo(
     () =>
-      visibleGatewaySessions.filter((session) => {
+      gatewayScopedSessions.filter((session) => {
         const owner = projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway;
         return `${session.title} ${session.projectName} ${session.cwd} ${session.provider} ${session.model ?? ""} ${owner.gatewayName} ${owner.computerName} ${owner.gatewayNodeId}`
           .toLowerCase()
           .includes(search.toLowerCase());
       }),
-    [fallbackProjectGateway, projectGatewaysById, search, visibleGatewaySessions],
+    [fallbackProjectGateway, gatewayScopedSessions, projectGatewaysById, search],
   );
   const activeFilteredSessions = filteredSessions;
-  const activeSessionCount = visibleGatewaySessions.length;
+  const activeSessionCount = gatewayScopedSessions.length;
+  const gatewayScopedProjects = useMemo(
+    () => (gatewayState?.projects ?? []).filter(project => projectMatchesGatewayFilter(
+      activeGatewayFilter,
+      project.projectId,
+      projectGatewaysById,
+      fallbackProjectGateway.gatewayNodeId,
+    )),
+    [
+      activeGatewayFilter,
+      fallbackProjectGateway.gatewayNodeId,
+      gatewayState?.projects,
+      projectGatewaysById,
+    ],
+  );
+  const gatewayScopedWorkspace = gatewayState?.workspace && projectMatchesGatewayFilter(
+    activeGatewayFilter,
+    gatewayState.workspace.projectId,
+    projectGatewaysById,
+    fallbackProjectGateway.gatewayNodeId,
+  )
+    ? gatewayState.workspace
+    : undefined;
   const canonicalProjectsById = useMemo(
     () =>
       new Map(
         canonicalGatewayProjects(
-          gatewayState?.workspace,
-          visibleGatewaySessions,
-          gatewayState?.projects ?? [],
+          gatewayScopedWorkspace,
+          gatewayScopedSessions,
+          gatewayScopedProjects,
         ).map((project) => [project.projectId, project]),
       ),
-    [gatewayState?.workspace, gatewayState?.projects, visibleGatewaySessions],
+    [gatewayScopedProjects, gatewayScopedSessions, gatewayScopedWorkspace],
   );
   const projectGroups = useMemo(() => {
     const groups = new Map<
@@ -1609,26 +1695,56 @@ function MalinkAppRuntime() {
     search,
     sessionReadState,
   ]);
-  const scratchSessions = useMemo(
-    () => activeFilteredSessions
-      .filter((session) => session.scope === "scratch")
-      .sort((left, right) => compareSessionsForAction(left, right, sessionReadState)),
-    [activeFilteredSessions, sessionReadState],
-  );
+  const scratchGroups = useMemo(() => {
+    const groups = new Map<string, {
+      key: string;
+      projectId: string;
+      projectName: string;
+      cwd: string;
+      gatewayLabel: string;
+      sessions: NonNullable<typeof gatewayState>["sessions"];
+      temporary: true;
+    }>();
+    for (const session of activeFilteredSessions) {
+      if (session.scope !== "scratch") continue;
+      const owner = projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway;
+      const group = groups.get(owner.gatewayNodeId) ?? {
+        key: `${matrixConfig.gatewayId}\u0000${owner.gatewayNodeId}\u0000scratch`,
+        projectId: `scratch:${owner.gatewayNodeId}`,
+        projectName: "Temporary",
+        cwd: "Isolated workspace · not linked to a project",
+        gatewayLabel: owner.label,
+        sessions: [],
+        temporary: true,
+      };
+      group.sessions.push(session);
+      groups.set(owner.gatewayNodeId, group);
+    }
+    const ordered = [...groups.values()];
+    for (const group of ordered) {
+      group.sessions.sort((left, right) =>
+        compareSessionsForAction(left, right, sessionReadState),
+      );
+    }
+    ordered.sort((left, right) =>
+      compareProjectSessionsForAction(
+        left.sessions,
+        right.sessions,
+        sessionReadState,
+      ) || left.gatewayLabel.localeCompare(right.gatewayLabel),
+    );
+    return ordered;
+  }, [
+    activeFilteredSessions,
+    fallbackProjectGateway,
+    matrixConfig.gatewayId,
+    projectGatewaysById,
+    sessionReadState,
+  ]);
   const conversationGroups = useMemo(() => [
-    ...(scratchSessions.length > 0
-      ? [{
-          key: `${matrixConfig.gatewayId}\u0000scratch`,
-          projectId: "scratch",
-          projectName: "Temporary",
-          cwd: "Isolated workspace · not linked to a project",
-          gatewayLabel: null,
-          sessions: scratchSessions,
-          temporary: true,
-        }]
-      : []),
-    ...projectGroups.map((project) => ({ ...project, temporary: false })),
-  ], [matrixConfig.gatewayId, projectGroups, scratchSessions]);
+    ...scratchGroups,
+    ...projectGroups.map((project) => ({ ...project, temporary: false as const })),
+  ], [projectGroups, scratchGroups]);
   const inboxFiles = gatewayState?.inboxFiles ?? [];
   const matrixConnectionPresentation = useMemo(
     () => deriveConnectionPresentation(connectionStatus, connectionDetail),
@@ -1676,15 +1792,6 @@ function MalinkAppRuntime() {
     [isStreaming, messages],
   );
   const liveToolMessage = toolFocus?.toolMessage ?? null;
-  const toolFocusCurrentTool = toolFocus?.toolMessage.toolGroup
-    ? focusedToolPresentation(toolFocus.toolMessage.toolGroup.tools)
-    : undefined;
-  const toolFocusKey = toolFocus && toolFocusCurrentTool
-    ? `${selectedSessionId ?? "session"}:${toolFocus.toolMessage.id}:${toolFocusCurrentTool.id}`
-    : null;
-  const toolFocusHistoryOpen = Boolean(
-    toolFocusKey && toolFocusHistoryKey === toolFocusKey,
-  );
   const timelineMessages = useMemo(
     () => turnTimelineMessages(messages),
     [messages],
@@ -1811,9 +1918,56 @@ function MalinkAppRuntime() {
         permissionMode: selectedProjectWorkspace?.permissionMode ?? "default",
       }
     : gatewayState?.workspace;
+  const allWorkspaceProjects = gatewayState?.projects ??
+    (gatewayState ? [gatewayState.workspace] : []);
+  const preferredSessionCreationWorkspace = selected
+    ? allWorkspaceProjects.find(project => project.projectId === selected.projectId)
+    : gatewayState?.workspace;
+  const gatewayFilterDefaultWorkspace = activeGatewayFilter === ALL_GATEWAYS_FILTER ||
+      (preferredSessionCreationWorkspace && projectMatchesGatewayFilter(
+        activeGatewayFilter,
+        preferredSessionCreationWorkspace.projectId,
+        projectGatewaysById,
+        fallbackProjectGateway.gatewayNodeId,
+      ))
+    ? preferredSessionCreationWorkspace ?? gatewayState?.workspace
+    : allWorkspaceProjects.find(project => projectMatchesGatewayFilter(
+        activeGatewayFilter,
+        project.projectId,
+        projectGatewaysById,
+        fallbackProjectGateway.gatewayNodeId,
+      ));
   const activeProjectGateway = activeWorkspace
     ? projectGatewaysById.get(activeWorkspace.projectId) ?? fallbackProjectGateway
     : fallbackProjectGateway;
+  const projectSettingsWorkspace = projectSettingsProjectId
+    ? gatewayState?.projects?.find(project => project.projectId === projectSettingsProjectId)
+      ?? (gatewayState?.workspace.projectId === projectSettingsProjectId
+        ? gatewayState.workspace
+        : null)
+    : null;
+  const projectSettingsGateway = projectSettingsWorkspace
+    ? projectGatewaysById.get(projectSettingsWorkspace.projectId) ?? fallbackProjectGateway
+    : fallbackProjectGateway;
+  const projectSettingsGatewayDescriptor = gatewayState?.gatewayDirectory?.directory.gateways
+    .find(gateway => gateway.gatewayNodeId === projectSettingsGateway.gatewayNodeId);
+  const projectSettingsRoute = projectSettingsGatewayDescriptor?.projects
+    ?.find(project => project.projectId === projectSettingsWorkspace?.projectId);
+  const projectSettingsIsControlRoute = Boolean(
+    (projectSettingsRoute
+      && projectSettingsGatewayDescriptor
+      && projectSettingsRoute.roomId === projectSettingsGatewayDescriptor.transport.roomId)
+    || (!projectSettingsGatewayDescriptor
+      && projectSettingsWorkspace?.projectId === matrixConfig.projectId),
+  );
+  const projectSettingsCanDelete = projectSettingsWorkspace
+    ? !projectSettingsIsControlRoute
+      && (gatewayState?.projects ?? [gatewayState?.workspace].filter(Boolean)).filter(project => {
+        if (!project) return false;
+        const owner = projectGatewaysById.get(project.projectId) ?? fallbackProjectGateway;
+        return owner.gatewayNodeId === projectSettingsGateway.gatewayNodeId;
+      }).length > 1
+    : false;
   const workspaceGatewayCount = gatewayState?.gatewayDirectory?.directory.gateways.length
     ?? (trustedGateway ? 1 : 0);
   const onlyWorkspaceGateway = gatewayState?.gatewayDirectory?.directory.gateways[0];
@@ -1829,7 +1983,13 @@ function MalinkAppRuntime() {
         ? fallbackProjectGateway.label
       : "Connect a computer";
   const activeCapabilities = activeWorkspace?.capabilities ?? gatewayState?.capabilities;
-  const canCreateAnySession = (gatewayState?.projects ?? (gatewayState ? [gatewayState.workspace] : []))
+  const canCreateAnySession = allWorkspaceProjects
+    .filter(project => projectMatchesGatewayFilter(
+      activeGatewayFilter,
+      project.projectId,
+      projectGatewaysById,
+      fallbackProjectGateway.gatewayNodeId,
+    ))
     .some(project => (project.capabilities ?? gatewayState?.capabilities)?.canCreateSession);
   const projectCreationGateways = useMemo<ProjectCreationGateway[]>(() => {
     if (!gatewayState) return [];
@@ -1882,6 +2042,15 @@ function MalinkAppRuntime() {
     matrixConfig.gatewayNodeId,
     trustedGateway,
   ]);
+  const presentedProjectCreationGateways = useMemo(
+    () => activeGatewayFilter === ALL_GATEWAYS_FILTER
+      ? projectCreationGateways
+      : [...projectCreationGateways].sort((left, right) =>
+          Number(right.gatewayNodeId === activeGatewayFilter) -
+          Number(left.gatewayNodeId === activeGatewayFilter),
+        ),
+    [activeGatewayFilter, projectCreationGateways],
+  );
   const gatewayUpdatePlan = useMemo(() =>
     buildGatewayUpdatePlan({
       directory: gatewayState?.gatewayDirectory,
@@ -1996,6 +2165,28 @@ function MalinkAppRuntime() {
       now: Date.now(),
       ...(autoDismissMs === undefined ? {} : { autoDismissMs }),
     });
+  }
+
+  function selectGatewayFilter(gatewayNodeId: string): void {
+    setGatewayFilterSelection({
+      workspaceId: matrixConfig.gatewayId,
+      gatewayNodeId,
+    });
+    try {
+      writeGatewayFilter(
+        window.localStorage,
+        matrixConfig.gatewayId,
+        gatewayNodeId,
+      );
+      recoverUiNotice("gateway-filter-storage");
+    } catch (error) {
+      showUiNotice(
+        "gateway-filter-storage",
+        "session",
+        "warning",
+        `This Gateway view is active for now, but the preference could not be saved: ${formatUiError(error)}`,
+      );
+    }
   }
 
   function updateSessionLifecycleBusy(
@@ -3232,10 +3423,15 @@ function MalinkAppRuntime() {
     if (openedSession) {
       setSessionReadState((current) => markSessionRead(current, openedSession));
       if (sessionChanged && revealProject) {
-        const projectKey = gatewayProjectKey(
-          matrixConfig.gatewayId,
-          openedSession.projectId,
-        );
+        const projectKey = openedSession.scope === "scratch"
+          ? `${matrixConfig.gatewayId}\u0000${
+              (projectGatewaysById.get(openedSession.projectId) ?? fallbackProjectGateway)
+                .gatewayNodeId
+            }\u0000scratch`
+          : gatewayProjectKey(
+              matrixConfig.gatewayId,
+              openedSession.projectId,
+            );
         setCollapsedProjects((current) =>
           setProjectCollapsed(current, projectKey, false),
         );
@@ -6561,6 +6757,85 @@ function MalinkAppRuntime() {
     }
   }
 
+  async function updateProjectSettings(input: ProjectSettingsInput): Promise<void> {
+    const project = projectSettingsWorkspace;
+    if (!project || projectSettingsBusy) return;
+    setProjectSettingsBusy(true);
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand({
+        operation: "project.settings",
+        name: input.name,
+        model: input.model,
+        reasoningEffort: input.reasoningEffort,
+      }, project.projectId, { propagateFailure: true });
+      if (!sent) return;
+      commandId = sent.commandId;
+      const completion = await sent.completion;
+      if (completion.outcome !== "succeeded") {
+        throw new Error(completion.error?.message ?? "The project settings could not be updated.");
+      }
+      setProjectSettingsProjectId(null);
+      showUiNotice(
+        "project:settings",
+        "session",
+        "success",
+        `${input.name} was updated. New conversations will use its new defaults.`,
+        6_000,
+      );
+    } catch (error) {
+      showUiNotice("project:settings", "session", "error", formatUiError(error));
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+      setProjectSettingsBusy(false);
+    }
+  }
+
+  async function deleteProject(): Promise<void> {
+    const project = projectSettingsWorkspace;
+    if (!project || projectSettingsBusy || !projectSettingsCanDelete) return;
+    setProjectSettingsBusy(true);
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand(
+        { operation: "project.delete" },
+        project.projectId,
+        { propagateFailure: true },
+      );
+      if (!sent) return;
+      commandId = sent.commandId;
+      const completion = await sent.completion;
+      if (completion.outcome !== "succeeded") {
+        throw new Error(completion.error?.message ?? "The project could not be deleted.");
+      }
+      const nextSession = gatewayState?.sessions.find(session =>
+        session.projectId !== project.projectId && session.status !== "archived"
+      );
+      if (selected?.projectId === project.projectId) {
+        activateLocalSession(nextSession?.id ?? null);
+      }
+      setProjectSettingsProjectId(null);
+      showUiNotice(
+        "project:delete",
+        "session",
+        "success",
+        `${project.projectName} was removed from Malink. Its working directory was not erased.`,
+        7_000,
+      );
+    } catch (error) {
+      showUiNotice("project:delete", "session", "error", formatUiError(error));
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+      setProjectSettingsBusy(false);
+    }
+  }
+
   function retryFailedOptimisticProjectCreate(): void {
     const record = optimisticProjectCreateRef.current;
     if (!record || record.phase !== "failed" || newProjectBusy) return;
@@ -6652,30 +6927,19 @@ function MalinkAppRuntime() {
     setMobileChatOpen(true);
     recoverUiNotice("session:create");
     let durableCommandRecorded = false;
-    let connection: MalinkClient | null = null;
     try {
       // Let React commit the pending row before Matrix encryption, IndexedDB,
       // acknowledgement, and command-result work begins.
       await waitForUiCommit();
-      connection = malinkClientRef.current;
       if (input.setAsProjectDefault) {
         const settingsUpdate = await sendRealCommand({
           operation: "project.settings",
           model: input.model ?? null,
           reasoningEffort: input.reasoningEffort ?? null,
+          defaultExtensions: input.extensions ?? [],
         }, input.projectId);
         if (!settingsUpdate || (await settingsUpdate.completion).outcome !== "succeeded") {
-          throw new Error("The project model and reasoning defaults could not be updated.");
-        }
-        if (connection?.updateProjectExtensions) {
-          const update = await connection.updateProjectExtensions(
-            input.extensions ?? [],
-            input.projectId,
-          );
-          const completion = await update.completion;
-          if (completion.outcome !== "succeeded") {
-            throw new Error("The project extension defaults could not be updated.");
-          }
+          throw new Error("The project defaults could not be updated.");
         }
       }
       const sent = await sendRealCommand({
@@ -7811,6 +8075,44 @@ function MalinkAppRuntime() {
     }
   }
 
+  async function materializeArtifact(
+    sessionId: string,
+    reference: MalinkArtifactReference,
+  ): Promise<"materialized" | "changed"> {
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand(
+        createArtifactMaterializeCommandPayload(
+          sessionId,
+          reference.id,
+          reference.statRevision,
+        ),
+        activeWorkspace?.projectId,
+        { propagateFailure: true },
+      );
+      if (!sent) throw new Error("The referenced file request was not queued.");
+      commandId = sent.commandId;
+      const completion = await waitForCommandCompletion(sent.completion, 30 * 60_000);
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message ?? "The referenced file could not be prepared.",
+        );
+      }
+      const result = completion.result;
+      return result
+        && typeof result === "object"
+        && !Array.isArray(result)
+        && result.status === "changed"
+        ? "changed"
+        : "materialized";
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+    }
+  }
+
   async function decidePermission(
     message: ChatMessage,
     decision: string,
@@ -8222,6 +8524,24 @@ function MalinkAppRuntime() {
           <span className="gateway-more" aria-hidden="true">•••</span>
         </button>
 
+        {gatewayFilterOptions.length > 1 && (
+          <label className="gateway-filter-control">
+            <span>View</span>
+            <select
+              value={activeGatewayFilter}
+              aria-label="Filter conversations by Gateway"
+              onChange={(event) => selectGatewayFilter(event.target.value)}
+            >
+              <option value={ALL_GATEWAYS_FILTER}>All Gateways</option>
+              {gatewayFilterOptions.map(gateway => (
+                <option key={gateway.gatewayNodeId} value={gateway.gatewayNodeId}>
+                  {gateway.label} · {gateway.shortId}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
         <UiNoticeList
           notices={sessionNotices}
           className="session-notices"
@@ -8229,7 +8549,12 @@ function MalinkAppRuntime() {
         />
 
         <div className="session-list">
-          {optimisticSession && (
+          {optimisticSession && projectMatchesGatewayFilter(
+            activeGatewayFilter,
+            optimisticSession.input.projectId ?? gatewayState?.workspace.projectId ?? "",
+            projectGatewaysById,
+            fallbackProjectGateway.gatewayNodeId,
+          ) && (
             <button
               type="button"
               className={`session-row session-create-pending ${
@@ -8288,6 +8613,8 @@ function MalinkAppRuntime() {
             </button>
           )}
           {optimisticProjectCreate &&
+            (activeGatewayFilter === ALL_GATEWAYS_FILTER ||
+              optimisticProjectCreate.input.gatewayNodeId === activeGatewayFilter) &&
             (!search.trim() ||
               `${optimisticProjectCreate.input.name} ${optimisticProjectCreate.input.cwd} ${optimisticProjectCreate.gatewayLabel}`
                 .toLowerCase()
@@ -8389,14 +8716,17 @@ function MalinkAppRuntime() {
             const contentId = `project-sessions-${encodeURIComponent(project.key)}`;
             return (
             <section className="project-session-group" key={project.key}>
+              <div className="project-session-heading">
               <button
                 type="button"
                 className="project-session-toggle"
                 aria-expanded={expanded}
                 aria-controls={contentId}
-                title={project.temporary ? "Temporary workspace" : "Project"}
+                title={project.temporary
+                  ? `Temporary workspace on ${project.gatewayLabel}`
+                  : `Project on ${project.gatewayLabel}`}
                 aria-label={`${projectSessionSummaryLabel(
-                  project.projectName,
+                  `${project.projectName} on ${project.gatewayLabel}`,
                   projectSummary,
                 )}. ${expanded ? "Collapse project" : "Expand project"}`}
                 onClick={() =>
@@ -8417,9 +8747,7 @@ function MalinkAppRuntime() {
                 <span className="project-copy">
                   <strong>{project.projectName}</strong>
                   <small>
-                    {project.temporary
-                      ? project.cwd
-                      : `${project.gatewayLabel} · ${project.cwd}`}
+                    {project.gatewayLabel} · {project.cwd}
                   </small>
                 </span>
                 <span className="project-indicators" aria-hidden="true">
@@ -8453,6 +8781,19 @@ function MalinkAppRuntime() {
                 </span>
                 <b aria-hidden="true">{project.sessions.length}</b>
               </button>
+              {!project.temporary && (
+                <button
+                  type="button"
+                  className="project-manage-button"
+                  aria-label={`Manage ${project.projectName}`}
+                  title="Project settings"
+                  disabled={projectSettingsBusy}
+                  onClick={() => setProjectSettingsProjectId(project.projectId)}
+                >
+                  <span aria-hidden="true">•••</span>
+                </button>
+              )}
+              </div>
               {expanded && (
                 <div id={contentId} className="project-session-list">
               {project.sessions.map((session) => {
@@ -8478,6 +8819,12 @@ function MalinkAppRuntime() {
                 const visualSignalLabel = lifecycleAction
                   ? statusSummary
                   : activity?.label || sessionSignalLabel(signal);
+                const statusTone = sessionStatusTone({
+                  signal,
+                  activityPhase: activity?.phase,
+                  lifecycleBusy: Boolean(lifecycleAction),
+                  gatewayConnected,
+                });
                 const showStatusSummary =
                   Boolean(lifecycleAction || activity) || signal !== "idle";
                 return (
@@ -8493,7 +8840,7 @@ function MalinkAppRuntime() {
                     selectedSessionId === session.id
                       ? "selected"
                       : ""
-                  } session-state-${indicator.activity} session-signal-${signal} ${indicator.unread ? "unread" : ""} ${lifecycleAction ? "is-busy" : ""}`}
+                  } session-state-${indicator.activity} session-signal-${visualSignal} ${indicator.unread ? "unread" : ""} ${lifecycleAction ? "is-busy" : ""}`}
                   onClick={() => void chooseSession(session.id)}
                   disabled={lifecycleAction === "delete"}
                 >
@@ -8523,7 +8870,9 @@ function MalinkAppRuntime() {
                     {(showStatusSummary || session.extensions.length > 0) && (
                       <span className="session-preview-line">
                         {showStatusSummary && (
-                          <span className="session-status-summary">
+                          <span
+                            className={`session-status-summary session-status-${statusTone}`}
+                          >
                             {statusSummary}
                           </span>
                         )}
@@ -8611,7 +8960,6 @@ function MalinkAppRuntime() {
             </div>
           )}
           {gatewayState &&
-            activeSessionCount > 0 &&
             conversationGroups.length === 0 &&
             Boolean(search.trim()) && (
             <div className="empty-search">
@@ -8620,7 +8968,20 @@ function MalinkAppRuntime() {
             </div>
           )}
           {gatewayState &&
+            activeGatewayFilter !== ALL_GATEWAYS_FILTER &&
+            activeSessionCount === 0 &&
+            conversationGroups.length === 0 &&
+            !optimisticSession &&
+            !optimisticProjectCreate &&
+            !search.trim() && (
+              <div className="empty-search">
+                <span>G</span>
+                No conversations or projects on this Gateway
+              </div>
+            )}
+          {gatewayState &&
             gatewayState.sessions.length === 0 &&
+            activeGatewayFilter === ALL_GATEWAYS_FILTER &&
             connectionStatus === "connected" &&
             !optimisticSession &&
             !pendingSessionCreate && (
@@ -8786,7 +9147,7 @@ function MalinkAppRuntime() {
 
 
         <div
-          className={`conversation-workspace ${toolFocus ? "is-tool-focused" : ""} ${toolFocusHistoryOpen ? "show-focus-history" : ""}`}
+          className={`conversation-workspace ${toolFocus ? "is-tool-focused" : ""}`}
         >
           <div
             className="chat-feed"
@@ -8858,10 +9219,10 @@ function MalinkAppRuntime() {
               );
             }
             const message = item.message;
-            const isToolFocusContext =
-              toolFocus?.contextMessage?.id === message.id;
-            const isToolFocusSource =
-              toolFocus?.toolMessage.id === message.id;
+            const artifactReferences = artifactReferencesFromRaw(message.raw);
+            const artifactAttachmentIds = new Set(
+              artifactReferences.map(reference => reference.id),
+            );
             const agentWork = isAgentWorkMessage(message);
             const previousItem = presentedTimeline[itemIndex - 1];
             const nextItem = presentedTimeline[itemIndex + 1];
@@ -8927,7 +9288,7 @@ function MalinkAppRuntime() {
               );
               return (
                 <div
-                  className={`message-row user-row turn-prompt ${isToolFocusContext ? "tool-focus-context-message" : ""} ${
+                  className={`message-row user-row turn-prompt ${
                     message.historical ? "" : "message-enter"
                   }`}
                   key={message.id}
@@ -8979,7 +9340,7 @@ function MalinkAppRuntime() {
               if (!message.toolGroup) return null;
               return (
                 <div
-                  className={`message-row tool-group-row ${isToolFocusSource ? "tool-focus-source" : ""} ${agentTurnClass} ${turnPresentationClass} ${
+                  className={`message-row tool-group-row ${agentTurnClass} ${turnPresentationClass} ${
                     message.historical ? "" : "message-enter"
                   }`}
                   key={message.id}
@@ -9110,7 +9471,7 @@ function MalinkAppRuntime() {
             }
             return (
               <div
-                className={`message-row agent-row ${isToolFocusContext ? "tool-focus-context-message" : ""} ${agentTurnClass} ${turnPresentationClass} ${
+                className={`message-row agent-row ${agentTurnClass} ${turnPresentationClass} ${
                   message.historical ? "" : "message-enter"
                 }`}
                 key={message.id}
@@ -9122,14 +9483,24 @@ function MalinkAppRuntime() {
                     {result && <TurnResultState outcome={result.outcome} />}
                   </span>
                   {message.format === "markdown" || !message.format ? (
-                    <MarkdownContent content={message.text ?? ""} />
+                    <MarkdownContent
+                      content={message.text ?? ""}
+                      artifactReferences={artifactReferences}
+                      attachments={message.attachments}
+                      connection={malinkClientRef.current}
+                      onMaterializeArtifact={message.sessionId
+                        ? reference => materializeArtifact(message.sessionId!, reference)
+                        : undefined}
+                    />
                   ) : (
                     <p className="message-copy">
                       {message.text}
                     </p>
                   )}
                   <AttachmentList
-                    attachments={message.attachments}
+                    attachments={message.attachments?.filter(
+                      attachment => !artifactAttachmentIds.has(attachment.id),
+                    )}
                     connection={malinkClientRef.current}
                   />
                   <time>{message.time}</time>
@@ -9162,12 +9533,6 @@ function MalinkAppRuntime() {
           {toolFocus?.toolMessage.toolGroup && (
             <ToolFocusPanel
               group={toolFocus.toolMessage.toolGroup}
-              historyOpen={toolFocusHistoryOpen}
-              onToggleHistory={() =>
-                setToolFocusHistoryKey((current) =>
-                  current === toolFocusKey ? null : toolFocusKey,
-                )
-              }
             />
           )}
         </div>
@@ -9384,6 +9749,15 @@ function MalinkAppRuntime() {
               rows={2}
               disabled={!composerState.canType}
             />
+            <span
+              id="composer-send-shortcut"
+              className="composer-send-shortcut"
+            >
+              <kbd>Ctrl/⌘</kbd>
+              <span>+</span>
+              <kbd>Enter</kbd>
+              <span>to send</span>
+            </span>
             <div className="composer-actions">
               <input
                 ref={attachmentInputRef}
@@ -9597,7 +9971,7 @@ function MalinkAppRuntime() {
                       ? "Queue message"
                       : "Send message"
                   }
-                  aria-describedby="composer-status"
+                  aria-describedby="composer-status composer-send-shortcut"
                   title={composerState.reason}
                 >
                   ↑
@@ -9612,9 +9986,6 @@ function MalinkAppRuntime() {
             aria-live="polite"
           >
             {composerState.reason}
-            <span className="composer-shortcut-hint" aria-hidden="true">
-              {" · Enter for new line · Ctrl/⌘ Enter to send"}
-            </span>
           </p>
         </div>
       </section>
@@ -9710,9 +10081,26 @@ function MalinkAppRuntime() {
         <NewProjectDialog
           open={newProjectOpen}
           busy={newProjectBusy}
-          gateways={projectCreationGateways}
+          gateways={presentedProjectCreationGateways}
           onClose={() => setNewProjectOpen(false)}
           onCreate={(input) => void createProject(input)}
+        />
+      )}
+
+      {projectSettingsWorkspace && (
+        <ProjectSettingsDialog
+          key={projectSettingsWorkspace.projectId}
+          open
+          busy={projectSettingsBusy}
+          project={projectSettingsWorkspace}
+          gatewayLabel={projectSettingsGateway.label}
+          fallbackModels={gatewayState?.capabilities.models ?? []}
+          canDelete={projectSettingsCanDelete}
+          onClose={() => {
+            if (!projectSettingsBusy) setProjectSettingsProjectId(null);
+          }}
+          onSave={(input) => void updateProjectSettings(input)}
+          onDelete={() => void deleteProject()}
         />
       )}
 
@@ -9737,12 +10125,14 @@ function MalinkAppRuntime() {
           busy={newSessionBusy}
           fallbackGateway={fallbackProjectGateway}
           projectGateways={projectGatewaysById}
-          workspace={activeWorkspace ?? gatewayState.workspace}
-          workspaces={gatewayState.projects ?? [gatewayState.workspace]}
+          workspace={gatewayFilterDefaultWorkspace ?? gatewayState.workspace}
+          workspaces={allWorkspaceProjects}
           models={gatewayState.capabilities.models}
           providers={gatewayState.capabilities.providers}
           extensions={gatewayState.capabilities.sessionExtensions}
-          defaultExtensions={gatewayState.workspace.defaultExtensions}
+          defaultExtensions={
+            (gatewayFilterDefaultWorkspace ?? gatewayState.workspace).defaultExtensions
+          }
           canUpdateProjectDefaults
           onClose={() => {
             if (!newSessionBusy) setNewSessionOpen(false);
@@ -9923,6 +10313,9 @@ function commandNoticeFor(payload: CommandPayload): {
   if (payload.operation === "prompt") {
     return { key: "composer:send", scope: "composer" };
   }
+  if (payload.operation === "artifact.materialize") {
+    return { key: `artifact:${payload.referenceId}`, scope: "session" };
+  }
   if (payload.operation.startsWith("project.")) {
     return {
       key: `project:${payload.operation.slice("project.".length)}`,
@@ -9936,6 +10329,16 @@ function commandNoticeFor(payload: CommandPayload): {
     };
   }
   return { key: `composer:${payload.operation}`, scope: "composer" };
+}
+
+function artifactReferencesFromRaw(
+  raw: Record<string, unknown> | undefined,
+): MalinkArtifactReference[] {
+  if (!Array.isArray(raw?.artifactReferences)) return [];
+  return raw.artifactReferences.flatMap(value => {
+    const parsed = artifactReferenceSchema.safeParse(value);
+    return parsed.success ? [parsed.data] : [];
+  });
 }
 
 function agentLifecycleFailureText(
@@ -10195,6 +10598,8 @@ function describeConflictedAction(payload: CommandPayload): string {
       return "The cancel action";
     case "decision":
       return `The ${payload.decision.replaceAll("_", " ")} permission decision`;
+    case "artifact.materialize":
+      return "The referenced file request";
     case "session.settings":
       return "The session settings change";
     case "session.create":
@@ -10203,6 +10608,8 @@ function describeConflictedAction(payload: CommandPayload): string {
       return "The new project request";
     case "project.settings":
       return "The project settings request";
+    case "project.delete":
+      return "The project deletion request";
     case "provider.sessions.list":
       return "The provider history request";
     case "provider.session.inspect":

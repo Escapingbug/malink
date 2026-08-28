@@ -13,8 +13,6 @@ describe("ToolFocusPanel", () => {
           tool("read", "Read", "completed", "apps/pwa/app/MalinkApp.tsx"),
           tool("test", "Bash", "updated", invocation, "12 tests passed"),
         ]),
-        historyOpen: false,
-        onToggleHistory() {},
       }),
     );
 
@@ -22,7 +20,6 @@ describe("ToolFocusPanel", () => {
     expect(html).toContain("tool-focus-invocation");
     expect(html).toContain("--tail-marker");
     expect(html).toContain("2/2");
-    expect(html).toContain('aria-label="Show conversation history"');
     expect(html).toContain('aria-label="Show captured output"');
     expect(html).not.toContain("12 tests passed");
   });
@@ -34,14 +31,12 @@ describe("ToolFocusPanel", () => {
           tool("read", "Read", "completed", "src/a.ts"),
           tool("edit", "Edit", "completed", "src/b.ts"),
         ]),
-        historyOpen: true,
-        onToggleHistory() {},
       }),
     );
 
     expect(html).toContain("src/b.ts");
     expect(html).not.toContain("src/a.ts");
-    expect(html).toContain('aria-label="Return to current context"');
+    expect(html).toContain('aria-label="Copy tool call"');
   });
 });
 

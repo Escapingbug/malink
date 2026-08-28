@@ -53,6 +53,7 @@
     "grammy": "^1.30.0",
     "https-proxy-agent": "^9.0.0",
     "matrix-js-sdk": "^41.0.0",
+    "mdast-util-from-markdown": "^2.0.3",
     "qrcode": "^1.5.4",
     "undici": "^8.3.0",
     "web-push": "^3.6.7",

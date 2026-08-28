@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import {
   type MalinkAttachment,
+  type MalinkArtifactReference,
   type Mlp3Event,
   type Mlp3SessionProjection,
   type JsonValue,
@@ -37,6 +38,29 @@ export interface MatrixMlp3PortOptions {
   now?: () => number
   onLog?: (message: string) => void
   onStatusChange?: (status: SessionStatus) => void
+  artifactReferences?: MatrixMlp3ArtifactReferenceHandler
+}
+
+export interface MatrixMlp3ArtifactReferenceHandler {
+  prepare(messageId: string, message: ChannelMessage): Promise<{
+    message: ChannelMessage
+    references: MalinkArtifactReference[]
+  }>
+  published(input: {
+    messageId: string
+    messageVersion: number
+    body: string
+    format: 'plain' | 'markdown'
+    final: boolean
+    partIndex?: number
+    partCount?: number
+    projection: Mlp3SessionProjection
+    references: MalinkArtifactReference[]
+    attachments: MalinkAttachment[]
+  }): Promise<void>
+  upload(
+    attachment: NonNullable<ChannelMessage['attachments']>[number],
+  ): Promise<MalinkAttachment>
 }
 
 interface PendingDecision {
@@ -106,12 +130,21 @@ export class MatrixMlp3Port implements ChannelPort {
     return Promise.all(confirmations).then(() => undefined)
   }
 
+  observeMessageVersion(messageId: string, version: number): void {
+    this.messageVersions.set(
+      messageId,
+      Math.max(this.messageVersions.get(messageId) ?? 0, version),
+    )
+  }
+
   async send(
     message: ChannelMessage,
     context: ChannelSendContext = {},
   ): Promise<ChannelSendResult> {
     const messageOptions = readMessageOptions(message.replyMarkup)
     const messageId = messageOptions.idempotencyKey ?? this.operationIdFor(message)
+    const prepared = await this.prepareArtifacts(messageId, message)
+    message = prepared.message
     const presentation = message.presentation ?? messageOptions.ui
     const liveToolGroup = isToolGroupPresentation(presentation)
     const attachments = await this.uploadAttachments(messageId, message.attachments)
@@ -120,8 +153,30 @@ export class MatrixMlp3Port implements ChannelPort {
       ? compactToolPresentation(presentation)
       : presentation
     const version = this.nextMessageVersion(messageId)
+    const artifactAttachmentIds = new Set(prepared.references.map(reference => reference.id))
     for (const [index, part] of parts.entries()) {
       const logicalPartId = partId(messageId, index, parts.length)
+      const projection = this.options.projection()
+      const references = referencesInBody(prepared.references, normalizedBody(part))
+      const partAttachments = attachmentsForPart(
+        attachments,
+        references,
+        artifactAttachmentIds,
+        index,
+      )
+      if (references.length > 0) {
+        await this.options.artifactReferences?.published({
+          messageId,
+          messageVersion: version,
+          body: normalizedBody(part),
+          format: part.format === 'markdown' ? 'markdown' : 'plain',
+          final: true,
+          ...(parts.length > 1 ? { partIndex: index, partCount: parts.length } : {}),
+          projection,
+          references,
+          attachments: partAttachments,
+        })
+      }
       const queued = await this.sendAssistantEvent({
         eventId: eventId('assistant', logicalPartId, version),
         messageId,
@@ -133,7 +188,8 @@ export class MatrixMlp3Port implements ChannelPort {
         ...(transportPresentation !== undefined
           ? { ui: transportPresentation as JsonValue }
           : {}),
-        ...(index === 0 && attachments.length > 0 ? { attachments } : {}),
+        ...(partAttachments.length > 0 ? { attachments: partAttachments } : {}),
+        ...(references.length > 0 ? { artifactReferences: references } : {}),
       }, {
         occurredAt: this.messageTimestamp(messageId),
         ...(liveToolGroup && context.finalSnapshot
@@ -160,6 +216,8 @@ export class MatrixMlp3Port implements ChannelPort {
   ): Promise<void> {
     const messageId = String(messageIdInput)
     const messageOptions = readMessageOptions(message.replyMarkup)
+    const prepared = await this.prepareArtifacts(messageId, message)
+    message = prepared.message
     const presentation = message.presentation ?? messageOptions.ui
     const toolGroup = isToolGroupPresentation(presentation)
     const attachments = await this.uploadAttachments(messageId, message.attachments)
@@ -171,11 +229,33 @@ export class MatrixMlp3Port implements ChannelPort {
       ? compactToolPresentation(presentation)
       : presentation
     const version = this.nextMessageVersion(messageId)
+    const artifactAttachmentIds = new Set(prepared.references.map(reference => reference.id))
 
     for (const [index, part] of parts.entries()) {
       const logicalPartId = partId(messageId, index, parts.length)
       const physicalTarget = this.physicalEventIds.get(logicalPartId)
         ?? (index === 0 ? this.physicalEventIds.get(messageId) : undefined)
+      const projection = this.options.projection()
+      const references = referencesInBody(prepared.references, normalizedBody(part))
+      const partAttachments = attachmentsForPart(
+        attachments,
+        references,
+        artifactAttachmentIds,
+        index,
+      )
+      if (references.length > 0) {
+        await this.options.artifactReferences?.published({
+          messageId,
+          messageVersion: version,
+          body: normalizedBody(part),
+          format: part.format === 'markdown' ? 'markdown' : 'plain',
+          final: context.terminal ?? !context.progressive,
+          ...(parts.length > 1 ? { partIndex: index, partCount: parts.length } : {}),
+          projection,
+          references,
+          attachments: partAttachments,
+        })
+      }
       const queued = await this.sendAssistantEvent({
         eventId: eventId('assistant', logicalPartId, version),
         messageId,
@@ -187,7 +267,8 @@ export class MatrixMlp3Port implements ChannelPort {
         ...(transportPresentation !== undefined
           ? { ui: transportPresentation as JsonValue }
           : {}),
-        ...(index === 0 && attachments.length > 0 ? { attachments } : {}),
+        ...(partAttachments.length > 0 ? { attachments: partAttachments } : {}),
+        ...(references.length > 0 ? { artifactReferences: references } : {}),
       }, {
         occurredAt: this.messageTimestamp(messageId),
         ...(toolGroup && context.finalSnapshot
@@ -553,12 +634,35 @@ export class MatrixMlp3Port implements ChannelPort {
     if (!attachments?.length) return Promise.resolve([])
     const current = this.attachmentUploads.get(operationId)
     if (current) return current
-    const upload = Promise.all(attachments.map(attachment =>
-      uploadMlp3Attachment(this.options.transport, attachment)
-    ))
+    const upload = Promise.all(attachments.map(async attachment => {
+        try {
+          const artifactUpload = (
+            attachment.optionalArtifact
+              ? this.options.artifactReferences?.upload(attachment)
+              : undefined
+          )
+          return await (
+            artifactUpload ?? uploadMlp3Attachment(this.options.transport, attachment)
+          )
+        } catch (error) {
+          if (!attachment.optionalArtifact) throw error
+          this.options.onLog?.(
+            `[mlp3/artifact] eager image upload fell back to a lazy reference: ${formatError(error)}`,
+          )
+          return null
+        }
+      })).then(uploaded => uploaded.filter(attachment => attachment !== null))
     this.attachmentUploads.set(operationId, upload)
     void upload.catch(() => this.attachmentUploads.delete(operationId))
     return upload
+  }
+
+  private prepareArtifacts(
+    messageId: string,
+    message: ChannelMessage,
+  ): Promise<{ message: ChannelMessage; references: MalinkArtifactReference[] }> {
+    return this.options.artifactReferences?.prepare(messageId, message)
+      ?? Promise.resolve({ message, references: [] })
   }
 }
 
@@ -583,6 +687,26 @@ function splitMessage(message: ChannelMessage): ChannelMessage[] {
     text,
     format: message.format === 'html' ? 'plain' : message.format,
   }))
+}
+
+function referencesInBody(
+  references: MalinkArtifactReference[],
+  body: string,
+): MalinkArtifactReference[] {
+  return references.filter(reference => body.includes(`malink-artifact:${reference.id}`))
+}
+
+function attachmentsForPart(
+  attachments: MalinkAttachment[],
+  references: MalinkArtifactReference[],
+  artifactAttachmentIds: Set<string>,
+  partIndex: number,
+): MalinkAttachment[] {
+  const referenceIds = new Set(references.map(reference => reference.id))
+  return attachments.filter(attachment =>
+    referenceIds.has(attachment.id)
+    || (partIndex === 0 && !artifactAttachmentIds.has(attachment.id)),
+  )
 }
 
 function compactToolPresentation(value: unknown): unknown {

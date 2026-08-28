@@ -66,6 +66,30 @@ describe("MatrixMlp3Projection", () => {
     expect(projection.visibleSessions().map(session => session.sessionId)).toEqual(["session-b"]);
   });
 
+  it("removes a deleted project's local materialized view and settles the command", () => {
+    const projection = new MatrixMlp3Projection();
+    projection.applyCommand(createCommand("a"), "$root-a");
+    projection.applyEvent(projectSnapshot(), "$project-snapshot");
+    projection.applyEvent({
+      kind: "malink.event",
+      version: 3,
+      eventId: "project-deleted-1",
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      occurredAt: 3,
+      causationCommandId: "project-delete-command",
+      payload: {
+        type: "project.deleted",
+        projectId: "project-1",
+        name: "Project",
+      },
+    }, "$project-deleted");
+
+    expect(projection.project).toBeNull();
+    expect(projection.visibleSessions()).toEqual([]);
+    expect(projection.completions.get("project-delete-command")?.outcome).toBe("succeeded");
+  });
+
   it("restores the complete materialized view without depending on the current sync window", () => {
     const first = new MatrixMlp3Projection();
     first.applyCommand(createCommand("a"), "$root-a");

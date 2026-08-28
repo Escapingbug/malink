@@ -10,6 +10,7 @@ import { encryptMedia, sha256 } from '@malink/security'
 import type { MatrixTransport } from './transport'
 
 export interface Mlp3AttachmentInput {
+  id?: string
   path: string
   filename?: string
 }
@@ -32,7 +33,7 @@ export async function uploadMlp3Attachment(
     ciphertext: encrypted.ciphertext,
   })
   return attachmentSchema.parse({
-    id: randomUUID(),
+    id: input.id ?? randomUUID(),
     name: input.filename ?? input.path.split(/[\\/]/u).at(-1) ?? 'attachment',
     mimeType: attachmentMimeType(input.filename ?? input.path),
     size: plaintext.byteLength,
@@ -48,6 +49,7 @@ function attachmentMimeType(path: string): string {
     case '.jpeg': return 'image/jpeg'
     case '.gif': return 'image/gif'
     case '.webp': return 'image/webp'
+    case '.avif': return 'image/avif'
     case '.svg': return 'image/svg+xml'
     case '.pdf': return 'application/pdf'
     case '.json': return 'application/json'

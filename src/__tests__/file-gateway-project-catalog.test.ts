@@ -63,4 +63,33 @@ describe('FileGatewayProjectCatalog', () => {
       providerName: 'codex',
     })).rejects.toThrow(/conflicts/u)
   })
+
+  it('renames and removes a project without changing its stable route identity', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-project-catalog-manage-'))
+    const catalog = new FileGatewayProjectCatalog(
+      join(directory, 'projects.json'),
+      'gateway-node-1',
+    )
+    await catalog.initialize([])
+    await catalog.add({
+      roomId: '!managed:example.org',
+      conversationId: 'managed',
+      projectId: 'project-managed',
+      projectName: 'Before',
+      cwd: '/srv/managed',
+      providerName: 'codex',
+    })
+
+    await expect(catalog.updateProjectName('project-managed', '  After  ')).resolves.toMatchObject({
+      projectId: 'project-managed',
+      projectName: 'After',
+      roomId: '!managed:example.org',
+    })
+    await expect(catalog.remove('project-managed')).resolves.toMatchObject({
+      projectId: 'project-managed',
+      projectName: 'After',
+    })
+    await expect(catalog.remove('project-managed')).resolves.toBeUndefined()
+    await expect(catalog.list()).resolves.toEqual([])
+  })
 })

@@ -220,7 +220,7 @@ test("authenticated Gateway state exposes only declarative session extension met
       project_name: "workspace",
       cwd: "/workspace",
       provider: "codex",
-      extensions: [{ id: "has-privacy", name: "HaS privacy", version: "1" }],
+      extensions: [{ id: "review-gate", name: "Review gate", version: "1" }],
     }],
     workspace: {
       project_id: "project-1",
@@ -235,21 +235,21 @@ test("authenticated Gateway state exposes only declarative session extension met
       can_create_session: true,
       can_select_session: false,
       session_extensions: [{
-        id: "has-privacy",
-        name: "HaS privacy",
-        description: "Local prompt privacy",
+        id: "review-gate",
+        name: "Review gate",
+        description: "Requires review before provider input.",
         version: "1",
         settings: [
           {
-            id: "contextId",
+            id: "policyId",
             type: "text",
-            label: "Privacy context",
+            label: "Review policy",
             required: true,
           },
           {
-            id: "reviewRequired",
+            id: "requireApproval",
             type: "boolean",
-            label: "Review",
+            label: "Require approval",
             default_value: true,
           },
         ],
@@ -257,7 +257,7 @@ test("authenticated Gateway state exposes only declarative session extension met
     },
   });
 
-  assert.equal(state.sessions[0].extensions[0].id, "has-privacy");
+  assert.equal(state.sessions[0].extensions[0].id, "review-gate");
   assert.equal(state.capabilities.sessionExtensions[0].settings[1].defaultValue, true);
   assert.equal("endpoint" in state.capabilities.sessionExtensions[0], false);
 });

@@ -195,6 +195,69 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `artifact assistant replacement completes the materialization command`() {
+        val projection = projection()
+        val result = projection.applyGatewayEvent(
+            event(
+                eventId = "artifact-materialized-1",
+                projectId = "project-1",
+                sessionId = "session-a",
+                causationCommandId = "artifact-command-1",
+                payload = buildJsonObject {
+                    put("type", "assistant.message")
+                    put("messageId", "message-1")
+                    put("messageVersion", 2)
+                    put("format", "markdown")
+                    put("body", "[report](malink-artifact:reference-1)")
+                    put("artifactReferences", buildJsonArray {
+                        add(buildJsonObject {
+                            put("id", "reference-1")
+                            put("kind", "file")
+                            put("name", "report.txt")
+                            put("relativePath", "report.txt")
+                            put("mimeType", "text/plain")
+                            put("size", 6)
+                            put("modifiedAt", 1)
+                            put("statRevision", "revision-1")
+                        })
+                    })
+                    put("attachments", buildJsonArray {
+                        add(buildJsonObject {
+                            put("id", "reference-1")
+                            put("name", "report.txt")
+                            put("mimeType", "text/plain")
+                            put("size", 6)
+                            put("sha256", "A".repeat(43))
+                            put("media", buildJsonObject {
+                                put("url", "mxc://example.org/report")
+                                put("key", "B".repeat(43))
+                                put("iv", "C".repeat(16))
+                                put("sha256", "D".repeat(43))
+                                put("size", 22)
+                            })
+                        })
+                    })
+                    put("ui", buildJsonObject {
+                        put("kind", "artifact_materialization")
+                        put("version", 1)
+                        put("referenceId", "reference-1")
+                        put("status", "materialized")
+                    })
+                },
+            ),
+            "\$artifact-physical",
+            "\$root-a",
+        )
+
+        assertEquals("artifact-command-1", result.terminal?.commandId)
+        assertEquals("succeeded", result.terminal?.outcome)
+        assertEquals(
+            "materialized",
+            result.terminal?.result?.jsonObject?.get("status")?.jsonPrimitive?.content,
+        )
+    }
+
+    @Test
     fun `assistant message tool presentation is projected as a tool message`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)

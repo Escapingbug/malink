@@ -9,5 +9,3 @@ allowBuilds:
   workerd: true
 minimumReleaseAgeExclude:
   - '@agentclientprotocol/codex-acp@1.7.0'
-
-# Optional session extensions under extensions/ are intentionally not product workspaces.

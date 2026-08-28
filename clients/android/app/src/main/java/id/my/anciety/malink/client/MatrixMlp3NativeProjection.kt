@@ -273,6 +273,22 @@ internal class MatrixMlp3NativeProjection(
 
         if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
 
+        if (type == "project.deleted" && projectId != null) {
+            projects.remove(projectId)
+            projectCapabilities.remove(projectId)
+            workspacePendingGatewayEnrollmentsByProject.remove(projectId)
+            val deletedSessionIds = sessions.values
+                .filter { it.projectId == projectId }
+                .map { it.id }
+                .toSet()
+            sessions.keys.removeAll(deletedSessionIds)
+            assistantMessageVersions.keys.removeAll { it.sessionId in deletedSessionIds }
+            return MatrixMlp3NativeProjectionResult(
+                terminal = terminal(type, event, payload, causation, sessionId),
+                changed = true,
+            )
+        }
+
         if (type == "project.snapshot" && projectId != null) {
             val version = payload.requiredPositiveLong("snapshotVersion")
             val current = projects[projectId]
@@ -1076,8 +1092,38 @@ internal class MatrixMlp3NativeProjection(
     ): MatrixMlp3NativeTerminal? {
         commandId ?: return null
         return when (type) {
+            "assistant.message" -> {
+                val ui = payload["ui"] as? JsonObject
+                if (ui?.optionalString("kind", 128) != "artifact_materialization") {
+                    null
+                } else {
+                    require(ui.requiredLong("version") == 1L)
+                    val status = ui.requiredString("status", 32)
+                    require(status == "materialized" || status == "changed")
+                    val referenceId = ui.requiredString("referenceId", 256)
+                    val hasReference = (payload["artifactReferences"] as? JsonArray)
+                        ?.any { item ->
+                            (item as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull == referenceId
+                        } == true
+                    require(hasReference)
+                    val hasAttachment = (payload["attachments"] as? JsonArray)
+                        ?.any { item ->
+                            (item as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull == referenceId
+                        } == true
+                    require((status == "materialized") == hasAttachment)
+                    MatrixMlp3NativeTerminal(
+                        commandId,
+                        "succeeded",
+                        sessionId,
+                        result = buildJsonObject {
+                            put("status", status)
+                            put("referenceId", referenceId)
+                        },
+                    )
+                }
+            }
             "session.ready", "session.updated", "session.lifecycle", "decision.resolved",
-            "extension.interaction.resolved", "project.snapshot",
+            "extension.interaction.resolved", "project.snapshot", "project.deleted",
             "notification.subscription.changed" ->
                 MatrixMlp3NativeTerminal(commandId, "succeeded", sessionId)
             "provider.sessions.listed", "provider.session.inspected" ->

@@ -643,7 +643,11 @@ async function createSignedCommand(
   reservation: CommandReservation,
   sequenceEpoch: string,
 ): Promise<SignedCommand> {
-  if (payload.operation === "project.create" || payload.operation === "gateway.profile.update") {
+  if (
+    payload.operation === "project.create"
+    || payload.operation === "gateway.profile.update"
+    || payload.operation === "artifact.materialize"
+  ) {
     throw new Error(`${fallbackBody(payload)} requires the Matrix MLP/3 transport.`);
   }
   const config = normalizeMatrixConfig(configInput);
@@ -5406,6 +5410,8 @@ function fallbackBody(payload: CommandPayload): string {
       return "Stop the current agent task";
     case "decision":
       return `Permission decision: ${payload.decision}`;
+    case "artifact.materialize":
+      return "Prepare a referenced file for download";
     case "session.settings":
       return "Update agent session settings";
     case "session.create":
@@ -5414,6 +5420,8 @@ function fallbackBody(payload: CommandPayload): string {
       return "Create a new project";
     case "project.settings":
       return "Update project defaults";
+    case "project.delete":
+      return "Delete a project from Malink";
     case "provider.sessions.list":
       return "List provider sessions";
     case "provider.session.inspect":
@@ -5441,10 +5449,11 @@ function fallbackBody(payload: CommandPayload): string {
   }
 }
 
-function requiredPairingOperation(operation: CommandOperation): PairingOperation {
+export function requiredPairingOperation(operation: CommandOperation): PairingOperation {
   if (operation.startsWith("gateway.enrollment.")) return "device.invite";
   if (operation.startsWith("gateway.profile.")) return "device.invite";
   if (operation.startsWith("gateway.update.")) return "gateway.update";
+  if (operation === "project.delete") return "project.settings";
   return operation as PairingOperation;
 }
 

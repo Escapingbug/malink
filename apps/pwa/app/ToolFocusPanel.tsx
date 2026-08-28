@@ -9,12 +9,8 @@ import type {
 
 export function ToolFocusPanel({
   group,
-  historyOpen,
-  onToggleHistory,
 }: {
   group: ToolGroupPresentation;
-  historyOpen: boolean;
-  onToggleHistory: () => void;
 }) {
   const tool = focusedToolPresentation(group.tools);
   const [outputToolId, setOutputToolId] = useState<string | null>(null);
@@ -66,15 +62,6 @@ export function ToolFocusPanel({
           </small>
         </span>
         <span className="tool-focus-actions">
-          <button
-            type="button"
-            className={historyOpen ? "is-active" : ""}
-            aria-label={historyOpen ? "Return to current context" : "Show conversation history"}
-            aria-pressed={historyOpen}
-            onClick={onToggleHistory}
-          >
-            <HistoryIcon />
-          </button>
           <button
             type="button"
             aria-label={
@@ -179,15 +166,6 @@ function phaseLabel(phase: ToolPhase): string {
     : phase === "failed"
       ? "Failed"
       : "Completed";
-}
-
-function HistoryIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M3.6 6.1A7 7 0 1 1 3 11" />
-      <path d="M3.5 2.8v3.7h3.7M10 6.2v4.1l2.8 1.6" />
-    </svg>
-  );
 }
 
 function CopyIcon() {

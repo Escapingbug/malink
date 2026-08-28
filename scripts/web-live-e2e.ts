@@ -17,11 +17,6 @@ import { decodePairingLink, type PairingOperation } from '@malink/protocol'
 import { GatewayAdminClient } from '../src/gateway/admin/client.js'
 import { runAndroidAlphaJourney } from './e2e/androidAlphaJourney.js'
 import {
-    runPrivacyBusinessJourney,
-    startPrivacyBusinessFixture,
-    type PrivacyBusinessFixture,
-} from './e2e/privacyBusinessJourney.js'
-import {
     createDisposableMatrixFixture,
     type DisposableMatrixFixture,
 } from './e2e/localMatrixFixture.js'
@@ -106,7 +101,6 @@ const LEGACY_PAIRING_OPERATIONS = [
 let browser: Browser | undefined
 let gatewayProcess: ManagedProcess | undefined
 let pwaProcess: ManagedProcess | undefined
-let privacyFixture: PrivacyBusinessFixture | undefined
 let matrixFixture: DisposableMatrixFixture | undefined
 let firstPage: Page | undefined
 let secondPage: Page | undefined
@@ -131,8 +125,6 @@ try {
         tester: { userId: fixture.tester.userId },
         gateway: { userId: fixture.gateway.userId },
     }, null, 2), 'utf8')
-
-    privacyFixture = await startPrivacyBusinessFixture(repositoryRoot, temporaryDirectory)
 
     process.stdout.write('[2/8] Building and starting the current PWA and Gateway…\n')
     pwaBuildOutput = await runProcess(
@@ -167,7 +159,6 @@ try {
         gatewayDataDirectory,
         gatewayAdminSocket,
         providerDelayMs: promptReconciliationOnly ? 1_000 : 30_000,
-        sessionExtensionsJson: privacyFixture.gatewayRegistration,
         ...(!promptReconciliationOnly
             ? { startupPairingOperations: LEGACY_PAIRING_OPERATIONS }
             : {}),
@@ -279,7 +270,6 @@ try {
         gatewayDataDirectory,
         gatewayAdminSocket,
         providerDelayMs: 3_500,
-        sessionExtensionsJson: privacyFixture.gatewayRegistration,
     })
     await gatewayProcess.waitFor(/Gateway ready with 1 trusted device\(s\)\./u)
     const admin = new GatewayAdminClient({
@@ -418,20 +408,6 @@ try {
     await openProjectSession(secondPage, projectName)
     await openProjectSession(firstPage, projectName)
 
-    process.stdout.write('[5d/8] Running privacy protection through the real PWA, Matrix, and Gateway…\n')
-    await runPrivacyBusinessJourney({
-        repositoryRoot,
-        runId,
-        cwd: repositoryRoot,
-        firstPage,
-        secondPage,
-        directProjectName: secondProjectName,
-        gatewayOutput: () => gatewayProcess!.output,
-        fixture: privacyFixture,
-    })
-    await openProjectSession(firstPage, projectName)
-    await openProjectSession(secondPage, projectName)
-
     process.stdout.write('[6/8] Sending one optimistic prompt, reconciling it in place, and restoring its Matrix-native history…\n')
     await sendPromptWithSingleDeliveryTransition(firstPage, prompt)
     await waitForText(firstPage, prompt)
@@ -533,7 +509,6 @@ try {
                     gatewayDataDirectory,
                     gatewayAdminSocket,
                     providerDelayMs: 3_500,
-                    sessionExtensionsJson: privacyFixture!.gatewayRegistration,
                 })
                 await gatewayProcess.waitFor(/Gateway ready with \d+ trusted device\(s\)\./u)
 
@@ -848,11 +823,6 @@ try {
         `${pwaBuildOutput}\n${pwaProcess?.output ?? ''}`,
         'utf8',
     )
-    await writeFile(
-        join(artifactDirectory, 'has-privacy.log'),
-        redactSecrets(privacyFixture?.output ?? ''),
-        'utf8',
-    )
     await Promise.all([...browserLogs].map(([name, lines]) =>
         writeFile(
             join(artifactDirectory, `${name}.log`),
@@ -873,9 +843,6 @@ try {
     })
     await pwaProcess?.stop().catch(error => {
         process.stderr.write(`Could not stop E2E PWA: ${formatError(error)}\n`)
-    })
-    await privacyFixture?.close().catch(error => {
-        process.stderr.write(`Could not stop E2E privacy fixture: ${formatError(error)}\n`)
     })
     await matrixFixture?.close().catch(error => {
         process.stderr.write(`Could not stop E2E Matrix fixture: ${formatError(error)}\n`)
@@ -2100,7 +2067,6 @@ function startGatewayProcess(input: {
     gatewayDataDirectory: string
     gatewayAdminSocket: string
     providerDelayMs: number
-    sessionExtensionsJson: string
     startupPairingOperations?: readonly PairingOperation[]
 }): ManagedProcess {
     return managedProcess(
@@ -2119,13 +2085,15 @@ function startGatewayProcess(input: {
                 MALINK_MATRIX_E2E_PROVIDER: '1',
                 MALINK_MATRIX_E2E_PROVIDER_DELAY_MS: String(input.providerDelayMs),
                 MALINK_MATRIX_GATEWAY_HEARTBEAT_INTERVAL_MS: '5000',
+                // Core product acceptance must not inherit a developer's
+                // optional extension registrations from the parent shell.
+                MALINK_SESSION_EXTENSIONS_JSON: '',
                 ...(input.startupPairingOperations
                     ? {
                         MALINK_MATRIX_E2E_STARTUP_PAIRING_OPERATIONS:
                             JSON.stringify(input.startupPairingOperations),
                     }
                     : {}),
-                MALINK_SESSION_EXTENSIONS_JSON: input.sessionExtensionsJson,
                 MALINK_CWD: repositoryRoot,
             },
         },

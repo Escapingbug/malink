@@ -271,6 +271,21 @@ export class MatrixMlp3Projection {
     }
     if (this.seenLogicalEvents.has(event.eventId)) return false;
     this.seenLogicalEvents.add(event.eventId);
+    if (payload.type === "project.deleted" && event.projectId) {
+      if (this.project?.projectId === event.projectId) this.project = null;
+      const deletedSessionIds = new Set(
+        [...this.sessions.values()]
+          .filter(session => session.projectId === event.projectId)
+          .map(session => session.sessionId),
+      );
+      for (const sessionId of deletedSessionIds) this.sessions.delete(sessionId);
+      for (const [logicalId, message] of this.messages) {
+        if (deletedSessionIds.has(message.sessionId)) this.messages.delete(logicalId);
+      }
+      for (const [fileId, file] of this.inboxFiles) {
+        if (file.projectId === event.projectId) this.inboxFiles.delete(fileId);
+      }
+    }
     if (payload.type === "project.snapshot" && event.projectId) {
       if (!this.project || payload.snapshotVersion >= this.project.snapshotVersion) {
         this.project = {
@@ -856,6 +871,17 @@ function requireUnique(values: string[], name: string): void {
 function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
   const commandId = event.causationCommandId;
   if (!commandId) return null;
+  if (
+    event.payload.type === "assistant.message"
+    && artifactMaterializationResult(event.payload.ui)
+  ) {
+    return {
+      commandId,
+      outcome: "succeeded",
+      ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      event,
+    };
+  }
   switch (event.payload.type) {
     case "session.ready":
     case "session.updated":
@@ -864,6 +890,7 @@ function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
     case "extension.interaction.resolved":
     case "project.snapshot":
     case "project.created":
+    case "project.deleted":
     case "device.invitation.created":
     case "gateway.enrollment.invitation.created":
     case "gateway.enrollment.approved":
@@ -887,6 +914,21 @@ function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
     default:
       return null;
   }
+}
+
+function artifactMaterializationResult(
+  value: unknown,
+): { status: "materialized" | "changed"; referenceId: string } | null {
+  const marker = record(value);
+  const status = marker?.status;
+  const referenceId = marker?.referenceId;
+  return marker?.kind === "artifact_materialization"
+    && marker.version === 1
+    && (status === "materialized" || status === "changed")
+    && typeof referenceId === "string"
+    && referenceId.length > 0
+    ? { status, referenceId }
+    : null;
 }
 
 function titleFromPrompt(text: string): string {

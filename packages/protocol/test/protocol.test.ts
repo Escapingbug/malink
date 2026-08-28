@@ -171,21 +171,21 @@ describe('protocol schemas', () => {
       payload: {
         operation: 'session.create',
         extensions: [{
-          id: 'has-privacy',
-          config: { contextId: 'payroll-1', reviewRequired: true },
+          id: 'review-gate',
+          config: { policyId: 'standard-review', requireApproval: true },
         }],
       },
     }
     expect(commandSchema.parse(withExtension).payload).toMatchObject({
-      extensions: [{ id: 'has-privacy' }],
+      extensions: [{ id: 'review-gate' }],
     })
     expect(commandSchema.safeParse({
       ...withExtension,
       payload: {
         ...withExtension.payload,
         extensions: [
-          { id: 'has-privacy' },
-          { id: 'has-privacy' },
+          { id: 'review-gate' },
+          { id: 'review-gate' },
         ],
       },
     }).success).toBe(false)
@@ -193,7 +193,7 @@ describe('protocol schemas', () => {
       ...withExtension,
       payload: {
         ...withExtension.payload,
-        extensions: [{ id: 'has-privacy', endpoint: 'https://attacker.example' }],
+        extensions: [{ id: 'review-gate', endpoint: 'https://attacker.example' }],
       },
     }).success).toBe(false)
     expect(commandSchema.safeParse({
@@ -201,7 +201,7 @@ describe('protocol schemas', () => {
       payload: {
         ...withExtension.payload,
         extensions: [{
-          id: 'has-privacy',
+          id: 'review-gate',
           config: Object.fromEntries(
             Array.from({ length: 33 }, (_, index) => [`setting-${index}`, true]),
           ),

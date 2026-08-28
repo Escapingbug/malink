@@ -247,7 +247,7 @@ class BootstrapPort implements NativeBridgePort {
   onmessage: NativeBridgePort["onmessage"] = null;
   bootstrapToken = "";
 
-  constructor(private readonly commandsDurableVersion = 3) {}
+  constructor(private readonly commandsDurableVersion = 4) {}
 
   postMessage(message: string): void {
     const request = JSON.parse(message) as {

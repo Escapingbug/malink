@@ -91,18 +91,40 @@ operation twice. Independent append operations such as prompts are serialized
 by the Gateway; state-dependent mutations carry explicit preconditions and
 produce a reviewable conflict instead of hidden client-side retry.
 
-Session creation, prompt, cancel, settings, provider-history inspection, and
-archive use this same path. A create command produces an immutable thread root.
+Session creation, prompt, cancel, settings, provider-history inspection,
+artifact materialization, and archive use this same path. A create command
+produces an immutable thread root.
 The provider is selected only by `session.create` and is immutable for the
 life of that Malink session. `session.update` may change model and reasoning,
 which the Gateway applies through the provider's structured ACP model/config
 surface rather than manufacturing provider-specific slash commands.
 
-`project.update` stores the default model and reasoning used by later sessions
-for the project's default provider. Provider-native slash commands remain user
-messages. When ACP publishes `available_commands_update`, clients may render
-those commands as actions that insert the corresponding slash input; Malink
-does not take ownership of provider commands such as `/model`.
+`project.update` atomically stores the display name, default model, reasoning,
+and extension bindings used by later sessions for the project's default
+provider. Its one signed terminal `project.snapshot` is also the new ordinary
+timeline snapshot; the Gateway updates the current-snapshot Room State pointer
+to that same event instead of publishing a duplicate timeline message.
+Provider-native slash commands remain user messages. When ACP publishes
+`available_commands_update`, clients may render those commands as actions that
+insert the corresponding slash input; Malink does not take ownership of
+provider commands such as `/model`.
+
+`project.delete` durably stops execution for that project and emits one signed
+`project.deleted` terminal event. It removes the route from the Gateway catalog
+and verified client projections, but does not erase the fixed working directory,
+provider-retained copies, or Matrix room history. The stable bootstrap control
+route cannot be deleted, and a Gateway always retains at least one project
+route. Deletions share one Gateway-wide lane so concurrent commands cannot both
+pass that invariant. Existing `project.settings` certificate authority covers
+both update and deletion, preserving already-issued device certificates.
+
+Project management has a bounded transport budget: one client command and one
+Gateway terminal timeline event per operation. Settings additionally updates
+one idempotent current-snapshot pointer; deletion republishes one signed
+Workspace Gateway Directory state on the stable control route. Durable client
+and Gateway outboxes retry the same command/event transaction IDs under Matrix
+429 responses; retries never split an operation into more semantic messages or
+fan out snapshots across every project room.
 
 Provider-owned history is a separate surface. `provider.sessions.list` lists
 the sessions still retained by a configured provider and
@@ -256,11 +278,28 @@ signed metadata. Large visible text is split into deterministic bounded parts
 with one logical message identity so recovery never depends on an oversized
 single response.
 
+An Agent Markdown local path may be rewritten only by the owning Gateway to an
+opaque `malink-artifact:` destination after canonical-path containment and stat
+checks. The original `assistant.message` carries at most ten encrypted
+reference records. A small safe raster image may additionally carry its signed
+attachment descriptor in that same event. Other references are lazy: the
+client displays projected stat metadata first, then an explicit confirmation
+sends exactly one `artifact.materialize` command with the reference ID and
+expected stat revision. If the file changed, the terminal event is a
+higher-version replacement with new stat metadata and no upload. Otherwise it
+is the same replacement with the encrypted attachment descriptor. The
+replacement's `artifact_materialization` UI marker makes it both the logical
+message update and the signed command terminal; no separate ack or progress
+event is permitted.
+
 ## Rate and delivery budget
 
 Traffic scales with visible business activity:
 
 - one Matrix command event per user action;
+- zero extra events for artifact stat display; one confirmed artifact command
+  and one higher-version assistant replacement, with media 429 retries kept
+  off-timeline;
 - one canonical queued projection and one terminal event for a prompt; there is
   no separate durable `turn.started` transition;
 - one bounded tool-group snapshot when current work first becomes visible, at

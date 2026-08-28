@@ -7,6 +7,7 @@ import {
   projectSessionSummaryLabel,
   sessionListSignal,
   sessionSignalLabel,
+  sessionStatusTone,
   summarizeProjectSessions,
 } from "../app/sessionListOrder.ts";
 import type { SessionReadState } from "../app/sessionIndicators.ts";
@@ -45,6 +46,42 @@ test("derives quiet visual signals from lifecycle and read state", () => {
   assert.equal(sessionListSignal(session("working", "running", 30), readState), "working");
   assert.equal(sessionListSignal(session("idle", "idle", 40), readState), "idle");
   assert.equal(sessionSignalLabel("idle"), null);
+});
+
+test("assigns distinct tones to live session status text", () => {
+  assert.equal(sessionStatusTone({
+    signal: "idle",
+    activityPhase: "sending",
+    lifecycleBusy: false,
+    gatewayConnected: true,
+  }), "sending");
+  assert.equal(sessionStatusTone({
+    signal: "working",
+    activityPhase: "waiting",
+    lifecycleBusy: false,
+    gatewayConnected: true,
+  }), "waiting");
+  assert.equal(sessionStatusTone({
+    signal: "working",
+    activityPhase: "working",
+    lifecycleBusy: false,
+    gatewayConnected: false,
+  }), "paused");
+  assert.equal(sessionStatusTone({
+    signal: "ready",
+    lifecycleBusy: false,
+    gatewayConnected: true,
+  }), "ready");
+  assert.equal(sessionStatusTone({
+    signal: "failed",
+    lifecycleBusy: false,
+    gatewayConnected: true,
+  }), "failed");
+  assert.equal(sessionStatusTone({
+    signal: "idle",
+    lifecycleBusy: true,
+    gatewayConnected: true,
+  }), "stopping");
 });
 
 test("sorts sessions and projects by action before recency", () => {
