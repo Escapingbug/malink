@@ -1,6 +1,5 @@
 package id.my.anciety.malink.service
 
-import android.annotation.SuppressLint
 import android.app.ForegroundServiceStartNotAllowedException
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -53,7 +52,6 @@ class MalinkConnectionService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var foregroundStarted = false
     @Volatile private var uiForeground = false
-    private var runtimeWakeLock: PowerManager.WakeLock? = null
     private var powerReceiverRegistered = false
     private val powerReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -143,7 +141,6 @@ class MalinkConnectionService : Service() {
     override fun onDestroy() {
         diagnostics.record("service.destroyed")
         unregisterPowerReceiver()
-        releaseRuntimeWakeLock()
         foregroundStarted = false
         val runtime = clientRuntime
         serviceScope.cancel()
@@ -212,7 +209,6 @@ class MalinkConnectionService : Service() {
             )
             foregroundStarted = true
         }
-        acquireRuntimeWakeLock()
     }
 
     private fun registerPowerReceiver() {
@@ -235,51 +231,12 @@ class MalinkConnectionService : Service() {
         powerReceiverRegistered = false
     }
 
-    @SuppressLint("WakelockTimeout")
-    private fun acquireRuntimeWakeLock() {
-        if (runtimeWakeLock?.isHeld == true) return
-        runCatching {
-            val power = getSystemService(PowerManager::class.java)
-            power.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "$packageName:matrix-runtime",
-            ).apply {
-                setReferenceCounted(false)
-                acquire()
-                runtimeWakeLock = this
-            }
-        }.onSuccess {
-            diagnostics.record("service.wake_lock_acquired")
-        }.onFailure { error ->
-            diagnostics.record(
-                "service.wake_lock_failed",
-                mapOf("error" to error.javaClass.simpleName.take(160)),
-            )
-        }
-    }
-
-    private fun releaseRuntimeWakeLock() {
-        val wakeLock = runtimeWakeLock ?: return
-        runtimeWakeLock = null
-        runCatching {
-            if (wakeLock.isHeld) wakeLock.release()
-        }.onSuccess {
-            diagnostics.record("service.wake_lock_released")
-        }.onFailure { error ->
-            diagnostics.record(
-                "service.wake_lock_release_failed",
-                mapOf("error" to error.javaClass.simpleName.take(160)),
-            )
-        }
-    }
-
     private fun disconnectExplicitly() {
         serviceScope.launch {
             try {
                 withContext(Dispatchers.IO) { awaitClientRuntime().disconnect(revoke = false) }
             } finally {
                 preferences.restoreEnabled = false
-                releaseRuntimeWakeLock()
                 ServiceCompat.stopForeground(
                     this@MalinkConnectionService,
                     ServiceCompat.STOP_FOREGROUND_REMOVE,
@@ -468,7 +425,6 @@ class MalinkConnectionService : Service() {
                 }
                 withContext(Dispatchers.Main.immediate) {
                     preferences.restoreEnabled = false
-                    releaseRuntimeWakeLock()
                     ServiceCompat.stopForeground(
                         this@MalinkConnectionService,
                         ServiceCompat.STOP_FOREGROUND_REMOVE,

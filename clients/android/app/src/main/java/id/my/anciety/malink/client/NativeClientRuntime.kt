@@ -339,6 +339,7 @@ class NativeClientRuntime(
     }
     @Volatile private var activePairingCompletion: ActivePairingCompletion? = null
     @Volatile private var pairingAutoResumeJob: Job? = null
+    @Volatile private var pairingExpiryJob: Job? = null
     private val preTrustEvents = ArrayDeque<MatrixDecryptedEvent>()
     private val initializedHistoryRelations = mutableSetOf<String>()
     private val historyRelationTokens = mutableMapOf<String, String>()
@@ -378,17 +379,7 @@ class NativeClientRuntime(
         }
         matrix.setObserver(this)
         refreshSnapshot(publishLifecycle = false)
-        scope.launch {
-            while (isActive) {
-                delay(1_000)
-                runCatching {
-                    mutex.withLock {
-                        expirePendingPairingIfNeeded()
-                        refreshSnapshot(publishLifecycle = true)
-                    }
-                }
-            }
-        }
+        schedulePendingPairingExpiry()
     }
 
     fun start(): ClientSnapshot {
@@ -578,6 +569,7 @@ class NativeClientRuntime(
         pairingStore.save(PersistedPairingTransaction(offer, null, null))
         clearPreTrustEvents()
         pendingPairing = PendingPairing(offer, repairingSession = repairingSession)
+        schedulePendingPairingExpiry()
         pairingStorageBlocked = false
         val preview = NativePairingPreview(
             pairingId = offer.offer.offerId,
@@ -717,6 +709,7 @@ class NativeClientRuntime(
             val response = CompletableDeferred<SignedPairingResponse>()
             pending.request = signedRequest
             pending.response = response
+            schedulePendingPairingExpiry()
             pending.receivedResponse?.let(response::complete)
             Triple(pending, signedRequest, response)
         }
@@ -811,6 +804,7 @@ class NativeClientRuntime(
                 ),
             )
             pendingPairing = null
+            cancelPendingPairingExpiry()
             runCatching { pairingStore.clear() }
                 .onFailure { error ->
                     // Trust is the authoritative commit. If the process stops
@@ -906,6 +900,7 @@ class NativeClientRuntime(
         pairingAutoResumeJob?.cancel()
         pairingAutoResumeJob = null
         pendingPairing = null
+        cancelPendingPairingExpiry()
         pairingStorageBlocked = false
         clearPreTrustEvents()
         eventHub.publish(
@@ -1073,6 +1068,7 @@ class NativeClientRuntime(
             pairingStorageBlocked = false
             gatewayState = null
             pendingPairing = null
+            cancelPendingPairingExpiry()
             pairingAutoResumeJob?.cancel()
             pairingAutoResumeJob = null
             clearPreTrustEvents()
@@ -1105,6 +1101,10 @@ class NativeClientRuntime(
         ) {
             resumeConfirmedPairing()
         }
+    }
+
+    override fun onRuntimeStatusChanged() {
+        refreshSnapshot(publishLifecycle = true)
     }
 
     override fun onTransportReady(identity: MatrixTransportIdentity) {
@@ -1784,7 +1784,10 @@ class NativeClientRuntime(
                     pairingStore.clear()
                 }
                 pairingStore.save(PersistedPairingTransaction(offer, null, null))
-                PendingPairing(offer, repairingSession = true).also { pendingPairing = it }
+                PendingPairing(offer, repairingSession = true).also {
+                    pendingPairing = it
+                    schedulePendingPairingExpiry()
+                }
             }
             completePairing(
                 pending.offer.offer.offerId,
@@ -2384,6 +2387,7 @@ class NativeClientRuntime(
         )
         pairingStore.save(PersistedPairingTransaction(pending.offer, request, signed))
         pending.receivedResponse = signed
+        schedulePendingPairingExpiry()
         diagnostics.record("pairing.transaction.response_persisted")
         pending.response?.complete(signed)
     }
@@ -2590,6 +2594,7 @@ class NativeClientRuntime(
             ) return
             pairingStore.clear()
             pendingPairing = null
+            cancelPendingPairingExpiry()
             pairingStorageBlocked = false
             clearPreTrustEvents()
             diagnostics.record("pairing.transaction.rejected")
@@ -2609,6 +2614,7 @@ class NativeClientRuntime(
         val pending = pendingPairing ?: return
         val expiresAt = pairingTransactionExpiresAt(pending)
         if (expiresAt > now()) return
+        cancelPendingPairingExpiry()
         pairingStore.clear()
         pending.response?.completeExceptionally(
             NativePairingRejectedException("The pairing transaction expired."),
@@ -2628,6 +2634,27 @@ class NativeClientRuntime(
             },
             refreshedSnapshot(),
         )
+    }
+
+    private fun schedulePendingPairingExpiry() {
+        cancelPendingPairingExpiry()
+        val expected = pendingPairing ?: return
+        val expiresAt = pairingTransactionExpiresAt(expected)
+        val delayMs = pendingPairingExpiryDelayMs(now(), expiresAt)
+        pairingExpiryJob = scope.launch {
+            delay(delayMs)
+            mutex.withLock {
+                if (pendingPairing !== expected) return@withLock
+                pairingExpiryJob = null
+                expirePendingPairingIfNeeded()
+                if (pendingPairing === expected) schedulePendingPairingExpiry()
+            }
+        }
+    }
+
+    private fun cancelPendingPairingExpiry() {
+        pairingExpiryJob?.cancel()
+        pairingExpiryJob = null
     }
 
     private fun validateRestoredPairingTransaction(
@@ -3041,10 +3068,18 @@ internal fun pairingRequestRetryDelayMs(completedRetries: Int): Long {
     }
 }
 
+internal fun pendingPairingExpiryDelayMs(now: Long, expiresAt: Long): Long {
+    require(now >= 0)
+    require(expiresAt >= 0)
+    if (expiresAt <= now) return 0L
+    return (expiresAt - now).coerceAtMost(MAX_PAIRING_EXPIRY_SLEEP_MS)
+}
+
 internal fun pairingRecoveryExpiresAt(request: SignedPairingRequest): Long =
     Math.addExact(request.request.issuedAt, PAIRING_RECOVERY_WINDOW_MS)
 
 private const val PAIRING_RECOVERY_WINDOW_MS = 366L * 24 * 60 * 60_000
+private const val MAX_PAIRING_EXPIRY_SLEEP_MS = 24L * 60 * 60_000
 
 internal fun recoverableCommandIds(commands: List<DurableView>): List<String> =
     commands

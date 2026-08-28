@@ -50,4 +50,27 @@ class MatrixRuntimeFailurePolicyTest {
             assertFalse(MatrixSyncRestartPolicy.decide(reason).blocked)
         }
     }
+
+    @Test
+    fun `transport retry grows exponentially and caps before jitter`() {
+        assertEquals(5_000L, MatrixRetryBackoff.transportDelayMs(0, jitterUnit = 0.5))
+        assertEquals(10_000L, MatrixRetryBackoff.transportDelayMs(1, jitterUnit = 0.5))
+        assertEquals(40_000L, MatrixRetryBackoff.transportDelayMs(3, jitterUnit = 0.5))
+        assertEquals(240_000L, MatrixRetryBackoff.transportDelayMs(20, jitterUnit = 0.5))
+    }
+
+    @Test
+    fun `request retry backs off instead of polling every few seconds forever`() {
+        assertEquals(1_000L, MatrixRetryBackoff.requestDelayMs(0, jitterUnit = 0.5))
+        assertEquals(8_000L, MatrixRetryBackoff.requestDelayMs(3, jitterUnit = 0.5))
+        assertEquals(48_000L, MatrixRetryBackoff.requestDelayMs(20, jitterUnit = 0.5))
+    }
+
+    @Test
+    fun `retry jitter stays within bounded radio friendly range`() {
+        assertEquals(180_000L, MatrixRetryBackoff.transportDelayMs(20, jitterUnit = 0.0))
+        assertEquals(300_000L, MatrixRetryBackoff.transportDelayMs(20, jitterUnit = 1.0))
+        assertEquals(36_000L, MatrixRetryBackoff.requestDelayMs(20, jitterUnit = 0.0))
+        assertEquals(60_000L, MatrixRetryBackoff.requestDelayMs(20, jitterUnit = 1.0))
+    }
 }

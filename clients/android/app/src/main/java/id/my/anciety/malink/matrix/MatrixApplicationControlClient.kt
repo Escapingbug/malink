@@ -179,7 +179,7 @@ class RestrictedHttpsMatrixApplicationControlTransport(
 
 class RestrictedHttpsMatrixApplicationControlSyncTransport(
     private val connectTimeoutMs: Int = 15_000,
-    private val readTimeoutMs: Int = 40_000,
+    private val readTimeoutMs: Int = 70_000,
 ) : MatrixApplicationControlSyncTransport {
     override suspend fun getJson(
         endpoint: URI,
@@ -846,7 +846,9 @@ class MatrixApplicationControlSyncClient(
         // and JSON framing. Larger backlogs are recovered through the
         // authoritative Room State baseline and per-thread history paging.
         const val LIVE_TIMELINE_LIMIT = 32
-        const val LONG_POLL_TIMEOUT_MS = 30_000
+        // A live event releases /sync immediately. The longer empty timeout
+        // only reduces idle radio wakeups when no Agent activity is happening.
+        const val LONG_POLL_TIMEOUT_MS = 55_000
         const val MAX_RETRY_AFTER_MS = 60_000L
     }
 }

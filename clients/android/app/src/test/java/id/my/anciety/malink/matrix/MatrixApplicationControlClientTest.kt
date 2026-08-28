@@ -667,6 +667,24 @@ class MatrixApplicationControlClientTest {
     }
 
     @Test
+    fun `live sync uses a longer idle poll without delaying incoming events`() = runBlocking {
+        lateinit var endpoint: URI
+        val responseBody = """
+            {"next_batch":"s-next","rooms":{"join":{}}}
+        """.trimIndent().toByteArray()
+        val client = MatrixApplicationControlSyncClient(
+            MatrixApplicationControlSyncTransport { target, _ ->
+                endpoint = target
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        client.sync(storedSession(), since = "s-current")
+
+        assertTrue(endpoint.rawQuery.contains("timeout=55000"))
+    }
+
+    @Test
     fun `sync tolerates null optional room sections without poisoning its cursor`() = runBlocking {
         val responseBody = """
             {

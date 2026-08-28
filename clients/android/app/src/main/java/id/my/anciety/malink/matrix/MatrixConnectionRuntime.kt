@@ -60,11 +60,11 @@ class MatrixConnectionRuntime(
     private val liveness: MatrixSyncLiveness = MatrixSyncLiveness(
         firstSyncTimeoutMs = BuildConfig.MATRIX_FIRST_SYNC_TIMEOUT_MS,
     ),
-    private val retryDelayMs: Long = 5_000,
     private val elapsedRealtime: () -> Long = SystemClock::elapsedRealtime,
     private val hasCachedApplicationProjection: () -> Boolean = { false },
     private val onPairingTransportReady: (MatrixTransportIdentity) -> Unit = {},
     private val onTransportReady: (MatrixTransportIdentity) -> Unit = {},
+    private val onStatusChanged: () -> Unit = {},
     private val onConvergenceRequired: (String) -> Unit = {},
     private val onDecryptedEvent: suspend (MatrixDecryptedEvent) -> Unit = {},
 ) {
@@ -84,6 +84,7 @@ class MatrixConnectionRuntime(
     @Volatile
     private var driverGeneration = 0L
     private var retryJob: Job? = null
+    private var reconnectFailures = 0
     private var watchdogJob: Job? = null
     private var applicationControlReceiverJob: Job? = null
     private var applicationControlGapJob: Job? = null
@@ -537,6 +538,7 @@ class MatrixConnectionRuntime(
         if (!started.compareAndSet(true, false)) return@withLock
         retryJob?.cancel()
         retryJob = null
+        reconnectFailures = 0
         watchdogJob?.cancel()
         watchdogJob = null
         networkMonitor.stop()
@@ -579,6 +581,7 @@ class MatrixConnectionRuntime(
                 }
                 val currentDriver = mutex.withLock {
                     networkAvailable = available
+                    if (available) reconnectFailures = 0
                     diagnostics.record(
                         "matrix.network.changed",
                         mapOf("available" to available.toString()),
@@ -732,6 +735,7 @@ class MatrixConnectionRuntime(
                                     liveness.syncUpdated()
                                     retryJob?.cancel()
                                     retryJob = null
+                                    reconnectFailures = 0
                                     accept(MatrixRuntimeEvent.SyncUpdated)
                                 }
                             }
@@ -904,13 +908,7 @@ class MatrixConnectionRuntime(
                             "matrix.application_state.current_retry",
                             errorAttributes(error),
                         )
-                        delay(
-                            (error as? MatrixApplicationControlSyncException)?.retryAfterMs
-                                ?: APPLICATION_CONTROL_RETRY_BASE_MS *
-                                    consecutiveFailures.coerceAtMost(
-                                        APPLICATION_CONTROL_MAX_RETRY_MULTIPLIER,
-                                    ),
-                        )
+                        delay(applicationControlRetryDelayMs(error, consecutiveFailures))
                         continue
                     }
                 }
@@ -1029,16 +1027,7 @@ class MatrixConnectionRuntime(
                         "matrix.application_control.receiver_retry",
                         errorAttributes(error),
                     )
-                    val requestedDelay =
-                        (error as? MatrixApplicationControlSyncException)?.retryAfterMs
-                    delay(
-                        requestedDelay ?: (
-                            APPLICATION_CONTROL_RETRY_BASE_MS *
-                                consecutiveFailures.coerceAtMost(
-                                    APPLICATION_CONTROL_MAX_RETRY_MULTIPLIER,
-                                )
-                            ),
-                    )
+                    delay(applicationControlRetryDelayMs(error, consecutiveFailures))
                     continue
                 }
                 applicationControlLastProgressAt = elapsedRealtime()
@@ -1287,13 +1276,7 @@ class MatrixConnectionRuntime(
                         "matrix.application_control.gap_retry",
                         errorAttributes(error),
                     )
-                    delay(
-                        (error as? MatrixApplicationControlSyncException)?.retryAfterMs
-                            ?: APPLICATION_CONTROL_RETRY_BASE_MS *
-                                consecutiveFailures.coerceAtMost(
-                                    APPLICATION_CONTROL_MAX_RETRY_MULTIPLIER,
-                                ),
-                    )
+                    delay(applicationControlRetryDelayMs(error, consecutiveFailures))
                 }
             }
         }
@@ -1313,15 +1296,24 @@ class MatrixConnectionRuntime(
             }
             if (committed) return
             diagnostics.record("matrix.application_control.gap_backpressure")
-            delay(250)
+            delay(APPLICATION_CONTROL_GAP_BACKPRESSURE_MS)
         }
     }
 
     private fun scheduleRetryLocked() {
         if (retryJob?.isActive == true || !networkAvailable || secrets == null || !started.get()) return
-        diagnostics.record("matrix.retry.scheduled")
+        val completedFailures = reconnectFailures
+        reconnectFailures = (reconnectFailures + 1).coerceAtMost(Int.MAX_VALUE)
+        val delayMs = MatrixRetryBackoff.transportDelayMs(completedFailures)
+        diagnostics.record(
+            "matrix.retry.scheduled",
+            mapOf(
+                "attempt" to completedFailures.toString(),
+                "delay_ms" to delayMs.toString(),
+            ),
+        )
         retryJob = scope.launch {
-            delay(retryDelayMs)
+            delay(delayMs)
             mutex.withLock {
                 retryJob = null
                 if (networkAvailable && secrets != null && started.get()) {
@@ -1386,6 +1378,7 @@ class MatrixConnectionRuntime(
                     "detail" to next.detailCode,
                 ),
             )
+            onStatusChanged()
         }
         return next
     }
@@ -1413,6 +1406,14 @@ class MatrixConnectionRuntime(
         }
     }
 
+    private fun applicationControlRetryDelayMs(error: Throwable, consecutiveFailures: Int): Long {
+        require(consecutiveFailures > 0)
+        return (error as? MatrixApplicationControlSyncException)
+            ?.retryAfterMs
+            ?.coerceAtLeast(APPLICATION_CONTROL_MIN_RETRY_MS)
+            ?: MatrixRetryBackoff.requestDelayMs(consecutiveFailures - 1)
+    }
+
     private fun StoredMatrixSession.toPublic() = PublicMatrixSession(
         homeserver = homeserverUrl,
         userId = userId,
@@ -1423,7 +1424,7 @@ class MatrixConnectionRuntime(
     private companion object {
         const val MAX_APPLICATION_CONTROL_GAPS = 64
         const val MAX_DIRECTORY_STABILITY_ATTEMPTS = 8
-        const val WATCHDOG_INTERVAL_MS = 5_000L
+        const val WATCHDOG_INTERVAL_MS = 15_000L
         const val DRIVER_START_TIMEOUT_MS = 30_000L
         const val DRIVER_STOP_TIMEOUT_MS = 10_000L
         const val NETWORK_CONTROL_TIMEOUT_MS = 10_000L
@@ -1434,9 +1435,9 @@ class MatrixConnectionRuntime(
         const val THREAD_DIRECTORY_OPERATION_TIMEOUT_MS = 120_000L
         const val MEDIA_OPERATION_TIMEOUT_MS = 120_000L
         const val LOGOUT_OPERATION_TIMEOUT_MS = 45_000L
-        const val APPLICATION_CONTROL_RETRY_BASE_MS = 1_000L
-        const val APPLICATION_CONTROL_MAX_RETRY_MULTIPLIER = 15
-        const val APPLICATION_CONTROL_STALE_TIMEOUT_MS = 90_000L
+        const val APPLICATION_CONTROL_MIN_RETRY_MS = 1_000L
+        const val APPLICATION_CONTROL_GAP_BACKPRESSURE_MS = 5_000L
+        const val APPLICATION_CONTROL_STALE_TIMEOUT_MS = 120_000L
         const val MAX_THREAD_DIRECTORY_PAGES = 1_000
     }
 }
