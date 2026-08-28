@@ -154,6 +154,9 @@ export async function validateMacosGatewayRelease(releaseDirectory: string): Pro
         if (metadata.isSymbolicLink() || !metadata.isFile()) {
             throw new Error(`Gateway release path is not a regular file: ${path}`)
         }
+        if (metadata.size < 1) {
+            throw new Error(`Required Gateway release path is empty: ${path}`)
+        }
         const resolved = await realpath(path)
         if (!resolved.startsWith(`${root}/`)) {
             throw new Error(`Gateway release path escapes its root: ${path}`)

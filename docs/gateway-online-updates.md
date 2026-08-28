@@ -99,11 +99,13 @@ ops/gatewayAgentUpdateCli.js
 ```
 
 It must be self-contained and contain no symlinks. The supervisor rejects
-reserved release metadata, empty or special files, more than 10,000 files, or
-more than 1 GiB. On submission it copies the candidate into an immutable
-release directory and records every path, byte count, executable bit, and
-SHA-256 digest in `release-seal.json` alongside the signed
-`release-prompt.json`. It verifies that seal again immediately before apply.
+reserved release metadata, empty required entrypoints, special files, more than
+10,000 files, or more than 1 GiB. Empty regular dependency files are permitted
+and covered by the release seal. On submission the supervisor copies the
+candidate into an immutable release directory and records every path, byte
+count, executable bit, and SHA-256 digest in `release-seal.json` alongside the
+signed `release-prompt.json`. It verifies that seal again immediately before
+apply.
 
 ## Publication
 

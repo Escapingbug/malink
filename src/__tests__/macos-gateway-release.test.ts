@@ -22,6 +22,20 @@ describe('macOS Matrix Gateway release activation', () => {
         }
     })
 
+    it('rejects an empty required entrypoint', async () => {
+        const root = await releaseFixture()
+        try {
+            const nextRelease = join(root, 'releases', 'next')
+            await writeFile(join(nextRelease, 'mcp', 'stdio.js'), '')
+
+            await expect(validateMacosGatewayRelease(nextRelease)).rejects.toThrow(
+                /Required Gateway release path is empty: .*mcp\/stdio\.js/u,
+            )
+        } finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    })
+
     it('preserves a stable Gateway Host while switching the current entrypoint', async () => {
         const root = await releaseFixture()
         try {

@@ -214,6 +214,58 @@ describe('GatewayUpdateSupervisor', () => {
     }
   })
 
+  it('copies and seals empty regular dependency files', async () => {
+    const fixture = await agentUpdateFixture({ emptyAuxiliaryFile: true })
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fixture.fetch })
+    await supervisor.initialize()
+
+    await expect(supervisor.stage('release-2')).resolves.toMatchObject({
+      phase: 'agent_required',
+    })
+    const instruction = await supervisor.agentInstruction('release-2')
+    const emptyFile = join(
+      'node_modules',
+      'matrix-js-sdk',
+      'lib',
+      '@types',
+      'another-json.d.js',
+    )
+    await expect(readFile(join(instruction.candidateDirectory, emptyFile))).resolves.toHaveLength(0)
+
+    await expect(supervisor.submitAgentRelease('release-2')).resolves.toMatchObject({
+      phase: 'staged',
+    })
+    await expect(readFile(
+      join(fixture.installRoot, 'releases', 'release-2', emptyFile),
+    )).resolves.toHaveLength(0)
+    const seal = JSON.parse(await readFile(
+      join(fixture.installRoot, 'releases', 'release-2', 'release-seal.json'),
+      'utf8',
+    )) as { files: Array<{ path: string; size: number; sha256: string }> }
+    expect(seal.files).toContainEqual({
+      path: emptyFile,
+      size: 0,
+      sha256: createHash('sha256').update('').digest('hex'),
+    })
+  })
+
+  it('rejects an empty Agent-built supervisor entrypoint', async () => {
+    const fixture = await agentUpdateFixture()
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fixture.fetch })
+    await supervisor.initialize()
+    await supervisor.stage('release-2')
+    const instruction = await supervisor.agentInstruction('release-2')
+    await writeFile(
+      join(instruction.candidateDirectory, 'ops', 'gatewayUpdateSupervisorMain.js'),
+      '',
+    )
+
+    await expect(supervisor.submitAgentRelease('release-2')).rejects.toThrow(
+      /release entrypoint is empty: ops\/gatewayUpdateSupervisorMain\.js/u,
+    )
+    await expect(supervisor.status()).resolves.toMatchObject({ phase: 'failed' })
+  })
+
   it('rejects a tampered Agent update Prompt before creating an Agent workspace', async () => {
     const fixture = await agentUpdateFixture({ tamperPrompt: true })
     const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fixture.fetch })
@@ -687,7 +739,10 @@ async function releaseFixture(options: {
   }
 }
 
-async function agentUpdateFixture(options: { tamperPrompt?: boolean } = {}) {
+async function agentUpdateFixture(options: {
+  tamperPrompt?: boolean
+  emptyAuxiliaryFile?: boolean
+} = {}) {
   const installRoot = await temporaryDirectory()
   const oldRelease = join(installRoot, 'releases', 'release-1')
   await mkdir(join(oldRelease, 'runtime'), { recursive: true })
@@ -701,6 +756,17 @@ async function agentUpdateFixture(options: { tamperPrompt?: boolean } = {}) {
     '// old supervisor\n',
   )
   await writeFile(join(oldRelease, 'ops', 'gatewayAgentUpdateCli.js'), '// old CLI\n')
+  if (options.emptyAuxiliaryFile) {
+    const typesDirectory = join(
+      oldRelease,
+      'node_modules',
+      'matrix-js-sdk',
+      'lib',
+      '@types',
+    )
+    await mkdir(typesDirectory, { recursive: true })
+    await writeFile(join(typesDirectory, 'another-json.d.js'), '')
+  }
   await symlink(oldRelease, join(installRoot, 'current'))
   const launchAgentPath = join(installRoot, 'gateway.plist')
   await writeFile(launchAgentPath, `<string>${join(installRoot, 'current')}</string>`)
