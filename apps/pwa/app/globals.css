@@ -1351,6 +1351,10 @@ select:focus-visible {
   color: #a64751;
 }
 
+.session-signal-working .session-status-summary {
+  color: #267859;
+}
+
 .session-preview-line b {
   display: grid;
   min-width: 18px;
@@ -2290,6 +2294,11 @@ select:focus-visible {
   color: white;
 }
 
+.user-bubble p {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .user-bubble time {
   color: rgb(255 255 255 / 90%);
 }
@@ -2408,6 +2417,10 @@ select:focus-visible {
 .delivery-indicator.queued {
   color: #e5ddff;
   animation: delivery-pending 1200ms ease-in-out infinite alternate;
+}
+
+.delivery-indicator.received {
+  letter-spacing: -0.12em;
 }
 
 .delivery-indicator.failed {
@@ -4329,16 +4342,20 @@ select:focus-visible {
 
 .composer textarea {
   width: 100%;
-  min-height: 30px;
-  max-height: 100px;
-  flex: 1;
+  min-height: 46px;
+  max-height: min(36vh, 240px);
+  flex: 0 1 auto;
+  overflow-y: auto;
   resize: none;
   border: 0;
   outline: 0;
   background: transparent;
   color: #343c4e;
+  field-sizing: content;
   font-size: 11px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .composer textarea::placeholder {
@@ -7634,7 +7651,7 @@ body {
 }
 
 .composer textarea {
-  min-height: 30px;
+  min-height: 52px;
   font-size: 15px;
 }
 
@@ -8565,9 +8582,8 @@ body {
   }
 
   .composer textarea {
-    min-height: 24px;
-    max-height: 104px;
-    field-sizing: content;
+    min-height: 44px;
+    max-height: min(32dvh, 180px);
   }
 
   .composer-options-button {

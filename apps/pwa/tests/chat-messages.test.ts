@@ -8,11 +8,104 @@ const {
   resolvedDecisionActionId,
   withoutReconciledOptimisticCopies,
 } = await import(new URL("../app/chatMessages.ts", import.meta.url).href);
+const {
+  agentReceivedCommandIds,
+  messageDeliveryPresentation,
+  userMessageDeliveryState,
+} = await import(new URL("../app/messageDelivery.ts", import.meta.url).href);
 
 test("identifies agent work messages without guessing from their text", () => {
   assert.equal(isAgentWorkMessage({ kind: "agent" }), true);
   assert.equal(isAgentWorkMessage({ kind: "tool" }), true);
   assert.equal(isAgentWorkMessage({ kind: "user" }), false);
+});
+
+test("uses one receipt for sent and two only after the Agent starts", () => {
+  assert.deepEqual(
+    messageDeliveryPresentation(
+      userMessageDeliveryState("sent", "command-1", new Set()),
+    ),
+    {
+      state: "sent",
+      label: "Message sent successfully",
+      symbol: "✓",
+    },
+  );
+
+  const received = agentReceivedCommandIds({
+    sessionId: "session-1",
+    session: {
+      activeTurnId: "command-1",
+      activityPhase: "working",
+    },
+    messages: [],
+    completions: [],
+  });
+  assert.deepEqual(
+    messageDeliveryPresentation(
+      userMessageDeliveryState("sent", "command-1", received),
+    ),
+    {
+      state: "received",
+      label: "Agent received and started",
+      symbol: "✓✓",
+    },
+  );
+});
+
+test("does not treat queued or rejected prompts as Agent-started", () => {
+  const received = agentReceivedCommandIds({
+    sessionId: "session-1",
+    session: {
+      activeTurnId: "command-queued",
+      activityPhase: "starting",
+    },
+    messages: [],
+    completions: [{
+      commandId: "command-rejected",
+      sessionId: "session-1",
+      outcome: "failed",
+    }],
+  });
+  assert.equal(received.has("command-queued"), false);
+  assert.equal(received.has("command-rejected"), false);
+});
+
+test("retains Agent receipt after output or successful completion", () => {
+  const received = agentReceivedCommandIds({
+    sessionId: "session-1",
+    session: null,
+    messages: [{ kind: "tool", commandId: "command-tool" }],
+    completions: [{
+      commandId: "command-complete",
+      sessionId: "session-1",
+      outcome: "succeeded",
+    }],
+  });
+  assert.equal(received.has("command-tool"), true);
+  assert.equal(received.has("command-complete"), true);
+});
+
+test("retains Agent receipt for a started turn that later fails", () => {
+  const received = agentReceivedCommandIds({
+    sessionId: "session-1",
+    session: null,
+    messages: [
+      {
+        kind: "error",
+        commandId: "command-started-then-failed",
+        raw: { type: "turn.failed" },
+      },
+      {
+        kind: "error",
+        commandId: "command-rejected",
+        raw: { type: "command.rejected" },
+      },
+    ],
+    completions: [],
+  });
+  assert.equal(received.has("command-started-then-failed"), true);
+  assert.equal(received.has("command-rejected"), false);
 });
 
 test("uses the verified resolved decision instead of leaving a stale permission action", () => {

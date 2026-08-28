@@ -61,8 +61,9 @@ export function agentActivityForPhase(
  * Reduces an authenticated `IncomingMalinkMessage.raw` value into the
  * transient Agent activity shown by the conversation UI.
  *
- * Unknown events preserve the current activity. A visible message clears it
- * because the transcript itself becomes the progress indicator.
+ * Unknown events preserve the current activity. Visible Agent output promotes
+ * the activity to working, but only a terminal lifecycle event clears it: a
+ * reply or tool result can arrive while the same turn is still executing.
  */
 export function reduceAgentActivity(
   current: AgentActivity | null,
@@ -111,10 +112,12 @@ export function reduceAgentActivity(
     event.type === "assistant.message" ||
     event.type === "tool.activity"
   ) {
-    return null;
+    return current?.phase === "stopping" ? current : WORKING_AGENT_ACTIVITY;
   }
 
-  if (event.kind === "message") return null;
+  if (event.kind === "message") {
+    return current?.phase === "stopping" ? current : WORKING_AGENT_ACTIVITY;
+  }
   if (event.kind === "decision_request") {
     return createActivity(
       "working",

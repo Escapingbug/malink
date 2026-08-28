@@ -190,6 +190,11 @@ import {
   createCancelCommandPayload,
   createPromptCommandPayload,
 } from "./commandPayloads";
+import {
+  agentReceivedCommandIds,
+  messageDeliveryPresentation,
+  userMessageDeliveryState,
+} from "./messageDelivery";
 import { retryMatchingCommandRevisionConflict } from "./commandRevisionRetry";
 import { deriveComposerState } from "./composerState";
 import {
@@ -1687,6 +1692,19 @@ function MalinkAppRuntime() {
   const agentActivity = selectedSessionId
     ? agentActivitiesBySession.get(selectedSessionId) ?? null
     : null;
+  const receivedPromptCommandIds = useMemo(
+    () =>
+      agentReceivedCommandIds({
+        sessionId: selectedSessionId,
+        session: gatewaySelected,
+        messages,
+        completions: observedCommandCompletions,
+      }),
+    [gatewaySelected, messages, observedCommandCompletions, selectedSessionId],
+  );
+  useLayoutEffect(() => {
+    resizeComposerTextarea(composerTextareaRef.current);
+  }, [draft, selectedSessionId]);
 
   const isPromptSubmitting = Boolean(
     selectedSessionId && submittingPromptSessionIds.has(selectedSessionId),
@@ -7465,7 +7483,11 @@ function MalinkAppRuntime() {
       setComposerOptionsOpen(false);
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (
+      event.key === "Enter" &&
+      (event.ctrlKey || event.metaKey) &&
+      !event.nativeEvent.isComposing
+    ) {
       event.preventDefault();
       void sendMessage();
     }
@@ -8104,10 +8126,14 @@ function MalinkAppRuntime() {
                 }${
                   session.reasoningEffort ? ` · ${session.reasoningEffort}` : ""
                 }`;
-                const visualSignal = lifecycleAction ? "working" : signal;
+                const visualSignal = lifecycleAction || activity
+                  ? "working"
+                  : signal;
                 const visualSignalLabel = lifecycleAction
                   ? statusSummary
-                  : sessionSignalLabel(signal);
+                  : activity?.label || sessionSignalLabel(signal);
+                const showStatusSummary =
+                  Boolean(lifecycleAction || activity) || signal !== "idle";
                 return (
                 <button
                   key={session.id}
@@ -8148,9 +8174,9 @@ function MalinkAppRuntime() {
                         )}
                       </span>
                     </span>
-                    {(lifecycleAction || session.extensions.length > 0) && (
+                    {(showStatusSummary || session.extensions.length > 0) && (
                       <span className="session-preview-line">
-                        {lifecycleAction && (
+                        {showStatusSummary && (
                           <span className="session-status-summary">
                             {statusSummary}
                           </span>
@@ -8544,6 +8570,13 @@ function MalinkAppRuntime() {
               const deliveryState =
                 message.deliveryState ??
                 (message.revision !== undefined ? "sent" : undefined);
+              const delivery = messageDeliveryPresentation(
+                userMessageDeliveryState(
+                  deliveryState,
+                  message.commandId,
+                  receivedPromptCommandIds,
+                ),
+              );
               return (
                 <div
                   className={`message-row user-row turn-prompt ${isToolFocusContext ? "tool-focus-context-message" : ""} ${
@@ -8572,26 +8605,13 @@ function MalinkAppRuntime() {
                       }
                     >
                       {message.time}{" "}
-                      {deliveryState && (
+                      {delivery && (
                         <span
-                          className={`delivery-indicator ${deliveryState}`}
-                          aria-label={
-                            deliveryState === "queued"
-                              ? "Waiting for session creation"
-                              : deliveryState === "sending"
-                                ? "Sending"
-                                : deliveryState === "failed"
-                                  ? "Send failed"
-                                  : "Sent"
-                          }
+                          className={`delivery-indicator ${delivery.state}`}
+                          aria-label={delivery.label}
+                          title={delivery.label}
                         >
-                          {deliveryState === "queued"
-                            ? "◷"
-                            : deliveryState === "sending"
-                              ? "…"
-                              : deliveryState === "failed"
-                                ? "!"
-                                : "✓✓"}
+                          {delivery.symbol}
                         </span>
                       )}
                     </time>
@@ -9015,6 +9035,7 @@ function MalinkAppRuntime() {
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={onComposerKeyDown}
+              aria-keyshortcuts="Control+Enter Meta+Enter"
               placeholder={
                 gatewayAvailable
                   ? `Message ${activeProvider}…`
@@ -9023,7 +9044,7 @@ function MalinkAppRuntime() {
                     : "Connect a computer to start"
               }
               aria-label={`Message ${activeProvider}`}
-              rows={1}
+              rows={2}
               disabled={!composerState.canType}
             />
             <div className="composer-actions">
@@ -9254,6 +9275,9 @@ function MalinkAppRuntime() {
             aria-live="polite"
           >
             {composerState.reason}
+            <span className="composer-shortcut-hint" aria-hidden="true">
+              {" · Enter for new line · Ctrl/⌘ Enter to send"}
+            </span>
           </p>
         </div>
       </section>
@@ -9714,6 +9738,21 @@ function resolvedPermissionLabel(
   if (typeof state !== "object") return "Approved";
   return permissionActionOptions(raw)
     .find((option) => option.value === state.actionId)?.label ?? "Approved";
+}
+
+function resizeComposerTextarea(textarea: HTMLTextAreaElement | null): void {
+  if (!textarea) return;
+  textarea.style.height = "auto";
+  const style = window.getComputedStyle(textarea);
+  const minHeight = Number.parseFloat(style.minHeight) || 0;
+  const parsedMaxHeight = Number.parseFloat(style.maxHeight);
+  const maxHeight = Number.isFinite(parsedMaxHeight)
+    ? parsedMaxHeight
+    : Number.POSITIVE_INFINITY;
+  const contentHeight = textarea.scrollHeight;
+  const height = Math.max(minHeight, Math.min(contentHeight, maxHeight));
+  textarea.style.height = `${Math.ceil(height)}px`;
+  textarea.style.overflowY = contentHeight > height ? "auto" : "hidden";
 }
 
 async function persistMessageHistoryPage(
