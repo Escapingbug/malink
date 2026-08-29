@@ -1199,6 +1199,9 @@ class MainActivity : ComponentActivity() {
 
         override fun nativeUpdateStatus(): NativeUpdateStatus = requireNativeUpdateManager().status()
 
+        override fun checkNativeUpdate(): NativeUpdateStatus =
+            requireNativeUpdateManager().requestStaticReleaseCheck()
+
         override suspend fun installNativeUpdate(): NativeUpdateStatus {
             val result = withContext(Dispatchers.IO) { requireNativeUpdateManager().installReady() }
             if (result.phase == NativeUpdatePhase.PERMISSION_REQUIRED) {

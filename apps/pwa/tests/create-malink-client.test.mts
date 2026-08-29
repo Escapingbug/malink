@@ -201,6 +201,38 @@ test("an outdated full client can still advance the independent native updater",
   assert.equal(port.onmessage, null);
 });
 
+test("a manual retry asks a v2 native updater to force-check the static channel", async () => {
+  const port = new NativeUpdatePort(2);
+  const result = await advanceNativeAppUpdate({
+    checkNow: true,
+    installReady: false,
+    dependencies: {
+      nativePort: () => port,
+      createBridge: (nativePort) => new NativeRpcBridge(nativePort),
+    },
+  });
+  assert.equal(result.phase, "checking");
+  assert.deepEqual(port.methods, [
+    "malink.bridge.hello",
+    "malink.update.check",
+  ]);
+});
+
+test("a manual retry fails clearly instead of rereading stale v1 status", async () => {
+  const port = new NativeUpdatePort(1);
+  await assert.rejects(
+    advanceNativeAppUpdate({
+      checkNow: true,
+      dependencies: {
+        nativePort: () => port,
+        createBridge: (nativePort) => new NativeRpcBridge(nativePort),
+      },
+    }),
+    /does not support manual update checks/,
+  );
+  assert.deepEqual(port.methods, ["malink.bridge.hello"]);
+});
+
 test("consumes a one-time login token only after complete native negotiation", async () => {
   const partial = new HelloPort();
   const input = nativeBootstrapInput();
@@ -379,6 +411,8 @@ class NativeUpdatePort implements NativeBridgePort {
   onmessage: NativeBridgePort["onmessage"] = null;
   methods: string[] = [];
 
+  constructor(private readonly capabilityVersion = 1) {}
+
   postMessage(message: string): void {
     const request = JSON.parse(message) as {
       id: string;
@@ -394,7 +428,7 @@ class NativeUpdatePort implements NativeBridgePort {
             runtimeBuild: "android-outdated",
             platform: "android",
           },
-          capabilities: { "client.update": { version: 1 } },
+          capabilities: { "client.update": { version: this.capabilityVersion } },
           limits: NATIVE_BRIDGE_LIMITS,
         }
       : request.method === "malink.update.status"
@@ -405,7 +439,13 @@ class NativeUpdatePort implements NativeBridgePort {
             latestVersionCode: 2,
             latestVersionName: "0.1.0-new",
           }
-        : {
+        : request.method === "malink.update.check"
+          ? {
+              phase: "checking",
+              currentVersionCode: 1,
+              currentVersionName: "0.1.0-old",
+            }
+          : {
             phase: "installing",
             currentVersionCode: 1,
             currentVersionName: "0.1.0-old",

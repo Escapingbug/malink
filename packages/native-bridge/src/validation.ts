@@ -432,6 +432,7 @@ function parseMethodResult<M extends RequestMethod>(
       result = parseClientDisconnectResult(input);
       break;
     case "malink.update.status":
+    case "malink.update.check":
     case "malink.update.install":
       result = parseNativeUpdateStatus(input);
       break;
@@ -1483,6 +1484,7 @@ function parseMethodParams(method: RequestMethod, input: unknown): JsonObject {
     case "malink.trust.get":
     case "malink.update.status":
       return paramsWithContext(input, []);
+    case "malink.update.check":
     case "malink.update.install":
       return mutationParams(input, []);
     case "malink.client.disconnect": {

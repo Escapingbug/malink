@@ -8,7 +8,7 @@ import {
   shouldPollNativeUpdateStatus,
 } from "../app/nativeUpdatePolling.ts";
 
-test("shows Android update recovery without Workspace authorization", () => {
+test("explains that only static APK checks bypass Workspace authorization", () => {
   const html = renderToStaticMarkup(createElement(NativeUpdateSettings, {
     state: null,
     busy: false,
@@ -17,8 +17,26 @@ test("shows Android update recovery without Workspace authorization", () => {
   }));
 
   assert.match(html, /Android app/);
-  assert.match(html, /Workspace authorization is not required/);
+  assert.match(html, /APK checks use the selected static service without Workspace authorization/);
+  assert.match(html, /Workspace features still require authorization/);
   assert.match(html, /Check APK update/);
+});
+
+test("shows the native failure detail needed to diagnose a retry", () => {
+  const html = renderToStaticMarkup(createElement(NativeUpdateSettings, {
+    state: {
+      phase: "failed",
+      currentVersionCode: 1,
+      currentVersionName: "0.1.0-old",
+      detailCode: "release_version_replayed",
+    },
+    busy: false,
+    onRefresh() {},
+    onInstall() {},
+  }));
+
+  assert.match(html, /update check failed \(release_version_replayed\)/);
+  assert.match(html, /Retry APK check/);
 });
 
 test("offers the verified APK when the native host reports it ready", () => {

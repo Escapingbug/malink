@@ -11,6 +11,12 @@ import id.my.anciety.malink.config.StaticServiceStore
 import id.my.anciety.malink.diagnostics.NativeDiagnosticLog
 import java.io.File
 import java.net.URI
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonObject
@@ -26,6 +32,10 @@ class NativeUpdateManager private constructor(context: Context) {
     private val notifier = NativeUpdateNotifier(appContext)
     private val diagnostics = NativeDiagnosticLog.get(appContext)
     private val mutex = Mutex()
+    private val staticCheckMutex = Mutex()
+    private val staticCheckScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val requestedStaticCheckLock = Any()
+    private var requestedStaticCheck: Job? = null
     @Volatile private var readyRelease: NativeClientRelease? = null
     @Volatile private var readyApk: File? = null
     @Volatile private var status = baseStatus()
@@ -36,31 +46,78 @@ class NativeUpdateManager private constructor(context: Context) {
 
     fun status(): NativeUpdateStatus = status
 
-    suspend fun checkStaticRelease(force: Boolean = false): NativeUpdateStatus {
-        val now = System.currentTimeMillis()
-        if (!staticReleaseCheckDue(now, store.lastStaticCheckAt, force)) return status
-        store.lastStaticCheckAt = now
-        val endpoint = staticServices.committed
-        diagnostics.record("update.static_check_started")
-        return try {
-            val manifest = http.readText(
-                endpoint.resolve("native-updates/channels/$UPDATE_CHANNEL/client-release.json"),
-                STATIC_MANIFEST_MAX_BYTES,
-            )
-            val value = kotlinx.serialization.json.Json
-                .parseToJsonElement(manifest)
-                .jsonObject
-            acceptPublishedRelease(value, metadataAuthenticated = false).also {
-                diagnostics.record("update.static_check_finished")
+    /**
+     * Starts one forced static-channel refresh and returns immediately so the
+     * WebView can keep polling progress through [status]. Repeated Retry taps
+     * join the same in-flight check instead of starting duplicate downloads.
+     */
+    fun requestStaticReleaseCheck(): NativeUpdateStatus = synchronized(requestedStaticCheckLock) {
+        if (requestedStaticCheck?.isActive == true) return@synchronized status
+        publish(status.copy(
+            phase = NativeUpdatePhase.CHECKING,
+            downloadedBytes = null,
+            detailCode = null,
+            checkedAt = System.currentTimeMillis(),
+        ))
+        lateinit var launched: Job
+        launched = staticCheckScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                checkStaticRelease(force = true)
+            } finally {
+                synchronized(requestedStaticCheckLock) {
+                    if (requestedStaticCheck === launched) requestedStaticCheck = null
+                }
             }
-        } catch (error: Exception) {
-            diagnostics.record(
-                "update.static_check_failed",
-                mapOf("reason" to detailCode(error)),
-            )
-            status
         }
+        requestedStaticCheck = launched
+        launched.start()
+        status
     }
+
+    suspend fun checkStaticRelease(force: Boolean = false): NativeUpdateStatus =
+        staticCheckMutex.withLock {
+            val now = System.currentTimeMillis()
+            if (!staticReleaseCheckDue(now, store.lastStaticCheckAt, force)) return@withLock status
+            store.lastStaticCheckAt = now
+            val endpoint = staticServices.committed
+            diagnostics.record("update.static_check_started")
+            try {
+                val manifest = http.readText(
+                    endpoint.resolve("native-updates/channels/$UPDATE_CHANNEL/client-release.json"),
+                    STATIC_MANIFEST_MAX_BYTES,
+                )
+                val value = kotlinx.serialization.json.Json
+                    .parseToJsonElement(manifest)
+                    .jsonObject
+                acceptPublishedRelease(value, metadataAuthenticated = false).also { result ->
+                    if (result.phase == NativeUpdatePhase.FAILED) {
+                        diagnostics.record(
+                            "update.static_check_failed",
+                            mapOf("reason" to result.detailCode.orEmpty()),
+                        )
+                    } else {
+                        diagnostics.record("update.static_check_finished")
+                    }
+                }
+            } catch (error: Exception) {
+                diagnostics.record(
+                    "update.static_check_failed",
+                    mapOf("reason" to detailCode(error)),
+                )
+                val detail = detailCode(error)
+                val ready = readyRelease
+                val apk = readyApk
+                if (ready != null && apk?.isFile == true) {
+                    publish(statusFor(ready, NativeUpdatePhase.READY, detailCode = detail))
+                } else {
+                    publish(baseStatus(
+                        phase = NativeUpdatePhase.FAILED,
+                        detailCode = detail,
+                        checkedAt = System.currentTimeMillis(),
+                    ))
+                }
+            }
+        }
 
     fun onStaticServiceChanged() {
         store.lastStaticCheckAt = 0L

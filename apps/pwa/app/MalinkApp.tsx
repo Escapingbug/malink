@@ -5850,9 +5850,15 @@ function MalinkAppRuntime() {
     nativeUpdateBusyRef.current = true;
     setNativeUpdateBusy(true);
     try {
+      const current = nativeUpdateStateRef.current;
+      const checkNow = !(
+        installReady &&
+        (current?.phase === "ready" || current?.phase === "permission_required")
+      );
       const status = await requestNativeUpdateStatus(
         malinkClientRef.current,
         installReady,
+        checkNow,
       );
       nativeUpdateStateRef.current = status;
       setNativeUpdateState(status);
@@ -10880,11 +10886,14 @@ function MalinkAppRuntime() {
 async function requestNativeUpdateStatus(
   connection: MalinkClient | null,
   installReady: boolean,
+  checkNow = false,
 ): Promise<NativeUpdateStatus> {
   if (!connection?.nativeUpdateStatus) {
-    return advanceNativeAppUpdate({ installReady });
+    return advanceNativeAppUpdate({ installReady, checkNow });
   }
-  let status = await connection.nativeUpdateStatus();
+  let status = checkNow && connection.checkNativeUpdate
+    ? await connection.checkNativeUpdate()
+    : await connection.nativeUpdateStatus();
   if (
     installReady &&
     connection.installNativeUpdate &&

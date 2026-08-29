@@ -43,7 +43,6 @@ import id.my.anciety.malink.client.events.ToolGroupPresentation
 import id.my.anciety.malink.client.events.compactSnapshotCommands
 import id.my.anciety.malink.diagnostics.NativeDiagnosticLog
 import id.my.anciety.malink.update.NativeUpdateStore
-import id.my.anciety.malink.update.NativeUpdateManager
 import id.my.anciety.malink.matrix.MatrixBootstrap
 import id.my.anciety.malink.matrix.MALINK_MATRIX_APPLICATION_CONTROL_EVENT_TYPE
 import id.my.anciety.malink.matrix.MatrixDecryptedEvent
@@ -323,8 +322,6 @@ class NativeClientRuntime(
     @Volatile private var pairingStorageBlocked = restoredPairing.isFailure
     @Volatile private var gatewayState: JsonObject? = null
     @Volatile private var gatewayStateSynchronized = false
-    private val nativeReleaseDispatchLock = Any()
-    @Volatile private var lastDispatchedNativeRelease: JsonObject? = null
     @Volatile private var authoritativeStateRefreshJob: Job? = null
     @Volatile private var gatewayConvergenceFallbackJob: Job? = null
     @Volatile private var workspaceDirectoryConvergenceJob: Job? = null
@@ -376,7 +373,6 @@ class NativeClientRuntime(
         gatewayState = matrixMlp3Projection.snapshot() ?: eventHub.snapshot().gatewayState
         if (gatewayState != null) {
             diagnostics.record("gateway.state.cache.restored")
-            gatewayState?.let(::acceptPublishedNativeRelease)
         }
         matrix.setObserver(this)
         refreshSnapshot(publishLifecycle = false)
@@ -2368,7 +2364,6 @@ class NativeClientRuntime(
         gatewayState = snapshot
         gatewayStateSynchronized = trust != null && matrixMlp3ProjectKeys.values().isNotEmpty()
         if (changed) {
-            acceptPublishedNativeRelease(snapshot)
             eventHub.publish(
                 ClientEventType.GATEWAY_STATE_CHANGED,
                 snapshot,
@@ -2378,41 +2373,6 @@ class NativeClientRuntime(
         if (!changed && synchronizedBefore == gatewayStateSynchronized) return
         schedulePendingCommandRecoveries(immediate = true)
         refreshSnapshot(publishLifecycle = true)
-    }
-
-    private fun acceptPublishedNativeRelease(snapshot: JsonObject) {
-        val release = (snapshot["native_client_releases"] as? JsonArray)
-            .orEmpty()
-            .mapNotNull { it as? JsonObject }
-            .filter { candidate ->
-                candidate["platform"]?.let { it as? JsonPrimitive }
-                    ?.contentOrNull == "android" &&
-                    candidate["channel"]?.let { it as? JsonPrimitive }
-                        ?.contentOrNull == "alpha"
-            }
-            .maxByOrNull { candidate ->
-                candidate["versionCode"]?.let { it as? JsonPrimitive }
-                    ?.longOrNull ?: 0L
-            }
-            ?: return
-        synchronized(nativeReleaseDispatchLock) {
-            if (lastDispatchedNativeRelease == release) return
-            lastDispatchedNativeRelease = release
-        }
-        scope.launch {
-            runCatching { NativeUpdateManager.get(appContext).acceptPublishedRelease(release) }
-                .onFailure { error ->
-                    synchronized(nativeReleaseDispatchLock) {
-                        if (lastDispatchedNativeRelease == release) {
-                            lastDispatchedNativeRelease = null
-                        }
-                    }
-                    diagnostics.record(
-                        "update.gateway_release_dispatch_failed",
-                        mapOf("error" to diagnosticErrorName(error)),
-                    )
-                }
-        }
     }
 
     private suspend fun replayMatrixMlp3InboxLocked() {

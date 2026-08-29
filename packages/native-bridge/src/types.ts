@@ -534,6 +534,7 @@ export const REQUEST_METHODS = [
   "malink.client.snapshot",
   "malink.client.disconnect",
   "malink.update.status",
+  "malink.update.check",
   "malink.update.install",
   "malink.events.subscribe",
   "malink.events.activate",
@@ -566,6 +567,7 @@ export const MUTATION_METHODS = [
   "malink.client.bootstrap",
   "malink.matrix.loginToken",
   "malink.client.disconnect",
+  "malink.update.check",
   "malink.update.install",
   "malink.command.send",
   "malink.command.cancel",
@@ -628,6 +630,7 @@ export type BridgeMethodParams = {
     mode: "stop" | "revoke";
   };
   "malink.update.status": ContextParams;
+  "malink.update.check": IdempotentMutationParams;
   "malink.update.install": IdempotentMutationParams;
   "malink.events.subscribe": EventsSubscribeParams;
   "malink.events.activate": EventsActivateParams;
@@ -699,6 +702,7 @@ export type BridgeMethodResults = {
   "malink.client.snapshot": ClientSnapshot;
   "malink.client.disconnect": ClientDisconnectResult;
   "malink.update.status": NativeUpdateStatus;
+  "malink.update.check": NativeUpdateStatus;
   "malink.update.install": NativeUpdateStatus;
   "malink.events.subscribe": EventsSubscribeResult;
   "malink.events.activate": EventsCursorResult;

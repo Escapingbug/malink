@@ -136,6 +136,7 @@ export interface MalinkClient {
   ): Promise<CommandCompletion>;
   releaseCommand(commandId: string): Promise<void>;
   nativeUpdateStatus?(): Promise<NativeUpdateStatus>;
+  checkNativeUpdate?(): Promise<NativeUpdateStatus>;
   installNativeUpdate?(): Promise<NativeUpdateStatus>;
 
   disconnect(): Promise<void>;

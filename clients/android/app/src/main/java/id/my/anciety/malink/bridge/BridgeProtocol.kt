@@ -139,6 +139,7 @@ object BridgeProtocol {
         "malink.client.snapshot",
         "malink.client.disconnect",
         "malink.update.status",
+        "malink.update.check",
         "malink.update.install",
         "malink.events.subscribe",
         "malink.events.activate",
@@ -327,6 +328,8 @@ interface BridgeRuntime {
         userAction = "update_native",
     )
 
+    fun checkNativeUpdate(): NativeUpdateStatus = nativeUpdateStatus()
+
     suspend fun installNativeUpdate(): NativeUpdateStatus = nativeUpdateStatus()
 }
 
@@ -457,6 +460,13 @@ class BridgeDispatcher(
                 requireUpdateCapability()
                 requireContext(request.params, mutation = false)
                 nativeUpdateStatusToJson(runtime.nativeUpdateStatus())
+            }
+            "malink.update.check" -> {
+                requireUpdateCapability(minimumVersion = 2)
+                requireContext(request.params, mutation = true)
+                mutationResult(request) {
+                    nativeUpdateStatusToJson(runtime.checkNativeUpdate())
+                }
             }
             "malink.update.install" -> {
                 requireUpdateCapability()
@@ -1344,11 +1354,15 @@ class BridgeDispatcher(
     private fun invalidParams(message: String): Nothing =
         throw BridgeDispatchException(BridgeError.INVALID_PARAMS, message)
 
-    private fun requireUpdateCapability() {
-        if (NATIVE_UPDATE_CAPABILITY !in negotiatedCapabilities) {
+    private fun requireUpdateCapability(minimumVersion: Int = 1) {
+        if ((negotiatedCapabilities[NATIVE_UPDATE_CAPABILITY] ?: 0) < minimumVersion) {
             throw BridgeDispatchException(
                 BridgeError.CAPABILITY_UNAVAILABLE,
-                "Native application updates were not negotiated.",
+                if (minimumVersion > 1) {
+                    "This APK does not support manual native update checks."
+                } else {
+                    "Native application updates were not negotiated."
+                },
                 userAction = "update_native",
             )
         }
@@ -1393,6 +1407,7 @@ class BridgeDispatcher(
             name == "history.page" -> setOf(1, 2)
             name == "commands.durable" -> setOf(1, 2, 3, 4)
             name == MATRIX_BOOTSTRAP_CAPABILITY -> setOf(1, 2)
+            name == NATIVE_UPDATE_CAPABILITY -> setOf(1, 2)
             name in SUPPORTED_CAPABILITIES -> setOf(1)
             else -> emptySet()
         }

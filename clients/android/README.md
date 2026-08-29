@@ -243,7 +243,7 @@ after explicit approval.
   notifications; the current ongoing notification opens the main Activity.
 - Complete stable Android application-signing key custody and the one-time
   transition from existing debug-signed development installs. Static channel
-  releases and the compatibility Gateway snapshot path use the same APK
-  signature acceptance boundary.
+  releases use the installed application's APK signature acceptance boundary;
+  Gateway snapshot release metadata is display-only catalog data.
 - Validate the `remoteMessaging` classification with Google Play policy before
   Play distribution. Directly distributed APKs do not undergo that review.

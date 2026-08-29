@@ -580,6 +580,12 @@ describe("native bridge JSON-RPC conformance", () => {
   it("strictly validates native update commands and progress", () => {
     expect(parseRpcRequest(request("malink.update.status", { context })).method)
       .toBe("malink.update.status");
+    expect(() => parseRpcRequest(request("malink.update.check", { context })))
+      .toThrow(/idempotencyKey/);
+    expect(parseRpcRequest(request("malink.update.check", {
+      context,
+      idempotencyKey,
+    })).method).toBe("malink.update.check");
     expect(() => parseRpcRequest(request("malink.update.install", { context })))
       .toThrow(/idempotencyKey/);
 
@@ -595,6 +601,11 @@ describe("native bridge JSON-RPC conformance", () => {
       checkedAt: 1_787_400_000_000,
     }));
     expect("result" in parsed && parsed.result.phase).toBe("downloading");
+    expect("result" in parseMethodRpcResponse("malink.update.check", response({
+      phase: "checking",
+      currentVersionCode: 41,
+      currentVersionName: "0.1.0-alpha.41",
+    }))).toBe(true);
     expect(() => parseMethodRpcResponse("malink.update.status", response({
       phase: "downloading",
       currentVersionCode: 41,

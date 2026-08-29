@@ -70,6 +70,7 @@ export function nativeCapabilityVersions(
   if (name === "commands.durable") return [4, 3, 2, 1];
   if (name === "history.page") return [2, 1];
   if (name === "matrix.session-bootstrap") return [2, 1];
+  if (name === "client.update") return [2, 1];
   return [1];
 }
 
@@ -170,6 +171,14 @@ export class NativeBridgeClient implements MalinkClient {
     });
   }
 
+  async checkNativeUpdate(): Promise<NativeUpdateStatus> {
+    this.#requireNativeUpdateCapability(2);
+    return this.bridge.request("malink.update.check", {
+      context: this.bridge.context(),
+      idempotencyKey: crypto.randomUUID(),
+    });
+  }
+
   async installNativeUpdate(): Promise<NativeUpdateStatus> {
     this.#requireNativeUpdateCapability();
     return this.bridge.request("malink.update.install", {
@@ -178,11 +187,13 @@ export class NativeBridgeClient implements MalinkClient {
     });
   }
 
-  #requireNativeUpdateCapability(): void {
-    if (this.helloResult.capabilities["client.update"]?.version !== 1) {
+  #requireNativeUpdateCapability(minimumVersion = 1): void {
+    if ((this.helloResult.capabilities["client.update"]?.version ?? 0) < minimumVersion) {
       throw new BridgeProtocolError(
         "CAPABILITY_UNAVAILABLE",
-        "This APK does not support direct native updates.",
+        minimumVersion > 1
+          ? "This APK does not support manual update checks. Install the latest APK once, then Retry will check the selected static service directly."
+          : "This APK does not support direct native updates.",
         { userAction: "update_native" },
       );
     }

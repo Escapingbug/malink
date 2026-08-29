@@ -1,7 +1,7 @@
 # Static native client releases
 
 An Android update is a static channel manifest plus an immutable APK. The APK
-checks the currently selected static service on startup and every six hours, so
+checks the currently selected static service on startup and every 24 hours, so
 automatic update discovery does not require a web application, database,
 Gateway, or Matrix connection. The APK may live either beside the manifest or
 as a fixed-version asset in the `Escapingbug/malink` GitHub Releases repository.
@@ -23,9 +23,10 @@ https://github.com/Escapingbug/malink/releases/download/
 ```
 
 Mutable `latest` links, other repositories, mismatched version tags, and URL
-credentials/query parameters are rejected. The compatibility path that
-receives a release from a signed Gateway workspace snapshot remains supported,
-but is no longer required for discovery.
+credentials/query parameters are rejected. The signed Gateway workspace
+snapshot may retain a compatibility catalog copy, but Android does not feed
+that copy into the updater. This prevents an older Gateway catalog from racing
+or overriding the static service selected by the user.
 
 The manifest is not a code-signing key. The client bounds and parses it and
 refuses manifest redirects. Same-service APKs also refuse redirects. A fixed

@@ -890,12 +890,18 @@ test("recovers structured tool cards from older native agent messages", async ()
   client.dispose();
 });
 
-test("reports and installs an APK release already received from the Gateway", async () => {
+test("checks the static APK channel and installs a verified release", async () => {
   const port = new RuntimePort();
   const client = await createTestClient(port);
 
   assert.equal((await client.nativeUpdateStatus()).phase, "ready");
+  assert.equal((await client.checkNativeUpdate()).phase, "checking");
   assert.equal((await client.installNativeUpdate()).phase, "installing");
+  const check = port.requests.find((request) => request.method === "malink.update.check");
+  assert.match(
+    (check?.params as BridgeMethodParams["malink.update.check"]).idempotencyKey,
+    /^[0-9a-f-]{36}$/,
+  );
   const install = port.requests.find((request) => request.method === "malink.update.install");
   assert.match(
     (install?.params as BridgeMethodParams["malink.update.install"]).idempotencyKey,
@@ -1000,6 +1006,8 @@ function responseFor(request: Request): unknown {
       };
     case "malink.update.status":
       return nativeUpdateStatus("ready");
+    case "malink.update.check":
+      return nativeUpdateStatus("checking");
     case "malink.update.install":
       return nativeUpdateStatus("installing");
     default:
@@ -1007,7 +1015,7 @@ function responseFor(request: Request): unknown {
   }
 }
 
-function nativeUpdateStatus(phase: "ready" | "installing") {
+function nativeUpdateStatus(phase: "checking" | "ready" | "installing") {
   return {
     phase,
     currentVersionCode: 41,

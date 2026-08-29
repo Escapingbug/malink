@@ -44,7 +44,7 @@ as the control plane that establishes device trust and distributes MLP/3 keys.
 | User prompt or mutation | ordinary `m.room.message` command event | device signature, certificate, stable `command_id` |
 | Agent/tool/status output | ordinary `m.room.message` thread event | Gateway signature and stable logical `event_id` |
 | Current project projection | ordinary signed snapshot event | `io.malink.project.current.v3` points to its physical event ID |
-| Current native client release compatibility copy | account-owned workspace snapshot field | Gateway admin publication, replicated to active project rooms; primary discovery may use the selected static service |
+| Current native client release compatibility copy | account-owned workspace snapshot field | Gateway admin publication and display-only catalog data; Android update discovery uses the selected static service |
 | Gateway release status | account-owned workspace snapshot field plus command result | pinned release signer and local update supervisor |
 | Project key grant | directly addressed Room State | `io.malink.project.key_grant.v3` keyed by device ID |
 | Transcript and audit | thread timeline and relations | append-only signed events |
@@ -201,18 +201,14 @@ Offline clients show their last verified encrypted local projection and
 history. They do not report Connected or release new commands until the Matrix
 transport and authenticated MLP/3 projection are writable.
 
-The Gateway also persists the latest native client release per platform,
-channel, and architecture. Deployment installs the immutable artifact first,
-then publishes its bounded metadata through the owner-only local admin socket.
-The Gateway replaces `workspace.snapshot` in each active project room, so an
-online Android service receives it through ordinary incremental sync and an
-offline device receives only the current release on recovery. The artifact URL
-is not a discovery API. Android receives bounded metadata from either the
-selected static service or this authenticated compatibility snapshot, then
-accepts only a same-service immutable path or the exact fixed-version
-`Escapingbug/malink` GitHub Release shape. It independently verifies the APK
-hash, identity, version, ABI, and Android application-signing certificate before
-installation.
+The Gateway may persist the latest native client release per platform,
+channel, and architecture as compatibility catalog data in `workspace.snapshot`.
+That field is not an Android update-discovery API and cannot mutate native
+updater state. Android reads bounded metadata only from the selected static
+service, then accepts only a same-service immutable path or the exact
+fixed-version `Escapingbug/malink` GitHub Release shape. It independently
+verifies the APK hash, identity, version, ABI, and Android application-signing
+certificate before installation.
 
 Android owns this process in its foreground connection service. The service
 keeps `/sync`, raw-inbox persistence, projection, outbox reconciliation, and

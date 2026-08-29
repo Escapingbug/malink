@@ -890,7 +890,10 @@ export function NativeUpdateSettings({
             value={downloadProgress.downloadedBytes}
           />
         )}
-        <small>Uses the selected static service; Workspace authorization is not required.</small>
+        <small>
+          APK checks use the selected static service without Workspace authorization.
+          Workspace features still require authorization.
+        </small>
       </span>
       <button
         type="button"
@@ -920,7 +923,7 @@ export function nativeUpdateStatusText(state: NativeUpdateStatus | null): string
     case "permission_required":
       return "APK: Android needs permission to install this update";
     case "failed":
-      return "APK: the last update attempt failed; the current app remains unchanged";
+      return `APK: update check failed (${state.detailCode ?? "unknown_error"}); the current app remains unchanged`;
     case "current":
       return "APK: up to date; static releases are checked automatically";
   }

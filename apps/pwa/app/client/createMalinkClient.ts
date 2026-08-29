@@ -118,6 +118,7 @@ export async function createMalinkClient(
 export async function advanceNativeAppUpdate(
   options: {
     installReady?: boolean;
+    checkNow?: boolean;
     dependencies?: Pick<
       CreateMalinkClientDependencies,
       "nativePort" | "createBridge"
@@ -137,18 +138,31 @@ export async function advanceNativeAppUpdate(
   try {
     const hello = await bridge.hello({
       webBuild: MALINK_BUILD_VERSION,
-      requiredCapabilities: [{ name: "client.update", versions: [1] }],
+      requiredCapabilities: [{ name: "client.update", versions: [2, 1] }],
     });
-    if (hello.capabilities["client.update"]?.version !== 1) {
+    const updateVersion = hello.capabilities["client.update"]?.version ?? 0;
+    if (updateVersion < 1) {
       throw new BridgeProtocolError(
         "CAPABILITY_UNAVAILABLE",
         "This APK cannot install direct native updates.",
         { userAction: "update_native" },
       );
     }
-    const status = await bridge.request("malink.update.status", {
-      context: bridge.context(),
-    });
+    if (options.checkNow && updateVersion < 2) {
+      throw new BridgeProtocolError(
+        "CAPABILITY_UNAVAILABLE",
+        "This APK does not support manual update checks. Install the latest APK once, then Retry will check the selected static service directly.",
+        { userAction: "update_native" },
+      );
+    }
+    const status = options.checkNow
+      ? await bridge.request("malink.update.check", {
+          context: bridge.context(),
+          idempotencyKey: crypto.randomUUID(),
+        })
+      : await bridge.request("malink.update.status", {
+          context: bridge.context(),
+        });
     if (
       options.installReady === false ||
       (status.phase !== "ready" && status.phase !== "permission_required")

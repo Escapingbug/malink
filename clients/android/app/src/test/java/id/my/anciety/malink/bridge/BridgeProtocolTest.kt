@@ -18,6 +18,8 @@ import id.my.anciety.malink.matrix.MatrixBootstrap
 import id.my.anciety.malink.matrix.MatrixLoginTokenIssueResult
 import id.my.anciety.malink.matrix.MatrixRoomBinding
 import id.my.anciety.malink.matrix.PublicMatrixSession
+import id.my.anciety.malink.update.NativeUpdatePhase
+import id.my.anciety.malink.update.NativeUpdateStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -136,6 +138,34 @@ class BridgeProtocolTest {
             "CAPABILITY_UNAVAILABLE",
             response.getValue("data").jsonObject.getValue("errorCode").jsonPrimitive.content,
         )
+    }
+
+    @Test
+    fun `manual native update checks are v2 gated and idempotent`() {
+        val runtime = FakeRuntime()
+        val dispatcher = BridgeDispatcher(runtime, BRIDGE_SESSION_ID)
+        val capabilities = successResult(dispatch(
+            dispatcher,
+            helloRequest(
+                optionalCapabilities =
+                    """[{"name":"client.update","versions":[2,1]}]""",
+            ),
+        )).getValue("capabilities").jsonObject
+        assertEquals(
+            2,
+            capabilities.getValue("client.update").jsonObject
+                .getValue("version").jsonPrimitive.int,
+        )
+
+        val request = { id: String ->
+            """{"jsonrpc":"2.0","id":"$id","method":"malink.update.check","params":{"context":{"bridgeSessionId":"$BRIDGE_SESSION_ID"},"idempotencyKey":"$IDEMPOTENCY_KEY"}}"""
+        }
+        val first = successResult(dispatch(dispatcher, request("check-1")))
+        val second = successResult(dispatch(dispatcher, request("check-2")))
+
+        assertEquals("checking", first.getValue("phase").jsonPrimitive.content)
+        assertEquals(first, second)
+        assertEquals(1, runtime.updateChecks)
     }
 
     @Test
@@ -454,6 +484,7 @@ class BridgeProtocolTest {
         var starts = 0
         var bootstraps = 0
         var loginTokenIssues = 0
+        var updateChecks = 0
         val loginTokenInputs = mutableListOf<Pair<String, String?>>()
         val disconnects = mutableListOf<String>()
         private var active = true
@@ -535,6 +566,15 @@ class BridgeProtocolTest {
             disconnects += mode
             active = false
             return snapshot()
+        }
+
+        override fun checkNativeUpdate(): NativeUpdateStatus {
+            updateChecks += 1
+            return NativeUpdateStatus(
+                phase = NativeUpdatePhase.CHECKING,
+                currentVersionCode = 1,
+                currentVersionName = "test",
+            )
         }
     }
 
