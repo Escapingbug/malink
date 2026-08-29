@@ -17,11 +17,9 @@ interface NativeMatrixObserver {
     /** Megolm and the bound Matrix identity are ready for the pairing channel. */
     fun onPairingTransportReady(identity: MatrixTransportIdentity)
 
-    /** The independent application-control receiver is ready for trusted commands. */
+    /** The SDK timeline is ready to receive trusted command results. */
     fun onTransportReady(identity: MatrixTransportIdentity)
     fun onRuntimeStatusChanged() = Unit
-    fun onConvergenceRequired(reason: String)
-    fun hasCachedApplicationProjection(): Boolean = false
     suspend fun onDecryptedEvent(event: MatrixDecryptedEvent)
 }
 
@@ -82,13 +80,9 @@ class MatrixNativePort(context: Context) : NativeMatrixPort {
     private val runtime = MatrixConnectionRuntime(
         context = context,
         diagnostics = diagnostics,
-        hasCachedApplicationProjection = {
-            observer?.hasCachedApplicationProjection() == true
-        },
         onPairingTransportReady = { identity -> observer?.onPairingTransportReady(identity) },
         onTransportReady = { identity -> observer?.onTransportReady(identity) },
         onStatusChanged = { observer?.onRuntimeStatusChanged() },
-        onConvergenceRequired = { reason -> observer?.onConvergenceRequired(reason) },
         onDecryptedEvent = { event -> observer?.onDecryptedEvent(event) },
     )
 

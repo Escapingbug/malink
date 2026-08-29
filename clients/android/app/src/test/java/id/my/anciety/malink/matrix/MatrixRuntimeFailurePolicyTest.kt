@@ -34,24 +34,6 @@ class MatrixRuntimeFailurePolicyTest {
     }
 
     @Test
-    fun `first response timeouts remain retryable for external supervisors`() {
-        val decision = MatrixSyncRestartPolicy.decide(MatrixSyncRestartReason.FIRST_SYNC_TIMEOUT)
-
-        assertFalse(decision.blocked)
-        assertEquals("matrix_first_sync_timeout", decision.detailCode)
-    }
-
-    @Test
-    fun `stopped and stale tasks remain retryable`() {
-        listOf(
-            MatrixSyncRestartReason.TASK_STOPPED,
-            MatrixSyncRestartReason.SYNC_STALE,
-        ).forEach { reason ->
-            assertFalse(MatrixSyncRestartPolicy.decide(reason).blocked)
-        }
-    }
-
-    @Test
     fun `transport retry grows exponentially and caps before jitter`() {
         assertEquals(5_000L, MatrixRetryBackoff.transportDelayMs(0, jitterUnit = 0.5))
         assertEquals(10_000L, MatrixRetryBackoff.transportDelayMs(1, jitterUnit = 0.5))
@@ -60,17 +42,8 @@ class MatrixRuntimeFailurePolicyTest {
     }
 
     @Test
-    fun `request retry backs off instead of polling every few seconds forever`() {
-        assertEquals(1_000L, MatrixRetryBackoff.requestDelayMs(0, jitterUnit = 0.5))
-        assertEquals(8_000L, MatrixRetryBackoff.requestDelayMs(3, jitterUnit = 0.5))
-        assertEquals(48_000L, MatrixRetryBackoff.requestDelayMs(20, jitterUnit = 0.5))
-    }
-
-    @Test
     fun `retry jitter stays within bounded radio friendly range`() {
         assertEquals(180_000L, MatrixRetryBackoff.transportDelayMs(20, jitterUnit = 0.0))
         assertEquals(300_000L, MatrixRetryBackoff.transportDelayMs(20, jitterUnit = 1.0))
-        assertEquals(36_000L, MatrixRetryBackoff.requestDelayMs(20, jitterUnit = 0.0))
-        assertEquals(60_000L, MatrixRetryBackoff.requestDelayMs(20, jitterUnit = 1.0))
     }
 }

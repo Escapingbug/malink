@@ -979,7 +979,8 @@ class NativeClientRuntime(
                 // Matrix already durably accepted this transaction. Sending
                 // the same transaction again can only return its original
                 // event id; it cannot create a new timeline delivery. Recover
-                // any missed signed progress/terminal events through /sync.
+                // any missed signed progress/terminal events through the SDK
+                // timeline and current-state recovery.
                 startMatrixMlp3ProjectionRefresh(recoverTransport = false)
             }
             else -> Unit
@@ -1117,6 +1118,9 @@ class NativeClientRuntime(
         refreshSnapshot(publishLifecycle = true)
         if (trust != null) {
             scheduleWorkspaceDirectoryConvergence()
+            if (!gatewayStateSynchronized) {
+                startMatrixMlp3ProjectionRefresh(recoverTransport = false)
+            }
             scope.launch {
                 mutex.withLock {
                     runCatching { recoverGatewayTransportSnapshotLocked() }
@@ -1137,15 +1141,6 @@ class NativeClientRuntime(
         ) {
             resumeConfirmedPairing()
         }
-    }
-
-    override fun hasCachedApplicationProjection(): Boolean =
-        trust != null &&
-            matrixMlp3ProjectKeys.isNotEmpty() &&
-            matrixMlp3Projection.snapshot() != null
-
-    override fun onConvergenceRequired(reason: String) {
-        requestAuthoritativeConvergence(reason)
     }
 
     fun requestAuthoritativeConvergence(reason: String) {
@@ -2002,7 +1997,7 @@ class NativeClientRuntime(
             it.roomId == event.roomId
         } ?: throw MatrixMlp3EventDeferredException("matrix_room_pending")
         if (event.sender != binding.gatewayUserId) {
-            // The application /sync lane accepts Gateway output only. A local
+            // The SDK application timeline accepts Gateway output only. A local
             // command is projected optimistically at the durable send boundary.
             return true
         }
@@ -2518,7 +2513,7 @@ class NativeClientRuntime(
             ),
         )
         if (!recorded) return
-        // Matrix can deliver the authenticated result through /sync before
+        // Matrix can deliver the authenticated result through the SDK timeline before
         // the SDK call which sent that same event has returned. Once the
         // command is terminal, its transmission lease has no remaining work;
         // cancelling it prevents the late sender from observing a rotated

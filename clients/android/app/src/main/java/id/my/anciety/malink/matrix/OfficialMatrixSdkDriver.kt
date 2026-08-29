@@ -8,6 +8,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import org.matrix.rustcomponents.sdk.Client
 import org.matrix.rustcomponents.sdk.ClientBuilder
@@ -15,7 +17,6 @@ import org.matrix.rustcomponents.sdk.ClientSessionDelegate
 import org.matrix.rustcomponents.sdk.CrossProcessLockConfig
 import org.matrix.rustcomponents.sdk.EventOrTransactionId
 import org.matrix.rustcomponents.sdk.MediaSource
-import org.matrix.rustcomponents.sdk.MsgLikeKind
 import org.matrix.rustcomponents.sdk.Room
 import org.matrix.rustcomponents.sdk.RoomListService
 import org.matrix.rustcomponents.sdk.RoomListServiceState
@@ -30,7 +31,6 @@ import org.matrix.rustcomponents.sdk.TaskHandle
 import org.matrix.rustcomponents.sdk.Timeline
 import org.matrix.rustcomponents.sdk.TimelineDiff
 import org.matrix.rustcomponents.sdk.TimelineItem
-import org.matrix.rustcomponents.sdk.TimelineItemContent
 import org.matrix.rustcomponents.sdk.TimelineListener
 
 interface MatrixSdkDriver {
@@ -40,13 +40,11 @@ interface MatrixSdkDriver {
         onSyncUpdate: () -> Unit,
         onSessionUpdated: (StoredMatrixSession) -> Unit,
         onTransportReady: (MatrixTransportIdentity) -> Unit,
-        onPairingEvent: suspend (MatrixDecryptedEvent) -> Unit,
+        onTimelineEvent: suspend (MatrixDecryptedEvent) -> Unit,
         onRuntimeFailure: (Throwable) -> Unit,
     )
 
     fun isSyncRunning(): Boolean
-
-    fun hasInternalSyncSupervision(): Boolean = false
 
     suspend fun setNetworkAvailable(available: Boolean)
 
@@ -78,6 +76,21 @@ data class MatrixDecryptedEvent(
     val rawJson: String,
 )
 
+internal fun shouldDeliverMatrixSdkTimelineEvent(
+    binding: MatrixRoomBinding,
+    primaryRoomId: String,
+    pairingChannelOpen: Boolean,
+    sender: String,
+    rawJson: String,
+): Boolean {
+    val pairing = binding.roomId == primaryRoomId && pairingChannelOpen &&
+        isMalinkPairingResponseEvent(rawJson)
+    val application = isMalinkApplicationControlEvent(rawJson) &&
+        (malinkApplicationEventKind(rawJson) == "workspace_gateway_directory" ||
+            sender == binding.gatewayUserId)
+    return pairing || application
+}
+
 class OfficialMatrixSdkDriver(
     private val callbackScope: CoroutineScope,
     private val diagnostics: DiagnosticRecorder = DiagnosticRecorder.None,
@@ -88,17 +101,17 @@ class OfficialMatrixSdkDriver(
     private var roomListService: RoomListService? = null
     private var roomListStateTask: TaskHandle? = null
     private var syncLifecycle: MatrixSyncServiceLifecycle? = null
-    private var pairingTimeline: Timeline? = null
-    private var pairingTimelineTask: TaskHandle? = null
+    private val applicationTimelines = linkedMapOf<String, MatrixSdkTimeline>()
     private var syncedBoundRoomReady = CompletableDeferred<Unit>()
     private val active = AtomicBoolean(false)
-    private val pairingTimelineStarting = AtomicBoolean(false)
+    private val pairingChannelOpen = AtomicBoolean(false)
     private val firstSyncFinalizing = AtomicBoolean(false)
     private val firstSyncWorkScheduled = AtomicBoolean(false)
     private val transportReadyPublished = AtomicBoolean(false)
+    private val timelineDeliveryMutex = Mutex()
     private lateinit var activeSession: StoredMatrixSession
     private var runtimeFailure: (Throwable) -> Unit = {}
-    private var pairingEvent: suspend (MatrixDecryptedEvent) -> Unit = {}
+    private var timelineEvent: suspend (MatrixDecryptedEvent) -> Unit = {}
 
     override suspend fun start(
         secrets: PersistedMatrixSecrets,
@@ -106,7 +119,7 @@ class OfficialMatrixSdkDriver(
         onSyncUpdate: () -> Unit,
         onSessionUpdated: (StoredMatrixSession) -> Unit,
         onTransportReady: (MatrixTransportIdentity) -> Unit,
-        onPairingEvent: suspend (MatrixDecryptedEvent) -> Unit,
+        onTimelineEvent: suspend (MatrixDecryptedEvent) -> Unit,
         onRuntimeFailure: (Throwable) -> Unit,
     ) {
         check(client == null) { "Matrix SDK driver is already started." }
@@ -121,7 +134,7 @@ class OfficialMatrixSdkDriver(
         }
         activeSession = secrets.session
         runtimeFailure = onRuntimeFailure
-        pairingEvent = onPairingEvent
+        timelineEvent = onTimelineEvent
         val delegate = object : ClientSessionDelegate {
             override fun retrieveSessionFromKeychain(userId: String) = files.sessionStore.load()
                 ?.session
@@ -250,6 +263,9 @@ class OfficialMatrixSdkDriver(
             runCatching { syncService?.stop() }.onFailure { cleanupError ->
                 diagnostics.record("matrix.driver.stop_failure", errorAttributes(cleanupError))
             }
+            closeApplicationTimelines()?.let { cleanupError ->
+                diagnostics.record("matrix.driver.stop_failure", errorAttributes(cleanupError))
+            }
             closeSyncServiceResources()?.let { cleanupError ->
                 diagnostics.record("matrix.driver.stop_failure", errorAttributes(cleanupError))
             }
@@ -263,14 +279,12 @@ class OfficialMatrixSdkDriver(
 
     override fun isSyncRunning(): Boolean = syncLifecycle?.isRunning() == true
 
-    override fun hasInternalSyncSupervision(): Boolean = true
-
     override suspend fun setNetworkAvailable(available: Boolean) {
         client?.enableAllSendQueues(available)
     }
 
     override suspend fun sendPairingMessage(contentJson: String) {
-        ensurePairingTimeline()
+        ensurePairingChannel()
         val room = awaitBoundRoom()
         check(room.isEncrypted()) { "Refusing to send Malink data to an unencrypted Matrix room." }
         room.discardRoomKey()
@@ -278,11 +292,7 @@ class OfficialMatrixSdkDriver(
     }
 
     override suspend fun closePairingChannel() {
-        pairingTimelineTask.cancelAndClose()
-        pairingTimelineTask = null
-        pairingTimeline?.close()
-        pairingTimeline = null
-        pairingTimelineStarting.set(false)
+        pairingChannelOpen.set(false)
         diagnostics.record("matrix.pairing_channel.closed")
     }
 
@@ -315,11 +325,11 @@ class OfficialMatrixSdkDriver(
         if (service != null) {
             runCatching { service.stop() }.onFailure { stopFailure = it }
         }
+        val timelineFailure = closeApplicationTimelines()
+        if (stopFailure == null) stopFailure = timelineFailure
         val closeFailure = closeSyncServiceResources()
         if (stopFailure == null) stopFailure = closeFailure
-        runCatching { closePairingChannel() }.onFailure {
-            if (stopFailure == null) stopFailure = it
-        }
+        pairingChannelOpen.set(false)
         client?.close()
         client = null
         firstSyncFinalizing.set(false)
@@ -328,30 +338,15 @@ class OfficialMatrixSdkDriver(
         stopFailure?.let { throw it }
     }
 
-    private suspend fun ensurePairingTimeline() {
-        if (pairingTimeline != null) return
-        check(pairingTimelineStarting.compareAndSet(false, true)) {
-            "The Matrix pairing channel is already opening."
-        }
+    private suspend fun ensurePairingChannel() {
+        if (pairingChannelOpen.get()) return
         diagnostics.record("matrix.pairing_channel.opening")
-        try {
-            val room = awaitBoundRoom()
-            val created = room.timeline()
-            val listener = created.addListener(object : TimelineListener {
-                override fun onUpdate(diff: List<TimelineDiff>) {
-                    if (!active.get() || pairingTimeline !== created) return
-                    diff.flatMap(::timelineItems).forEach(::capturePairingEvent)
-                }
-            })
-            pairingTimeline = created
-            pairingTimelineTask = listener
-            diagnostics.record("matrix.pairing_channel.open")
-        } catch (error: Exception) {
-            diagnostics.record("matrix.pairing_channel.failure", errorAttributes(error))
-            throw error
-        } finally {
-            pairingTimelineStarting.set(false)
+        awaitBoundRoom()
+        check(applicationTimelines.containsKey(activeSession.roomBinding.roomId)) {
+            "The Matrix application timeline is unavailable."
         }
+        pairingChannelOpen.set(true)
+        diagnostics.record("matrix.pairing_channel.open")
     }
 
     private fun timelineItems(diff: TimelineDiff): List<TimelineItem> = when (diff) {
@@ -369,25 +364,70 @@ class OfficialMatrixSdkDriver(
         -> emptyList()
     }
 
-    private fun capturePairingEvent(item: TimelineItem) {
-        val event = item.asEvent() ?: return
-        if (!event.isRemote) return
-        val content = event.content as? TimelineItemContent.MsgLike ?: return
-        val kind = content.content.kind
-        if (kind !is MsgLikeKind.Message && kind !is MsgLikeKind.Other) return
-        val eventId = (event.eventOrTransactionId as? EventOrTransactionId.EventId)?.eventId ?: return
-        val rawJson = event.lazyProvider.latestJson() ?: return
-        if (!isMalinkPairingResponseEvent(rawJson)) return
-        val value = MatrixDecryptedEvent(
-            roomId = activeSession.roomBinding.roomId,
+    private fun captureTimelineEvent(
+        binding: MatrixRoomBinding,
+        item: TimelineItem,
+    ): MatrixDecryptedEvent? {
+        val event = item.asEvent() ?: return null
+        if (!event.isRemote) return null
+        val eventId = (event.eventOrTransactionId as? EventOrTransactionId.EventId)?.eventId
+            ?: return null
+        val rawJson = event.lazyProvider.latestJson() ?: return null
+        val shouldDeliver = shouldDeliverMatrixSdkTimelineEvent(
+            binding = binding,
+            primaryRoomId = activeSession.roomBinding.roomId,
+            pairingChannelOpen = pairingChannelOpen.get(),
+            sender = event.sender,
+            rawJson = rawJson,
+        )
+        if (!shouldDeliver) return null
+        return MatrixDecryptedEvent(
+            roomId = binding.roomId,
             eventId = eventId,
             sender = event.sender,
             timestamp = event.timestamp.toLong(),
             rawJson = rawJson,
         )
-        callbackScope.launch {
-            runCatching { pairingEvent(value) }.onFailure(runtimeFailure)
+    }
+
+    private suspend fun openApplicationTimelines(expectedClient: Client) {
+        for (binding in activeSession.roomBindings) {
+            if (applicationTimelines.containsKey(binding.roomId)) continue
+            val room = expectedClient.getRoom(binding.roomId)
+                ?: throw IllegalStateException(
+                    "A bound Matrix project room was unavailable after native sliding sync.",
+                )
+            val timeline = room.timeline()
+            val listener = timeline.addListener(object : TimelineListener {
+                override fun onUpdate(diff: List<TimelineDiff>) {
+                    if (!active.get() || client !== expectedClient) return
+                    val events = diff.flatMap(::timelineItems)
+                        .mapNotNull { captureTimelineEvent(binding, it) }
+                    if (events.isEmpty()) return
+                    callbackScope.launch {
+                        timelineDeliveryMutex.withLock {
+                            for (event in events) {
+                                runCatching { timelineEvent(event) }.onFailure(runtimeFailure)
+                            }
+                        }
+                    }
+                }
+            })
+            applicationTimelines[binding.roomId] = MatrixSdkTimeline(timeline, listener)
+            diagnostics.record("matrix.application_timeline.open")
         }
+    }
+
+    private fun closeApplicationTimelines(): Throwable? {
+        var failure: Throwable? = null
+        applicationTimelines.values.forEach { activeTimeline ->
+            activeTimeline.listener.cancelAndClose()
+            runCatching { activeTimeline.timeline.close() }.onFailure {
+                if (failure == null) failure = it
+            }
+        }
+        applicationTimelines.clear()
+        return failure
     }
 
     private fun closeSyncServiceResources(): Throwable? {
@@ -459,7 +499,7 @@ class OfficialMatrixSdkDriver(
                     while (
                         active.get() &&
                         client === expectedClient &&
-                        expectedClient.getRoom(activeSession.roomBinding.roomId) == null
+                        activeSession.roomBindings.any { expectedClient.getRoom(it.roomId) == null }
                     ) {
                         delay(BOUND_ROOM_POLL_INTERVAL_MS)
                     }
@@ -470,8 +510,12 @@ class OfficialMatrixSdkDriver(
                 )
             }
             if (active.get() && client === expectedClient) {
+                openApplicationTimelines(expectedClient)
                 syncedBoundRoomReady.complete(Unit)
-                diagnostics.record("matrix.bound_room.ready")
+                diagnostics.record(
+                    "matrix.bound_rooms.ready",
+                    mapOf("count" to activeSession.roomBindings.size.toString()),
+                )
             }
             return syncedBoundRoomReady.isCompleted
         } finally {
@@ -504,9 +548,14 @@ class OfficialMatrixSdkDriver(
     )
 
     private companion object {
-        const val ROOM_LIST_TIMELINE_LIMIT = 0u
+        const val ROOM_LIST_TIMELINE_LIMIT = 32u
         const val E2EE_INITIALIZATION_TIMEOUT_MS = 45_000L
         const val BOUND_ROOM_READY_TIMEOUT_MS = 30_000L
         const val BOUND_ROOM_POLL_INTERVAL_MS = 100L
     }
+
+    private data class MatrixSdkTimeline(
+        val timeline: Timeline,
+        val listener: TaskHandle,
+    )
 }

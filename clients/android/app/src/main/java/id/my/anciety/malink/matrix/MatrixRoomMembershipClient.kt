@@ -29,7 +29,7 @@ class MatrixRoomMembershipClient(
         }
         try {
             if (response.status !in 200..299) {
-                throw MatrixApplicationControlSyncException(response.status, null)
+                throw MatrixApplicationReadException(response.status, null)
             }
         } finally {
             response.body.fill(0)

@@ -9,7 +9,7 @@ internal data class MatrixApplicationEventBatchResult(
 )
 
 /**
- * Commits a Matrix application-control page event by event.
+ * Commits SDK timeline or on-demand recovery events one by one.
  *
  * A single historical event may belong to an older Malink protocol or may be
  * malformed independently of the Matrix cursor surrounding it. Treating the

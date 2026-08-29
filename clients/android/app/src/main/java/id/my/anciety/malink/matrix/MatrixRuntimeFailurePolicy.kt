@@ -28,11 +28,6 @@ internal object MatrixRuntimeFailurePolicy {
     }
 }
 
-internal object MatrixSyncRestartPolicy {
-    fun decide(reason: MatrixSyncRestartReason): MatrixRuntimeFailureDecision =
-        MatrixRuntimeFailureDecision(reason.detailCode, blocked = false)
-}
-
 /**
  * Bounded exponential retry delays keep an unavailable homeserver from turning
  * a persistent Android connection into a tight radio/CPU wakeup loop. Network
@@ -47,18 +42,6 @@ internal object MatrixRetryBackoff {
             completedFailures,
             initialMs = 5_000L,
             maximumBaseMs = 240_000L,
-        ),
-        jitterUnit,
-    )
-
-    fun requestDelayMs(
-        completedFailures: Int,
-        jitterUnit: Double = Random.nextDouble(),
-    ): Long = jitteredDelay(
-        baseDelayMs(
-            completedFailures,
-            initialMs = 1_000L,
-            maximumBaseMs = 48_000L,
         ),
         jitterUnit,
     )
