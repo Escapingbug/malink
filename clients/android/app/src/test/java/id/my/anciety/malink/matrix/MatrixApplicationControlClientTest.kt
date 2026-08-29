@@ -211,6 +211,19 @@ class MatrixApplicationControlClientTest {
     }
 
     @Test
+    fun `SDK timeline deduplicator bounds memory and accepts an evicted event again`() {
+        val events = MatrixTimelineEventDeduplicator(capacity = 2)
+
+        assertTrue(events.accept("\$first"))
+        assertFalse(events.accept("\$first"))
+        assertTrue(events.accept("\$second"))
+        assertTrue(events.accept("\$third"))
+        assertTrue(events.accept("\$first"))
+        events.clear()
+        assertTrue(events.accept("\$third"))
+    }
+
+    @Test
     fun `diagnostics expose only the bounded application event kind`() {
         assertEquals(
             "v3_project_envelope",

@@ -91,6 +91,30 @@ internal fun shouldDeliverMatrixSdkTimelineEvent(
     return pairing || application
 }
 
+internal class MatrixTimelineEventDeduplicator(
+    private val capacity: Int = 4_096,
+) {
+    private val eventIds = LinkedHashSet<String>()
+
+    init {
+        require(capacity > 0)
+    }
+
+    @Synchronized
+    fun accept(eventId: String): Boolean {
+        if (!eventIds.add(eventId)) return false
+        if (eventIds.size > capacity) {
+            val oldest = eventIds.iterator()
+            oldest.next()
+            oldest.remove()
+        }
+        return true
+    }
+
+    @Synchronized
+    fun clear() = eventIds.clear()
+}
+
 class OfficialMatrixSdkDriver(
     private val callbackScope: CoroutineScope,
     private val diagnostics: DiagnosticRecorder = DiagnosticRecorder.None,
@@ -102,6 +126,7 @@ class OfficialMatrixSdkDriver(
     private var roomListStateTask: TaskHandle? = null
     private var syncLifecycle: MatrixSyncServiceLifecycle? = null
     private val applicationTimelines = linkedMapOf<String, MatrixSdkTimeline>()
+    private val deliveredTimelineEvents = MatrixTimelineEventDeduplicator()
     private var syncedBoundRoomReady = CompletableDeferred<Unit>()
     private val active = AtomicBoolean(false)
     private val pairingChannelOpen = AtomicBoolean(false)
@@ -129,6 +154,7 @@ class OfficialMatrixSdkDriver(
         firstSyncFinalizing.set(false)
         firstSyncWorkScheduled.set(false)
         transportReadyPublished.set(false)
+        deliveredTimelineEvents.clear()
         check(secrets.session.slidingSyncVersion == SlidingSyncVersion.NATIVE) {
             "Only native Matrix sliding sync sessions are supported."
         }
@@ -381,6 +407,7 @@ class OfficialMatrixSdkDriver(
             rawJson = rawJson,
         )
         if (!shouldDeliver) return null
+        if (!deliveredTimelineEvents.accept(eventId)) return null
         return MatrixDecryptedEvent(
             roomId = binding.roomId,
             eventId = eventId,

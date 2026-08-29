@@ -89,6 +89,7 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
     // the human protocol name, and cannot be renamed without losing old data.
     private val associatedData = "malink.matrix-v3-inbox.v1\u0000$scope".toByteArray()
     private var records = load().toMutableList()
+    private var projectedCleanupPending = false
 
     @Synchronized
     fun put(event: MatrixDecryptedEvent): Boolean {
@@ -101,6 +102,7 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
         }
         records += MatrixMlp3InboxRecord(event, MatrixMlp3InboxStatus.PENDING)
         save()
+        projectedCleanupPending = false
         return true
     }
 
@@ -111,7 +113,7 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
     @Synchronized
     fun projected(eventId: String) {
         val changed = records.removeAll { it.event.eventId == eventId }
-        if (changed) save()
+        if (changed) projectedCleanupPending = true
     }
 
     @Synchronized
@@ -130,6 +132,15 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
             records = records.filterIndexed { recordIndex, _ -> recordIndex !in remove }.toMutableList()
         }
         save()
+        projectedCleanupPending = false
+    }
+
+    /** Persists successful removals at a lifecycle boundary, not once per event. */
+    @Synchronized
+    fun flushProjected() {
+        if (!projectedCleanupPending) return
+        save()
+        projectedCleanupPending = false
     }
 
     @Synchronized
@@ -140,6 +151,7 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
     @Synchronized
     fun clear() {
         records.clear()
+        projectedCleanupPending = false
         blob.delete()
     }
 
@@ -193,6 +205,10 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
     }
 
     private fun save() {
+        if (records.isEmpty()) {
+            blob.delete()
+            return
+        }
         val plaintext = CanonicalJson.bytes(buildJsonObject {
             put("schemaVersion", 1)
             put("records", buildJsonArray {

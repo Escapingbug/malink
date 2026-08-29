@@ -396,7 +396,7 @@ class NativeUpdateManager private constructor(context: Context) {
 
     companion object {
         private const val UPDATE_CHANNEL = "alpha"
-        const val STATIC_CHECK_INTERVAL_MS = 6 * 60 * 60_000L
+        const val STATIC_CHECK_INTERVAL_MS = 24 * 60 * 60_000L
         private const val STATIC_MANIFEST_MAX_BYTES = 64 * 1024
         @Volatile private var instance: NativeUpdateManager? = null
 

@@ -99,6 +99,7 @@ class MainActivity : ComponentActivity() {
     private var webView: WebView? = null
     private var nativeBridge: NativeWebBridge? = null
     private var foreground = false
+    private var webViewResumed = false
     private var pendingForegroundStart = false
     private var pendingSessionId: String? = null
     private var nativeBackDispatchPending = false
@@ -250,11 +251,25 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        webViewResumed = true
+        webView?.apply {
+            resumeTimers()
+            onResume()
+        }
         if (pendingNativeUpdateInstall && packageManager.canRequestPackageInstalls()) {
             pendingNativeUpdateInstall = false
             installNativeUpdate()
         }
         resumePersistentHost()
+    }
+
+    override fun onPause() {
+        webViewResumed = false
+        webView?.apply {
+            onPause()
+            pauseTimers()
+        }
+        super.onPause()
     }
 
     override fun onStop() {
@@ -672,6 +687,10 @@ class MainActivity : ComponentActivity() {
         val created = WebView(this)
         webView = created
         configureWebView(created)
+        if (!webViewResumed) {
+            created.onPause()
+            created.pauseTimers()
+        }
         val bridge = NativeWebBridge(created, ActivityBridgeRuntime(), trustedWebOrigin)
         if (!bridge.install()) {
             created.destroy()

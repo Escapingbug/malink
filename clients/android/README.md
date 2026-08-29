@@ -28,6 +28,8 @@ one identity from being driven by both transports.
 - The service never holds a process-lifetime CPU wake lock or opens an
   application-owned `/sync` long poll. The Matrix SDK owns the single live sync
   connection, its retry policy, room subscriptions, and encrypted timelines.
+- Activity backgrounding pauses the WebView and its timers; the native service
+  remains the only owner of background Matrix delivery and task notifications.
 - A visible ongoing `remoteMessaging` notification is mandatory. There is no
   battery-saving or connection-mode selector. Refusing notification permission
   blocks native connection startup with a visible explanation.
@@ -80,9 +82,16 @@ consume those same SDK timelines; Android owns no second sync cursor, long poll,
 gap worker, or receiver watchdog. Pairing storage commits under the domain-state
 lock, while all Matrix network I/O runs after that lock is released.
 
-The SDK writes bounded private sync traces. Diagnostic export converts those
-traces to a fixed vocabulary of levels, targets, categories, and HTTP status
-codes; raw SDK messages and identifiers never enter the shared report.
+Cold projection recovery is bounded to six attempts and is started by native
+transport readiness, not by screen-on, Doze-exit, or ordinary Activity focus.
+Timeline event IDs are deduplicated within each SDK driver generation, command
+sends are serialized, and successful raw-inbox cleanup is coalesced until the
+next durable input or a clean lifecycle boundary.
+
+Debug builds write bounded private sync-profiling traces. Release builds retain
+only bounded SDK warnings and errors. Diagnostic export converts those traces
+to a fixed vocabulary of levels, targets, categories, and HTTP status codes;
+raw SDK messages and identifiers never enter the shared report.
 
 ## Native capabilities
 
@@ -147,7 +156,7 @@ translate into a pairing cancellation.
 ## Static APK updates
 
 The foreground service checks the selected static service's Alpha channel on
-startup and every six hours:
+startup and every 24 hours:
 
 ```text
 native-updates/channels/alpha/client-release.json

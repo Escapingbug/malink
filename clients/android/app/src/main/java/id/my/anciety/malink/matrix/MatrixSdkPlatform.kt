@@ -22,10 +22,11 @@ object MatrixSdkPlatform {
             val diagnostics = NativeDiagnosticLog.get(applicationContext)
             diagnostics.record("matrix.platform.initializing")
             try {
+                val tracing = matrixSdkTracingPolicy(BuildConfig.DEBUG)
                 initPlatform(
                     config = TracingConfiguration(
-                        logLevel = LogLevel.DEBUG,
-                        traceLogPacks = listOf(TraceLogPacks.SYNC_PROFILING),
+                        logLevel = tracing.logLevel,
+                        traceLogPacks = tracing.traceLogPacks,
                         extraTargets = emptyList(),
                         writeToStdoutOrSystem = BuildConfig.DEBUG,
                         writeToFiles = MatrixSdkTraceLog.configuration(applicationContext),
@@ -54,3 +55,15 @@ object MatrixSdkPlatform {
         .replace(Regex("[^A-Za-z0-9._:+/-]"), "_")
         .take(160)
 }
+
+internal data class MatrixSdkTracingPolicy(
+    val logLevel: LogLevel,
+    val traceLogPacks: List<TraceLogPacks>,
+)
+
+internal fun matrixSdkTracingPolicy(debug: Boolean): MatrixSdkTracingPolicy =
+    if (debug) {
+        MatrixSdkTracingPolicy(LogLevel.DEBUG, listOf(TraceLogPacks.SYNC_PROFILING))
+    } else {
+        MatrixSdkTracingPolicy(LogLevel.WARN, emptyList())
+    }

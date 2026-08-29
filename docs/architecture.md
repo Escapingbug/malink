@@ -229,7 +229,7 @@ manifest under the user-selected UI service. The immutable APK may be stored
 beside that manifest or as an exact fixed-version asset under the official
 `Escapingbug/malink` GitHub Releases repository. The publisher installs or
 uploads the APK first, then atomically replaces the channel JSON; Android checks
-on startup and every six hours without requiring a Gateway or Matrix connection.
+on startup and every 24 hours without requiring a Gateway or Matrix connection.
 A Gateway may also include the same metadata in its signed, encrypted
 `workspace.snapshot` for compatibility. Android verifies the APK hash, package
 identity, monotonic version, architecture, and application signing certificate
@@ -241,7 +241,9 @@ The WebView subscribes to a versioned native bridge and renders service-owned
 state. Its `malink.events.ack` method advances only the local Native-to-WebView
 event cursor; it is not a Matrix or MLP/3 command acknowledgement. Detaching,
 reloading, or online-updating the PWA cannot cancel a running Agent or create a
-second Matrix client. Browser-only use implements the same MLP/3
+second Matrix client. Android pauses WebView execution and timers whenever the
+Activity is not resumed; background delivery and notifications remain native.
+Browser-only use implements the same MLP/3
 projection in IndexedDB. It cannot keep Matrix `/sync` executing after the
 browser suspends it, but an opted-in standards-based Web Push subscription lets
 the Service Worker wake for a generic task-terminal system notification.

@@ -55,9 +55,42 @@ class MatrixMlp3NativeStorageTest {
 
         store.projected(valid.eventId)
         assertTrue(store.pending().isEmpty())
+        store.flushProjected()
         AtomicEncryptedMatrixMlp3InboxStore(blob, JvmAesGcmCipher(), "account-a")
             .validateStoredState()
         assertFalse(blob.bytes!!.toString(Charsets.UTF_8).contains("secret must not persist"))
+    }
+
+    @Test
+    fun `projected inbox cleanup is coalesced until new input or lifecycle flush`() {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val store = AtomicEncryptedMatrixMlp3InboxStore(blob, JvmAesGcmCipher(), "account-a")
+        val first = event("\$first", "{\"kind\":\"event\"}")
+        val second = event("\$second", "{\"kind\":\"event\"}")
+
+        assertTrue(store.put(first))
+        assertEquals(1, blob.writeCount)
+        store.projected(first.eventId)
+        assertEquals(1, blob.writeCount)
+        assertEquals(
+            listOf(first.eventId),
+            AtomicEncryptedMatrixMlp3InboxStore(blob, JvmAesGcmCipher(), "account-a")
+                .pending()
+                .map { it.event.eventId },
+        )
+
+        assertTrue(store.put(second))
+        assertEquals(2, blob.writeCount)
+        assertEquals(
+            listOf(second.eventId),
+            AtomicEncryptedMatrixMlp3InboxStore(blob, JvmAesGcmCipher(), "account-a")
+                .pending()
+                .map { it.event.eventId },
+        )
+
+        store.projected(second.eventId)
+        store.flushProjected()
+        assertNull(blob.bytes)
     }
 
     @Test
@@ -144,10 +177,12 @@ class MatrixMlp3NativeStorageTest {
 
     private class MemoryMatrixMlp3BlobStore : MatrixMlp3BlobStore {
         var bytes: ByteArray? = null
+        var writeCount = 0
 
         override fun read(): ByteArray? = bytes?.copyOf()
 
         override fun write(bytes: ByteArray) {
+            writeCount += 1
             this.bytes = bytes.copyOf()
         }
 

@@ -115,17 +115,6 @@ class MatrixConnectionRuntime(
         onNetworkChanged(available)
     }
 
-    fun onSystemWake(reason: String) {
-        val safeReason = reason
-            .replace(Regex("[^A-Za-z0-9._:+/-]"), "_")
-            .take(160)
-            .ifBlank { "unspecified" }
-        diagnostics.record(
-            "matrix.system_wake",
-            mapOf("reason" to safeReason, "stage" to "sdk_owned"),
-        )
-    }
-
     suspend fun bootstrap(input: MatrixBootstrap): PublicMatrixSession = scope.async {
         mutex.withLock { bootstrapLocked(input) }
     }.await()

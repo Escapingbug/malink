@@ -30,8 +30,8 @@ internal object MatrixRuntimeFailurePolicy {
 
 /**
  * Bounded exponential retry delays keep an unavailable homeserver from turning
- * a persistent Android connection into a tight radio/CPU wakeup loop. Network
- * callbacks and explicit system-wake recovery still bypass this delay.
+ * a persistent Android connection into a tight radio/CPU wakeup loop. A real
+ * network transition resets the delay; screen and idle broadcasts do not.
  */
 internal object MatrixRetryBackoff {
     fun transportDelayMs(

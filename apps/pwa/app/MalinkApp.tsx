@@ -2520,6 +2520,7 @@ function MalinkAppRuntime() {
   useEffect(() => {
     const controller = new AbortController();
     const refresh = () => {
+      if (document.visibilityState !== "visible") return;
       void discoverLatestGatewayAgentUpdate(fetch, controller.signal)
         .then((release) => {
           if (controller.signal.aborted) return;
@@ -2716,6 +2717,9 @@ function MalinkAppRuntime() {
   }, [detailsOpen]);
 
   useEffect(() => {
+    if (connectionStatus !== "connecting" && connectionStatus !== "securing") {
+      return;
+    }
     const recoverInterruptedStartup = () => {
       const startup = matrixStartupRef.current;
       if (!startup) return;
@@ -2765,7 +2769,7 @@ function MalinkAppRuntime() {
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, []);
+  }, [connectionStatus]);
 
   useEffect(() => {
     const openRequestedSession = () => {

@@ -196,9 +196,10 @@ test("keeps Matrix delivery outside the lock and rejects legacy revision conflic
     /private suspend fun transmit[\s\S]*?\n    private fun schedulePendingCommandRecoveries/,
   )?.[0];
   assert.ok(transmission, "Native command transmission must remain inspectable");
+  assert.match(transmission, /commandSendMutex\.withLock transmit@\{/);
   assert.match(transmission, /val transmission = mutex\.withLock/);
   assert.match(
     transmission,
-    /}\s*\?: return\s*\n\s*try \{[\s\S]*?sendTrustedControlMessage/,
+    /}\s*\?: return@transmit\s*\n\s*try \{[\s\S]*?sendTrustedControlMessage/,
   );
 });

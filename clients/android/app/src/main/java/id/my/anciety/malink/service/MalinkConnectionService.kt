@@ -5,15 +5,12 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Binder
 import android.os.IBinder
-import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
@@ -54,30 +51,6 @@ class MalinkConnectionService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var foregroundStarted = false
     @Volatile private var uiForeground = false
-    private var powerReceiverRegistered = false
-    private val powerReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            val reason = when (intent?.action) {
-                Intent.ACTION_SCREEN_ON -> "screen_on"
-                PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED -> {
-                    val power = getSystemService(PowerManager::class.java)
-                    if (power.isDeviceIdleMode) return
-                    "device_idle_exit"
-                }
-                else -> return
-            }
-            diagnostics.record("service.system_wake", mapOf("reason" to reason))
-            serviceScope.launch(Dispatchers.IO) {
-                runCatching { awaitClientRuntime().onSystemWake(reason) }
-                    .onFailure { error ->
-                        diagnostics.record(
-                            "service.system_wake_failed",
-                            mapOf("error" to error.javaClass.simpleName.take(160)),
-                        )
-                    }
-            }
-        }
-    }
 
     override fun onCreate() {
         super.onCreate()
@@ -85,7 +58,6 @@ class MalinkConnectionService : Service() {
         diagnostics.record("service.created")
         preferences = ServicePreferenceStore(this)
         taskNotifier = AgentTaskNotifier(this)
-        registerPowerReceiver()
         createNotificationChannel()
         recordTaskNotificationChannel(taskNotifier.createChannel())
         startStaticUpdateChecks()
@@ -143,7 +115,6 @@ class MalinkConnectionService : Service() {
 
     override fun onDestroy() {
         diagnostics.record("service.destroyed")
-        unregisterPowerReceiver()
         foregroundStarted = false
         val runtime = clientRuntime
         serviceScope.cancel()
@@ -223,26 +194,6 @@ class MalinkConnectionService : Service() {
             )
             foregroundStarted = true
         }
-    }
-
-    private fun registerPowerReceiver() {
-        if (powerReceiverRegistered) return
-        ContextCompat.registerReceiver(
-            this,
-            powerReceiver,
-            IntentFilter().apply {
-                addAction(Intent.ACTION_SCREEN_ON)
-                addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
-            },
-            ContextCompat.RECEIVER_NOT_EXPORTED,
-        )
-        powerReceiverRegistered = true
-    }
-
-    private fun unregisterPowerReceiver() {
-        if (!powerReceiverRegistered) return
-        runCatching { unregisterReceiver(powerReceiver) }
-        powerReceiverRegistered = false
     }
 
     private fun disconnectExplicitly() {
@@ -385,24 +336,11 @@ class MalinkConnectionService : Service() {
         suspend fun snapshot(): ClientSnapshot = awaitClientRuntime().snapshot()
 
         fun setUiForeground(value: Boolean) {
-            val becameForeground = value && !uiForeground
             uiForeground = value
             diagnostics.record(
                 "service.ui_foreground",
                 mapOf("running" to value.toString()),
             )
-            if (becameForeground) {
-                serviceScope.launch(Dispatchers.IO) {
-                    runCatching {
-                        awaitClientRuntime().requestAuthoritativeConvergence("ui_foreground")
-                    }.onFailure { error ->
-                        diagnostics.record(
-                            "service.ui_convergence_failed",
-                            mapOf("error" to error.javaClass.simpleName.take(160)),
-                        )
-                    }
-                }
-            }
         }
 
         fun startInBackground() {
