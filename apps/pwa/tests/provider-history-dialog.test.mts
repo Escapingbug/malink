@@ -94,6 +94,8 @@ test("keeps other provider sessions selectable while one session loads", () => {
   assert.ok(otherButton);
   assert.match(selectedButton, /disabled/);
   assert.doesNotMatch(otherButton, /disabled/);
+  assert.match(html, /provider-history-body is-preview-open/);
+  assert.match(html, /Provider sessions<\/button>/);
 });
 
 test("keeps the provider history retry action after a background failure", () => {

@@ -565,8 +565,8 @@ async function waitForText(page: Page, value: string): Promise<void> {
 
 async function waitForSessionIds(page: Page, expected: string[]): Promise<void> {
     await waitFor(async () => {
-        const actual = (await sessionIds(page)).toSorted()
-        return JSON.stringify(actual) === JSON.stringify(expected.toSorted())
+        const actual = (await sessionIds(page)).slice().sort()
+        return JSON.stringify(actual) === JSON.stringify(expected.slice().sort())
     }, {
         description: `sessions ${expected.join(', ') || '<empty>'}`,
         timeoutMs: CONVERGENCE_TIMEOUT_MS,
@@ -1057,7 +1057,7 @@ async function assertColdProjectionWaitsForAuthority(
             ).isVisible().catch(() => false),
             recoveryIndicatorVisible,
             interactionsLocked: await cachedProjectionInteractionsLocked(page),
-            visibleSessionIds: (await sessionIds(page)).toSorted(),
+            visibleSessionIds: (await sessionIds(page)).slice().sort(),
         }
         try {
             assert.deepEqual(actual, {
@@ -1065,7 +1065,7 @@ async function assertColdProjectionWaitsForAuthority(
                 emptyInventoryVisible: false,
                 recoveryIndicatorVisible: true,
                 interactionsLocked: true,
-                visibleSessionIds: expectedSessionIds.toSorted(),
+                visibleSessionIds: expectedSessionIds.slice().sort(),
             }, 'A trusted browser must show its read-only cache until authoritative MLP/3 state is available.')
         } catch (error) {
             if (!(error instanceof Error)) throw error
@@ -1106,7 +1106,7 @@ async function assertRecoveryFailureSurvivesLaterSync(
             blockingFailureVisible: await alert.isVisible().catch(() => false),
             recoveryIndicatorVisible,
             interactionsLocked: await cachedProjectionInteractionsLocked(page),
-            visibleSessionIds: (await sessionIds(page)).toSorted(),
+            visibleSessionIds: (await sessionIds(page)).slice().sort(),
         }
         try {
             assert.deepEqual(actual, {
@@ -1114,7 +1114,7 @@ async function assertRecoveryFailureSurvivesLaterSync(
                 blockingFailureVisible: false,
                 recoveryIndicatorVisible: true,
                 interactionsLocked: true,
-                visibleSessionIds: expectedSessionIdsDuringRecovery.toSorted(),
+                visibleSessionIds: expectedSessionIdsDuringRecovery.slice().sort(),
             }, 'A recoverable MLP/3 failure must remain non-blocking while the supervisor retries.')
         } catch (error) {
             if (!(error instanceof Error)) throw error

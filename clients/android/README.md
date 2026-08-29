@@ -25,10 +25,11 @@ one identity from being driven by both transports.
 - The service is `START_STICKY`, restores after reboot when persistent
   connection is enabled, and stays alive when the Activity/WebView is closed or
   replaced.
-- The service never holds a process-lifetime CPU wake lock. Matrix long polls
-  release immediately for new events, use a longer idle timeout, and retry with
-  bounded exponential backoff plus jitter so a sleeping or offline phone does
-  not enter a radio/CPU retry storm.
+- The service never holds a process-lifetime CPU wake lock or opens an
+  application-owned `/sync` long poll. The Matrix SDK owns the single live sync
+  connection, its retry policy, room subscriptions, and encrypted timelines.
+- Activity backgrounding pauses the WebView and its timers; the native service
+  remains the only owner of background Matrix delivery and task notifications.
 - A visible ongoing `remoteMessaging` notification is mandatory. There is no
   battery-saving or connection-mode selector. Refusing notification permission
   blocks native connection startup with a visible explanation.
@@ -60,8 +61,8 @@ restart itself until the user opens it again.
 `MalinkApplication` initializes the Matrix FFI platform and its multithreaded
 Tokio runtime before an Activity, boot receiver, or connection service can open
 a client. Every client explicitly uses the SDK's single-process store mode. The
-Matrix SDK `SyncService` then supervises native sliding sync for both the room
-list and encryption.
+Matrix SDK `SyncService` then supervises native sliding sync for the room list,
+encryption, pairing, and all live MLP/3 timeline events.
 
 Existing v2 sessions are migrated to the native sliding-sync session mode while
 preserving the Matrix crypto/data store and Malink pairing identity. Only the
@@ -72,20 +73,25 @@ spawned; readiness requires room-list progress from a completed sync before
 E2EE finalization, timeline construction, and transport publication. A running
 SDK supervisor is allowed to keep waiting for that first response: its own
 `ERROR` and `TERMINATED` states are authoritative, so a slow homeserver cannot
-be misreported as a permanent native failure. Drivers without internal
-supervision retain a bounded first-response watchdog and retry instead of
-entering a blocked state.
+be misreported as a permanent native failure. Android does not run a periodic
+polling watchdog beside the SDK supervisor.
 
-The bound-room encrypted transport and the application-control receiver expose
-separate readiness barriers. Native pairing can begin as soon as the SDK has a
-verified transport identity; it never waits for the application-control
-`/sync` cursor that gates commands from an already trusted device. Pairing
-storage commits under the domain-state lock, while all Matrix network I/O runs
-after that lock is released.
+The SDK publishes one readiness barrier after E2EE initialization and timeline
+construction succeed for every bound project room. Pairing and trusted commands
+consume those same SDK timelines; Android owns no second sync cursor, long poll,
+gap worker, or receiver watchdog. Pairing storage commits under the domain-state
+lock, while all Matrix network I/O runs after that lock is released.
 
-The SDK writes bounded private sync traces. Diagnostic export converts those
-traces to a fixed vocabulary of levels, targets, categories, and HTTP status
-codes; raw SDK messages and identifiers never enter the shared report.
+Cold projection recovery is bounded to six attempts and is started by native
+transport readiness, not by screen-on, Doze-exit, or ordinary Activity focus.
+Timeline event IDs are deduplicated within each SDK driver generation, command
+sends are serialized, and successful raw-inbox cleanup is coalesced until the
+next durable input or a clean lifecycle boundary.
+
+Debug builds write bounded private sync-profiling traces. Release builds retain
+only bounded SDK warnings and errors. Diagnostic export converts those traces
+to a fixed vocabulary of levels, targets, categories, and HTTP status codes;
+raw SDK messages and identifiers never enter the shared report.
 
 ## Native capabilities
 
@@ -150,7 +156,7 @@ translate into a pairing cancellation.
 ## Static APK updates
 
 The foreground service checks the selected static service's Alpha channel on
-startup and every six hours:
+startup and every 24 hours:
 
 ```text
 native-updates/channels/alpha/client-release.json

@@ -199,10 +199,11 @@ unverified commands produce no application event.
 9. Current project state is an ordinary signed snapshot referenced by
    `io.malink.project.current.v3`. It is a recovery accelerator, not a separate
    mutable authority or a manual checkpoint.
-10. `/sync` is the sole normal source of recent events. Clients commit its
-    cursor only after durable inbox/projection handling; a limited timeline
-    creates a durable background gap-recovery job. Thread relations are used
-    only to establish a cache-cold selected window and to page older history.
+10. The platform Matrix SDK is the sole client owner of live `/sync`. Android
+    consumes MLP/3 events from SDK timelines and never opens an independent
+    application `/sync`, cursor, gap worker, or receiver watchdog. Current Room
+    State, signed snapshot pointers, and thread relations rebuild a cold local
+    projection and page older history on demand.
 11. Clients persist a raw event before projection. Poison is quarantined per
     event and dependency-deferred records converge in multiple passes.
 12. MLP/1 and MLP/2 application events are neither emitted nor parsed by
@@ -217,7 +218,7 @@ The normative wire and recovery rules are in
 The native foreground service remains connected while the Activity/WebView is
 backgrounded. It owns:
 
-- Matrix login, `/sync`, thread pagination, and media transfer;
+- Matrix login, SDK-owned `/sync`, thread pagination, and media transfer;
 - encrypted identity, trust, project keys, raw inbox, projection, and outbox;
 - exactly-once command reconciliation across process death;
 - notification emission when an Agent task reaches a user-relevant result;
@@ -228,7 +229,7 @@ manifest under the user-selected UI service. The immutable APK may be stored
 beside that manifest or as an exact fixed-version asset under the official
 `Escapingbug/malink` GitHub Releases repository. The publisher installs or
 uploads the APK first, then atomically replaces the channel JSON; Android checks
-on startup and every six hours without requiring a Gateway or Matrix connection.
+on startup and every 24 hours without requiring a Gateway or Matrix connection.
 A Gateway may also include the same metadata in its signed, encrypted
 `workspace.snapshot` for compatibility. Android verifies the APK hash, package
 identity, monotonic version, architecture, and application signing certificate
@@ -240,7 +241,9 @@ The WebView subscribes to a versioned native bridge and renders service-owned
 state. Its `malink.events.ack` method advances only the local Native-to-WebView
 event cursor; it is not a Matrix or MLP/3 command acknowledgement. Detaching,
 reloading, or online-updating the PWA cannot cancel a running Agent or create a
-second Matrix client. Browser-only use implements the same MLP/3
+second Matrix client. Android pauses WebView execution and timers whenever the
+Activity is not resumed; background delivery and notifications remain native.
+Browser-only use implements the same MLP/3
 projection in IndexedDB. It cannot keep Matrix `/sync` executing after the
 browser suspends it, but an opted-in standards-based Web Push subscription lets
 the Service Worker wake for a generic task-terminal system notification.
@@ -309,17 +312,19 @@ same signed attachment model.
 
 The UI reads only the local projection. A session `updatedAt` change, browser
 focus, visibility change, or network recovery never synchronously reloads its
-recent thread relations. Live `/sync` events update the projection directly;
-explicit gap workers and user-requested older pagination are the only recovery
-paths allowed to read remote history.
+recent thread relations. SDK timeline events update the projection directly;
+current Room State, signed pointers, thread-directory recovery, and
+user-requested older pagination are the only paths allowed to read remote
+history.
 
-Warm startup is likewise cursor-driven. A browser may skip thread-directory
+Warm startup is likewise SDK-driven. A browser may skip thread-directory
 recovery only when its application projection checkpoint exactly matches the
-Matrix SDK's durably saved sync token. Android may do so only when both its
-encrypted projection and application-control cursor are present. A missing or
-mismatched checkpoint triggers the complete thread-directory rebuild, while
-additional Workspace project rooms converge independently in the background
-and cannot hold an already-authoritative primary project in `Connecting`.
+Matrix SDK's durably saved sync token. Android resumes from its encrypted
+projection and SDK store; a missing application projection triggers current
+MLP/3 Room State and thread-directory recovery without creating another sync
+cursor. Additional Workspace project rooms converge independently in the
+background and cannot hold an already-authoritative primary project in
+`Connecting`.
 
 No layer substitutes for another. In particular, increasing an in-memory event
 window, publishing a manual checkpoint, or resending an already Matrix-acked

@@ -25,7 +25,6 @@ Useful commands:
 Run the automated secure Alpha acceptance with:
 
 ```powershell
-$env:MALINK_ALPHA_LIVE_E2E = '1'
 $env:MALINK_ANDROID_SERIAL = 'emulator-5554'
 pnpm test:e2e:alpha-live
 ```

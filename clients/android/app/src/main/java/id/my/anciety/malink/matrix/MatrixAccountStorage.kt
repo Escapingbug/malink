@@ -11,8 +11,6 @@ import java.io.File
 data class MatrixAccountFiles(
     val accountScope: String,
     val sessionStore: MatrixSessionStore,
-    val applicationControlCursor: MatrixSyncCursorStore,
-    val applicationControlGaps: MatrixSyncGapStore,
     val sdkDataPath: String,
     val sdkCachePath: String,
 )
@@ -23,6 +21,8 @@ internal val MATRIX_STATE_CATALOG = listOf(
         NativePersistedStateClass.SECURITY_CRITICAL,
         1,
     ),
+    // Released store IDs remain in the upgrade catalog as compatibility
+    // tombstones even though the SDK-only sync runtime no longer opens them.
     NativeStateCatalogEntry(
         "matrix-sync-cursor",
         NativePersistedStateClass.REBUILDABLE_PROJECTION,
@@ -63,16 +63,8 @@ class MatrixAccountStorage(
         check(accountScopes.size <= 1) { "Multiple native Matrix sessions require explicit recovery." }
         val accountScope = accountScopes.singleOrNull() ?: run {
             stateUpgrade.recoverPreserved("matrix-session")
-            stateUpgrade.recoverRebuildable(
-                "matrix-sync-cursor",
-                validate = {},
-                reset = {},
-            )
-            stateUpgrade.recoverRebuildable(
-                "matrix-sync-gaps",
-                validate = {},
-                reset = {},
-            )
+            stateUpgrade.recoverRebuildable("matrix-sync-cursor", validate = {}, reset = {})
+            stateUpgrade.recoverRebuildable("matrix-sync-gaps", validate = {}, reset = {})
             stateUpgrade.recoverPreserved("matrix-sdk-crypto-store")
             stateUpgrade.recoverRebuildable(
                 "matrix-sdk-cache",
@@ -92,8 +84,7 @@ class MatrixAccountStorage(
     fun clear(files: MatrixAccountFiles) {
         require(ACCOUNT_SCOPE.matches(files.accountScope)) { "Matrix account scope is invalid." }
         files.sessionStore.clear()
-        files.applicationControlCursor.clear()
-        files.applicationControlGaps.clear()
+        discardLegacyApplicationSyncState(files.accountScope)
         MatrixAccountWiper.deleteSdkAccountRoot(sdkRoot, files.accountScope)
         sdkRoot.listFiles()?.takeIf { it.isEmpty() }?.let { sdkRoot.delete() }
     }
@@ -101,8 +92,7 @@ class MatrixAccountStorage(
     /** Clears replaceable SDK state without opening a delete-before-save gap for the login. */
     fun prepareForBootstrap(files: MatrixAccountFiles) {
         require(ACCOUNT_SCOPE.matches(files.accountScope)) { "Matrix account scope is invalid." }
-        files.applicationControlCursor.clear()
-        files.applicationControlGaps.clear()
+        discardLegacyApplicationSyncState(files.accountScope)
         MatrixAccountWiper.deleteSdkAccountRoot(sdkRoot, files.accountScope)
         sdkRoot.listFiles()?.takeIf { it.isEmpty() }?.let { sdkRoot.delete() }
     }
@@ -110,6 +100,7 @@ class MatrixAccountStorage(
     private fun scoped(accountScope: String): MatrixAccountFiles {
         require(ACCOUNT_SCOPE.matches(accountScope)) { "Matrix account scope is invalid." }
         root.mkdirsOrThrow()
+        discardLegacyApplicationSyncState(accountScope)
         val accountRoot = File(sdkRoot, accountScope)
         val data = File(accountRoot, "data").apply { mkdirsOrThrow() }
         val cache = MatrixAccountCache.prepare(accountRoot)
@@ -120,16 +111,6 @@ class MatrixAccountStorage(
                 cipher,
                 accountScope,
             ),
-            applicationControlCursor = EncryptedMatrixSyncCursorStore(
-                File(root, "control-sync-$accountScope.enc"),
-                cipher,
-                accountScope,
-            ),
-            applicationControlGaps = EncryptedMatrixSyncGapStore(
-                File(root, "control-sync-gaps-$accountScope.enc"),
-                cipher,
-                accountScope,
-            ),
             sdkDataPath = data.absolutePath,
             sdkCachePath = cache.absolutePath,
         )
@@ -137,16 +118,8 @@ class MatrixAccountStorage(
             "matrix-session",
             validate = { files.sessionStore.load() },
         )
-        stateUpgrade.recoverRebuildable(
-            "matrix-sync-cursor",
-            validate = { files.applicationControlCursor.load() },
-            reset = files.applicationControlCursor::clear,
-        )
-        stateUpgrade.recoverRebuildable(
-            "matrix-sync-gaps",
-            validate = { files.applicationControlGaps.load() },
-            reset = files.applicationControlGaps::clear,
-        )
+        stateUpgrade.recoverRebuildable("matrix-sync-cursor", validate = {}, reset = {})
+        stateUpgrade.recoverRebuildable("matrix-sync-gaps", validate = {}, reset = {})
         stateUpgrade.recoverPreserved(
             "matrix-sdk-crypto-store",
             validate = {
@@ -162,6 +135,20 @@ class MatrixAccountStorage(
         )
         stateUpgrade.complete()
         return files
+    }
+
+    private fun discardLegacyApplicationSyncState(accountScope: String) {
+        listOf(
+            "control-sync-$accountScope.enc",
+            "control-sync-$accountScope.enc.bak",
+            "control-sync-gaps-$accountScope.enc",
+            "control-sync-gaps-$accountScope.enc.bak",
+        ).forEach { name ->
+            val file = File(root, name)
+            check(!file.exists() || file.delete()) {
+                "Obsolete Matrix application sync state could not be removed."
+            }
+        }
     }
 
     private fun File.mkdirsOrThrow() {

@@ -9,8 +9,9 @@ import org.junit.Test
 
 class NativeClientReleaseTest {
     @Test
-    fun `static discovery waits six hours but recovers from clock rollback`() {
+    fun `static discovery waits one day but recovers from clock rollback`() {
         val interval = NativeUpdateManager.STATIC_CHECK_INTERVAL_MS
+        assertEquals(24L * 60L * 60_000L, interval)
         assertTrue(staticReleaseCheckDue(10_000L, 0L, force = false))
         assertFalse(staticReleaseCheckDue(10_000L, 9_000L, force = false))
         assertEquals(interval - 1_000L, staticReleaseCheckDelay(10_000L, 9_000L))

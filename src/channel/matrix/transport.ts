@@ -1,5 +1,7 @@
 import { MALINK_MATRIX_APPLICATION_CONTROL_EVENT_TYPE } from '@malink/protocol'
 
+export const MALINK_MATRIX_EXTENSION = 'io.malink' as const
+
 /**
  * Narrow Matrix transport boundary.
  *

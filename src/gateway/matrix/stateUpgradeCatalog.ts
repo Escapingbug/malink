@@ -1,8 +1,4 @@
 import type { PersistedStateClass } from '@malink/protocol'
-import {
-    GATEWAY_RUNTIME_STATE_MIGRATIONS,
-    GATEWAY_RUNTIME_STATE_SCHEMA_VERSION,
-} from './fileRuntimeState.js'
 
 export interface GatewayStateCatalogEntry {
     id: string
@@ -20,10 +16,12 @@ export interface GatewayStateCatalogEntry {
  */
 export const GATEWAY_STATE_CATALOG: readonly GatewayStateCatalogEntry[] = Object.freeze([
     {
+        // Retained in release manifests for rollback compatibility with
+        // pre-MLP/3 releases. The active Gateway no longer opens this store.
         id: 'gateway-runtime-state',
         stateClass: 'durable-command',
-        schemaVersion: GATEWAY_RUNTIME_STATE_SCHEMA_VERSION,
-        migrationFromVersions: migrationKeys(GATEWAY_RUNTIME_STATE_MIGRATIONS),
+        schemaVersion: 3,
+        migrationFromVersions: new Set([1, 2]),
     },
     {
         // Project creation commits Matrix routing authority here. A rollback
@@ -117,13 +115,3 @@ export const GATEWAY_STATE_CATALOG: readonly GatewayStateCatalogEntry[] = Object
         migrationFromVersions: new Set<number>(),
     },
 ])
-
-function migrationKeys(
-    migrations: Readonly<Record<number, unknown>>,
-): ReadonlySet<number> {
-    return new Set(
-        Object.entries(migrations)
-            .filter(([, migration]) => typeof migration === 'function')
-            .map(([version]) => Number(version)),
-    )
-}

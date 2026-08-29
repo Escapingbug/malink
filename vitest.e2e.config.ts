@@ -7,10 +7,8 @@ export default defineConfig({
         // Extension implementations live and test in their owning projects;
         // they must never enter this suite through a broad file glob.
         include: [
-            'e2e/device-onboarding-first-command.test.ts',
             'e2e/native-login-token-bridge.test.ts',
             'e2e/native-offline-history-reconnect.test.ts',
-            'e2e/native-session-lifecycle-conflict.test.ts',
         ],
         testTimeout: 60_000,
         hookTimeout: 60_000,

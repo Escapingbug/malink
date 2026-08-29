@@ -10,7 +10,7 @@ with an in-memory implementation are integration tests, not business E2E.
 | Class | Required components | What a pass means |
 | --- | --- | --- |
 | Unit | One module with controlled dependencies | Local behavior is correct. |
-| Protocol integration | Real protocol/client code with fake ports or providers | Signing, replay, conflict, and projection rules compose correctly. |
+| Protocol integration | Real protocol/client code with fake ports or providers | Signing, replay, authorization, journaling, and projection rules compose correctly. |
 | Local business E2E | Disposable Synapse, current Gateway process, current PWA in a real browser, deterministic provider | The current source tree completes user journeys over real Matrix and browser storage. |
 | Release acceptance | Deployed PWA, installed APK, running Matrix Gateway, real Matrix server, configured ACP provider | The exact released artifacts and their real provider boundary work together after deployment. |
 
@@ -28,7 +28,7 @@ Android APK. Cross-device steps use two independently paired Matrix devices.
    - The browser build, APK native build, Gateway build, and Matrix-native
      protocol version are recorded in the result.
    - A client does not report `Connected` from cached state alone. It must
-   authenticate current Matrix Room State from the running Gateway.
+   authenticate current MLP/3 pointers and snapshots from the running Gateway.
    - An incompatible Gateway fails closed with an actionable update message.
    - A device paired before new mandatory session-lifecycle capabilities were
      introduced upgrades its authorization without losing its identity or
@@ -78,8 +78,8 @@ Android APK. Cross-device steps use two independently paired Matrix devices.
      row locally.
    - The session disappears on the second device, remains absent after reload
      and process restart, and cannot be selected or deleted again.
-   - Replaying the same deletion intent is idempotent and does not occupy the
-     single-writer command slot.
+   - Replaying the same stable command ID is idempotent and cannot execute the
+     deletion twice.
 5. **Offline and recovery**
    - Previously synchronized sessions and history remain readable offline.
    - Commands show a truthful queued state and are delivered once after
@@ -94,10 +94,9 @@ Android APK. Cross-device steps use two independently paired Matrix devices.
    - A limited Matrix `/sync` persists its gap before the live cursor advances,
      closes the gap in the background after process restart, and never blocks
      the WebView history bridge or duplicates projected messages.
-   - When another device advances the Gateway with a prompt while Android is
-     stale, Android's append-only prompt is linearly accepted at the next revision,
-     reaches the Agent exactly once, and never shows revision review or a
-     connection failure. State-dependent mutations retain explicit review.
+   - When another device submits a prompt while Android is stale, Android's
+     authenticated prompt is journaled once, reaches the Agent exactly once,
+     and does not depend on a client-maintained global revision counter.
 6. **Background Android behavior**
    - The foreground service notification remains present while another app is
      foregrounded.
@@ -141,32 +140,21 @@ Android APK. Cross-device steps use two independently paired Matrix devices.
 pnpm test
 pnpm test:protocol-integration
 
-# Real installed-APK release acceptance. This intentionally fails unless an
-# emulator is connected and explicit mutation permission is supplied.
-MALINK_WEB_LIVE_E2E=1 pnpm test:e2e:web-live
-
-# Focused real-browser regression: one optimistic prompt must transition from
-# Sending to Sent in place while the command reaches the Agent exactly once.
-pnpm test:e2e:pwa-prompt-reconciliation
-
-# Real browser/Gateway recovery across a Matrix /sync stall longer than the
-# command lifetime and watchdog boundary, without restarting the Agent runtime.
-MALINK_SYNC_STALL_E2E=1 pnpm test:e2e:web-sync-stall
+# Browser-only MLP/3 diagnostic journey over disposable Synapse.
+MALINK_MATRIX_MLP3_LIVE_E2E=1 pnpm test:e2e:matrix-mlp3-live
 
 MALINK_ANDROID_LIVE_E2E=1 \
 MALINK_ANDROID_SERIAL=emulator-5554 \
 pnpm test:e2e:android-live
 
 # Full isolated Alpha gate: fresh .e2e APK, two browsers, official Synapse,
-# current Gateway, deterministic delayed provider, background notifications,
-# cross-device lifecycle, in-flight recovery, and long Matrix /sync stall
-# recovery.
-MALINK_ALPHA_LIVE_E2E=1 \
+# current MLP/3 Gateway, deterministic provider, durable recovery, background
+# notifications, and cross-device lifecycle.
 MALINK_ANDROID_SERIAL=emulator-5554 \
 pnpm test:e2e:alpha-live
 ```
 
-The Web runner starts an official disposable Synapse fixture with a per-run
+The MLP/3 runner starts an official disposable Synapse fixture with a per-run
 container, data directory, and host port, builds the current static PWA
 production artifact, serves its files from the local fixture origin, opens two
 isolated Chrome contexts, and
@@ -185,17 +173,14 @@ to complete before pairing can continue.
 | Journey | Web live runner | Android live runner |
 | --- | --- | --- |
 | Fresh-device pairing and inventory bootstrap | Two isolated browser devices | Enforced by the isolated Alpha gate |
-| Previously paired device gains current lifecycle capabilities | Enforced with a legacy signed capability set and an exactly-once delete | Enforced in `scripts/web-live-e2e.ts` |
 | Create and immediate feedback | Enforced | Enforced |
 | Cross-device prompt and agent response | Enforced | Enforced by the isolated Alpha gate |
 | Text-file and image content reaches the Agent | Enforced | Not yet enforced |
 | History after reload/process restart | Enforced on both browser devices, including an erased MLP/3 read model with delayed recovery and failed authoritative recovery that converges automatically without reload or user action | Enforced for cached history; Alpha also creates on Android while the trusted browser is read-model-cold and offline |
 | Archive, restore, and delete | Delete enforced on both devices; deleting the only session remains empty across reload without transient reselection or replacement creation | Full lifecycle enforced twice |
 | Offline read and network recovery | Enforced by the isolated Alpha gate | Enforced with airplane mode |
-| Post-commit ACK/result loss and durable-outbox release | Not applicable | Enforced by the isolated Alpha gate for create and delete |
-| Gateway restart over a legacy durable Room State outbox | Enforced: the persisted Gateway state is downgraded to the pre-command-cursor shape before restart, then active work and a queued create must recover | Shared Gateway path is exercised by the isolated Alpha gate |
-| Retained APK data across replay-ledger rebuild and revision-epoch rotation | Gateway session inventory must survive the rebuild | Enforced: an offline durable prompt, background delivery, notification, the next prompt, Agent invocation, and browser/APK convergence must all complete exactly once without reinstalling or repairing the APK |
-| APK cover-install over a legacy encrypted submitted command | Not applicable | Enforced: ambiguous command is quarantined without replay, Gateway sequence is reconciled, new create/delete succeeds, and migration runs once across restart |
+| Durable MLP/3 outbox and projection migration | Enforced: outbox rows survive while rebuildable inbox/projection rows are restored from Matrix | Shared path is exercised by the isolated Alpha gate |
+| Gateway restart and poison-event quarantine | Enforced without a client-maintained revision epoch | Shared Gateway path is exercised by the isolated Alpha gate |
 | Static native release discovery, download, cover-install, and data preservation | Static bundle generation and optional Gateway compatibility publication are enforced | The APK download/install path is enforced independently by `scripts/android-update-live-e2e.ts` on the isolated `.e2e` package |
 | Stale cross-device command review, discard, and immediate retry | Not yet enforced | Enforced by the isolated Alpha gate |
 | Android foreground-service and completion notifications | Not applicable | Enforced by the isolated Alpha gate |

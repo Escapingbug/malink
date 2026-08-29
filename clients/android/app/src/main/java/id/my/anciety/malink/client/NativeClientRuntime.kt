@@ -152,10 +152,6 @@ class NativeClientRuntime(
         matrix.injectNetworkAvailabilityForE2e(available)
     }
 
-    fun onSystemWake(reason: String) {
-        matrix.onSystemWake(reason)
-    }
-
     private data class PendingPairing(
         val offer: SignedPairingOffer,
         var request: SignedPairingRequest? = null,
@@ -180,6 +176,7 @@ class NativeClientRuntime(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
     private val capabilityRenewalMutex = Mutex()
+    private val commandSendMutex = Mutex()
     // History pagination is an explicit, per-conversation user action. Never
     // serialize unrelated sessions behind one slow Matrix relation page.
     private val historyMutexes = ConcurrentHashMap<String, Mutex>()
@@ -1006,7 +1003,8 @@ class NativeClientRuntime(
                 // Matrix already durably accepted this transaction. Sending
                 // the same transaction again can only return its original
                 // event id; it cannot create a new timeline delivery. Recover
-                // any missed signed progress/terminal events through /sync.
+                // any missed signed progress/terminal events through the SDK
+                // timeline and current-state recovery.
                 startMatrixMlp3ProjectionRefresh(recoverTransport = false)
                 startPublishedCommandTimelineRecovery(current)
             }
@@ -1073,6 +1071,7 @@ class NativeClientRuntime(
             matrix.revokeSession()
         } else {
             matrix.stop(clearSession = false)
+            matrixMlp3Inbox.flushProjected()
         }
         cancelAllCommandTransmissions()
         cancelAllCommandRecoveries()
@@ -1120,6 +1119,7 @@ class NativeClientRuntime(
         workspaceDirectoryConvergenceJob?.cancel()
         workspaceDirectoryConvergenceJob = null
         transfers.clear()
+        matrixMlp3Inbox.flushProjected()
         matrix.close()
         scope.cancel()
     }
@@ -1148,6 +1148,9 @@ class NativeClientRuntime(
         refreshSnapshot(publishLifecycle = true)
         if (trust != null) {
             scheduleWorkspaceDirectoryConvergence()
+            if (!gatewayStateSynchronized) {
+                startMatrixMlp3ProjectionRefresh(recoverTransport = false)
+            }
             scope.launch {
                 mutex.withLock {
                     runCatching { recoverGatewayTransportSnapshotLocked() }
@@ -1168,28 +1171,6 @@ class NativeClientRuntime(
         ) {
             resumeConfirmedPairing()
         }
-    }
-
-    override fun hasCachedApplicationProjection(): Boolean =
-        trust != null &&
-            matrixMlp3ProjectKeys.isNotEmpty() &&
-            matrixMlp3Projection.snapshot() != null
-
-    override fun onConvergenceRequired(reason: String) {
-        requestAuthoritativeConvergence(reason)
-    }
-
-    fun requestAuthoritativeConvergence(reason: String) {
-        val diagnosticReason = reason
-            .replace(Regex("[^A-Za-z0-9._:+/-]"), "_")
-            .take(160)
-            .ifBlank { "unspecified" }
-        diagnostics.record(
-            "gateway.convergence.requested",
-            mapOf("reason" to diagnosticReason),
-        )
-        if (trust == null || authoritativeStateRefreshJob?.isActive == true) return
-        startMatrixMlp3ProjectionRefresh(recoverTransport = false)
     }
 
     override suspend fun onDecryptedEvent(event: MatrixDecryptedEvent) {
@@ -1281,7 +1262,7 @@ class NativeClientRuntime(
     private suspend fun transmit(
         commandId: String,
         recovery: Boolean,
-    ) {
+    ) = commandSendMutex.withLock transmit@{
         val transmission = mutex.withLock {
             val claimed = if (recovery) {
                 outbox.claimRecovery(commandId)
@@ -1290,7 +1271,7 @@ class NativeClientRuntime(
             } ?: return@withLock null
             publishCommand(outbox.get(commandId) ?: return@withLock null)
             claimed
-        } ?: return
+        } ?: return@transmit
         try {
             val content = signedCommandContent(transmission)
             val roomId = commandRoomId(transmission)
@@ -1318,7 +1299,7 @@ class NativeClientRuntime(
                     "command.transmission.superseded",
                     mapOf("action" to (transmission.payload.string("operation") ?: "unknown")),
                 )
-                return
+                return@transmit
             }
             throw error
         }
@@ -1419,7 +1400,7 @@ class NativeClientRuntime(
                     } finally {
                         keys.wipe()
                     }
-                    val accepted = matrix.recoverApplicationTimeline(
+                    val scannedPages = matrix.recoverApplicationTimeline(
                         roomId,
                     ) {
                         outbox.get(command.commandId)?.state?.isTerminal == true
@@ -1428,7 +1409,7 @@ class NativeClientRuntime(
                         "command.timeline_recovery.completed",
                         mapOf(
                             "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
-                            "accepted" to accepted.toString(),
+                            "pages" to scannedPages.toString(),
                             "terminal" to (outbox.get(command.commandId)?.state?.isTerminal == true).toString(),
                         ),
                     )
@@ -1782,7 +1763,11 @@ class NativeClientRuntime(
                 }
             }
             var completedAttempts = 0
-            do {
+            while (
+                isActive &&
+                trust != null &&
+                completedAttempts < MAX_AUTHORITATIVE_STATE_REFRESH_ATTEMPTS
+            ) {
                 if (trust == null) break
                 var refreshed = false
                 runCatching { matrix.refreshApplicationProjection() }
@@ -1800,17 +1785,24 @@ class NativeClientRuntime(
                     (gatewayStateSynchronized && refreshed) ||
                     trust == null
                 ) break
-                val delayMs = authoritativeStateRefreshDelayMs(completedAttempts)
+                completedAttempts += 1
+                val delayMs = authoritativeStateRefreshRetryDelayMs(completedAttempts)
+                if (delayMs == null) {
+                    diagnostics.record(
+                        "matrix.v3_projection.refresh_exhausted",
+                        mapOf("attempt" to completedAttempts.toString()),
+                    )
+                    break
+                }
                 diagnostics.record(
                     "matrix.v3_projection.refresh_retry_scheduled",
                     mapOf(
-                        "attempt" to completedAttempts.toString(),
+                        "attempt" to (completedAttempts - 1).toString(),
                         "transport_ready" to matrix.commandTransportReady.toString(),
                     ),
                 )
-                completedAttempts += 1
                 delay(delayMs)
-            } while (isActive)
+            }
             if (gatewayStateSynchronized) {
                 diagnostics.record("matrix.v3_projection.converged")
             }
@@ -2091,7 +2083,7 @@ class NativeClientRuntime(
             it.roomId == event.roomId
         } ?: throw MatrixMlp3EventDeferredException("matrix_room_pending")
         if (event.sender != binding.gatewayUserId) {
-            // The application /sync lane accepts Gateway output only. A local
+            // The SDK application timeline accepts Gateway output only. A local
             // command is projected optimistically at the durable send boundary.
             return true
         }
@@ -2607,7 +2599,7 @@ class NativeClientRuntime(
             ),
         )
         if (!recorded) return
-        // Matrix can deliver the authenticated result through /sync before
+        // Matrix can deliver the authenticated result through the SDK timeline before
         // the SDK call which sent that same event has returned. Once the
         // command is terminal, its transmission lease has no remaining work;
         // cancelling it prevents the late sender from observing a rotated
@@ -3186,6 +3178,12 @@ internal fun authoritativeStateRefreshDelayMs(completedAttempts: Int): Long {
     }
 }
 
+internal fun authoritativeStateRefreshRetryDelayMs(completedAttempts: Int): Long? {
+    require(completedAttempts > 0)
+    if (completedAttempts >= MAX_AUTHORITATIVE_STATE_REFRESH_ATTEMPTS) return null
+    return authoritativeStateRefreshDelayMs(completedAttempts - 1)
+}
+
 internal fun pairingRequestRetryDelayMs(completedRetries: Int): Long {
     require(completedRetries >= 0)
     return when (completedRetries) {
@@ -3207,6 +3205,7 @@ internal fun pairingRecoveryExpiresAt(request: SignedPairingRequest): Long =
 
 private const val PAIRING_RECOVERY_WINDOW_MS = 366L * 24 * 60 * 60_000
 private const val MAX_PAIRING_EXPIRY_SLEEP_MS = 24L * 60 * 60_000
+private const val MAX_AUTHORITATIVE_STATE_REFRESH_ATTEMPTS = 6
 
 internal fun recoverableCommandIds(commands: List<DurableView>): List<String> =
     commands
