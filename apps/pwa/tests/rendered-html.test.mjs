@@ -86,8 +86,17 @@ test("ships a complete installable offline shell", async () => {
   assert.match(matrixSettings, /onClick=\{onExportDiagnostics\}/);
   assert.match(
     matrixSettings,
-    /<details className="settings-build-details">[\s\S]*onClick=\{onExportDiagnostics\}[\s\S]*<\/details>/,
+    /className="settings-diagnostic-card"[\s\S]*onClick=\{onExportDiagnostics\}[\s\S]*<details className="settings-build-details">[\s\S]*Build and version details/,
   );
+  assert.match(
+    matrixSettings,
+    /className="settings-group settings-app-group"[\s\S]*<PwaSourceSettings[\s\S]*<PwaUpdateSettings/,
+  );
+  const buildDetails = matrixSettings.slice(
+    matrixSettings.indexOf('<details className="settings-build-details">'),
+    matrixSettings.indexOf("</details>", matrixSettings.indexOf('<details className="settings-build-details">')),
+  );
+  assert.doesNotMatch(buildDetails, /Change address|Check for updates|onExportDiagnostics/);
   assert.match(matrixSettings, /recoveryPlan\.secondary\.label/);
   assert.match(matrixSettings, /setManualRepairReason\("manual"\)/);
   assert.match(providerHistory, /role="alert"[\s\S]*onClick=\{onRetry\}[\s\S]*Retry/);

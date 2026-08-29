@@ -68,6 +68,29 @@ test("future IndexedDB security schemas run every adjacent migration", async () 
   assert.equal(manifest.stores[0].schemaVersion, 3);
 });
 
+test("reports each database check and a determinate completion", async () => {
+  const storage = new MemoryStorage();
+  const entries = [
+    catalog("security-critical", 1),
+    { ...catalog("rebuildable-projection", 1), id: "projection" },
+  ];
+  const progress: Array<{ completed: number; total: number; currentItemId: string | null }> = [];
+
+  await runPwaIndexedDbUpgrade(
+    storage,
+    unusedFactory,
+    1_000,
+    entries,
+    value => progress.push(value),
+  );
+
+  assert.deepEqual(progress, [
+    { completed: 0, total: 2, currentItemId: entries[0]?.id },
+    { completed: 1, total: 2, currentItemId: "projection" },
+    { completed: 2, total: 2, currentItemId: null },
+  ]);
+});
+
 test("future IndexedDB security bump without a step blocks without reset", async () => {
   const storage = new MemoryStorage();
   let reset = false;

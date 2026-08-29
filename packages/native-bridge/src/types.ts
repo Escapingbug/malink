@@ -111,6 +111,7 @@ export type CapabilityName =
   | "matrix.session-bootstrap"
   | "matrix.login-token"
   | "client.update"
+  | "client.pwa-source"
   | "background.foreground-service";
 
 export type CapabilityRequest = {

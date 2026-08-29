@@ -76,6 +76,27 @@ test("first coordinated upgrade preserves security state and invalidates only re
   ]);
 });
 
+test("reports each saved-state check and a determinate completion", () => {
+  const storage = new MemoryStorage();
+  const progress: Array<{ completed: number; total: number; currentItemId: string | null }> = [];
+
+  runPwaStateUpgrade(
+    storage,
+    1_000,
+    PWA_STATE_CATALOG,
+    value => progress.push(value),
+  );
+
+  assert.equal(progress[0]?.completed, 0);
+  assert.equal(progress[0]?.currentItemId, PWA_STATE_CATALOG[0]?.id);
+  assert.deepEqual(progress.at(-1), {
+    completed: PWA_STATE_CATALOG.length,
+    total: PWA_STATE_CATALOG.length,
+    currentItemId: null,
+  });
+  assert.equal(progress.length, PWA_STATE_CATALOG.length + 1);
+});
+
 test("an interrupted upgrade resumes idempotently from its running journal", () => {
   const storage = new MemoryStorage();
   storage.setItem("malink.ui.project-disclosure.v1", '{"version":99}');

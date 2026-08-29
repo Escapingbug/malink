@@ -302,12 +302,14 @@ function MatrixSettingsDialog({
       >
         <header>
           <div>
-            <span className="eyebrow">Devices</span>
+            <span className="eyebrow">
+              {trustedGateway ? "Settings" : "Devices"}
+            </span>
             <h2 id="matrix-settings-title">
               {repairRequired
                 ? "Repair connection"
                 : trustedGateway
-                  ? "Connection"
+                  ? "Malink settings"
                   : "Connect a computer"}
             </h2>
           </div>
@@ -315,30 +317,31 @@ function MatrixSettingsDialog({
             ref={closeButtonRef}
             type="button"
             onClick={requestClose}
-            aria-label="Close connection settings"
+            aria-label="Close settings"
             disabled={actionBusy}
           >
             ×
           </button>
         </header>
 
-        <div className="settings-security-note">
-          <span>✓</span>
-          <p>
-            {addingGateway
-              ? "The setup link only tells the new Gateway where to request access. It joins only after you approve the matching code."
-              : "Scan a one-time code from Malink on your computer. Only devices you approve can see or send messages."}
-          </p>
-        </div>
-
-        {nativeHostDetected && (
-          <NativeUpdateSettings
-            state={nativeUpdateState}
-            busy={nativeUpdateBusy}
-            onRefresh={onRefreshNativeUpdate}
-            onInstall={onInstallNativeUpdate}
+        <div className="matrix-settings-body">
+        <section className="settings-group settings-connection-group">
+          <SettingsGroupHeading
+            eyebrow={trustedGateway ? "Connection" : "Secure setup"}
+            title={trustedGateway ? "Devices & connection" : "Connect a device"}
+            detail={trustedGateway
+              ? "Manage approved computers, Gateway access, and this device's connection."
+              : "Approve this device with a one-time invitation from your computer."}
           />
-        )}
+
+          <div className="settings-security-note">
+            <span>✓</span>
+            <p>
+              {addingGateway
+                ? "The setup link only tells the new Gateway where to request access. It joins only after you approve the matching code."
+                : "Scan a one-time code from Malink on your computer. Only devices you approve can see or send messages."}
+            </p>
+          </div>
 
         {showGatewayManagement && (
           <section className="gateway-profile-list" aria-label="Workspace Gateways">
@@ -674,52 +677,90 @@ function MatrixSettingsDialog({
             </div>
           </details>
         )}
+        </section>
 
-        {!nativeRuntime && trustedGateway && (
-          <section className="web-push-settings" aria-live="polite">
-            <span>
-              <strong>Agent notifications</strong>
-              <small>{webPushStatusText(webPushState)}</small>
-              {webPushState.status === "error" && (
-                <em>{webPushState.detail}</em>
-              )}
-            </span>
-            {webPushState.status === "enabled" ? (
-              <button
-                type="button"
-                disabled={webPushBusy}
-                onClick={onDisableWebPush}
-              >
-                {webPushBusy ? "Disabling…" : "Disable"}
-              </button>
-            ) : webPushState.status === "prompt" || webPushState.status === "error" ? (
-              <button
-                type="button"
-                disabled={webPushBusy || status !== "connected"}
-                onClick={onEnableWebPush}
-              >
-                {webPushBusy ? "Enabling…" : "Enable"}
-              </button>
-            ) : null}
+        {(nativeHostDetected || trustedGateway) && (
+          <section className="settings-group settings-app-group">
+            <SettingsGroupHeading
+              eyebrow="Application"
+              title="App & updates"
+              detail="Choose where the interface loads from and keep each Malink component current."
+            />
+
+            {nativeHostDetected && (
+              <PwaSourceSettings
+                runtime={nativeRuntime}
+                onChange={() => {
+                  window.location.href = "malink://static-service-settings";
+                }}
+              />
+            )}
+
+            {nativeHostDetected && (
+              <NativeUpdateSettings
+                state={nativeUpdateState}
+                busy={nativeUpdateBusy}
+                onRefresh={onRefreshNativeUpdate}
+                onInstall={onInstallNativeUpdate}
+              />
+            )}
+
+            <PwaUpdateSettings state={updateState} onCheck={onCheckForUpdates} />
+
+            {trustedGateway && gatewayRelease && gatewayUpdateNodeCount > 0 && (
+              <section className="gateway-update-settings" aria-live="polite">
+                <span>
+                  <strong>Gateway software</strong>
+                  <small>
+                    {gatewayUpdateAvailableCount > 0
+                      ? `${gatewayUpdateAvailableCount} ${gatewayUpdateAvailableCount === 1 ? "Gateway needs" : "Gateways need"} release ${gatewayRelease.releaseId}.`
+                      : `Review ${gatewayUpdateNodeCount} ${gatewayUpdateNodeCount === 1 ? "Gateway" : "Gateways"} and their live status.`}
+                  </small>
+                  {gatewayUpdateDiscoveryError && (
+                    <em role="alert">Update discovery: {gatewayUpdateDiscoveryError}</em>
+                  )}
+                </span>
+                <button type="button" onClick={onReviewGatewayUpdates}>
+                  {gatewayUpdateAvailableCount > 0 ? "Review update" : "View versions"}
+                </button>
+              </section>
+            )}
           </section>
         )}
 
-        {trustedGateway && gatewayRelease && gatewayUpdateNodeCount > 0 && (
-          <section className="gateway-update-settings" aria-live="polite">
-            <span>
-              <strong>Gateway software</strong>
-              <small>
-                {gatewayUpdateAvailableCount > 0
-                  ? `${gatewayUpdateAvailableCount} ${gatewayUpdateAvailableCount === 1 ? "Gateway needs" : "Gateways need"} release ${gatewayRelease.releaseId}.`
-                  : `Review ${gatewayUpdateNodeCount} ${gatewayUpdateNodeCount === 1 ? "Gateway" : "Gateways"} and their live status.`}
-              </small>
-              {gatewayUpdateDiscoveryError && (
-                <em role="alert">Update discovery: {gatewayUpdateDiscoveryError}</em>
-              )}
-            </span>
-            <button type="button" onClick={onReviewGatewayUpdates}>
-              {gatewayUpdateAvailableCount > 0 ? "Review update" : "View versions"}
-            </button>
+        {!nativeRuntime && trustedGateway && (
+          <section className="settings-group settings-notification-group">
+            <SettingsGroupHeading
+              eyebrow="Attention"
+              title="Notifications"
+              detail="Control whether this browser can alert you when an agent needs attention."
+            />
+            <section className="web-push-settings" aria-live="polite">
+              <span>
+                <strong>Agent notifications</strong>
+                <small>{webPushStatusText(webPushState)}</small>
+                {webPushState.status === "error" && (
+                  <em>{webPushState.detail}</em>
+                )}
+              </span>
+              {webPushState.status === "enabled" ? (
+                <button
+                  type="button"
+                  disabled={webPushBusy}
+                  onClick={onDisableWebPush}
+                >
+                  {webPushBusy ? "Disabling…" : "Disable"}
+                </button>
+              ) : webPushState.status === "prompt" || webPushState.status === "error" ? (
+                <button
+                  type="button"
+                  disabled={webPushBusy || status !== "connected"}
+                  onClick={onEnableWebPush}
+                >
+                  {webPushBusy ? "Enabling…" : "Enable"}
+                </button>
+              ) : null}
+            </section>
           </section>
         )}
 
@@ -739,80 +780,68 @@ function MatrixSettingsDialog({
           </div>
         )}
 
-        <div className="settings-build-version">
-          <details className="settings-build-details">
-            <summary>Advanced diagnostics</summary>
-            <div className="settings-build-details-body">
-              <span>
-                PWA build <code>{MALINK_BUILD_VERSION}</code>
-                {nativeRuntime && (
-                  <>
-                    <small>
-                      Native APK <code>{nativeRuntime.runtimeVersion}</code>
-                    </small>
-                    <small>
-                      Native build <code>{nativeRuntime.runtimeBuild}</code>
-                    </small>
-                  </>
-                )}
-                <small>{updateStatusText(updateState)}</small>
-                {nativeHostDetected && (
-                  <small>{nativeUpdateStatusText(nativeUpdateState)}</small>
-                )}
-                {gatewayRelease && (
-                  <small>
-                    Published Gateway update <code>{gatewayRelease.releaseId}</code>
-                  </small>
-                )}
-              </span>
-              <div className="settings-build-actions">
-                <button type="button" onClick={onExportDiagnostics}>
-                  Export diagnostics
-                </button>
-                {nativeHostDetected && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      window.location.href = "malink://static-service-settings";
-                    }}
-                  >
-                    Change static service
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={onCheckForUpdates}
-                  disabled={
-                    updateState.phase === "checking" ||
-                    updateState.phase === "updating" ||
-                    updateState.phase === "waiting"
-                  }
-                >
-                  {updateState.phase === "checking" ? "Checking…" : "Check for updates"}
-                </button>
-              </div>
-              <section className="settings-danger-zone">
+        <section className="settings-group settings-support-group">
+          <SettingsGroupHeading
+            eyebrow="Support"
+            title="Diagnostics & recovery"
+            detail="Export a support report or inspect exact build identifiers."
+          />
+          <div className="settings-diagnostic-card">
+            <span>
+              <strong>Diagnostic report</strong>
+              <small>Connection state and bounded build details for troubleshooting.</small>
+            </span>
+            <button type="button" onClick={onExportDiagnostics}>
+              Export diagnostics
+            </button>
+          </div>
+          <div className="settings-build-version">
+            <details className="settings-build-details">
+              <summary>Build and version details</summary>
+              <div className="settings-build-details-body">
                 <span>
-                  <strong>
-                    {trustedGateway ? "Remove this computer" : "Reset local setup"}
-                  </strong>
-                  <small>
-                    {trustedGateway
-                      ? "Remove this computer and its saved authorization from this device."
-                      : "Clear incomplete connection data stored on this device."}
-                  </small>
+                  PWA build <code>{MALINK_BUILD_VERSION}</code>
+                  {nativeRuntime && (
+                    <>
+                      <small>
+                        Native APK <code>{nativeRuntime.runtimeVersion}</code>
+                      </small>
+                      <small>
+                        Native build <code>{nativeRuntime.runtimeBuild}</code>
+                      </small>
+                    </>
+                  )}
+                  {gatewayRelease && (
+                    <small>
+                      Published Gateway update <code>{gatewayRelease.releaseId}</code>
+                    </small>
+                  )}
                 </span>
-                <button
-                  type="button"
-                  className="forget-button"
-                  onClick={onForget}
-                  disabled={busy}
-                >
-                  {trustedGateway ? "Remove computer" : "Clear local setup"}
-                </button>
-              </section>
-            </div>
-          </details>
+              </div>
+            </details>
+          </div>
+        </section>
+
+        <section className="settings-danger-zone settings-danger-zone-standalone">
+          <span>
+            <strong>
+              {trustedGateway ? "Remove this computer" : "Reset local setup"}
+            </strong>
+            <small>
+              {trustedGateway
+                ? "Remove this computer and its saved authorization from this device."
+                : "Clear incomplete connection data stored on this device."}
+            </small>
+          </span>
+          <button
+            type="button"
+            className="forget-button"
+            onClick={onForget}
+            disabled={busy}
+          >
+            {trustedGateway ? "Remove computer" : "Clear local setup"}
+          </button>
+        </section>
         </div>
 
         {connected && (
@@ -829,6 +858,91 @@ function MatrixSettingsDialog({
       </section>
     </div>
   );
+}
+
+function SettingsGroupHeading({
+  eyebrow,
+  title,
+  detail,
+}: {
+  eyebrow: string;
+  title: string;
+  detail: string;
+}) {
+  return (
+    <header className="settings-group-heading">
+      <span className="eyebrow">{eyebrow}</span>
+      <h3>{title}</h3>
+      <p>{detail}</p>
+    </header>
+  );
+}
+
+export function PwaSourceSettings({
+  runtime,
+  onChange,
+}: {
+  runtime: MalinkNativeRuntimeInfo | null;
+  onChange(): void;
+}) {
+  const source = runtime?.pwaSource;
+  const currentBaseUrl = source?.currentBaseUrl ?? currentDocumentBaseUrl();
+  const sourceLabel = source?.source === "official"
+    ? "Official"
+    : source?.source === "custom"
+      ? "Custom"
+      : "Current";
+  return (
+    <section className="pwa-source-settings" aria-live="polite">
+      <span className="pwa-source-mark" aria-hidden="true">↗</span>
+      <span>
+        <span className="pwa-source-title">
+          <strong>PWA address</strong>
+          <b className={`pwa-source-badge is-${source?.source ?? "current"}`}>
+            {sourceLabel}
+          </b>
+        </span>
+        <code title={currentBaseUrl}>{currentBaseUrl}</code>
+        <small>
+          {source?.source === "custom"
+            ? "This interface comes from a custom service. Change it only to an address you trust."
+            : "This address provides the Malink interface and its update channel."}
+        </small>
+      </span>
+      <button type="button" onClick={onChange}>Change address</button>
+    </section>
+  );
+}
+
+export function PwaUpdateSettings({
+  state,
+  onCheck,
+}: {
+  state: PwaUpdateState;
+  onCheck(): void;
+}) {
+  const checking = state.phase === "checking";
+  const busy = checking || state.phase === "updating" || state.phase === "waiting";
+  return (
+    <section className="pwa-update-settings" aria-live="polite">
+      <span>
+        <strong>Web interface</strong>
+        <small>{updateStatusText(state)} · Build {MALINK_BUILD_VERSION}</small>
+      </span>
+      <button type="button" onClick={onCheck} disabled={busy}>
+        {checking ? "Checking…" : "Check for updates"}
+      </button>
+    </section>
+  );
+}
+
+function currentDocumentBaseUrl(): string {
+  if (typeof document === "undefined") return "Current Android app address";
+  try {
+    return new URL(".", document.baseURI).href;
+  } catch {
+    return document.baseURI;
+  }
 }
 
 function updateStatusText(state: PwaUpdateState): string {
@@ -891,7 +1005,7 @@ export function NativeUpdateSettings({
           />
         )}
         <small>
-          APK checks use the selected static service without Workspace authorization.
+          APK checks use the selected PWA address without Workspace authorization.
           Workspace features still require authorization.
         </small>
       </span>

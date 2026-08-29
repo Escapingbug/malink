@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { NativeUpdateSettings } from "../app/MatrixSettings.tsx";
+import {
+  NativeUpdateSettings,
+  PwaSourceSettings,
+  PwaUpdateSettings,
+} from "../app/MatrixSettings.tsx";
 import {
   NATIVE_UPDATE_DISCOVERY_GRACE_MS,
   shouldPollNativeUpdateStatus,
@@ -17,9 +21,43 @@ test("explains that only static APK checks bypass Workspace authorization", () =
   }));
 
   assert.match(html, /Android app/);
-  assert.match(html, /APK checks use the selected static service without Workspace authorization/);
+  assert.match(html, /APK checks use the selected PWA address without Workspace authorization/);
   assert.match(html, /Workspace features still require authorization/);
   assert.match(html, /Check APK update/);
+});
+
+test("shows the current PWA address outside diagnostics with its trust source", () => {
+  const html = renderToStaticMarkup(createElement(PwaSourceSettings, {
+    runtime: {
+      runtimeVersion: "0.1.0",
+      runtimeBuild: "android-test",
+      platform: "android",
+      pwaSource: {
+        currentBaseUrl: "https://mirror.example/malink/",
+        officialBaseUrl: "https://official.example/malink/",
+        source: "custom",
+      },
+    },
+    onChange() {},
+  }));
+
+  assert.match(html, /PWA address/);
+  assert.match(html, /Custom/);
+  assert.match(html, /https:\/\/mirror\.example\/malink\//);
+  assert.match(html, /address you trust/);
+  assert.match(html, /Change address/);
+  assert.doesNotMatch(html, /diagnostic/i);
+});
+
+test("presents Web interface updates as a first-class settings row", () => {
+  const html = renderToStaticMarkup(createElement(PwaUpdateSettings, {
+    state: { phase: "current", currentVersion: "test-build", checkedAt: 1 },
+    onCheck() {},
+  }));
+
+  assert.match(html, /Web interface/);
+  assert.match(html, /Up to date/);
+  assert.match(html, /Check for updates/);
 });
 
 test("shows the native failure detail needed to diagnose a retry", () => {

@@ -293,10 +293,18 @@ object BridgeProtocol {
     }
 }
 
+data class NativePwaSource(
+    val currentBaseUrl: String,
+    val officialBaseUrl: String,
+    val source: String,
+)
+
 interface BridgeRuntime {
     val runtimeVersion: String
     val runtimeBuild: String
     val nativeDeviceId: String
+    val pwaSource: NativePwaSource?
+        get() = null
 
     suspend fun client(): NativeClientRuntime
 
@@ -962,7 +970,9 @@ class BridgeDispatcher(
         val selectedCapabilities = linkedMapOf<String, Int>()
         required.forEach { (name, versions) ->
             val selected = versions
-                .filter { it in supportedCapabilityVersions(name) }
+                .filter { version ->
+                    version in supportedCapabilityVersions(name) && supportsRuntimeCapability(name)
+                }
                 .maxOrNull()
             if (selected == null) {
                 throw BridgeDispatchException(
@@ -975,7 +985,9 @@ class BridgeDispatcher(
         }
         optional.forEach { (name, versions) ->
             versions
-                .filter { it in supportedCapabilityVersions(name) }
+                .filter { version ->
+                    version in supportedCapabilityVersions(name) && supportsRuntimeCapability(name)
+                }
                 .maxOrNull()
                 ?.let { selectedCapabilities[name] = it }
         }
@@ -991,7 +1003,18 @@ class BridgeDispatcher(
             })
             put("capabilities", buildJsonObject {
                 selectedCapabilities.forEach { (name, version) ->
-                    put(name, buildJsonObject { put("version", version) })
+                    put(name, buildJsonObject {
+                        put("version", version)
+                        if (name == PWA_SOURCE_CAPABILITY) {
+                            runtime.pwaSource?.let { source ->
+                                put("options", buildJsonObject {
+                                    put("currentBaseUrl", source.currentBaseUrl)
+                                    put("officialBaseUrl", source.officialBaseUrl)
+                                    put("source", source.source)
+                                })
+                            }
+                        }
+                    })
                 }
             })
             put("limits", buildJsonObject {
@@ -1384,11 +1407,15 @@ class BridgeDispatcher(
     private fun operationNotFound(message: String): Nothing =
         throw BridgeDispatchException(BridgeError.OPERATION_NOT_FOUND, message)
 
+    private fun supportsRuntimeCapability(name: String): Boolean =
+        name != PWA_SOURCE_CAPABILITY || runtime.pwaSource != null
+
     private companion object {
         const val FOREGROUND_SERVICE_CAPABILITY = "background.foreground-service"
         const val MATRIX_BOOTSTRAP_CAPABILITY = "matrix.session-bootstrap"
         const val MATRIX_LOGIN_TOKEN_CAPABILITY = "matrix.login-token"
         const val NATIVE_UPDATE_CAPABILITY = "client.update"
+        const val PWA_SOURCE_CAPABILITY = "client.pwa-source"
         val SUPPORTED_CAPABILITIES = setOf(
             "client.lifecycle",
             "events.replay",
@@ -1402,6 +1429,7 @@ class BridgeDispatcher(
             MATRIX_BOOTSTRAP_CAPABILITY,
             MATRIX_LOGIN_TOKEN_CAPABILITY,
             NATIVE_UPDATE_CAPABILITY,
+            PWA_SOURCE_CAPABILITY,
         )
         fun supportedCapabilityVersions(name: String): Set<Int> = when {
             name == "history.page" -> setOf(1, 2)

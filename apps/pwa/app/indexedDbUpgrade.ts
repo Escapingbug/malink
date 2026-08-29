@@ -83,6 +83,12 @@ export class PwaIndexedDbUpgradeBlockedError extends Error {
   }
 }
 
+export type PwaIndexedDbUpgradeProgress = {
+  completed: number;
+  total: number;
+  currentItemId: string | null;
+};
+
 export function pwaIndexedDbCatalog(
   factory: IDBFactory = indexedDB,
 ): readonly PwaIndexedDbCatalogEntry[] {
@@ -168,6 +174,7 @@ export async function runPwaIndexedDbUpgrade(
   factory: IDBFactory = indexedDB,
   now = Date.now(),
   catalog: readonly PwaIndexedDbCatalogEntry[] = pwaIndexedDbCatalog(factory),
+  onProgress?: (progress: PwaIndexedDbUpgradeProgress) => void,
 ): Promise<void> {
   validateCatalog(catalog);
   const manifestRaw = storage.getItem(PWA_INDEXED_DB_MANIFEST_STORAGE_KEY);
@@ -214,7 +221,12 @@ export async function runPwaIndexedDbUpgrade(
 
   const blocked: string[] = [];
   try {
-    for (const entry of catalog) {
+    for (const [index, entry] of catalog.entries()) {
+      onProgress?.({
+        completed: index,
+        total: catalog.length,
+        currentItemId: entry.id,
+      });
       const recorded = manifest.stores.find(value => value.id === entry.id)!;
       if (recorded.stateClass !== entry.stateClass) {
         blocked.push(entry.databaseName);
@@ -261,6 +273,11 @@ export async function runPwaIndexedDbUpgrade(
         checkpointStore(entry, entry.schemaVersion, true);
       }
     }
+    onProgress?.({
+      completed: catalog.length,
+      total: catalog.length,
+      currentItemId: null,
+    });
   } catch (error) {
     if (blocked.length === 0 && manifest.activeMigration) {
       const activeEntry = catalog.find(entry => entry.id === manifest.activeMigration?.id);

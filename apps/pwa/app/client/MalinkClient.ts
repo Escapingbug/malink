@@ -20,7 +20,14 @@ import type {
 } from "../matrix";
 
 export type MalinkClientRuntime = "web" | "native";
-export type MalinkNativeRuntimeInfo = HelloResult["native"];
+export type MalinkPwaSourceInfo = {
+  currentBaseUrl: string;
+  officialBaseUrl: string;
+  source: "official" | "custom";
+};
+export type MalinkNativeRuntimeInfo = HelloResult["native"] & {
+  pwaSource?: MalinkPwaSourceInfo;
+};
 export type MalinkMessage = ClientMessage;
 export type MalinkPairingPreview = PairingPreview;
 export type MalinkPublicTrust = Extract<

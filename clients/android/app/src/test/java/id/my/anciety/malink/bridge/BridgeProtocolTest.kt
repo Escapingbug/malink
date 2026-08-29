@@ -122,6 +122,37 @@ class BridgeProtocolTest {
     }
 
     @Test
+    fun `hello exposes the selected PWA source only when requested`() {
+        val runtime = FakeRuntime().apply {
+            pwaSource = NativePwaSource(
+                currentBaseUrl = "https://mirror.example/malink/",
+                officialBaseUrl = "https://official.example/malink/",
+                source = "custom",
+            )
+        }
+        val dispatcher = BridgeDispatcher(runtime, BRIDGE_SESSION_ID)
+        val response = successResult(
+            dispatch(
+                dispatcher,
+                helloRequest(
+                    optionalCapabilities =
+                        """[{"name":"client.pwa-source","versions":[1]}]""",
+                ),
+            ),
+        )
+        val capability = response.getValue("capabilities").jsonObject
+            .getValue("client.pwa-source").jsonObject
+        val options = capability.getValue("options").jsonObject
+
+        assertEquals(1, capability.getValue("version").jsonPrimitive.int)
+        assertEquals(
+            "https://mirror.example/malink/",
+            options.getValue("currentBaseUrl").jsonPrimitive.content,
+        )
+        assertEquals("custom", options.getValue("source").jsonPrimitive.content)
+    }
+
+    @Test
     fun `hello fails closed when an unavailable capability is required`() {
         val dispatcher = BridgeDispatcher(FakeRuntime(), BRIDGE_SESSION_ID)
         val response = failure(
@@ -480,6 +511,7 @@ class BridgeProtocolTest {
     private class FakeRuntime : BridgeRuntime {
         override val runtimeVersion = "test"
         override val runtimeBuild = "test-build"
+        override var pwaSource: NativePwaSource? = null
         override val nativeDeviceId = "native-device-1"
         var starts = 0
         var bootstraps = 0
