@@ -38,6 +38,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import android.util.Base64
@@ -98,6 +99,7 @@ class MainActivity : ComponentActivity() {
     private var serviceBinderReady = CompletableDeferred<MalinkConnectionService.LocalBinder>()
     private lateinit var contentHost: FrameLayout
     private var webView: WebView? = null
+    private var webLoadingOverlay: View? = null
     private var nativeBridge: NativeWebBridge? = null
     private var foreground = false
     private var webViewResumed = false
@@ -306,6 +308,7 @@ class MainActivity : ComponentActivity() {
             destroy()
         }
         webView = null
+        webLoadingOverlay = null
         super.onDestroy()
     }
 
@@ -677,6 +680,10 @@ class MainActivity : ComponentActivity() {
             WebHostBindingAction.RELOAD -> {
                 checkNotNull(existing)
                 showContent(existing)
+                showWebLoading(
+                    title = "Refreshing Malink…",
+                    detail = "Restoring the secure interface and its current operation status.",
+                )
                 diagnostics.record("activity.web_host_reloading_after_bind")
                 val target = pendingWebAppUrl()
                 if (target == trustedWebOrigin.appUrl) existing.reload() else existing.loadUrl(target)
@@ -701,6 +708,10 @@ class MainActivity : ComponentActivity() {
         }
         nativeBridge = bridge
         showContent(created)
+        showWebLoading(
+            title = "Loading Malink…",
+            detail = "Connecting the secure interface to the native background service.",
+        )
         diagnostics.record("activity.web_host_created")
         created.loadUrl(pendingWebAppUrl())
     }
@@ -748,6 +759,7 @@ class MainActivity : ComponentActivity() {
         if (content.parent !== contentHost) {
             (content.parent as? ViewGroup)?.removeView(content)
             contentHost.removeAllViews()
+            webLoadingOverlay = null
             contentHost.addView(
                 content,
                 FrameLayout.LayoutParams(
@@ -757,6 +769,45 @@ class MainActivity : ComponentActivity() {
             )
         }
         ViewCompat.requestApplyInsets(contentHost)
+    }
+
+    private fun showWebLoading(title: String, detail: String) {
+        webLoadingOverlay?.let(contentHost::removeView)
+        val overlay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(32), dp(32), dp(32), dp(32))
+            setBackgroundColor(0xFFF4F6FA.toInt())
+            addView(ProgressBar(context))
+            addView(TextView(context).apply {
+                text = title
+                textSize = 20f
+                setTextColor(0xFF111827.toInt())
+                gravity = Gravity.CENTER
+                setPadding(0, dp(18), 0, 0)
+            })
+            addView(TextView(context).apply {
+                text = detail
+                textSize = 14f
+                setTextColor(0xFF4B5563.toInt())
+                gravity = Gravity.CENTER
+                setPadding(0, dp(10), 0, 0)
+            })
+        }
+        webLoadingOverlay = overlay
+        contentHost.addView(
+            overlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+    }
+
+    private fun hideWebLoading(view: WebView) {
+        if (view !== webView) return
+        webLoadingOverlay?.let(contentHost::removeView)
+        webLoadingOverlay = null
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -776,6 +827,7 @@ class MainActivity : ComponentActivity() {
         }
         view.webViewClient = object : WebViewClient() {
             override fun onPageCommitVisible(view: WebView, url: String) {
+                hideWebLoading(view)
                 diagnostics.record("activity.web_page_visible")
             }
 
@@ -962,11 +1014,35 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun installNativeUpdate() {
-        val manager = updateManager ?: return
+        val manager = updateManager
+        if (manager == null) {
+            Toast.makeText(
+                this,
+                "The update service is still starting. Try again in a moment.",
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        Toast.makeText(
+            this,
+            "Preparing the verified Malink update…",
+            Toast.LENGTH_SHORT,
+        ).show()
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { manager.installReady() }
-            if (result.phase == NativeUpdatePhase.PERMISSION_REQUIRED) {
-                openNativeUpdateInstallPermission()
+            when (result.phase) {
+                NativeUpdatePhase.PERMISSION_REQUIRED -> openNativeUpdateInstallPermission()
+                NativeUpdatePhase.INSTALLING -> Toast.makeText(
+                    this@MainActivity,
+                    "Update prepared. Android will show the installation confirmation.",
+                    Toast.LENGTH_LONG,
+                ).show()
+                NativeUpdatePhase.FAILED -> Toast.makeText(
+                    this@MainActivity,
+                    "The verified update is not ready. Reopen Malink update settings to retry.",
+                    Toast.LENGTH_LONG,
+                ).show()
+                else -> Unit
             }
         }
     }
@@ -1047,7 +1123,7 @@ class MainActivity : ComponentActivity() {
             if (serviceBinder == null) {
                 ensureHostBound()
             } else {
-                webView?.reload() ?: showWebHost()
+                showWebHost(reloadExisting = true)
             }
         })
     }
@@ -1095,7 +1171,12 @@ class MainActivity : ComponentActivity() {
         ))
         addView(Button(context).apply {
             text = action
-            setOnClickListener { onAction() }
+            setOnClickListener {
+                if (!isEnabled) return@setOnClickListener
+                isEnabled = false
+                text = "$action…"
+                onAction()
+            }
         })
         if (secondaryAction != null && onSecondaryAction != null) {
             addView(Button(context).apply {

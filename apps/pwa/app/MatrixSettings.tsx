@@ -174,6 +174,9 @@ function MatrixSettingsDialog({
   const [addingGateway, setAddingGateway] = useState(false);
   const [editingGatewayNodeId, setEditingGatewayNodeId] = useState<string | null>(null);
   const [gatewayNameDraft, setGatewayNameDraft] = useState("");
+  const [diagnosticExportStatus, setDiagnosticExportStatus] = useState<
+    "started" | "failed" | null
+  >(null);
   const connected =
     status === "connected" ||
     status === "securing" ||
@@ -282,6 +285,40 @@ function MatrixSettingsDialog({
       case "export-diagnostics":
         onExportDiagnostics();
     }
+  };
+  const pwaUpdateBusy =
+    updateState.phase === "checking" ||
+    updateState.phase === "updating" ||
+    updateState.phase === "waiting";
+  const recoveryActionInFlight = (action: ConnectionRecoveryAction) =>
+    (action === "check-updates" && pwaUpdateBusy) ||
+    (action === "update-native-app" && nativeUpdateBusy) ||
+    (action === "copy-page-link" && copyPageLinkBusy);
+  const recoveryActionLabel = (
+    action: ConnectionRecoveryAction,
+    fallback: string,
+  ) => {
+    if (action === "check-updates" && pwaUpdateBusy) {
+      if (updateState.phase === "checking") return "Checking updates…";
+      if (updateState.phase === "waiting") return "Update waiting…";
+      return "Applying update…";
+    }
+    if (action === "update-native-app" && nativeUpdateBusy) {
+      if (
+        nativeUpdateState?.phase === "ready" ||
+        nativeUpdateState?.phase === "permission_required"
+      ) {
+        return "Installing APK…";
+      }
+      if (nativeUpdateState?.phase === "downloading") {
+        return "Downloading APK…";
+      }
+      return "Checking APK…";
+    }
+    if (action === "copy-page-link" && copyPageLinkBusy) {
+      return "Copying link…";
+    }
+    return fallback;
   };
 
   return (
@@ -484,39 +521,24 @@ function MatrixSettingsDialog({
               <button
                 type="button"
                 className="connect-button"
-                disabled={
-                  busy ||
-                  (recoveryPlan.primary.action === "copy-page-link" &&
-                    copyPageLinkBusy) ||
-                  (recoveryPlan.primary.action === "update-native-app" &&
-                    nativeUpdateBusy)
-                }
+                disabled={busy || recoveryActionInFlight(recoveryPlan.primary.action)}
                 onClick={() => runRecoveryAction(recoveryPlan.primary.action)}
               >
-                {recoveryPlan.primary.action === "update-native-app" &&
-                nativeUpdateBusy
-                  ? "Checking APK…"
-                  : recoveryPlan.primary.action === "copy-page-link" &&
-                      copyPageLinkBusy
-                    ? "Copying link…"
-                  : recoveryPlan.primary.label}
+                {recoveryActionLabel(
+                  recoveryPlan.primary.action,
+                  recoveryPlan.primary.label,
+                )}
               </button>
               {recoveryPlan.secondary && (
                 <button
                   type="button"
-                  disabled={
-                    busy ||
-                    (recoveryPlan.secondary.action === "copy-page-link" &&
-                      copyPageLinkBusy) ||
-                    (recoveryPlan.secondary.action === "update-native-app" &&
-                      nativeUpdateBusy)
-                  }
+                  disabled={busy || recoveryActionInFlight(recoveryPlan.secondary.action)}
                   onClick={() => runRecoveryAction(recoveryPlan.secondary!.action)}
                 >
-                  {recoveryPlan.secondary.action === "copy-page-link" &&
-                  copyPageLinkBusy
-                    ? "Copying link…"
-                    : recoveryPlan.secondary.label}
+                  {recoveryActionLabel(
+                    recoveryPlan.secondary.action,
+                    recoveryPlan.secondary.label,
+                  )}
                 </button>
               )}
             </div>
@@ -790,8 +812,26 @@ function MatrixSettingsDialog({
             <span>
               <strong>Diagnostic report</strong>
               <small>Connection state and bounded build details for troubleshooting.</small>
+              {diagnosticExportStatus && (
+                <small role="status">
+                  {diagnosticExportStatus === "started"
+                    ? "Diagnostic report download started."
+                    : "The diagnostic report could not be downloaded."}
+                </small>
+              )}
             </span>
-            <button type="button" onClick={onExportDiagnostics}>
+            <button
+              type="button"
+              onClick={() => {
+                setDiagnosticExportStatus(null);
+                try {
+                  onExportDiagnostics();
+                  setDiagnosticExportStatus("started");
+                } catch {
+                  setDiagnosticExportStatus("failed");
+                }
+              }}
+            >
               Export diagnostics
             </button>
           </div>

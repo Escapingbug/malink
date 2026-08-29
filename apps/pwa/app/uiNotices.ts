@@ -1,6 +1,7 @@
 export type UiNoticeScope =
   | "connection"
   | "pairing"
+  | "background"
   | "history"
   | "session"
   | "composer"
@@ -87,10 +88,21 @@ export function noticesForScope(
 }
 
 export function shouldShowGlobalNotice(notice: UiNotice): boolean {
-  return (
-    notice.severity === "error" &&
-    (notice.scope === "connection" || notice.scope === "pairing")
-  );
+  return notice.scope === "connection" ||
+    notice.scope === "pairing" ||
+    notice.scope === "background" ||
+    notice.scope === "update";
+}
+
+/**
+ * Notices owned by a dialog or another temporary surface must remain visible
+ * after that surface closes. Keeping this selection beside the reducer makes
+ * it difficult to add a new global operation without also rendering it.
+ */
+export function globalUiNotices(state: UiNoticeState): UiNotice[] {
+  return Object.values(state)
+    .filter(shouldShowGlobalNotice)
+    .sort((left, right) => left.createdAt - right.createdAt);
 }
 
 function defaultAutoDismissMs(severity: UiNoticeSeverity): number | null {

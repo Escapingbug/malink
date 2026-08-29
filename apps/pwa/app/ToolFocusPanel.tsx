@@ -6,6 +6,7 @@ import type {
   ToolPhase,
   ToolPresentationItem,
 } from "./presentation";
+import { writeClipboardTextWithTimeout } from "./uiClipboard";
 
 export function ToolFocusPanel({
   group,
@@ -33,7 +34,7 @@ export function ToolFocusPanel({
 
   async function copyInvocation() {
     try {
-      await navigator.clipboard.writeText(invocation);
+      await writeClipboardTextWithTimeout(invocation);
       setCopyFeedback({ toolId: tool.id, state: "copied" });
     } catch {
       setCopyFeedback({ toolId: tool.id, state: "failed" });

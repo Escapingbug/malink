@@ -83,10 +83,13 @@ test("ships a complete installable offline shell", async () => {
   assert.match(matrixSettings, /case "update-native-app"[\s\S]*onUpdateNativeApp\(\)/);
   assert.match(matrixSettings, /case "reload-app"[\s\S]*onRestartApp\(\)/);
   assert.match(matrixSettings, /case "copy-page-link"[\s\S]*onCopyPageLink\(\)/);
-  assert.match(matrixSettings, /onClick=\{onExportDiagnostics\}/);
   assert.match(
     matrixSettings,
-    /className="settings-diagnostic-card"[\s\S]*onClick=\{onExportDiagnostics\}[\s\S]*<details className="settings-build-details">[\s\S]*Build and version details/,
+    /onExportDiagnostics\(\);[\s\S]*setDiagnosticExportStatus\("started"\)/,
+  );
+  assert.match(
+    matrixSettings,
+    /className="settings-diagnostic-card"[\s\S]*Diagnostic report download started[\s\S]*onExportDiagnostics\(\)[\s\S]*<details className="settings-build-details">[\s\S]*Build and version details/,
   );
   assert.match(
     matrixSettings,
@@ -102,7 +105,7 @@ test("ships a complete installable offline shell", async () => {
   assert.match(providerHistory, /role="alert"[\s\S]*onClick=\{onRetry\}[\s\S]*Retry/);
   assert.match(
     source,
-    /registerPwaUpdates\(setPwaUpdateState, \{[\s\S]*canReload:/,
+    /registerPwaUpdates\(\(state\) => \{[\s\S]*pwaUpdateStateRef\.current = state;[\s\S]*setPwaUpdateState\(state\);[\s\S]*canReload:/,
   );
   assert.doesNotMatch(
     source,
@@ -115,8 +118,7 @@ test("ships a complete installable offline shell", async () => {
   );
   assert.match(source, /Updating Malink/);
   assert.match(source, /onCheckForUpdates/);
-  assert.match(source, /navigator\.clipboard\?\.writeText/);
-  assert.match(source, /navigator\.clipboard\.writeText\(pageLink\)/);
+  assert.match(source, /writeClipboardTextWithTimeout\(pageLink\)/);
   assert.match(source, /onCopyPageLink=\{\(\) => void copyPageLinkForAnotherBrowser\(\)\}/);
   assert.doesNotMatch(source, /const sessions:|const initialMessages|appMode/);
   assert.match(source, /operation: "session\.create"/);
@@ -544,7 +546,7 @@ test("renders safe Markdown with phase-aware, responsive tool focus", async () =
   assert.match(markdown, /skipHtml/);
   assert.match(markdown, /rel="noopener noreferrer"/);
   assert.match(markdown, /MarkdownCodeBlock/);
-  assert.match(markdown, /navigator\.clipboard\.writeText/);
+  assert.match(markdown, /writeClipboardTextWithTimeout\(value\)/);
   assert.match(markdown, /url\.startsWith\(ARTIFACT_SCHEME\)/);
   assert.match(markdown, /The file changed\. Review the updated size and confirm again\./);
   assert.match(markdown, /connection\.downloadAttachment\(attachment\)/);

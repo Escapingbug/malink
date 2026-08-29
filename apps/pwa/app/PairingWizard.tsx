@@ -24,6 +24,11 @@ import {
   MAX_AUTHORIZATION_TRANSFER_BYTES,
   parseAuthorizationTransfer,
 } from "./authorizationTransfer";
+import {
+  ClipboardOperationTimeoutError,
+  readClipboardTextWithTimeout,
+  writeClipboardTextWithTimeout,
+} from "./uiClipboard";
 
 type Props = {
   preview: PairingPreview | null;
@@ -219,8 +224,7 @@ export function PairingWizard({
                 onClick={() => {
                   setShareStatus(null);
                   setShareBusy("copy");
-                  void navigator.clipboard
-                    .writeText(deviceInvitation.link)
+                  void writeClipboardTextWithTimeout(deviceInvitation.link)
                     .then(() => setShareStatus("Invitation link copied."))
                     .catch(() =>
                       setShareStatus(
@@ -420,15 +424,16 @@ export function PairingWizard({
           onClick={() => {
             setClipboardError(null);
             setPasteBusy(true);
-            void navigator.clipboard
-              .readText()
+            void readClipboardTextWithTimeout()
               .then((value) => {
                 setLink(value);
                 onLink(value);
               })
-              .catch(() => {
+              .catch((error) => {
                 setClipboardError(
-                  "Clipboard access was blocked. Paste the link in the box above.",
+                  error instanceof ClipboardOperationTimeoutError
+                    ? "Clipboard access did not respond. Paste the link in the box above."
+                    : "Clipboard access was blocked. Paste the link in the box above.",
                 );
               })
               .finally(() => setPasteBusy(false));

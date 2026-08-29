@@ -10,6 +10,11 @@ import {
   waitForHistoryOperation,
 } from "../app/historyPagination.ts";
 import { PairingWizard } from "../app/PairingWizard.tsx";
+import {
+  ClipboardOperationTimeoutError,
+  readClipboardTextWithTimeout,
+  writeClipboardTextWithTimeout,
+} from "../app/uiClipboard.ts";
 
 test("auto-loads earlier messages only from an idle, healthy feed", () => {
   const idle = {
@@ -39,6 +44,25 @@ test("bounds a foreground history source without losing a fast result", async ()
     (error: unknown) =>
       error instanceof HistoryOperationTimeoutError &&
       error.message === "cache did not finish in time.",
+  );
+});
+
+test("bounds clipboard access so the paste action always reaches a terminal state", async () => {
+  assert.equal(
+    await readClipboardTextWithTimeout(async () => "malink://pair", 1_000),
+    "malink://pair",
+  );
+  await assert.rejects(
+    readClipboardTextWithTimeout(() => new Promise<string>(() => {}), 0),
+    ClipboardOperationTimeoutError,
+  );
+  await assert.rejects(
+    writeClipboardTextWithTimeout(
+      "Malink",
+      () => new Promise<void>(() => {}),
+      0,
+    ),
+    ClipboardOperationTimeoutError,
   );
 });
 
@@ -105,10 +129,15 @@ test("identifies only the Gateway row whose approval is in flight", () => {
 
 test("keeps async operation context visible until terminal completion", async () => {
   const appRoot = new URL("../", import.meta.url);
-  const [app, settings, matrixConnection] = await Promise.all([
+  const [app, settings, matrixConnection, androidActivity, css] = await Promise.all([
     readFile(new URL("app/MalinkApp.tsx", appRoot), "utf8"),
     readFile(new URL("app/MatrixSettings.tsx", appRoot), "utf8"),
     readFile(new URL("app/matrixMlp3Connection.ts", appRoot), "utf8"),
+    readFile(new URL(
+      "../../clients/android/app/src/main/java/id/my/anciety/malink/web/MainActivity.kt",
+      appRoot,
+    ), "utf8"),
+    readFile(new URL("app/globals.css", appRoot), "utf8"),
   ]);
 
   assert.match(
@@ -121,6 +150,56 @@ test("keeps async operation context visible until terminal completion", async ()
   assert.match(settings, /if \(actionBusy\) return;/);
   assert.match(settings, /escapeDisabled: actionBusy/);
   assert.match(settings, /nativeUpdateBusy[\s\S]*?"Installing APK…"/);
+  assert.match(
+    settings,
+    /recoveryActionInFlight[\s\S]*?check-updates[\s\S]*?pwaUpdateBusy/,
+  );
+  assert.match(
+    settings,
+    /recoveryActionLabel[\s\S]*?Checking updates…[\s\S]*?Update waiting…[\s\S]*?Applying update…/,
+  );
+  assert.match(
+    settings,
+    /diagnosticExportStatus[\s\S]*?Diagnostic report download started[\s\S]*?could not be downloaded/,
+  );
+  assert.match(
+    app,
+    /async function checkForPwaUpdates\(\)[\s\S]*?Checking for a newer Malink version in the background[\s\S]*?await updater\.checkNow\(\)[\s\S]*?Malink is up to date/,
+  );
+  assert.match(
+    app,
+    /function closeProviderHistory\(\)[\s\S]*?providerHistoryLoadRef\.current[\s\S]*?Provider sessions are loading in the background/,
+  );
+  assert.match(
+    app,
+    /function finishProviderHistoryBackground\([\s\S]*?Provider History finished loading/,
+  );
+  const globalNoticeRule = css.slice(
+    css.indexOf(".global-ui-notices {"),
+    css.indexOf(".global-ui-notices .ui-notice"),
+  );
+  const settingsBackdropRule = css.slice(
+    css.indexOf(".settings-backdrop {"),
+    css.indexOf(".matrix-settings {"),
+  );
+  assert.match(globalNoticeRule, /z-index:\s*59;/);
+  assert.match(settingsBackdropRule, /z-index:\s*60;/);
+
+  const nativeRecoveryPage = androidActivity.slice(
+    androidActivity.indexOf("private fun showRecoveryPage"),
+    androidActivity.indexOf("private fun showDisconnectedPage"),
+  );
+  assert.match(nativeRecoveryPage, /showWebHost\(reloadExisting = true\)/);
+  assert.doesNotMatch(nativeRecoveryPage, /webView\?\.reload\(\)/);
+  assert.match(
+    androidActivity,
+    /showWebLoading\([\s\S]*?Loading Malink…[\s\S]*?onPageCommitVisible[\s\S]*?hideWebLoading\(view\)/,
+  );
+  assert.match(androidActivity, /The update service is still starting/);
+  assert.match(
+    androidActivity,
+    /if \(!isEnabled\) return@setOnClickListener[\s\S]*?isEnabled = false[\s\S]*?text = "\$action…"/,
+  );
 
   const restoreHistory = app.slice(
     app.indexOf("async function restoreSessionHistory"),

@@ -8,6 +8,7 @@ import type {
   MalinkAttachment,
 } from "@malink/protocol";
 import type { MalinkClient } from "./client/MalinkClient";
+import { writeClipboardTextWithTimeout } from "./uiClipboard";
 
 const ARTIFACT_SCHEME = "malink-artifact:";
 const MAX_INLINE_TEXT_PREVIEW_BYTES = 1024 * 1024;
@@ -33,7 +34,7 @@ function MarkdownCodeBlock({ children }: { children: ReactNode }) {
     if (!value || copyState === "copying") return;
     setCopyState("copying");
     try {
-      await navigator.clipboard.writeText(value);
+      await writeClipboardTextWithTimeout(value);
       setCopyState("copied");
     } catch {
       setCopyState("failed");

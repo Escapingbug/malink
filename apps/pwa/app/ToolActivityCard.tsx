@@ -8,6 +8,7 @@ import type {
   ToolPresentationItem,
 } from "./presentation";
 import { ToolOutput } from "./ToolFocusPanel";
+import { writeClipboardTextWithTimeout } from "./uiClipboard";
 
 type ToolStageKind = "explore" | "change" | "execute" | "delegate" | "other";
 
@@ -78,7 +79,7 @@ export function ToolActivityCard({
     if (!value || copyState === "copying") return;
     setCopyState("copying");
     try {
-      await navigator.clipboard.writeText(value);
+      await writeClipboardTextWithTimeout(value);
       setCopyState("copied");
     } catch {
       setCopyState("failed");

@@ -4570,6 +4570,24 @@ select:focus-visible {
   gap: 6px;
 }
 
+.global-ui-notices {
+  position: fixed;
+  /* Dialogs own their in-progress state. Keep the durable notice beneath
+     modal backdrops so it cannot cover close or confirmation controls; it
+     becomes visible as soon as the temporary surface closes. */
+  z-index: 59;
+  top: calc(18px + env(safe-area-inset-top));
+  right: 18px;
+  width: min(420px, calc(100vw - 36px));
+  pointer-events: none;
+}
+
+.global-ui-notices .ui-notice {
+  pointer-events: auto;
+  box-shadow: 0 12px 34px rgb(42 45 70 / 16%);
+  animation: toast-enter var(--motion-panel) var(--motion-ease-out);
+}
+
 .ui-notice {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr) 32px;
@@ -9935,6 +9953,14 @@ body {
 
   .verification-panel strong {
     font-size: 28px;
+  }
+}
+
+@media (max-width: 900px) {
+  .global-ui-notices {
+    top: calc(108px + env(safe-area-inset-top));
+    right: 10px;
+    width: calc(100vw - 20px);
   }
 }
 

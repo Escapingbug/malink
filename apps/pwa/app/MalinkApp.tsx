@@ -280,12 +280,14 @@ import {
 } from "./gatewayFilter";
 import {
   EMPTY_UI_NOTICE_STATE,
+  globalUiNotices,
   noticesForScope,
   reduceUiNotices,
   type UiNotice,
   type UiNoticeScope,
   type UiNoticeSeverity,
 } from "./uiNotices";
+import { writeClipboardTextWithTimeout } from "./uiClipboard";
 import {
   NATIVE_BACK_PRIORITY,
   resolveMalinkBackAction,
@@ -1493,6 +1495,10 @@ function MalinkAppRuntime() {
     hiddenAt: number | null;
   } | null>(null);
   const pwaUpdateRef = useRef<PwaUpdateHandle | null>(null);
+  const pwaUpdateStateRef = useRef<PwaUpdateState>({
+    phase: "current",
+    currentVersion: MALINK_BUILD_VERSION,
+  });
   const pwaReloadBlockedRef = useRef(false);
   const gatewayUpdateProbeKeysRef = useRef(new Set<string>());
   const executeGatewayUpdateRef = useRef<(
@@ -1576,6 +1582,7 @@ function MalinkAppRuntime() {
   const providerHistoryGatewayNodeIdRef = useRef("");
   const providerHistoryProjectIdRef = useRef("");
   const providerHistoryLoadRef = useRef<ProviderHistoryLoadState | null>(null);
+  const providerHistoryBackgroundedRef = useRef(false);
   const providerHistoryLoadIdRef = useRef(0);
   const providerHistoryLoadedProviderRef = useRef<string | null>(null);
   const providerHistoryFocusRef = useRef<ProviderHistoryFocus | null>(null);
@@ -1649,7 +1656,7 @@ function MalinkAppRuntime() {
         case "close-delete-dialog":
           break;
         case "close-provider-history":
-          setProviderHistoryOpen(false);
+          closeProviderHistory();
           break;
         case "close-new-project":
           setNewProjectOpen(false);
@@ -1947,6 +1954,7 @@ function MalinkAppRuntime() {
   ];
   const sessionNotices = noticesForScope(uiNotices, "session");
   const historyNotices = noticesForScope(uiNotices, "history");
+  const globalNotices = globalUiNotices(uiNotices);
   const gatewayConnected = gatewayAvailable;
   const isStreaming = Boolean(
     selectedSessionId && runningSessionIds.has(selectedSessionId),
@@ -2373,6 +2381,86 @@ function MalinkAppRuntime() {
     dispatchUiNotice({ type: "operation-recovered", key });
   }
 
+  async function checkForPwaUpdates(): Promise<void> {
+    const updater = pwaUpdateRef.current;
+    if (!updater) {
+      showUiNotice(
+        "update:pwa-check",
+        "update",
+        "warning",
+        "The update checker is still starting. Try again in a moment.",
+      );
+      return;
+    }
+    showUiNotice(
+      "update:pwa-check",
+      "update",
+      "info",
+      "Checking for a newer Malink version in the background…",
+      null,
+    );
+    try {
+      await updater.checkNow();
+      const result = pwaUpdateStateRef.current;
+      if (result.phase === "current") {
+        showUiNotice(
+          "update:pwa-check",
+          "update",
+          "success",
+          "Malink is up to date.",
+          4_000,
+        );
+      } else if (result.phase === "unavailable") {
+        showUiNotice(
+          "update:pwa-check",
+          "update",
+          "warning",
+          "Malink could not check for updates right now. Your current version is still running.",
+        );
+      } else {
+        recoverUiNotice("update:pwa-check");
+      }
+    } catch (error) {
+      showUiNotice(
+        "update:pwa-check",
+        "update",
+        "warning",
+        `Malink could not check for updates: ${formatUiError(error)}`,
+      );
+    }
+  }
+
+  function closeProviderHistory(): void {
+    setProviderHistoryOpen(false);
+    if (!providerHistoryLoadRef.current) return;
+    providerHistoryBackgroundedRef.current = true;
+    showUiNotice(
+      "provider:history-background",
+      "background",
+      "info",
+      providerHistoryLoadRef.current.kind === "session"
+        ? "Provider session history is loading in the background. You can keep working."
+        : "Provider sessions are loading in the background. You can keep working.",
+      null,
+    );
+  }
+
+  function finishProviderHistoryBackground(
+    failure: string | null = null,
+  ): void {
+    if (!providerHistoryBackgroundedRef.current) return;
+    providerHistoryBackgroundedRef.current = false;
+    showUiNotice(
+      "provider:history-background",
+      "background",
+      failure ? "warning" : "success",
+      failure
+        ? `Provider History finished in the background but needs attention: ${failure}`
+        : "Provider History finished loading. Reopen it whenever you are ready.",
+      failure ? undefined : 5_000,
+    );
+  }
+
   function setSessionRunning(sessionId: string, running: boolean) {
     setRunningSessionIds((current) => {
       const next = new Set(current);
@@ -2640,7 +2728,10 @@ function MalinkAppRuntime() {
   }, []);
 
   useEffect(() => {
-    const updater = registerPwaUpdates(setPwaUpdateState, {
+    const updater = registerPwaUpdates((state) => {
+      pwaUpdateStateRef.current = state;
+      setPwaUpdateState(state);
+    }, {
       canReload: () => !pwaReloadBlockedRef.current,
     });
     pwaUpdateRef.current = updater;
@@ -6010,8 +6101,7 @@ function MalinkAppRuntime() {
     setPageLinkCopyBusy(true);
     const pageLink = window.location.href;
     try {
-      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
-      await navigator.clipboard.writeText(pageLink);
+      await writeClipboardTextWithTimeout(pageLink);
       showUiNotice(
         "connection:browser-link-copied",
         "connection",
@@ -6783,6 +6873,8 @@ function MalinkAppRuntime() {
   }
 
   async function openProviderHistory(request: OpenProviderHistoryRequest = {}) {
+    providerHistoryBackgroundedRef.current = false;
+    recoverUiNotice("provider:history-background");
     setProviderHistoryOpen(true);
     const focus = providerHistoryFocusRef.current;
     const requestedSource = request.sourceKey === undefined
@@ -6931,6 +7023,7 @@ function MalinkAppRuntime() {
     providerHistoryLoadRef.current = load;
     setProviderHistoryLoad(load);
     let focusedSession: ProviderSessionEntry | null = null;
+    let backgroundFailure: string | null = null;
     try {
       const completion = await executeProviderHistoryCommand(
         load,
@@ -6968,12 +7061,14 @@ function MalinkAppRuntime() {
       }
     } catch (error) {
       if (providerHistoryLoadRef.current?.id === load.id) {
-        setProviderHistoryError(formatUiError(error));
+        backgroundFailure = formatUiError(error);
+        setProviderHistoryError(backgroundFailure);
       }
     } finally {
       if (providerHistoryLoadRef.current?.id === load.id) {
         providerHistoryLoadRef.current = null;
         setProviderHistoryLoad(null);
+        finishProviderHistoryBackground(backgroundFailure);
       }
     }
     if (focusedSession) {
@@ -6997,6 +7092,7 @@ function MalinkAppRuntime() {
     };
     providerHistoryLoadRef.current = load;
     setProviderHistoryLoad(load);
+    let backgroundFailure: string | null = null;
     try {
       const completion = await executeProviderHistoryCommand(
         load,
@@ -7022,12 +7118,14 @@ function MalinkAppRuntime() {
       }
     } catch (error) {
       if (providerHistoryLoadRef.current?.id === load.id) {
-        setProviderHistoryError(formatUiError(error));
+        backgroundFailure = formatUiError(error);
+        setProviderHistoryError(backgroundFailure);
       }
     } finally {
       if (providerHistoryLoadRef.current?.id === load.id) {
         providerHistoryLoadRef.current = null;
         setProviderHistoryLoad(null);
+        finishProviderHistoryBackground(backgroundFailure);
       }
     }
   }
@@ -7053,6 +7151,8 @@ function MalinkAppRuntime() {
       );
       return;
     }
+    providerHistoryBackgroundedRef.current = false;
+    recoverUiNotice("provider:history-background");
     setProviderHistoryOpen(false);
     chooseSession(sessionId);
   }
@@ -7086,6 +7186,8 @@ function MalinkAppRuntime() {
       );
       return;
     }
+    providerHistoryBackgroundedRef.current = false;
+    recoverUiNotice("provider:history-background");
     setProviderHistoryOpen(false);
     void createSession({
       projectId: historyWorkspace.projectId,
@@ -8961,6 +9063,11 @@ function MalinkAppRuntime() {
 
   return (
     <main className={`app-shell ${mobileChatOpen ? "mobile-chat-open" : ""} ${primaryView === "files" ? "file-inbox-open" : ""}`}>
+      <UiNoticeList
+        notices={globalNotices}
+        className="global-ui-notices"
+        onDismiss={dismissUiNotice}
+      />
       <aside className="rail" aria-label="Primary navigation">
         <div className="brand" role="img" aria-label="Malink">
           <MalinkMark />
@@ -10852,7 +10959,7 @@ function MalinkAppRuntime() {
           messages={providerHistoryMessages}
           loading={providerHistoryLoad?.kind ?? null}
           error={providerHistoryError}
-          onClose={() => setProviderHistoryOpen(false)}
+          onClose={closeProviderHistory}
           onSourceChange={(sourceKey) => void openProviderHistory({ sourceKey })}
           onProviderChange={(provider) => void openProviderHistory({ provider })}
           onInspect={(session) => void inspectProviderHistorySession(session)}
@@ -10951,7 +11058,7 @@ function MalinkAppRuntime() {
           setSettingsOpen(false);
           setGatewayUpdateDialogOpen(true);
         }}
-        onCheckForUpdates={() => void pwaUpdateRef.current?.checkNow()}
+        onCheckForUpdates={() => void checkForPwaUpdates()}
         onUpdateNativeApp={() => void recoverNativeAppUpdate(true)}
         onRestartApp={() => window.location.reload()}
         onCopyPageLink={() => void copyPageLinkForAnotherBrowser()}

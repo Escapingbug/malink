@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   EMPTY_UI_NOTICE_STATE,
+  globalUiNotices,
   noticesForScope,
   reduceUiNotices,
   shouldShowGlobalNotice,
@@ -30,6 +31,51 @@ test("scopes preserve unrelated operation notices", () => {
   assert.equal(noticesForScope(withAttachment, "attachment").length, 1);
   assert.equal(shouldShowGlobalNotice(withAttachment["connection:matrix"]), true);
   assert.equal(shouldShowGlobalNotice(withAttachment["attachment:upload"]), false);
+});
+
+test("dialog-owned operations remain globally visible at every severity", () => {
+  let state = reduceUiNotices(EMPTY_UI_NOTICE_STATE, {
+    type: "show",
+    key: "connection:renamed",
+    scope: "connection",
+    severity: "success",
+    message: "Gateway renamed.",
+    now: 30,
+  });
+  state = reduceUiNotices(state, {
+    type: "show",
+    key: "provider:history-background",
+    scope: "background",
+    severity: "info",
+    message: "Provider History is loading in the background.",
+    now: 20,
+    autoDismissMs: null,
+  });
+  state = reduceUiNotices(state, {
+    type: "show",
+    key: "update:pwa-check",
+    scope: "update",
+    severity: "warning",
+    message: "The update check is unavailable.",
+    now: 40,
+  });
+  state = reduceUiNotices(state, {
+    type: "show",
+    key: "composer:send",
+    scope: "composer",
+    severity: "error",
+    message: "Message failed.",
+    now: 10,
+  });
+
+  assert.deepEqual(
+    globalUiNotices(state).map(notice => notice.key),
+    [
+      "provider:history-background",
+      "connection:renamed",
+      "update:pwa-check",
+    ],
+  );
 });
 
 test("info and success expire while warnings and errors remain actionable", () => {

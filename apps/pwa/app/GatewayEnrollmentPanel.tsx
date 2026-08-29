@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { GatewayEnrollmentPending } from "@malink/protocol";
+import { writeClipboardTextWithTimeout } from "./uiClipboard";
 
 export type GeneratedGatewayEnrollment = {
   link: string;
@@ -83,7 +84,7 @@ export function GatewayEnrollmentPanel({
               onClick={() => {
                 setCopyStatus(null);
                 setCopyBusy(true);
-                void navigator.clipboard.writeText(command)
+                void writeClipboardTextWithTimeout(command)
                   .then(() => setCopyStatus("Gateway setup command copied."))
                   .catch(() => setCopyStatus("Copy was blocked; select the command manually."))
                   .finally(() => setCopyBusy(false));
