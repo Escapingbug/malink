@@ -143,6 +143,19 @@ export function sessionCreateRecoveryMatches(
   );
 }
 
+/**
+ * A terminal result can arrive after the bounded foreground waiter has already
+ * moved the optimistic row to `uncertain`. The persisted command ID remains
+ * the authority for consuming that late result; matching it here never submits
+ * another command.
+ */
+export function sessionCreateCompletionMatchesRecovery(
+  recovery: Pick<PendingSessionCreateRecovery, "commandId"> | null,
+  completion: Pick<CommandCompletion, "commandId">,
+): boolean {
+  return recovery?.commandId === completion.commandId;
+}
+
 export function isMissingSessionCreateRecoveryCommand(error: unknown): boolean {
   return Boolean(
     error &&

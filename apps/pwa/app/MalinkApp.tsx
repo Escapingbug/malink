@@ -151,6 +151,7 @@ import {
   pendingSessionCreateRecoveryFromOptimistic,
   readPendingSessionCreateRecovery,
   rebindPendingSessionCreateRecovery,
+  sessionCreateCompletionMatchesRecovery,
   sessionCreateFailureMessage,
   sessionCreateRecoveryMatches,
   writePendingSessionCreateRecovery,
@@ -322,7 +323,10 @@ import {
   saveMessageHistory,
   type MessageHistoryCursor,
 } from "./messageHistory";
-import { shouldAutoLoadEarlierMessages } from "./historyPagination";
+import {
+  shouldAutoLoadEarlierMessages,
+  waitForHistoryOperation,
+} from "./historyPagination";
 import {
   completedTurnPresentation,
   type CompletedTurnProcess,
@@ -526,6 +530,7 @@ function sameGatewayUiScope(
 
 const DEVICE_INVITATION_RESULT_TIMEOUT_MS = 95_000;
 const SESSION_CREATE_RESULT_RECOVERY_MS = 15_000;
+const LOCAL_HISTORY_FOREGROUND_TIMEOUT_MS = 5_000;
 const PROJECT_CREATE_RESULT_TIMEOUT_MS = 60_000;
 const PROVIDER_HISTORY_RESULT_TIMEOUT_MS = 60_000;
 const GATEWAY_UPDATE_DISCOVERY_INTERVAL_MS = 15 * 60_000;
@@ -2448,7 +2453,7 @@ function MalinkAppRuntime() {
     ) {
       optimistic = markOptimisticSessionUncertain(
         optimistic,
-        "Your computer accepted the secure command, but Malink could not confirm its final result. Check again, or stop waiting to create a different conversation.",
+        "Your computer accepted the secure command. Malink is still checking its final result in the background; checking it again cannot create a duplicate.",
       );
       try {
         writeOptimisticSession(window.localStorage, optimistic);
@@ -3194,28 +3199,34 @@ function MalinkAppRuntime() {
         message.sessionId ?? page.sessionId,
       ),
     );
-    // Persist before checking the selected-session generation. A response may
-    // arrive after the user switched conversations and must still be visible
-    // when they return.
-    void persistMessageHistoryPage(scope, page.sessionId, recovered)
-      .then(() => {
-        if (historySessionIdRef.current !== page.sessionId) return;
-        historyCursorRef.current = olderHistoryCursor(
-          historyCursorRef.current,
-          recovered,
-        );
-        setMessages((current) => mergeChatMessages(current, recovered));
-        setHistoryHasMore(page.hasMore);
-        setHistoryError(null);
-        setHistoryRetryMode(null);
-      })
-      .catch((error) => {
-        if (historySessionIdRef.current === page.sessionId) {
-          setHistoryError(
-            `Recovered history could not be saved: ${formatUiError(error)}`,
-          );
-        }
-      });
+    // Presentation persistence is a cache, not a delivery gate. A blocked
+    // IndexedDB write must not hide already-verified native history.
+    persistRecoveredHistoryInBackground(scope, page.sessionId, recovered);
+    if (historySessionIdRef.current !== page.sessionId) return;
+    historyCursorRef.current = olderHistoryCursor(
+      historyCursorRef.current,
+      recovered,
+    );
+    setMessages((current) => mergeChatMessages(current, recovered));
+    setHistoryHasMore(page.hasMore);
+    setHistoryError(null);
+    setHistoryRetryMode(null);
+  }
+
+  function persistRecoveredHistoryInBackground(
+    scope: string,
+    sessionId: string,
+    messages: readonly ChatMessage[],
+  ): void {
+    if (messages.length === 0) return;
+    void persistMessageHistoryPage(scope, sessionId, messages).catch((error) => {
+      showUiNotice(
+        `history:save:${sessionId}`,
+        "history",
+        "warning",
+        `Recovered history is visible, but its local cache could not be updated: ${formatUiError(error)}`,
+      );
+    });
   }
 
   function loadRemoteHistoryInBackground(
@@ -3242,7 +3253,11 @@ function MalinkAppRuntime() {
       connection,
     };
     historyRemoteFlightRef.current = flight;
-    if (isCurrent()) setHistoryCheckingRemote(true);
+    if (isCurrent()) {
+      setHistoryCheckingRemote(true);
+      setHistoryError(null);
+      setHistoryRetryMode(null);
+    }
     void (async () => {
       try {
         const remote = await connection.loadHistoryPage(sessionId);
@@ -3252,9 +3267,7 @@ function MalinkAppRuntime() {
             message.sessionId ?? sessionId,
           ),
         );
-        if (olderMessages.length > 0) {
-          await persistMessageHistoryPage(scope, sessionId, olderMessages);
-        }
+        persistRecoveredHistoryInBackground(scope, sessionId, olderMessages);
         if (!isCurrent()) return;
         if (olderMessages.length > 0) {
           if (prepend) prepareHistoryPrepend(feedRef.current, prependScrollRef);
@@ -3285,6 +3298,92 @@ function MalinkAppRuntime() {
     })();
   }
 
+  function loadInitialConnectionHistoryInBackground(
+    sessionId: string,
+    scope: string,
+    connection: MalinkClient,
+    generation: number,
+    cachedHasMore: boolean,
+  ): void {
+    const active = historyRemoteFlightRef.current;
+    if (
+      active?.sessionId === sessionId
+      && active.generation === generation
+      && active.connection === connection
+    ) return;
+
+    const isCurrent = () =>
+      generation === historyGenerationRef.current
+      && historySessionIdRef.current === sessionId
+      && malinkClientRef.current === connection;
+    const flight = { sessionId, generation, connection };
+    historyRemoteFlightRef.current = flight;
+    if (isCurrent()) {
+      setHistoryCheckingRemote(true);
+      setHistoryError(null);
+      setHistoryRetryMode(null);
+    }
+    void (async () => {
+      try {
+        const local = await connection.loadLocalHistory(sessionId);
+        const localMessages = local.messages.map((message) =>
+          chatMessageFromIncoming(
+            { ...incomingMessageFromClient(message), historical: true },
+            message.sessionId ?? sessionId,
+          ),
+        );
+        persistRecoveredHistoryInBackground(scope, sessionId, localMessages);
+        if (!isCurrent()) return;
+        if (localMessages.length > 0) {
+          historyCursorRef.current = olderHistoryCursor(
+            historyCursorRef.current,
+            localMessages,
+          );
+          setMessages((current) => mergeChatMessages(current, localMessages));
+        }
+        const localHasMore = cachedHasMore || local.hasMore;
+        setHistoryHasMore(localHasMore);
+        if (localHasMore) {
+          setHistoryError(null);
+          setHistoryRetryMode(null);
+          return;
+        }
+
+        const remote = await connection.loadHistoryPage(sessionId);
+        const remoteMessages = remote.messages.map((message) =>
+          chatMessageFromIncoming(
+            { ...incomingMessageFromClient(message), historical: true },
+            message.sessionId ?? sessionId,
+          ),
+        );
+        persistRecoveredHistoryInBackground(scope, sessionId, remoteMessages);
+        if (!isCurrent()) return;
+        if (remoteMessages.length > 0) {
+          historyCursorRef.current = olderHistoryCursor(
+            historyCursorRef.current,
+            remoteMessages,
+          );
+          setMessages((current) => mergeChatMessages(current, remoteMessages));
+        }
+        setHistoryHasMore(remote.hasMore);
+        setHistoryError(null);
+        setHistoryRetryMode(null);
+      } catch (error) {
+        if (!isCurrent()) return;
+        setHistoryHasMore(cachedHasMore);
+        setHistoryError(
+          `Conversation history could not be restored: ${formatUiError(error)}`,
+        );
+        setHistoryRetryMode("restore");
+      } finally {
+        if (historyRemoteFlightRef.current === flight) {
+          historyRemoteFlightRef.current = null;
+        }
+        if (isCurrent()) setHistoryCheckingRemote(false);
+      }
+    })();
+  }
+
   async function restoreSessionHistory(
     sessionId: string,
     connection: MalinkClient | null = malinkClientRef.current,
@@ -3304,7 +3403,11 @@ function MalinkAppRuntime() {
     setMessages([]);
     setDecisionStates({});
     try {
-      const cached = await loadMessageHistoryPage(scope, sessionId);
+      const cached = await waitForHistoryOperation(
+        loadMessageHistoryPage(scope, sessionId),
+        LOCAL_HISTORY_FOREGROUND_TIMEOUT_MS,
+        "Local conversation history",
+      );
       if (
         generation !== historyGenerationRef.current ||
         historySessionIdRef.current !== sessionId
@@ -3326,17 +3429,18 @@ function MalinkAppRuntime() {
           deliveryState: "failed" as const,
         }));
       if (interruptedSends.length > 0) {
-        await saveMessageHistory(
+        void saveMessageHistory(
           scope,
           sessionId,
           interruptedSends,
-        );
-        if (
-          generation !== historyGenerationRef.current ||
-          historySessionIdRef.current !== sessionId
-        ) {
-          return;
-        }
+        ).catch((error) => {
+          showUiNotice(
+            `history:save:${sessionId}`,
+            "history",
+            "warning",
+            `Interrupted message state is visible, but its local cache could not be updated: ${formatUiError(error)}`,
+          );
+        });
       }
       const liveMessages =
         liveMessagesBySessionRef.current.get(sessionId) ?? [];
@@ -3356,7 +3460,7 @@ function MalinkAppRuntime() {
           void flushQueuedSessionMessages(sessionId, connection);
         }
       }
-      setHistoryHasMore(cached.hasMore || Boolean(connection));
+      setHistoryHasMore(cached.hasMore);
 
       if (!connection) return;
       connection.markHistoryLoaded(
@@ -3365,45 +3469,17 @@ function MalinkAppRuntime() {
           message.eventId ? [message.eventId] : [],
         ),
       );
-      // Render both browser persistence and the native/Web local projection
-      // before starting any Matrix relations request. A slow homeserver must
-      // never keep the selected conversation in its foreground loading state.
-      const local = await connection.loadLocalHistory(sessionId);
-      const localMessages = local.messages.map((message) =>
-        chatMessageFromIncoming(
-          { ...incomingMessageFromClient(message), historical: true },
-          message.sessionId ?? sessionId,
-        ),
+      // Browser persistence is the only foreground restore. Native/Web local
+      // projection and Matrix relations continue behind a bounded status row,
+      // so neither a bridge handoff nor the homeserver can keep the feed in
+      // `Loading earlier messages`.
+      loadInitialConnectionHistoryInBackground(
+        sessionId,
+        scope,
+        connection,
+        generation,
+        cached.hasMore,
       );
-      if (localMessages.length > 0) {
-        await persistMessageHistoryPage(scope, sessionId, localMessages);
-      }
-      if (
-        generation !== historyGenerationRef.current ||
-        historySessionIdRef.current !== sessionId
-      ) {
-        return;
-      }
-      if (localMessages.length > 0) {
-        historyCursorRef.current = olderHistoryCursor(
-          historyCursorRef.current,
-          localMessages,
-        );
-        setMessages((current) =>
-          mergeChatMessages(current, localMessages),
-        );
-      }
-      const localHasMore = cached.hasMore || local.hasMore;
-      setHistoryHasMore(localHasMore);
-      if (!localHasMore) {
-        loadRemoteHistoryInBackground(
-          sessionId,
-          scope,
-          connection,
-          generation,
-          false,
-        );
-      }
     } catch (error) {
       if (
         generation === historyGenerationRef.current &&
@@ -3413,6 +3489,18 @@ function MalinkAppRuntime() {
           `Conversation history could not be restored: ${formatUiError(error)}`,
         );
         setHistoryRetryMode("restore");
+        if (connection) {
+          // A damaged or blocked presentation cache must not cut off the
+          // authoritative native/Web projection. A successful background
+          // restore clears this transient cache error.
+          loadInitialConnectionHistoryInBackground(
+            sessionId,
+            scope,
+            connection,
+            generation,
+            false,
+          );
+        }
       }
     } finally {
       if (generation === historyGenerationRef.current) {
@@ -3439,9 +3527,13 @@ function MalinkAppRuntime() {
     setHistoryError(null);
     setHistoryRetryMode(null);
     try {
-      const cached = await loadMessageHistoryPage(scope, sessionId, {
-        before: historyCursorRef.current,
-      });
+      const cached = await waitForHistoryOperation(
+        loadMessageHistoryPage(scope, sessionId, {
+          before: historyCursorRef.current,
+        }),
+        LOCAL_HISTORY_FOREGROUND_TIMEOUT_MS,
+        "Local conversation history",
+      );
       if (
         generation !== historyGenerationRef.current ||
         historySessionIdRef.current !== sessionId
@@ -3513,6 +3605,17 @@ function MalinkAppRuntime() {
           `Older history could not be loaded: ${formatUiError(error)}`,
         );
         setHistoryRetryMode("older");
+        const connection = malinkClientRef.current;
+        if (connection) {
+          setHistoryHasMore(false);
+          loadRemoteHistoryInBackground(
+            sessionId,
+            scope,
+            connection,
+            generation,
+            true,
+          );
+        }
       }
     } finally {
       if (generation === historyGenerationRef.current) {
@@ -4144,7 +4247,7 @@ function MalinkAppRuntime() {
           commitOptimisticSession(
             markOptimisticSessionUncertain(
               draft,
-              "Your computer accepted the secure command, but Malink could not confirm its final result. Check again, or stop waiting to create a different conversation.",
+              "Your computer accepted the secure command. Malink is still checking its final result in the background; checking it again cannot create a duplicate.",
             ),
           );
           clearPendingSessionCreateUi();
@@ -4152,7 +4255,7 @@ function MalinkAppRuntime() {
             "session:create",
             "session",
             "warning",
-            "Session creation did not reach a confirmed result. The original command remains safe to check again and will not be submitted twice.",
+            "Session creation has not reached a confirmed result yet. Malink will keep checking the same saved command and will not submit it twice.",
           );
         } else {
           showUiNotice(
@@ -4163,7 +4266,6 @@ function MalinkAppRuntime() {
           );
         }
         if (
-          !resultIsUncertain &&
           malinkClientRef.current === connection &&
           connectionStatusRef.current === "connected"
         ) {
@@ -4684,6 +4786,26 @@ function MalinkAppRuntime() {
         onCommandResult(result) {
           if (!isCurrentStartup()) return;
           observeCommandCompletion(result);
+          const pendingSessionCreate = pendingSessionCreateRecoveryRef.current;
+          const activeConnection = malinkClientRef.current;
+          if (
+            activeConnection &&
+            sessionCreateCompletionMatchesRecovery(
+              pendingSessionCreate,
+              result,
+            )
+          ) {
+            // The bounded foreground waiter may already have timed out. This
+            // authenticated terminal event is still the result of the exact
+            // persisted create command, so consume it immediately without
+            // submitting or reserving another command.
+            void consumeSessionCreateCompletion(
+              activeConnection,
+              result.commandId,
+              result,
+            );
+            return;
+          }
           const promptSessionId =
             activePromptCommandsRef.current.get(result.commandId);
           if (promptSessionId) {
@@ -5879,6 +6001,9 @@ function MalinkAppRuntime() {
     commandId: string,
     completion: CommandCompletion,
   ): Promise<void> {
+    if (
+      pendingSessionCreateRecoveryRef.current?.commandId !== commandId
+    ) return;
     let sessionToReveal: string | null = null;
     let skipHistoryRestore = false;
     try {
@@ -9549,12 +9674,12 @@ function MalinkAppRuntime() {
                   Retry
                 </button>
               </span>
+            ) : historyCheckingRemote ? (
+              <span>Restoring conversation history in the background…</span>
             ) : historyHasMore ? (
               <button type="button" onClick={() => void loadOlderHistory()}>
                 Load earlier messages
               </button>
-            ) : historyCheckingRemote ? (
-              <span>Checking archived history in the background…</span>
             ) : messages.length > 0 ? (
               <span>Beginning of loaded history</span>
             ) : null}

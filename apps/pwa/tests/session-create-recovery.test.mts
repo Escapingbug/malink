@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   clearPendingSessionCreateRecovery,
@@ -8,6 +9,7 @@ import {
   pendingSessionCreateRecoveryFromOptimistic,
   readPendingSessionCreateRecovery,
   rebindPendingSessionCreateRecovery,
+  sessionCreateCompletionMatchesRecovery,
   sessionCreateFailureMessage,
   sessionCreateRecoveryMatches,
   writePendingSessionCreateRecovery,
@@ -90,6 +92,48 @@ test("persists the durable session-create identity across a reload", () => {
       conversationId: "room-1",
     }),
     false,
+  );
+});
+
+test("consumes only a late terminal result for the persisted create command", () => {
+  assert.equal(
+    sessionCreateCompletionMatchesRecovery(recovery, {
+      commandId: recovery.commandId,
+    }),
+    true,
+  );
+  assert.equal(
+    sessionCreateCompletionMatchesRecovery(recovery, {
+      commandId: "another-command",
+    }),
+    false,
+  );
+  assert.equal(
+    sessionCreateCompletionMatchesRecovery(null, {
+      commandId: recovery.commandId,
+    }),
+    false,
+  );
+});
+
+test("routes a late authenticated create result into idempotent consumption", async () => {
+  const app = await readFile(
+    new URL("../app/MalinkApp.tsx", import.meta.url),
+    "utf8",
+  );
+  const resultHandler = app.slice(
+    app.indexOf("onCommandResult(result)"),
+    app.indexOf("onHistoryRecovered(page)"),
+  );
+  assert.match(resultHandler, /sessionCreateCompletionMatchesRecovery\(/);
+  assert.match(resultHandler, /consumeSessionCreateCompletion\(/);
+  const consumer = app.slice(
+    app.indexOf("async function consumeSessionCreateCompletion"),
+    app.indexOf("function promoteOptimisticSession"),
+  );
+  assert.match(
+    consumer,
+    /pendingSessionCreateRecoveryRef\.current\?\.commandId !== commandId[\s\S]*?return;/,
   );
 });
 

@@ -4,7 +4,11 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { GatewayEnrollmentPanel } from "../app/GatewayEnrollmentPanel.tsx";
-import { shouldAutoLoadEarlierMessages } from "../app/historyPagination.ts";
+import {
+  HistoryOperationTimeoutError,
+  shouldAutoLoadEarlierMessages,
+  waitForHistoryOperation,
+} from "../app/historyPagination.ts";
 import { PairingWizard } from "../app/PairingWizard.tsx";
 
 test("auto-loads earlier messages only from an idle, healthy feed", () => {
@@ -23,6 +27,19 @@ test("auto-loads earlier messages only from an idle, healthy feed", () => {
     false,
   );
   assert.equal(shouldAutoLoadEarlierMessages({ ...idle, hasError: true }), false);
+});
+
+test("bounds a foreground history source without losing a fast result", async () => {
+  assert.equal(
+    await waitForHistoryOperation(Promise.resolve("cached"), 1_000, "cache"),
+    "cached",
+  );
+  await assert.rejects(
+    waitForHistoryOperation(new Promise<never>(() => {}), 0, "cache"),
+    (error: unknown) =>
+      error instanceof HistoryOperationTimeoutError &&
+      error.message === "cache did not finish in time.",
+  );
 });
 
 test("shows an explicit busy state while a pairing invitation is verified", () => {
@@ -88,9 +105,10 @@ test("identifies only the Gateway row whose approval is in flight", () => {
 
 test("keeps async operation context visible until terminal completion", async () => {
   const appRoot = new URL("../", import.meta.url);
-  const [app, settings] = await Promise.all([
+  const [app, settings, matrix] = await Promise.all([
     readFile(new URL("app/MalinkApp.tsx", appRoot), "utf8"),
     readFile(new URL("app/MatrixSettings.tsx", appRoot), "utf8"),
+    readFile(new URL("app/matrix.ts", appRoot), "utf8"),
   ]);
 
   assert.match(
@@ -112,9 +130,22 @@ test("keeps async operation context visible until terminal completion", async ()
     app.indexOf("async function loadOlderHistory"),
     app.indexOf("function handleFeedScroll"),
   );
-  assert.match(restoreHistory, /connection\.loadLocalHistory\(sessionId\)/);
+  assert.match(restoreHistory, /waitForHistoryOperation\(/);
+  assert.match(restoreHistory, /loadInitialConnectionHistoryInBackground\(/);
+  assert.doesNotMatch(restoreHistory, /await connection\.loadLocalHistory/);
   assert.doesNotMatch(restoreHistory, /await connection\.loadHistoryPage/);
   assert.match(olderHistory, /loadRemoteHistoryInBackground/);
   assert.doesNotMatch(olderHistory, /await connection\.loadHistoryPage/);
-  assert.match(app, /Checking archived history in the background/);
+  assert.match(app, /Restoring conversation history in the background/);
+  assert.match(
+    app,
+    /persistRecoveredHistoryInBackground\(scope, sessionId, remoteMessages\);[\s\S]*?if \(!isCurrent\(\)\) return;/,
+  );
+  const relationsFetch = matrix.slice(
+    matrix.indexOf("const fetchSessionRelations"),
+    matrix.indexOf("const initializeSessionRelations"),
+  );
+  assert.match(relationsFetch, /client\.http\.authedRequest/);
+  assert.match(relationsFetch, /localTimeoutMs: MATRIX_HISTORY_REQUEST_TIMEOUT_MS/);
+  assert.doesNotMatch(relationsFetch, /client\.relations\(/);
 });

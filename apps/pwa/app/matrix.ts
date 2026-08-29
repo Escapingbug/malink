@@ -54,6 +54,7 @@ import type {
   Room,
 } from "matrix-js-sdk";
 import type { RoomMessageEventContent } from "matrix-js-sdk/lib/@types/events";
+import { ClientPrefix } from "matrix-js-sdk/lib/http-api/prefix";
 import {
   applyGatewayDeviceRotation,
   applyGatewayTransportSnapshot,
@@ -154,6 +155,7 @@ const DEVICE_KEYS_UPLOAD_TIMEOUT_MS = 30_000;
 const GATEWAY_DEVICE_TIMEOUT_MS = 15_000;
 const ENCRYPTED_SEND_TIMEOUT_MS = 20_000;
 const CAPABILITY_RENEWAL_TIMEOUT_MS = 30_000;
+const MATRIX_HISTORY_REQUEST_TIMEOUT_MS = 30_000;
 
 export type MatrixConnectionConfig = {
   homeserver: string;
@@ -2416,11 +2418,23 @@ export async function connectMatrix(
   ): Promise<string | null> => {
     const rootEventId = await sessionRootEventId(room, sessionId);
     if (!rootEventId) return null;
-    const page = await client.relations(
-      config.roomId,
-      rootEventId,
-      sdk.RelationType.Thread,
-      null,
+    const path = [
+      "/rooms/",
+      encodeURIComponent(config.roomId),
+      "/relations/",
+      encodeURIComponent(rootEventId),
+      "/",
+      encodeURIComponent(sdk.RelationType.Thread),
+    ].join("");
+    type RawMatrixEvent = Parameters<
+      ReturnType<MatrixClient["getEventMapper"]>
+    >[0];
+    const page = await client.http.authedRequest<{
+      chunk: RawMatrixEvent[];
+      next_batch?: string | null;
+    }>(
+      "GET" as Parameters<MatrixClient["http"]["authedRequest"]>[0],
+      path,
       {
         dir: sdk.Direction.Backward,
         // Gateway events are individually capped at 40 KiB. Keep each
@@ -2430,12 +2444,15 @@ export async function connectMatrix(
         recurse: true,
         ...(from ? { from } : {}),
       },
+      undefined,
+      {
+        prefix: ClientPrefix.V1,
+        localTimeoutMs: MATRIX_HISTORY_REQUEST_TIMEOUT_MS,
+      },
     );
-    await scanHistoryEvents([
-      ...(page.originalEvent ? [page.originalEvent] : []),
-      ...page.events,
-    ]);
-    return page.nextBatch ?? null;
+    const mapEvent = client.getEventMapper();
+    await scanHistoryEvents(page.chunk.map((event) => mapEvent(event)));
+    return page.next_batch ?? null;
   };
   const initializeSessionRelations = async (
     room: Room,
