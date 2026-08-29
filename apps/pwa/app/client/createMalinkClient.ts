@@ -16,6 +16,7 @@ import {
   hasCurrentNativeCapability,
   nativeCapabilityVersions,
   bootstrapNativeSession,
+  checkNativeUpdateWithCompatibility,
   createNativeBridgeClient,
   readNativeMatrixSession,
   type NativeBootstrapInput,
@@ -158,7 +159,7 @@ export async function advanceNativeAppUpdate(
   try {
     const hello = await bridge.hello({
       webBuild: MALINK_BUILD_VERSION,
-      requiredCapabilities: [{ name: "client.update", versions: [2, 1] }],
+      requiredCapabilities: [{ name: "client.update", versions: [1] }],
     });
     const updateVersion = hello.capabilities["client.update"]?.version ?? 0;
     if (updateVersion < 1) {
@@ -168,18 +169,8 @@ export async function advanceNativeAppUpdate(
         { userAction: "update_native" },
       );
     }
-    if (options.checkNow && updateVersion < 2) {
-      throw new BridgeProtocolError(
-        "CAPABILITY_UNAVAILABLE",
-        "This APK does not support manual update checks. Install the latest APK once, then Retry will check the selected static service directly.",
-        { userAction: "update_native" },
-      );
-    }
     const status = options.checkNow
-      ? await bridge.request("malink.update.check", {
-          context: bridge.context(),
-          idempotencyKey: crypto.randomUUID(),
-        })
+      ? await checkNativeUpdateWithCompatibility(bridge)
       : await bridge.request("malink.update.status", {
           context: bridge.context(),
         });

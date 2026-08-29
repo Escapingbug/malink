@@ -231,8 +231,8 @@ test("an outdated full client can still advance the independent native updater",
   assert.equal(port.onmessage, null);
 });
 
-test("a manual retry asks a v2 native updater to force-check the static channel", async () => {
-  const port = new NativeUpdatePort(2);
+test("a manual retry uses the additive v1 static-channel check", async () => {
+  const port = new NativeUpdatePort();
   const result = await advanceNativeAppUpdate({
     checkNow: true,
     installReady: false,
@@ -248,19 +248,36 @@ test("a manual retry asks a v2 native updater to force-check the static channel"
   ]);
 });
 
-test("a manual retry fails clearly instead of rereading stale v1 status", async () => {
-  const port = new NativeUpdatePort(1);
-  await assert.rejects(
-    advanceNativeAppUpdate({
-      checkNow: true,
-      dependencies: {
-        nativePort: () => port,
-        createBridge: (nativePort) => new NativeRpcBridge(nativePort),
-      },
-    }),
-    /does not support manual update checks/,
-  );
-  assert.deepEqual(port.methods, ["malink.bridge.hello"]);
+test("a manual retry keeps pre-extension v1 APK status and install recovery usable", async () => {
+  const port = new NativeUpdatePort(false);
+  const result = await advanceNativeAppUpdate({
+    checkNow: true,
+    installReady: false,
+    dependencies: {
+      nativePort: () => port,
+      createBridge: (nativePort) => new NativeRpcBridge(nativePort),
+    },
+  });
+  assert.equal(result.phase, "ready");
+  assert.deepEqual(port.methods, [
+    "malink.bridge.hello",
+    "malink.update.check",
+    "malink.update.status",
+  ]);
+});
+
+test("a pre-extension v1 APK reports an actionable manual-check boundary", async () => {
+  const port = new NativeUpdatePort(false, "current");
+  const result = await advanceNativeAppUpdate({
+    checkNow: true,
+    installReady: false,
+    dependencies: {
+      nativePort: () => port,
+      createBridge: (nativePort) => new NativeRpcBridge(nativePort),
+    },
+  });
+  assert.equal(result.phase, "failed");
+  assert.equal(result.detailCode, "manual_check_unavailable");
 });
 
 test("consumes a one-time login token only after complete native negotiation", async () => {
@@ -441,7 +458,10 @@ class NativeUpdatePort implements NativeBridgePort {
   onmessage: NativeBridgePort["onmessage"] = null;
   methods: string[] = [];
 
-  constructor(private readonly capabilityVersion = 1) {}
+  constructor(
+    private readonly supportsManualCheck = true,
+    private readonly statusPhase: "current" | "ready" = "ready",
+  ) {}
 
   postMessage(message: string): void {
     const request = JSON.parse(message) as {
@@ -458,18 +478,18 @@ class NativeUpdatePort implements NativeBridgePort {
             runtimeBuild: "android-outdated",
             platform: "android",
           },
-          capabilities: { "client.update": { version: this.capabilityVersion } },
+          capabilities: { "client.update": { version: 1 } },
           limits: NATIVE_BRIDGE_LIMITS,
         }
       : request.method === "malink.update.status"
         ? {
-            phase: "ready",
+            phase: this.statusPhase,
             currentVersionCode: 1,
             currentVersionName: "0.1.0-old",
             latestVersionCode: 2,
             latestVersionName: "0.1.0-new",
           }
-        : request.method === "malink.update.check"
+        : request.method === "malink.update.check" && this.supportsManualCheck
           ? {
               phase: "checking",
               currentVersionCode: 1,
@@ -483,6 +503,20 @@ class NativeUpdatePort implements NativeBridgePort {
             latestVersionName: "0.1.0-new",
           };
     queueMicrotask(() => {
+      if (request.method === "malink.update.check" && !this.supportsManualCheck) {
+        this.onmessage?.({
+          data: JSON.stringify({
+            jsonrpc: "2.0",
+            id: request.id,
+            error: {
+              code: -32601,
+              message: "Unsupported native bridge method: malink.update.check",
+              data: { errorCode: "METHOD_NOT_FOUND", retryable: false },
+            },
+          }),
+        });
+        return;
+      }
       this.onmessage?.({
         data: JSON.stringify({ jsonrpc: "2.0", id: request.id, result }),
       });

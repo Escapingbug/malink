@@ -213,6 +213,38 @@ unverified commands produce no application event.
 The normative wire and recovery rules are in
 [`malink-protocol.md`](malink-protocol.md).
 
+## Compatibility-first protocol versioning
+
+A protocol or capability version is a compatibility boundary, not a semantic
+change counter. A clearer description, a new internal implementation, or an
+additive optional operation does not by itself justify a version increase.
+Version decisions start from the oldest independently deployed peer that the
+product still supports:
+
+- Keep the current version when an older peer can safely ignore or reject an
+  additive operation and the newer peer retains a useful fallback.
+- Add a separately negotiated optional capability when independent discovery
+  is useful but the existing behavior remains valid.
+- Increase a capability version only when using the same version could make a
+  peer accept an unsafe or materially incompatible interpretation. Increase
+  the whole bridge or MLP version only when the common envelope itself cannot
+  remain compatible.
+- Never use a newer version as a hard product gate merely because it describes
+  the new behavior more precisely. Negotiation selects an enhancement; it must
+  not remove the recovery path needed to install the enhancement.
+
+Every version increase requires a staged compatibility proof: the provider
+ships before a consumer requires it, the consumer keeps the previous supported
+path, and tests exercise newest PWA against every supported released APK plus
+oldest supported PWA against the new APK. An updater may not require the update
+it is responsible for installing.
+
+`malink.update.check` is the concrete compatibility example. It is an additive
+`client.update` v1 operation. A pre-extension v1 APK returns
+`METHOD_NOT_FOUND`; a current PWA falls back to v1 status/install behavior and
+keeps an explicit upgrade route. Adding this operation is not a reason to
+rename the capability v2.
+
 ## Android ownership boundary
 
 The native foreground service remains connected while the Activity/WebView is

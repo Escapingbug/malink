@@ -71,8 +71,52 @@ export function nativeCapabilityVersions(
   if (name === "commands.durable") return [4, 3, 2, 1];
   if (name === "history.page") return [2, 1];
   if (name === "matrix.session-bootstrap") return [2, 1];
-  if (name === "client.update") return [2, 1];
   return [1];
+}
+
+export const LEGACY_NATIVE_MANUAL_CHECK_UNAVAILABLE =
+  "manual_check_unavailable";
+
+/**
+ * `malink.update.check` is an additive client.update v1 operation. APKs
+ * released before that operation return METHOD_NOT_FOUND; the online PWA must
+ * keep their status/install path usable instead of turning the additive
+ * method into a new minimum capability version.
+ */
+export async function checkNativeUpdateWithCompatibility(
+  bridge: NativeRpcBridge,
+): Promise<NativeUpdateStatus> {
+  try {
+    return await bridge.request("malink.update.check", {
+      context: bridge.context(),
+      idempotencyKey: crypto.randomUUID(),
+    });
+  } catch (error) {
+    if (
+      !(error instanceof BridgeProtocolError) ||
+      (error.errorCode !== "METHOD_NOT_FOUND" &&
+        error.errorCode !== "CAPABILITY_UNAVAILABLE")
+    ) {
+      throw error;
+    }
+    const status = await bridge.request("malink.update.status", {
+      context: bridge.context(),
+    });
+    if (
+      status.phase === "available" ||
+      status.phase === "downloading" ||
+      status.phase === "ready" ||
+      status.phase === "installing" ||
+      status.phase === "permission_required"
+    ) {
+      return status;
+    }
+    return {
+      ...status,
+      phase: "failed",
+      detailCode: LEGACY_NATIVE_MANUAL_CHECK_UNAVAILABLE,
+    };
+  }
 }
 
 export function hasCurrentNativeCapability(
@@ -173,11 +217,8 @@ export class NativeBridgeClient implements MalinkClient {
   }
 
   async checkNativeUpdate(): Promise<NativeUpdateStatus> {
-    this.#requireNativeUpdateCapability(2);
-    return this.bridge.request("malink.update.check", {
-      context: this.bridge.context(),
-      idempotencyKey: crypto.randomUUID(),
-    });
+    this.#requireNativeUpdateCapability();
+    return checkNativeUpdateWithCompatibility(this.bridge);
   }
 
   async installNativeUpdate(): Promise<NativeUpdateStatus> {
@@ -188,13 +229,11 @@ export class NativeBridgeClient implements MalinkClient {
     });
   }
 
-  #requireNativeUpdateCapability(minimumVersion = 1): void {
-    if ((this.helloResult.capabilities["client.update"]?.version ?? 0) < minimumVersion) {
+  #requireNativeUpdateCapability(): void {
+    if ((this.helloResult.capabilities["client.update"]?.version ?? 0) < 1) {
       throw new BridgeProtocolError(
         "CAPABILITY_UNAVAILABLE",
-        minimumVersion > 1
-          ? "This APK does not support manual update checks. Install the latest APK once, then Retry will check the selected static service directly."
-          : "This APK does not support direct native updates.",
+        "This APK does not support direct native updates.",
         { userAction: "update_native" },
       );
     }

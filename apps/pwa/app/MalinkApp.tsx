@@ -5981,7 +5981,9 @@ function MalinkAppRuntime() {
         );
       } else if (status.phase === "failed") {
         setConnectionError(
-          "The APK update did not complete. Restart Malink and try again; if it still fails, export diagnostics.",
+          status.detailCode === "manual_check_unavailable"
+            ? "This installed APK predates immediate checks. It will still check automatically, or open the official APK releases from Settings."
+            : "The APK update did not complete. Restart Malink and try again; if it still fails, export diagnostics.",
         );
       }
     } catch {

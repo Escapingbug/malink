@@ -6,6 +6,14 @@ Status: version 3, pre-release hard cutover
 The current version is written **MLP/3**. Matrix is its durable transport; a
 Matrix room/event/sync version and a MLP version are separate concepts.
 
+The MLP version marks a wire-compatibility boundary, not every semantic change.
+Compatible additive behavior remains within the current version when old peers
+can reject or ignore it safely and new peers retain a fallback. A version
+increase is justified only when peers using the same version could otherwise
+accept an unsafe or materially incompatible interpretation. Native-bridge
+capability versions follow the compatibility-first policy in
+[`architecture.md`](architecture.md#compatibility-first-protocol-versioning).
+
 ## Naming boundary
 
 - **MLP/3 command, event, envelope, projection, key, or snapshot** means a

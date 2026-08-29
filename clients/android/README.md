@@ -109,6 +109,10 @@ Bridge protocol version 1 currently implements:
 - `trust.native`
 - `matrix.session-bootstrap` v2 (v2 adds credential-free discovery of an
   existing native-owned Matrix session for a newly loaded Web origin)
+- `client.update` v1 (`status`/`install`, plus the additive idempotent
+  `check` operation; Web clients fall back when a pre-extension v1 APK returns
+  `METHOD_NOT_FOUND`)
+- `client.pwa-source` v1
 - `background.foreground-service`
 
 The bridge has strict schemas, a 512 KiB RPC envelope limit, 256 KiB event
@@ -116,6 +120,13 @@ batches, mutation idempotency, cursor replay with snapshot fallback, and
 chunked attachments up to 50 MiB. Reconnect snapshots reserve their budget for
 active commands and terminal summaries; large terminal results remain
 recoverable through `malink.command.get`.
+
+Capability versions express compatibility, not semantic precision. Additive
+optional operations stay on the existing capability version when old APKs can
+reject them predictably and the PWA keeps a useful fallback. A new version may
+become required only after a staged release proves both newest-PWA/oldest-APK
+and oldest-PWA/newest-APK operation; native update recovery itself can never be
+the feature that requires the new updater version.
 
 Pairing uses a native confirmation dialog. Its signed certificate is the
 complete command policy; the APK never adds implicit local grants. Signed pairing rejection, request

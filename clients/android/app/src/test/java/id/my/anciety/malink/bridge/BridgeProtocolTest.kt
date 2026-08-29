@@ -172,18 +172,18 @@ class BridgeProtocolTest {
     }
 
     @Test
-    fun `manual native update checks are v2 gated and idempotent`() {
+    fun `manual native update checks are an additive v1 operation and idempotent`() {
         val runtime = FakeRuntime()
         val dispatcher = BridgeDispatcher(runtime, BRIDGE_SESSION_ID)
         val capabilities = successResult(dispatch(
             dispatcher,
             helloRequest(
                 optionalCapabilities =
-                    """[{"name":"client.update","versions":[2,1]}]""",
+                    """[{"name":"client.update","versions":[1]}]""",
             ),
         )).getValue("capabilities").jsonObject
         assertEquals(
-            2,
+            1,
             capabilities.getValue("client.update").jsonObject
                 .getValue("version").jsonPrimitive.int,
         )

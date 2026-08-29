@@ -77,6 +77,26 @@ test("shows the native failure detail needed to diagnose a retry", () => {
   assert.match(html, /Retry APK check/);
 });
 
+test("keeps a pre-extension v1 APK on an actionable compatibility path", () => {
+  const html = renderToStaticMarkup(createElement(NativeUpdateSettings, {
+    state: {
+      phase: "failed",
+      currentVersionCode: 1,
+      currentVersionName: "0.1.0-old",
+      detailCode: "manual_check_unavailable",
+    },
+    busy: false,
+    onRefresh() {},
+    onInstall() {},
+  }));
+
+  assert.match(html, /cannot start an immediate check/);
+  assert.match(html, /Refresh APK status/);
+  assert.match(html, /open the official APK releases/);
+  assert.match(html, /github\.com\/Escapingbug\/malink\/releases/);
+  assert.doesNotMatch(html, /Retry APK check/);
+});
+
 test("offers the verified APK when the native host reports it ready", () => {
   const html = renderToStaticMarkup(createElement(NativeUpdateSettings, {
     state: {

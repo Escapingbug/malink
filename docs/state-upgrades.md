@@ -59,8 +59,13 @@ number:
 - Web/native bridge protocol (`NATIVE_BRIDGE_PROTOCOL_VERSION`).
 
 A build ID is diagnostic metadata. Store versions decide migration; protocol
-versions decide whether two concurrently running components can communicate.
-Native bridge versions are negotiated. MLP/3 application events fail
+versions describe a genuine compatibility boundary between concurrently
+running components; they are not counters for semantic or implementation
+changes. Additive optional behavior stays on the current version when old
+peers can reject or ignore it safely and new peers retain a useful fallback.
+Native bridge versions are negotiated, but negotiation must widen compatible
+operation rather than turn a supported older peer into an update dead end.
+MLP/3 application events fail
 closed when their authenticated version is unsupported; a storage migration
 must not silently reinterpret a different wire protocol or reconnect a v2 data
 plane. Pairing is independently versioned because it establishes the trust and
@@ -89,6 +94,10 @@ For every release that changes persistent state:
    Gateway, cover-install it with `PackageInstaller`, prove application data
    survived, and prove the new build converged stale update cache. Gateway
    tests separately prove durable admin publication into `workspace.snapshot`.
+8. A bridge/capability version increase must include bidirectional released-peer
+   fixtures and a staged rollout test. The newest online PWA must retain a
+   working path for the oldest supported APK, especially when that path is
+   responsible for installing the new APK.
 
 Adding a new persistent key/database without adding it to the owning catalog is
 a release-blocking defect.

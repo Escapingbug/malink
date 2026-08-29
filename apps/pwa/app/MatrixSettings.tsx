@@ -973,6 +973,8 @@ export function NativeUpdateSettings({
   onRefresh(): void;
   onInstall(): void;
 }) {
+  const legacyManualCheck =
+    state?.detailCode === "manual_check_unavailable";
   const installable =
     state?.phase === "ready" || state?.phase === "permission_required";
   const installing = state?.phase === "installing";
@@ -988,7 +990,9 @@ export function NativeUpdateSettings({
       : state?.phase === "ready"
         ? "Install APK update"
         : state?.phase === "failed"
-          ? "Retry APK check"
+          ? legacyManualCheck
+            ? "Refresh APK status"
+            : "Retry APK check"
           : state
             ? "Refresh APK status"
             : "Check APK update";
@@ -1008,6 +1012,12 @@ export function NativeUpdateSettings({
           APK checks use the selected PWA address without Workspace authorization.
           Workspace features still require authorization.
         </small>
+        {legacyManualCheck && (
+          <small>
+            This installed APK predates immediate checks. It will still check on
+            its schedule, or you can <a href="https://github.com/Escapingbug/malink/releases">open the official APK releases</a>.
+          </small>
+        )}
       </span>
       <button
         type="button"
@@ -1022,6 +1032,9 @@ export function NativeUpdateSettings({
 
 export function nativeUpdateStatusText(state: NativeUpdateStatus | null): string {
   if (!state) return "APK: check the native update channel from this device";
+  if (state.detailCode === "manual_check_unavailable") {
+    return "APK: this installed version cannot start an immediate check";
+  }
   const latest = state.latestVersionName ?? "the latest APK";
   switch (state.phase) {
     case "checking":

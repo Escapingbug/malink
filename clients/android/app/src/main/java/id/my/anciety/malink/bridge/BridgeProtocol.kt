@@ -470,7 +470,10 @@ class BridgeDispatcher(
                 nativeUpdateStatusToJson(runtime.nativeUpdateStatus())
             }
             "malink.update.check" -> {
-                requireUpdateCapability(minimumVersion = 2)
+                // Manual checks are an additive client.update v1 operation.
+                // Older v1 APKs return METHOD_NOT_FOUND and newer Web UIs
+                // must retain their status/install fallback during rollout.
+                requireUpdateCapability()
                 requireContext(request.params, mutation = true)
                 mutationResult(request) {
                     nativeUpdateStatusToJson(runtime.checkNativeUpdate())
@@ -1377,15 +1380,11 @@ class BridgeDispatcher(
     private fun invalidParams(message: String): Nothing =
         throw BridgeDispatchException(BridgeError.INVALID_PARAMS, message)
 
-    private fun requireUpdateCapability(minimumVersion: Int = 1) {
-        if ((negotiatedCapabilities[NATIVE_UPDATE_CAPABILITY] ?: 0) < minimumVersion) {
+    private fun requireUpdateCapability() {
+        if (NATIVE_UPDATE_CAPABILITY !in negotiatedCapabilities) {
             throw BridgeDispatchException(
                 BridgeError.CAPABILITY_UNAVAILABLE,
-                if (minimumVersion > 1) {
-                    "This APK does not support manual native update checks."
-                } else {
-                    "Native application updates were not negotiated."
-                },
+                "Native application updates were not negotiated.",
                 userAction = "update_native",
             )
         }
@@ -1435,7 +1434,6 @@ class BridgeDispatcher(
             name == "history.page" -> setOf(1, 2)
             name == "commands.durable" -> setOf(1, 2, 3, 4)
             name == MATRIX_BOOTSTRAP_CAPABILITY -> setOf(1, 2)
-            name == NATIVE_UPDATE_CAPABILITY -> setOf(1, 2)
             name in SUPPORTED_CAPABILITIES -> setOf(1)
             else -> emptySet()
         }

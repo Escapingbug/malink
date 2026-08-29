@@ -20,8 +20,10 @@ export type NativeBridgeSupport = {
 
 /**
  * Selects the highest mutually supported bridge and capability versions.
- * Missing optional capabilities are omitted; a missing required capability
- * fails closed so an online UI cannot silently fall back to a weaker path.
+ * Missing optional capabilities are omitted. Required capabilities fail
+ * closed only when weaker behavior would be unsafe; additive enhancements and
+ * update recovery must remain optional until every supported released peer
+ * has a tested fallback.
  */
 export function negotiateHello(
   hello: HelloParams,
