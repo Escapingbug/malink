@@ -57,6 +57,7 @@ import id.my.anciety.malink.R
 import id.my.anciety.malink.bridge.BridgeRuntime
 import id.my.anciety.malink.bridge.BridgeError
 import id.my.anciety.malink.bridge.BridgeRuntimeFailure
+import id.my.anciety.malink.bridge.NativePwaSource
 import id.my.anciety.malink.bridge.NativeWebBridge
 import id.my.anciety.malink.bridge.TrustedWebOrigin
 import id.my.anciety.malink.client.NativeClientRuntime
@@ -1112,6 +1113,12 @@ class MainActivity : ComponentActivity() {
     private inner class ActivityBridgeRuntime : BridgeRuntime {
         override val runtimeVersion: String = BuildConfig.VERSION_NAME
         override val runtimeBuild: String = BuildConfig.NATIVE_BUILD_ID
+        override val pwaSource: NativePwaSource
+            get() = NativePwaSource(
+                currentBaseUrl = staticServiceStore.selected.baseUrl,
+                officialBaseUrl = staticServiceStore.official.baseUrl,
+                source = if (staticServiceStore.usesCustom) "custom" else "official",
+            )
         override val nativeDeviceId: String
             get() = serviceBinder?.readyClientRuntime()?.deviceId
                 ?: ServicePreferenceStore(this@MainActivity).nativeDeviceId

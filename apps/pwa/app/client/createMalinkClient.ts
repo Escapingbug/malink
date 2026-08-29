@@ -9,6 +9,7 @@ import { MALINK_BUILD_VERSION } from "../buildInfo";
 import { ConnectionFailureError } from "../connectionFailure";
 import type { MatrixConnectionConfig } from "../matrix";
 import type { MalinkClient, MalinkClientHandlers } from "./MalinkClient";
+import type { MalinkNativeRuntimeInfo } from "./MalinkClient";
 import {
   OPTIONAL_NATIVE_CAPABILITIES,
   REQUIRED_NATIVE_CAPABILITIES,
@@ -90,7 +91,7 @@ export async function createMalinkClient(
     );
     return dependencies.createWeb(config, handlers);
   }
-  handlers.onNativeRuntime?.(hello.native);
+  handlers.onNativeRuntime?.(nativeRuntimeInfo(hello));
   const fullNative = REQUIRED_NATIVE_CAPABILITIES.every(
     (name) => hasCurrentNativeCapability(hello, name),
   );
@@ -107,6 +108,25 @@ export async function createMalinkClient(
   if (nativeManaged) throw nativeRuntimeOutdated();
   handlers.onStatus("connecting", NATIVE_FALLBACK_DETAIL);
   return dependencies.createWeb(config, handlers);
+}
+
+export function nativeRuntimeInfo(hello: HelloResult): MalinkNativeRuntimeInfo {
+  const capability = hello.capabilities["client.pwa-source"];
+  const options = capability?.version === 1 ? capability.options : undefined;
+  const currentBaseUrl = options?.currentBaseUrl;
+  const officialBaseUrl = options?.officialBaseUrl;
+  const source = options?.source;
+  if (
+    typeof currentBaseUrl !== "string" ||
+    typeof officialBaseUrl !== "string" ||
+    (source !== "official" && source !== "custom")
+  ) {
+    return hello.native;
+  }
+  return {
+    ...hello.native,
+    pwaSource: { currentBaseUrl, officialBaseUrl, source },
+  };
 }
 
 /**

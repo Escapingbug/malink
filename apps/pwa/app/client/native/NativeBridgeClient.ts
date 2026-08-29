@@ -55,6 +55,7 @@ export const REQUIRED_NATIVE_CAPABILITIES = [
 export const OPTIONAL_NATIVE_CAPABILITIES = [
   "matrix.login-token",
   "client.update",
+  "client.pwa-source",
 ] as const;
 
 export function nativeCapabilityVersions(

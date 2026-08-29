@@ -247,6 +247,12 @@ export type PwaStateUpgradeResult = {
   invalidated: readonly string[];
 };
 
+export type PwaStateUpgradeProgress = {
+  completed: number;
+  total: number;
+  currentItemId: string | null;
+};
+
 export class PwaStateUpgradeBlockedError extends Error {
   constructor(
     message: string,
@@ -268,6 +274,7 @@ export function runPwaStateUpgrade(
   storage: UpgradeStorage,
   now = Date.now(),
   catalog: readonly PwaStateCatalogEntry[] = PWA_STATE_CATALOG,
+  onProgress?: (progress: PwaStateUpgradeProgress) => void,
 ): PwaStateUpgradeResult {
   validateCatalog(catalog);
   let manifestRaw: string | null;
@@ -345,7 +352,12 @@ export function runPwaStateUpgrade(
     writeManifest(storage, running);
   };
   try {
-    for (const entry of catalog) {
+    for (const [index, entry] of catalog.entries()) {
+      onProgress?.({
+        completed: index,
+        total: catalog.length,
+        currentItemId: entry.id,
+      });
       const recorded = running.stores.find(store => store.id === entry.id)!;
       if (recorded.stateClass !== entry.stateClass) {
         blockedKeys.push(entry.key);
@@ -398,6 +410,11 @@ export function runPwaStateUpgrade(
         }
       }
     }
+    onProgress?.({
+      completed: catalog.length,
+      total: catalog.length,
+      currentItemId: null,
+    });
   } catch (error) {
     try {
       checkpoint({ ...running, phase: "blocked", blocked: blockedKeys });

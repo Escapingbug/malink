@@ -136,14 +136,18 @@ import {
   type WebPushNotificationState,
 } from "./webPushNotifications";
 import {
+  PWA_STATE_CATALOG,
   PwaStateUpgradeBlockedError,
   resetBlockedPwaConnection,
   runPwaStateUpgrade,
+  type PwaStateUpgradeProgress,
 } from "./stateUpgrade";
 import {
   PwaIndexedDbUpgradeBlockedError,
+  pwaIndexedDbCatalog,
   resetBlockedPwaIndexedDb,
   runPwaIndexedDbUpgrade,
+  type PwaIndexedDbUpgradeProgress,
 } from "./indexedDbUpgrade";
 import {
   clearPendingSessionCreateRecovery,
@@ -1019,7 +1023,13 @@ function UiNoticeList({
 }
 
 type PwaUpgradeGateState =
-  | { phase: "preparing" }
+  | {
+      phase: "preparing";
+      scope: "local-storage" | "indexed-db";
+      completed: number;
+      total: number;
+      currentItemId: string | null;
+    }
   | { phase: "ready" }
   | {
       phase: "blocked";
@@ -1034,13 +1044,29 @@ type PwaUpgradeGateState =
 export function MalinkApp() {
   const [upgrade, setUpgrade] = useState<PwaUpgradeGateState>({
     phase: "preparing",
+    scope: "local-storage",
+    completed: 0,
+    total: PWA_STATE_CATALOG.length,
+    currentItemId: PWA_STATE_CATALOG[0]?.id ?? null,
   });
 
   useEffect(() => {
     let active = true;
     void (async () => {
       try {
-        runPwaStateUpgrade(window.localStorage);
+        runPwaStateUpgrade(
+          window.localStorage,
+          Date.now(),
+          PWA_STATE_CATALOG,
+          (progress: PwaStateUpgradeProgress) => {
+            if (!active) return;
+            setUpgrade({
+              phase: "preparing",
+              scope: "local-storage",
+              ...progress,
+            });
+          },
+        );
       } catch (error) {
         if (!active) return;
         setUpgrade({
@@ -1057,7 +1083,30 @@ export function MalinkApp() {
         return;
       }
       try {
-        await runPwaIndexedDbUpgrade(window.localStorage, window.indexedDB);
+        const indexedDbCatalog = pwaIndexedDbCatalog(window.indexedDB);
+        if (active) {
+          setUpgrade({
+            phase: "preparing",
+            scope: "indexed-db",
+            completed: 0,
+            total: indexedDbCatalog.length,
+            currentItemId: indexedDbCatalog[0]?.id ?? null,
+          });
+        }
+        await runPwaIndexedDbUpgrade(
+          window.localStorage,
+          window.indexedDB,
+          Date.now(),
+          indexedDbCatalog,
+          (progress: PwaIndexedDbUpgradeProgress) => {
+            if (!active) return;
+            setUpgrade({
+              phase: "preparing",
+              scope: "indexed-db",
+              ...progress,
+            });
+          },
+        );
         if (active) setUpgrade({ phase: "ready" });
       } catch (error) {
         if (!active) return;
@@ -1080,13 +1129,37 @@ export function MalinkApp() {
   }, []);
 
   if (upgrade.phase === "preparing") {
+    const step = upgrade.scope === "local-storage" ? 1 : 2;
+    const progressLabel = pwaUpgradeProgressLabel(
+      upgrade.scope,
+      upgrade.currentItemId,
+    );
     return (
       <main className="upgrade-gate" aria-busy="true">
         <section className="upgrade-gate-card" role="status">
-          <span className="session-status-dot is-running" aria-hidden="true" />
-          <div>
-            <h1>Preparing this version…</h1>
-            <p>Checking saved connection and recovery state before Malink starts.</p>
+          <span className="upgrade-gate-mark" aria-hidden="true">M</span>
+          <div className="upgrade-gate-copy">
+            <p className="eyebrow">Step {step} of 2</p>
+            <h1>Preparing Malink</h1>
+            <p>
+              {upgrade.scope === "local-storage"
+                ? "Checking saved connection and recovery state."
+                : "Checking secure local databases before the workspace opens."}
+            </p>
+            <div className="upgrade-gate-progress">
+              <span>
+                <strong>{progressLabel}</strong>
+                <small>{upgrade.completed} of {upgrade.total} complete</small>
+              </span>
+              <progress
+                aria-label={`Preparation progress: ${upgrade.completed} of ${upgrade.total}`}
+                max={Math.max(upgrade.total, 1)}
+                value={upgrade.completed}
+              />
+            </div>
+            <small className="upgrade-gate-hint">
+              Malink preserves identity and queued commands if a check needs attention.
+            </small>
           </div>
         </section>
       </main>
@@ -1144,6 +1217,43 @@ export function MalinkApp() {
     );
   }
   return <MalinkAppRuntime />;
+}
+
+const PWA_LOCAL_STATE_PROGRESS_LABELS: Readonly<Record<string, string>> = {
+  "matrix-connection": "Saved connection",
+  "matrix-connections": "Connection profiles",
+  "gateway-trust": "Gateway authorization",
+  "gateway-trust-profiles": "Approved Gateways",
+  "pending-pairing": "Pending device setup",
+  "pending-session-create-projection": "Pending conversations",
+  "pending-project-create-projection": "Pending projects",
+  "native-event-cursor": "Native event position",
+  "gateway-ui-projection": "Workspace cache",
+  "selected-session": "Selected conversations",
+  "session-read-markers": "Read state",
+  "project-disclosure": "Project display state",
+};
+
+const PWA_INDEXED_DB_PROGRESS_LABELS: Readonly<Record<string, string>> = {
+  "matrix-identity-and-command-sequences": "Identity and command records",
+  "replay-protection": "Replay protection",
+  "matrix-crypto-store": "Encrypted Matrix state",
+  "mlp3-command-outbox": "Queued commands",
+  "mlp3-inbox-and-projection": "Verified workspace state",
+  "conversation-history-projection": "Conversation history",
+  "matrix-sync-projection": "Matrix synchronization cache",
+};
+
+function pwaUpgradeProgressLabel(
+  scope: "local-storage" | "indexed-db",
+  currentItemId: string | null,
+): string {
+  if (currentItemId === null) return "Finishing this step";
+  return (
+    scope === "local-storage"
+      ? PWA_LOCAL_STATE_PROGRESS_LABELS[currentItemId]
+      : PWA_INDEXED_DB_PROGRESS_LABELS[currentItemId]
+  ) ?? "Checking saved app data";
 }
 
 function MalinkAppRuntime() {

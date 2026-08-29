@@ -14,6 +14,7 @@ import {
   advanceNativeAppUpdate,
   bootstrapNativeMatrixSessionIfAvailable,
   createMalinkClient,
+  nativeRuntimeInfo,
   nativeMatrixSessionConfig,
   resumeNativeMatrixSessionIfAvailable,
 } from "../app/client/createMalinkClient.ts";
@@ -85,6 +86,35 @@ test("uses Web directly when no native host is injected", async () => {
   );
   assert.equal(client, webClient);
   assert.equal(webCreates, 1);
+});
+
+test("reads a negotiated PWA source without changing the shared hello envelope", () => {
+  const hello: HelloResult = {
+    protocolVersion: 1,
+    bridgeSessionId: "bridge-pwa-source-1",
+    native: {
+      runtimeVersion: "0.1.0",
+      runtimeBuild: "android-source",
+      platform: "android",
+    },
+    capabilities: {
+      "client.pwa-source": {
+        version: 1,
+        options: {
+          currentBaseUrl: "https://mirror.example/malink/",
+          officialBaseUrl: "https://official.example/malink/",
+          source: "custom",
+        },
+      },
+    },
+    limits: NATIVE_BRIDGE_LIMITS,
+  };
+
+  assert.deepEqual(nativeRuntimeInfo(hello).pwaSource, {
+    currentBaseUrl: "https://mirror.example/malink/",
+    officialBaseUrl: "https://official.example/malink/",
+    source: "custom",
+  });
 });
 
 test("falls back explicitly when the native host is only a Matrix scaffold", async () => {
