@@ -9,6 +9,9 @@ test("builds a migration-safe static Malink boot shell", async () => {
   assert.match(html, /<title>Your agents, anywhere · Malink<\/title>/i);
   assert.match(html, /Preparing this version/);
   assert.match(html, /Checking saved connection and recovery state before Malink starts/);
+  assert.match(html, /src="\/malink\/assets\//);
+  assert.match(html, /href="\/malink\/assets\//);
+  assert.doesNotMatch(html, /(?:src|href)="\/assets\//);
   assert.doesNotMatch(html, /Connect a computer/);
   assert.doesNotMatch(html, /Matrix|P-256|Gateway/);
   assert.doesNotMatch(html, />Demo</);

@@ -3,10 +3,19 @@ import { describe, expect, it } from "vitest";
 import {
   createNativeClientRelease,
   githubReleaseArtifactUrl,
+  resolveAndroidArtifactHost,
   type AndroidApkMetadata,
 } from "./android-update-release.js";
 
 describe("Android static release bundle", () => {
+  it("defaults immutable APK storage to GitHub Releases", () => {
+    expect(resolveAndroidArtifactHost()).toBe("github-release");
+    expect(resolveAndroidArtifactHost("static")).toBe("static");
+    expect(() => resolveAndroidArtifactHost("mutable-cdn")).toThrow(
+      "--artifact-host must be static or github-release.",
+    );
+  });
+
   it("binds immutable APK metadata for static and Gateway publication", () => {
     const apkBytes = Buffer.from("signed-apk-fixture");
     const metadata: AndroidApkMetadata = {

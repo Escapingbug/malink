@@ -5,13 +5,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class StaticServiceSettingsPresentationTest {
-    private val official = StaticServiceEndpoint.parse("https://rd.anciety.my.id")
+    private val official = StaticServiceEndpoint.parse("https://escapingbug.github.io/malink/")
 
     @Test
     fun `official PWA remains selectable and visibly current`() {
         assertEquals(
             listOf(
-                "Official PWA (current)\nhttps://rd.anciety.my.id/",
+                "Official PWA (current)\nhttps://escapingbug.github.io/malink/",
                 "Custom PWA address…\nUse a mirror or self-hosted HTTPS address",
             ),
             staticServiceSettingsChoices(
@@ -28,7 +28,7 @@ class StaticServiceSettingsPresentationTest {
 
         assertEquals(
             listOf(
-                "Official PWA\nhttps://rd.anciety.my.id/",
+                "Official PWA\nhttps://escapingbug.github.io/malink/",
                 "Custom PWA address… (current)\nhttps://mirror.example/malink/",
             ),
             staticServiceSettingsChoices(

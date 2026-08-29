@@ -88,9 +88,11 @@ manifest instead:
 ```sh
 pnpm release:android-update -- \
   --apk clients/android/app/build/outputs/apk/release/app-release.apk \
-  --artifact-host github-release \
   --release-note "Background connection reliability improvements"
 ```
+
+GitHub Release hosting is the default. Pass `--artifact-host static` and an
+explicit `--base-url` only for a same-service mirror deployment.
 
 The output JSON contains the exact asset filename and URL. Create the immutable
 tag `android-alpha-<versionCode>`, upload that APK to the GitHub Release, and do

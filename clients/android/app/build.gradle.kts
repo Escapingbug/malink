@@ -45,7 +45,7 @@ val buildTimestamp = DateTimeFormatter
     .format(Instant.ofEpochMilli(buildEpochMillis))
 val androidVersionName = "$androidBaseVersion-dev.$buildTimestamp+$sourceLabel"
 val androidNativeBuildId = "android-$buildTimestamp-$sourceLabel"
-val productionWebOrigin = "https://rd.anciety.my.id"
+val productionWebOrigin = "https://escapingbug.github.io/malink/"
 val releaseSigningValues = mapOf(
     "storeFile" to providers.environmentVariable("MALINK_ANDROID_SIGNING_STORE_FILE").orNull,
     "storePassword" to providers.environmentVariable("MALINK_ANDROID_SIGNING_STORE_PASSWORD").orNull,

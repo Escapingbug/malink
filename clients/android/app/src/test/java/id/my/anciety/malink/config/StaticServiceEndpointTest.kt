@@ -1,10 +1,21 @@
 package id.my.anciety.malink.config
 
+import id.my.anciety.malink.BuildConfig
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StaticServiceEndpointTest {
+    @Test
+    fun `GitHub Pages is the production Official static service`() {
+        assertEquals(
+            "https://escapingbug.github.io/malink/",
+            StaticServiceEndpoint.parse(BuildConfig.APP_ORIGIN).baseUrl,
+        )
+    }
+
     @Test
     fun `normalizes a root or path based static service`() {
         assertEquals(
@@ -63,5 +74,18 @@ class StaticServiceEndpointTest {
                 allowLoopbackHttp = true,
             ).baseUrl,
         )
+    }
+
+    @Test
+    fun `a saved custom choice becomes Official when it matches the new Official address`() {
+        val official = StaticServiceEndpoint.parse("https://escapingbug.github.io/malink/")
+
+        assertFalse(shouldUseCustomStaticService(true, official, official))
+        assertFalse(shouldUseCustomStaticService(false, official, official))
+        assertTrue(shouldUseCustomStaticService(
+            true,
+            StaticServiceEndpoint.parse("https://mirror.example/malink/"),
+            official,
+        ))
     }
 }

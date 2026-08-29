@@ -144,7 +144,11 @@ class StaticServiceStore(context: Context) {
         get() = pending()?.usesCustom ?: committedUsesCustom
 
     private val committedUsesCustom: Boolean
-        get() = preferences.getBoolean(KEY_USE_CUSTOM, false) && custom != null
+        get() = shouldUseCustomStaticService(
+            requested = preferences.getBoolean(KEY_USE_CUSTOM, false),
+            candidate = custom,
+            official = official,
+        )
 
     val custom: StaticServiceEndpoint?
         get() {
@@ -171,7 +175,7 @@ class StaticServiceStore(context: Context) {
         }
         val pending = PendingStaticServiceSelection(
             endpoint = endpoint,
-            usesCustom = usesCustom,
+            usesCustom = shouldUseCustomStaticService(usesCustom, endpoint, official),
             startedAt = now,
             expiresAt = Math.addExact(now, timeoutMs),
         )
@@ -244,3 +248,9 @@ class StaticServiceStore(context: Context) {
         const val KEY_PENDING_EXPIRES_AT = "pending-expires-at"
     }
 }
+
+internal fun shouldUseCustomStaticService(
+    requested: Boolean,
+    candidate: StaticServiceEndpoint?,
+    official: StaticServiceEndpoint,
+): Boolean = requested && candidate?.baseUrl != null && candidate.baseUrl != official.baseUrl

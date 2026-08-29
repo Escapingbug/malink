@@ -47,7 +47,9 @@ function resolveGatewayRelease(): { releaseId: string; buildId: string } | null 
 }
 
 function resolveBasePath(): string {
-  const input = process.env.MALINK_PWA_BASE_PATH?.trim() || "/";
+  // GitHub Pages is the production Official PWA. Root-host deployments such
+  // as rd.anciety.my.id must opt into `/` explicitly.
+  const input = process.env.MALINK_PWA_BASE_PATH?.trim() || "/malink/";
   if (!input.startsWith("/") || input.includes("?") || input.includes("#")) {
     throw new Error("MALINK_PWA_BASE_PATH must be an absolute URL path.");
   }

@@ -1,10 +1,12 @@
 # Malink Android native host
 
 This is the Android-first native host for the continuously updated static
-Malink UI. The official default is `https://rd.anciety.my.id`, but the user can
-select another HTTPS mirror or a self-hosted base URL without rebuilding the
-APK. It is a Kotlin Android application; it does not use Tauri and does not
-bundle a second offline frontend.
+Malink UI. The official default is
+`https://escapingbug.github.io/malink/`; the user can select another HTTPS
+mirror or a self-hosted base URL without rebuilding the APK. A saved custom
+choice for that exact Pages address is normalized back to Official after an
+upgrade. It is a Kotlin Android application; it does not use Tauri and does
+not bundle a second offline frontend.
 
 The browser PWA remains a complete standalone client. Inside the APK, the same
 hosted UI selects the native client only after a strict capability handshake

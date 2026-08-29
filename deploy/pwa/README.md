@@ -2,7 +2,8 @@
 
 Build `apps/pwa` and publish the contents of `apps/pwa/dist/` as ordinary static
 files. No Node, Vinext, Cloudflare Worker, database, or application API runs in
-production.
+production. The default production target is the Official GitHub Pages site at
+`https://escapingbug.github.io/malink/`.
 
 The directory can be uploaded to Caddy/Nginx object storage, GitHub Pages, or a
 CDN. For a non-root location, build with `MALINK_PWA_BASE_PATH=/path/`. The
@@ -33,15 +34,21 @@ compression so update clients can compare `Content-Length` with the signed
 artifact size before streaming and hashing the response.
 
 GitHub Pages deployment only needs the generated `dist/` directory. The build
-includes `.nojekyll` and `404.html`; repository Pages normally uses a base path:
+includes `.nojekyll` and `404.html`; the checked Official build fixes the
+required `/malink/` base path:
 
 ```bash
-MALINK_PWA_BASE_PATH=/repository-name/ pnpm --dir apps/pwa build
+pnpm --dir apps/pwa build:official
 ```
+
+For the root-hosted `rd.anciety.my.id` mirror, build explicitly with
+`pnpm --dir apps/pwa build:root`. Never publish one target's `dist/` directory
+to the other target: the generated JavaScript, stylesheet, update manifest,
+and Service Worker URLs are base-path-specific.
 
 Validate the deployed WASM response with a compression-capable client:
 
 ```sh
 curl --compressed --head \
-  https://rd.anciety.my.id/assets/matrix_sdk_crypto_wasm_bg-DDJzNWwu.wasm
+  https://escapingbug.github.io/malink/assets/matrix_sdk_crypto_wasm_bg-DDJzNWwu.wasm
 ```

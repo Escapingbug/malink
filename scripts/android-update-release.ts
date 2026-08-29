@@ -103,6 +103,16 @@ export function githubReleaseArtifactUrl(input: {
     `android-${input.channel}-${input.versionCode}/${input.artifactName}`;
 }
 
+export function resolveAndroidArtifactHost(
+  configured?: string,
+): "static" | "github-release" {
+  const artifactHost = configured ?? "github-release";
+  if (artifactHost !== "static" && artifactHost !== "github-release") {
+    throw new Error("--artifact-host must be static or github-release.");
+  }
+  return artifactHost;
+}
+
 function main(argv: string[]) {
   const options = parseArguments(argv);
   const sdkRoot = androidSdkRoot(options.sdk);
@@ -120,10 +130,7 @@ function main(argv: string[]) {
   if (!/^[a-z][a-z0-9-]{0,31}$/.test(channel)) throw new Error("Invalid update channel.");
   const publishedAt = integerOption(options["published-at"], Date.now(), "published-at");
   const buildId = options["build-id"] ?? deriveNativeBuildId(metadata.versionName);
-  const artifactHost = options["artifact-host"] ?? "static";
-  if (artifactHost !== "static" && artifactHost !== "github-release") {
-    throw new Error("--artifact-host must be static or github-release.");
-  }
+  const artifactHost = resolveAndroidArtifactHost(options["artifact-host"]);
   if (artifactHost === "github-release" && options["base-url"] !== undefined) {
     throw new Error("--base-url applies only when --artifact-host is static.");
   }

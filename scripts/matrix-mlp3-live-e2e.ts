@@ -65,7 +65,7 @@ const pwaUrl = `http://127.0.0.1:${pwaPort}`
 const pwaEnvironment = { ...process.env }
 delete pwaEnvironment.MALINK_GATEWAY_RELEASE_ID
 delete pwaEnvironment.MALINK_GATEWAY_BUILD_ID
-delete pwaEnvironment.MALINK_PWA_BASE_PATH
+pwaEnvironment.MALINK_PWA_BASE_PATH = "/"
 delete pwaEnvironment.MALINK_BUILD_VERSION
 
 let fixture: DisposableMatrixFixture | undefined

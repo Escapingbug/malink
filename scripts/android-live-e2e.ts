@@ -6,7 +6,7 @@ const execFileAsync = promisify(execFile)
 
 const PACKAGE_NAME = 'id.my.anciety.malink'
 const MAIN_ACTIVITY = `${PACKAGE_NAME}/.web.MainActivity`
-const APP_ORIGIN = 'https://rd.anciety.my.id/'
+const APP_ORIGIN = 'https://escapingbug.github.io/malink/'
 const ENABLE_ENV = 'MALINK_ANDROID_LIVE_E2E'
 const PHYSICAL_ENV = 'MALINK_ANDROID_ALLOW_PHYSICAL'
 const SERIAL_ENV = 'MALINK_ANDROID_SERIAL'

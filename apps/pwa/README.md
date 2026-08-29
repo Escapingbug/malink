@@ -43,7 +43,7 @@ pnpm --dir apps/pwa dev
 Build, test, and lint this package with:
 
 ```bash
-pnpm --dir apps/pwa build
+pnpm --dir apps/pwa build:official
 pnpm --dir apps/pwa test
 pnpm --dir apps/pwa lint
 ```
@@ -51,11 +51,11 @@ pnpm --dir apps/pwa lint
 The application requires Node.js 22.13 or newer. Node and Vite are build-time
 tools only; a production host only needs to serve `dist/` over HTTPS.
 
-For a path-based host such as GitHub Pages, set the public base path while
-building:
+The default production build and `build:official` target the Official GitHub
+Pages path `/malink/`. A root-hosted mirror must opt into the root build:
 
 ```bash
-MALINK_PWA_BASE_PATH=/malink/ pnpm --dir apps/pwa build
+pnpm --dir apps/pwa build:root
 ```
 
 The host should serve `index.html` for unknown application paths, avoid caching
