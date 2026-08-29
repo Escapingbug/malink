@@ -1,3 +1,6 @@
+import type { MessageDeliveryMode } from "@malink/native-bridge";
+import { isLiveMessageDelivery } from "./messageDelivery";
+
 export type AgentActivityPhase =
   | "sending"
   | "waiting"
@@ -35,11 +38,12 @@ export function shouldApplyAgentActivity(
   currentSessionId: string | null,
   event: {
     sessionId?: string;
+    deliveryMode?: MessageDeliveryMode;
     historical?: boolean;
   },
 ): boolean {
   return (
-    !event.historical &&
+    isLiveMessageDelivery(event) &&
     Boolean(currentSessionId) &&
     event.sessionId === currentSessionId
   );

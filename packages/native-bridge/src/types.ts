@@ -404,6 +404,13 @@ export type ToolGroupPresentation = {
   tools: ToolPresentationItem[];
 };
 
+/**
+ * Presentation context for an already authenticated message. This is not part
+ * of the message's durable identity and must never create another Matrix or
+ * ClientEvent copy.
+ */
+export type MessageDeliveryMode = "live" | "catchup" | "history";
+
 export type ClientMessage = {
   eventId: string;
   sender: string;
@@ -413,6 +420,8 @@ export type ClientMessage = {
   kind: "notice" | "user" | "agent" | "tool" | "permission" | "error";
   text?: string;
   sessionId?: string;
+  deliveryMode?: MessageDeliveryMode;
+  /** Legacy history marker retained for older native/web clients. */
   historical?: boolean;
   operationId?: string;
   requestId?: string;

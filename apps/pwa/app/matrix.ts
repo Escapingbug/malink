@@ -14,6 +14,7 @@ import {
   verifyPairingRejection,
   verifyPairingResponse,
 } from "@malink/security";
+import type { MessageDeliveryMode } from "@malink/native-bridge";
 import type {
   Device,
   MatrixClient,
@@ -100,6 +101,7 @@ export type IncomingMalinkMessage = {
   kind: "agent" | "user" | "tool" | "permission" | "notice" | "error";
   text: string;
   sessionId?: string;
+  deliveryMode?: MessageDeliveryMode;
   historical?: boolean;
   operationId?: string;
   commandId?: string;

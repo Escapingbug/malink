@@ -18,6 +18,7 @@ import {
 import type { MatrixClient, MatrixEvent, Room } from "matrix-js-sdk";
 import type { RoomMessageEventContent } from "matrix-js-sdk/lib/@types/events";
 import { ClientPrefix } from "matrix-js-sdk/lib/http-api/prefix";
+import type { MessageDeliveryMode } from "@malink/native-bridge";
 import { IndexedDbMatrixMlp3ClientStore } from "./IndexedDbMatrixMlp3ClientStore";
 import {
   MatrixMlp3ReadModelRepairError,
@@ -74,6 +75,9 @@ import { workspaceRouteNeedsJoin } from "./matrixWorkspaceRoute";
 const LOCAL_TIMEOUT_MS = 10_000;
 const MATRIX_HISTORY_REQUEST_TIMEOUT_MS = 30_000;
 const INITIAL_SYNC_LIMIT = 32;
+const CATCHUP_PRESENTATION_LIMIT_PER_SESSION = 30;
+
+type ProjectionDeliveryMode = MessageDeliveryMode | "hydrate";
 
 type V3Handlers = {
   onMessage(message: IncomingMalinkMessage): void;
@@ -113,6 +117,8 @@ export async function connectMatrixMlp3(
   let protocol: MatrixMlp3ProtocolClient | null = null;
   let projectId: string | null = null;
   let savedMatrixSyncToken: string | null = null;
+  let matrixSyncCatchingUp = false;
+  let matrixSyncCatchupGeneration = 0;
   const secondaryProtocols = new Map<string, {
     route: MatrixWorkspaceRoute;
     room: Room;
@@ -120,6 +126,8 @@ export async function connectMatrixMlp3(
   }>();
   const commandProjects = new Map<string, MatrixMlp3ProtocolClient>();
   const pendingSecondaryProjects = new Set<string>();
+  const activeSecondaryRecoveries = new Set<Promise<void>>();
+  const activeSecondaryRecoveryCounts = new Map<string, number>();
   let matrixDeviceKeys: { ed25519: string; curve25519: string } | null = null;
   const readiness = new MatrixMlp3Readiness(Boolean(trust));
   let authoritativeProjectionPrepared = false;
@@ -176,10 +184,23 @@ export async function connectMatrixMlp3(
     return secondary && active.includes(secondary) ? secondary : null;
   };
 
-  const publishProjection = () => {
+  const publishProjection = (
+    deliveryMode: ProjectionDeliveryMode = "live",
+    targetProtocols?: readonly MatrixMlp3ProtocolClient[],
+  ) => {
+    // Recovery may fetch authoritative pointers after the SDK has announced a
+    // reconnect but before its sync boundary has settled. Let the boundary
+    // publish one bounded catch-up window instead of leaking those snapshots
+    // through the ordinary live callback.
+    if (deliveryMode === "live" && matrixSyncCatchingUp) return;
     const activeProtocols = activeWorkspaceProtocols();
     if (activeProtocols.length === 0) return;
-    for (const message of activeProtocols.flatMap(value => [...value.projection.messages.values()])) {
+    const projectionProtocols = targetProtocols
+      ? targetProtocols.filter(target => activeProtocols.includes(target))
+      : activeProtocols;
+    const catchupBySession = new Map<string, IncomingMalinkMessage[]>();
+    const unscopedCatchup: IncomingMalinkMessage[] = [];
+    for (const message of projectionProtocols.flatMap(value => [...value.projection.messages.values()])) {
       const previous = deliveredMessages.get(message.logicalId);
       if (
         previous
@@ -190,9 +211,51 @@ export async function connectMatrixMlp3(
         version: message.version,
         physicalEventId: message.physicalEventId,
       });
-      handlers.onMessage(toIncomingMessage(message, previous?.physicalEventId));
+      if (deliveryMode === "hydrate") continue;
+      const incoming = toIncomingMessage(
+        message,
+        previous?.physicalEventId,
+        deliveryMode,
+      );
+      if (deliveryMode !== "catchup") {
+        handlers.onMessage(incoming);
+      } else if (incoming.sessionId) {
+        const recovered = catchupBySession.get(incoming.sessionId) ?? [];
+        recovered.push(incoming);
+        catchupBySession.set(incoming.sessionId, recovered);
+      } else {
+        unscopedCatchup.push(incoming);
+      }
     }
-    for (const completion of activeProtocols.flatMap(value => [...value.projection.completions.values()])) {
+    for (const [sessionId, recovered] of catchupBySession) {
+      const bounded = recovered
+        .sort(
+          (left, right) =>
+            left.timestamp - right.timestamp ||
+            left.eventId.localeCompare(right.eventId),
+        )
+        .slice(-CATCHUP_PRESENTATION_LIMIT_PER_SESSION);
+      if (handlers.onHistoryRecovered) {
+        handlers.onHistoryRecovered({
+          sessionId,
+          messages: bounded,
+          // Catch-up is intentionally a bounded presentation window. Older
+          // transcript content remains available through explicit pagination.
+          hasMore: true,
+        });
+      } else {
+        bounded.forEach(handlers.onMessage);
+      }
+    }
+    unscopedCatchup
+      .sort(
+        (left, right) =>
+          left.timestamp - right.timestamp ||
+          left.eventId.localeCompare(right.eventId),
+      )
+      .slice(-CATCHUP_PRESENTATION_LIMIT_PER_SESSION)
+      .forEach(handlers.onMessage);
+    for (const completion of projectionProtocols.flatMap(value => [...value.projection.completions.values()])) {
       if (emittedCompletions.has(completion.commandId)) continue;
       emittedCompletions.add(completion.commandId);
       handlers.onCommandResult?.(toLegacyCompletion(completion));
@@ -206,7 +269,13 @@ export async function connectMatrixMlp3(
   };
 
   const publishProjectionIfAuthoritative = () => {
-    if (readiness.canPublishAuthoritativeProjection) publishProjection();
+    if (
+      readiness.canPublishAuthoritativeProjection
+      && !matrixSyncCatchingUp
+      && protocol
+    ) {
+      publishProjection("live", [protocol]);
+    }
   };
 
   const publishCachedProjectionIfAvailable = () => {
@@ -224,7 +293,10 @@ export async function connectMatrixMlp3(
       )
     ) return;
     cachedProjectionPublished = true;
-    publishProjection();
+    // The selected session hydrates its bounded local window through
+    // loadLocalHistory. Seeding delivery identities here prevents a restored
+    // projection from being replayed message-by-message as live traffic.
+    publishProjection("hydrate");
   };
 
   const createProtocol = async (grantInput: unknown): Promise<boolean> => {
@@ -334,7 +406,11 @@ export async function connectMatrixMlp3(
         config.gatewayId, route.roomId, route.projectId, identity.keyId,
         trust.certificate.certificate.certificateId,
       ].join("\u0000")),
-      publishProjection,
+      () => {
+        if ((activeSecondaryRecoveryCounts.get(route.projectId) ?? 0) > 0) return;
+        const active = secondaryProtocols.get(route.projectId)?.protocol;
+        if (active) publishProjection("live", [active]);
+      },
       (_event, error) => console.error("[mlp3/matrix] quarantined project event", error),
     );
       await routeProtocol.initialize();
@@ -342,7 +418,7 @@ export async function connectMatrixMlp3(
       const context = { route, room: routeRoom, protocol: routeProtocol };
       secondaryProtocols.set(route.projectId, context);
       routeRoom.on(sdk.RoomStateEvent.Events, onRoomState);
-      await recoverSecondaryProject(route.projectId);
+      await recoverSecondaryProject(route.projectId, "hydrate");
       if (await routeProtocol.requiresThreadDirectoryRecovery(savedMatrixSyncToken)) {
         await replayThreadDirectory(
           route.roomId,
@@ -355,27 +431,51 @@ export async function connectMatrixMlp3(
     }
   };
 
-  const recoverSecondaryProject = async (targetProjectId: string): Promise<void> => {
-    const context = secondaryProtocols.get(targetProjectId);
-    if (!context || !trust) return;
-    for (const [eventType, stateKey] of [
-      [MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE, config.gatewayId],
-      [MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE, targetProjectId],
-    ] as const) {
-      const content = await client.getStateEvent(context.route.roomId, eventType, stateKey);
-      const pointer = await verifyMlp3Pointer(content, trust.gatewayKey.publicKey);
-      if (pointer.workspaceId !== config.gatewayId || pointer.projectId !== targetProjectId ||
-          pointer.roomId !== context.route.roomId || pointer.gatewayKeyId !== trust.gatewayKey.keyId) {
-        throw new Error("The MLP/3 pointer is bound to another Workspace project.");
+  const recoverSecondaryProject = (
+    targetProjectId: string,
+    deliveryMode: ProjectionDeliveryMode = "live",
+  ): Promise<void> => {
+    activeSecondaryRecoveryCounts.set(
+      targetProjectId,
+      (activeSecondaryRecoveryCounts.get(targetProjectId) ?? 0) + 1,
+    );
+    const operation = (async () => {
+      const context = secondaryProtocols.get(targetProjectId);
+      if (!context || !trust) return;
+      for (const [eventType, stateKey] of [
+        [MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE, config.gatewayId],
+        [MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE, targetProjectId],
+      ] as const) {
+        const content = await client.getStateEvent(context.route.roomId, eventType, stateKey);
+        const pointer = await verifyMlp3Pointer(content, trust.gatewayKey.publicKey);
+        if (pointer.workspaceId !== config.gatewayId || pointer.projectId !== targetProjectId ||
+            pointer.roomId !== context.route.roomId || pointer.gatewayKeyId !== trust.gatewayKey.keyId) {
+          throw new Error("The MLP/3 pointer is bound to another Workspace project.");
+        }
+        const raw = await client.fetchRoomEvent(context.route.roomId, pointer.eventId);
+        await ingestSecondaryEvent(context, new sdk.MatrixEvent(raw));
       }
-      const raw = await client.fetchRoomEvent(context.route.roomId, pointer.eventId);
-      await ingestSecondaryEvent(context, new sdk.MatrixEvent(raw));
-    }
-    for (const event of context.room.getLiveTimeline().getEvents()) {
-      await ingestSecondaryEvent(context, event);
-    }
-    await context.protocol.retryPending();
-    publishProjection();
+      for (const event of context.room.getLiveTimeline().getEvents()) {
+        await ingestSecondaryEvent(context, event);
+      }
+      await context.protocol.retryPending();
+      publishProjection(deliveryMode, [context.protocol]);
+    })();
+    activeSecondaryRecoveries.add(operation);
+    const finish = () => {
+      activeSecondaryRecoveries.delete(operation);
+      const remaining = (activeSecondaryRecoveryCounts.get(targetProjectId) ?? 1) - 1;
+      if (remaining > 0) {
+        activeSecondaryRecoveryCounts.set(targetProjectId, remaining);
+      } else {
+        activeSecondaryRecoveryCounts.delete(targetProjectId);
+      }
+    };
+    void operation.then(
+      finish,
+      finish,
+    );
+    return operation;
   };
 
   const ingestSecondaryEvent = async (
@@ -403,7 +503,7 @@ export async function connectMatrixMlp3(
     trust = await applyWorkspaceGatewayDirectory(trust, input);
     config.workspaceRoutes = workspaceRoutesFromTrust(trust);
     handlers.onTrustUpdated?.(trust);
-    publishProjection();
+    publishProjection("live");
     reconcileWorkspaceRoutes();
   };
 
@@ -666,11 +766,46 @@ export async function connectMatrixMlp3(
   };
   const onSync = (state: string) => {
     if (stopped) return;
+    if (
+      state === "RECONNECTING"
+      || state === "CATCHUP"
+      || state === "ERROR"
+      || state === "STOPPED"
+    ) {
+      matrixSyncCatchingUp = true;
+      matrixSyncCatchupGeneration += 1;
+    }
     if (state === "SYNCING" || state === "PREPARED") {
       const persisted = flushMatrixSyncStore(syncDatabase, syncStore);
       if (readiness.canPublishAuthoritativeProjection) {
         void protocol?.retryPending();
         void checkpointMatrixSync(activeWorkspaceProtocols(), persisted);
+      }
+      if (matrixSyncCatchingUp) {
+        const generation = matrixSyncCatchupGeneration;
+        const catchupBoundary = (async () => {
+          await inboundChain;
+          await recoveryChain;
+          while (activeSecondaryRecoveries.size > 0) {
+            await Promise.all([...activeSecondaryRecoveries]);
+          }
+        })();
+        void catchupBoundary.then(() => {
+          if (
+            stopped
+            || generation !== matrixSyncCatchupGeneration
+            || !matrixSyncCatchingUp
+          ) return;
+          if (readiness.canPublishAuthoritativeProjection) {
+            publishProjection("catchup");
+          }
+          matrixSyncCatchingUp = false;
+        }).catch(error => {
+          if (generation === matrixSyncCatchupGeneration) {
+            matrixSyncCatchingUp = false;
+          }
+          console.error("[mlp3/matrix] catch-up presentation could not converge", error);
+        });
       }
     }
     const update = readiness.statusForMatrixSync(state);
@@ -740,7 +875,9 @@ export async function connectMatrixMlp3(
     return operation;
   };
 
-  const recoverAuthoritativeState = async (): Promise<void> => {
+  const recoverAuthoritativeState = async (
+    deliveryMode: ProjectionDeliveryMode = "live",
+  ): Promise<void> => {
     const operation = recoveryChain.catch(() => undefined).then(async () => {
       readiness.beginRecovery();
       handlers.onStatus("connecting", "matrix_gateway_state_syncing");
@@ -765,7 +902,7 @@ export async function connectMatrixMlp3(
       await protocol?.retryPending();
       await checkpointMatrixSync(activeWorkspaceProtocols());
       readiness.completeRecovery();
-      publishProjection();
+      publishProjection(deliveryMode);
       handlers.onStatus("connected");
     });
     recoveryChain = operation;
@@ -818,7 +955,7 @@ export async function connectMatrixMlp3(
       handlers.onStatus("error", MATRIX_PROJECT_AUTHORIZATION_REPAIR_REQUIRED);
       return;
     }
-    await recoverAuthoritativeState();
+    await recoverAuthoritativeState("hydrate");
     await recoverWorkspaceDirectoryState();
     completeReady();
     reconcileWorkspaceRoutes();
@@ -884,7 +1021,7 @@ export async function connectMatrixMlp3(
     handlers.onStatus("connecting", "matrix_gateway_state_syncing");
     try {
       await waitForGrant(signal);
-      await recoverAuthoritativeState();
+      await recoverAuthoritativeState("hydrate");
       await recoverWorkspaceDirectoryState();
       completeReady();
       reconcileWorkspaceRoutes();
@@ -972,7 +1109,7 @@ export async function connectMatrixMlp3(
       .map(message => {
         delivered.add(message.logicalId);
         delivered.add(message.physicalEventId);
-        return toIncomingMessage(message);
+        return toIncomingMessage(message, undefined, "history");
       });
     return { messages, hasMore: Boolean(page.next_batch) };
   };
@@ -987,11 +1124,11 @@ export async function connectMatrixMlp3(
       .filter(message =>
         !delivered.has(message.logicalId) && !delivered.has(message.physicalEventId)
       );
-    const messages = available.slice(-1_000)
+    const messages = available.slice(-CATCHUP_PRESENTATION_LIMIT_PER_SESSION)
       .map(message => {
         delivered.add(message.logicalId);
         delivered.add(message.physicalEventId);
-        return toIncomingMessage(message);
+        return toIncomingMessage(message, undefined, "history");
       });
     return {
       messages,
@@ -1182,6 +1319,7 @@ async function sendMatrixMlp3ApplicationEvent(
 export function toIncomingMessage(
   message: import("./matrixMlp3Projection").V3ProjectedMessage,
   replacesEventId?: string,
+  deliveryMode: MessageDeliveryMode = "live",
 ): IncomingMalinkMessage {
   const payload = message.payload;
   const toolGroup = toolGroupFromMlp3Payload(payload, message.timestamp);
@@ -1205,6 +1343,8 @@ export function toIncomingMessage(
             : "agent",
     text: message.body,
     sessionId: message.sessionId,
+    deliveryMode,
+    ...(deliveryMode === "history" ? { historical: true } : {}),
     ...(message.commandId ? { commandId: message.commandId } : {}),
     ...(message.originDeviceId ? { originDeviceId: message.originDeviceId } : {}),
     ...(payload?.type === "decision.requested" || payload?.type === "extension.interaction.requested"

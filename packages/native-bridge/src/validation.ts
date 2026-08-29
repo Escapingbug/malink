@@ -1047,6 +1047,7 @@ export function parseClientMessage(
       "kind",
       "text",
       "sessionId",
+      "deliveryMode",
       "historical",
       "operationId",
       "requestId",
@@ -1105,6 +1106,15 @@ export function parseClientMessage(
       "originDeviceId",
       "originDeviceName",
     ]),
+    ...(value.deliveryMode === undefined
+      ? {}
+      : {
+          deliveryMode: enumValue(value.deliveryMode, `${label}.deliveryMode`, [
+            "live",
+            "catchup",
+            "history",
+          ]),
+        }),
     ...(value.historical === undefined
       ? {}
       : { historical: requiredBoolean(value.historical, `${label}.historical`) }),

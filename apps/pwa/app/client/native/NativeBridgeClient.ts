@@ -12,6 +12,7 @@ import {
   type CommandView,
   type HelloResult,
   type JsonObject,
+  type MessageDeliveryMode,
   type NativeUpdateStatus,
   type PublicMatrixSession,
 } from "@malink/native-bridge";
@@ -76,6 +77,8 @@ export function nativeCapabilityVersions(
 
 export const LEGACY_NATIVE_MANUAL_CHECK_UNAVAILABLE =
   "manual_check_unavailable";
+const NATIVE_CATCHUP_PRESENTATION_LIMIT_PER_SESSION = 30;
+const NATIVE_CATCHUP_SETTLE_MS = 500;
 
 /**
  * `malink.update.check` is an additive client.update v1 operation. APKs
@@ -185,6 +188,14 @@ export class NativeBridgeClient implements MalinkClient {
   readonly #completions = new Map<string, CommandCompletion>();
   readonly #completionWaiters = new Map<string, Set<CompletionWaiter>>();
   readonly #loadedHistoryEventIds = new Map<string, Set<string>>();
+  #networkCatchupActive = false;
+  #networkCatchupConnected = false;
+  #networkCatchupSettleTimer: ReturnType<typeof setTimeout> | null = null;
+  readonly #networkCatchupBySession = new Map<
+    string,
+    MalinkHistoryPage["messages"]
+  >();
+  readonly #networkCatchupUnscoped: MalinkHistoryPage["messages"] = [];
 
   constructor(
     private readonly bridge: NativeRpcBridge,
@@ -194,6 +205,7 @@ export class NativeBridgeClient implements MalinkClient {
   ) {
     assertFullNativeCapabilities(helloResult);
     this.ready = this.#initialize().catch((error) => {
+      this.#discardNetworkCatchup();
       this.#detachEventListener?.();
       this.#detachEventListener = null;
       this.bridge.close();
@@ -474,32 +486,21 @@ export class NativeBridgeClient implements MalinkClient {
   ): Promise<MalinkHistoryPage> {
     this.#historyBefore.delete(sessionId);
     const loaded = this.#loadedHistoryEventIds.get(sessionId) ?? new Set<string>();
-    const recovered = new Map<string, MalinkHistoryPage["messages"][number]>();
-    let hasMore = false;
-    for (let pageIndex = 0; pageIndex < 10; pageIndex += 1) {
-      const page = await this.#loadHistory(sessionId, 100, this.#historyBefore.get(sessionId), "local");
-      let reachedLoadedWindow = false;
-      for (const message of page.messages) {
-        if (loaded.has(message.eventId)) {
-          reachedLoadedWindow = true;
-          continue;
-        }
-        recovered.set(message.eventId, message);
-      }
-      hasMore = page.hasMore;
-      if (
-        reachedLoadedWindow ||
-        !page.hasMore ||
-        !this.#historyBefore.has(sessionId)
-      ) break;
-    }
+    const page = await this.#loadHistory(
+      sessionId,
+      NATIVE_CATCHUP_PRESENTATION_LIMIT_PER_SESSION,
+      undefined,
+      "local",
+    );
     return {
-      messages: [...recovered.values()].sort(
-        (left, right) =>
-          left.timestamp - right.timestamp ||
-          left.eventId.localeCompare(right.eventId),
-      ),
-      hasMore,
+      messages: page.messages
+        .filter((message) => !loaded.has(message.eventId))
+        .sort(
+          (left, right) =>
+            left.timestamp - right.timestamp ||
+            left.eventId.localeCompare(right.eventId),
+        ),
+      hasMore: page.hasMore,
     };
   }
 
@@ -565,6 +566,7 @@ export class NativeBridgeClient implements MalinkClient {
     await this.ready;
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#discardNetworkCatchup();
     this.#detachEventListener?.();
     this.#detachEventListener = null;
     this.#subscriptionId = null;
@@ -579,6 +581,7 @@ export class NativeBridgeClient implements MalinkClient {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#discardNetworkCatchup();
     this.#detachEventListener?.();
     this.#detachEventListener = null;
     const subscriptionId = this.#subscriptionId;
@@ -602,7 +605,7 @@ export class NativeBridgeClient implements MalinkClient {
     this.#detachEventListener = this.bridge.onEvents((notification) => {
       if (notification.params.subscriptionId !== this.#subscriptionId) return;
       this.#eventChain = this.#eventChain
-        .then(() => this.#acceptEvents(notification.params.events, true))
+        .then(() => this.#acceptEvents(notification.params.events, true, "live"))
         .catch((error) => {
           this.handlers.onStatus("error", formatError(error));
         });
@@ -622,7 +625,7 @@ export class NativeBridgeClient implements MalinkClient {
     if (subscribed.mode === "snapshot") {
       this.#applySnapshot(subscribed.snapshot);
     } else {
-      await this.#acceptEvents(subscribed.events, false);
+      await this.#acceptEvents(subscribed.events, false, "catchup");
     }
     await this.bridge.request("malink.events.activate", {
       context: this.bridge.context(),
@@ -632,8 +635,37 @@ export class NativeBridgeClient implements MalinkClient {
     this.cursorStore.save(this.#deviceId, subscribed.barrierCursor);
   }
 
-  async #acceptEvents(events: ClientEvent[], acknowledge: boolean): Promise<void> {
-    for (const event of events) this.#acceptEvent(event);
+  async #acceptEvents(
+    events: ClientEvent[],
+    acknowledge: boolean,
+    deliveryMode: MessageDeliveryMode,
+  ): Promise<void> {
+    const immediateCatchup: MalinkHistoryPage["messages"] = [];
+    for (const event of events) {
+      if (event.type !== "message.upserted") {
+        this.#acceptEvent(event, deliveryMode);
+        continue;
+      }
+      const effectiveDeliveryMode =
+        deliveryMode === "live" && this.#networkCatchupActive
+          ? "catchup"
+          : deliveryMode;
+      if (effectiveDeliveryMode === "live") {
+        this.#acceptEvent(event, "live");
+        continue;
+      }
+      const message = this.#messageForDelivery(
+        event.payload,
+        effectiveDeliveryMode,
+      );
+      if (deliveryMode === "live") {
+        this.#queueNetworkCatchupMessage(message);
+      } else {
+        immediateCatchup.push(message);
+      }
+    }
+    this.#deliverCatchupMessages(immediateCatchup);
+    this.#scheduleNetworkCatchupSettle();
     const throughCursor = events.at(-1)?.cursor;
     if (!throughCursor || !this.#subscriptionId) return;
     if (acknowledge) {
@@ -646,10 +678,114 @@ export class NativeBridgeClient implements MalinkClient {
     if (acknowledge) this.cursorStore.save(this.#deviceId, throughCursor);
   }
 
-  #acceptEvent(event: ClientEvent): void {
+  #deliverCatchupMessages(
+    messages: MalinkHistoryPage["messages"],
+  ): void {
+    const catchupBySession = new Map<string, MalinkHistoryPage["messages"]>();
+    const unscoped: MalinkHistoryPage["messages"] = [];
+    for (const message of messages) {
+      if (!message.sessionId) {
+        unscoped.push(message);
+        continue;
+      }
+      const sessionMessages = catchupBySession.get(message.sessionId) ?? [];
+      sessionMessages.push(message);
+      catchupBySession.set(message.sessionId, sessionMessages);
+    }
+    for (const [sessionId, sessionMessages] of catchupBySession) {
+      const bounded = sessionMessages.slice(
+        -NATIVE_CATCHUP_PRESENTATION_LIMIT_PER_SESSION,
+      );
+      if (this.handlers.onHistoryRecovered) {
+        this.handlers.onHistoryRecovered({ sessionId, messages: bounded, hasMore: true });
+      } else {
+        bounded.forEach((message) => this.handlers.onMessage(message));
+      }
+    }
+    unscoped
+      .slice(-NATIVE_CATCHUP_PRESENTATION_LIMIT_PER_SESSION)
+      .forEach((message) => this.handlers.onMessage(message));
+  }
+
+  #queueNetworkCatchupMessage(
+    message: MalinkHistoryPage["messages"][number],
+  ): void {
+    const target = message.sessionId
+      ? this.#networkCatchupBySession.get(message.sessionId) ?? []
+      : this.#networkCatchupUnscoped;
+    target.push(message);
+    if (target.length > NATIVE_CATCHUP_PRESENTATION_LIMIT_PER_SESSION) {
+      target.splice(
+        0,
+        target.length - NATIVE_CATCHUP_PRESENTATION_LIMIT_PER_SESSION,
+      );
+    }
+    if (message.sessionId) {
+      this.#networkCatchupBySession.set(message.sessionId, target);
+    }
+  }
+
+  #noteNetworkPresentationStatus(
+    status: Parameters<MalinkClientHandlers["onStatus"]>[0],
+  ): void {
+    if (status === "offline" || status === "reconnecting") {
+      this.#networkCatchupActive = true;
+      this.#networkCatchupConnected = false;
+      if (this.#networkCatchupSettleTimer !== null) {
+        clearTimeout(this.#networkCatchupSettleTimer);
+        this.#networkCatchupSettleTimer = null;
+      }
+      return;
+    }
+    if (status === "connected" && this.#networkCatchupActive) {
+      this.#networkCatchupConnected = true;
+      this.#scheduleNetworkCatchupSettle();
+    }
+  }
+
+  #scheduleNetworkCatchupSettle(): void {
+    if (
+      !this.#networkCatchupActive
+      || !this.#networkCatchupConnected
+      || this.#disposed
+    ) return;
+    if (this.#networkCatchupSettleTimer !== null) {
+      clearTimeout(this.#networkCatchupSettleTimer);
+    }
+    this.#networkCatchupSettleTimer = setTimeout(() => {
+      this.#networkCatchupSettleTimer = null;
+      if (this.#disposed || !this.#networkCatchupActive) return;
+      const messages = [
+        ...this.#networkCatchupBySession.values(),
+        this.#networkCatchupUnscoped,
+      ].flat();
+      this.#networkCatchupBySession.clear();
+      this.#networkCatchupUnscoped.length = 0;
+      this.#networkCatchupActive = false;
+      this.#networkCatchupConnected = false;
+      try {
+        this.#deliverCatchupMessages(messages);
+      } catch (error) {
+        this.handlers.onStatus("error", formatError(error));
+      }
+    }, NATIVE_CATCHUP_SETTLE_MS);
+  }
+
+  #discardNetworkCatchup(): void {
+    if (this.#networkCatchupSettleTimer !== null) {
+      clearTimeout(this.#networkCatchupSettleTimer);
+      this.#networkCatchupSettleTimer = null;
+    }
+    this.#networkCatchupBySession.clear();
+    this.#networkCatchupUnscoped.length = 0;
+    this.#networkCatchupActive = false;
+    this.#networkCatchupConnected = false;
+  }
+
+  #acceptEvent(event: ClientEvent, deliveryMode: MessageDeliveryMode): void {
     switch (event.type) {
       case "message.upserted":
-        this.handlers.onMessage(parseCompatibleClientMessage(event.payload));
+        this.handlers.onMessage(this.#messageForDelivery(event.payload, deliveryMode));
         break;
       case "command.changed":
         this.#recordCommand(parseCommandView(event.payload));
@@ -662,6 +798,7 @@ export class NativeBridgeClient implements MalinkClient {
       case "client.status.changed": {
         const status = parseStatusPayload(event.payload);
         this.handlers.onStatus(status.status, status.detail);
+        this.#noteNetworkPresentationStatus(status.status);
         break;
       }
       case "gateway.state.changed":
@@ -674,12 +811,24 @@ export class NativeBridgeClient implements MalinkClient {
     }
   }
 
+  #messageForDelivery(
+    payload: ClientEvent["payload"],
+    deliveryMode: MessageDeliveryMode,
+  ): MalinkHistoryPage["messages"][number] {
+    const message = parseCompatibleClientMessage(payload);
+    return {
+      ...message,
+      deliveryMode: message.historical ? "history" : deliveryMode,
+    };
+  }
+
   #applySnapshot(snapshot: ClientSnapshot): void {
     this.#deviceId = snapshot.deviceId;
     this.handlers.onStatus(
       matrixStatus(snapshot.lifecycle.phase),
       snapshot.lifecycle.detailCode,
     );
+    this.#noteNetworkPresentationStatus(matrixStatus(snapshot.lifecycle.phase));
     this.handlers.onTrustUpdated?.(
       snapshot.trust.state === "trusted" ? snapshot.trust : null,
     );
@@ -931,7 +1080,11 @@ export class NativeBridgeClient implements MalinkClient {
     if (page.nextBefore) this.#historyBefore.set(sessionId, page.nextBefore);
     else this.#historyBefore.delete(sessionId);
     return {
-      messages: page.messages.map(parseCompatibleClientMessage),
+      messages: page.messages.map((payload) => ({
+        ...parseCompatibleClientMessage(payload),
+        deliveryMode: "history" as const,
+        historical: true,
+      })),
       hasMore: page.hasMore,
     };
   }

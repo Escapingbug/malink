@@ -410,6 +410,7 @@ describe("native bridge JSON-RPC conformance", () => {
           kind: "tool",
           text: "done",
           sessionId: "session-1",
+          deliveryMode: "history",
           historical: true,
           activeDeviceCount: 2,
           format: "markdown",
@@ -435,6 +436,27 @@ describe("native bridge JSON-RPC conformance", () => {
       }),
     );
     expect("result" in page && page.result.messages[0]?.encrypted).toBe(true);
+    expect("result" in page && page.result.messages[0]?.deliveryMode).toBe("history");
+
+    expect(() =>
+      parseMethodRpcResponse(
+        "malink.history.page",
+        response({
+          sessionId: "session-1",
+          messages: [{
+            eventId: "event-invalid-delivery",
+            sender: "gateway-1",
+            timestamp: 1,
+            encrypted: true,
+            kind: "agent",
+            deliveryMode: "replay",
+            format: "plain",
+          }],
+          hasMore: false,
+          asOfCursor: "journal-1:42",
+        }),
+      ),
+    ).toThrow(/deliveryMode/);
 
     expect(() =>
       parseMethodRpcResponse(

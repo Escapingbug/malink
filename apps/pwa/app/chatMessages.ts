@@ -1,4 +1,6 @@
+import type { MessageDeliveryMode } from "@malink/native-bridge";
 import type { PersistedChatMessage } from "./messageHistory";
+import { resolvedMessageDeliveryMode } from "./messageDelivery";
 
 type TranscriptCandidate = {
   kind?: string;
@@ -25,6 +27,7 @@ export function isTranscriptMessage(message: TranscriptCandidate): boolean {
 
 export type ChatMessage = PersistedChatMessage & {
   sessionId?: string;
+  deliveryMode?: MessageDeliveryMode;
   historical?: boolean;
   optimistic?: boolean;
   eventAliases?: string[];
@@ -341,6 +344,7 @@ function mergeMultipartAssistantMessage(
       candidates.flatMap((entry) => operationIds(entry)),
     ),
     historical: candidates.every((entry) => Boolean(entry.historical)),
+    deliveryMode: aggregateDeliveryMode(candidates),
     multipart: {
       messageId: incomingPart.messageId,
       partCount,
@@ -351,6 +355,15 @@ function mergeMultipartAssistantMessage(
   };
   const withoutParts = current.filter((entry) => !matching.includes(entry));
   return insertChatMessage(withoutParts, aggregate);
+}
+
+function aggregateDeliveryMode(
+  messages: readonly ChatMessage[],
+): MessageDeliveryMode {
+  const modes = messages.map(resolvedMessageDeliveryMode);
+  if (modes.includes("live")) return "live";
+  if (modes.includes("catchup")) return "catchup";
+  return "history";
 }
 
 function multipartDescriptor(

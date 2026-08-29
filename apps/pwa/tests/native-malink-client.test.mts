@@ -209,6 +209,198 @@ test("returns a durable native receipt immediately and acknowledges event cursor
   replacement.close();
 });
 
+test("bounds native replay as catch-up while later events remain live", async () => {
+  const replayEvents = Array.from({ length: 35 }, (_, index) => ({
+    schemaVersion: 1,
+    eventId: `replay-event-${index}`,
+    cursor: `replay-cursor-${index}`,
+    occurredAt: index + 1,
+    type: "message.upserted" as const,
+    payload: {
+      eventId: `replay-message-${index}`,
+      sender: "gateway",
+      timestamp: index + 1,
+      encrypted: true,
+      kind: "agent",
+      text: `restored ${index}`,
+      sessionId: "session-catchup",
+      format: "plain",
+    },
+  }));
+  const port = new RuntimePort((request) => {
+    if (request.method !== "malink.events.subscribe") {
+      return responseFor(request);
+    }
+    return {
+      subscriptionId: "subscription-1",
+      barrierCursor: "replay-cursor-34",
+      mode: "replay",
+      events: replayEvents,
+    };
+  });
+  const liveMessages: Array<{ eventId: string; deliveryMode?: string }> = [];
+  const recoveries: Array<{
+    sessionId: string;
+    messages: Array<{ eventId: string; deliveryMode?: string }>;
+    hasMore: boolean;
+  }> = [];
+  const bridge = await acquireNativeRpcBridge(port);
+  const hello = await bridge.hello({
+    webBuild: "test-build",
+    requiredCapabilities: [],
+    optionalCapabilities: REQUIRED_NATIVE_CAPABILITIES.map((name) => ({
+      name,
+      versions: nativeCapabilityVersions(name),
+    })),
+  });
+  const client = new NativeBridgeClient(bridge, hello, {
+    onMessage(message) {
+      liveMessages.push({
+        eventId: message.eventId,
+        deliveryMode: message.deliveryMode,
+      });
+    },
+    onStatus() {},
+    onHistoryRecovered(recovery) {
+      recoveries.push(recovery);
+    },
+  });
+
+  await client.ready;
+
+  assert.equal(liveMessages.length, 0);
+  assert.equal(recoveries.length, 1);
+  assert.equal(recoveries[0]?.sessionId, "session-catchup");
+  assert.equal(recoveries[0]?.hasMore, true);
+  assert.equal(recoveries[0]?.messages.length, 30);
+  assert.equal(recoveries[0]?.messages[0]?.eventId, "replay-message-5");
+  assert.equal(recoveries[0]?.messages.at(-1)?.eventId, "replay-message-34");
+  assert.ok(
+    recoveries[0]?.messages.every(
+      (message) => message.deliveryMode === "catchup",
+    ),
+  );
+
+  port.deliver({
+    jsonrpc: "2.0",
+    method: "malink.events.deliver",
+    params: {
+      subscriptionId: "subscription-1",
+      events: [{
+        schemaVersion: 1,
+        eventId: "live-event-1",
+        cursor: "live-cursor-1",
+        occurredAt: 100,
+        type: "message.upserted",
+        payload: {
+          eventId: "live-message-1",
+          sender: "gateway",
+          timestamp: 100,
+          encrypted: true,
+          kind: "agent",
+          text: "live",
+          sessionId: "session-catchup",
+          format: "plain",
+        },
+      }],
+    },
+  });
+  await nextTurn();
+
+  assert.deepEqual(liveMessages, [{
+    eventId: "live-message-1",
+    deliveryMode: "live",
+  }]);
+
+  port.deliver({
+    jsonrpc: "2.0",
+    method: "malink.events.deliver",
+    params: {
+      subscriptionId: "subscription-1",
+      events: [{
+        schemaVersion: 1,
+        eventId: "status-offline-1",
+        cursor: "status-offline-cursor-1",
+        occurredAt: 200,
+        type: "client.status.changed",
+        payload: { phase: "offline", detail: "network_unavailable" },
+      }],
+    },
+  });
+  port.deliver({
+    jsonrpc: "2.0",
+    method: "malink.events.deliver",
+    params: {
+      subscriptionId: "subscription-1",
+      events: [{
+        schemaVersion: 1,
+        eventId: "status-ready-1",
+        cursor: "status-ready-cursor-1",
+        occurredAt: 201,
+        type: "client.status.changed",
+        payload: { phase: "ready" },
+      }, ...replayEvents.map((event, index) => ({
+        ...event,
+        eventId: `network-catchup-event-${index}`,
+        cursor: `network-catchup-cursor-${index}`,
+        occurredAt: 202 + index,
+        payload: {
+          ...event.payload,
+          eventId: `network-catchup-message-${index}`,
+          timestamp: 202 + index,
+        },
+      }))],
+    },
+  });
+  await nextTurn();
+
+  assert.equal(recoveries.length, 1);
+  assert.equal(liveMessages.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 550));
+  assert.equal(recoveries.length, 2);
+  assert.equal(recoveries[1]?.messages.length, 30);
+  assert.equal(
+    recoveries[1]?.messages[0]?.eventId,
+    "network-catchup-message-5",
+  );
+  assert.ok(
+    recoveries[1]?.messages.every(
+      (message) => message.deliveryMode === "catchup",
+    ),
+  );
+
+  port.deliver({
+    jsonrpc: "2.0",
+    method: "malink.events.deliver",
+    params: {
+      subscriptionId: "subscription-1",
+      events: [{
+        schemaVersion: 1,
+        eventId: "live-event-2",
+        cursor: "live-cursor-2",
+        occurredAt: 300,
+        type: "message.upserted",
+        payload: {
+          eventId: "live-message-2",
+          sender: "gateway",
+          timestamp: 300,
+          encrypted: true,
+          kind: "agent",
+          text: "live again",
+          sessionId: "session-catchup",
+          format: "plain",
+        },
+      }],
+    },
+  });
+  await nextTurn();
+  assert.deepEqual(liveMessages.at(-1), {
+    eventId: "live-message-2",
+    deliveryMode: "live",
+  });
+  client.dispose();
+});
+
 test("keeps native local projection reads separate from Matrix pagination", async () => {
   const historySources: string[] = [];
   const port = new RuntimePort((request) => {

@@ -10,9 +10,27 @@ const {
 } = await import(new URL("../app/chatMessages.ts", import.meta.url).href);
 const {
   agentReceivedCommandIds,
+  isHistoricalMessageDelivery,
+  isLiveMessageDelivery,
   messageDeliveryPresentation,
+  resolvedMessageDeliveryMode,
   userMessageDeliveryState,
 } = await import(new URL("../app/messageDelivery.ts", import.meta.url).href);
+
+test("keeps live, reconnect catch-up, and explicit history presentation distinct", () => {
+  assert.equal(resolvedMessageDeliveryMode({}), "live");
+  assert.equal(
+    resolvedMessageDeliveryMode({ deliveryMode: "catchup" }),
+    "catchup",
+  );
+  assert.equal(
+    resolvedMessageDeliveryMode({ deliveryMode: "live", historical: true }),
+    "history",
+  );
+  assert.equal(isLiveMessageDelivery({ deliveryMode: "catchup" }), false);
+  assert.equal(isHistoricalMessageDelivery({ deliveryMode: "catchup" }), false);
+  assert.equal(isHistoricalMessageDelivery({ deliveryMode: "history" }), true);
+});
 
 test("identifies agent work messages without guessing from their text", () => {
   assert.equal(isAgentWorkMessage({ kind: "agent" }), true);

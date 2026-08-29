@@ -439,6 +439,27 @@ describe("MatrixMlp3Projection", () => {
     expect(secondIncoming.replacesEventId).toBe("$matrix-version-1");
   });
 
+  it("labels presentation delivery without changing the projected message identity", () => {
+    const projection = new MatrixMlp3Projection();
+    projection.applyEvent(messageEvent(1), "$matrix-version-1");
+    const projected = projection.messages.get("assistant:message-1:0");
+    expect(projected).toBeDefined();
+
+    expect(toIncomingMessage(projected!)).toMatchObject({
+      eventId: "assistant:message-1:0",
+      deliveryMode: "live",
+    });
+    expect(toIncomingMessage(projected!, undefined, "catchup")).toMatchObject({
+      eventId: "assistant:message-1:0",
+      deliveryMode: "catchup",
+    });
+    expect(toIncomingMessage(projected!, undefined, "history")).toMatchObject({
+      eventId: "assistant:message-1:0",
+      deliveryMode: "history",
+      historical: true,
+    });
+  });
+
   it("keeps streamed Agent and tool messages in one order after projection restore", () => {
     const projection = new MatrixMlp3Projection();
     projection.applyEvent(messageEvent(1, 1, 100), "$agent-v1");

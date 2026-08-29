@@ -174,6 +174,13 @@ test("only live events for the selected session may drive activity", () => {
     false,
   );
   assert.equal(
+    shouldApplyAgentActivity("session-a", {
+      sessionId: "session-a",
+      deliveryMode: "catchup",
+    }),
+    false,
+  );
+  assert.equal(
     shouldApplyAgentActivity(null, { sessionId: "session-a" }),
     false,
   );

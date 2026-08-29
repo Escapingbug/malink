@@ -214,7 +214,10 @@ import {
 } from "./commandPayloads";
 import {
   agentReceivedCommandIds,
+  isHistoricalMessageDelivery,
+  isLiveMessageDelivery,
   messageDeliveryPresentation,
+  resolvedMessageDeliveryMode,
   userMessageDeliveryState,
 } from "./messageDelivery";
 import { retryMatchingCommandRevisionConflict } from "./commandRevisionRetry";
@@ -3390,7 +3393,7 @@ function MalinkAppRuntime() {
     }
     const sessionId =
       incoming.sessionId ?? selectedSessionIdRef.current ?? undefined;
-    if (sessionId && !incoming.historical) {
+    if (sessionId && isLiveMessageDelivery(incoming)) {
       setSessionAgentActivity(sessionId, (current) => {
         if (incoming.kind === "user") {
           return current?.phase === "starting" ||
@@ -3467,7 +3470,7 @@ function MalinkAppRuntime() {
       optimisticMessagesRef.current.delete(optimisticMessageId);
       recoverUiNotice("composer:send");
     }
-    if (sessionId && !incoming.historical) {
+    if (sessionId && isLiveMessageDelivery(incoming)) {
       rememberLiveMessage(sessionId, message, {
         reconcileMessageId: optimisticMessageId,
       });
@@ -3497,7 +3500,7 @@ function MalinkAppRuntime() {
     ) {
       return;
     }
-    if (incoming.requestId && !incoming.historical) {
+    if (incoming.requestId && !isHistoricalMessageDelivery(incoming)) {
       const resolvedActionId = resolvedDecisionActionId(incoming.raw);
       setDecisionStates((current) => ({
         ...current,
@@ -3508,7 +3511,7 @@ function MalinkAppRuntime() {
     }
     const feed = feedRef.current;
     followLatestRef.current = !feed || isNearFeedBottom(feed);
-    if (!followLatestRef.current && !incoming.historical) {
+    if (!followLatestRef.current && isLiveMessageDelivery(incoming)) {
       setFeedHasUnseenMessages(true);
     }
     setMessages((current) =>
@@ -3521,12 +3524,18 @@ function MalinkAppRuntime() {
   function recoverLateHistory(page: MalinkHistoryRecovery): void {
     const scope = historyScopeRef.current;
     if (!scope) return;
-    const recovered = page.messages.map((message) =>
-      chatMessageFromIncoming(
-        { ...incomingMessageFromClient(message), historical: true },
+    const recovered = page.messages.map((message) => {
+      const incoming = incomingMessageFromClient(message);
+      const deliveryMode = resolvedMessageDeliveryMode(incoming);
+      return chatMessageFromIncoming(
+        {
+          ...incoming,
+          deliveryMode,
+          historical: deliveryMode === "history",
+        },
         message.sessionId ?? page.sessionId,
-      ),
-    );
+      );
+    });
     // Presentation persistence is a cache, not a delivery gate. A blocked
     // IndexedDB write must not hide already-verified native history.
     persistRecoveredHistoryInBackground(scope, page.sessionId, recovered);
@@ -3595,7 +3604,11 @@ function MalinkAppRuntime() {
         );
         const olderMessages = remote.messages.map((message) =>
           chatMessageFromIncoming(
-            { ...incomingMessageFromClient(message), historical: true },
+            {
+              ...incomingMessageFromClient(message),
+              deliveryMode: "history",
+              historical: true,
+            },
             message.sessionId ?? sessionId,
           ),
         );
@@ -3664,7 +3677,11 @@ function MalinkAppRuntime() {
         );
         const localMessages = local.messages.map((message) =>
           chatMessageFromIncoming(
-            { ...incomingMessageFromClient(message), historical: true },
+            {
+              ...incomingMessageFromClient(message),
+              deliveryMode: "history",
+              historical: true,
+            },
             message.sessionId ?? sessionId,
           ),
         );
@@ -3692,7 +3709,11 @@ function MalinkAppRuntime() {
         );
         const remoteMessages = remote.messages.map((message) =>
           chatMessageFromIncoming(
-            { ...incomingMessageFromClient(message), historical: true },
+            {
+              ...incomingMessageFromClient(message),
+              deliveryMode: "history",
+              historical: true,
+            },
             message.sessionId ?? sessionId,
           ),
         );
@@ -3757,6 +3778,7 @@ function MalinkAppRuntime() {
       const cachedMessages = cached.messages.map((message) => ({
         ...message,
         sessionId,
+        deliveryMode: "history" as const,
         historical: true,
         ...(message.deliveryState === "sending"
           ? { deliveryState: "failed" as const }
@@ -3884,6 +3906,7 @@ function MalinkAppRuntime() {
         const olderMessages = cached.messages.map((message) => ({
           ...message,
           sessionId,
+          deliveryMode: "history" as const,
           historical: true,
         }));
         prepareHistoryPrepend(feedRef.current, prependScrollRef);
@@ -10194,7 +10217,7 @@ function MalinkAppRuntime() {
               return (
                 <div
                   className={`encryption-notice ${
-                    message.historical ? "" : "notice-enter"
+                    isLiveMessageDelivery(message) ? "notice-enter" : ""
                   }`}
                   key={message.id}
                 >
@@ -10207,7 +10230,7 @@ function MalinkAppRuntime() {
               return (
                 <div
                   className={`message-row agent-row ${turnPresentationClass} ${
-                    message.historical ? "" : "message-enter"
+                    isLiveMessageDelivery(message) ? "message-enter" : ""
                   }`}
                   key={message.id}
                 >
@@ -10234,7 +10257,7 @@ function MalinkAppRuntime() {
               return (
                 <div
                   className={`message-row user-row turn-prompt ${
-                    message.historical ? "" : "message-enter"
+                    isLiveMessageDelivery(message) ? "message-enter" : ""
                   }`}
                   key={message.id}
                 >
@@ -10286,7 +10309,7 @@ function MalinkAppRuntime() {
               return (
                 <div
                   className={`message-row tool-group-row ${agentTurnClass} ${turnPresentationClass} ${
-                    message.historical ? "" : "message-enter"
+                    isLiveMessageDelivery(message) ? "message-enter" : ""
                   }`}
                   key={message.id}
                 >
@@ -10309,14 +10332,14 @@ function MalinkAppRuntime() {
                 return (
                   <div
                     className={`message-row agent-row ${turnPresentationClass} ${
-                      message.historical ? "" : "message-enter"
+                      isLiveMessageDelivery(message) ? "message-enter" : ""
                     }`}
                     key={message.id}
                   >
                     <div className="agent-mark">C</div>
                     <ExtensionViewCard
                       extensionName={extensionView.extension.name}
-                      historical={message.historical}
+                      historical={isHistoricalMessageDelivery(message)}
                       onAction={(actionId) =>
                         void decidePermission(message, actionId)
                       }
@@ -10343,7 +10366,7 @@ function MalinkAppRuntime() {
               return (
                 <div
                   className={`message-row agent-row ${turnPresentationClass} ${
-                    message.historical ? "" : "message-enter"
+                    isLiveMessageDelivery(message) ? "message-enter" : ""
                   }`}
                   key={message.id}
                 >
@@ -10364,7 +10387,7 @@ function MalinkAppRuntime() {
                     {permissionDetails && (
                       <pre className="permission-details">{permissionDetails}</pre>
                     )}
-                    {message.historical ? (
+                    {isHistoricalMessageDelivery(message) ? (
                       <div className="decision-state historical">
                         History only · request not replayed
                       </div>
@@ -10417,7 +10440,7 @@ function MalinkAppRuntime() {
             return (
               <div
                 className={`message-row agent-row ${agentTurnClass} ${turnPresentationClass} ${
-                  message.historical ? "" : "message-enter"
+                  isLiveMessageDelivery(message) ? "message-enter" : ""
                 }`}
                 key={message.id}
               >
@@ -11322,6 +11345,7 @@ function chatMessageFromIncoming(
   incoming: IncomingMalinkMessage,
   sessionId?: string,
 ): ChatMessage {
+  const deliveryMode = resolvedMessageDeliveryMode(incoming);
   return {
     id: incoming.eventId,
     eventId: incoming.eventId,
@@ -11340,7 +11364,8 @@ function chatMessageFromIncoming(
     toolGroup: incoming.toolGroup,
     attachments: incoming.attachments,
     sessionId,
-    historical: incoming.historical,
+    deliveryMode,
+    historical: deliveryMode === "history",
     raw: incoming.raw,
   };
 }
@@ -11356,6 +11381,7 @@ function incomingMessageFromClient(
     kind: message.kind,
     text: message.text ?? "",
     sessionId: message.sessionId,
+    deliveryMode: message.deliveryMode,
     historical: message.historical,
     operationId: message.operationId,
     requestId: message.requestId,

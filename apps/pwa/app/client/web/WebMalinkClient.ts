@@ -331,6 +331,7 @@ function messageFromWeb(message: IncomingMalinkMessage): MalinkMessage {
     kind: message.kind,
     text: message.text,
     sessionId: message.sessionId,
+    deliveryMode: message.deliveryMode,
     historical: message.historical,
     operationId: message.operationId,
     requestId: message.requestId,

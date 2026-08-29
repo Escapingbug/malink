@@ -1,3 +1,4 @@
+import type { MessageDeliveryMode } from "@malink/native-bridge";
 import type { CommandCompletion } from "./commandLifecycle";
 import type { GatewaySessionSummary } from "./gatewayState";
 import type { PersistedChatMessage } from "./messageHistory";
@@ -21,6 +22,31 @@ type ActiveSession = Pick<
   GatewaySessionSummary,
   "activeTurnId" | "activityPhase"
 >;
+
+export type MessageDelivery = {
+  deliveryMode?: MessageDeliveryMode;
+  historical?: boolean;
+};
+
+/**
+ * `historical` predates explicit delivery modes. Preserve it as the stronger
+ * signal so an older native history page can never become an actionable live
+ * message merely because it crossed a newer Web client.
+ */
+export function resolvedMessageDeliveryMode(
+  message: MessageDelivery,
+): MessageDeliveryMode {
+  if (message.historical) return "history";
+  return message.deliveryMode ?? "live";
+}
+
+export function isLiveMessageDelivery(message: MessageDelivery): boolean {
+  return resolvedMessageDeliveryMode(message) === "live";
+}
+
+export function isHistoricalMessageDelivery(message: MessageDelivery): boolean {
+  return resolvedMessageDeliveryMode(message) === "history";
+}
 
 /**
  * Derives the prompt commands that have crossed the second receipt boundary:
