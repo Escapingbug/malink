@@ -53,6 +53,8 @@ import {
   type AgentActivity,
 } from "./agentActivity";
 import { MatrixSettings } from "./MatrixSettings";
+import { ConnectionOnboarding } from "./ConnectionOnboarding";
+import { MalinkMark } from "./MalinkMark";
 import type { GatewayEnrollmentBusyState } from "./GatewayEnrollmentPanel";
 import { waitForUiCommit } from "./uiScheduling";
 import { hasPairingRoute, pairingRouteFromUrl } from "./pairingRoute";
@@ -563,11 +565,31 @@ function bindCredentialsToHomeserver(
   };
 }
 
-function Icon({ children }: { children: React.ReactNode }) {
+function ChatsIcon() {
   return (
-    <span className="icon" aria-hidden="true">
-      {children}
-    </span>
+    <svg aria-hidden="true" className="rail-icon" viewBox="0 0 24 24">
+      <path d="M5.25 5.25h13.5c.83 0 1.5.67 1.5 1.5v8.5c0 .83-.67 1.5-1.5 1.5h-7.5l-4.7 3v-3h-1.3c-.83 0-1.5-.67-1.5-1.5v-8.5c0-.83.67-1.5 1.5-1.5Z" />
+      <path d="M8 9.25h8M8 12.75h5.5" />
+    </svg>
+  );
+}
+
+function FilesIcon() {
+  return (
+    <svg aria-hidden="true" className="rail-icon" viewBox="0 0 24 24">
+      <path d="M4.25 5.25h15.5v13.5H4.25z" />
+      <path d="M8 14.75h1.5l1 1.5h3l1-1.5H16" />
+      <path d="M12 7.75v5M9.75 10.5 12 12.75l2.25-2.25" />
+    </svg>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg aria-hidden="true" className="rail-icon" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="3.25" />
+      <path d="M9.85 3.9h4.3l.5 2.05 1.4.8 2.02-.6 2.15 3.72-1.53 1.46v1.62l1.53 1.46-2.15 3.72-2.02-.6-1.4.8-.5 2.05h-4.3l-.5-2.05-1.4-.8-2.02.6-2.15-3.72 1.53-1.46v-1.62L3.78 9.87l2.15-3.72 2.02.6 1.4-.8.5-2.05Z" />
+    </svg>
   );
 }
 
@@ -2677,6 +2699,7 @@ function MalinkAppRuntime() {
 
   useEffect(() => {
     const focusSessionSearch = (event: globalThis.KeyboardEvent) => {
+      if (!trustedGateway) return;
       if (event.key.toLowerCase() !== "k" || (!event.metaKey && !event.ctrlKey)) {
         return;
       }
@@ -2687,7 +2710,7 @@ function MalinkAppRuntime() {
     };
     window.addEventListener("keydown", focusSessionSearch);
     return () => window.removeEventListener("keydown", focusSessionSearch);
-  }, []);
+  }, [trustedGateway]);
 
   useEffect(() => {
     if (!detailsOpen) return;
@@ -8808,8 +8831,8 @@ function MalinkAppRuntime() {
   return (
     <main className={`app-shell ${mobileChatOpen ? "mobile-chat-open" : ""} ${primaryView === "files" ? "file-inbox-open" : ""}`}>
       <aside className="rail" aria-label="Primary navigation">
-        <div className="brand" title="Malink">
-          <span>⌁</span>
+        <div className="brand" role="img" aria-label="Malink">
+          <MalinkMark />
         </div>
         <nav className="rail-nav">
           <button
@@ -8818,7 +8841,7 @@ function MalinkAppRuntime() {
             aria-current={primaryView === "chats" ? "page" : undefined}
             onClick={() => setPrimaryView("chats")}
           >
-            <Icon>◫</Icon>
+            <ChatsIcon />
             <span>Chats</span>
           </button>
           <button
@@ -8830,7 +8853,7 @@ function MalinkAppRuntime() {
               setMobileChatOpen(false);
             }}
           >
-            <Icon>⇩</Icon>
+            <FilesIcon />
             <span>Files</span>
           </button>
         </nav>
@@ -8841,7 +8864,7 @@ function MalinkAppRuntime() {
           aria-label="Settings"
           onClick={() => setSettingsOpen(true)}
         >
-          <Icon>⚙</Icon>
+          <SettingsIcon />
           <span>Settings</span>
         </button>
       </aside>
@@ -8881,7 +8904,7 @@ function MalinkAppRuntime() {
               <div className="workspace-inbox-empty">
                 <span aria-hidden="true">⇩</span>
                 <strong>No files yet</strong>
-                <p>Run <code>malink send-file &lt;path&gt;</code> on the Gateway computer.</p>
+                <p>Run <code>malink send-file &lt;path&gt;</code> on the connected computer.</p>
               </div>
             )}
           </div>
@@ -8895,21 +8918,32 @@ function MalinkAppRuntime() {
             <h1>Malink</h1>
           </div>
           <div className="session-header-actions">
-            <button
-              type="button"
-              className={`mobile-history-button${providerHistoryLoad ? " is-loading" : ""}`}
-              aria-label={providerHistoryLoad
-                ? "Provider sessions are loading"
-                : "Browse provider sessions"}
-              aria-busy={providerHistoryLoad !== null}
-              onClick={() => void openProviderHistory()}
-              disabled={
-                !gatewayAvailable ||
-                providerHistorySources.length === 0
-              }
-            >
-              <HistoryIcon />
-            </button>
+            {trustedGateway && (
+              <button
+                type="button"
+                className={`mobile-history-button${providerHistoryLoad ? " is-loading" : ""}`}
+                aria-label={providerHistoryLoad
+                  ? "Provider sessions are loading"
+                  : !gatewayAvailable
+                    ? "Reconnect your computer to browse provider sessions"
+                    : providerHistorySources.length === 0
+                      ? "No provider sessions are available"
+                      : "Browse provider sessions"}
+                aria-busy={providerHistoryLoad !== null}
+                title={!gatewayAvailable
+                  ? "Reconnect your computer to browse provider sessions"
+                  : providerHistorySources.length === 0
+                    ? "No provider sessions are available"
+                    : "Browse provider sessions"}
+                onClick={() => void openProviderHistory()}
+                disabled={
+                  !gatewayAvailable ||
+                  providerHistorySources.length === 0
+                }
+              >
+                <HistoryIcon />
+              </button>
+            )}
             <button
               type="button"
               className="mobile-files-button"
@@ -8918,70 +8952,86 @@ function MalinkAppRuntime() {
             >
               <FileInboxIcon />
             </button>
-            <button
-              type="button"
-              className="mobile-search-button"
-              aria-label={sessionSearchOpen ? "Close conversation search" : "Search conversations"}
-              aria-expanded={sessionSearchOpen}
-              aria-controls="session-search"
-              onClick={() => {
-                if (sessionSearchOpen) {
-                  setSearch("");
-                  setSessionSearchOpen(false);
-                  return;
-                }
-                setSessionSearchOpen(true);
-                window.requestAnimationFrame(() =>
-                  sessionSearchRef.current?.focus(),
-                );
-              }}
-            >
-              {sessionSearchOpen ? <CloseIcon /> : <SearchIcon />}
-            </button>
-            <button
-              type="button"
-              className="new-project-button"
-              aria-label="New project"
-              title="New project"
-              onClick={() => setNewProjectOpen(true)}
-              disabled={
-                Boolean(optimisticProjectCreate) ||
-                !gatewayAvailable ||
-                projectCreationGateways.length === 0
-              }
-            >
-              <NewProjectIcon />
-            </button>
-            <button
-              className="round-button"
-              aria-label="New conversation"
-              onClick={() => setNewSessionOpen(true)}
-              disabled={
-                newSessionBusy ||
-                Boolean(optimisticSession) ||
-                !gatewayAvailable ||
-                !canCreateAnySession
-              }
-            >
-              <NewConversationIcon />
-            </button>
+            {trustedGateway && (
+              <>
+                <button
+                  type="button"
+                  className="mobile-search-button"
+                  aria-label={sessionSearchOpen ? "Close conversation search" : "Search conversations"}
+                  aria-expanded={sessionSearchOpen}
+                  aria-controls="session-search"
+                  onClick={() => {
+                    if (sessionSearchOpen) {
+                      setSearch("");
+                      setSessionSearchOpen(false);
+                      return;
+                    }
+                    setSessionSearchOpen(true);
+                    window.requestAnimationFrame(() =>
+                      sessionSearchRef.current?.focus(),
+                    );
+                  }}
+                >
+                  {sessionSearchOpen ? <CloseIcon /> : <SearchIcon />}
+                </button>
+                <button
+                  type="button"
+                  className="new-project-button"
+                  aria-label="New project"
+                  title="New project"
+                  onClick={() => setNewProjectOpen(true)}
+                  disabled={
+                    Boolean(optimisticProjectCreate) ||
+                    !gatewayAvailable ||
+                    projectCreationGateways.length === 0
+                  }
+                >
+                  <NewProjectIcon />
+                </button>
+                <button
+                  type="button"
+                  className="round-button"
+                  aria-label={!gatewayAvailable
+                    ? "Reconnect your computer to create a conversation"
+                    : !canCreateAnySession
+                      ? "No project can start a conversation"
+                      : "New conversation"}
+                  title={!gatewayAvailable
+                    ? "Reconnect your computer to create a conversation"
+                    : !canCreateAnySession
+                      ? "No project can start a conversation"
+                      : "New conversation"}
+                  onClick={() => setNewSessionOpen(true)}
+                  disabled={
+                    newSessionBusy ||
+                    Boolean(optimisticSession) ||
+                    !gatewayAvailable ||
+                    !canCreateAnySession
+                  }
+                >
+                  <NewConversationIcon />
+                </button>
+              </>
+            )}
           </div>
         </header>
 
-        <label
-          className={`search-box ${sessionSearchOpen || search ? "search-box-open" : ""}`}
-        >
-          <span aria-hidden="true">⌕</span>
-          <input
-            id="session-search"
-            ref={sessionSearchRef}
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search conversations"
-            aria-label="Search conversations"
-          />
-          <kbd aria-label="Control or Command K">Ctrl/⌘ K</kbd>
-        </label>
+        {trustedGateway && (
+          <label
+            className={`search-box ${sessionSearchOpen || search ? "search-box-open" : ""}`}
+          >
+            <span aria-hidden="true">⌕</span>
+            <input
+              id="session-search"
+              ref={sessionSearchRef}
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search conversations"
+              aria-label="Search conversations"
+            />
+            <kbd aria-label="Control or Command K">Ctrl/⌘ K</kbd>
+          </label>
+        )}
 
         <button
           className={`gateway-card gateway-card-button connection-state-${displayedConnectionStatus} ${
@@ -9027,10 +9077,10 @@ function MalinkAppRuntime() {
             <span>View</span>
             <select
               value={activeGatewayFilter}
-              aria-label="Filter conversations by Gateway"
+              aria-label="Filter conversations by computer"
               onChange={(event) => selectGatewayFilter(event.target.value)}
             >
-              <option value={ALL_GATEWAYS_FILTER}>All Gateways</option>
+              <option value={ALL_GATEWAYS_FILTER}>All computers</option>
               {gatewayFilterOptions.map(gateway => (
                 <option key={gateway.gatewayNodeId} value={gateway.gatewayNodeId}>
                   {gateway.label} · {gateway.shortId}
@@ -9397,9 +9447,9 @@ function MalinkAppRuntime() {
             );
           })}
           {!trustedGateway && (
-            <div className="empty-search">
-              <span>G</span>
-              Connect a computer to start your first conversation
+            <div className="empty-search connection-list-empty">
+              <strong>Your workspace is ready</strong>
+              <small>Connect a computer to load projects and conversations.</small>
             </div>
           )}
           {trustedGateway &&
@@ -9483,9 +9533,19 @@ function MalinkAppRuntime() {
             connectionStatus === "connected" &&
             !optimisticSession &&
             !pendingSessionCreate && (
-              <div className="empty-search">
-                <span>+</span>
-                Create your first conversation
+              <div className="empty-search empty-search-action">
+                <span aria-hidden="true">+</span>
+                <strong>Create your first conversation</strong>
+                <small>Choose a project and agent to start working.</small>
+                <button
+                  type="button"
+                  onClick={() => setNewSessionOpen(true)}
+                  disabled={!canCreateAnySession || newSessionBusy}
+                >
+                  {canCreateAnySession
+                    ? "New conversation"
+                    : "No available project"}
+                </button>
               </div>
             )}
         </div>
@@ -9515,7 +9575,13 @@ function MalinkAppRuntime() {
         </footer>
       </section>
 
-      <section className="conversation-panel" aria-label={conversationTitle}>
+      <section
+        className={`conversation-panel ${!trustedGateway ? "is-onboarding" : ""}`}
+        aria-label={conversationTitle}
+      >
+        {!trustedGateway && (
+          <ConnectionOnboarding onConnect={() => setSettingsOpen(true)} />
+        )}
         <header className="conversation-header">
           <button
             className="mobile-back"
@@ -10056,7 +10122,7 @@ function MalinkAppRuntime() {
             <div className="context-item">
               <span className="context-icon">▱</span>
               <span>
-                <small>Project · Gateway</small>
+                <small>Project · Computer</small>
                 <b title={activeWorkspace?.cwd}>
                   {activeWorkspace?.projectName || "Syncing conversations…"}
                   {activeProjectGateway ? ` · ${activeProjectGateway.label}` : ""}

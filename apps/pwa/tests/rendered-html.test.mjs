@@ -127,8 +127,8 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /Temporary workspace on \$\{project\.gatewayLabel\}/);
   assert.match(source, /<ProjectDisclosureIcon \/>/);
   assert.doesNotMatch(source, /project\.temporary \? "◇" : "▱"/);
-  assert.match(source, /aria-label="Filter conversations by Gateway"/);
-  assert.match(source, /<option value=\{ALL_GATEWAYS_FILTER\}>All Gateways<\/option>/);
+  assert.match(source, /aria-label="Filter conversations by computer"/);
+  assert.match(source, /<option value=\{ALL_GATEWAYS_FILTER\}>All computers<\/option>/);
   assert.match(source, /projectMatchesGatewayFilter\(/);
   assert.match(source, /scratchGroups/);
   assert.match(newSession, /The selected Gateway creates a private working folder/);

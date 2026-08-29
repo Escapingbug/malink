@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import type { GatewaySessionSummary } from "./gatewayState";
+import { useDialogFocus } from "./dialogFocus";
 
 type Props = {
   session: GatewaySessionSummary | null;
@@ -16,17 +17,16 @@ export function SessionDeleteDialog({
   onClose,
   onConfirm,
 }: Props) {
+  const dialogRef = useRef<HTMLElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    if (!session) return;
-    cancelRef.current?.focus();
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape" && !busy) onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [busy, onClose, session]);
+  useDialogFocus({
+    open: session !== null,
+    containerRef: dialogRef,
+    initialFocusRef: cancelRef,
+    escapeDisabled: busy,
+    onEscape: onClose,
+  });
 
   if (!session) return null;
 
@@ -39,11 +39,13 @@ export function SessionDeleteDialog({
       }}
     >
       <section
+        ref={dialogRef}
         className="session-delete-dialog"
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="session-delete-title"
         aria-describedby="session-delete-description"
+        tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="danger-symbol" aria-hidden="true">

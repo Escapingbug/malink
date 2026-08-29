@@ -791,21 +791,32 @@ function MatrixSettingsDialog({
                   {updateState.phase === "checking" ? "Checking…" : "Check for updates"}
                 </button>
               </div>
+              <section className="settings-danger-zone">
+                <span>
+                  <strong>
+                    {trustedGateway ? "Remove this computer" : "Reset local setup"}
+                  </strong>
+                  <small>
+                    {trustedGateway
+                      ? "Remove this computer and its saved authorization from this device."
+                      : "Clear incomplete connection data stored on this device."}
+                  </small>
+                </span>
+                <button
+                  type="button"
+                  className="forget-button"
+                  onClick={onForget}
+                  disabled={busy}
+                >
+                  {trustedGateway ? "Remove computer" : "Clear local setup"}
+                </button>
+              </section>
             </div>
           </details>
         </div>
 
-        <footer>
-          <button
-            type="button"
-            className="forget-button"
-            onClick={onForget}
-            disabled={busy}
-          >
-            {trustedGateway ? "Remove computer" : "Clear local setup"}
-          </button>
-          <span className="settings-spacer" />
-          {connected ? (
+        {connected && (
+          <footer>
             <button
               className="disconnect-button"
               onClick={onDisconnect}
@@ -813,8 +824,8 @@ function MatrixSettingsDialog({
             >
               Disconnect
             </button>
-          ) : null}
-        </footer>
+          </footer>
+        )}
       </section>
     </div>
   );

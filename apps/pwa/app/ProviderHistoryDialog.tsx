@@ -67,6 +67,7 @@ function ProviderHistoryDialogContent({
 }: Props) {
   const draftKey = `${sourceKey}\u0000${provider}\u0000${selected?.sessionId ?? ""}`;
   const [draftState, setDraftState] = useState({ key: draftKey, text: "" });
+  const [mobilePreviewOpen, setMobilePreviewOpen] = useState(Boolean(selected));
   const draft = draftState.key === draftKey ? draftState.text : "";
   const dialogRef = useRef<HTMLElement>(null);
   const sourceRef = useRef<HTMLSelectElement>(null);
@@ -138,7 +139,10 @@ function ProviderHistoryDialogContent({
               <select
                 ref={sourceRef}
                 value={sourceKey}
-                onChange={(event) => onSourceChange(event.target.value)}
+                onChange={(event) => {
+                  setMobilePreviewOpen(false);
+                  onSourceChange(event.target.value);
+                }}
               >
                 {sourceGroups.map(group => (
                   <optgroup key={group.gatewayNodeId} label={group.gatewayLabel}>
@@ -156,7 +160,10 @@ function ProviderHistoryDialogContent({
               <select
                 ref={providerRef}
                 value={provider}
-                onChange={(event) => onProviderChange(event.target.value)}
+                onChange={(event) => {
+                  setMobilePreviewOpen(false);
+                  onProviderChange(event.target.value);
+                }}
               >
                 {providers.map(option => (
                   <option key={option.id} value={option.id}>{option.name}</option>
@@ -173,7 +180,9 @@ function ProviderHistoryDialogContent({
           </small>
         </div>
 
-        <div className="provider-history-body">
+        <div
+          className={`provider-history-body ${mobilePreviewOpen ? "is-preview-open" : ""}`}
+        >
           <aside aria-label="Provider session list">
             {sessionGroups.map(group => (
               <section className={`provider-history-session-group is-${group.id}`} key={group.id}>
@@ -194,7 +203,10 @@ function ProviderHistoryDialogContent({
                       type="button"
                       key={session.sessionId}
                       className={selected?.sessionId === session.sessionId ? "selected" : ""}
-                      onClick={() => onInspect(session)}
+                      onClick={() => {
+                        setMobilePreviewOpen(true);
+                        onInspect(session);
+                      }}
                       disabled={
                         loading === "session"
                         && selected?.sessionId === session.sessionId
@@ -219,6 +231,14 @@ function ProviderHistoryDialogContent({
           </aside>
 
           <section className="provider-history-preview">
+            <button
+              type="button"
+              className="provider-history-mobile-back"
+              onClick={() => setMobilePreviewOpen(false)}
+            >
+              <span aria-hidden="true">←</span>
+              Provider sessions
+            </button>
             {error && (
               <div className="provider-history-error" role="alert">
                 <p>{error}</p>
