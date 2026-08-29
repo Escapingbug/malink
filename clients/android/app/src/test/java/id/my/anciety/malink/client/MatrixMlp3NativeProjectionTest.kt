@@ -350,6 +350,115 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `durable projection interns repeated session arrays`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        val availableCommands = buildJsonArray {
+            repeat(40) { index ->
+                add(buildJsonObject {
+                    put("id", "command-$index")
+                    put("name", "Command $index")
+                    put("description", "description-$index-${"x".repeat(128)}")
+                })
+            }
+        }
+        repeat(300) { index ->
+            projection.applyGatewayEvent(
+                sessionReadyWithCommands("session-$index", index + 1L, availableCommands),
+                "\$root-$index",
+                "\$root-$index",
+            )
+        }
+
+        val durable = projection.durableProjection()
+        val encoded = durable.value.toString()
+        assertEquals(1, Regex("description-39-").findAll(encoded).count())
+        assertTrue(durable.encodedBytes < 1024 * 1024)
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = durable.value,
+        )
+        assertEquals("\$root-299", restored.threadRootEventId("session-299"))
+    }
+
+    @Test
+    fun `schema twelve projection remains readable during direct codec upgrade`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 7, "Legacy", 700),
+            "\$root-a",
+            "\$root-a",
+        )
+        val current = projection.durableState()
+        val catalogs = current.getValue("sessionArrayCatalogs").jsonObject
+        val extensions = catalogs.getValue("extensions").jsonArray
+        val commands = catalogs.getValue("availableCommands").jsonArray
+        val legacySessions = current.getValue("sessions").jsonArray.map { element ->
+            val session = element.jsonObject
+            val extensionIndex = session.getValue("extensionsRef").jsonPrimitive.content.toInt()
+            val commandIndex = session.getValue("availableCommandsRef").jsonPrimitive.content.toInt()
+            JsonObject(
+                session.filterKeys {
+                    it != "extensionsRef" && it != "availableCommandsRef"
+                } + mapOf(
+                    "extensions" to extensions[extensionIndex],
+                    "availableCommands" to commands[commandIndex],
+                ),
+            )
+        }
+        val legacy = JsonObject(
+            current.filterKeys { it != "sessionArrayCatalogs" } + mapOf(
+                "schemaVersion" to kotlinx.serialization.json.JsonPrimitive(12),
+                "sessions" to JsonArray(legacySessions),
+            ),
+        )
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = legacy,
+        )
+
+        assertEquals("\$root-a", restored.threadRootEventId("session-a"))
+    }
+
+    @Test
+    fun `durable projection compacts unique rebuildable session data before cache limit`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        repeat(800) { index ->
+            val uniqueCommands = buildJsonArray {
+                add(buildJsonObject {
+                    put("id", "command-$index")
+                    put("name", "Command $index")
+                    put("description", "$index-${"x".repeat(11_500)}")
+                })
+            }
+            projection.applyGatewayEvent(
+                sessionReadyWithCommands("session-$index", index + 1L, uniqueCommands),
+                "\$root-$index",
+                "\$root-$index",
+            )
+        }
+
+        val durable = projection.durableProjection()
+        assertTrue(durable.compacted)
+        assertTrue(durable.retainedSessions < durable.totalSessions)
+        assertTrue(durable.encodedBytes <= 6 * 1024 * 1024)
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = durable.value,
+        )
+        assertEquals("\$root-799", restored.threadRootEventId("session-799"))
+        assertNull(restored.threadRootEventId("session-0"))
+    }
+
+    @Test
     fun `active turn id survives durable restore and clears on completion`() {
         val original = projection()
         original.applyGatewayEvent(projectSnapshot(), "\$project", null)
@@ -793,6 +902,29 @@ class MatrixMlp3NativeProjectionTest {
                     "cwd" to kotlinx.serialization.json.JsonPrimitive(cwd),
                 ))
             })
+        },
+    )
+
+    private fun sessionReadyWithCommands(
+        sessionId: String,
+        stateVersion: Long,
+        availableCommands: JsonArray,
+    ) = event(
+        eventId = "ready-$sessionId-$stateVersion",
+        projectId = "project-1",
+        sessionId = sessionId,
+        causationCommandId = "create-$sessionId",
+        payload = buildJsonObject {
+            put("type", "session.ready")
+            put("provider", "codex")
+            put("permissionMode", "default")
+            put("projection", JsonObject(sessionProjection(
+                stateVersion,
+                "Session $sessionId",
+                "active",
+                "idle",
+                stateVersion,
+            ) + ("availableCommands" to availableCommands)))
         },
     )
 

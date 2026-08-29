@@ -261,7 +261,11 @@ data class PublicCommandError(
     val retryable: Boolean,
 ) {
     init {
-        require(code.length in 1..128 && message.length in 1..2_048)
+        require(code.length in 1..128) { "Command error code is invalid." }
+        // The durable command model and MLP/3 terminal adapter both permit a
+        // 4 KiB diagnostic. Keep the public DTO boundary aligned so rendering
+        // a completed command cannot fail with an opaque `Failed requirement`.
+        require(message.length in 1..4_096) { "Command error message is invalid." }
     }
 }
 

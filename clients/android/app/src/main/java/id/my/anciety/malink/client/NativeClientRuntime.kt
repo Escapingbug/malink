@@ -323,6 +323,8 @@ class NativeClientRuntime(
     @Volatile private var pairingStorageBlocked = restoredPairing.isFailure
     @Volatile private var gatewayState: JsonObject? = null
     @Volatile private var gatewayStateSynchronized = false
+    private val nativeReleaseDispatchLock = Any()
+    @Volatile private var lastDispatchedNativeRelease: JsonObject? = null
     @Volatile private var authoritativeStateRefreshJob: Job? = null
     @Volatile private var gatewayConvergenceFallbackJob: Job? = null
     @Volatile private var workspaceDirectoryConvergenceJob: Job? = null
@@ -374,6 +376,7 @@ class NativeClientRuntime(
         gatewayState = matrixMlp3Projection.snapshot() ?: eventHub.snapshot().gatewayState
         if (gatewayState != null) {
             diagnostics.record("gateway.state.cache.restored")
+            gatewayState?.let(::acceptPublishedNativeRelease)
         }
         matrix.setObserver(this)
         refreshSnapshot(publishLifecycle = false)
@@ -496,6 +499,7 @@ class NativeClientRuntime(
                             historicalMessages,
                             refreshedSnapshot(),
                         )
+                        commitMatrixMlp3Projection("history_page")
                     }
                     imported += historicalMessages.size
                     initializedHistoryRelations += sessionId
@@ -1159,9 +1163,10 @@ class NativeClientRuntime(
                                 "gateway.transport.recovery.failure",
                                 mapOf("error" to diagnosticErrorName(error)),
                             )
-                        }
+                    }
                     replayMatrixMlp3InboxLocked()
                     matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
+                    schedulePendingCommandRecoveries(immediate = true)
                 }
             }
         } else if (
@@ -2209,11 +2214,7 @@ class NativeClientRuntime(
             }
         }
         result.terminal?.let(::recordMatrixMlp3Terminal)
-        matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
-        // Projection persistence follows ClientEventHub persistence. If the
-        // process stops between them, replay is harmless and history upsert
-        // IDs deduplicate; the inverse order could lose a public message.
-        matrixMlp3ProjectionStore.save(matrixMlp3Projection.durableState())
+        commitMatrixMlp3Projection("gateway_event")
         return true
     }
 
@@ -2241,8 +2242,7 @@ class NativeClientRuntime(
         }.toSet()
         matrixMlp3ProjectKeys.retain(projectIds)
         matrixMlp3Projection.retainProjects(projectIds)
-        matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
-        matrixMlp3ProjectionStore.save(matrixMlp3Projection.durableState())
+        commitMatrixMlp3Projection("workspace_directory")
         diagnostics.record(
             "matrix.workspace_directory.accepted",
             mapOf(
@@ -2332,8 +2332,7 @@ class NativeClientRuntime(
             val sessionId = message.sessionId ?: return@forEach
             eventHub.upsertMessage(sessionId, message, refreshedSnapshot())
         }
-        matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
-        matrixMlp3ProjectionStore.save(matrixMlp3Projection.durableState())
+        commitMatrixMlp3Projection("own_command")
     }
 
     private fun recordMatrixMlp3Terminal(terminal: MatrixMlp3NativeTerminal) {
@@ -2365,16 +2364,18 @@ class NativeClientRuntime(
     private fun acceptMatrixMlp3GatewayState(snapshot: JsonObject) {
         if (snapshot.toString().toByteArray().size > MAX_BRIDGE_EVENT_PAYLOAD_BYTES) return
         val changed = gatewayState != snapshot
+        val synchronizedBefore = gatewayStateSynchronized
         gatewayState = snapshot
         gatewayStateSynchronized = trust != null && matrixMlp3ProjectKeys.values().isNotEmpty()
-        acceptPublishedNativeRelease(snapshot)
         if (changed) {
+            acceptPublishedNativeRelease(snapshot)
             eventHub.publish(
                 ClientEventType.GATEWAY_STATE_CHANGED,
                 snapshot,
                 refreshedSnapshot(),
             )
         }
+        if (!changed && synchronizedBefore == gatewayStateSynchronized) return
         schedulePendingCommandRecoveries(immediate = true)
         refreshSnapshot(publishLifecycle = true)
     }
@@ -2394,9 +2395,18 @@ class NativeClientRuntime(
                     ?.longOrNull ?: 0L
             }
             ?: return
+        synchronized(nativeReleaseDispatchLock) {
+            if (lastDispatchedNativeRelease == release) return
+            lastDispatchedNativeRelease = release
+        }
         scope.launch {
             runCatching { NativeUpdateManager.get(appContext).acceptPublishedRelease(release) }
                 .onFailure { error ->
+                    synchronized(nativeReleaseDispatchLock) {
+                        if (lastDispatchedNativeRelease == release) {
+                            lastDispatchedNativeRelease = null
+                        }
+                    }
                     diagnostics.record(
                         "update.gateway_release_dispatch_failed",
                         mapOf("error" to diagnosticErrorName(error)),
@@ -2472,11 +2482,22 @@ class NativeClientRuntime(
                 outbox.recordProgress(commandId, protocolEvent.string("sessionId"))
             }
             projected.terminal?.let(::recordMatrixMlp3Terminal)
-            matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
-            matrixMlp3ProjectionStore.save(matrixMlp3Projection.durableState())
             return projected.messages.singleOrNull()?.copy(historical = true)
         }
         return null
+    }
+
+    private fun commitMatrixMlp3Projection(reason: String) {
+        matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
+        // ClientEventHub/raw-inbox persistence remains authoritative. This
+        // encrypted projection is a bounded acceleration cache; failing to
+        // rewrite it must not turn an authenticated Matrix event into poison.
+        persistMatrixMlp3ProjectionCache(
+            matrixMlp3Projection,
+            matrixMlp3ProjectionStore,
+            diagnostics,
+            reason,
+        )
     }
 
 

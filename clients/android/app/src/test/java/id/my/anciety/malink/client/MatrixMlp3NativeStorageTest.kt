@@ -1,5 +1,6 @@
 package id.my.anciety.malink.client
 
+import id.my.anciety.malink.diagnostics.DiagnosticRecorder
 import id.my.anciety.malink.matrix.JvmAesGcmCipher
 import id.my.anciety.malink.matrix.MatrixDecryptedEvent
 import id.my.anciety.malink.security.malink.MatrixMlp3ProjectKey
@@ -167,6 +168,54 @@ class MatrixMlp3NativeStorageTest {
         )
     }
 
+    @Test
+    fun `projection cache write failure does not escape into event processing`() {
+        val blob = MemoryMatrixMlp3BlobStore().apply { failWrites = true }
+        val recorder = RecordingDiagnostics()
+        val projection = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 1 },
+        )
+
+        assertFalse(persistMatrixMlp3ProjectionCache(
+            projection,
+            AtomicEncryptedMatrixMlp3ProjectionStore(
+                blob,
+                JvmAesGcmCipher(),
+                "account-a",
+            ),
+            recorder,
+            "gateway_event",
+        ))
+        assertEquals(
+            listOf("matrix.v3_projection.cache_write_failed"),
+            recorder.events.map { it.first },
+        )
+        assertEquals("gateway_event", recorder.events.single().second["reason"])
+    }
+
+    @Test
+    fun `projection store reports its actual cache limit`() {
+        val value = buildJsonObject {
+            put("payload", "x".repeat(AtomicEncryptedMatrixMlp3ProjectionStore.MAX_BYTES))
+        }
+        val store = AtomicEncryptedMatrixMlp3ProjectionStore(
+            MemoryMatrixMlp3BlobStore(),
+            JvmAesGcmCipher(),
+            "account-a",
+        )
+
+        val error = try {
+            store.save(value)
+            null
+        } catch (candidate: MatrixMlp3ProjectionTooLargeException) {
+            candidate
+        }
+        assertTrue(error != null)
+        assertTrue(error!!.actualBytes > error.maximumBytes)
+        assertEquals(AtomicEncryptedMatrixMlp3ProjectionStore.MAX_BYTES, error.maximumBytes)
+    }
+
     private fun event(eventId: String, rawJson: String) = MatrixDecryptedEvent(
         roomId = "!room:example.org",
         eventId = eventId,
@@ -178,16 +227,26 @@ class MatrixMlp3NativeStorageTest {
     private class MemoryMatrixMlp3BlobStore : MatrixMlp3BlobStore {
         var bytes: ByteArray? = null
         var writeCount = 0
+        var failWrites = false
 
         override fun read(): ByteArray? = bytes?.copyOf()
 
         override fun write(bytes: ByteArray) {
             writeCount += 1
+            if (failWrites) throw IllegalStateException("simulated cache write failure")
             this.bytes = bytes.copyOf()
         }
 
         override fun delete() {
             bytes = null
+        }
+    }
+
+    private class RecordingDiagnostics : DiagnosticRecorder {
+        val events = mutableListOf<Pair<String, Map<String, String>>>()
+
+        override fun record(event: String, attributes: Map<String, String>) {
+            events += event to attributes
         }
     }
 }

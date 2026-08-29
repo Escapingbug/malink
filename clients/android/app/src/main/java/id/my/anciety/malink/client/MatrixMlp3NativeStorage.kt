@@ -1,6 +1,7 @@
 package id.my.anciety.malink.client
 
 import android.util.AtomicFile
+import id.my.anciety.malink.diagnostics.DiagnosticRecorder
 import id.my.anciety.malink.matrix.MatrixDecryptedEvent
 import id.my.anciety.malink.security.SecretCipher
 import id.my.anciety.malink.security.SecretEnvelope
@@ -448,7 +449,9 @@ internal class AtomicEncryptedMatrixMlp3ProjectionStore internal constructor(
             encrypted.fill(0)
         }
         return try {
-            require(plaintext.size <= MAX_BYTES)
+            if (plaintext.size > MAX_BYTES) {
+                throw MatrixMlp3ProjectionTooLargeException(plaintext.size, MAX_BYTES)
+            }
             Json.parseToJsonElement(plaintext.toString(Charsets.UTF_8)).jsonObject
         } finally {
             plaintext.fill(0)
@@ -456,9 +459,14 @@ internal class AtomicEncryptedMatrixMlp3ProjectionStore internal constructor(
     }
 
     @Synchronized
-    fun save(value: JsonObject) {
+    fun save(value: JsonObject): Int {
         val plaintext = CanonicalJson.bytes(value)
-        require(plaintext.size <= MAX_BYTES)
+        if (plaintext.size > MAX_BYTES) {
+            val actualBytes = plaintext.size
+            plaintext.fill(0)
+            throw MatrixMlp3ProjectionTooLargeException(actualBytes, MAX_BYTES)
+        }
+        val plaintextBytes = plaintext.size
         val encrypted = try {
             val envelope = cipher.encrypt(plaintext, associatedData)
             try {
@@ -475,6 +483,7 @@ internal class AtomicEncryptedMatrixMlp3ProjectionStore internal constructor(
         } finally {
             encrypted.fill(0)
         }
+        return plaintextBytes
     }
 
     @Synchronized
@@ -485,8 +494,67 @@ internal class AtomicEncryptedMatrixMlp3ProjectionStore internal constructor(
     @Synchronized
     fun clear() = blob.delete()
 
-    private companion object {
-        const val MAX_BYTES = 8 * 1024 * 1024
+    companion object {
+        internal const val MAX_BYTES = 8 * 1024 * 1024
+    }
+}
+
+internal class MatrixMlp3ProjectionTooLargeException(
+    val actualBytes: Int,
+    val maximumBytes: Int,
+) : IllegalStateException(
+    "The rebuildable MLP/3 projection is $actualBytes bytes; the encrypted cache limit is " +
+        "$maximumBytes bytes.",
+)
+
+/**
+ * Projection persistence is best-effort because Matrix plus the raw inbox are
+ * the replay authorities. A cache write failure must never quarantine a
+ * verified event or make transcript decoding fail.
+ */
+internal fun persistMatrixMlp3ProjectionCache(
+    projection: MatrixMlp3NativeProjection,
+    store: AtomicEncryptedMatrixMlp3ProjectionStore,
+    diagnostics: DiagnosticRecorder,
+    reason: String,
+): Boolean {
+    var durable: MatrixMlp3DurableProjection? = null
+    return try {
+        durable = projection.durableProjection()
+        store.save(durable.value)
+        if (durable.compacted) {
+            diagnostics.record(
+                "matrix.v3_projection.cache_compacted",
+                mapOf(
+                    "reason" to reason,
+                    "bytes" to durable.encodedBytes.toString(),
+                    "sessions" to durable.totalSessions.toString(),
+                    "retained_sessions" to durable.retainedSessions.toString(),
+                    "seen_events" to durable.totalSeenEvents.toString(),
+                    "retained_seen_events" to durable.retainedSeenEvents.toString(),
+                    "seen_commands" to durable.totalSeenCommands.toString(),
+                    "retained_seen_commands" to durable.retainedSeenCommands.toString(),
+                    "assistant_versions" to durable.totalAssistantVersions.toString(),
+                    "retained_assistant_versions" to
+                        durable.retainedAssistantVersions.toString(),
+                ),
+            )
+        }
+        true
+    } catch (error: Exception) {
+        diagnostics.record(
+            "matrix.v3_projection.cache_write_failed",
+            buildMap {
+                put("reason", reason)
+                put("error", error.javaClass.simpleName.take(160))
+                durable?.let { put("bytes", it.encodedBytes.toString()) }
+                if (error is MatrixMlp3ProjectionTooLargeException) {
+                    put("actual_bytes", error.actualBytes.toString())
+                    put("maximum_bytes", error.maximumBytes.toString())
+                }
+            },
+        )
+        false
     }
 }
 

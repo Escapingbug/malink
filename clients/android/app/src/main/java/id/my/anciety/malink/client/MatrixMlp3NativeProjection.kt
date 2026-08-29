@@ -8,6 +8,7 @@ import id.my.anciety.malink.client.events.ToolCategory
 import id.my.anciety.malink.client.events.ToolGroupPresentation
 import id.my.anciety.malink.client.events.ToolPhase
 import id.my.anciety.malink.client.events.ToolPresentationItem
+import id.my.anciety.malink.security.malink.CanonicalJson
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -37,6 +38,25 @@ internal data class MatrixMlp3NativeProjectionResult(
     val terminal: MatrixMlp3NativeTerminal? = null,
     val changed: Boolean = false,
 )
+
+internal data class MatrixMlp3DurableProjection(
+    val value: JsonObject,
+    val encodedBytes: Int,
+    val totalSessions: Int,
+    val retainedSessions: Int,
+    val totalSeenEvents: Int,
+    val retainedSeenEvents: Int,
+    val totalSeenCommands: Int,
+    val retainedSeenCommands: Int,
+    val totalAssistantVersions: Int,
+    val retainedAssistantVersions: Int,
+) {
+    val compacted: Boolean
+        get() = retainedSessions < totalSessions ||
+            retainedSeenEvents < totalSeenEvents ||
+            retainedSeenCommands < totalSeenCommands ||
+            retainedAssistantVersions < totalAssistantVersions
+}
 
 /** Order-independent Android materialized view of MLP/3 timeline data. */
 internal class MatrixMlp3NativeProjection(
@@ -672,93 +692,167 @@ internal class MatrixMlp3NativeProjection(
     }
 
     @Synchronized
-    fun durableState(): JsonObject = buildJsonObject {
-        put("schemaVersion", 12)
-        put("projectCapabilities", buildJsonArray {
-            projectCapabilities.entries.sortedBy { it.key }.forEach { (projectId, capabilities) ->
-                add(buildJsonObject {
-                    put("projectId", projectId)
-                    put("snapshotVersion", capabilities.snapshotVersion)
-                    put("value", capabilities.value)
-                    put("clientReleases", capabilities.clientReleases)
-                })
+    fun durableState(): JsonObject = durableProjection().value
+
+    /**
+     * The projection is a rebuildable Matrix materialized view, not an
+     * authority. Keep its encrypted checkpoint bounded and normalize repeated
+     * per-session arrays so a large thread directory cannot poison event
+     * processing merely by crossing the cache file's safety limit.
+     */
+    @Synchronized
+    fun durableProjection(
+        targetBytes: Int = DEFAULT_DURABLE_TARGET_BYTES,
+    ): MatrixMlp3DurableProjection {
+        require(targetBytes in MIN_DURABLE_TARGET_BYTES..MAX_DURABLE_TARGET_BYTES) {
+            "The MLP/3 durable projection target is invalid."
+        }
+        var last: MatrixMlp3DurableProjection? = null
+        for (policy in DURABLE_RETENTION_POLICIES) {
+            val candidate = encodeDurableProjection(policy)
+            last = candidate
+            if (candidate.encodedBytes <= targetBytes) return candidate
+        }
+        return requireNotNull(last)
+    }
+
+    private fun encodeDurableProjection(
+        policy: DurableRetentionPolicy,
+    ): MatrixMlp3DurableProjection {
+        val retainedSessions = sessions.values
+            .sortedWith(
+                compareByDescending<Session> { it.lifecycle == "active" }
+                    .thenByDescending { it.activity in ACTIVE_SESSION_ACTIVITIES }
+                    .thenByDescending(Session::updatedAt)
+                    .thenBy(Session::id),
+            )
+            .take(policy.sessionLimit)
+        val extensionCatalog = linkedMapOf<JsonArray, Int>()
+        val availableCommandCatalog = linkedMapOf<JsonArray, Int>()
+        retainedSessions.forEach { session ->
+            extensionCatalog.getOrPut(session.extensions) { extensionCatalog.size }
+            availableCommandCatalog.getOrPut(session.availableCommands) {
+                availableCommandCatalog.size
             }
-        })
-        put("workspaceGatewayDirectory", workspaceGatewayDirectory ?: JsonNull)
-        put("workspacePendingGatewayEnrollmentsByProject", buildJsonObject {
-            workspacePendingGatewayEnrollmentsByProject.entries.sortedBy { it.key }
-                .forEach { (projectId, enrollments) -> put(projectId, enrollments) }
-        })
-        put("gatewayUpdateStatus", gatewayUpdateStatus ?: JsonNull)
-        put("projects", buildJsonArray {
-            projects.values.sortedBy(Project::id).forEach { activeProject ->
-                add(buildJsonObject {
-                    put("id", activeProject.id)
-                    put("snapshotVersion", activeProject.snapshotVersion)
-                    put("name", activeProject.name)
-                    put("cwd", activeProject.cwd)
-                    put("provider", activeProject.provider)
-                    activeProject.model?.let { put("model", it) }
-                    activeProject.reasoningEffort?.let { put("reasoningEffort", it) }
-                    put("permissionMode", activeProject.permissionMode)
-                    put("installedExtensions", activeProject.installedExtensions)
-                    put("defaultExtensions", activeProject.defaultExtensions)
-                    put("extensionDefaultsRevision", activeProject.extensionDefaultsRevision)
-                })
-            }
-        })
-        put("sessions", buildJsonArray {
-            sessions.values.forEach { session ->
-                add(buildJsonObject {
-                    put("id", session.id)
-                    put("projectId", session.projectId)
-                    put("threadRootEventId", session.threadRootEventId)
-                    put("title", session.title)
-                    put("scope", session.scope)
-                    put("cwd", session.cwd)
-                    put("lifecycle", session.lifecycle)
-                    put("activity", session.activity)
-                    put("updatedAt", session.updatedAt)
-                    put("stateVersion", session.stateVersion)
-                    session.provider?.let { put("provider", it) }
-                    session.model?.let { put("model", it) }
-                    session.reasoningEffort?.let { put("reasoningEffort", it) }
-                    session.permissionMode?.let { put("permissionMode", it) }
-                    put("extensions", session.extensions)
-                    put("extensionRevision", session.extensionRevision)
-                    put("availableCommands", session.availableCommands)
-                    session.activeTurnId?.let { put("activeTurnId", it) }
-                })
-            }
-        })
-        put("inboxFiles", buildJsonArray {
-            inboxFiles.values.forEach { file ->
-                add(buildJsonObject {
-                    put("id", file.id)
-                    put("receivedAt", file.receivedAt)
-                    file.caption?.let { put("caption", it) }
-                    file.sourceLabel?.let { put("sourceLabel", it) }
-                    put("attachment", file.attachment)
-                })
-            }
-        })
-        put("seenEvents", JsonArray(seenEvents.toList().takeLast(MAX_SEEN_IDS).map(::JsonPrimitive)))
-        put("seenCommands", JsonArray(seenCommands.toList().takeLast(MAX_SEEN_IDS).map(::JsonPrimitive)))
-        put("assistantMessageVersions", buildJsonArray {
-            assistantMessageVersions.entries.toList().takeLast(MAX_SEEN_IDS).forEach { (key, version) ->
-                add(buildJsonObject {
-                    put("sessionId", key.sessionId)
-                    put("messageId", key.messageId)
-                    put("partIndex", key.partIndex)
-                    put("version", version)
-                })
-            }
-        })
+        }
+        val retainedSeenEvents = seenEvents.toList().takeLast(policy.seenEventLimit)
+        val retainedSeenCommands = seenCommands.toList().takeLast(policy.seenCommandLimit)
+        val retainedAssistantVersions = assistantMessageVersions.entries
+            .toList()
+            .takeLast(policy.assistantVersionLimit)
+        val value = buildJsonObject {
+            put("schemaVersion", 13)
+            put("projectCapabilities", buildJsonArray {
+                projectCapabilities.entries.sortedBy { it.key }.forEach { (projectId, capabilities) ->
+                    add(buildJsonObject {
+                        put("projectId", projectId)
+                        put("snapshotVersion", capabilities.snapshotVersion)
+                        put("value", capabilities.value)
+                        put("clientReleases", capabilities.clientReleases)
+                    })
+                }
+            })
+            put("workspaceGatewayDirectory", workspaceGatewayDirectory ?: JsonNull)
+            put("workspacePendingGatewayEnrollmentsByProject", buildJsonObject {
+                workspacePendingGatewayEnrollmentsByProject.entries.sortedBy { it.key }
+                    .forEach { (projectId, enrollments) -> put(projectId, enrollments) }
+            })
+            put("gatewayUpdateStatus", gatewayUpdateStatus ?: JsonNull)
+            put("projects", buildJsonArray {
+                projects.values.sortedBy(Project::id).forEach { activeProject ->
+                    add(buildJsonObject {
+                        put("id", activeProject.id)
+                        put("snapshotVersion", activeProject.snapshotVersion)
+                        put("name", activeProject.name)
+                        put("cwd", activeProject.cwd)
+                        put("provider", activeProject.provider)
+                        activeProject.model?.let { put("model", it) }
+                        activeProject.reasoningEffort?.let { put("reasoningEffort", it) }
+                        put("permissionMode", activeProject.permissionMode)
+                        put("installedExtensions", activeProject.installedExtensions)
+                        put("defaultExtensions", activeProject.defaultExtensions)
+                        put("extensionDefaultsRevision", activeProject.extensionDefaultsRevision)
+                    })
+                }
+            })
+            put("sessions", buildJsonArray {
+                retainedSessions.forEach { session ->
+                    add(buildJsonObject {
+                        put("id", session.id)
+                        put("projectId", session.projectId)
+                        put("threadRootEventId", session.threadRootEventId)
+                        put("title", session.title)
+                        put("scope", session.scope)
+                        put("cwd", session.cwd)
+                        put("lifecycle", session.lifecycle)
+                        put("activity", session.activity)
+                        put("updatedAt", session.updatedAt)
+                        put("stateVersion", session.stateVersion)
+                        session.provider?.let { put("provider", it) }
+                        session.model?.let { put("model", it) }
+                        session.reasoningEffort?.let { put("reasoningEffort", it) }
+                        session.permissionMode?.let { put("permissionMode", it) }
+                        put("extensionsRef", extensionCatalog.getValue(session.extensions))
+                        put("extensionRevision", session.extensionRevision)
+                        put(
+                            "availableCommandsRef",
+                            availableCommandCatalog.getValue(session.availableCommands),
+                        )
+                        session.activeTurnId?.let { put("activeTurnId", it) }
+                    })
+                }
+            })
+            put("sessionArrayCatalogs", buildJsonObject {
+                put("extensions", JsonArray(extensionCatalog.keys.toList()))
+                put("availableCommands", JsonArray(availableCommandCatalog.keys.toList()))
+            })
+            put("inboxFiles", buildJsonArray {
+                inboxFiles.values.forEach { file ->
+                    add(buildJsonObject {
+                        put("id", file.id)
+                        put("receivedAt", file.receivedAt)
+                        file.caption?.let { put("caption", it) }
+                        file.sourceLabel?.let { put("sourceLabel", it) }
+                        put("attachment", file.attachment)
+                    })
+                }
+            })
+            put("seenEvents", JsonArray(retainedSeenEvents.map(::JsonPrimitive)))
+            put("seenCommands", JsonArray(retainedSeenCommands.map(::JsonPrimitive)))
+            put("assistantMessageVersions", buildJsonArray {
+                retainedAssistantVersions.forEach { (key, version) ->
+                    add(buildJsonObject {
+                        put("sessionId", key.sessionId)
+                        put("messageId", key.messageId)
+                        put("partIndex", key.partIndex)
+                        put("version", version)
+                    })
+                }
+            })
+        }
+        val encoded = CanonicalJson.bytes(value)
+        val encodedBytes = try {
+            encoded.size
+        } finally {
+            encoded.fill(0)
+        }
+        return MatrixMlp3DurableProjection(
+            value = value,
+            encodedBytes = encodedBytes,
+            totalSessions = sessions.size,
+            retainedSessions = retainedSessions.size,
+            totalSeenEvents = seenEvents.size,
+            retainedSeenEvents = retainedSeenEvents.size,
+            totalSeenCommands = seenCommands.size,
+            retainedSeenCommands = retainedSeenCommands.size,
+            totalAssistantVersions = assistantMessageVersions.size,
+            retainedAssistantVersions = retainedAssistantVersions.size,
+        )
     }
 
     private fun restore(value: JsonObject) {
         val schemaVersion = value.requiredLong("schemaVersion")
-        require(schemaVersion in 1L..12L)
+        require(schemaVersion in 1L..13L)
         val legacyWorkspaceCapabilities = if (schemaVersion == 1L || schemaVersion >= 9L) {
             null
         } else {
@@ -878,6 +972,21 @@ internal class MatrixMlp3NativeProjection(
         val restoredSessions = value["sessions"] as? JsonArray
             ?: throw IllegalArgumentException("The MLP/3 session projection is invalid.")
         require(restoredSessions.size <= 20_000)
+        val sessionArrayCatalogs = if (schemaVersion >= 13L) {
+            value.requiredObject("sessionArrayCatalogs")
+        } else {
+            null
+        }
+        val extensionCatalog = sessionArrayCatalogs
+            ?.requiredArray("extensions", MAX_DURABLE_SESSIONS)
+        val availableCommandCatalog = sessionArrayCatalogs
+            ?.requiredArray("availableCommands", MAX_DURABLE_SESSIONS)
+        extensionCatalog?.forEach {
+            require(it is JsonArray) { "The MLP/3 session extension catalog is invalid." }
+        }
+        availableCommandCatalog?.forEach {
+            require(it is JsonArray) { "The MLP/3 session command catalog is invalid." }
+        }
         restoredSessions.forEach { item ->
             val session = item as? JsonObject
                 ?: throw IllegalArgumentException("The MLP/3 session projection is invalid.")
@@ -903,12 +1012,25 @@ internal class MatrixMlp3NativeProjection(
                 model = session.optionalString("model", 256),
                 reasoningEffort = session.optionalString("reasoningEffort", 64),
                 permissionMode = session.optionalString("permissionMode", 128),
-                extensions = session["extensions"] as? JsonArray ?: JsonArray(emptyList()),
+                extensions = if (schemaVersion >= 13L) {
+                    extensionCatalog.requiredCatalogArray(
+                        session.requiredLong("extensionsRef"),
+                        "session extension",
+                    )
+                } else {
+                    session["extensions"] as? JsonArray ?: JsonArray(emptyList())
+                },
                 extensionRevision = session.optionalLong("extensionRevision")
                     ?.takeIf { it > 0 }
                     ?: 1,
-                availableCommands = session["availableCommands"] as? JsonArray
-                    ?: JsonArray(emptyList()),
+                availableCommands = if (schemaVersion >= 13L) {
+                    availableCommandCatalog.requiredCatalogArray(
+                        session.requiredLong("availableCommandsRef"),
+                        "session command",
+                    )
+                } else {
+                    session["availableCommands"] as? JsonArray ?: JsonArray(emptyList())
+                },
                 activeTurnId = if (schemaVersion >= 4L) {
                     session.optionalString("activeTurnId", 256)
                 } else {
@@ -960,7 +1082,26 @@ internal class MatrixMlp3NativeProjection(
 
     private companion object {
         const val MAX_SEEN_IDS = 10_000
+        const val MAX_DURABLE_SESSIONS = 4_000
+        const val DEFAULT_DURABLE_TARGET_BYTES = 6 * 1024 * 1024
+        const val MIN_DURABLE_TARGET_BYTES = 256 * 1024
+        const val MAX_DURABLE_TARGET_BYTES = 8 * 1024 * 1024
+        val ACTIVE_SESSION_ACTIVITIES = setOf("queued", "working", "attention")
+        val DURABLE_RETENTION_POLICIES = listOf(
+            DurableRetentionPolicy(MAX_DURABLE_SESSIONS, MAX_SEEN_IDS, MAX_SEEN_IDS, MAX_SEEN_IDS),
+            DurableRetentionPolicy(2_000, 4_096, 4_096, 4_096),
+            DurableRetentionPolicy(1_000, 2_048, 2_048, 2_048),
+            DurableRetentionPolicy(256, 512, 512, 512),
+            DurableRetentionPolicy(64, 128, 128, 128),
+        )
     }
+
+    private data class DurableRetentionPolicy(
+        val sessionLimit: Int,
+        val seenEventLimit: Int,
+        val seenCommandLimit: Int,
+        val assistantVersionLimit: Int,
+    )
 
     private fun mergeNativeClientReleases(current: JsonArray, incoming: JsonArray): JsonArray {
         require(incoming.size <= 8)
@@ -1547,6 +1688,16 @@ private fun JsonObject.optionalArray(key: String, maximum: Int): JsonArray? =
             ?: throw IllegalArgumentException("$key must be an array."))
             .also { array -> require(array.size <= maximum) }
     }
+
+private fun JsonArray?.requiredCatalogArray(index: Long, label: String): JsonArray {
+    val catalog = this
+        ?: throw IllegalArgumentException("The MLP/3 $label catalog is missing.")
+    require(index >= 0 && index < catalog.size) {
+        "The MLP/3 $label catalog reference is invalid."
+    }
+    return catalog[index.toInt()] as? JsonArray
+        ?: throw IllegalArgumentException("The MLP/3 $label catalog entry is invalid.")
+}
 
 private fun JsonObject.requireKeys(
     required: Set<String>,
