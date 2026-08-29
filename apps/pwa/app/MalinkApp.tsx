@@ -322,6 +322,7 @@ import {
   saveMessageHistory,
   type MessageHistoryCursor,
 } from "./messageHistory";
+import { shouldAutoLoadEarlierMessages } from "./historyPagination";
 import {
   completedTurnPresentation,
   type CompletedTurnProcess,
@@ -1144,6 +1145,7 @@ function MalinkAppRuntime() {
   const [feedAwayFromLatest, setFeedAwayFromLatest] = useState(false);
   const [feedHasUnseenMessages, setFeedHasUnseenMessages] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyCheckingRemote, setHistoryCheckingRemote] = useState(false);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyRetryMode, setHistoryRetryMode] = useState<
@@ -1427,6 +1429,11 @@ function MalinkAppRuntime() {
   const historyCursorRef = useRef<MessageHistoryCursor | null>(null);
   const historyGenerationRef = useRef(0);
   const historyLoadingRef = useRef(false);
+  const historyRemoteFlightRef = useRef<{
+    sessionId: string;
+    generation: number;
+    connection: MalinkClient;
+  } | null>(null);
   const providerHistoryProviderRef = useRef("");
   const providerHistoryGatewayNodeIdRef = useRef("");
   const providerHistoryProjectIdRef = useRef("");
@@ -3211,6 +3218,73 @@ function MalinkAppRuntime() {
       });
   }
 
+  function loadRemoteHistoryInBackground(
+    sessionId: string,
+    scope: string,
+    connection: MalinkClient,
+    generation: number,
+    prepend: boolean,
+  ): void {
+    const active = historyRemoteFlightRef.current;
+    if (
+      active?.sessionId === sessionId
+      && active.generation === generation
+      && active.connection === connection
+    ) return;
+
+    const isCurrent = () =>
+      generation === historyGenerationRef.current
+      && historySessionIdRef.current === sessionId
+      && malinkClientRef.current === connection;
+    const flight = {
+      sessionId,
+      generation,
+      connection,
+    };
+    historyRemoteFlightRef.current = flight;
+    if (isCurrent()) setHistoryCheckingRemote(true);
+    void (async () => {
+      try {
+        const remote = await connection.loadHistoryPage(sessionId);
+        const olderMessages = remote.messages.map((message) =>
+          chatMessageFromIncoming(
+            { ...incomingMessageFromClient(message), historical: true },
+            message.sessionId ?? sessionId,
+          ),
+        );
+        if (olderMessages.length > 0) {
+          await persistMessageHistoryPage(scope, sessionId, olderMessages);
+        }
+        if (!isCurrent()) return;
+        if (olderMessages.length > 0) {
+          if (prepend) prepareHistoryPrepend(feedRef.current, prependScrollRef);
+          historyCursorRef.current = olderHistoryCursor(
+            historyCursorRef.current,
+            olderMessages,
+          );
+          setMessages((current) => mergeChatMessages(current, olderMessages));
+        }
+        setHistoryHasMore(remote.hasMore);
+        setHistoryError(null);
+        setHistoryRetryMode(null);
+      } catch (error) {
+        if (!isCurrent()) return;
+        // Keep one explicit retry available, but never let a layout-driven
+        // scroll event turn a slow Matrix archive into an automatic loop.
+        setHistoryHasMore(true);
+        setHistoryError(
+          `Older history could not be loaded: ${formatUiError(error)}`,
+        );
+        setHistoryRetryMode("older");
+      } finally {
+        if (historyRemoteFlightRef.current === flight) {
+          historyRemoteFlightRef.current = null;
+        }
+        if (isCurrent()) setHistoryCheckingRemote(false);
+      }
+    })();
+  }
+
   async function restoreSessionHistory(
     sessionId: string,
     connection: MalinkClient | null = malinkClientRef.current,
@@ -3223,6 +3297,7 @@ function MalinkAppRuntime() {
     followLatestRef.current = true;
     historyLoadingRef.current = true;
     setHistoryLoading(true);
+    setHistoryCheckingRemote(false);
     setHistoryError(null);
     setHistoryRetryMode(null);
     setHistoryHasMore(false);
@@ -3290,22 +3365,18 @@ function MalinkAppRuntime() {
           message.eventId ? [message.eventId] : [],
         ),
       );
-      // The live Matrix subscription is the only source of recent updates.
-      // A populated local cache must render immediately and must never turn
-      // focus, reload, or a Gateway-state timestamp into a remote history RPC.
-      // A cache-cold device performs one explicit initial thread-page load;
-      // older pages remain driven solely by user pagination below.
-      const remote = cachedMessages.length > 0
-        ? await connection.loadLocalHistory(sessionId)
-        : await connection.loadHistoryPage(sessionId);
-      const remoteMessages = remote.messages.map((message) =>
+      // Render both browser persistence and the native/Web local projection
+      // before starting any Matrix relations request. A slow homeserver must
+      // never keep the selected conversation in its foreground loading state.
+      const local = await connection.loadLocalHistory(sessionId);
+      const localMessages = local.messages.map((message) =>
         chatMessageFromIncoming(
           { ...incomingMessageFromClient(message), historical: true },
           message.sessionId ?? sessionId,
         ),
       );
-      if (remoteMessages.length > 0) {
-        await persistMessageHistoryPage(scope, sessionId, remoteMessages);
+      if (localMessages.length > 0) {
+        await persistMessageHistoryPage(scope, sessionId, localMessages);
       }
       if (
         generation !== historyGenerationRef.current ||
@@ -3313,16 +3384,26 @@ function MalinkAppRuntime() {
       ) {
         return;
       }
-      if (remoteMessages.length > 0) {
+      if (localMessages.length > 0) {
         historyCursorRef.current = olderHistoryCursor(
           historyCursorRef.current,
-          remoteMessages,
+          localMessages,
         );
         setMessages((current) =>
-          mergeChatMessages(current, remoteMessages),
+          mergeChatMessages(current, localMessages),
         );
       }
-      setHistoryHasMore(cached.hasMore || remote.hasMore);
+      const localHasMore = cached.hasMore || local.hasMore;
+      setHistoryHasMore(localHasMore);
+      if (!localHasMore) {
+        loadRemoteHistoryInBackground(
+          sessionId,
+          scope,
+          connection,
+          generation,
+          false,
+        );
+      }
     } catch (error) {
       if (
         generation === historyGenerationRef.current &&
@@ -3384,9 +3465,8 @@ function MalinkAppRuntime() {
             ),
           ),
         );
-        // Consume at most one local page per pull. Once the local cache ends,
-        // advance Matrix by one page in parallel so a later pull does not need
-        // to replay every already-cached server page after a refresh.
+        // Consume one local page immediately. Matrix pagination begins only at
+        // the local edge and never extends the foreground loading indicator.
         const connection = malinkClientRef.current;
         if (!connection) {
           setHistoryHasMore(cached.hasMore);
@@ -3398,27 +3478,16 @@ function MalinkAppRuntime() {
             message.eventId ? [message.eventId] : [],
           ),
         );
-        const prefetched = await connection.loadHistoryPage(sessionId);
-        const prefetchedMessages = prefetched.messages.map((message) =>
-          chatMessageFromIncoming(
-            { ...incomingMessageFromClient(message), historical: true },
-            message.sessionId ?? sessionId,
-          ),
-        );
-        if (prefetchedMessages.length > 0) {
-          await persistMessageHistoryPage(
-            scope,
+        setHistoryHasMore(cached.hasMore);
+        if (!cached.hasMore) {
+          loadRemoteHistoryInBackground(
             sessionId,
-            prefetchedMessages,
+            scope,
+            connection,
+            generation,
+            true,
           );
         }
-        if (
-          generation !== historyGenerationRef.current ||
-          historySessionIdRef.current !== sessionId
-        ) {
-          return;
-        }
-        setHistoryHasMore(cached.hasMore || prefetched.hasMore);
         return;
       }
 
@@ -3427,33 +3496,14 @@ function MalinkAppRuntime() {
         setHistoryHasMore(false);
         return;
       }
-      const remote = await connection.loadHistoryPage(sessionId);
-      const olderMessages = remote.messages.map((message) =>
-        chatMessageFromIncoming(
-          { ...incomingMessageFromClient(message), historical: true },
-          message.sessionId ?? sessionId,
-        ),
+      setHistoryHasMore(false);
+      loadRemoteHistoryInBackground(
+        sessionId,
+        scope,
+        connection,
+        generation,
+        true,
       );
-      if (olderMessages.length > 0) {
-        await persistMessageHistoryPage(scope, sessionId, olderMessages);
-      }
-      if (
-        generation !== historyGenerationRef.current ||
-        historySessionIdRef.current !== sessionId
-      ) {
-        return;
-      }
-      if (olderMessages.length > 0) {
-        prepareHistoryPrepend(feedRef.current, prependScrollRef);
-        historyCursorRef.current = olderHistoryCursor(
-          historyCursorRef.current,
-          olderMessages,
-        );
-        setMessages((current) =>
-          mergeChatMessages(current, olderMessages),
-        );
-      }
-      setHistoryHasMore(remote.hasMore);
     } catch (error) {
       if (
         generation === historyGenerationRef.current &&
@@ -3478,11 +3528,13 @@ function MalinkAppRuntime() {
     followLatestRef.current = isNearFeedBottom(feed);
     setFeedAwayFromLatest(!followLatestRef.current);
     if (followLatestRef.current) setFeedHasUnseenMessages(false);
-    if (
-      feed.scrollTop <= 80 &&
-      historyHasMore &&
-      !historyLoadingRef.current
-    ) {
+    if (shouldAutoLoadEarlierMessages({
+      scrollTop: feed.scrollTop,
+      hasMore: historyHasMore,
+      loading: historyLoadingRef.current,
+      checkingRemote: historyCheckingRemote,
+      hasError: Boolean(historyError),
+    })) {
       void loadOlderHistory();
     }
   }
@@ -3541,6 +3593,7 @@ function MalinkAppRuntime() {
     historyGenerationRef.current += 1;
     historySessionIdRef.current = sessionId;
     historyCursorRef.current = null;
+    setHistoryCheckingRemote(false);
     setMessages([]);
     setDecisionStates({});
     setHistoryHasMore(Boolean(sessionId) && !skipHistoryRestore);
@@ -4274,6 +4327,7 @@ function MalinkAppRuntime() {
       historyGenerationRef.current += 1;
       historyLoadingRef.current = false;
       setHistoryLoading(false);
+      setHistoryCheckingRemote(false);
       setHistoryHasMore(false);
       setFeedHasUnseenMessages(false);
       setHistoryError(null);
@@ -4765,6 +4819,7 @@ function MalinkAppRuntime() {
     historyCursorRef.current = null;
     historyLoadingRef.current = false;
     setHistoryLoading(false);
+    setHistoryCheckingRemote(false);
     setHistoryHasMore(false);
     setHistoryError(null);
     setHistoryRetryMode(null);
@@ -9498,6 +9553,8 @@ function MalinkAppRuntime() {
               <button type="button" onClick={() => void loadOlderHistory()}>
                 Load earlier messages
               </button>
+            ) : historyCheckingRemote ? (
+              <span>Checking archived history in the background…</span>
             ) : messages.length > 0 ? (
               <span>Beginning of loaded history</span>
             ) : null}

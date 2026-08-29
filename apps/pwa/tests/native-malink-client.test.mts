@@ -209,7 +209,7 @@ test("returns a durable native receipt immediately and acknowledges event cursor
   replacement.close();
 });
 
-test("renders native local history before advancing a cache-cold Matrix page", async () => {
+test("keeps native local projection reads separate from Matrix pagination", async () => {
   const historySources: string[] = [];
   const port = new RuntimePort((request) => {
     if (request.method !== "malink.history.page") return responseFor(request);
@@ -234,17 +234,20 @@ test("renders native local history before advancing a cache-cold Matrix page", a
   });
   const client = await createTestClient(port);
 
-  const initial = await client.loadHistoryPage("session-history-1");
+  const initial = await client.loadLocalHistory("session-history-1");
   assert.deepEqual(initial.messages.map((message) => message.eventId), [
     "native-local-history-1",
   ]);
-  assert.equal(initial.hasMore, true);
+  assert.equal(initial.hasMore, false);
   assert.deepEqual(historySources, ["local"]);
 
   const older = await client.loadHistoryPage("session-history-1");
   assert.deepEqual(older.messages, []);
   assert.equal(older.hasMore, false);
   assert.deepEqual(historySources, ["local", "matrix"]);
+
+  await client.loadHistoryPage("session-history-2");
+  assert.deepEqual(historySources, ["local", "matrix", "matrix"]);
   client.dispose();
 });
 

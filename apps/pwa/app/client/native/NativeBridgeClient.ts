@@ -139,7 +139,6 @@ export class NativeBridgeClient implements MalinkClient {
   readonly #completions = new Map<string, CommandCompletion>();
   readonly #completionWaiters = new Map<string, Set<CompletionWaiter>>();
   readonly #loadedHistoryEventIds = new Map<string, Set<string>>();
-  readonly #initialLocalHistoryServed = new Set<string>();
 
   constructor(
     private readonly bridge: NativeRpcBridge,
@@ -422,7 +421,6 @@ export class NativeBridgeClient implements MalinkClient {
   async loadLocalHistory(
     sessionId: string,
   ): Promise<MalinkHistoryPage> {
-    this.#initialLocalHistoryServed.add(sessionId);
     this.#historyBefore.delete(sessionId);
     const loaded = this.#loadedHistoryEventIds.get(sessionId) ?? new Set<string>();
     const recovered = new Map<string, MalinkHistoryPage["messages"][number]>();
@@ -458,26 +456,6 @@ export class NativeBridgeClient implements MalinkClient {
     sessionId: string,
     limit = 30,
   ): Promise<MalinkHistoryPage> {
-    if (
-      !this.#initialLocalHistoryServed.has(sessionId) &&
-      !this.#historyBefore.has(sessionId)
-    ) {
-      this.#initialLocalHistoryServed.add(sessionId);
-      const local = await this.#loadHistory(
-        sessionId,
-        limit,
-        undefined,
-        "local",
-      );
-      if (local.messages.length > 0) {
-        // A cache-cold Web origin can still have a complete durable projection
-        // in the Android service. Render that projection immediately instead
-        // of hiding it behind a Matrix relations request that may take 50s.
-        // Keep one pagination opportunity when the local page is exhausted so
-        // an explicit older-history request can advance Matrix afterwards.
-        return { ...local, hasMore: true };
-      }
-    }
     return this.#loadHistory(
       sessionId,
       limit,

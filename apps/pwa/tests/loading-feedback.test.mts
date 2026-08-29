@@ -4,7 +4,26 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { GatewayEnrollmentPanel } from "../app/GatewayEnrollmentPanel.tsx";
+import { shouldAutoLoadEarlierMessages } from "../app/historyPagination.ts";
 import { PairingWizard } from "../app/PairingWizard.tsx";
+
+test("auto-loads earlier messages only from an idle, healthy feed", () => {
+  const idle = {
+    scrollTop: 40,
+    hasMore: true,
+    loading: false,
+    checkingRemote: false,
+    hasError: false,
+  };
+  assert.equal(shouldAutoLoadEarlierMessages(idle), true);
+  assert.equal(shouldAutoLoadEarlierMessages({ ...idle, scrollTop: 81 }), false);
+  assert.equal(shouldAutoLoadEarlierMessages({ ...idle, loading: true }), false);
+  assert.equal(
+    shouldAutoLoadEarlierMessages({ ...idle, checkingRemote: true }),
+    false,
+  );
+  assert.equal(shouldAutoLoadEarlierMessages({ ...idle, hasError: true }), false);
+});
 
 test("shows an explicit busy state while a pairing invitation is verified", () => {
   const html = renderToStaticMarkup(createElement(PairingWizard, {
@@ -84,4 +103,18 @@ test("keeps async operation context visible until terminal completion", async ()
   assert.match(settings, /if \(actionBusy\) return;/);
   assert.match(settings, /escapeDisabled: actionBusy/);
   assert.match(settings, /nativeUpdateBusy[\s\S]*?"Installing APK…"/);
+
+  const restoreHistory = app.slice(
+    app.indexOf("async function restoreSessionHistory"),
+    app.indexOf("async function loadOlderHistory"),
+  );
+  const olderHistory = app.slice(
+    app.indexOf("async function loadOlderHistory"),
+    app.indexOf("function handleFeedScroll"),
+  );
+  assert.match(restoreHistory, /connection\.loadLocalHistory\(sessionId\)/);
+  assert.doesNotMatch(restoreHistory, /await connection\.loadHistoryPage/);
+  assert.match(olderHistory, /loadRemoteHistoryInBackground/);
+  assert.doesNotMatch(olderHistory, /await connection\.loadHistoryPage/);
+  assert.match(app, /Checking archived history in the background/);
 });
