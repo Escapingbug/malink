@@ -90,6 +90,14 @@ Timeline event IDs are deduplicated within each SDK driver generation, command
 sends are serialized, and successful raw-inbox cleanup is coalesced until the
 next durable input or a clean lifecycle boundary.
 
+For an Android outbox command already published to Matrix but still missing a
+terminal event, native recovery first scans the bounded SDK timeline. If that
+scan still has no result, Android sends the exact stored signed/encrypted
+content under a fresh `malink.v3.reconcile.<commandId>.<uuid>` Matrix
+transaction. It never rebuilds the command. The Gateway journal deduplicates
+before execution and returns signed `command.reconciled` state, allowing a
+restarted WebView to converge without submitting the user action twice.
+
 Debug builds write bounded private sync-profiling traces. Release builds retain
 only bounded SDK warnings and errors. Diagnostic export converts those traces
 to a fixed vocabulary of levels, targets, categories, and HTTP status codes;

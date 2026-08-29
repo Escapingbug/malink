@@ -273,6 +273,63 @@ const artifactMaterializationUiSchema = z
     status: z.enum(['materialized', 'changed']),
   })
   .strict()
+
+const commandReconciledPayloadSchema = z
+  .object({
+    type: z.literal('command.reconciled'),
+    commandId: opaqueId,
+    state: z.enum(['accepted', 'running', 'terminal']),
+    acceptedAt: timestamp,
+    dispatchedAt: timestamp.optional(),
+    terminalAt: timestamp.optional(),
+    outcome: z
+      .enum(['succeeded', 'failed', 'cancelled', 'rejected', 'interrupted'])
+      .optional(),
+    result: jsonValueSchema.optional(),
+    error: z
+      .object({
+        code: z.string().min(1).max(128),
+        message: z.string().min(1).max(8_192),
+        retryable: z.boolean(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const terminal = value.state === 'terminal'
+    if (terminal !== (value.outcome !== undefined)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['outcome'],
+        message: 'A reconciled terminal command requires an outcome',
+      })
+    }
+    if (!terminal && (value.terminalAt !== undefined || value.result !== undefined || value.error)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['state'],
+        message: 'Only a reconciled terminal command may carry terminal data',
+      })
+    }
+    if (value.state === 'accepted' && value.dispatchedAt !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['dispatchedAt'],
+        message: 'An accepted command has not been dispatched',
+      })
+    }
+    const failed = value.outcome === 'failed'
+      || value.outcome === 'rejected'
+      || value.outcome === 'interrupted'
+    if (terminal && failed !== (value.error !== undefined)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['error'],
+        message: 'A failed reconciled command requires an error',
+      })
+    }
+  })
 const sessionUpdatePayloadSchema = z
   .object({ operation: z.literal('session.update'), patch: sessionSettingsPatchSchema })
   .strict()
@@ -831,6 +888,7 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       retryable: z.boolean(),
     })
     .strict(),
+  commandReconciledPayloadSchema,
   z
     .object({
       type: z.literal('project.created'),

@@ -1019,12 +1019,34 @@ describe('MatrixMlp3GatewayRunner', () => {
     // An exact retry arrives as a different physical Matrix event. It remains
     // the same business command and must not run a second provider turn.
     await send(promptA, '$prompt-a-retry')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'prompt-a'
+        && event.payload.type === 'command.reconciled'
+        && event.payload.state === 'running'
+      ))
     blocked.resolve()
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
       .some(event =>
         event.causationCommandId === 'prompt-a'
         && event.payload.type === 'turn.completed'
       ))
+    await send(promptA, '$prompt-a-terminal-reconciliation')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'prompt-a'
+        && event.payload.type === 'command.reconciled'
+        && event.payload.state === 'terminal'
+      ))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'prompt-a'
+      && event.payload.type === 'command.reconciled'
+      && event.payload.state === 'terminal'
+    )?.payload).toMatchObject({
+      type: 'command.reconciled',
+      commandId: 'prompt-a',
+      outcome: 'succeeded',
+    })
     expect(dispatched.filter(item => item.text === 'block A')).toHaveLength(1)
     expect(terminalNotifications.filter(event =>
       event.causationCommandId === 'prompt-blocked-by-macos'

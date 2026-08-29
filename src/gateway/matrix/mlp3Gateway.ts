@@ -620,6 +620,14 @@ export class MatrixMlp3GatewayRunner {
     )
     this.observeRelationHint(project, authorized.command, event)
     const record = authorized.claim.record
+    if (authorized.claim.kind === 'duplicate') {
+      await this.publishCommandReconciliation(project, record, event.eventId).catch(error => {
+        this.log(
+          `[mlp3/matrix] command ${record.command.commandId} reconciliation failed: `
+          + formatError(error),
+        )
+      })
+    }
     if (record.status === 'terminal') {
       if (!record.terminalDeliveryEventId) this.scheduleTerminalRedelivery(project, record)
       return
@@ -2198,6 +2206,43 @@ export class MatrixMlp3GatewayRunner {
     this.executionTasks.add(task)
   }
 
+  /**
+   * A client whose Matrix transaction was accepted may still miss the signed
+   * terminal event before its local cursor advances. It reconciles by sending
+   * the exact original signed command under a fresh Matrix transaction. The
+   * execution journal has already claimed that immutable command identity, so
+   * this path can report durable state without running the operation twice.
+   */
+  private async publishCommandReconciliation(
+    project: V3ProjectRuntime,
+    record: Mlp3CommandJournalRecord,
+    recoveryMatrixEventId: string,
+  ): Promise<void> {
+    const terminal = record.terminal
+    const sessionId = terminal?.sessionId ?? record.command.sessionId
+    const event: Mlp3Event = {
+      kind: 'malink.event',
+      version: 3,
+      eventId: logicalCommandReconciliationEventId(record.command, recoveryMatrixEventId),
+      workspaceId: this.config.gatewayId,
+      projectId: project.project.projectId,
+      ...(sessionId ? { sessionId } : {}),
+      occurredAt: this.now(),
+      causationCommandId: record.command.commandId,
+      payload: commandReconciliationPayload(record),
+    }
+    const session = event.sessionId
+      ? project.project.sessions.find(candidate => candidate.id === event.sessionId)
+      : undefined
+    await this.content.queueEvent(project.config, event, this.client, {
+      ...(session ? { relation: threadRelation(session.threadRootEventId) } : {}),
+      priority: 'urgent',
+    })
+    this.log(
+      `[mlp3/matrix] reconciled command ${record.command.commandId} as ${record.status}`,
+    )
+  }
+
   private async enqueueTerminalNotification(
     project: V3ProjectRuntime,
     event: Mlp3Event,
@@ -3021,6 +3066,86 @@ function logicalSessionRecoveryEventId(
       `malink-v3-session-recovery\0${workspaceId}\0${projectId}\0${sessionId}\0${stateVersion}`,
     )
     .digest('base64url')
+}
+
+function logicalCommandReconciliationEventId(
+  command: Mlp3Command,
+  recoveryMatrixEventId: string,
+): string {
+  return createHash('sha256')
+    .update(
+      `malink-v3-command-reconciliation\0${command.deviceId}\0${command.certificateId}`
+      + `\0${command.commandId}\0${recoveryMatrixEventId}`,
+    )
+    .digest('base64url')
+}
+
+function commandReconciliationPayload(
+  record: Mlp3CommandJournalRecord,
+): Extract<Mlp3EventPayload, { type: 'command.reconciled' }> {
+  if (record.status === 'accepted') {
+    return {
+      type: 'command.reconciled',
+      commandId: record.command.commandId,
+      state: 'accepted',
+      acceptedAt: record.acceptedAt,
+    }
+  }
+  if (record.status === 'dispatched') {
+    return {
+      type: 'command.reconciled',
+      commandId: record.command.commandId,
+      state: 'running',
+      acceptedAt: record.acceptedAt,
+      ...(record.dispatchedAt === undefined ? {} : { dispatchedAt: record.dispatchedAt }),
+    }
+  }
+  const terminal = record.terminal
+  if (!terminal) throw new Error('A terminal command journal record has no terminal outcome')
+  const outcome = reconciledCommandOutcome(terminal)
+  const error = reconciledCommandError(terminal, outcome)
+  return {
+    type: 'command.reconciled',
+    commandId: record.command.commandId,
+    state: 'terminal',
+    acceptedAt: record.acceptedAt,
+    ...(record.dispatchedAt === undefined ? {} : { dispatchedAt: record.dispatchedAt }),
+    ...(record.terminalAt === undefined ? {} : { terminalAt: record.terminalAt }),
+    outcome,
+    ...(terminal.result === undefined ? {} : { result: terminal.result }),
+    ...(error ? { error } : {}),
+  }
+}
+
+function reconciledCommandOutcome(
+  terminal: Mlp3CommandTerminal,
+): 'succeeded' | 'failed' | 'cancelled' | 'rejected' | 'interrupted' {
+  return terminal.event?.payload.type === 'turn.completed'
+      && terminal.event.payload.outcome === 'cancelled'
+    ? 'cancelled'
+    : terminal.outcome
+}
+
+function reconciledCommandError(
+  terminal: Mlp3CommandTerminal,
+  outcome: ReturnType<typeof reconciledCommandOutcome>,
+): { code: string; message: string; retryable: boolean } | undefined {
+  if (outcome === 'succeeded' || outcome === 'cancelled') return undefined
+  const payload = terminal.event?.payload
+  if (payload?.type === 'turn.failed') {
+    return { code: payload.code, message: payload.message, retryable: false }
+  }
+  if (payload?.type === 'command.rejected') {
+    return { code: payload.code, message: payload.message, retryable: payload.retryable }
+  }
+  return {
+    code: terminal.code ?? (outcome === 'interrupted' ? 'execution_interrupted' : 'gateway_failed'),
+    message: terminal.error
+      ?? (outcome === 'interrupted'
+        ? 'The Gateway restarted after dispatch. The command was not executed again.'
+        : 'The Gateway recorded this command as failed.'),
+    retryable: outcome === 'interrupted',
+  }
 }
 
 function commandKey(command: Mlp3Command): string {

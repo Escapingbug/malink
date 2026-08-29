@@ -511,7 +511,12 @@ internal class MatrixMlp3NativeProjection(
 
         return MatrixMlp3NativeProjectionResult(
             messages = messages,
-            progressedCommandId = if (type in setOf("turn.queued", "turn.started")) causation else null,
+            progressedCommandId = when {
+                type in setOf("turn.queued", "turn.started") -> causation
+                type == "command.reconciled" &&
+                    payload.requiredString("state", 32) == "running" -> causation
+                else -> null
+            },
             terminal = terminal(type, event, payload, causation, sessionId),
             changed = sessionId != null || messages.isNotEmpty(),
         )
@@ -1306,6 +1311,46 @@ internal class MatrixMlp3NativeProjection(
                 errorMessage = payload.requiredString("message", 8_192),
                 retryable = payload.requiredBoolean("retryable"),
             )
+            "command.reconciled" -> {
+                require(payload.requiredString("commandId", 256) == commandId)
+                payload.requiredLong("acceptedAt")
+                payload.optionalLong("dispatchedAt")
+                val state = payload.requiredOneOf(
+                    "state",
+                    setOf("accepted", "running", "terminal"),
+                )
+                if (state != "terminal") {
+                    null
+                } else {
+                    payload.optionalLong("terminalAt")
+                    val outcome = payload.requiredOneOf(
+                        "outcome",
+                        setOf("succeeded", "failed", "cancelled", "rejected", "interrupted"),
+                    )
+                    val error = payload["error"] as? JsonObject
+                    if (outcome in setOf("failed", "rejected", "interrupted")) {
+                        requireNotNull(error) {
+                            "A failed reconciled command requires an error."
+                        }
+                    } else {
+                        require(error == null) {
+                            "A successful reconciled command cannot include an error."
+                        }
+                    }
+                    MatrixMlp3NativeTerminal(
+                        commandId = commandId,
+                        outcome = when (outcome) {
+                            "succeeded", "cancelled" -> outcome
+                            else -> "failed"
+                        },
+                        sessionId = sessionId,
+                        result = payload["result"],
+                        errorCode = error?.requiredString("code", 128),
+                        errorMessage = error?.requiredString("message", 8_192),
+                        retryable = error?.requiredBoolean("retryable") ?: false,
+                    )
+                }
+            }
             "device.invitation.created" -> MatrixMlp3NativeTerminal(
                 commandId,
                 "succeeded",

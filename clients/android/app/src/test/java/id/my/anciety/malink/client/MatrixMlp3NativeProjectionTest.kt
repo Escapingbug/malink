@@ -279,6 +279,59 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `authoritative reconciliation progresses and completes the original command`() {
+        val projection = projection()
+        val running = projection.applyGatewayEvent(
+            event(
+                eventId = "reconciliation-running-1",
+                projectId = "project-1",
+                sessionId = "session-a",
+                causationCommandId = "command-1",
+                payload = buildJsonObject {
+                    put("type", "command.reconciled")
+                    put("commandId", "command-1")
+                    put("state", "running")
+                    put("acceptedAt", 1)
+                    put("dispatchedAt", 2)
+                },
+            ),
+            "\$reconciliation-running",
+            "\$root-a",
+        )
+        assertEquals("command-1", running.progressedCommandId)
+        assertNull(running.terminal)
+
+        val terminal = projection.applyGatewayEvent(
+            event(
+                eventId = "reconciliation-terminal-1",
+                projectId = "project-1",
+                sessionId = "session-a",
+                causationCommandId = "command-1",
+                payload = buildJsonObject {
+                    put("type", "command.reconciled")
+                    put("commandId", "command-1")
+                    put("state", "terminal")
+                    put("acceptedAt", 1)
+                    put("dispatchedAt", 2)
+                    put("terminalAt", 3)
+                    put("outcome", "interrupted")
+                    put("error", buildJsonObject {
+                        put("code", "execution_interrupted")
+                        put("message", "The Gateway restarted after dispatch.")
+                        put("retryable", true)
+                    })
+                },
+            ),
+            "\$reconciliation-terminal",
+            "\$root-a",
+        ).terminal
+        assertEquals("command-1", terminal?.commandId)
+        assertEquals("failed", terminal?.outcome)
+        assertEquals("execution_interrupted", terminal?.errorCode)
+        assertEquals(true, terminal?.retryable)
+    }
+
+    @Test
     fun `assistant message tool presentation is projected as a tool message`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)

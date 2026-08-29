@@ -1265,7 +1265,9 @@ export function toLegacyCompletion(
     commandId: completion.commandId,
     sequence: 1,
     revision: 0,
-    outcome: completion.outcome === "succeeded" ? "succeeded" : "failed",
+    outcome: completion.outcome === "succeeded" || completion.outcome === "cancelled"
+      ? completion.outcome
+      : "failed",
     ...(completion.sessionId ? { sessionId: completion.sessionId } : {}),
     ...(payload.type === "device.invitation.created"
       ? { result: { pairingLink: payload.pairingLink, expiresAt: payload.expiresAt } }
@@ -1292,6 +1294,8 @@ export function toLegacyCompletion(
         ? { result: payload.status }
       : payload.type === "provider.sessions.listed" || payload.type === "provider.session.inspected"
         ? { result: payload }
+      : payload.type === "command.reconciled" && payload.result !== undefined
+        ? { result: payload.result }
       : artifactResult
         ? { result: artifactResult }
       : {}),
@@ -1299,6 +1303,8 @@ export function toLegacyCompletion(
       ? { error: { code: payload.code, message: payload.message, retryable: false } }
       : payload.type === "command.rejected"
         ? { error: { code: payload.code, message: payload.message, retryable: payload.retryable } }
+      : payload.type === "command.reconciled" && payload.error
+        ? { error: payload.error }
         : {}),
   };
 }

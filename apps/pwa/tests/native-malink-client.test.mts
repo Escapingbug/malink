@@ -337,14 +337,14 @@ test("reports durable commands restored from the native startup snapshot", async
     onStatus() {},
     onDurableCommandRecovered(command) {
       recovered.push(
-        `${command.commandId}:${command.state}:${command.sessionId}:${command.submittedAt}`,
+        `${command.commandId}:${command.state}:${command.sessionId}:${command.submittedAt}:${command.updatedAt}`,
       );
     },
   });
   await client.ready;
 
   assert.deepEqual(recovered, [
-    "command-interrupted-archive:recovery_required:session-archive-1:31",
+    "command-interrupted-archive:recovery_required:session-archive-1:31:32",
   ]);
   client.dispose();
 });

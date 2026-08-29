@@ -90,14 +90,27 @@ delivery state in place.
 Before sending, a client writes the exact signed and encrypted Matrix content
 to its durable outbox. Retry reuses both `command_id` and Matrix transaction ID.
 Once Matrix returns the physical event ID, the client records the command as
-published and stops retransmitting it. Signed Gateway progress may follow, and
-only a signed terminal event completes the command.
+published and stops ordinary transport retransmission. Signed Gateway progress
+may follow, and only a signed terminal event completes the command.
+
+If a published command still has no signed terminal after bounded Matrix
+timeline recovery, a client may send the exact saved Matrix content under a
+fresh transaction ID prefixed `malink.v3.reconcile.<command_id>.`. This is a
+journal reconciliation probe, not a new command: the client MUST NOT change the
+signed command, ciphertext, logical ID, or application payload. The Gateway
+deduplicates it before dispatch and emits a new signed `command.reconciled`
+event. Its state is `accepted`, `running`, or `terminal`; a terminal event
+includes the journal's durable outcome and structured result or error. Clients
+complete the original outbox record from that event. This additive event does
+not change the MLP version because old clients never send the probe and old
+Gateways safely leave new clients on the existing timeline-recovery fallback.
 
 The Gateway commits each accepted `command_id` to a durable command journal
-before execution. Re-delivery returns the recorded state and never runs the
-operation twice. Independent append operations such as prompts are serialized
-by the Gateway; state-dependent mutations carry explicit preconditions and
-produce a reviewable conflict instead of hidden client-side retry.
+before execution. Exact re-delivery returns the recorded state through
+`command.reconciled` and never runs the operation twice. Independent append
+operations such as prompts are serialized by the Gateway; state-dependent
+mutations carry explicit preconditions and produce a reviewable conflict
+instead of hidden client-side retry.
 
 Session creation, prompt, cancel, settings, provider-history inspection,
 artifact materialization, and archive use this same path. A create command
@@ -203,7 +216,11 @@ cursor and closes that gap in a coalesced background worker. The current
 pointer and fully paginated thread directory provide a cache-cold baseline;
 thread relations do not poll for recent state. Process death resumes the
 durable inbox, gap queue, and outbox and never manufactures a replacement
-command.
+command. A published command first performs bounded timeline recovery; only if
+no terminal result is found does it issue the exact-content reconciliation
+probe described above. The UI exposes the saved command ID and stage, explains
+whether Matrix or the Gateway is unavailable, and offers explicit check,
+reconnect, and diagnostic actions.
 
 Offline clients show their last verified encrypted local projection and
 history. They do not report Connected or release new commands until the Matrix

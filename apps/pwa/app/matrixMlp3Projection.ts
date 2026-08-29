@@ -64,7 +64,7 @@ export type V3ProjectedInboxFile = {
 
 export type Mlp3CommandCompletion = {
   commandId: string;
-  outcome: "succeeded" | "failed" | "rejected" | "interrupted";
+  outcome: "succeeded" | "failed" | "cancelled" | "rejected" | "interrupted";
   sessionId?: string;
   event: Mlp3Event;
 };
@@ -703,7 +703,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
     if (
       !completion
       || !text(completion.commandId)
-      || !["succeeded", "failed", "rejected", "interrupted"].includes(String(completion.outcome))
+      || !["succeeded", "failed", "cancelled", "rejected", "interrupted"].includes(String(completion.outcome))
     ) throw new Error("The MLP/3 completion projection is invalid.");
     return {
       ...structuredClone(completion),
@@ -901,13 +901,26 @@ function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
     case "provider.session.inspected":
       return { commandId, outcome: "succeeded", ...(event.sessionId ? { sessionId: event.sessionId } : {}), event };
     case "turn.completed":
-      return { commandId, outcome: "succeeded", ...(event.sessionId ? { sessionId: event.sessionId } : {}), event };
+      return {
+        commandId,
+        outcome: event.payload.outcome === "cancelled" ? "cancelled" : "succeeded",
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+        event,
+      };
     case "turn.failed":
       return { commandId, outcome: "failed", ...(event.sessionId ? { sessionId: event.sessionId } : {}), event };
     case "command.rejected":
       return {
         commandId,
         outcome: event.payload.code === "execution_interrupted" ? "interrupted" : "rejected",
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+        event,
+      };
+    case "command.reconciled":
+      if (event.payload.state !== "terminal" || !event.payload.outcome) return null;
+      return {
+        commandId: event.payload.commandId,
+        outcome: event.payload.outcome,
         ...(event.sessionId ? { sessionId: event.sessionId } : {}),
         event,
       };

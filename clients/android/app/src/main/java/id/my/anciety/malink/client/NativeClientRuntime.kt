@@ -495,7 +495,7 @@ class NativeClientRuntime(
                             historicalMessages,
                             refreshedSnapshot(),
                         )
-                        commitMatrixMlp3Projection("history_page")
+                        commitMatrixMlp3Projection("timeline_page")
                     }
                     imported += historicalMessages.size
                     initializedHistoryRelations += sessionId
@@ -1414,6 +1414,9 @@ class NativeClientRuntime(
                             "terminal" to (outbox.get(command.commandId)?.state?.isTerminal == true).toString(),
                         ),
                     )
+                    if (outbox.get(command.commandId)?.state?.isTerminal != true) {
+                        sendPublishedCommandReconciliation(command, roomId)
+                    }
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
@@ -1434,6 +1437,34 @@ class NativeClientRuntime(
             commandTimelineRecoveryJobs[command.commandId] = job
             job.start()
         }
+    }
+
+    private suspend fun sendPublishedCommandReconciliation(
+        command: DurableView,
+        roomId: String,
+    ) = commandSendMutex.withLock reconciliation@{
+        val current = mutex.withLock { outbox.get(command.commandId) }
+            ?: return@reconciliation
+        if (current.state.isTerminal || current.state !in setOf(DurableState.PUBLISHED, DurableState.RUNNING)) {
+            return@reconciliation
+        }
+        val content = matrixMlp3CommandContent.get(command.commandId)
+            ?: throw IllegalStateException(
+                "The exact signed command content is unavailable for reconciliation.",
+            )
+        val attemptId = UUID.randomUUID().toString()
+        sendTrustedControlMessage(
+            content.toString(),
+            "malink.v3.reconcile.${command.commandId}.$attemptId",
+            roomId,
+        )
+        diagnostics.record(
+            "command.reconciliation.submitted",
+            mapOf(
+                "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                "stage" to current.state.wireName,
+            ),
+        )
     }
 
     private fun cancelCommandTimelineRecovery(commandId: String) {

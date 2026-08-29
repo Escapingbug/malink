@@ -67,7 +67,7 @@ export type MalinkRecoveredSessionCreate = {
 
 export type MalinkRecoveredDurableCommand = Pick<
   CommandView,
-  "commandId" | "state" | "sessionId" | "submittedAt"
+  "commandId" | "state" | "sessionId" | "submittedAt" | "updatedAt"
 > & { commandId: string };
 
 export class CommandReviewRequiredError extends Error {

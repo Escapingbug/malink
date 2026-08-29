@@ -192,10 +192,15 @@ unverified commands produce no application event.
    `causationCommandId` is a relationship, never message identity.
 7. The client saves exact outbound content before send and reuses a stable
    Matrix transaction ID. A returned Matrix event ID records homeserver
-   persistence and stops retransmission; terminal convergence comes from the
-   signed Gateway chain.
+   persistence and stops ordinary transport retransmission; terminal
+   convergence comes from the signed Gateway chain. If bounded timeline
+   recovery cannot find that terminal chain, the client may publish the exact
+   saved content under a fresh reconciliation transaction ID. It must not
+   create, resign, or re-encrypt a replacement command.
 8. The Gateway journals a command before execution. Redelivery of the same
-   command ID returns its recorded state and cannot execute twice.
+   exact command ID emits a signed `command.reconciled` view of its recorded
+   accepted, running, or terminal state and cannot execute twice. A terminal
+   reconciliation carries the durable outcome and structured result or error.
 9. Current project state is an ordinary signed snapshot referenced by
    `io.malink.project.current.v3`. It is a recovery accelerator, not a separate
    mutable authority or a manual checkpoint.
@@ -359,8 +364,14 @@ background and cannot hold an already-authoritative primary project in
 `Connecting`.
 
 No layer substitutes for another. In particular, increasing an in-memory event
-window, publishing a manual checkpoint, or resending an already Matrix-acked
-command is not a recovery strategy.
+window or publishing a manual checkpoint is not a recovery strategy. An
+already-published command may only be sent again as an explicit reconciliation
+probe: exact signed/encrypted content, the same logical command ID, and a fresh
+Matrix transport transaction ID. The Gateway command journal—not Matrix send
+success—then answers with signed `command.reconciled` state. This additive
+event remains MLP/3 because older peers safely ignore it and current peers keep
+their existing terminal-event fallback; protocol versions are compatibility
+boundaries rather than semantic revision counters.
 
 ## Gateway online-update boundary
 

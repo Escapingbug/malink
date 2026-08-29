@@ -581,6 +581,49 @@ describe('Malink Protocol v3 (MLP/3)', () => {
     expect(event.payload).toMatchObject({ messageId: 'message-1', messageVersion: 2 })
   })
 
+  it('models authoritative command reconciliation without changing MLP/3', () => {
+    const common = {
+      kind: 'malink.event' as const,
+      version: 3 as const,
+      eventId: 'command-reconciliation-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      occurredAt: 4,
+      causationCommandId: 'command-1',
+    }
+    expect(mlp3EventSchema.parse({
+      ...common,
+      payload: {
+        type: 'command.reconciled',
+        commandId: 'command-1',
+        state: 'terminal',
+        acceptedAt: 1,
+        dispatchedAt: 2,
+        terminalAt: 3,
+        outcome: 'failed',
+        error: {
+          code: 'execution_interrupted',
+          message: 'The Gateway restarted after dispatch.',
+          retryable: true,
+        },
+      },
+    }).payload).toMatchObject({
+      type: 'command.reconciled',
+      state: 'terminal',
+      outcome: 'failed',
+    })
+    expect(() => mlp3EventSchema.parse({
+      ...common,
+      payload: {
+        type: 'command.reconciled',
+        commandId: 'command-1',
+        state: 'terminal',
+        acceptedAt: 1,
+      },
+    })).toThrow('requires an outcome')
+  })
+
   it('grants retained project keys once per device and validates the active key', () => {
     expect(mlp3ProjectKeyGrantPlaintextSchema.parse({
       kind: 'project.key_grant',

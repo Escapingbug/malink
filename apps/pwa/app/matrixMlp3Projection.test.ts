@@ -58,6 +58,49 @@ describe("MatrixMlp3Projection", () => {
     });
   });
 
+  it("settles an interrupted durable command from an authoritative reconciliation", () => {
+    const projection = new MatrixMlp3Projection();
+    projection.applyEvent({
+      kind: "malink.event",
+      version: 3,
+      eventId: "command-reconciled-command-1-terminal",
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      sessionId: "session-a",
+      occurredAt: 8,
+      causationCommandId: "command-1",
+      payload: {
+        type: "command.reconciled",
+        commandId: "command-1",
+        state: "terminal",
+        acceptedAt: 2,
+        dispatchedAt: 3,
+        terminalAt: 7,
+        outcome: "interrupted",
+        error: {
+          code: "gateway_restarted",
+          message: "The Gateway restarted after dispatch.",
+          retryable: true,
+        },
+      },
+    }, "$command-reconciled");
+
+    const completion = projection.completions.get("command-1");
+    expect(completion).toMatchObject({
+      commandId: "command-1",
+      outcome: "interrupted",
+    });
+    expect(toLegacyCompletion(completion!)).toMatchObject({
+      commandId: "command-1",
+      outcome: "failed",
+      error: {
+        code: "gateway_restarted",
+        message: "The Gateway restarted after dispatch.",
+        retryable: true,
+      },
+    });
+  });
+
   it("tombstones only the targeted session without a global inventory revision", () => {
     const projection = new MatrixMlp3Projection();
     projection.applyCommand(createCommand("a"), "$root-a");

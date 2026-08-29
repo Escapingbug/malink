@@ -227,6 +227,7 @@ import {
   type ConnectionRepairReason,
   type MobileConnectionSignal,
 } from "./connectionPresentation";
+import { durableCommandRecoveryPresentation } from "./durableCommandRecoveryPresentation";
 import { connectionFailureCode } from "./connectionFailure";
 import {
   automaticConnectionRetryDelay,
@@ -1024,6 +1025,65 @@ function UiNoticeList({
   );
 }
 
+function DurableCommandRecoveryNotice({
+  command,
+  connectionStatus,
+  gatewayAvailable,
+  busy,
+  lastError,
+  onCheck,
+  onReconnect,
+  onExportDiagnostics,
+}: {
+  command: MalinkRecoveredDurableCommand;
+  connectionStatus: MatrixConnectionStatus;
+  gatewayAvailable: boolean;
+  busy: boolean;
+  lastError?: string;
+  onCheck(): void;
+  onReconnect(): void;
+  onExportDiagnostics(): void;
+}) {
+  const presentation = durableCommandRecoveryPresentation({
+    state: command.state,
+    connectionStatus,
+    gatewayAvailable,
+    lastError,
+  });
+  const commandLabel = command.commandId.length > 16
+    ? `${command.commandId.slice(0, 12)}…${command.commandId.slice(-4)}`
+    : command.commandId;
+  return (
+    <section className="durable-command-recovery" role="status" aria-live="polite">
+      <div className="durable-command-recovery-heading">
+        <span aria-hidden="true">↻</span>
+        <span>
+          <strong>{presentation.title}</strong>
+          <small>{presentation.stateLabel}</small>
+        </span>
+      </div>
+      <p>{presentation.detail}</p>
+      <small className="durable-command-recovery-meta">
+        Command {commandLabel} · saved {formatRecoveryTimestamp(command.submittedAt)} ·
+        last changed {formatRecoveryTimestamp(command.updatedAt)}
+      </small>
+      <div className="durable-command-recovery-actions">
+        <button
+          type="button"
+          className="primary"
+          disabled={busy}
+          onClick={presentation.primaryAction === "check" ? onCheck : onReconnect}
+        >
+          {busy ? "Checking…" : presentation.primaryLabel}
+        </button>
+        <button type="button" onClick={onExportDiagnostics}>
+          Export diagnostics
+        </button>
+      </div>
+    </section>
+  );
+}
+
 type PwaUpgradeGateState =
   | {
       phase: "preparing";
@@ -1464,6 +1524,13 @@ function MalinkAppRuntime() {
     reduceUiNotices,
     EMPTY_UI_NOTICE_STATE,
   );
+  const [recoveredNativeCommands, setRecoveredNativeCommands] = useState<
+    MalinkRecoveredDurableCommand[]
+  >([]);
+  const [recoveredNativeCommandFlightIds, setRecoveredNativeCommandFlightIds] =
+    useState<Set<string>>(() => new Set());
+  const [recoveredNativeCommandErrors, setRecoveredNativeCommandErrors] =
+    useState<Record<string, string>>({});
   const [sessionLifecycleBusy, setSessionLifecycleBusy] = useState<
     Map<string, SessionLifecycleAction>
   >(() => new Map());
@@ -1955,6 +2022,11 @@ function MalinkAppRuntime() {
   const sessionNotices = noticesForScope(uiNotices, "session");
   const historyNotices = noticesForScope(uiNotices, "history");
   const globalNotices = globalUiNotices(uiNotices);
+  const visibleRecoveredNativeCommand = recoveredNativeCommands.find(
+    command =>
+      command.state !== "needs_review" &&
+      !recoveredNativeCommandIsOwned(command.commandId),
+  ) ?? null;
   const gatewayConnected = gatewayAvailable;
   const isStreaming = Boolean(
     selectedSessionId && runningSessionIds.has(selectedSessionId),
@@ -2337,6 +2409,33 @@ function MalinkAppRuntime() {
       now: Date.now(),
       ...(autoDismissMs === undefined ? {} : { autoDismissMs }),
     });
+  }
+
+  function syncRecoveredNativeCommands(): void {
+    setRecoveredNativeCommands(
+      [...recoveredNativeCommandsRef.current.values()].sort((left, right) =>
+        left.submittedAt - right.submittedAt ||
+        left.commandId.localeCompare(right.commandId)),
+    );
+  }
+
+  function syncRecoveredNativeCommandFlights(): void {
+    setRecoveredNativeCommandFlightIds(
+      new Set(recoveredNativeCommandFlightsRef.current),
+    );
+  }
+
+  function forgetRecoveredNativeCommand(...commandIds: string[]): void {
+    for (const commandId of commandIds) {
+      recoveredNativeCommandsRef.current.delete(commandId);
+      setRecoveredNativeCommandErrors((current) => {
+        if (!(commandId in current)) return current;
+        const next = { ...current };
+        delete next[commandId];
+        return next;
+      });
+    }
+    syncRecoveredNativeCommands();
   }
 
   function selectGatewayFilter(gatewayNodeId: string): void {
@@ -5023,6 +5122,7 @@ function MalinkAppRuntime() {
         onDurableCommandRecovered(command) {
           if (!isCurrentStartup()) return;
           recoveredNativeCommandsRef.current.set(command.commandId, command);
+          syncRecoveredNativeCommands();
         },
         onCommandResult(result) {
           if (!isCurrentStartup()) return;
@@ -5142,6 +5242,9 @@ function MalinkAppRuntime() {
     }
     recoveredNativeCommandsRef.current.clear();
     recoveredNativeCommandFlightsRef.current.clear();
+    setRecoveredNativeCommands([]);
+    setRecoveredNativeCommandFlightIds(new Set());
+    setRecoveredNativeCommandErrors({});
     completionObservationOrderRef.current = 0;
     setObservedCommandCompletions([]);
     setExpandedProcessTurnIds(new Set());
@@ -7895,6 +7998,7 @@ function MalinkAppRuntime() {
         continue;
       }
       recoveredNativeCommandFlightsRef.current.add(commandId);
+      syncRecoveredNativeCommandFlights();
       void (async () => {
         let currentCommandId = commandId;
         let retryNeeded = false;
@@ -7907,6 +8011,9 @@ function MalinkAppRuntime() {
               ...command,
               commandId: currentCommandId,
             });
+            recoveredNativeCommandFlightsRef.current.add(currentCommandId);
+            syncRecoveredNativeCommands();
+            syncRecoveredNativeCommandFlights();
           }
           if (recoveredNativeCommandIsOwned(currentCommandId)) return;
           await waitForCommandCompletion(sent.completion);
@@ -7914,28 +8021,25 @@ function MalinkAppRuntime() {
           await connection.releaseCommand(currentCommandId);
           completedCommandResultsRef.current.delete(commandId);
           completedCommandResultsRef.current.delete(currentCommandId);
-          recoveredNativeCommandsRef.current.delete(commandId);
-          recoveredNativeCommandsRef.current.delete(currentCommandId);
+          forgetRecoveredNativeCommand(commandId, currentCommandId);
           recoverUiNotice("command:startup-recovery");
         } catch (error) {
           if (
             error instanceof CommandReviewRequiredError
             || isMissingSessionCreateRecoveryCommand(error)
           ) {
-            recoveredNativeCommandsRef.current.delete(commandId);
-            recoveredNativeCommandsRef.current.delete(currentCommandId);
+            forgetRecoveredNativeCommand(commandId, currentCommandId);
             return;
           }
           retryNeeded = true;
-          showUiNotice(
-            "command:startup-recovery",
-            "session",
-            "warning",
-            `An interrupted local action still has no authenticated final result. Malink is recovering its Matrix timeline and will retry the same command identity: ${formatUiError(error)}`,
-          );
+          setRecoveredNativeCommandErrors((current) => ({
+            ...current,
+            [currentCommandId]: formatUiError(error),
+          }));
         } finally {
           recoveredNativeCommandFlightsRef.current.delete(commandId);
           recoveredNativeCommandFlightsRef.current.delete(currentCommandId);
+          syncRecoveredNativeCommandFlights();
           if (
             retryNeeded
             && malinkClientRef.current === connection
@@ -7946,6 +8050,24 @@ function MalinkAppRuntime() {
         }
       })();
     }
+  }
+
+  function checkRecoveredNativeCommandsNow(): void {
+    const connection = malinkClientRef.current;
+    if (!connection || connectionStatusRef.current !== "connected") {
+      setSettingsOpen(true);
+      return;
+    }
+    if (recoveredNativeCommandTimerRef.current !== null) {
+      window.clearTimeout(recoveredNativeCommandTimerRef.current);
+      recoveredNativeCommandTimerRef.current = null;
+    }
+    reconcileRecoveredNativeCommands(connection);
+  }
+
+  function reconnectForRecoveredNativeCommand(): void {
+    setSettingsOpen(true);
+    void connectMalinkClient(matrixConfig, false);
   }
 
   function clearSessionLifecycleRecoveries(): void {
@@ -8113,7 +8235,7 @@ function MalinkAppRuntime() {
     }
 
     completedCommandResultsRef.current.delete(sent.commandId);
-    recoveredNativeCommandsRef.current.delete(sent.commandId);
+    forgetRecoveredNativeCommand(sent.commandId);
     const recovery = sessionLifecycleRecoveriesRef.current.get(sent.commandId);
     if (recovery?.timer !== null) window.clearTimeout(recovery.timer);
     sessionLifecycleRecoveriesRef.current.delete(sent.commandId);
@@ -9063,11 +9185,30 @@ function MalinkAppRuntime() {
 
   return (
     <main className={`app-shell ${mobileChatOpen ? "mobile-chat-open" : ""} ${primaryView === "files" ? "file-inbox-open" : ""}`}>
-      <UiNoticeList
-        notices={globalNotices}
-        className="global-ui-notices"
-        onDismiss={dismissUiNotice}
-      />
+      {(globalNotices.length > 0 || visibleRecoveredNativeCommand) && (
+        <div className="global-ui-notices">
+          <UiNoticeList
+            notices={globalNotices}
+            onDismiss={dismissUiNotice}
+          />
+          {visibleRecoveredNativeCommand && (
+            <DurableCommandRecoveryNotice
+              command={visibleRecoveredNativeCommand}
+              connectionStatus={connectionStatus}
+              gatewayAvailable={gatewayAvailable}
+              busy={recoveredNativeCommandFlightIds.has(
+                visibleRecoveredNativeCommand.commandId,
+              )}
+              lastError={recoveredNativeCommandErrors[
+                visibleRecoveredNativeCommand.commandId
+              ]}
+              onCheck={checkRecoveredNativeCommandsNow}
+              onReconnect={reconnectForRecoveredNativeCommand}
+              onExportDiagnostics={exportConnectionDiagnostics}
+            />
+          )}
+        </div>
+      )}
       <aside className="rail" aria-label="Primary navigation">
         <div className="brand" role="img" aria-label="Malink">
           <MalinkMark />
@@ -11376,6 +11517,17 @@ function formatMessageTime(timestamp: number): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(timestamp));
+}
+
+function formatRecoveryTimestamp(timestamp: number): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "at an unknown time";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function formatFileSize(bytes: number): string {

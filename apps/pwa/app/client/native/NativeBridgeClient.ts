@@ -690,6 +690,7 @@ export class NativeBridgeClient implements MalinkClient {
           commandId: command.commandId,
           state: command.state,
           submittedAt: command.submittedAt,
+          updatedAt: command.updatedAt,
           ...(command.sessionId === undefined
             ? {}
             : { sessionId: command.sessionId }),

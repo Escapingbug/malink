@@ -282,7 +282,12 @@ export class MatrixMlp3ProtocolClient {
       };
     }
     const completion = this.observeCompletion(commandId);
-    const eventId = await this.transmit(record).catch(() => undefined);
+    const eventId = record.matrixEventId
+      ? record.matrixEventId
+      : await this.transmit(record).catch(() => undefined);
+    if (record.matrixEventId) {
+      await this.reconcile(record).catch(() => undefined);
+    }
     return {
       commandId,
       ...(record.command.sessionId ? { sessionId: record.command.sessionId } : {}),
@@ -411,6 +416,18 @@ export class MatrixMlp3ProtocolClient {
       await this.persistProjection();
     }
     this.onProjection?.();
+    return result.eventId;
+  }
+
+  private async reconcile(record: MatrixMlp3OutboxRecord): Promise<string> {
+    // This is not a second business command. The exact signed/encrypted MLP/3
+    // content is delivered under a fresh Matrix transaction so the Gateway
+    // can consult its execution-once journal and publish current durable state.
+    const result = await this.transport.sendMessage({
+      roomId: this.config.roomId,
+      content: record.content,
+      transactionId: reconciliationTransactionId(record.command.commandId),
+    });
     return result.eventId;
   }
 
@@ -875,6 +892,10 @@ function threadRelation(rootEventId: string) {
 
 function transactionId(commandId: string): string {
   return `malink.v3.command.${commandId}`;
+}
+
+function reconciliationTransactionId(commandId: string): string {
+  return `malink.v3.reconcile.${commandId}.${crypto.randomUUID()}`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

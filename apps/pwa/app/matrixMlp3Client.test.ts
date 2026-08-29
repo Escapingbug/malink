@@ -104,6 +104,14 @@ describe("MatrixMlp3ProtocolClient", () => {
     await client.retryPending();
     expect(attempts).toHaveLength(2);
 
+    const recovered = await client.recover(sent.commandId);
+    expect(attempts).toHaveLength(3);
+    expect(attempts[2]?.content).toEqual(attempts[1]?.content);
+    expect(attempts[2]?.transactionId).toMatch(
+      new RegExp(`^malink\\.v3\\.reconcile\\.${sent.commandId}\\.`),
+    );
+    expect(attempts[2]?.transactionId).not.toBe(attempts[1]?.transactionId);
+
     await client.ingest({
       roomId: config.roomId,
       eventId: "$bad",
@@ -194,6 +202,10 @@ describe("MatrixMlp3ProtocolClient", () => {
     };
     await client.ingest(readyRaw);
     await expect(sent.completion).resolves.toMatchObject({
+      commandId: sent.commandId,
+      outcome: "succeeded",
+    });
+    await expect(recovered.completion).resolves.toMatchObject({
       commandId: sent.commandId,
       outcome: "succeeded",
     });
