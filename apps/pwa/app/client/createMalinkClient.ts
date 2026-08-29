@@ -112,6 +112,8 @@ export async function createMalinkClient(
 }
 
 export function nativeRuntimeInfo(hello: HelloResult): MalinkNativeRuntimeInfo {
+  const commandJournalReconciliation =
+    hello.capabilities["commands.journal-reconciliation"]?.version === 1;
   const capability = hello.capabilities["client.pwa-source"];
   const options = capability?.version === 1 ? capability.options : undefined;
   const currentBaseUrl = options?.currentBaseUrl;
@@ -122,10 +124,14 @@ export function nativeRuntimeInfo(hello: HelloResult): MalinkNativeRuntimeInfo {
     typeof officialBaseUrl !== "string" ||
     (source !== "official" && source !== "custom")
   ) {
-    return hello.native;
+    return {
+      ...hello.native,
+      ...(commandJournalReconciliation ? { commandJournalReconciliation: true } : {}),
+    };
   }
   return {
     ...hello.native,
+    ...(commandJournalReconciliation ? { commandJournalReconciliation: true } : {}),
     pwaSource: { currentBaseUrl, officialBaseUrl, source },
   };
 }

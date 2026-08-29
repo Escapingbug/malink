@@ -117,6 +117,31 @@ test("reads a negotiated PWA source without changing the shared hello envelope",
   });
 });
 
+test("reports journal reconciliation only when the native host negotiated it", () => {
+  const base: HelloResult = {
+    protocolVersion: 1,
+    bridgeSessionId: "bridge-command-recovery-1",
+    native: {
+      runtimeVersion: "0.1.0",
+      runtimeBuild: "android-command-recovery",
+      platform: "android",
+    },
+    capabilities: {},
+    limits: NATIVE_BRIDGE_LIMITS,
+  };
+
+  assert.equal(nativeRuntimeInfo(base).commandJournalReconciliation, undefined);
+  assert.equal(
+    nativeRuntimeInfo({
+      ...base,
+      capabilities: {
+        "commands.journal-reconciliation": { version: 1 },
+      },
+    }).commandJournalReconciliation,
+    true,
+  );
+});
+
 test("falls back explicitly when the native host is only a Matrix scaffold", async () => {
   const port = new HelloPort();
   const webClient = { runtime: "web" } as MalinkClient;

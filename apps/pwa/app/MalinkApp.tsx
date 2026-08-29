@@ -542,6 +542,9 @@ function sameGatewayUiScope(
 
 const DEVICE_INVITATION_RESULT_TIMEOUT_MS = 95_000;
 const SESSION_CREATE_RESULT_RECOVERY_MS = 15_000;
+const RECOVERED_COMMAND_CHECK_TIMEOUT_MS = 15_000;
+const RECOVERED_COMMAND_RETRY_DELAY_MS = 60_000;
+const RECOVERED_COMMAND_FAILURE_RETRY_DELAY_MS = 15_000;
 const LOCAL_HISTORY_FOREGROUND_TIMEOUT_MS = 5_000;
 const BACKGROUND_HISTORY_SOURCE_TIMEOUT_MS = 65_000;
 const PROJECT_CREATE_RESULT_TIMEOUT_MS = 60_000;
@@ -1032,6 +1035,7 @@ function DurableCommandRecoveryNotice({
   command,
   connectionStatus,
   gatewayAvailable,
+  journalReconciliationAvailable,
   busy,
   lastError,
   onCheck,
@@ -1041,6 +1045,7 @@ function DurableCommandRecoveryNotice({
   command: MalinkRecoveredDurableCommand;
   connectionStatus: MatrixConnectionStatus;
   gatewayAvailable: boolean;
+  journalReconciliationAvailable: boolean;
   busy: boolean;
   lastError?: string;
   onCheck(): void;
@@ -1051,6 +1056,7 @@ function DurableCommandRecoveryNotice({
     state: command.state,
     connectionStatus,
     gatewayAvailable,
+    journalReconciliationAvailable,
     lastError,
   });
   const commandLabel = command.commandId.length > 16
@@ -8024,7 +8030,7 @@ function MalinkAppRuntime() {
       syncRecoveredNativeCommandFlights();
       void (async () => {
         let currentCommandId = commandId;
-        let retryNeeded = false;
+        let retryDelayMs: number | null = null;
         try {
           const sent = await connection.recoverCommand(commandId);
           currentCommandId = sent.commandId;
@@ -8039,7 +8045,10 @@ function MalinkAppRuntime() {
             syncRecoveredNativeCommandFlights();
           }
           if (recoveredNativeCommandIsOwned(currentCommandId)) return;
-          await waitForCommandCompletion(sent.completion);
+          await waitForCommandCompletion(
+            sent.completion,
+            RECOVERED_COMMAND_CHECK_TIMEOUT_MS,
+          );
           if (recoveredNativeCommandIsOwned(currentCommandId)) return;
           await connection.releaseCommand(currentCommandId);
           completedCommandResultsRef.current.delete(commandId);
@@ -8054,7 +8063,9 @@ function MalinkAppRuntime() {
             forgetRecoveredNativeCommand(commandId, currentCommandId);
             return;
           }
-          retryNeeded = true;
+          retryDelayMs = error instanceof CommandCompletionTimeoutError
+            ? RECOVERED_COMMAND_RETRY_DELAY_MS
+            : RECOVERED_COMMAND_FAILURE_RETRY_DELAY_MS;
           setRecoveredNativeCommandErrors((current) => ({
             ...current,
             [currentCommandId]: formatUiError(error),
@@ -8064,11 +8075,14 @@ function MalinkAppRuntime() {
           recoveredNativeCommandFlightsRef.current.delete(currentCommandId);
           syncRecoveredNativeCommandFlights();
           if (
-            retryNeeded
+            retryDelayMs !== null
             && malinkClientRef.current === connection
             && connectionStatusRef.current === "connected"
           ) {
-            scheduleRecoveredNativeCommandReconciliation(connection);
+            scheduleRecoveredNativeCommandReconciliation(
+              connection,
+              retryDelayMs,
+            );
           }
         }
       })();
@@ -9219,6 +9233,9 @@ function MalinkAppRuntime() {
               command={visibleRecoveredNativeCommand}
               connectionStatus={connectionStatus}
               gatewayAvailable={gatewayAvailable}
+              journalReconciliationAvailable={
+                nativeRuntime?.commandJournalReconciliation === true
+              }
               busy={recoveredNativeCommandFlightIds.has(
                 visibleRecoveredNativeCommand.commandId,
               )}

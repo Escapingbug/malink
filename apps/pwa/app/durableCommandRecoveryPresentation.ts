@@ -18,6 +18,7 @@ export function durableCommandRecoveryPresentation(input: {
   state: CommandState;
   connectionStatus: MatrixConnectionStatus;
   gatewayAvailable: boolean;
+  journalReconciliationAvailable?: boolean;
   lastError?: string | null;
 }): DurableCommandRecoveryPresentation {
   const stateLabel = commandStateLabel(input.state);
@@ -45,7 +46,9 @@ export function durableCommandRecoveryPresentation(input: {
   if (!input.gatewayAvailable) {
     return {
       title: "Waiting for your computer",
-      detail: "Matrix is connected, but the Gateway has not published a recent signed state. The original action remains saved. Bring the Gateway online, then check again; Malink will ask its command journal about the same command and will not execute a duplicate.",
+      detail: input.journalReconciliationAvailable === false
+        ? "Matrix is connected, but the Gateway has not published a recent signed state. This installed Android version can only check Matrix history. Update the Android app, bring the Gateway online, then check the same saved command again; Malink will not execute a duplicate."
+        : "Matrix is connected, but the Gateway has not published a recent signed state. The original action remains saved. Bring the Gateway online, then check again; Malink will ask its command journal about the same command and will not execute a duplicate.",
       stateLabel,
       primaryAction: "check",
       primaryLabel: "Check again",
@@ -53,7 +56,9 @@ export function durableCommandRecoveryPresentation(input: {
   }
 
   const detail = accepted
-    ? "Your computer accepted this action, but this client did not receive its signed final result—usually because the app or Matrix sync was interrupted. Malink is checking Matrix history and asking the Gateway journal about the same command; the action will not run twice."
+    ? input.journalReconciliationAvailable === false
+      ? "Your computer accepted this action, but this client did not receive its signed final result. This installed Android version can only check Matrix history and cannot ask the Gateway journal. Update the Android app, then check this same command again; the action will not run twice."
+      : "Your computer accepted this action, but this client did not receive its signed final result—usually because the app or Matrix sync was interrupted. Malink is checking Matrix history and asking the Gateway journal about the same command; the action will not run twice."
     : localOnly
       ? "The app was interrupted before it confirmed that Matrix accepted this action. The exact signed command remains in the local outbox. Malink is retrying that same identity and will not create a second action."
       : "The action has a durable local result, but its recovery record has not been released yet. Malink is verifying the result before removing the record.";
@@ -64,7 +69,9 @@ export function durableCommandRecoveryPresentation(input: {
       : detail,
     stateLabel,
     primaryAction: "check",
-    primaryLabel: "Check now",
+    primaryLabel: accepted && input.journalReconciliationAvailable === false
+      ? "Check Matrix again"
+      : "Check now",
   };
 }
 

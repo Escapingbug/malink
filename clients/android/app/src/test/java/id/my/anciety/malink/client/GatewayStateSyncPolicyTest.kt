@@ -12,6 +12,9 @@ import id.my.anciety.malink.security.malink.PairingRequest
 import id.my.anciety.malink.security.malink.SignedPairingRequest
 import id.my.anciety.malink.security.malink.TestP256Identity
 import java.util.UUID
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -38,6 +41,59 @@ class GatewayStateSyncPolicyTest {
         assertThrows(IllegalArgumentException::class.java) {
             commandRecoveryDelayMs(-1)
         }
+    }
+
+    @Test
+    fun `published command asks the Gateway journal before scanning Matrix history`() = runBlocking {
+        val steps = mutableListOf<String>()
+
+        recoverPublishedCommandDelivery(
+            isTerminal = { false },
+            submitReconciliation = { steps += "journal" },
+            scanTimeline = { steps += "timeline" },
+        )
+
+        assertEquals(listOf("journal", "timeline"), steps)
+    }
+
+    @Test
+    fun `timeline timeout cannot cancel a submitted Gateway journal probe`() = runBlocking {
+        val steps = mutableListOf<String>()
+        val timelineFailures = mutableListOf<String>()
+
+        recoverPublishedCommandDelivery(
+            isTerminal = { false },
+            submitReconciliation = { steps += "journal" },
+            scanTimeline = {
+                steps += "timeline"
+                withTimeout(1) { delay(50) }
+            },
+            onTimelineFailure = { timelineFailures += it::class.java.simpleName },
+        )
+
+        assertEquals(listOf("journal", "timeline"), steps)
+        assertEquals(listOf("TimeoutCancellationException"), timelineFailures)
+    }
+
+    @Test
+    fun `failed journal submission retries after the legacy timeline fallback`() = runBlocking {
+        val steps = mutableListOf<String>()
+        val journalFailures = mutableListOf<String>()
+        var attempts = 0
+
+        recoverPublishedCommandDelivery(
+            isTerminal = { false },
+            submitReconciliation = {
+                attempts += 1
+                steps += "journal-$attempts"
+                if (attempts == 1) throw IllegalStateException("send interrupted")
+            },
+            scanTimeline = { steps += "timeline" },
+            onReconciliationFailure = { journalFailures += it.message.orEmpty() },
+        )
+
+        assertEquals(listOf("journal-1", "timeline", "journal-2"), steps)
+        assertEquals(listOf("send interrupted"), journalFailures)
     }
 
     @Test

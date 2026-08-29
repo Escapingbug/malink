@@ -47,4 +47,18 @@ describe("durableCommandRecoveryPresentation", () => {
     expect(presentation.detail).toContain("Matrix is connected");
     expect(presentation.detail).toContain("Gateway");
   });
+
+  it("does not claim journal recovery for an older Android runtime", () => {
+    const presentation = durableCommandRecoveryPresentation({
+      state: "accepted",
+      connectionStatus: "connected",
+      gatewayAvailable: true,
+      journalReconciliationAvailable: false,
+    });
+
+    expect(presentation.primaryLabel).toBe("Check Matrix again");
+    expect(presentation.detail).toContain("Update the Android app");
+    expect(presentation.detail).toContain("cannot ask the Gateway journal");
+    expect(presentation.detail).toContain("will not run twice");
+  });
 });

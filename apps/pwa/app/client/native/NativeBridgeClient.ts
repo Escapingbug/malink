@@ -54,6 +54,7 @@ export const REQUIRED_NATIVE_CAPABILITIES = [
 ] as const;
 
 export const OPTIONAL_NATIVE_CAPABILITIES = [
+  "commands.journal-reconciliation",
   "matrix.login-token",
   "client.update",
   "client.pwa-source",
@@ -141,6 +142,7 @@ export function hasCurrentNativeCapability(
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 24 * 60 * 60_000;
+const RECOVERED_COMMAND_COMPLETION_TIMEOUT_MS = 60_000;
 const DEFAULT_BLOCKED_COMMAND_RETRY_WINDOW_MS = 2 * 60_000;
 
 type CompletionWaiter = {
@@ -338,7 +340,12 @@ export class NativeBridgeClient implements MalinkClient {
       });
       this.#recordCommand(current);
     }
-    return this.#sendResult(receipt);
+    return this.#sendResult(
+      receipt,
+      false,
+      RECOVERED_COMMAND_COMPLETION_TIMEOUT_MS,
+      () => new CommandCompletionTimeoutError(),
+    );
   }
 
   async confirmRevisionRetry(commandId: string): Promise<MalinkCommandSendResult> {
@@ -956,6 +963,8 @@ export class NativeBridgeClient implements MalinkClient {
   async #sendResult(
     receipt: CommandReceipt,
     createsSession = false,
+    completionTimeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+    completionTimeoutError?: (commandId: string) => Error,
   ): Promise<MalinkCommandSendResult> {
     if (!receipt.commandId) {
       throw new BridgeProtocolError(
@@ -976,8 +985,9 @@ export class NativeBridgeClient implements MalinkClient {
     // progress, and the signed terminal event continue independently.
     const completion = this.#waitForCompletion(
       commandId,
-      DEFAULT_COMMAND_TIMEOUT_MS,
-      () => new CommandCompletionExpiredError(commandId),
+      completionTimeoutMs,
+      () => completionTimeoutError?.(commandId)
+        ?? new CommandCompletionExpiredError(commandId),
     );
     return {
       operationId: receipt.operationId,

@@ -27,6 +27,8 @@ export type MalinkPwaSourceInfo = {
 };
 export type MalinkNativeRuntimeInfo = HelloResult["native"] & {
   pwaSource?: MalinkPwaSourceInfo;
+  /** Additive capability; absent on APKs that only scan Matrix history. */
+  commandJournalReconciliation?: boolean;
 };
 export type MalinkMessage = ClientMessage;
 export type MalinkPairingPreview = PairingPreview;

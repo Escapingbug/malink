@@ -1401,22 +1401,51 @@ class NativeClientRuntime(
                     } finally {
                         keys.wipe()
                     }
-                    val scannedPages = matrix.recoverApplicationTimeline(
-                        roomId,
-                    ) {
-                        outbox.get(command.commandId)?.state?.isTerminal == true
-                    }
-                    diagnostics.record(
-                        "command.timeline_recovery.completed",
-                        mapOf(
-                            "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
-                            "pages" to scannedPages.toString(),
-                            "terminal" to (outbox.get(command.commandId)?.state?.isTerminal == true).toString(),
-                        ),
+                    recoverPublishedCommandDelivery(
+                        isTerminal = {
+                            outbox.get(command.commandId)?.state?.isTerminal == true
+                        },
+                        submitReconciliation = {
+                            sendPublishedCommandReconciliation(command, roomId)
+                        },
+                        scanTimeline = {
+                            val scannedPages = matrix.recoverApplicationTimeline(
+                                roomId,
+                            ) {
+                                outbox.get(command.commandId)?.state?.isTerminal == true
+                            }
+                            diagnostics.record(
+                                "command.timeline_recovery.completed",
+                                mapOf(
+                                    "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                                    "pages" to scannedPages.toString(),
+                                    "terminal" to (outbox.get(command.commandId)?.state?.isTerminal == true).toString(),
+                                ),
+                            )
+                        },
+                        onReconciliationFailure = { error ->
+                            diagnostics.record(
+                                "command.reconciliation.failed",
+                                mapOf(
+                                    "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                                    "error" to diagnosticErrorName(error),
+                                ),
+                            )
+                        },
+                        onTimelineFailure = { error ->
+                            diagnostics.record(
+                                if (error is TimeoutCancellationException) {
+                                    "command.timeline_recovery.timed_out"
+                                } else {
+                                    "command.timeline_recovery.failed"
+                                },
+                                mapOf(
+                                    "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                                    "error" to diagnosticErrorName(error),
+                                ),
+                            )
+                        },
                     )
-                    if (outbox.get(command.commandId)?.state?.isTerminal != true) {
-                        sendPublishedCommandReconciliation(command, roomId)
-                    }
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
@@ -3214,6 +3243,58 @@ internal fun pendingPairingExpiryDelayMs(now: Long, expiresAt: Long): Long {
 
 internal fun pairingRecoveryExpiresAt(request: SignedPairingRequest): Long =
     Math.addExact(request.request.issuedAt, PAIRING_RECOVERY_WINDOW_MS)
+
+/**
+ * A journal probe is the authoritative and cheap recovery path for a command
+ * that Matrix already accepted. Submit it before optional timeline pagination
+ * so a slow or very old timeline can never prevent Gateway reconciliation.
+ * Timeline scanning remains as a compatibility fallback for older Gateways.
+ */
+internal suspend fun recoverPublishedCommandDelivery(
+    isTerminal: () -> Boolean,
+    submitReconciliation: suspend () -> Unit,
+    scanTimeline: suspend () -> Unit,
+    onReconciliationFailure: (Exception) -> Unit = {},
+    onTimelineFailure: (Exception) -> Unit = {},
+) {
+    var reconciliationSubmitted = false
+    if (!isTerminal()) {
+        reconciliationSubmitted = try {
+            submitReconciliation()
+            true
+        } catch (error: TimeoutCancellationException) {
+            onReconciliationFailure(error)
+            false
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            onReconciliationFailure(error)
+            false
+        }
+    }
+    if (!isTerminal()) {
+        try {
+            scanTimeline()
+        } catch (error: TimeoutCancellationException) {
+            onTimelineFailure(error)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            onTimelineFailure(error)
+        }
+    }
+    if (!isTerminal() && !reconciliationSubmitted) {
+        try {
+            submitReconciliation()
+        } catch (error: TimeoutCancellationException) {
+            onReconciliationFailure(error)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            onReconciliationFailure(error)
+        }
+    }
+}
 
 private const val PAIRING_RECOVERY_WINDOW_MS = 366L * 24 * 60 * 60_000
 private const val MAX_PAIRING_EXPIRY_SLEEP_MS = 24L * 60 * 60_000

@@ -91,12 +91,15 @@ sends are serialized, and successful raw-inbox cleanup is coalesced until the
 next durable input or a clean lifecycle boundary.
 
 For an Android outbox command already published to Matrix but still missing a
-terminal event, native recovery first scans the bounded SDK timeline. If that
-scan still has no result, Android sends the exact stored signed/encrypted
-content under a fresh `malink.v3.reconcile.<commandId>.<uuid>` Matrix
-transaction. It never rebuilds the command. The Gateway journal deduplicates
-before execution and returns signed `command.reconciled` state, allowing a
-restarted WebView to converge without submitting the user action twice.
+terminal event, native recovery immediately sends the exact stored
+signed/encrypted content under a fresh
+`malink.v3.reconcile.<commandId>.<uuid>` Matrix transaction, then scans the
+bounded SDK timeline as an older-Gateway fallback. It never rebuilds the
+command, and timeline pagination timeout cannot cancel or postpone the journal
+probe. The Gateway journal deduplicates before execution and returns signed
+`command.reconciled` state, allowing a restarted WebView to converge without
+submitting the user action twice. APKs with this behavior advertise the
+optional `commands.journal-reconciliation` bridge capability.
 
 Debug builds write bounded private sync-profiling traces. Release builds retain
 only bounded SDK warnings and errors. Diagnostic export converts those traces

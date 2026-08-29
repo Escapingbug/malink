@@ -1411,6 +1411,7 @@ class BridgeDispatcher(
 
     private companion object {
         const val FOREGROUND_SERVICE_CAPABILITY = "background.foreground-service"
+        const val COMMAND_JOURNAL_RECONCILIATION_CAPABILITY = "commands.journal-reconciliation"
         const val MATRIX_BOOTSTRAP_CAPABILITY = "matrix.session-bootstrap"
         const val MATRIX_LOGIN_TOKEN_CAPABILITY = "matrix.login-token"
         const val NATIVE_UPDATE_CAPABILITY = "client.update"
@@ -1420,6 +1421,7 @@ class BridgeDispatcher(
             "events.replay",
             "state.snapshot",
             "commands.durable",
+            COMMAND_JOURNAL_RECONCILIATION_CAPABILITY,
             "history.page",
             "attachments.chunked",
             "pairing.native",

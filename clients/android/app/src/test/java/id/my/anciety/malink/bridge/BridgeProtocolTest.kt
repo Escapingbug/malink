@@ -84,6 +84,7 @@ class BridgeProtocolTest {
                           {"name":"background.foreground-service","versions":[1]},
                           {"name":"trust.native","versions":[1]},
                           {"name":"commands.durable","versions":[1,2,3,4]},
+                          {"name":"commands.journal-reconciliation","versions":[1]},
                           {"name":"history.page","versions":[1,2]}
                         ]
                     """.trimIndent(),
@@ -97,6 +98,7 @@ class BridgeProtocolTest {
                 "background.foreground-service",
                 "trust.native",
                 "commands.durable",
+                "commands.journal-reconciliation",
                 "history.page",
             ),
             capabilities.keys,

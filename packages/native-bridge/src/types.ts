@@ -104,6 +104,7 @@ export type CapabilityName =
   | "events.replay"
   | "state.snapshot"
   | "commands.durable"
+  | "commands.journal-reconciliation"
   | "history.page"
   | "attachments.chunked"
   | "pairing.native"
