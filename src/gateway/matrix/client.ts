@@ -130,7 +130,7 @@ export function createMatrixJsSdkGatewayClient(
 }
 
 export function createGatewayMatrixScheduler(): MatrixScheduler {
-    // GatewaySecureContentLayer already owns durable retries, bounded
+    // MatrixMlp3ContentLayer already owns durable retries, bounded
     // concurrency, per-recipient serialization, and the control/normal lanes.
     // Letting the SDK enqueue every m.room.message behind its global FIFO would
     // erase those priorities and can delay command acks/results behind bulk

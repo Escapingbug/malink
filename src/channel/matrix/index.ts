@@ -1,4 +1,3 @@
-export * from './matrixPort'
 export * from './matrixMlp3Port'
 export * from './mlp3Attachment'
 export * from './memoryTransport'

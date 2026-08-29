@@ -105,10 +105,10 @@ test("identifies only the Gateway row whose approval is in flight", () => {
 
 test("keeps async operation context visible until terminal completion", async () => {
   const appRoot = new URL("../", import.meta.url);
-  const [app, settings, matrix] = await Promise.all([
+  const [app, settings, matrixConnection] = await Promise.all([
     readFile(new URL("app/MalinkApp.tsx", appRoot), "utf8"),
     readFile(new URL("app/MatrixSettings.tsx", appRoot), "utf8"),
-    readFile(new URL("app/matrix.ts", appRoot), "utf8"),
+    readFile(new URL("app/matrixMlp3Connection.ts", appRoot), "utf8"),
   ]);
 
   assert.match(
@@ -141,11 +141,12 @@ test("keeps async operation context visible until terminal completion", async ()
     app,
     /persistRecoveredHistoryInBackground\(scope, sessionId, remoteMessages\);[\s\S]*?if \(!isCurrent\(\)\) return;/,
   );
-  const relationsFetch = matrix.slice(
-    matrix.indexOf("const fetchSessionRelations"),
-    matrix.indexOf("const initializeSessionRelations"),
+  const relationsFetch = matrixConnection.slice(
+    matrixConnection.indexOf("const loadHistory = async"),
+    matrixConnection.indexOf("const uploadAttachment = async"),
   );
-  assert.match(relationsFetch, /client\.http\.authedRequest/);
-  assert.match(relationsFetch, /localTimeoutMs: MATRIX_HISTORY_REQUEST_TIMEOUT_MS/);
-  assert.doesNotMatch(relationsFetch, /client\.relations\(/);
+  assert.match(relationsFetch, /await ready/);
+  assert.match(relationsFetch, /await client\.relations\(/);
+  assert.match(relationsFetch, /historyTokens\.set\(sessionId, page\.nextBatch \?\? null\)/);
+  assert.doesNotMatch(relationsFetch, /client\.http\.authedRequest/);
 });
