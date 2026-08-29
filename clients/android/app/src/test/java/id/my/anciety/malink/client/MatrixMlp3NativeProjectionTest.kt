@@ -19,6 +19,27 @@ import org.junit.Test
 
 class MatrixMlp3NativeProjectionTest {
     @Test
+    fun `authoritative Workspace Directory distinguishes active and removed projects`() {
+        val projection = projection()
+        assertNull(projection.workspaceHasProject("project-1"))
+        projection.applyWorkspaceGatewayDirectory(buildJsonObject {
+            put("directory", buildJsonObject {
+                put("revision", 1)
+                put("gateways", buildJsonArray {
+                    add(buildJsonObject {
+                        put("projects", buildJsonArray {
+                            add(buildJsonObject { put("projectId", "project-1") })
+                        })
+                    })
+                })
+            })
+        })
+
+        assertEquals(true, projection.workspaceHasProject("project-1"))
+        assertEquals(false, projection.workspaceHasProject("project-removed"))
+    }
+
+    @Test
     fun `two Gateway projects remain distinct across durable restore and route removal`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project-a", null)

@@ -526,6 +526,58 @@ class MatrixApplicationControlClientTest {
     }
 
     @Test
+    fun `command recovery walks backward from the live cursor without moving it`() = runBlocking {
+        lateinit var endpoint: URI
+        val responseBody = """
+            {
+              "start":"s-live",
+              "end":"s-older",
+              "chunk":[
+                {
+                  "type":"m.room.message",
+                  "event_id":"${'$'}terminal-event",
+                  "sender":"@gateway:example.org",
+                  "origin_server_ts":1235,
+                  "content":${timelineContent()}
+                },
+                {
+                  "type":"m.room.message",
+                  "event_id":"${'$'}foreign-event",
+                  "sender":"@attacker:example.org",
+                  "origin_server_ts":1234,
+                  "content":${timelineContent()}
+                }
+              ]
+            }
+        """.trimIndent().toByteArray()
+        val client = MatrixApplicationTimelineClient(
+            MatrixApplicationControlSyncTransport { target, _ ->
+                endpoint = target
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        val page = client.backwardPage(
+            storedSession(),
+            from = "s-live",
+            roomId = "!room:example.org",
+        )
+
+        assertEquals(listOf("\$terminal-event"), page.events.map { it.eventId })
+        assertEquals("s-older", page.nextFrom)
+        assertEquals(2, page.candidateEventCount)
+        val query = endpoint.rawQuery.split("&").associate { part ->
+            val (key, value) = part.split("=", limit = 2)
+            key to URLDecoder.decode(value, Charsets.UTF_8.name())
+        }
+        assertEquals("b", query["dir"])
+        assertEquals("s-live", query["from"])
+        assertFalse(query.containsKey("to"))
+        assertEquals("32", query["limit"])
+        assertTrue(responseBody.all { it == 0.toByte() })
+    }
+
+    @Test
     fun `initial sync establishes a live cursor without room-wide history catchup`() = runBlocking {
         lateinit var endpoint: URI
         val responseBody = """

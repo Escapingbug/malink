@@ -239,12 +239,44 @@ class DurableCommandOutbox internal constructor(
         findCurrent(commandId)?.payload?.let(CommandPayloadValidator::validate)?.operation
 
     @Synchronized
+    fun projectId(commandId: String): String? = findCurrent(commandId)?.projectId
+
+    @Synchronized
     fun list(): List<CommandView> = snapshot.commands.map(PersistedCommand::toView)
 
     @Synchronized
     fun release(commandId: String): Boolean {
         val command = findCurrent(commandId) ?: return false
         require(command.state.isTerminal) { "Only completed commands can be released." }
+        require(snapshot.released.size < MAX_RELEASED_TOMBSTONES) {
+            "The released-command safety ledger is full; revoke this native account before clearing it."
+        }
+        val tombstone = ReleasedCommandTombstone(
+            operationId = command.operationId,
+            commandId = command.commandId,
+            retiredCommandIds = command.retiredCommandIds,
+            idempotencyKey = command.idempotencyKey,
+            requestFingerprint = command.requestFingerprint,
+            releasedAt = nonnegativeNow(),
+        )
+        commit(snapshot.copy(commands = snapshot.commands - command, released = snapshot.released + tombstone))
+        return true
+    }
+
+    /**
+     * Retires a non-terminal command only after its authoritative Workspace
+     * Directory has removed the target project. The tombstone preserves the
+     * idempotency key, so cleanup can never turn into a duplicate execution.
+     */
+    @Synchronized
+    fun retireUnavailableProjectCommand(commandId: String): Boolean {
+        val command = findCurrent(commandId) ?: return false
+        require(!command.state.isTerminal) {
+            "Completed commands must use normal release."
+        }
+        require(command.projectId != null) {
+            "Only a project-scoped command can be retired after route removal."
+        }
         require(snapshot.released.size < MAX_RELEASED_TOMBSTONES) {
             "The released-command safety ledger is full; revoke this native account before clearing it."
         }

@@ -51,6 +51,12 @@ interface NativeMatrixPort {
     ): MatrixThreadHistoryBatch = throw UnsupportedOperationException(
         "Workspace multi-room history is unavailable.",
     )
+    suspend fun recoverApplicationTimeline(
+        roomId: String,
+        stopWhen: () -> Boolean,
+    ): Int = throw UnsupportedOperationException(
+        "Published command timeline recovery is unavailable.",
+    )
     suspend fun sendApplicationControlEvent(contentJson: String, transactionId: String): String
     suspend fun sendApplicationControlEvent(
         contentJson: String,
@@ -121,6 +127,10 @@ class MatrixNativePort(context: Context) : NativeMatrixPort {
         limit: Int,
         roomId: String,
     ): MatrixThreadHistoryBatch = runtime.loadThreadHistory(threadRootEventId, from, limit, roomId)
+    override suspend fun recoverApplicationTimeline(
+        roomId: String,
+        stopWhen: () -> Boolean,
+    ): Int = runtime.recoverApplicationTimeline(roomId, stopWhen)
     override suspend fun sendApplicationControlEvent(contentJson: String, transactionId: String): String =
         runtime.sendApplicationControlEvent(contentJson, transactionId)
     override suspend fun sendApplicationControlEvent(

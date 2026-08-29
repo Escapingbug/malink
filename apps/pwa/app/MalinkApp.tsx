@@ -531,6 +531,7 @@ function sameGatewayUiScope(
 const DEVICE_INVITATION_RESULT_TIMEOUT_MS = 95_000;
 const SESSION_CREATE_RESULT_RECOVERY_MS = 15_000;
 const LOCAL_HISTORY_FOREGROUND_TIMEOUT_MS = 5_000;
+const BACKGROUND_HISTORY_SOURCE_TIMEOUT_MS = 65_000;
 const PROJECT_CREATE_RESULT_TIMEOUT_MS = 60_000;
 const PROVIDER_HISTORY_RESULT_TIMEOUT_MS = 60_000;
 const GATEWAY_UPDATE_DISCOVERY_INTERVAL_MS = 15 * 60_000;
@@ -3260,7 +3261,11 @@ function MalinkAppRuntime() {
     }
     void (async () => {
       try {
-        const remote = await connection.loadHistoryPage(sessionId);
+        const remote = await waitForHistoryOperation(
+          connection.loadHistoryPage(sessionId),
+          BACKGROUND_HISTORY_SOURCE_TIMEOUT_MS,
+          "Matrix conversation history",
+        );
         const olderMessages = remote.messages.map((message) =>
           chatMessageFromIncoming(
             { ...incomingMessageFromClient(message), historical: true },
@@ -3325,7 +3330,11 @@ function MalinkAppRuntime() {
     }
     void (async () => {
       try {
-        const local = await connection.loadLocalHistory(sessionId);
+        const local = await waitForHistoryOperation(
+          connection.loadLocalHistory(sessionId),
+          BACKGROUND_HISTORY_SOURCE_TIMEOUT_MS,
+          "Local client conversation projection",
+        );
         const localMessages = local.messages.map((message) =>
           chatMessageFromIncoming(
             { ...incomingMessageFromClient(message), historical: true },
@@ -3349,7 +3358,11 @@ function MalinkAppRuntime() {
           return;
         }
 
-        const remote = await connection.loadHistoryPage(sessionId);
+        const remote = await waitForHistoryOperation(
+          connection.loadHistoryPage(sessionId),
+          BACKGROUND_HISTORY_SOURCE_TIMEOUT_MS,
+          "Matrix conversation history",
+        );
         const remoteMessages = remote.messages.map((message) =>
           chatMessageFromIncoming(
             { ...incomingMessageFromClient(message), historical: true },
@@ -7671,7 +7684,7 @@ function MalinkAppRuntime() {
             "command:startup-recovery",
             "session",
             "warning",
-            "Malink is still reconciling an interrupted local action. It will retry the same command before sending another one.",
+            `An interrupted local action still has no authenticated final result. Malink is recovering its Matrix timeline and will retry the same command identity: ${formatUiError(error)}`,
           );
         } finally {
           recoveredNativeCommandFlightsRef.current.delete(commandId);

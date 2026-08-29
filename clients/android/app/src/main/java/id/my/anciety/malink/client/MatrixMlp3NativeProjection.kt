@@ -599,6 +599,21 @@ internal class MatrixMlp3NativeProjection(
     @Synchronized
     fun workspaceGatewayDirectory(): JsonObject? = workspaceGatewayDirectory
 
+    /** Null means no authoritative multi-Gateway directory has been projected yet. */
+    @Synchronized
+    fun workspaceHasProject(projectId: String): Boolean? {
+        val directory = workspaceGatewayDirectory?.requiredObject("directory") ?: return null
+        val gateways = directory["gateways"] as? JsonArray
+            ?: throw IllegalArgumentException("Workspace Gateway Directory gateways are invalid.")
+        return gateways.any { gateway ->
+            val projects = (gateway as? JsonObject)?.get("projects") as? JsonArray
+                ?: throw IllegalArgumentException("Workspace Gateway Directory entry is invalid.")
+            projects.any { project ->
+                (project as? JsonObject)?.requiredString("projectId", 256) == projectId
+            }
+        }
+    }
+
     @Synchronized
     fun pendingGatewayEnrollments(): JsonArray = mergedPendingGatewayEnrollments()
 

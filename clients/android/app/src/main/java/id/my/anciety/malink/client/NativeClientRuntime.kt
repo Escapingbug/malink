@@ -298,6 +298,7 @@ class NativeClientRuntime(
     }
     private val commandTransmissionJobs = ConcurrentHashMap<String, Job>()
     private val commandRecoveryJobs = ConcurrentHashMap<String, Job>()
+    private val commandTimelineRecoveryJobs = ConcurrentHashMap<String, Job>()
     private val commandRecoveryAttempts = ConcurrentHashMap<String, Int>()
     private val capabilityRenewalWaiters =
         ConcurrentHashMap<String, CapabilityRenewalWaiter>()
@@ -962,6 +963,32 @@ class NativeClientRuntime(
     suspend fun recoverCommand(commandId: String): DurableReceipt {
         val current = outbox.resolveCurrent(commandId)
             ?: throw UnknownCommandException("Command was not found.")
+        val targetProjectId = outbox.projectId(current.commandId)
+        val targetStillAuthorized = targetProjectId?.let {
+            matrixMlp3Projection.workspaceHasProject(it)
+        }
+        if (shouldRetireRecoveredCommandForRemovedProject(
+            current.state,
+            gatewayStateSynchronized,
+            targetProjectId,
+            targetStillAuthorized,
+        )) {
+            val operation = outbox.operation(current.commandId)
+            cancelCommandTransmission(current.commandId)
+            cancelScheduledCommandRecovery(current.commandId)
+            cancelCommandTimelineRecovery(current.commandId)
+            if (outbox.retireUnavailableProjectCommand(current.commandId)) {
+                matrixMlp3CommandContent.remove(current.commandId)
+                refreshSnapshot(publishLifecycle = false)
+                diagnostics.record(
+                    "command.removed_project_retired",
+                    mapOf("action" to (operation?.wireName ?: "unknown")),
+                )
+            }
+            throw UnknownCommandException(
+                "The command target project is no longer part of this Workspace.",
+            )
+        }
         diagnostics.record(
             "command.recovery.requested",
             mapOf(
@@ -981,6 +1008,7 @@ class NativeClientRuntime(
                 // event id; it cannot create a new timeline delivery. Recover
                 // any missed signed progress/terminal events through /sync.
                 startMatrixMlp3ProjectionRefresh(recoverTransport = false)
+                startPublishedCommandTimelineRecovery(current)
             }
             else -> Unit
         }
@@ -1011,6 +1039,7 @@ class NativeClientRuntime(
     fun releaseCommand(commandId: String): Boolean {
         cancelCommandTransmission(commandId)
         cancelScheduledCommandRecovery(commandId)
+        cancelCommandTimelineRecovery(commandId)
         val released = outbox.release(commandId)
         if (released) matrixMlp3CommandContent.remove(commandId)
         if (released) refreshSnapshot(publishLifecycle = false)
@@ -1047,6 +1076,7 @@ class NativeClientRuntime(
         }
         cancelAllCommandTransmissions()
         cancelAllCommandRecoveries()
+        cancelAllCommandTimelineRecoveries()
         authoritativeStateRefreshJob?.cancel()
         authoritativeStateRefreshJob = null
         cancelGatewayConvergenceFallback()
@@ -1083,6 +1113,7 @@ class NativeClientRuntime(
         matrix.setObserver(null)
         cancelAllCommandTransmissions()
         cancelAllCommandRecoveries()
+        cancelAllCommandTimelineRecoveries()
         authoritativeStateRefreshJob?.cancel()
         authoritativeStateRefreshJob = null
         cancelGatewayConvergenceFallback()
@@ -1372,6 +1403,64 @@ class NativeClientRuntime(
         commandRecoveryJobs.values.forEach(Job::cancel)
         commandRecoveryJobs.clear()
         commandRecoveryAttempts.clear()
+    }
+
+    private fun startPublishedCommandTimelineRecovery(command: DurableView) {
+        synchronized(commandTimelineRecoveryJobs) {
+            if (commandTimelineRecoveryJobs[command.commandId]?.isActive == true) return
+            val job = scope.launch(start = CoroutineStart.LAZY) {
+                try {
+                    val projectId = outbox.projectId(command.commandId)
+                        ?: throw IllegalStateException("The published command project is unavailable.")
+                    val keys = matrixMlp3ProjectKeys.value(projectId)
+                        ?: throw IllegalStateException("The published command project key is unavailable.")
+                    val roomId = try {
+                        keys.roomId
+                    } finally {
+                        keys.wipe()
+                    }
+                    val accepted = matrix.recoverApplicationTimeline(
+                        roomId,
+                    ) {
+                        outbox.get(command.commandId)?.state?.isTerminal == true
+                    }
+                    diagnostics.record(
+                        "command.timeline_recovery.completed",
+                        mapOf(
+                            "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                            "accepted" to accepted.toString(),
+                            "terminal" to (outbox.get(command.commandId)?.state?.isTerminal == true).toString(),
+                        ),
+                    )
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    diagnostics.record(
+                        "command.timeline_recovery.failed",
+                        mapOf(
+                            "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                            "error" to diagnosticErrorName(error),
+                        ),
+                    )
+                } finally {
+                    val currentJob = coroutineContext[Job]
+                    if (currentJob != null) {
+                        commandTimelineRecoveryJobs.remove(command.commandId, currentJob)
+                    }
+                }
+            }
+            commandTimelineRecoveryJobs[command.commandId] = job
+            job.start()
+        }
+    }
+
+    private fun cancelCommandTimelineRecovery(commandId: String) {
+        commandTimelineRecoveryJobs.remove(commandId)?.cancel()
+    }
+
+    private fun cancelAllCommandTimelineRecoveries() {
+        commandTimelineRecoveryJobs.values.forEach(Job::cancel)
+        commandTimelineRecoveryJobs.clear()
     }
 
     private fun signedCommandContent(transmission: CommandTransmission): JsonObject {
@@ -2525,6 +2614,7 @@ class NativeClientRuntime(
         // Gateway scope and reporting a spurious transmission failure.
         cancelCommandTransmission(completion.commandId)
         cancelScheduledCommandRecovery(completion.commandId)
+        cancelCommandTimelineRecovery(completion.commandId)
         outbox.get(completion.commandId)?.let(::publishCommand)
         runCatching {
             operation?.let { completedOperation ->
@@ -3074,6 +3164,16 @@ internal fun commandRecoveryDelayMs(completedAttempts: Int): Long {
         else -> 60_000L
     }
 }
+
+internal fun shouldRetireRecoveredCommandForRemovedProject(
+    state: DurableState,
+    gatewayStateSynchronized: Boolean,
+    targetProjectId: String?,
+    targetStillAuthorized: Boolean?,
+): Boolean = !state.isTerminal &&
+    gatewayStateSynchronized &&
+    targetProjectId != null &&
+    targetStillAuthorized == false
 
 internal fun authoritativeStateRefreshDelayMs(completedAttempts: Int): Long {
     require(completedAttempts >= 0)

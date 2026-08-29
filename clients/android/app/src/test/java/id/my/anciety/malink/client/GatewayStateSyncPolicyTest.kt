@@ -41,6 +41,46 @@ class GatewayStateSyncPolicyTest {
     }
 
     @Test
+    fun `only an authoritative removed project retires a recovered command`() {
+        assertEquals(
+            true,
+            shouldRetireRecoveredCommandForRemovedProject(
+                CommandState.PUBLISHED,
+                gatewayStateSynchronized = true,
+                targetProjectId = "project-removed",
+                targetStillAuthorized = false,
+            ),
+        )
+        assertEquals(
+            false,
+            shouldRetireRecoveredCommandForRemovedProject(
+                CommandState.PUBLISHED,
+                gatewayStateSynchronized = false,
+                targetProjectId = "project-removed",
+                targetStillAuthorized = false,
+            ),
+        )
+        assertEquals(
+            false,
+            shouldRetireRecoveredCommandForRemovedProject(
+                CommandState.PUBLISHED,
+                gatewayStateSynchronized = true,
+                targetProjectId = "project-active",
+                targetStillAuthorized = true,
+            ),
+        )
+        assertEquals(
+            false,
+            shouldRetireRecoveredCommandForRemovedProject(
+                CommandState.SUCCEEDED,
+                gatewayStateSynchronized = true,
+                targetProjectId = "project-removed",
+                targetStillAuthorized = false,
+            ),
+        )
+    }
+
+    @Test
     fun `authoritative state convergence retries quickly then settles at a bounded interval`() {
         assertEquals(1_000L, authoritativeStateRefreshDelayMs(0))
         assertEquals(2_000L, authoritativeStateRefreshDelayMs(1))

@@ -534,6 +534,62 @@ class MatrixConnectionRuntime(
         }
     }
 
+    suspend fun recoverApplicationTimeline(
+        roomId: String,
+        stopWhen: () -> Boolean,
+    ): Int {
+        val (session, initialCursor) = mutex.withLock {
+            check(started.get()) { "The native Matrix runtime is stopped." }
+            if (!networkAvailable) throw MatrixOfflineException()
+            val activeSession = secrets?.session
+                ?: throw MatrixOfflineException("The Matrix session is unavailable.")
+            activeSession to applicationControlSince
+        }
+        val recoveryCursor = initialCursor
+            ?: return refreshApplicationProjectionBaseline(session)
+        return withTimeout(COMMAND_TIMELINE_RECOVERY_TIMEOUT_MS) {
+            var cursor: String = recoveryCursor
+            var accepted = 0
+            repeat(MAX_COMMAND_TIMELINE_RECOVERY_PAGES) {
+                val page = applicationTimelineClient.backwardPage(
+                    session,
+                    cursor,
+                    roomId,
+                    MAX_COMMAND_TIMELINE_RECOVERY_EVENTS,
+                )
+                val processed = processMatrixApplicationEventBatch(
+                    events = page.events.sortedWith(
+                        compareBy<MatrixDecryptedEvent> { it.timestamp }.thenBy { it.eventId },
+                    ),
+                    onEvent = onDecryptedEvent,
+                    onQuarantined = { event, error ->
+                        diagnostics.record(
+                            "matrix.command_recovery.event_quarantined",
+                            mapOf(
+                                "error" to error.javaClass.simpleName.take(160),
+                                "fingerprint" to matrixApplicationEventFingerprint(event),
+                            ),
+                        )
+                    },
+                )
+                accepted += processed.committed
+                if (
+                    stopWhen() ||
+                    page.nextFrom == null
+                ) {
+                    return@withTimeout accepted
+                }
+                cursor = page.nextFrom
+            }
+            accepted
+        }.also { accepted ->
+            diagnostics.record(
+                "matrix.command_recovery.timeline_scanned",
+                mapOf("accepted" to accepted.toString()),
+            )
+        }
+    }
+
     suspend fun stop(clearSession: Boolean) = mutex.withLock {
         if (!started.compareAndSet(true, false)) return@withLock
         retryJob?.cancel()
@@ -1432,6 +1488,7 @@ class MatrixConnectionRuntime(
         const val PROFILE_OPERATION_TIMEOUT_MS = 45_000L
         const val LOGIN_TOKEN_OPERATION_TIMEOUT_MS = 45_000L
         const val HISTORY_OPERATION_TIMEOUT_MS = 45_000L
+        const val COMMAND_TIMELINE_RECOVERY_TIMEOUT_MS = 45_000L
         const val THREAD_DIRECTORY_OPERATION_TIMEOUT_MS = 120_000L
         const val MEDIA_OPERATION_TIMEOUT_MS = 120_000L
         const val LOGOUT_OPERATION_TIMEOUT_MS = 45_000L
@@ -1439,6 +1496,8 @@ class MatrixConnectionRuntime(
         const val APPLICATION_CONTROL_GAP_BACKPRESSURE_MS = 5_000L
         const val APPLICATION_CONTROL_STALE_TIMEOUT_MS = 120_000L
         const val MAX_THREAD_DIRECTORY_PAGES = 1_000
+        const val MAX_COMMAND_TIMELINE_RECOVERY_PAGES = 64
+        const val MAX_COMMAND_TIMELINE_RECOVERY_EVENTS = 32
     }
 }
 

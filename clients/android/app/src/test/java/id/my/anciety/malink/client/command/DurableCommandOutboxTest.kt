@@ -193,6 +193,38 @@ class DurableCommandOutboxTest {
         }
     }
 
+    @Test
+    fun `published command keeps its project route for terminal timeline recovery`() {
+        val fixture = fixture()
+        val receipt = fixture.outbox.enqueue(
+            UUID.randomUUID().toString(),
+            payload("project.settings"),
+            projectId = "project-a",
+        )
+        fixture.outbox.claimForTransmission(receipt.commandId)
+        fixture.outbox.recordPublished(receipt.commandId, "\$command-event")
+
+        assertEquals("project-a", fixture.outbox.projectId(receipt.commandId))
+        val restored = DurableCommandOutbox(fixture.store, fixture.clock, fixture.ids)
+        assertEquals("project-a", restored.projectId(receipt.commandId))
+    }
+
+    @Test
+    fun `removed project command retires with an idempotency tombstone`() {
+        val fixture = fixture()
+        val key = UUID.randomUUID().toString()
+        val body = payload("project.settings")
+        val receipt = fixture.outbox.enqueue(key, body, projectId = "project-removed")
+        fixture.outbox.claimForTransmission(receipt.commandId)
+        fixture.outbox.recordPublished(receipt.commandId, "\$command-event")
+
+        assertTrue(fixture.outbox.retireUnavailableProjectCommand(receipt.commandId))
+        assertNull(fixture.outbox.get(receipt.commandId))
+        assertThrows(ReleasedCommandException::class.java) {
+            fixture.outbox.enqueue(key, body, projectId = "project-removed")
+        }
+    }
+
     private fun fixture(): Fixture {
         val store = InMemoryCommandOutboxStore()
         val clock = MutableClock()

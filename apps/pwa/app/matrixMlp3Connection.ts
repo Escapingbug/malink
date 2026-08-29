@@ -17,6 +17,7 @@ import {
 } from "@malink/security";
 import type { MatrixClient, MatrixEvent, Room } from "matrix-js-sdk";
 import type { RoomMessageEventContent } from "matrix-js-sdk/lib/@types/events";
+import { ClientPrefix } from "matrix-js-sdk/lib/http-api/prefix";
 import { IndexedDbMatrixMlp3ClientStore } from "./IndexedDbMatrixMlp3ClientStore";
 import {
   MatrixMlp3ReadModelRepairError,
@@ -71,6 +72,7 @@ import {
 import { workspaceRouteNeedsJoin } from "./matrixWorkspaceRoute";
 
 const LOCAL_TIMEOUT_MS = 10_000;
+const MATRIX_HISTORY_REQUEST_TIMEOUT_MS = 30_000;
 const INITIAL_SYNC_LIMIT = 32;
 
 type V3Handlers = {
@@ -918,22 +920,39 @@ export async function connectMatrixMlp3(
     if (!session?.threadRootEventId) return { messages: [], hasMore: false };
     const pageLimit = Math.max(1, Math.min(limit, 100));
     const from = historyInitialized.has(sessionId) ? historyTokens.get(sessionId) ?? undefined : undefined;
-    const page = await client.relations(
-      context.roomId,
-      session.threadRootEventId,
-      sdk.RelationType.Thread,
-      null,
+    const path = [
+      "/rooms/",
+      encodeURIComponent(context.roomId),
+      "/relations/",
+      encodeURIComponent(session.threadRootEventId),
+      "/",
+      encodeURIComponent(sdk.RelationType.Thread),
+    ].join("");
+    type RawMatrixEvent = Parameters<
+      ReturnType<MatrixClient["getEventMapper"]>
+    >[0];
+    const page = await client.http.authedRequest<{
+      chunk: RawMatrixEvent[];
+      next_batch?: string | null;
+    }>(
+      "GET" as Parameters<MatrixClient["http"]["authedRequest"]>[0],
+      path,
       {
         dir: sdk.Direction.Backward,
         limit: Math.min(32, pageLimit),
         recurse: true,
         ...(from ? { from } : {}),
       },
+      undefined,
+      {
+        prefix: ClientPrefix.V1,
+        localTimeoutMs: MATRIX_HISTORY_REQUEST_TIMEOUT_MS,
+      },
     );
     historyInitialized.add(sessionId);
-    historyTokens.set(sessionId, page.nextBatch ?? null);
-    for (const event of [page.originalEvent, ...page.events]) {
-      if (!event) continue;
+    historyTokens.set(sessionId, page.next_batch ?? null);
+    const mapEvent = client.getEventMapper();
+    for (const event of page.chunk.map(raw => mapEvent(raw))) {
       if (active === protocol) {
         await ingestEvent(event);
       } else {
@@ -955,7 +974,7 @@ export async function connectMatrixMlp3(
         delivered.add(message.physicalEventId);
         return toIncomingMessage(message);
       });
-    return { messages, hasMore: Boolean(page.nextBatch) };
+    return { messages, hasMore: Boolean(page.next_batch) };
   };
 
   const loadLocalHistory = async (sessionId: string): Promise<MatrixHistoryPage> => {

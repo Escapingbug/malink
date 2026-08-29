@@ -105,10 +105,11 @@ test("identifies only the Gateway row whose approval is in flight", () => {
 
 test("keeps async operation context visible until terminal completion", async () => {
   const appRoot = new URL("../", import.meta.url);
-  const [app, settings, matrix] = await Promise.all([
+  const [app, settings, matrix, matrixMlp3] = await Promise.all([
     readFile(new URL("app/MalinkApp.tsx", appRoot), "utf8"),
     readFile(new URL("app/MatrixSettings.tsx", appRoot), "utf8"),
     readFile(new URL("app/matrix.ts", appRoot), "utf8"),
+    readFile(new URL("app/matrixMlp3Connection.ts", appRoot), "utf8"),
   ]);
 
   assert.match(
@@ -148,4 +149,22 @@ test("keeps async operation context visible until terminal completion", async ()
   assert.match(relationsFetch, /client\.http\.authedRequest/);
   assert.match(relationsFetch, /localTimeoutMs: MATRIX_HISTORY_REQUEST_TIMEOUT_MS/);
   assert.doesNotMatch(relationsFetch, /client\.relations\(/);
+  const activeRelationsFetch = matrixMlp3.slice(
+    matrixMlp3.indexOf("const loadHistory"),
+    matrixMlp3.indexOf("const loadLocalHistory"),
+  );
+  assert.match(activeRelationsFetch, /client\.http\.authedRequest/);
+  assert.match(
+    activeRelationsFetch,
+    /localTimeoutMs: MATRIX_HISTORY_REQUEST_TIMEOUT_MS/,
+  );
+  assert.doesNotMatch(activeRelationsFetch, /client\.relations\(/);
+  assert.match(
+    app,
+    /waitForHistoryOperation\(\s*connection\.loadLocalHistory/,
+  );
+  assert.match(
+    app,
+    /waitForHistoryOperation\(\s*connection\.loadHistoryPage/,
+  );
 });

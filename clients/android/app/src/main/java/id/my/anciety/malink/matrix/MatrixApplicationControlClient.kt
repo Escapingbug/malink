@@ -358,6 +358,75 @@ class MatrixApplicationTimelineClient(
         }
     }
 
+    /**
+     * Walks backward from a durable /sync token without moving that token.
+     * Command recovery uses this cursor-independent view when an already
+     * published terminal event fell outside the latest bounded /sync window.
+     */
+    suspend fun backwardPage(
+        session: StoredMatrixSession,
+        from: String,
+        roomId: String,
+        limit: Int = 32,
+    ): MatrixApplicationTimelinePage {
+        require(from.isNotBlank() && from.length <= 4_096)
+        require(limit in 1..32)
+        val homeserver = MatrixIdentifiers.normalizeHomeserver(session.homeserverUrl)
+        val binding = session.roomBindings
+            .map(MatrixIdentifiers::validateRoomBinding)
+            .singleOrNull { it.roomId == roomId }
+            ?: throw IllegalArgumentException("Unknown Matrix project room: $roomId")
+        val filter = buildJsonObject {
+            put("types", buildJsonArray {
+                add(JsonPrimitive("m.room.message"))
+                add(JsonPrimitive(MALINK_MATRIX_APPLICATION_CONTROL_EVENT_TYPE))
+            })
+        }.toString()
+        val endpoint = URI(
+            "$homeserver/_matrix/client/v3/rooms/${encode(binding.roomId)}/messages?" +
+                listOf(
+                    "dir=b",
+                    "from=${encode(from)}",
+                    "limit=$limit",
+                    "filter=${encode(filter)}",
+                ).joinToString("&"),
+        )
+        val response = transport.getJson(endpoint, session.accessToken)
+        return try {
+            if (response.status !in 200..299) {
+                throw MatrixApplicationControlSyncException(
+                    response.status,
+                    parseMatrixRetryAfterMs(response.body),
+                )
+            }
+            val root = runCatching {
+                Json.parseToJsonElement(response.body.toString(Charsets.UTF_8)) as? JsonObject
+            }.getOrNull() ?: throw MatrixApplicationControlPayloadException(
+                "Matrix command-recovery page response is not an object.",
+            )
+            val candidates = root["chunk"].let { it as? JsonArray }.orEmpty()
+            val events = candidates.mapNotNull { element ->
+                val event = element as? JsonObject ?: return@mapNotNull null
+                if (
+                    event["sender"]?.jsonPrimitive?.contentOrNull != binding.gatewayUserId ||
+                    !isMalinkApplicationControlEvent(event.toString())
+                ) return@mapNotNull null
+                matrixApplicationEvent(binding.roomId, event)
+            }
+            val end = root["end"]
+                .let { it as? JsonPrimitive }
+                ?.contentOrNull
+                ?.takeIf { it.isNotBlank() && it.length <= 4_096 }
+            MatrixApplicationTimelinePage(
+                events = events,
+                nextFrom = end?.takeUnless { it == from || candidates.isEmpty() },
+                candidateEventCount = candidates.size,
+            )
+        } finally {
+            response.body.fill(0)
+        }
+    }
+
     private fun encode(value: String): String =
         URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
 }
