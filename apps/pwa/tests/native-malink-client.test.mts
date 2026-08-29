@@ -296,6 +296,56 @@ test("identifies a terminal native session creation for orphaned UI recovery", a
   client.dispose();
 });
 
+test("reports durable commands restored from the native startup snapshot", async () => {
+  const recovered: string[] = [];
+  const port = new RuntimePort((request) => {
+    if (request.method === "malink.client.start") {
+      return {
+        deviceId: "native-device-1",
+        snapshot: {
+          ...snapshot(),
+          commands: [{
+            operationId: "operation-interrupted-archive",
+            commandId: "command-interrupted-archive",
+            idempotencyKey: "00000000-0000-4000-8000-000000000031",
+            state: "recovery_required",
+            submittedAt: 31,
+            updatedAt: 32,
+            sessionId: "session-archive-1",
+            sequence: 1,
+            revision: 0,
+          }],
+        },
+      };
+    }
+    return responseFor(request);
+  });
+  const bridge = await acquireNativeRpcBridge(port);
+  const hello = await bridge.hello({
+    webBuild: "test-build",
+    requiredCapabilities: [],
+    optionalCapabilities: REQUIRED_NATIVE_CAPABILITIES.map((name) => ({
+      name,
+      versions: nativeCapabilityVersions(name),
+    })),
+  });
+  const client = new NativeBridgeClient(bridge, hello, {
+    onMessage() {},
+    onStatus() {},
+    onDurableCommandRecovered(command) {
+      recovered.push(
+        `${command.commandId}:${command.state}:${command.sessionId}:${command.submittedAt}`,
+      );
+    },
+  });
+  await client.ready;
+
+  assert.deepEqual(recovered, [
+    "command-interrupted-archive:recovery_required:session-archive-1:31",
+  ]);
+  client.dispose();
+});
+
 test("projects Android native Gateway Directory ownership into the hosted UI", async () => {
   const gatewayState = nativeGatewayDirectoryState();
   let projectedGatewayState: Parameters<

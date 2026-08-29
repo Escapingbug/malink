@@ -854,6 +854,24 @@ test("pairs a Gateway without exposing Matrix fingerprints and signs strict comm
   assert.match(app, /mobile-history-button\$\{providerHistoryLoad \? " is-loading"/);
   assert.match(app, /connection\.recoverCommand\(sent\.commandId\)/);
   assert.match(app, /await connection\.releaseCommand\(commandId\)/);
+  const sessionLifecycleSettlement = app.slice(
+    app.indexOf("async function settleSessionLifecycle"),
+    app.indexOf("async function archiveSession"),
+  );
+  assert.match(
+    sessionLifecycleSettlement,
+    /CommandCompletionTimeoutError[\s\S]*rememberSessionLifecycleRecovery[\s\S]*scheduleSessionLifecycleRecovery/,
+  );
+  assert.doesNotMatch(
+    sessionLifecycleSettlement,
+    /finally\s*{\s*try\s*{\s*await connection\.releaseCommand/,
+  );
+  assert.ok(
+    sessionLifecycleSettlement.indexOf("await connection.releaseCommand")
+      > sessionLifecycleSettlement.indexOf("completion = await waitForCommandCompletion"),
+    "session lifecycle commands must only be released after a terminal completion",
+  );
+  assert.match(app, /onDurableCommandRecovered[\s\S]*reconcileRecoveredNativeCommands/);
   assert.match(
     matrix,
     /Refusing to recover command \$\{expectedCommandId\}/,

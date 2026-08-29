@@ -654,7 +654,19 @@ export class NativeBridgeClient implements MalinkClient {
     this.handlers.onTrustUpdated?.(
       snapshot.trust.state === "trusted" ? snapshot.trust : null,
     );
-    snapshot.commands.forEach((command) => this.#recordCommand(command));
+    snapshot.commands.forEach((command) => {
+      this.#recordCommand(command);
+      if (command.commandId) {
+        this.handlers.onDurableCommandRecovered?.({
+          commandId: command.commandId,
+          state: command.state,
+          submittedAt: command.submittedAt,
+          ...(command.sessionId === undefined
+            ? {}
+            : { sessionId: command.sessionId }),
+        });
+      }
+    });
     if (snapshot.gatewayState) this.#applyGatewayState(snapshot.gatewayState);
   }
 

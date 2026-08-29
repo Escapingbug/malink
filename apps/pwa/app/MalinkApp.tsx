@@ -288,6 +288,7 @@ import type {
   MalinkClient,
   MalinkCommandReview,
   MalinkCommandSendResult,
+  MalinkRecoveredDurableCommand,
   MalinkHistoryRecovery,
   MalinkMessage,
   MalinkNativeRuntimeInfo,
@@ -1384,6 +1385,11 @@ function MalinkAppRuntime() {
   const sessionLifecycleBusyRef = useRef(
     new Map<string, SessionLifecycleAction>(),
   );
+  const recoveredNativeCommandsRef = useRef(
+    new Map<string, MalinkRecoveredDurableCommand>(),
+  );
+  const recoveredNativeCommandFlightsRef = useRef(new Set<string>());
+  const recoveredNativeCommandTimerRef = useRef<number | null>(null);
   const pairingAbortRef = useRef<AbortController | null>(null);
   const pairingRecoveryRef = useRef<
     (
@@ -3025,6 +3031,12 @@ function MalinkAppRuntime() {
       }
       pairingAbortRef.current?.abort();
       clearSessionLifecycleRecoveries();
+      if (recoveredNativeCommandTimerRef.current !== null) {
+        window.clearTimeout(recoveredNativeCommandTimerRef.current);
+        recoveredNativeCommandTimerRef.current = null;
+      }
+      recoveredNativeCommandsRef.current.clear();
+      recoveredNativeCommandFlightsRef.current.clear();
       malinkClientRef.current?.dispose();
     },
     [],
@@ -4353,6 +4365,10 @@ function MalinkAppRuntime() {
               const activeConnection = malinkClientRef.current;
               if (activeConnection) {
                 continuePendingSessionCreate(activeConnection);
+                scheduleRecoveredNativeCommandReconciliation(
+                  activeConnection,
+                  1_000,
+                );
                 for (const sessionId of queuedSessionFlushIdsRef.current) {
                   void flushQueuedSessionMessages(sessionId, activeConnection);
                 }
@@ -4607,6 +4623,10 @@ function MalinkAppRuntime() {
           const activeConnection = malinkClientRef.current;
           if (activeConnection) continuePendingSessionCreate(activeConnection);
         },
+        onDurableCommandRecovered(command) {
+          if (!isCurrentStartup()) return;
+          recoveredNativeCommandsRef.current.set(command.commandId, command);
+        },
         onCommandResult(result) {
           if (!isCurrentStartup()) return;
           observeCommandCompletion(result);
@@ -4645,6 +4665,7 @@ function MalinkAppRuntime() {
           if (malinkClientRef.current !== connection) return;
           continuePendingProjectCreate(connection);
           continuePendingSessionCreate(connection);
+          scheduleRecoveredNativeCommandReconciliation(connection, 1_000);
           const sessionId = selectedSessionIdRef.current;
           if (
             sessionId &&
@@ -4698,6 +4719,12 @@ function MalinkAppRuntime() {
     nativeCommandReviewRef.current = null;
     activePromptCommandsRef.current.clear();
     completedCommandResultsRef.current.clear();
+    if (recoveredNativeCommandTimerRef.current !== null) {
+      window.clearTimeout(recoveredNativeCommandTimerRef.current);
+      recoveredNativeCommandTimerRef.current = null;
+    }
+    recoveredNativeCommandsRef.current.clear();
+    recoveredNativeCommandFlightsRef.current.clear();
     completionObservationOrderRef.current = 0;
     setObservedCommandCompletions([]);
     setExpandedProcessTurnIds(new Set());
@@ -7338,16 +7365,13 @@ function MalinkAppRuntime() {
       return true;
     } catch (error) {
       if (error instanceof CommandAcknowledgementTimeoutError && connection) {
-        const recovery: PendingSessionLifecycleRecovery = {
-          commandId: error.commandId,
+        const recovery = rememberSessionLifecycleRecovery(
+          error.commandId,
           action,
           sessionId,
-          ...(onSucceeded ? { onSucceeded } : {}),
-          ...(onFailed ? { onFailed } : {}),
-          timer: null,
-          inFlight: false,
-        };
-        sessionLifecycleRecoveriesRef.current.set(error.commandId, recovery);
+          onSucceeded,
+          onFailed,
+        );
         setDetailsOpen(false);
         showUiNotice(
           `session:${action}`,
@@ -7371,6 +7395,116 @@ function MalinkAppRuntime() {
         return next;
       });
       return false;
+    }
+  }
+
+  function rememberSessionLifecycleRecovery(
+    commandId: string,
+    action: "archive",
+    sessionId: string,
+    onSucceeded?: () => void | Promise<void>,
+    onFailed?: () => void | Promise<void>,
+  ): PendingSessionLifecycleRecovery {
+    const existing = sessionLifecycleRecoveriesRef.current.get(commandId);
+    if (existing) return existing;
+    const recovery: PendingSessionLifecycleRecovery = {
+      commandId,
+      action,
+      sessionId,
+      ...(onSucceeded ? { onSucceeded } : {}),
+      ...(onFailed ? { onFailed } : {}),
+      timer: null,
+      inFlight: false,
+    };
+    sessionLifecycleRecoveriesRef.current.set(commandId, recovery);
+    return recovery;
+  }
+
+  function recoveredNativeCommandIsOwned(commandId: string): boolean {
+    return pendingSessionCreateRecoveryRef.current?.commandId === commandId
+      || optimisticProjectCreateRef.current?.commandId === commandId
+      || sessionLifecycleRecoveriesRef.current.has(commandId)
+      || nativeCommandReviewRef.current?.commandId === commandId;
+  }
+
+  function scheduleRecoveredNativeCommandReconciliation(
+    connection: MalinkClient,
+    delayMs = 5_000,
+  ): void {
+    if (recoveredNativeCommandTimerRef.current !== null) {
+      window.clearTimeout(recoveredNativeCommandTimerRef.current);
+    }
+    recoveredNativeCommandTimerRef.current = window.setTimeout(() => {
+      recoveredNativeCommandTimerRef.current = null;
+      if (
+        malinkClientRef.current === connection
+        && connectionStatusRef.current === "connected"
+      ) {
+        reconcileRecoveredNativeCommands(connection);
+      }
+    }, delayMs);
+  }
+
+  function reconcileRecoveredNativeCommands(connection: MalinkClient): void {
+    for (const [commandId, command] of recoveredNativeCommandsRef.current) {
+      if (
+        command.state === "needs_review"
+        || recoveredNativeCommandIsOwned(commandId)
+        || recoveredNativeCommandFlightsRef.current.has(commandId)
+      ) {
+        continue;
+      }
+      recoveredNativeCommandFlightsRef.current.add(commandId);
+      void (async () => {
+        let currentCommandId = commandId;
+        let retryNeeded = false;
+        try {
+          const sent = await connection.recoverCommand(commandId);
+          currentCommandId = sent.commandId;
+          if (currentCommandId !== commandId) {
+            recoveredNativeCommandsRef.current.delete(commandId);
+            recoveredNativeCommandsRef.current.set(currentCommandId, {
+              ...command,
+              commandId: currentCommandId,
+            });
+          }
+          if (recoveredNativeCommandIsOwned(currentCommandId)) return;
+          await waitForCommandCompletion(sent.completion);
+          if (recoveredNativeCommandIsOwned(currentCommandId)) return;
+          await connection.releaseCommand(currentCommandId);
+          completedCommandResultsRef.current.delete(commandId);
+          completedCommandResultsRef.current.delete(currentCommandId);
+          recoveredNativeCommandsRef.current.delete(commandId);
+          recoveredNativeCommandsRef.current.delete(currentCommandId);
+          recoverUiNotice("command:startup-recovery");
+        } catch (error) {
+          if (
+            error instanceof CommandReviewRequiredError
+            || isMissingSessionCreateRecoveryCommand(error)
+          ) {
+            recoveredNativeCommandsRef.current.delete(commandId);
+            recoveredNativeCommandsRef.current.delete(currentCommandId);
+            return;
+          }
+          retryNeeded = true;
+          showUiNotice(
+            "command:startup-recovery",
+            "session",
+            "warning",
+            "Malink is still reconciling an interrupted local action. It will retry the same command before sending another one.",
+          );
+        } finally {
+          recoveredNativeCommandFlightsRef.current.delete(commandId);
+          recoveredNativeCommandFlightsRef.current.delete(currentCommandId);
+          if (
+            retryNeeded
+            && malinkClientRef.current === connection
+            && connectionStatusRef.current === "connected"
+          ) {
+            scheduleRecoveredNativeCommandReconciliation(connection);
+          }
+        }
+      })();
     }
   }
 
@@ -7414,7 +7548,11 @@ function MalinkAppRuntime() {
           sessionLifecycleRecoveriesRef.current.get(recovery.commandId) !==
           recovery
         ) return;
-        sessionLifecycleRecoveriesRef.current.delete(recovery.commandId);
+        if (sent.commandId !== recovery.commandId) {
+          sessionLifecycleRecoveriesRef.current.delete(recovery.commandId);
+          recovery.commandId = sent.commandId;
+          sessionLifecycleRecoveriesRef.current.set(recovery.commandId, recovery);
+        }
         recoverUiNotice(`session:${recovery.action}`);
         await settleSessionLifecycle(
           connection,
@@ -7471,8 +7609,75 @@ function MalinkAppRuntime() {
     onSucceeded?: () => void | Promise<void>,
     onFailed?: () => void | Promise<void>,
   ): Promise<void> {
+    let completion: CommandCompletion;
     try {
-      const completion = await waitForCommandCompletion(sent.completion);
+      completion = await waitForCommandCompletion(sent.completion);
+    } catch (error) {
+      if (
+        error instanceof CommandCompletionTimeoutError
+        || isCommandRecoveryPendingError(error)
+        || connectionStatusRef.current !== "connected"
+      ) {
+        const recovery = rememberSessionLifecycleRecovery(
+          sent.commandId,
+          action,
+          sessionId,
+          onSucceeded,
+          onFailed,
+        );
+        showUiNotice(
+          `session:${action}`,
+          "session",
+          "warning",
+          "Your computer accepted this action. Malink will keep checking the same command until its final result arrives.",
+        );
+        scheduleSessionLifecycleRecovery(recovery);
+        return;
+      }
+      await onFailed?.();
+      showUiNotice(
+        `session:${action}`,
+        "session",
+        "error",
+        formatUiError(error),
+      );
+      updateSessionLifecycleBusy((current) => {
+        if (current.get(sessionId) !== action) return current;
+        const next = new Map(current);
+        next.delete(sessionId);
+        return next;
+      });
+      return;
+    }
+
+    try {
+      await connection.releaseCommand(sent.commandId);
+    } catch (error) {
+      if (!isMissingSessionCreateRecoveryCommand(error)) {
+        const recovery = rememberSessionLifecycleRecovery(
+          sent.commandId,
+          action,
+          sessionId,
+          onSucceeded,
+          onFailed,
+        );
+        showUiNotice(
+          `session:${action}:release`,
+          "session",
+          "warning",
+          "The completed action is saved, but its local recovery record still needs cleanup. Malink will retry it automatically.",
+        );
+        scheduleSessionLifecycleRecovery(recovery);
+        return;
+      }
+    }
+
+    completedCommandResultsRef.current.delete(sent.commandId);
+    recoveredNativeCommandsRef.current.delete(sent.commandId);
+    const recovery = sessionLifecycleRecoveriesRef.current.get(sent.commandId);
+    if (recovery?.timer !== null) window.clearTimeout(recovery.timer);
+    sessionLifecycleRecoveriesRef.current.delete(sent.commandId);
+    try {
       if (completion.outcome !== "succeeded") {
         await onFailed?.();
         showUiNotice(
@@ -7481,12 +7686,12 @@ function MalinkAppRuntime() {
           "error",
           `The session could not be ${lifecyclePastTense(action)}.`,
         );
-        return;
+      } else {
+        await onSucceeded?.();
+        recoverUiNotice(`session:${action}`);
+        recoverUiNotice(`session:${action}:release`);
       }
-      await onSucceeded?.();
-      recoverUiNotice(`session:${action}`);
     } catch (error) {
-      await onFailed?.();
       showUiNotice(
         `session:${action}`,
         "session",
@@ -7494,16 +7699,6 @@ function MalinkAppRuntime() {
         formatUiError(error),
       );
     } finally {
-      try {
-        await connection.releaseCommand(sent.commandId);
-      } catch (error) {
-        showUiNotice(
-          `session:${action}:release`,
-          "session",
-          "warning",
-          `The completed session command could not be released locally: ${formatUiError(error)}`,
-        );
-      }
       updateSessionLifecycleBusy((current) => {
         if (current.get(sessionId) !== action) return current;
         const next = new Map(current);

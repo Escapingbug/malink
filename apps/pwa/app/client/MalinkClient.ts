@@ -1,5 +1,6 @@
 import type {
   ClientMessage,
+  CommandView,
   HelloResult,
   PairingPreview,
   PublicTrustState,
@@ -57,6 +58,11 @@ export type MalinkRecoveredSessionCreate = {
   completion: CommandCompletion & { sessionId: string };
 };
 
+export type MalinkRecoveredDurableCommand = Pick<
+  CommandView,
+  "commandId" | "state" | "sessionId" | "submittedAt"
+> & { commandId: string };
+
 export class CommandReviewRequiredError extends Error {
   constructor(readonly review: MalinkCommandReview) {
     super(
@@ -74,6 +80,7 @@ export type MalinkClientHandlers = {
   onCollaborationState?(state: CollaborationState): void;
   onCommandResult?(result: CommandCompletion): void;
   onSessionCreateRecovered?(recovery: MalinkRecoveredSessionCreate): void;
+  onDurableCommandRecovered?(command: MalinkRecoveredDurableCommand): void;
   onCommandReviewRequired?(review: MalinkCommandReview | null): void;
   onHistoryRecovered?(page: MalinkHistoryRecovery): void;
   onConvergenceRequired?(): void;
