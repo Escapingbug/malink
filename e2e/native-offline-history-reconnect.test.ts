@@ -41,8 +41,14 @@ describe('native offline history and reconnect', () => {
         expect(firstStatuses).toContain('offline')
         await expect(first.loadLocalHistory('session-history')).resolves.toEqual({
             messages: [
-                message('history-1', 1, 'first cached reply', true),
-                message('history-2', 2, 'second cached reply', true),
+                {
+                    ...message('history-1', 1, 'first cached reply', true),
+                    deliveryMode: 'history',
+                },
+                {
+                    ...message('history-2', 2, 'second cached reply', true),
+                    deliveryMode: 'history',
+                },
             ],
             hasMore: false,
         })
@@ -69,12 +75,15 @@ describe('native offline history and reconnect', () => {
         expect(replayed).toEqual(['history-3'])
         second.markHistoryLoaded('session-history', ['history-1', 'history-2'])
         await expect(second.loadLocalHistory('session-history')).resolves.toEqual({
-            messages: [message(
-                'history-3',
-                3,
-                'reply received while the UI was gone',
-                false,
-            )],
+            messages: [{
+                ...message(
+                    'history-3',
+                    3,
+                    'reply received while the UI was gone',
+                    true,
+                ),
+                deliveryMode: 'history',
+            }],
             hasMore: false,
         })
 
@@ -87,7 +96,7 @@ describe('native offline history and reconnect', () => {
         second.dispose()
     })
 
-    it('recovers more than one hundred detached updates from local native history without Matrix polling', async () => {
+    it('bounds more than one hundred detached updates to the newest local catch-up page', async () => {
         const port = new PersistentHistoryPort([
             message('cross-device-user', 1, 'first message from the phone', false),
             message('cross-device-command', 2, 'running command', false),
@@ -109,15 +118,16 @@ describe('native offline history and reconnect', () => {
         ])
         const recovered = await client.loadLocalHistory('session-history')
         expect(recovered.messages.map(message => message.eventId)).toEqual(
-            Array.from({ length: 150 }, (_, offset) =>
-                `cross-device-missed-${offset + 1}`,
+            Array.from({ length: 30 }, (_, offset) =>
+                `cross-device-missed-${offset + 121}`,
             ),
         )
+        expect(recovered.hasMore).toBe(true)
         for (let index = 1; index <= 150; index += 1) {
             port.deliverGatewayState(index)
         }
         await nextTurn()
-        expect(port.historyRequestSources).toEqual(['local', 'local'])
+        expect(port.historyRequestSources).toEqual(['local'])
         expect(port.failures).toEqual([])
         client.dispose()
     })
