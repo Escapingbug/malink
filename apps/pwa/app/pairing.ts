@@ -39,6 +39,7 @@ import {
   verifyWorkspaceGatewayDirectory,
 } from "@malink/security";
 import type { DeviceIdentity } from "./matrix";
+import type { MatrixRoomBinding } from "@malink/native-bridge";
 
 export const PAIRING_TRUST_STORAGE_KEY = "malink.pairing.trust.v1";
 export const PAIRING_TRUST_PROFILES_STORAGE_KEY = "malink.pairing.trust.profiles.v1";
@@ -59,6 +60,24 @@ export type PairingPreview = {
   expiresAt: number;
   transport: MatrixTransportBinding;
 };
+
+/**
+ * The native Matrix binding is scoped to the Workspace/project transport.
+ * Physical node identity remains in the signed pairing trust record; sending
+ * it as an extra strict-bridge field breaks compatible v2 APKs.
+ */
+export function nativeMatrixRoomBindingFromPairingPreview(
+  preview: PairingPreview,
+): MatrixRoomBinding {
+  return {
+    roomId: preview.transport.roomId,
+    gatewayId: preview.gatewayId,
+    conversationId: preview.transport.roomId,
+    gatewayUserId: preview.transport.userId,
+    gatewayDeviceId: preview.transport.deviceId,
+    gatewayDeviceEd25519: preview.transport.ed25519,
+  };
+}
 
 export type {
   DeviceInvitation,

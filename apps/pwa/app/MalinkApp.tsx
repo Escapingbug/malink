@@ -404,6 +404,7 @@ import {
   loadPendingPairingRecovery,
   loadTrustedGateway,
   loadTrustedGateways,
+  nativeMatrixRoomBindingFromPairingPreview,
   pairingLinkFromDeviceInvitation,
   trustedGatewayConfig,
   type GeneratedDeviceInvitation,
@@ -5950,15 +5951,7 @@ function MalinkAppRuntime() {
           oneTimeLoginToken: matrixLogin.loginToken,
           expectedUserId: matrixLogin.userId,
           deviceName: browserDeviceName(),
-          roomBinding: {
-            roomId: transport.roomId,
-            gatewayId: preview.gatewayId,
-            gatewayNodeId: preview.gatewayNodeId,
-            conversationId: transport.roomId,
-            gatewayUserId: transport.userId,
-            gatewayDeviceId: transport.deviceId,
-            gatewayDeviceEd25519: transport.ed25519,
-          },
+          roomBinding: nativeMatrixRoomBindingFromPairingPreview(preview),
         });
         if (nativeBootstrap) {
           nextConfig = {
@@ -6005,15 +5998,7 @@ function MalinkAppRuntime() {
             password,
             expectedUserId: userId,
             deviceName: browserDeviceName(),
-            roomBinding: {
-              roomId: preview.transport.roomId,
-              gatewayId: preview.gatewayId,
-              gatewayNodeId: preview.gatewayNodeId,
-              conversationId: preview.transport.roomId,
-              gatewayUserId: preview.transport.userId,
-              gatewayDeviceId: preview.transport.deviceId,
-              gatewayDeviceEd25519: preview.transport.ed25519,
-            },
+            roomBinding: nativeMatrixRoomBindingFromPairingPreview(preview),
           })
         : null;
       const credentials = nativeBootstrap

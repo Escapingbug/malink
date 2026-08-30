@@ -14,6 +14,7 @@ import {
   completePairing,
   createDeviceInvitationLink,
   decodeDeviceInvitationLink,
+  nativeMatrixRoomBindingFromPairingPreview,
   pairingLinkFromDeviceInvitation,
 } from "../app/pairing.ts";
 import { DeviceInvitationLifecycle } from "../app/deviceInvitationLifecycle.ts";
@@ -47,6 +48,32 @@ test("combines one signed Gateway offer and one-time Matrix login into a fragmen
   assert.match(
     await QRCode.toDataURL(generated.link, { errorCorrectionLevel: "L" }),
     /^data:image\/png;base64,/,
+  );
+});
+
+test("keeps physical Gateway node identity out of the strict native Matrix binding", async () => {
+  const offer = await signedOffer();
+  const preview = {
+    signedOffer: offer,
+    gatewayName: "Development Gateway",
+    gatewayId: "workspace-1",
+    gatewayNodeId: "node-physical-1",
+    verificationCode: "123 456",
+    expiresAt: 1_800_000_300_000,
+    transport: offer.offer.gatewayTransport,
+  };
+
+  assert.deepEqual(nativeMatrixRoomBindingFromPairingPreview(preview), {
+    roomId: "!room:example",
+    gatewayId: "workspace-1",
+    conversationId: "!room:example",
+    gatewayUserId: "@gateway:example",
+    gatewayDeviceId: "GATEWAY",
+    gatewayDeviceEd25519: "gateway-ed25519-public-key",
+  });
+  assert.equal(
+    "gatewayNodeId" in nativeMatrixRoomBindingFromPairingPreview(preview),
+    false,
   );
 });
 
