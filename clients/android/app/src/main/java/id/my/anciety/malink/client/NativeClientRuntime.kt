@@ -304,6 +304,7 @@ class NativeClientRuntime(
         }
     }
     @Volatile private var transportIdentity: MatrixTransportIdentity? = null
+    private val pairingTransportIdentityReady = CompletableDeferred<MatrixTransportIdentity>()
     @Volatile private var trust: GatewayTrust? = restoredTrust.getOrNull()
     @Volatile private var trustStorageBlocked = restoredTrust.isFailure
     @Volatile private var pairingStorageBlocked = restoredPairing.isFailure
@@ -633,6 +634,17 @@ class NativeClientRuntime(
         expectedPending: PendingPairing,
         deviceName: String,
     ): Pair<PublicTrustState.Trusted, ClientSnapshot> {
+        val readyTransport = try {
+            awaitPairingTransportIdentity(
+                current = { transportIdentity },
+                ready = pairingTransportIdentityReady,
+                timeoutMs = PAIRING_TRANSPORT_READY_TIMEOUT_MS,
+            )
+        } catch (_: TimeoutCancellationException) {
+            throw NativePairingRejectedException(
+                "The secure Matrix transport did not become ready in time. Check the network and retry this invitation.",
+            )
+        }
         val (pending, signedRequest, response) = mutex.withLock {
             val pending = pendingPairing?.takeIf { it === expectedPending }
                 ?: throw IllegalStateException("The pairing transaction is no longer active.")
@@ -646,8 +658,9 @@ class NativeClientRuntime(
             }
             val session = matrix.publicSession()
                 ?: throw IllegalStateException("A native Matrix session is required before pairing.")
-            val transport = transportIdentity
-                ?: throw IllegalStateException("Matrix encryption keys are not ready yet.")
+            // Prefer the latest callback value if the Matrix SDK rotated the
+            // transport identity while the pairing coroutine was suspended.
+            val transport = transportIdentity ?: readyTransport
             assertOfferRoute(pending.offer)
             trust?.takeIf { pending.repairingSession }?.let { activeTrust ->
                 MatrixSessionRepairPolicy.requirePinnedOffer(activeTrust, pending.offer)
@@ -1148,6 +1161,7 @@ class NativeClientRuntime(
 
     override fun onPairingTransportReady(identity: MatrixTransportIdentity) {
         transportIdentity = identity
+        pairingTransportIdentityReady.complete(identity)
         diagnostics.record("matrix.pairing_transport.ready")
         if (
             (trust == null || pendingPairing?.repairingSession == true) &&
@@ -1164,6 +1178,7 @@ class NativeClientRuntime(
 
     override fun onTransportReady(identity: MatrixTransportIdentity) {
         transportIdentity = identity
+        pairingTransportIdentityReady.complete(identity)
         gatewayStateSynchronized = trust != null &&
             matrixMlp3ProjectKeys.isNotEmpty() &&
             matrixMlp3Projection.snapshot() != null
@@ -3103,6 +3118,15 @@ internal fun pairingRequestRetryDelayMs(completedRetries: Int): Long {
     }
 }
 
+internal suspend fun <T> awaitPairingTransportIdentity(
+    current: () -> T?,
+    ready: CompletableDeferred<T>,
+    timeoutMs: Long,
+): T {
+    require(timeoutMs > 0)
+    return current() ?: withTimeout(timeoutMs) { ready.await() }
+}
+
 internal fun pendingPairingExpiryDelayMs(now: Long, expiresAt: Long): Long {
     require(now >= 0)
     require(expiresAt >= 0)
@@ -3207,6 +3231,7 @@ internal suspend fun awaitPublishedCommandReconciliation(
 }
 
 private const val PAIRING_RECOVERY_WINDOW_MS = 366L * 24 * 60 * 60_000
+private const val PAIRING_TRANSPORT_READY_TIMEOUT_MS = 60_000L
 private const val MAX_PAIRING_EXPIRY_SLEEP_MS = 24L * 60 * 60_000
 private const val MAX_AUTHORITATIVE_STATE_REFRESH_ATTEMPTS = 6
 private const val COMMAND_RECONCILIATION_DELIVERY_GRACE_MS = 12_000L

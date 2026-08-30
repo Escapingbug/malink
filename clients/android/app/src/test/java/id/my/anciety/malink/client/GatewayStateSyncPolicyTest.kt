@@ -23,6 +23,38 @@ import org.junit.Test
 
 class GatewayStateSyncPolicyTest {
     @Test
+    fun `pairing waits for the native Matrix transport instead of losing an early confirmation`() = runBlocking {
+        val ready = CompletableDeferred<String>()
+        val waiting = async {
+            awaitPairingTransportIdentity(
+                current = { null },
+                ready = ready,
+                timeoutMs = 1_000,
+            )
+        }
+
+        delay(10)
+        assertEquals(false, waiting.isCompleted)
+        ready.complete("matrix-device-ready")
+
+        assertEquals("matrix-device-ready", waiting.await())
+    }
+
+    @Test
+    fun `pairing uses the latest available transport without waiting`() = runBlocking {
+        val ready = CompletableDeferred<String>().also { it.complete("stale-device") }
+
+        assertEquals(
+            "current-device",
+            awaitPairingTransportIdentity(
+                current = { "current-device" },
+                ready = ready,
+                timeoutMs = 1_000,
+            ),
+        )
+    }
+
+    @Test
     fun `canonical Matrix revision suppresses command completion fallback`() {
         assertEquals(true, requiresGatewayConvergence(null, 4))
         assertEquals(true, requiresGatewayConvergence(3, 4))
