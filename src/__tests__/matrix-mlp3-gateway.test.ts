@@ -791,6 +791,16 @@ describe('MatrixMlp3GatewayRunner', () => {
     )?.payload).toMatchObject({
       status: { phase: 'staged', releaseId: 'release-2' },
     })
+    const gatewayStageEvents = await events(client, activeKey.key, roomId, projectId)
+    expect(gatewayStageEvents.some(event =>
+      event.causationCommandId === 'gateway-update-stage-1'
+      && event.payload.type === 'turn.completed'
+    )).toBe(false)
+    expect(gatewayStageEvents.some(event =>
+      event.causationCommandId?.startsWith('gateway-update-turn-')
+      && event.payload.type === 'turn.completed'
+      && event.sessionId?.startsWith('gateway-update-')
+    )).toBe(true)
     expect(gatewayUpdateCalls).toContain('stage:release-2')
     expect(gatewayUpdateCalls).toContain('instruction:release-2')
     expect(gatewayUpdateCalls.some(call => call.startsWith('begin:release-2:gateway-update-')))

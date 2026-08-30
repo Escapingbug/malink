@@ -30,6 +30,15 @@ export type GatewayUpdateCommand =
       mode: "when_idle";
     };
 
+const AMBIGUOUS_STAGE_RECHECK_DELAYS_MS = [0, 500, 1_000, 2_000, 4_000, 8_000] as const;
+const STAGE_IN_PROGRESS_PHASES = new Set<GatewayUpdateStatus["phase"]>([
+  "idle",
+  "staging",
+  "agent_required",
+  "agent_running",
+  "agent_validating",
+]);
+
 /**
  * Build a node-level update plan from the signed Gateway Directory. This is
  * intentionally presentation-only: discovering a release must never mutate a
@@ -99,7 +108,7 @@ export async function triggerGatewayUpdate(input: {
     if (updateAlreadyScheduled(staged, input.release)) return staged;
     throw new Error(
       `Gateway ${input.target.gatewayName} did not stage release ${input.release.releaseId} ` +
-        `(reported ${staged.phase}).`,
+        `(reported ${staged.phase})${staged.detail ? `: ${staged.detail}` : "."}`,
     );
   }
   if (
@@ -118,6 +127,39 @@ export async function triggerGatewayUpdate(input: {
     // later commands durably queued for the replacement process.
     mode: "when_idle",
   }, input.target.targetProjectId);
+}
+
+/**
+ * Older Gateways exposed the maintenance Agent's child turn.completed under
+ * the parent gateway.update.stage command ID. A client could therefore see a
+ * successful completion without the update-status result just before the real
+ * terminal arrived. Recover only by issuing signed, read-only status checks;
+ * never submit the stage operation a second time from this compatibility path.
+ */
+export async function recoverAmbiguousGatewayUpdateCompletion(input: {
+  operation: GatewayUpdateCommand["operation"];
+  releaseId: string;
+  readStatus(): Promise<GatewayUpdateStatus>;
+  wait?: (milliseconds: number) => Promise<void>;
+  delaysMs?: readonly number[];
+}): Promise<GatewayUpdateStatus> {
+  const wait = input.wait ?? ((milliseconds: number) =>
+    new Promise(resolve => globalThis.setTimeout(resolve, milliseconds)));
+  const delays = input.delaysMs ?? AMBIGUOUS_STAGE_RECHECK_DELAYS_MS;
+  let latest: GatewayUpdateStatus | null = null;
+  for (const delayMs of delays) {
+    if (delayMs > 0) await wait(delayMs);
+    latest = await input.readStatus();
+    if (input.operation !== "gateway.update.stage") return latest;
+    const sameRelease = latest.releaseId === input.releaseId;
+    if (!STAGE_IN_PROGRESS_PHASES.has(latest.phase)) return latest;
+    if (latest.phase !== "idle" && !sameRelease) return latest;
+  }
+  throw new Error(
+    latest?.detail ??
+      "The maintenance Agent finished, but the Gateway update status has not settled yet. " +
+        "Malink checked the signed status without repeating the update command. Try Update again shortly.",
+  );
 }
 
 function updateAlreadyScheduled(

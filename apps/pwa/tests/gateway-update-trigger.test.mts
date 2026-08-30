@@ -4,6 +4,7 @@ import type { SignedWorkspaceGatewayDirectory } from "@malink/protocol";
 import {
   gatewayUpdatePlan,
   gatewayUpdateTarget,
+  recoverAmbiguousGatewayUpdateCompletion,
   triggerGatewayUpdate,
 } from "../app/gatewayUpdateTrigger.ts";
 
@@ -107,6 +108,36 @@ test("treats a duplicate already-scheduled release as successful", async () => {
   assert.equal(calls, 1);
 });
 
+test("recovers an old Gateway child-turn completion through read-only status checks", async () => {
+  const phases = ["agent_running", "staged"] as const;
+  const waits: number[] = [];
+  let reads = 0;
+  const result = await recoverAmbiguousGatewayUpdateCompletion({
+    operation: "gateway.update.stage",
+    releaseId: release.releaseId,
+    readStatus: async () => status(phases[reads++]!),
+    wait: async milliseconds => { waits.push(milliseconds); },
+    delaysMs: [0, 10],
+  });
+
+  assert.equal(result.phase, "staged");
+  assert.equal(reads, 2);
+  assert.deepEqual(waits, [10]);
+});
+
+test("does not repeat an ambiguous apply operation", async () => {
+  let reads = 0;
+  const result = await recoverAmbiguousGatewayUpdateCompletion({
+    operation: "gateway.update.apply",
+    releaseId: release.releaseId,
+    readStatus: async () => { reads += 1; return status("scheduled"); },
+    delaysMs: [0],
+  });
+
+  assert.equal(result.phase, "scheduled");
+  assert.equal(reads, 1);
+});
+
 function gateway(
   gatewayNodeId: string,
   gatewayName: string,
@@ -123,7 +154,7 @@ function gateway(
   };
 }
 
-function status(phase: "staged" | "scheduled") {
+function status(phase: "agent_running" | "staged" | "scheduled") {
   return {
     version: 1 as const,
     phase,

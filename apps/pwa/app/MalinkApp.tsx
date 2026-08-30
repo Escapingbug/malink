@@ -125,6 +125,7 @@ import { uncertainCommandRecoveryPresentation } from "./uncertainCommandRecovery
 import {
   gatewayUpdatePlan as buildGatewayUpdatePlan,
   gatewayUpdateTarget,
+  recoverAmbiguousGatewayUpdateCompletion,
   triggerGatewayUpdate,
   type GatewayUpdatePlanNode,
 } from "./gatewayUpdateTrigger";
@@ -6464,6 +6465,7 @@ function MalinkAppRuntime() {
     timeoutMs?: number,
   ) {
     let commandId: string | null = null;
+    let completion: CommandCompletion;
     try {
       const sent = await sendRealCommand(payload, targetProjectId, {
         autoRetryRevisionConflict: true,
@@ -6471,24 +6473,43 @@ function MalinkAppRuntime() {
       });
       if (!sent) throw new Error("The connected client could not send the Gateway update request.");
       commandId = sent.commandId;
-      const completion = await waitForCommandCompletion(
+      completion = await waitForCommandCompletion(
         sent.completion,
         timeoutMs ?? (payload.operation === "gateway.update.status" ? 60_000 : 30 * 60_000),
       );
-      if (completion.outcome !== "succeeded") {
-        throw new Error(
-          completion.error?.message ?? "The Gateway update request did not complete.",
-        );
-      }
-      const status = gatewayUpdateStatusSchema.parse(completion.result);
-      setGatewayState((current) => current ? { ...current, gatewayUpdate: status } : current);
-      return status;
     } finally {
       if (commandId) {
         completedCommandResultsRef.current.delete(commandId);
         await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
       }
     }
+    if (completion.outcome !== "succeeded") {
+      throw new Error(
+        completion.error?.message ?? "The Gateway update request did not complete.",
+      );
+    }
+    const parsed = gatewayUpdateStatusSchema.safeParse(completion.result);
+    let status: GatewayUpdateStatus;
+    if (parsed.success) {
+      status = parsed.data;
+    } else if (payload.operation !== "gateway.update.status") {
+      status = await recoverAmbiguousGatewayUpdateCompletion({
+        operation: payload.operation,
+        releaseId: payload.releaseId,
+        readStatus: () => executeGatewayUpdate(
+          { operation: "gateway.update.status" },
+          targetProjectId,
+          60_000,
+        ),
+      });
+    } else {
+      throw new Error(
+        "The Gateway signed a successful status reply, but it did not contain a readable update status. " +
+          "The update command was not repeated. Update the Gateway Host manually or export diagnostics if this continues.",
+      );
+    }
+    setGatewayState((current) => current ? { ...current, gatewayUpdate: status } : current);
+    return status;
   }
 
   async function waitForConnectedCommandWindow(timeoutMs = 10_000): Promise<boolean> {

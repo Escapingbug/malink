@@ -843,7 +843,13 @@ export class MatrixMlp3GatewayRunner {
             runtime,
             command,
             { text: maintenanceAgentPrompt(instruction) },
-            { settleCommand: false },
+            {
+              settleCommand: false,
+              childTurnId: this.maintenanceAgentTurnId(
+                command.commandId,
+                instruction.releaseId,
+              ),
+            },
           )
         } catch (error) {
           await supervisor.failAgentUpdate(
@@ -945,6 +951,13 @@ export class MatrixMlp3GatewayRunner {
   private maintenanceAgentSessionId(releaseId: string): string {
     return `gateway-update-${createHash('sha256')
       .update(`${this.config.gatewayId}\0${releaseId}`)
+      .digest('hex')
+      .slice(0, 40)}`
+  }
+
+  private maintenanceAgentTurnId(commandId: string, releaseId: string): string {
+    return `gateway-update-turn-${createHash('sha256')
+      .update(`${this.config.gatewayId}\0${releaseId}\0${commandId}`)
       .digest('hex')
       .slice(0, 40)}`
   }
@@ -1287,8 +1300,19 @@ export class MatrixMlp3GatewayRunner {
     runtime: Mlp3SessionRuntime,
     command: Mlp3Command,
     prompt: { text: string; attachments?: import('@malink/protocol').MalinkAttachment[] },
-    options: { settleCommand?: boolean } = {},
+    options: { settleCommand?: boolean; childTurnId?: string } = {},
   ): Promise<void> {
+    if (options.childTurnId && options.settleCommand !== false) {
+      throw new Error('A child Agent turn cannot settle its parent command')
+    }
+    // Composite operations such as a Gateway update can run a visible Agent
+    // turn before their own authoritative terminal result exists. Give that
+    // child turn a separate causal identity: clients infer command completion
+    // from causal terminal events, so reusing the parent command ID would let
+    // turn.completed settle gateway.update.stage before its signed status.
+    const eventCommand = options.childTurnId
+      ? { ...command, commandId: options.childTurnId }
+      : command
     if (runtime.record.scope !== 'scratch') {
       await this.dependencies.assertDirectoryAccess?.({
         cwd: runtime.record.cwd,
@@ -1300,11 +1324,11 @@ export class MatrixMlp3GatewayRunner {
     await this.emitBestEffort(project, runtime.record, this.eventFor(
       project,
       runtime.record,
-      command,
+      eventCommand,
       'turn-queued',
       {
         type: 'turn.queued',
-        turnId: command.commandId,
+        turnId: eventCommand.commandId,
         originDeviceId: command.deviceId,
         text: prompt.text,
         ...(prompt.attachments ? { attachments: prompt.attachments } : {}),
@@ -1313,8 +1337,8 @@ export class MatrixMlp3GatewayRunner {
     ))
     this.transition(runtime, 'working')
     await this.persist(project)
-    runtime.port.setCausationCommandId(command.commandId)
-    runtime.activeTurnId = command.commandId
+    runtime.port.setCausationCommandId(eventCommand.commandId)
+    runtime.activeTurnId = eventCommand.commandId
     let dispatchFailure: { error: unknown } | null = null
     try {
       const richInput = await materializePromptInput(
@@ -1325,11 +1349,11 @@ export class MatrixMlp3GatewayRunner {
       await this.emitBestEffort(project, runtime.record, this.eventFor(
         project,
         runtime.record,
-        command,
+        eventCommand,
         'turn-started',
         {
           type: 'turn.started',
-          turnId: command.commandId,
+          turnId: eventCommand.commandId,
           projection: projection(runtime.record, runtime.activity.phase, this.extensions),
         },
       ))
@@ -1343,7 +1367,7 @@ export class MatrixMlp3GatewayRunner {
     } catch (error) {
       dispatchFailure = { error }
     } finally {
-      const causalDelivery = runtime.port.causalDeliveryBarrier(command.commandId)
+      const causalDelivery = runtime.port.causalDeliveryBarrier(eventCommand.commandId)
       runtime.port.setCausationCommandId(null)
       runtime.activeTurnId = null
       try {
@@ -1366,9 +1390,9 @@ export class MatrixMlp3GatewayRunner {
     runtime.record.providerSessionId = runtime.session.sessionRecord.conversationId
     this.transition(runtime, 'idle')
     await this.persist(project)
-    const completed = this.eventFor(project, runtime.record, command, 'turn-completed', {
+    const completed = this.eventFor(project, runtime.record, eventCommand, 'turn-completed', {
       type: 'turn.completed',
-      turnId: command.commandId,
+      turnId: eventCommand.commandId,
       outcome: 'succeeded',
       projection: terminalProjection(runtime.record, runtime.activity.phase, this.extensions),
     })
