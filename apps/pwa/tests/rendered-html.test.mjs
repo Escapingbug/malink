@@ -173,6 +173,8 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /Creation result not confirmed/);
   assert.match(source, /uncertainSessionRecovery\.primaryLabel/);
   assert.match(source, /uncertainSessionRecovery\.primaryAction === "check"/);
+  assert.match(source, /last checked \{formatRecoveryTimestamp\(lastCheck\.checkedAt\)\}/);
+  assert.match(source, /onReviewGatewayUpdates=\{reviewGatewayUpdatesForRecoveredNativeCommand\}/);
   assert.match(source, /Stop waiting/);
   assert.match(source, /discardFailedOptimisticSession/);
   assert.match(

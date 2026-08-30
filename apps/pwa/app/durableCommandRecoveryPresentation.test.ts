@@ -101,4 +101,42 @@ describe("durableCommandRecoveryPresentation", () => {
     expect(presentation.primaryAction).toBe("open-apk-releases");
     expect(presentation.primaryLabel).toBe("Open APK releases");
   });
+
+  it("routes a journal check with no response to available Gateway updates", () => {
+    const presentation = durableCommandRecoveryPresentation({
+      state: "accepted",
+      connectionStatus: "connected",
+      gatewayAvailable: true,
+      journalReconciliationAvailable: true,
+      gatewayUpdateAvailableCount: 2,
+      lastCheck: {
+        status: "no-response",
+        checkedAt: 1_788_000_000_000,
+      },
+    });
+
+    expect(presentation.primaryAction).toBe("review-gateway-updates");
+    expect(presentation.primaryLabel).toBe("Review Gateway updates");
+    expect(presentation.detail).toContain("2 Gateways have a software update");
+    expect(presentation.detail).toContain("Repeating the check");
+  });
+
+  it("does not offer another no-op check when a current Gateway does not answer", () => {
+    const presentation = durableCommandRecoveryPresentation({
+      state: "running",
+      connectionStatus: "connected",
+      gatewayAvailable: true,
+      journalReconciliationAvailable: true,
+      gatewayUpdateAvailableCount: 0,
+      lastCheck: {
+        status: "no-response",
+        checkedAt: 1_788_000_000_000,
+      },
+    });
+
+    expect(presentation.primaryAction).toBeNull();
+    expect(presentation.detail).toContain("may be offline");
+    expect(presentation.detail).toContain("Export diagnostics");
+    expect(presentation.detail).toContain("Repeating Check now cannot change");
+  });
 });

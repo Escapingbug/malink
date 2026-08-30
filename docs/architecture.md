@@ -381,6 +381,11 @@ as an external prerequisite and is retried automatically; the client does not
 present a no-op “check again” button. Release discovery, Workspace projection,
 and Gateway liveness remain separate visible states, so a missing prerequisite
 never hides the Gateway software panel or masquerades as another layer's retry.
+If a bounded journal check receives no signed reply, the client records the
+check time and presents that outcome separately from the command's unchanged
+durable timestamp. An available Gateway release becomes the recovery action;
+otherwise the client explains the target Gateway prerequisites and continues
+automatic same-identity recovery without offering another immediate no-op check.
 
 ## Gateway online-update boundary
 

@@ -235,7 +235,10 @@ import {
   type ConnectionRepairReason,
   type MobileConnectionSignal,
 } from "./connectionPresentation";
-import { durableCommandRecoveryPresentation } from "./durableCommandRecoveryPresentation";
+import {
+  durableCommandRecoveryPresentation,
+  type DurableCommandRecoveryCheckResult,
+} from "./durableCommandRecoveryPresentation";
 import { connectionFailureCode } from "./connectionFailure";
 import {
   automaticConnectionRetryDelay,
@@ -1042,10 +1045,12 @@ function DurableCommandRecoveryNotice({
   gatewayAvailable,
   journalReconciliationAvailable,
   manualAndroidUpdateRequired,
+  gatewayUpdateAvailableCount,
   busy,
-  lastError,
+  lastCheck,
   onCheck,
   onReconnect,
+  onReviewGatewayUpdates,
   onUpdateAndroid,
   onOpenAndroidReleases,
   onExportDiagnostics,
@@ -1055,10 +1060,12 @@ function DurableCommandRecoveryNotice({
   gatewayAvailable: boolean;
   journalReconciliationAvailable: boolean;
   manualAndroidUpdateRequired: boolean;
+  gatewayUpdateAvailableCount: number;
   busy: boolean;
-  lastError?: string;
+  lastCheck?: DurableCommandRecoveryCheckResult;
   onCheck(): void;
   onReconnect(): void;
+  onReviewGatewayUpdates(): void;
   onUpdateAndroid(): void;
   onOpenAndroidReleases(): void;
   onExportDiagnostics(): void;
@@ -1069,7 +1076,8 @@ function DurableCommandRecoveryNotice({
     gatewayAvailable,
     journalReconciliationAvailable,
     manualAndroidUpdateRequired,
-    lastError,
+    gatewayUpdateAvailableCount,
+    lastCheck,
   });
   const commandLabel = command.commandId.length > 16
     ? `${command.commandId.slice(0, 12)}…${command.commandId.slice(-4)}`
@@ -1087,6 +1095,7 @@ function DurableCommandRecoveryNotice({
       <small className="durable-command-recovery-meta">
         Command {commandLabel} · saved {formatRecoveryTimestamp(command.submittedAt)} ·
         last changed {formatRecoveryTimestamp(command.updatedAt)}
+        {lastCheck && <> · last checked {formatRecoveryTimestamp(lastCheck.checkedAt)}</>}
       </small>
       <div className="durable-command-recovery-actions">
         {presentation.primaryAction && presentation.primaryLabel && (
@@ -1099,9 +1108,11 @@ function DurableCommandRecoveryNotice({
                 ? onCheck
                 : presentation.primaryAction === "reconnect"
                   ? onReconnect
-                  : presentation.primaryAction === "update-native-app"
-                    ? onUpdateAndroid
-                    : onOpenAndroidReleases
+                  : presentation.primaryAction === "review-gateway-updates"
+                    ? onReviewGatewayUpdates
+                    : presentation.primaryAction === "update-native-app"
+                      ? onUpdateAndroid
+                      : onOpenAndroidReleases
             }
           >
             {busy
@@ -1568,8 +1579,8 @@ function MalinkAppRuntime() {
   >([]);
   const [recoveredNativeCommandFlightIds, setRecoveredNativeCommandFlightIds] =
     useState<Set<string>>(() => new Set());
-  const [recoveredNativeCommandErrors, setRecoveredNativeCommandErrors] =
-    useState<Record<string, string>>({});
+  const [recoveredNativeCommandChecks, setRecoveredNativeCommandChecks] =
+    useState<Record<string, DurableCommandRecoveryCheckResult>>({});
   const [sessionLifecycleBusy, setSessionLifecycleBusy] = useState<
     Map<string, SessionLifecycleAction>
   >(() => new Map());
@@ -2468,7 +2479,7 @@ function MalinkAppRuntime() {
   function forgetRecoveredNativeCommand(...commandIds: string[]): void {
     for (const commandId of commandIds) {
       recoveredNativeCommandsRef.current.delete(commandId);
-      setRecoveredNativeCommandErrors((current) => {
+      setRecoveredNativeCommandChecks((current) => {
         if (!(commandId in current)) return current;
         const next = { ...current };
         delete next[commandId];
@@ -5314,7 +5325,7 @@ function MalinkAppRuntime() {
     recoveredNativeCommandFlightsRef.current.clear();
     setRecoveredNativeCommands([]);
     setRecoveredNativeCommandFlightIds(new Set());
-    setRecoveredNativeCommandErrors({});
+    setRecoveredNativeCommandChecks({});
     completionObservationOrderRef.current = 0;
     setObservedCommandCompletions([]);
     setExpandedProcessTurnIds(new Set());
@@ -8107,9 +8118,18 @@ function MalinkAppRuntime() {
           retryDelayMs = error instanceof CommandCompletionTimeoutError
             ? RECOVERED_COMMAND_RETRY_DELAY_MS
             : RECOVERED_COMMAND_FAILURE_RETRY_DELAY_MS;
-          setRecoveredNativeCommandErrors((current) => ({
+          setRecoveredNativeCommandChecks((current) => ({
             ...current,
-            [currentCommandId]: formatUiError(error),
+            [currentCommandId]: error instanceof CommandCompletionTimeoutError
+              ? {
+                  status: "no-response",
+                  checkedAt: Date.now(),
+                }
+              : {
+                  status: "failed",
+                  checkedAt: Date.now(),
+                  detail: formatUiError(error),
+                },
           }));
         } finally {
           recoveredNativeCommandFlightsRef.current.delete(commandId);
@@ -8151,6 +8171,11 @@ function MalinkAppRuntime() {
   function updateAndroidForRecoveredNativeCommand(): void {
     setSettingsOpen(true);
     void recoverNativeAppUpdate(true);
+  }
+
+  function reviewGatewayUpdatesForRecoveredNativeCommand(): void {
+    setSettingsOpen(false);
+    setGatewayUpdateDialogOpen(true);
   }
 
   function openOfficialAndroidReleases(): void {
@@ -9307,14 +9332,16 @@ function MalinkAppRuntime() {
               gatewayAvailable={gatewayAvailable}
               journalReconciliationAvailable={journalReconciliationAvailable}
               manualAndroidUpdateRequired={manualAndroidUpdateRequired}
+              gatewayUpdateAvailableCount={gatewayUpdateAvailableCount}
               busy={recoveredNativeCommandFlightIds.has(
                 visibleRecoveredNativeCommand.commandId,
               )}
-              lastError={recoveredNativeCommandErrors[
+              lastCheck={recoveredNativeCommandChecks[
                 visibleRecoveredNativeCommand.commandId
               ]}
               onCheck={checkRecoveredNativeCommandsNow}
               onReconnect={reconnectForRecoveredNativeCommand}
+              onReviewGatewayUpdates={reviewGatewayUpdatesForRecoveredNativeCommand}
               onUpdateAndroid={updateAndroidForRecoveredNativeCommand}
               onOpenAndroidReleases={openOfficialAndroidReleases}
               onExportDiagnostics={exportConnectionDiagnostics}

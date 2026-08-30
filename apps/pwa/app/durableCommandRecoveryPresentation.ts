@@ -8,10 +8,17 @@ export type DurableCommandRecoveryPresentation = {
   primaryAction:
     | "check"
     | "reconnect"
+    | "review-gateway-updates"
     | "update-native-app"
     | "open-apk-releases"
     | null;
   primaryLabel?: string;
+};
+
+export type DurableCommandRecoveryCheckResult = {
+  status: "no-response" | "failed";
+  checkedAt: number;
+  detail?: string;
 };
 
 /**
@@ -25,7 +32,8 @@ export function durableCommandRecoveryPresentation(input: {
   gatewayAvailable: boolean;
   journalReconciliationAvailable?: boolean;
   manualAndroidUpdateRequired?: boolean;
-  lastError?: string | null;
+  gatewayUpdateAvailableCount?: number;
+  lastCheck?: DurableCommandRecoveryCheckResult | null;
 }): DurableCommandRecoveryPresentation {
   const stateLabel = commandStateLabel(input.state);
   const accepted = input.state === "accepted" || input.state === "running";
@@ -78,6 +86,29 @@ export function durableCommandRecoveryPresentation(input: {
     };
   }
 
+  if (accepted && input.lastCheck?.status === "no-response") {
+    const updateCount = input.gatewayUpdateAvailableCount ?? 0;
+    if (updateCount > 0) {
+      return {
+        title: "The Gateway did not answer this check",
+        detail:
+          `No signed journal reply arrived during the last check. ${updateCount} ` +
+          `${updateCount === 1 ? "Gateway has" : "Gateways have"} a software update available. ` +
+          "Review and update the Gateway that accepted this action; Malink will then retry the same command identity automatically. Repeating the check before that Gateway changes will not produce a different result.",
+        stateLabel,
+        primaryAction: "review-gateway-updates",
+        primaryLabel: "Review Gateway updates",
+      };
+    }
+    return {
+      title: "The Gateway did not answer this check",
+      detail:
+        "No signed journal reply arrived during the last check. The target Gateway may be offline, may not support journal replies, or may no longer own this command route. Bring that Gateway online and ensure it is current; Malink will retry the same command automatically. Export diagnostics if it is already online. Repeating Check now cannot change the result.",
+      stateLabel,
+      primaryAction: null,
+    };
+  }
+
   const detail = accepted
     ? "Your computer accepted this action, but this client did not receive its signed final result—usually because the app or Matrix sync was interrupted. Malink is checking Matrix history and asking the Gateway journal about the same command; the action will not run twice."
     : localOnly
@@ -85,8 +116,8 @@ export function durableCommandRecoveryPresentation(input: {
       : "The action has a durable local result, but its recovery record has not been released yet. Malink is verifying the result before removing the record.";
   return {
     title: accepted ? "Waiting for a verified result" : "Recovering a previous action",
-    detail: input.lastError
-      ? `${detail} Last check: ${input.lastError}`
+    detail: input.lastCheck?.status === "failed" && input.lastCheck.detail
+      ? `${detail} Last check failed: ${input.lastCheck.detail}`
       : detail,
     stateLabel,
     primaryAction: "check",
