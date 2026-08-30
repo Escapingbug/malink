@@ -58,6 +58,7 @@ export const OPTIONAL_NATIVE_CAPABILITIES = [
   "matrix.login-token",
   "client.update",
   "client.pwa-source",
+  "client.diagnostics",
 ] as const;
 
 export function nativeCapabilityVersions(
@@ -241,6 +242,14 @@ export class NativeBridgeClient implements MalinkClient {
       context: this.bridge.context(),
       idempotencyKey: crypto.randomUUID(),
     });
+  }
+
+  async exportDiagnostics(): Promise<boolean> {
+    if (!this.helloResult.capabilities["client.diagnostics"]) return false;
+    await this.bridge.request("malink.diagnostics.export", {
+      context: this.bridge.context(),
+    });
+    return true;
   }
 
   #requireNativeUpdateCapability(): void {

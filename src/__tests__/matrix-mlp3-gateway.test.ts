@@ -311,6 +311,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     let gatewayAgentStaged = false
     let gatewayAgentShouldSubmit = true
     let gatewayAgentRunningReleaseId: string | null = null
+    let gatewayAgentFailedReleaseId: string | null = null
     const webPushService: GatewayWebPushService = {
       initialize: async () => undefined,
       publicKey: () => 'B'.repeat(87),
@@ -512,7 +513,25 @@ describe('MatrixMlp3GatewayRunner', () => {
               releaseId: gatewayAgentRunningReleaseId,
               targetBuildId: 'build-2',
               currentBuildId: 'build-1',
+              maintenanceSessionId: gatewayMaintenanceSessionId(
+                'gateway-node-1',
+                gatewayAgentRunningReleaseId,
+              ),
               updatedAt: 12,
+            }
+          }
+          if (gatewayAgentFailedReleaseId) {
+            return {
+              version: 1,
+              phase: 'failed',
+              releaseId: gatewayAgentFailedReleaseId,
+              targetBuildId: 'build-2',
+              currentBuildId: 'build-1',
+              maintenanceSessionId: gatewayMaintenanceSessionId(
+                'gateway-node-1',
+                gatewayAgentFailedReleaseId,
+              ),
+              updatedAt: 13,
             }
           }
           return {
@@ -524,6 +543,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         },
         async stage(releaseId) {
           gatewayUpdateCalls.push(`stage:${releaseId}`)
+          gatewayAgentFailedReleaseId = null
           return {
             version: 1,
             phase: 'agent_required',
@@ -570,6 +590,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         async failAgentUpdate(releaseId, _ownerCommandId, detail) {
           gatewayUpdateCalls.push(`fail:${releaseId}:${detail}`)
           gatewayAgentRunningReleaseId = null
+          gatewayAgentFailedReleaseId = releaseId
           return {
             version: 1,
             phase: 'failed',
@@ -857,6 +878,31 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(gatewayUpdateCalls.some(call =>
       call.startsWith('fail:release-no-submit:The maintenance Agent finished without submitting')
     )).toBe(true)
+    const failedMaintenanceSessionId = gatewayMaintenanceSessionId(
+      'gateway-node-1',
+      'release-no-submit',
+    )
+    await send({
+      ...base,
+      commandId: 'archive-failed-gateway-update',
+      sessionId: failedMaintenanceSessionId,
+      operation: 'session.set_lifecycle',
+      payload: { operation: 'session.set_lifecycle', state: 'archived' },
+    }, '$archive-failed-gateway-update')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'archive-failed-gateway-update'
+        && event.payload.type === 'command.rejected'
+      ))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'archive-failed-gateway-update'
+      && event.payload.type === 'command.rejected'
+    )?.payload).toMatchObject({
+      type: 'command.rejected',
+      message: expect.stringContaining(
+        'cannot be archived while the update supervisor reports failed',
+      ),
+    })
     gatewayAgentStaged = true
     gatewayAgentShouldSubmit = true
     dispatched.splice(0)

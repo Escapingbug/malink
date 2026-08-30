@@ -125,6 +125,7 @@ import { discoverLatestGatewayAgentUpdate } from "./gatewayAgentUpdateDiscovery"
 import { uncertainCommandRecoveryPresentation } from "./uncertainCommandRecoveryPresentation";
 import {
   collidingGatewayMaintenanceSessionIds,
+  gatewayMaintenanceSessionCanBeArchived,
   gatewayUpdatePlan as buildGatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
   gatewayUpdateStatusNeedsPolling,
@@ -2553,7 +2554,8 @@ function MalinkAppRuntime() {
             maintenanceSessionAmbiguous: true,
             maintenanceSessionArchiveAvailable:
               maintenanceSession !== undefined &&
-              maintenanceSession.status !== "archived",
+              maintenanceSession.status !== "archived" &&
+              gatewayMaintenanceSessionCanBeArchived(runtime.status),
             maintenanceSessionArchived:
               maintenanceSession?.status === "archived",
             maintenanceSessionArchiveBusy: Boolean(
@@ -2578,7 +2580,8 @@ function MalinkAppRuntime() {
           ...(runtime ?? { state: "unchecked" as const }),
           legacyMaintenanceSessionId: legacySession.id,
           legacyMaintenanceSessionArchiveAvailable:
-            legacySession.status !== "archived",
+            legacySession.status !== "archived" &&
+            gatewayMaintenanceSessionCanBeArchived(runtime?.status),
           legacyMaintenanceSessionArchived:
             legacySession.status === "archived",
           legacyMaintenanceSessionArchiveBusy: sessionLifecycleBusy.has(
@@ -2834,7 +2837,7 @@ function MalinkAppRuntime() {
       if (result.phase === "current") {
         showUiNotice(
           "update:pwa-check",
-          "update",
+          "diagnostics",
           "success",
           "Malink is up to date.",
           4_000,
@@ -2852,7 +2855,7 @@ function MalinkAppRuntime() {
     } catch (error) {
       showUiNotice(
         "update:pwa-check",
-        "update",
+        "diagnostics",
         "warning",
         `Malink could not check for updates: ${formatUiError(error)}`,
       );
@@ -6923,7 +6926,7 @@ function MalinkAppRuntime() {
     }
   }
 
-  function exportConnectionDiagnostics(): void {
+  async function exportConnectionDiagnostics(): Promise<void> {
     const report = createConnectionDiagnostics({
       buildVersion: MALINK_BUILD_VERSION,
       status: connectionStatus,
@@ -6965,16 +6968,49 @@ function MalinkAppRuntime() {
       visibility: document.visibilityState,
       userAgent: navigator.userAgent,
     });
-    const url = URL.createObjectURL(
-      new Blob([report], { type: "application/json" }),
-    );
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `malink-connection-diagnostics-${Date.now()}.json`;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    try {
+      const connection = malinkClientRef.current;
+      if (connection?.runtime === "native") {
+        if (!connection.exportDiagnostics || !(await connection.exportDiagnostics())) {
+          throw new Error(
+            "This APK cannot open the Android diagnostic share sheet. Update the APK and try again.",
+          );
+        }
+        showUiNotice(
+          "diagnostics:exported",
+          "update",
+          "success",
+          "Android opened the diagnostic share sheet. Choose where to save or send the report.",
+          8_000,
+        );
+        return;
+      }
+      const url = URL.createObjectURL(
+        new Blob([report], { type: "application/json" }),
+      );
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `malink-connection-diagnostics-${Date.now()}.json`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      showUiNotice(
+        "diagnostics:exported",
+        "diagnostics",
+        "success",
+        "Diagnostic download started.",
+        5_000,
+      );
+    } catch (error) {
+      showUiNotice(
+        "diagnostics:export-failed",
+        "update",
+        "error",
+        `Diagnostic export failed: ${formatUiError(error)}`,
+        12_000,
+      );
+    }
   }
 
   async function sendRealCommand(
@@ -12394,9 +12430,25 @@ function MalinkAppRuntime() {
           onStart={(node) => void startGatewayUpdateNode(node)}
           onOpenSession={openGatewayUpdateSession}
           onArchiveSession={(node, sessionId) => {
-            if (node.targetProjectId) {
-              void archiveSession(sessionId, node.targetProjectId);
-            }
+            void (async () => {
+              const target = gatewayNodeProbeTargetsById.get(node.gatewayNodeId);
+              const status = target
+                ? await probeGatewayNodeLiveness(target)
+                : null;
+              if (!gatewayMaintenanceSessionCanBeArchived(status ?? undefined)) {
+                showUiNotice(
+                  `gateway-update:archive-blocked:${node.gatewayNodeId}`,
+                  "update",
+                  "warning",
+                  "This update session is still owned by the Gateway supervisor. Open it to review the report or retry the published release; cleanup becomes available only after the update is committed or rolled back.",
+                  10_000,
+                );
+                return;
+              }
+              if (node.targetProjectId) {
+                await archiveSession(sessionId, node.targetProjectId);
+              }
+            })();
           }}
           onExportDiagnostics={exportConnectionDiagnostics}
         />

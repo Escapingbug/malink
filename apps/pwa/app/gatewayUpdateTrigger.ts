@@ -148,6 +148,22 @@ export function gatewayUpdateStatusNeedsPolling(
   ].includes(status.phase);
 }
 
+/**
+ * Maintenance sessions remain part of the signed update transaction until the
+ * supervisor has reached a terminal, non-retryable state. Archiving one while
+ * an Agent is running cancels its prompt; archiving a failed attempt prevents
+ * a same-release retry from reopening the deterministic session identity.
+ */
+export function gatewayMaintenanceSessionCanBeArchived(
+  status: GatewayUpdateStatus | undefined,
+): boolean {
+  return status !== undefined && [
+    "idle",
+    "committed",
+    "rolled_back",
+  ].includes(status.phase);
+}
+
 export function gatewayUpdateCanApplyStaged(input: {
   status: GatewayUpdateStatus | undefined;
 }): boolean {

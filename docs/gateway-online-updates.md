@@ -220,6 +220,14 @@ entry point. Connection diagnostics include bounded per-node liveness timestamps
 consecutive no-reply counts, and update phase/build identifiers without
 exporting credentials or unstructured Gateway errors.
 
+The maintenance session is transaction-owned state, not ordinary conversation
+history. Neither a client nor the Gateway may archive the session while the
+supervisor reports an active, staged, failed-but-retryable, or repair-required
+update. The client rechecks signed live status immediately before cleanup and
+the Gateway enforces the same rule before changing session lifecycle. This
+prevents a stale multi-Gateway presentation from cancelling the maintenance
+Agent or making a deterministic same-release retry impossible.
+
 ## Agent-safe candidate completion
 
 The maintenance Agent is never allowed to execute a candidate Gateway,
@@ -346,7 +354,8 @@ a release ID or manually transfer Gateway credentials or artifacts.
 
 - `failed`: the active release was not changed. Inspect the maintenance session
   and supervisor detail, correct the Prompt/commit, and publish a new immutable
-  release ID.
+  release ID. Do not archive the session named by the supervisor: it remains
+  evidence for the failure and may still be required by a same-release retry.
 - `rolled_back`: the candidate failed health or probation and the previous
   release is running.
 - `repair_required`: activation and safe rollback could not be proven. Preserve

@@ -3,6 +3,7 @@ import test from "node:test";
 import type { SignedWorkspaceGatewayDirectory } from "@malink/protocol";
 import {
   collidingGatewayMaintenanceSessionIds,
+  gatewayMaintenanceSessionCanBeArchived,
   gatewayUpdateCanApplyStaged,
   gatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
@@ -285,6 +286,21 @@ test("recognizes phases that need automatic progress checks", () => {
   assert.equal(gatewayUpdateStatusNeedsPolling(status("agent_running")), true);
   assert.equal(gatewayUpdateStatusNeedsPolling(status("probation")), true);
   assert.equal(gatewayUpdateStatusNeedsPolling(status("staged")), false);
+});
+
+test("only archives maintenance sessions after the signed update transaction is terminal", () => {
+  const status = (phase: "idle" | "agent_running" | "failed" | "repair_required" | "committed" | "rolled_back") => ({
+    version: 1 as const,
+    phase,
+    updatedAt: 10,
+  });
+  assert.equal(gatewayMaintenanceSessionCanBeArchived(undefined), false);
+  assert.equal(gatewayMaintenanceSessionCanBeArchived(status("agent_running")), false);
+  assert.equal(gatewayMaintenanceSessionCanBeArchived(status("failed")), false);
+  assert.equal(gatewayMaintenanceSessionCanBeArchived(status("repair_required")), false);
+  assert.equal(gatewayMaintenanceSessionCanBeArchived(status("idle")), true);
+  assert.equal(gatewayMaintenanceSessionCanBeArchived(status("committed")), true);
+  assert.equal(gatewayMaintenanceSessionCanBeArchived(status("rolled_back")), true);
 });
 
 test("offers activation for any complete staged release identity", () => {

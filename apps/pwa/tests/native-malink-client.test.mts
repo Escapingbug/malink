@@ -83,13 +83,16 @@ test("returns a durable native receipt immediately and acknowledges event cursor
   const hello = await bridge.hello({
     webBuild: "test-build",
     requiredCapabilities: [],
-    optionalCapabilities: REQUIRED_NATIVE_CAPABILITIES.map((name) => ({
-      name,
-      versions: nativeCapabilityVersions(name),
-    })).concat(OPTIONAL_NATIVE_CAPABILITIES.map((name) => ({
-      name,
-      versions: [1],
-    }))),
+    optionalCapabilities: [
+      ...REQUIRED_NATIVE_CAPABILITIES.map((name) => ({
+        name,
+        versions: nativeCapabilityVersions(name),
+      })),
+      ...OPTIONAL_NATIVE_CAPABILITIES.map((name) => ({
+        name,
+        versions: [1],
+      })),
+    ],
   });
   const statuses: string[] = [];
   const commandResults: string[] = [];
@@ -1102,6 +1105,15 @@ test("checks the static APK channel and installs a verified release", async () =
   client.dispose();
 });
 
+test("opens the Android diagnostic share surface when negotiated", async () => {
+  const port = new RuntimePort();
+  const client = await createTestClient(port);
+
+  assert.equal(await client.exportDiagnostics(), true);
+  assert.ok(port.requests.some(request => request.method === "malink.diagnostics.export"));
+  client.dispose();
+});
+
 async function createTestClient(
   port: RuntimePort,
   onReview: (review: MalinkCommandReview | null) => void = () => {},
@@ -1202,6 +1214,11 @@ function responseFor(request: Request): unknown {
       return nativeUpdateStatus("checking");
     case "malink.update.install":
       return nativeUpdateStatus("installing");
+    case "malink.diagnostics.export":
+      return {
+        status: "share_opened",
+        filename: "malink-native-diagnostics.txt",
+      };
     default:
       throw new Error(`Unexpected native method in test: ${request.method}`);
   }

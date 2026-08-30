@@ -141,6 +141,7 @@ object BridgeProtocol {
         "malink.update.status",
         "malink.update.check",
         "malink.update.install",
+        "malink.diagnostics.export",
         "malink.events.subscribe",
         "malink.events.activate",
         "malink.events.ack",
@@ -339,6 +340,12 @@ interface BridgeRuntime {
     fun checkNativeUpdate(): NativeUpdateStatus = nativeUpdateStatus()
 
     suspend fun installNativeUpdate(): NativeUpdateStatus = nativeUpdateStatus()
+
+    suspend fun exportDiagnostics(): String = throw BridgeRuntimeFailure(
+        BridgeError.CAPABILITY_UNAVAILABLE,
+        "Native diagnostic export is unavailable.",
+        userAction = "update_native",
+    )
 }
 
 class BridgeDispatcher(
@@ -484,6 +491,14 @@ class BridgeDispatcher(
                 requireContext(request.params, mutation = true)
                 mutationResult(request) {
                     nativeUpdateStatusToJson(runtime.installNativeUpdate())
+                }
+            }
+            "malink.diagnostics.export" -> {
+                requireDiagnosticsCapability()
+                requireContext(request.params, mutation = false)
+                buildJsonObject {
+                    put("status", "share_opened")
+                    put("filename", runtime.exportDiagnostics())
                 }
             }
             "malink.events.subscribe" -> {
@@ -1390,6 +1405,16 @@ class BridgeDispatcher(
         }
     }
 
+    private fun requireDiagnosticsCapability() {
+        if (NATIVE_DIAGNOSTICS_CAPABILITY !in negotiatedCapabilities) {
+            throw BridgeDispatchException(
+                BridgeError.CAPABILITY_UNAVAILABLE,
+                "Native diagnostic export was not negotiated.",
+                userAction = "update_native",
+            )
+        }
+    }
+
     private fun nativeUpdateStatusToJson(status: NativeUpdateStatus): JsonObject = buildJsonObject {
         put("phase", status.phase.wireName)
         put("currentVersionCode", status.currentVersionCode)
@@ -1416,6 +1441,7 @@ class BridgeDispatcher(
         const val MATRIX_LOGIN_TOKEN_CAPABILITY = "matrix.login-token"
         const val NATIVE_UPDATE_CAPABILITY = "client.update"
         const val PWA_SOURCE_CAPABILITY = "client.pwa-source"
+        const val NATIVE_DIAGNOSTICS_CAPABILITY = "client.diagnostics"
         val SUPPORTED_CAPABILITIES = setOf(
             "client.lifecycle",
             "events.replay",
@@ -1431,6 +1457,7 @@ class BridgeDispatcher(
             MATRIX_LOGIN_TOKEN_CAPABILITY,
             NATIVE_UPDATE_CAPABILITY,
             PWA_SOURCE_CAPABILITY,
+            NATIVE_DIAGNOSTICS_CAPABILITY,
         )
         fun supportedCapabilityVersions(name: String): Set<Int> = when {
             name == "history.page" -> setOf(1, 2)

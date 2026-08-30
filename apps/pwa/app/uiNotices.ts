@@ -6,6 +6,7 @@ export type UiNoticeScope =
   | "session"
   | "composer"
   | "attachment"
+  | "diagnostics"
   | "update";
 
 export type UiNoticeSeverity = "info" | "success" | "warning" | "error";

@@ -637,6 +637,21 @@ describe("native bridge JSON-RPC conformance", () => {
     }))).toThrow(/cannot exceed/);
   });
 
+  it("strictly validates native diagnostic export", () => {
+    expect(parseRpcRequest(request("malink.diagnostics.export", { context })).method)
+      .toBe("malink.diagnostics.export");
+    const parsed = parseMethodRpcResponse("malink.diagnostics.export", response({
+      status: "share_opened",
+      filename: "malink-native-diagnostics.txt",
+    }));
+    expect("result" in parsed && parsed.result.filename)
+      .toBe("malink-native-diagnostics.txt");
+    expect(() => parseMethodRpcResponse("malink.diagnostics.export", response({
+      status: "downloaded",
+      filename: "malink-native-diagnostics.txt",
+    }))).toThrow(/share_opened/);
+  });
+
   it("strictly validates replay subscription and activation cursors", () => {
     const subscribe = parseRpcRequest(request("malink.events.subscribe", {
       context,

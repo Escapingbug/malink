@@ -984,7 +984,10 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         when (intent?.action) {
-            ACTION_EXPORT_DIAGNOSTICS -> exportDiagnostics(intent)
+            ACTION_EXPORT_DIAGNOSTICS -> {
+                intent.action = null
+                exportDiagnostics()
+            }
             ACTION_STATIC_SERVICE_SETTINGS -> {
                 intent.action = null
                 showStaticServiceSettings()
@@ -1081,24 +1084,9 @@ class MainActivity : ComponentActivity() {
         return "${trustedWebOrigin.appUrl}#session=${Uri.encode(sessionId)}"
     }
 
-    private fun exportDiagnostics(intent: Intent) {
-        intent.action = null
-        diagnostics.record("diagnostics.export_requested")
+    private fun exportDiagnostics() {
         runCatching {
-            val report = diagnostics.export()
-            val uri = FileProvider.getUriForFile(
-                this,
-                "$packageName.fileprovider",
-                report,
-            )
-            val share = Intent(Intent.ACTION_SEND)
-                .setType("text/plain")
-                .putExtra(Intent.EXTRA_STREAM, uri)
-                .putExtra(Intent.EXTRA_SUBJECT, "Malink native diagnostics ${BuildConfig.VERSION_NAME}")
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            share.clipData = ClipData.newRawUri("Malink diagnostics", uri)
-            startActivity(Intent.createChooser(share, getString(R.string.diagnostics_share_title)))
-            diagnostics.record("diagnostics.export_shared")
+            shareDiagnostics()
         }.onFailure { error ->
             diagnostics.record(
                 "diagnostics.export_failure",
@@ -1110,6 +1098,25 @@ class MainActivity : ComponentActivity() {
             )
             showRecoveryPage("The native diagnostic report could not be exported.")
         }
+    }
+
+    private fun shareDiagnostics(): String {
+        diagnostics.record("diagnostics.export_requested")
+        val report = diagnostics.export()
+        val uri = FileProvider.getUriForFile(
+            this,
+            "$packageName.fileprovider",
+            report,
+        )
+        val share = Intent(Intent.ACTION_SEND)
+            .setType("text/plain")
+            .putExtra(Intent.EXTRA_STREAM, uri)
+            .putExtra(Intent.EXTRA_SUBJECT, "Malink native diagnostics ${BuildConfig.VERSION_NAME}")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        share.clipData = ClipData.newRawUri("Malink diagnostics", uri)
+        startActivity(Intent.createChooser(share, getString(R.string.diagnostics_share_title)))
+        diagnostics.record("diagnostics.export_shared")
+        return report.name
     }
 
     private fun showRecoveryPage(detail: String) {
@@ -1297,6 +1304,9 @@ class MainActivity : ComponentActivity() {
             }
             return result
         }
+
+        override suspend fun exportDiagnostics(): String =
+            withContext(Dispatchers.Main.immediate) { shareDiagnostics() }
 
         private fun requireNativeUpdateManager(): NativeUpdateManager =
             updateManager ?: throw BridgeRuntimeFailure(

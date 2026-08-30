@@ -147,6 +147,7 @@ export interface MalinkClient {
   nativeUpdateStatus?(): Promise<NativeUpdateStatus>;
   checkNativeUpdate?(): Promise<NativeUpdateStatus>;
   installNativeUpdate?(): Promise<NativeUpdateStatus>;
+  exportDiagnostics?(): Promise<boolean>;
 
   disconnect(): Promise<void>;
   dispose(): void;

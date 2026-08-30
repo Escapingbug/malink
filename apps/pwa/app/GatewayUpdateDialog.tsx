@@ -241,7 +241,7 @@ function GatewayUpdateDialogContent({
                         {runtime.maintenanceSessionArchiveAvailable ||
                           runtime.maintenanceSessionArchived
                           ? "This Gateway has an update session left by an older Malink version. Cleanup is safe; only this Gateway is affected."
-                          : "Malink is tracking this Gateway through its signed update status. It will keep checking progress automatically."}
+                          : "This session is still owned by the Gateway update supervisor. Open it to review the report or retry the published release; it cannot be archived while the update is active or retryable."}
                       </p>
                       {runtime.maintenanceSessionArchived ? (
                         <span className="gateway-update-session-warning" role="status">
@@ -264,8 +264,10 @@ function GatewayUpdateDialogContent({
                   {!targetInstalled && runtime.legacyMaintenanceSessionId && (
                     <>
                       <p className="gateway-update-session-warning" role="alert">
-                        This Gateway also has an update session left by an older Malink version.
-                        You can safely archive it here; only this Gateway is affected.
+                        {runtime.legacyMaintenanceSessionArchiveAvailable ||
+                          runtime.legacyMaintenanceSessionArchived
+                          ? "This Gateway also has an update session left by an older Malink version. Cleanup is safe now; only this Gateway is affected."
+                          : "This older update session cannot be archived while the Gateway supervisor still owns a retryable update."}
                       </p>
                       {runtime.legacyMaintenanceSessionArchived ? (
                         <span className="gateway-update-session-warning" role="status">

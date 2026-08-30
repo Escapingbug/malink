@@ -124,6 +124,9 @@ Bridge protocol version 1 currently implements:
   `check` operation; Web clients fall back when a pre-extension v1 APK returns
   `METHOD_NOT_FOUND`)
 - `client.pwa-source` v1
+- `client.diagnostics` v1 (opens Android's native share sheet for the bounded
+  native diagnostic report; hosted Web UI does not rely on WebView blob
+  downloads for this action)
 - `background.foreground-service`
 
 The bridge has strict schemas, a 512 KiB RPC envelope limit, 256 KiB event

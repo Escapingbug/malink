@@ -1637,6 +1637,7 @@ export class MatrixMlp3GatewayRunner {
         const runtime = this.createSessionRuntime(project, record)
         project.sessions.set(record.id, runtime)
       } else {
+        await this.assertMaintenanceSessionCanBeArchived(record.id)
         const active = project.sessions.get(record.id)
         if (active) {
           await this.destroySessionRuntime(active, 'archive')
@@ -1655,6 +1656,23 @@ export class MatrixMlp3GatewayRunner {
       ...(alreadyApplied ? { alreadyApplied: true } : {}),
     })
     await this.settleAndDeliver(project, command, lifecycle, 'succeeded')
+  }
+
+  private async assertMaintenanceSessionCanBeArchived(sessionId: string): Promise<void> {
+    if (!sessionId.startsWith('gateway-update-')) return
+    const supervisor = this.dependencies.gatewayUpdateSupervisor
+    if (!supervisor) return
+    const status = await supervisor.status()
+    const ownsSession = status.maintenanceSessionId === sessionId
+      || (
+        status.releaseId !== undefined
+        && this.maintenanceAgentSessionId(status.releaseId) === sessionId
+      )
+    if (!ownsSession || ['idle', 'committed', 'rolled_back'].includes(status.phase)) return
+    throw new Error(
+      `Gateway update session ${sessionId} cannot be archived while the update supervisor `
+      + `reports ${status.phase}. Open the session to review it or retry the signed release.`,
+    )
   }
 
   private async createInvitation(

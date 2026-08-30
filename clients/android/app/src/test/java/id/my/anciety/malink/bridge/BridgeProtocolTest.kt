@@ -85,7 +85,8 @@ class BridgeProtocolTest {
                           {"name":"trust.native","versions":[1]},
                           {"name":"commands.durable","versions":[1,2,3,4]},
                           {"name":"commands.journal-reconciliation","versions":[1]},
-                          {"name":"history.page","versions":[1,2]}
+                          {"name":"history.page","versions":[1,2]},
+                          {"name":"client.diagnostics","versions":[1]}
                         ]
                     """.trimIndent(),
                 ),
@@ -100,6 +101,7 @@ class BridgeProtocolTest {
                 "commands.durable",
                 "commands.journal-reconciliation",
                 "history.page",
+                "client.diagnostics",
             ),
             capabilities.keys,
         )
@@ -121,6 +123,34 @@ class BridgeProtocolTest {
         assertFalse(response.toString().contains("matrix", ignoreCase = true))
         assertTrue(response.toString().contains("durable", ignoreCase = true))
         assertEquals(BRIDGE_SESSION_ID, response.getValue("bridgeSessionId").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `exports diagnostics through the negotiated native share surface`() {
+        val runtime = FakeRuntime()
+        val dispatcher = BridgeDispatcher(runtime, BRIDGE_SESSION_ID)
+        dispatch(
+            dispatcher,
+            helloRequest(
+                optionalCapabilities =
+                    """[{"name":"client.diagnostics","versions":[1]}]""",
+            ),
+        )
+        val response = successResult(dispatch(dispatcher, """
+            {
+              "jsonrpc":"2.0",
+              "id":"diagnostics-1",
+              "method":"malink.diagnostics.export",
+              "params":{"context":{"bridgeSessionId":"$BRIDGE_SESSION_ID"}}
+            }
+        """.trimIndent()))
+
+        assertEquals("share_opened", response.getValue("status").jsonPrimitive.content)
+        assertEquals(
+            "malink-native-diagnostics.txt",
+            response.getValue("filename").jsonPrimitive.content,
+        )
+        assertEquals(1, runtime.diagnosticExports)
     }
 
     @Test
@@ -519,6 +549,7 @@ class BridgeProtocolTest {
         var bootstraps = 0
         var loginTokenIssues = 0
         var updateChecks = 0
+        var diagnosticExports = 0
         val loginTokenInputs = mutableListOf<Pair<String, String?>>()
         val disconnects = mutableListOf<String>()
         private var active = true
@@ -544,6 +575,11 @@ class BridgeProtocolTest {
             starts += 1
             active = true
             return snapshot()
+        }
+
+        override suspend fun exportDiagnostics(): String {
+            diagnosticExports += 1
+            return "malink-native-diagnostics.txt"
         }
 
         override suspend fun bootstrap(

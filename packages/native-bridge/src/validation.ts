@@ -10,6 +10,7 @@ import {
   type ClientMessage,
   type ClientSnapshot,
   type ClientStartResult,
+  type DiagnosticsExportResult,
   type MalinkAttachment,
   type CommandCompletion,
   type CommandReceipt,
@@ -435,6 +436,9 @@ function parseMethodResult<M extends RequestMethod>(
     case "malink.update.check":
     case "malink.update.install":
       result = parseNativeUpdateStatus(input);
+      break;
+    case "malink.diagnostics.export":
+      result = parseDiagnosticsExportResult(input);
       break;
     case "malink.events.subscribe":
       result = parseEventsSubscribeResult(input);
@@ -1337,6 +1341,17 @@ function parseAttachmentDownloadReadResult(input: unknown) {
   };
 }
 
+function parseDiagnosticsExportResult(input: unknown): DiagnosticsExportResult {
+  const value = strictObject(input, ["status", "filename"], "diagnostics export result");
+  if (value.status !== "share_opened") {
+    invalidParams("diagnostics export status must be share_opened.");
+  }
+  return {
+    status: "share_opened",
+    filename: requiredString(value.filename, "diagnostics filename", 256),
+  };
+}
+
 function parseLiteralResult(
   input: unknown,
   flag: "unsubscribed" | "released" | "aborted" | "closed" | "cancelled",
@@ -1493,6 +1508,7 @@ function parseMethodParams(method: RequestMethod, input: unknown): JsonObject {
     case "malink.client.snapshot":
     case "malink.trust.get":
     case "malink.update.status":
+    case "malink.diagnostics.export":
       return paramsWithContext(input, []);
     case "malink.update.check":
     case "malink.update.install":

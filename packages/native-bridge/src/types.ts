@@ -113,6 +113,7 @@ export type CapabilityName =
   | "matrix.login-token"
   | "client.update"
   | "client.pwa-source"
+  | "client.diagnostics"
   | "background.foreground-service";
 
 export type CapabilityRequest = {
@@ -536,6 +537,11 @@ export type NativeUpdateStatus = {
   checkedAt?: number;
 };
 
+export type DiagnosticsExportResult = {
+  status: "share_opened";
+  filename: string;
+};
+
 export const REQUEST_METHODS = [
   "malink.bridge.hello",
   "malink.client.start",
@@ -547,6 +553,7 @@ export const REQUEST_METHODS = [
   "malink.update.status",
   "malink.update.check",
   "malink.update.install",
+  "malink.diagnostics.export",
   "malink.events.subscribe",
   "malink.events.activate",
   "malink.events.ack",
@@ -643,6 +650,7 @@ export type BridgeMethodParams = {
   "malink.update.status": ContextParams;
   "malink.update.check": IdempotentMutationParams;
   "malink.update.install": IdempotentMutationParams;
+  "malink.diagnostics.export": ContextParams;
   "malink.events.subscribe": EventsSubscribeParams;
   "malink.events.activate": EventsActivateParams;
   "malink.events.ack": EventsAckParams;
@@ -715,6 +723,7 @@ export type BridgeMethodResults = {
   "malink.update.status": NativeUpdateStatus;
   "malink.update.check": NativeUpdateStatus;
   "malink.update.install": NativeUpdateStatus;
+  "malink.diagnostics.export": DiagnosticsExportResult;
   "malink.events.subscribe": EventsSubscribeResult;
   "malink.events.activate": EventsCursorResult;
   "malink.events.ack": EventsCursorResult;
