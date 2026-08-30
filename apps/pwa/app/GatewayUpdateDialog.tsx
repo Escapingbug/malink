@@ -8,12 +8,19 @@ import {
   gatewayUpdateCanApplyStaged,
   type GatewayUpdatePlanNode,
 } from "./gatewayUpdateTrigger";
+import {
+  GatewayNoReplyHelp,
+  GatewayUpdateFailureHelp,
+} from "./GatewayNoReplyHelp";
+import { gatewayNoReplyPresentation } from "./gatewayNodeLiveness";
 import { gatewayProjectOwner } from "./projectCatalog";
 
 export type GatewayUpdateNodeRuntime = {
   state: "unchecked" | "checking" | "unreachable" | "online" | "starting" | "error";
   releaseKey?: string;
   checkedAt?: number;
+  lastVerifiedAt?: number;
+  consecutiveNoReplies?: number;
   startedAt?: number;
   detail?: string;
   status?: GatewayUpdateStatus;
@@ -40,6 +47,7 @@ type Props = {
   onStart(node: GatewayUpdatePlanNode): void;
   onOpenSession(sessionId: string): void;
   onArchiveSession(node: GatewayUpdatePlanNode, sessionId: string): void;
+  onExportDiagnostics(): void;
 };
 
 export function GatewayUpdateDialog(props: Props) {
@@ -59,6 +67,7 @@ function GatewayUpdateDialogContent({
   onStart,
   onOpenSession,
   onArchiveSession,
+  onExportDiagnostics,
 }: Props) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -133,6 +142,15 @@ function GatewayUpdateDialogContent({
               node.computerName,
             );
             const runtime = runtimeByNode[node.gatewayNodeId] ?? { state: "unchecked" };
+            const noReply = gatewayNoReplyPresentation({
+              gatewayLabel: owner.label,
+              consecutiveNoReplies: runtime.consecutiveNoReplies,
+            });
+            const knownUpdateFailure = runtime.status?.phase === "failed" ||
+              runtime.status?.phase === "repair_required";
+            const runtimeNeedsAttention = runtime.state === "error" ||
+              (runtime.state === "unreachable" && noReply.persistent) ||
+              knownUpdateFailure;
             const targetInstalled = runtime.status?.currentBuildId === release.buildId;
             const stagedReady = gatewayUpdateCanApplyStaged({
               status: runtime.status,
@@ -172,8 +190,13 @@ function GatewayUpdateDialogContent({
                 </div>
 
                 <div
-                  className={`gateway-update-live gateway-update-live-${runtime.state}`}
-                  role={runtime.state === "error" || runtime.state === "unreachable" ? "alert" : "status"}
+                  className={
+                    `gateway-update-live gateway-update-live-${runtime.state}` +
+                    (runtimeNeedsAttention
+                      ? " gateway-update-live-attention"
+                      : "")
+                  }
+                  role={runtimeNeedsAttention ? "alert" : "status"}
                 >
                   <span aria-hidden="true" />
                   <span>
@@ -181,6 +204,21 @@ function GatewayUpdateDialogContent({
                     <small>{runtimeStateDetail(runtime, node, release, connected)}</small>
                   </span>
                 </div>
+
+                {runtime.state === "unreachable" && (
+                  <GatewayNoReplyHelp
+                    gatewayLabel={owner.label}
+                    consecutiveNoReplies={runtime.consecutiveNoReplies}
+                    onExportDiagnostics={onExportDiagnostics}
+                  />
+                )}
+                {runtime.status && knownUpdateFailure && (
+                  <GatewayUpdateFailureHelp
+                    gatewayLabel={owner.label}
+                    status={runtime.status}
+                    onExportDiagnostics={onExportDiagnostics}
+                  />
+                )}
 
                 <div className="gateway-update-node-actions">
                   {!targetInstalled && runtime.maintenanceSessionId &&
@@ -259,7 +297,7 @@ function GatewayUpdateDialogContent({
                       {runtime.state === "checking"
                         ? "Checking…"
                         : runtime.state === "unreachable"
-                          ? "Retry live check"
+                          ? noReply.retryLabel
                           : "Check live status"}
                     </button>
                   )}
@@ -330,10 +368,19 @@ function runtimeStateTitle(
   node: GatewayUpdatePlanNode,
 ): string {
   if (runtime.state === "checking") return "Checking this Gateway…";
-  if (runtime.state === "unreachable") return "No live reply";
+  if (runtime.state === "unreachable") {
+    return gatewayNoReplyPresentation({
+      gatewayLabel: node.computerName ?? node.gatewayName,
+      consecutiveNoReplies: runtime.consecutiveNoReplies,
+    }).title;
+  }
   if (runtime.state === "starting") return "Update requested by this device";
   if (runtime.state === "error") return "Update needs attention";
-  if (runtime.state === "online") return "Online now";
+  if (runtime.state === "online") {
+    if (runtime.status?.phase === "repair_required") return "Gateway repair required";
+    if (runtime.status?.phase === "failed") return "Gateway update failed";
+    return "Online now";
+  }
   if (node.state === "manual") return "Online update is not installed";
   if (node.state === "unrouted") return "No synchronized project route";
   if (node.state === "unknown") return "Cannot compare this build";
@@ -350,8 +397,10 @@ function runtimeStateDetail(
     return "Waiting for a signed terminal reply from this node.";
   }
   if (runtime.state === "unreachable") {
-    return runtime.detail ??
-      "Matrix accepted the status request, but this Gateway did not return a signed reply. Check that the named computer and Malink Gateway Host are running, then retry.";
+    return runtime.detail ?? gatewayNoReplyPresentation({
+      gatewayLabel: node.computerName ?? node.gatewayName,
+      consecutiveNoReplies: runtime.consecutiveNoReplies,
+    }).detail;
   }
   if (runtime.state === "starting") {
     return runtime.maintenanceSessionId
@@ -362,6 +411,15 @@ function runtimeStateDetail(
     return runtime.detail ?? "The current Gateway build remains unchanged.";
   }
   if (runtime.state === "online") {
+    if (
+      runtime.status?.phase === "failed" ||
+      runtime.status?.phase === "repair_required"
+    ) {
+      const failure = runtime.status.detail ?? gatewayUpdatePhaseText(runtime.status);
+      return runtime.checkedAt
+        ? `${failure} · replied ${formatCheckedTime(runtime.checkedAt)}`
+        : failure;
+    }
     const supervisor = runtime.status?.phase === "staged" &&
       runtime.status.targetBuildId !== release.buildId
       ? `Build ${runtime.status.targetBuildId} is staged locally and ready to install`

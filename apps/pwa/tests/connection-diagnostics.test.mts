@@ -20,6 +20,20 @@ test("exports bounded connection diagnostics without unstructured errors or cred
       computerName: "alice-macbook",
       buildId: "gateway-2026.08.27.1-arm64",
     }],
+    gatewayHealth: [{
+      gatewayNodeId: "gateway-node-1",
+      state: "unreachable",
+      checkedAt: 120,
+      lastVerifiedAt: 60,
+      consecutiveNoReplies: 2,
+      update: {
+        phase: "repair_required",
+        releaseId: "release-2",
+        currentBuildId: "gateway-old",
+        targetBuildId: "gateway-new",
+        updatedAt: 100,
+      },
+    }],
     online: true,
     visibility: "visible",
     userAgent: "test-browser",
@@ -34,6 +48,20 @@ test("exports bounded connection diagnostics without unstructured errors or cred
     name: "Office Gateway",
     computerName: "alice-macbook",
     buildId: "gateway-2026.08.27.1-arm64",
+  }]);
+  assert.deepEqual(parsed.gatewayHealth, [{
+    nodeId: "gateway-node-1",
+    state: "unreachable",
+    checkedAt: 120,
+    lastVerifiedAt: 60,
+    consecutiveNoReplies: 2,
+    update: {
+      phase: "repair_required",
+      releaseId: "release-2",
+      currentBuildId: "gateway-old",
+      targetBuildId: "gateway-new",
+      updatedAt: 100,
+    },
   }]);
   assert.equal(report.includes("secret-token"), false);
   assert.equal(report.includes("access_token"), false);

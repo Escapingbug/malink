@@ -146,7 +146,15 @@ test("online proof expires instead of presenting cached registration as liveness
   assert.equal(gatewayNodeLivenessPresentation({
     state: "unreachable",
     checkedAt: now,
-  }, now).label, "Not responding");
+    consecutiveNoReplies: 1,
+  }, now).label, "Live check timed out");
+  const repeated = gatewayNodeLivenessPresentation({
+    state: "unreachable",
+    checkedAt: now,
+    consecutiveNoReplies: 2,
+  }, now);
+  assert.equal(repeated.label, "Gateway needs attention");
+  assert.match(repeated.detail, /missed 2 consecutive signed checks/);
 });
 
 test("automatic checks are bounded while manual status remains explicit", () => {
@@ -172,8 +180,8 @@ test("summarizes independently verified nodes without hiding failures", () => {
     gatewayNodeIds: ["online", "offline", "unknown"],
     values: {
       online: { state: "online", checkedAt: now, lastVerifiedAt: now },
-      offline: { state: "unreachable", checkedAt: now },
+      offline: { state: "unreachable", checkedAt: now, consecutiveNoReplies: 2 },
     },
     now,
-  }), "1 online · 1 not responding · 1 unverified");
+  }), "1 online · 1 needs attention · 1 unverified");
 });

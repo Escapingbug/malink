@@ -39,9 +39,11 @@ import { injectedNativeBridgePort } from "./client/native/NativeRpcBridge";
 import { nativeUpdateDownloadProgress } from "./nativeUpdatePolling";
 import { gatewayUpdateSettingsPresentation } from "./gatewayUpdateSettingsPresentation";
 import {
+  gatewayNoReplyPresentation,
   gatewayNodeLivenessPresentation,
   type GatewayNodeLiveness,
 } from "./gatewayNodeLiveness";
+import { GatewayNoReplyHelp } from "./GatewayNoReplyHelp";
 
 export const OFFICIAL_ANDROID_RELEASES_URL =
   "https://github.com/Escapingbug/malink/releases";
@@ -446,17 +448,22 @@ function MatrixSettingsDialog({
                 const editing = editingGatewayNodeId === gatewayProfileId;
                 const targetProjectId = gateway.targetProjectId;
                 const liveCheckAvailable = gateway.onlineUpdate && Boolean(targetProjectId);
+                const livenessValue: GatewayNodeLiveness = liveCheckAvailable
+                  ? gatewayNodeLivenessById[gatewayProfileId] ?? { state: "unknown" }
+                  : {
+                      state: "unavailable",
+                      detail: targetProjectId
+                        ? "This Gateway build does not advertise the signed live-status capability."
+                        : "This client has no synchronized project route for a signed live check.",
+                    };
                 const liveness = gatewayNodeLivenessPresentation(
-                  liveCheckAvailable
-                    ? gatewayNodeLivenessById[gatewayProfileId]
-                    : {
-                        state: "unavailable",
-                        detail: targetProjectId
-                          ? "This Gateway build does not advertise the signed live-status capability."
-                          : "This client has no synchronized project route for a signed live check.",
-                      },
+                  livenessValue,
                   gatewayLivenessNow,
                 );
+                const noReply = gatewayNoReplyPresentation({
+                  gatewayLabel: gatewayIdentity.label,
+                  consecutiveNoReplies: livenessValue.consecutiveNoReplies,
+                });
                 const lastVerified = gatewayLastVerifiedText(
                   gatewayNodeLivenessById[gatewayProfileId]?.lastVerifiedAt,
                   gatewayLivenessNow,
@@ -478,7 +485,14 @@ function MatrixSettingsDialog({
                         Build: {gateway.buildId ?? "Not reported"} · Node {gatewayIdentity.shortId}
                       </small>
                       <span
-                        className={`gateway-profile-liveness gateway-profile-liveness-${liveness.state}`}
+                        className={
+                          `gateway-profile-liveness gateway-profile-liveness-${liveness.state}` +
+                          (liveness.state === "unreachable"
+                            ? noReply.persistent
+                              ? " gateway-profile-liveness-attention"
+                              : " gateway-profile-liveness-timeout"
+                            : "")
+                        }
                         aria-live="polite"
                       >
                         <i aria-hidden="true" />
@@ -489,6 +503,13 @@ function MatrixSettingsDialog({
                           </small>
                         </span>
                       </span>
+                      {livenessValue.state === "unreachable" && (
+                        <GatewayNoReplyHelp
+                          gatewayLabel={gatewayIdentity.label}
+                          consecutiveNoReplies={livenessValue.consecutiveNoReplies}
+                          onExportDiagnostics={onExportDiagnostics}
+                        />
+                      )}
                       {editing && (
                         <form
                           className="gateway-profile-rename"
@@ -556,7 +577,7 @@ function MatrixSettingsDialog({
                           {liveness.state === "checking"
                             ? "Checking…"
                             : liveness.state === "unreachable"
-                              ? "Retry live check"
+                              ? noReply.retryLabel
                               : "Check live status"}
                         </button>
                         <button

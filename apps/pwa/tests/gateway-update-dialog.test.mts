@@ -60,6 +60,7 @@ test("shows node identity, version need, and signed live status before consent",
     onStart() {},
     onOpenSession() {},
     onArchiveSession() {},
+    onExportDiagnostics() {},
   }));
 
   assert.match(html, /Review Gateway update/);
@@ -69,13 +70,82 @@ test("shows node identity, version need, and signed live status before consent",
   assert.match(html, /Create update session/);
   assert.match(html, /Server/);
   assert.match(html, /Up to date/);
-  assert.match(html, /No live reply/);
-  assert.match(html, /did not return a signed reply/);
-  assert.match(html, /Retry live check/);
+  assert.match(html, /Live check timed out/);
+  assert.match(html, /temporary Matrix delay/);
+  assert.match(html, /Check again/);
+  assert.match(html, /What should I do\?/);
+  assert.match(html, /Export client diagnostics/);
   assert.doesNotMatch(html, /Recovering the signed reply/);
   assert.match(html, /Legacy Mac/);
   assert.match(html, /Manual update/);
   assert.match(html, /Requested by this Malink device; executed by the named Gateway/);
+});
+
+test("turns repeated missing replies into actionable Gateway attention", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [nodes[0]!],
+    runtimeByNode: {
+      "node-office": {
+        state: "unreachable",
+        consecutiveNoReplies: 2,
+      },
+    },
+    activeGatewayNodeId: null,
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  assert.match(html, /Gateway needs attention/);
+  assert.match(html, /missed 2 consecutive signed checks/);
+  assert.match(html, /repeating the check alone will not repair/i);
+  assert.match(html, /Diagnose this Gateway/);
+  assert.match(html, /launchctl kickstart/);
+  assert.match(html, /gateway\.error\.log/);
+  assert.match(html, /update-supervisor\.error\.log/);
+});
+
+test("presents a signed supervisor repair failure as an actionable error", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [nodes[0]!],
+    runtimeByNode: {
+      "node-office": {
+        state: "online",
+        checkedAt: 1,
+        status: {
+          version: 1,
+          phase: "repair_required",
+          releaseId: release.releaseId,
+          currentBuildId: "gateway-old-arm64",
+          targetBuildId: release.buildId,
+          detail: "Activation and rollback health checks both failed",
+          updatedAt: 1,
+        },
+      },
+    },
+    activeGatewayNodeId: null,
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  assert.match(html, /Gateway repair required/);
+  assert.match(html, /Activation and rollback health checks both failed/);
+  assert.match(html, /Repair this Gateway/);
+  assert.match(html, /Repeating the update request will not repair this state/);
+  assert.match(html, /role="alert"/);
 });
 
 test("does not render the review panel while closed", () => {
@@ -91,6 +161,7 @@ test("does not render the review panel while closed", () => {
     onStart() {},
     onOpenSession() {},
     onArchiveSession() {},
+    onExportDiagnostics() {},
   }));
   assert.equal(html, "");
 });
@@ -113,6 +184,7 @@ test("keeps the panel dismissible while a Gateway maintenance Agent starts", () 
     onStart() {},
     onOpenSession() {},
     onArchiveSession() {},
+    onExportDiagnostics() {},
   }));
 
   const closeControl = html.match(
@@ -145,6 +217,7 @@ test("does not open a legacy maintenance session shared by multiple nodes", () =
     onStart() {},
     onOpenSession() {},
     onArchiveSession() {},
+    onExportDiagnostics() {},
   }));
 
   assert.match(html, /update session left by an older Malink version/);
@@ -181,6 +254,7 @@ test("shows exact-node archival progress for a legacy maintenance session", () =
     onStart() {},
     onOpenSession() {},
     onArchiveSession() {},
+    onExportDiagnostics() {},
   }));
 
   assert.match(html, /Archiving old update session…/);
@@ -214,6 +288,7 @@ test("keeps a new release actionable while offering cleanup for an older collisi
     onStart() {},
     onOpenSession() {},
     onArchiveSession() {},
+    onExportDiagnostics() {},
   }));
 
   assert.match(html, /Archive old update session/);
@@ -247,6 +322,7 @@ test("offers installation when the maintenance Agent already staged the target",
     onStart() {},
     onOpenSession() {},
     onArchiveSession() {},
+    onExportDiagnostics() {},
   }));
 
   assert.match(html, /gateway-staged-arm64.*staged locally and ready to install/);
@@ -283,6 +359,7 @@ test("treats a verified installed build as complete without cleanup warnings", (
     onStart() {},
     onOpenSession() {},
     onArchiveSession() {},
+    onExportDiagnostics() {},
   }));
 
   assert.match(html, /Installed build verified/);

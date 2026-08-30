@@ -15,6 +15,20 @@ export type ConnectionDiagnosticsInput = {
     computerName?: string;
     buildId?: string;
   }[];
+  gatewayHealth?: readonly {
+    gatewayNodeId: string;
+    state: string;
+    checkedAt?: number;
+    lastVerifiedAt?: number;
+    consecutiveNoReplies?: number;
+    update?: {
+      phase: string;
+      releaseId?: string;
+      currentBuildId?: string;
+      targetBuildId?: string;
+      updatedAt?: number;
+    };
+  }[];
   online: boolean;
   visibility: DocumentVisibilityState;
   userAgent: string;
@@ -61,6 +75,31 @@ export function createConnectionDiagnostics(
         ? boundedString(gateway.buildId, 256)
         : null,
     })),
+    gatewayHealth: (input.gatewayHealth ?? []).slice(0, 256).map(health => ({
+      nodeId: boundedString(health.gatewayNodeId, 512),
+      state: boundedString(health.state, 64),
+      checkedAt: safeTimestamp(health.checkedAt),
+      lastVerifiedAt: safeTimestamp(health.lastVerifiedAt),
+      consecutiveNoReplies: Number.isSafeInteger(health.consecutiveNoReplies) &&
+        (health.consecutiveNoReplies ?? -1) >= 0
+        ? health.consecutiveNoReplies
+        : 0,
+      update: health.update
+        ? {
+            phase: boundedString(health.update.phase, 64),
+            releaseId: health.update.releaseId
+              ? boundedString(health.update.releaseId, 256)
+              : null,
+            currentBuildId: health.update.currentBuildId
+              ? boundedString(health.update.currentBuildId, 256)
+              : null,
+            targetBuildId: health.update.targetBuildId
+              ? boundedString(health.update.targetBuildId, 256)
+              : null,
+            updatedAt: safeTimestamp(health.update.updatedAt),
+          }
+        : null,
+    })),
     browser: {
       online: input.online,
       visibility: input.visibility,
@@ -75,4 +114,9 @@ function isMachineDetailCode(value: string): boolean {
 
 function boundedString(value: string, maxLength: number): string {
   return value.slice(0, maxLength);
+}
+
+function safeTimestamp(value: number | undefined): number | null {
+  if (value === undefined || !Number.isSafeInteger(value) || value < 0) return null;
+  return value;
 }

@@ -14,6 +14,7 @@ export type GatewayNodeLiveness = {
   state: GatewayNodeLivenessState;
   checkedAt?: number;
   lastVerifiedAt?: number;
+  consecutiveNoReplies?: number;
   detail?: string;
 };
 
@@ -33,6 +34,38 @@ export type GatewayNodeLivenessPresentation = {
   detail: string;
   canCheck: boolean;
 };
+
+export type GatewayNoReplyPresentation = {
+  title: string;
+  detail: string;
+  persistent: boolean;
+  retryLabel: string;
+};
+
+export function gatewayNoReplyPresentation(input: {
+  gatewayLabel: string;
+  consecutiveNoReplies: number | undefined;
+}): GatewayNoReplyPresentation {
+  const attempts = Math.max(1, input.consecutiveNoReplies ?? 1);
+  if (attempts === 1) {
+    return {
+      title: "Live check timed out",
+      detail:
+        `No signed reply arrived from ${input.gatewayLabel} within 12 seconds. ` +
+        "This can be a temporary Matrix delay or a Gateway waking up. Wait a moment, then check once more. No update was started.",
+      persistent: false,
+      retryLabel: "Check again",
+    };
+  }
+  return {
+    title: "Gateway needs attention",
+    detail:
+      `${input.gatewayLabel} missed ${attempts} consecutive signed checks. ` +
+      "Matrix accepted the requests, but Malink cannot verify that the Gateway process is healthy. Repeating the check alone will not repair a startup failure.",
+    persistent: true,
+    retryLabel: "Check again",
+  };
+}
 
 export function gatewayNodeLivenessTargets(input: {
   directory: SignedWorkspaceGatewayDirectory | null | undefined;
@@ -87,11 +120,14 @@ export function gatewayNodeLivenessPresentation(
     };
   }
   if (current.state === "unreachable") {
+    const noReply = gatewayNoReplyPresentation({
+      gatewayLabel: "This Gateway",
+      consecutiveNoReplies: current.consecutiveNoReplies,
+    });
     return {
       state: "unreachable",
-      label: "Not responding",
-      detail: current.detail ??
-        "Matrix accepted the check, but this Gateway did not return a signed reply.",
+      label: noReply.title,
+      detail: current.detail ?? noReply.detail,
       canCheck: true,
     };
   }
@@ -133,11 +169,17 @@ export function gatewayNodeLivenessSummary(input: {
   );
   const online = presentations.filter((value) => value.state === "online").length;
   const unreachable = presentations.filter((value) => value.state === "unreachable").length;
+  const attention = input.gatewayNodeIds.filter((gatewayNodeId) => {
+    const value = input.values[gatewayNodeId];
+    return value?.state === "unreachable" && (value.consecutiveNoReplies ?? 1) >= 2;
+  }).length;
+  const timedOut = unreachable - attention;
   const checking = presentations.filter((value) => value.state === "checking").length;
   const unverified = presentations.length - online - unreachable - checking;
   const parts: string[] = [];
   if (online > 0) parts.push(`${online} online`);
-  if (unreachable > 0) parts.push(`${unreachable} not responding`);
+  if (attention > 0) parts.push(`${attention} ${attention === 1 ? "needs" : "need"} attention`);
+  if (timedOut > 0) parts.push(`${timedOut} ${timedOut === 1 ? "check" : "checks"} timed out`);
   if (checking > 0) parts.push(`${checking} checking`);
   if (unverified > 0) parts.push(`${unverified} unverified`);
   return parts.join(" · ");

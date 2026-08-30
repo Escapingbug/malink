@@ -194,14 +194,27 @@ Agent session for that Gateway and release. Multiple nodes are updated as
 separate confirmed operations so it is always clear which node is executing.
 
 The live check has a bounded foreground wait. If no signed reply arrives within
-12 seconds, the node becomes `No live reply`, identifies the named Gateway
-computer as the component to check, and immediately offers a retry. An
+12 seconds, the first miss is presented as `Live check timed out`: it is a
+warning that may still be caused by wake-up or Matrix latency, not proof of a
+Gateway fault. A second consecutive miss becomes `Gateway needs attention`,
+identifies the named Gateway computer as the component to inspect, and explains
+that repeated checks cannot repair a startup failure. The recovery disclosure
+provides the local restart command, bounded Gateway log paths, and a client
+diagnostic export; it also states that the client report cannot replace logs
+from a Gateway that is failing before it can reply. An
 unanswered `gateway.update.status` is safe to retire because it is strictly
 read-only; Android preserves an idempotency tombstone, and a newer status probe
 for the same project atomically retires older unfinished probes. No other MLP/3
 command gains this exception: unfinished session, Prompt, cancel, update-stage,
 and update-apply commands remain durable until an authenticated terminal result
 or an existing authoritative retirement rule applies.
+
+When a signed reply does arrive with `failed` or `repair_required`, the panel
+shows that as an update error instead of the generic `Online now` state, retains
+the supervisor's signed detail, and offers recovery steps appropriate to that
+phase. Connection diagnostics include bounded per-node liveness timestamps,
+consecutive no-reply counts, and update phase/build identifiers without
+exporting credentials or unstructured Gateway errors.
 
 Workspace membership and the signed Gateway Directory are inventory, not
 presence. The main Gateway card, computer filter, and Settings therefore keep a

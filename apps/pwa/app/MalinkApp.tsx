@@ -253,6 +253,7 @@ import {
 } from "./connectionRecovery";
 import { deriveGatewayLiveness } from "./gatewayLiveness";
 import {
+  gatewayNoReplyPresentation,
   gatewayNodeLivenessPresentation,
   gatewayNodeLivenessSummary,
   gatewayNodeLivenessTargets,
@@ -6443,6 +6444,7 @@ function MalinkAppRuntime() {
         state: "online",
         checkedAt,
         lastVerifiedAt: checkedAt,
+        consecutiveNoReplies: 0,
         detail: completion.outcome === "succeeded"
           ? undefined
           : completion.error?.message
@@ -6454,6 +6456,8 @@ function MalinkAppRuntime() {
           ...current,
           state: "online",
           checkedAt,
+          lastVerifiedAt: checkedAt,
+          consecutiveNoReplies: 0,
           detail: completion.error?.message
             ? `Gateway replied, but its update supervisor reported: ${completion.error.message}`
             : "Gateway replied, but its update supervisor is unavailable.",
@@ -6466,6 +6470,8 @@ function MalinkAppRuntime() {
         ...current,
         state: "online",
         checkedAt,
+        lastVerifiedAt: checkedAt,
+        consecutiveNoReplies: 0,
         status,
         maintenanceSessionId:
           status.releaseId === gatewayRelease?.releaseId
@@ -6570,18 +6576,26 @@ function MalinkAppRuntime() {
     } catch (error) {
       if (error instanceof CommandCompletionTimeoutError && commandId !== null && probe) {
         const checkedAt = Date.now();
-        updateGatewayNodeLiveness(gatewayNodeId, current => ({
-          ...current,
-          state: "unreachable",
-          checkedAt,
-          detail: `${gatewayLabel} did not return a signed reply within 12 seconds. Check that the computer and Malink Gateway Host are running, then retry.`,
-        }));
+        const liveness = updateGatewayNodeLiveness(gatewayNodeId, current => {
+          const consecutiveNoReplies = (current.consecutiveNoReplies ?? 0) + 1;
+          return {
+            ...current,
+            state: "unreachable",
+            checkedAt,
+            consecutiveNoReplies,
+            detail: gatewayNoReplyPresentation({
+              gatewayLabel,
+              consecutiveNoReplies,
+            }).detail,
+          };
+        });
         setGatewayUpdateNodeRuntime(gatewayNodeId, current => ({
           ...current,
           state: "unreachable",
           checkedAt,
-          detail:
-            "Matrix accepted the signed status request, but this Gateway did not return a signed reply within 12 seconds. Make sure the named Gateway computer and Malink Gateway Host are running. Retry is safe: Malink reuses any saved request, or starts a new read-only check after retiring it.",
+          lastVerifiedAt: liveness.lastVerifiedAt,
+          consecutiveNoReplies: liveness.consecutiveNoReplies,
+          detail: liveness.detail,
         }));
         if (!await releaseProbe(commandId, false)) {
           observeLateCompletion(probe);
@@ -6917,6 +6931,36 @@ function MalinkAppRuntime() {
       deviceKeyId,
       nativeRuntime,
       gateways: gatewayState?.gatewayDirectory?.directory.gateways,
+      gatewayHealth: gatewayNodeProbeTargets.map(target => {
+        const liveness = gatewayNodeLivenessRef.current[target.gatewayNodeId];
+        const update = gatewayUpdateRuntimeByNode[target.gatewayNodeId]?.status;
+        return {
+          gatewayNodeId: target.gatewayNodeId,
+          state: liveness?.state ?? "unknown",
+          ...(liveness?.checkedAt !== undefined ? { checkedAt: liveness.checkedAt } : {}),
+          ...(liveness?.lastVerifiedAt !== undefined
+            ? { lastVerifiedAt: liveness.lastVerifiedAt }
+            : {}),
+          ...(liveness?.consecutiveNoReplies !== undefined
+            ? { consecutiveNoReplies: liveness.consecutiveNoReplies }
+            : {}),
+          ...(update
+            ? {
+                update: {
+                  phase: update.phase,
+                  ...(update.releaseId ? { releaseId: update.releaseId } : {}),
+                  ...(update.currentBuildId
+                    ? { currentBuildId: update.currentBuildId }
+                    : {}),
+                  ...(update.targetBuildId
+                    ? { targetBuildId: update.targetBuildId }
+                    : {}),
+                  updatedAt: update.updatedAt,
+                },
+              }
+            : {}),
+        };
+      }),
       online: navigator.onLine,
       visibility: document.visibilityState,
       userAgent: navigator.userAgent,
@@ -12354,6 +12398,7 @@ function MalinkAppRuntime() {
               void archiveSession(sessionId, node.targetProjectId);
             }
           }}
+          onExportDiagnostics={exportConnectionDiagnostics}
         />
       )}
 
