@@ -57,6 +57,24 @@ class GatewayStateSyncPolicyTest {
     }
 
     @Test
+    fun `published command gives a signed journal result priority over timeline scanning`() = runBlocking {
+        val steps = mutableListOf<String>()
+        var terminal = false
+
+        recoverPublishedCommandDelivery(
+            isTerminal = { terminal },
+            submitReconciliation = { steps += "journal" },
+            awaitReconciliation = {
+                steps += "wait"
+                terminal = true
+            },
+            scanTimeline = { steps += "timeline" },
+        )
+
+        assertEquals(listOf("journal", "wait"), steps)
+    }
+
+    @Test
     fun `timeline timeout cannot cancel a submitted Gateway journal probe`() = runBlocking {
         val steps = mutableListOf<String>()
         val timelineFailures = mutableListOf<String>()
@@ -134,6 +152,28 @@ class GatewayStateSyncPolicyTest {
                 targetStillAuthorized = false,
             ),
         )
+    }
+
+    @Test
+    fun `published recovery reuses an already synchronized Gateway projection`() {
+        assertEquals(false, requiresProjectionRefreshForCommandRecovery(true))
+        assertEquals(true, requiresProjectionRefreshForCommandRecovery(false))
+    }
+
+    @Test
+    fun `journal reconciliation wait is bounded and observes terminal state`() = runBlocking {
+        var checks = 0
+
+        awaitPublishedCommandReconciliation(
+            isTerminal = {
+                checks += 1
+                checks >= 2
+            },
+            timeoutMs = 1_000,
+            pollIntervalMs = 1,
+        )
+
+        assertEquals(2, checks)
     }
 
     @Test

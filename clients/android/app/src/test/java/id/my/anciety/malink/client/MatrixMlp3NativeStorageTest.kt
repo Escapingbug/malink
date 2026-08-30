@@ -52,6 +52,7 @@ class MatrixMlp3NativeStorageTest {
         assertTrue(store.put(valid))
         assertFalse(store.put(valid))
         store.quarantine(poison.eventId, IllegalArgumentException("secret must not persist"))
+        assertFalse(store.put(poison))
         assertEquals(listOf(valid.eventId), store.pending().map { it.event.eventId })
 
         store.projected(valid.eventId)

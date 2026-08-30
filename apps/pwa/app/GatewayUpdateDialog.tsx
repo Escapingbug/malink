@@ -8,7 +8,7 @@ import type { GatewayUpdatePlanNode } from "./gatewayUpdateTrigger";
 import { gatewayProjectOwner } from "./projectCatalog";
 
 export type GatewayUpdateNodeRuntime = {
-  state: "unchecked" | "checking" | "online" | "starting" | "failed" | "error";
+  state: "unchecked" | "checking" | "pending" | "online" | "starting" | "error";
   releaseKey?: string;
   checkedAt?: number;
   startedAt?: number;
@@ -159,7 +159,7 @@ function GatewayUpdateDialogContent({
 
                 <div
                   className={`gateway-update-live gateway-update-live-${runtime.state}`}
-                  role={runtime.state === "failed" || runtime.state === "error" ? "alert" : "status"}
+                  role={runtime.state === "error" ? "alert" : "status"}
                 >
                   <span aria-hidden="true" />
                   <span>
@@ -182,10 +182,18 @@ function GatewayUpdateDialogContent({
                     <button
                       type="button"
                       className="secondary-button"
-                      disabled={runtime.state === "checking" || activeGatewayNodeId !== null}
+                      disabled={
+                        runtime.state === "checking" ||
+                        runtime.state === "pending" ||
+                        activeGatewayNodeId !== null
+                      }
                       onClick={() => onProbe(node)}
                     >
-                      {runtime.state === "checking" ? "Checking…" : "Check live status"}
+                      {runtime.state === "checking"
+                        ? "Checking…"
+                        : runtime.state === "pending"
+                          ? "Recovering same reply…"
+                          : "Check live status"}
                     </button>
                   )}
                   {node.state === "available" && !runtime.maintenanceSessionId && (
@@ -245,8 +253,8 @@ function runtimeStateTitle(
   node: GatewayUpdatePlanNode,
 ): string {
   if (runtime.state === "checking") return "Checking this Gateway…";
+  if (runtime.state === "pending") return "Recovering the signed reply…";
   if (runtime.state === "starting") return "Update requested by this device";
-  if (runtime.state === "failed") return "No live reply";
   if (runtime.state === "error") return "Update needs attention";
   if (runtime.state === "online") return "Online now";
   if (node.state === "manual") return "Online update is not installed";
@@ -263,13 +271,14 @@ function runtimeStateDetail(
   if (runtime.state === "checking") {
     return "Waiting for a signed terminal reply from this node.";
   }
+  if (runtime.state === "pending") {
+    return runtime.detail ??
+      "The request is saved. This client is catching up with Matrix and will update automatically without submitting it again.";
+  }
   if (runtime.state === "starting") {
     return runtime.maintenanceSessionId
       ? "The local Agent maintenance session is visible and running."
       : "The Gateway is creating its local Agent maintenance session.";
-  }
-  if (runtime.state === "failed") {
-    return runtime.detail ?? "The node did not reply within the live-check window.";
   }
   if (runtime.state === "error") {
     return runtime.detail ?? "The current Gateway build remains unchanged.";

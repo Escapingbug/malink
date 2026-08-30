@@ -7413,21 +7413,19 @@ select:focus-visible {
 }
 
 .gateway-update-live-checking > span:first-child,
+.gateway-update-live-pending > span:first-child,
 .gateway-update-live-starting > span:first-child {
   border-color: #7765df;
   border-top-color: transparent;
   animation: motion-spin 720ms linear infinite;
 }
 
-.gateway-update-live-failed > span:first-child,
 .gateway-update-live-error > span:first-child {
   border-color: #c8616a;
   background: #df7b83;
 }
 
-.gateway-update-live-failed strong,
 .gateway-update-live-error strong,
-.gateway-update-live-failed small,
 .gateway-update-live-error small {
   color: #9a4f57;
 }

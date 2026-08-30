@@ -51,8 +51,7 @@ test("shows node identity, version need, and signed live status before consent",
         },
       },
       "node-server": {
-        state: "failed",
-        detail: "No signed reply arrived within 12 seconds.",
+        state: "pending",
       },
     },
     activeGatewayNodeId: null,
@@ -69,7 +68,10 @@ test("shows node identity, version need, and signed live status before consent",
   assert.match(html, /Create update session/);
   assert.match(html, /Server/);
   assert.match(html, /Up to date/);
-  assert.match(html, /No live reply/);
+  assert.match(html, /Recovering the signed reply/);
+  assert.match(html, /will update automatically without submitting it again/);
+  assert.match(html, /Recovering same reply/);
+  assert.doesNotMatch(html, /No live reply/);
   assert.match(html, /Legacy Mac/);
   assert.match(html, /Manual update/);
   assert.match(html, /Requested by this Malink device; executed by the named Gateway/);

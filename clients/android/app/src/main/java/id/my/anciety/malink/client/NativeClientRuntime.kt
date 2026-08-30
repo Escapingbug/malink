@@ -49,6 +49,7 @@ import id.my.anciety.malink.matrix.MatrixLoginTokenIssueResult
 import id.my.anciety.malink.matrix.MatrixRuntimePhase
 import id.my.anciety.malink.matrix.MatrixTransportIdentity
 import id.my.anciety.malink.matrix.PublicMatrixSession
+import id.my.anciety.malink.matrix.malinkApplicationEventKind
 import id.my.anciety.malink.security.AndroidKeystoreSecretCipher
 import id.my.anciety.malink.security.SecretCipher
 import id.my.anciety.malink.security.malink.AndroidKeystoreP256Identity
@@ -95,6 +96,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -305,6 +307,7 @@ class NativeClientRuntime(
     @Volatile private var pairingStorageBlocked = restoredPairing.isFailure
     @Volatile private var gatewayState: JsonObject? = null
     @Volatile private var gatewayStateSynchronized = false
+    private val authoritativeStateRefreshLock = Any()
     @Volatile private var authoritativeStateRefreshJob: Job? = null
     @Volatile private var gatewayConvergenceFallbackJob: Job? = null
     @Volatile private var workspaceDirectoryConvergenceJob: Job? = null
@@ -819,7 +822,7 @@ class NativeClientRuntime(
         // request may still race. Keep the service-owned connection converging
         // until one complete authenticated MLP/3 projection is committed; never
         // make the WebView stay foreground merely to wait for that round trip.
-        startMatrixMlp3ProjectionRefresh(recoverTransport = false)
+        startMatrixMlp3ProjectionRefresh()
         return mutex.withLock { public to snapshot() }
     }
 
@@ -986,9 +989,13 @@ class NativeClientRuntime(
                 // Matrix already durably accepted this transaction. Sending
                 // the same transaction again can only return its original
                 // event id; it cannot create a new timeline delivery. Recover
-                // any missed signed progress/terminal events through the SDK
-                // timeline and current-state recovery.
-                startMatrixMlp3ProjectionRefresh(recoverTransport = false)
+                // the exact command through the Gateway journal and its SDK
+                // timeline. A synchronized projection is already authoritative
+                // current state; rescanning every project thread here blocks
+                // live replies behind unrelated historical events.
+                if (requiresProjectionRefreshForCommandRecovery(gatewayStateSynchronized)) {
+                    startMatrixMlp3ProjectionRefresh()
+                }
                 startPublishedCommandTimelineRecovery(current)
             }
             else -> Unit
@@ -1132,7 +1139,7 @@ class NativeClientRuntime(
         if (trust != null) {
             scheduleWorkspaceDirectoryConvergence()
             if (!gatewayStateSynchronized) {
-                startMatrixMlp3ProjectionRefresh(recoverTransport = false)
+                startMatrixMlp3ProjectionRefresh()
             }
             scope.launch {
                 mutex.withLock {
@@ -1160,7 +1167,13 @@ class NativeClientRuntime(
     override suspend fun onDecryptedEvent(event: MatrixDecryptedEvent) {
         mutex.withLock {
             val isV3 = isMatrixMlp3RawEvent(event.rawJson)
-            if (isV3) matrixMlp3Inbox.put(event)
+            if (isV3 && !matrixMlp3Inbox.put(event)) {
+                diagnostics.record(
+                    "matrix.v3_event.duplicate_ignored",
+                    mapOf("kind" to malinkApplicationEventKind(event.rawJson)),
+                )
+                return@withLock
+            }
             try {
                 processMatrixEvent(event)
                 if (isV3) matrixMlp3Inbox.projected(event.eventId)
@@ -1176,6 +1189,7 @@ class NativeClientRuntime(
                     "matrix.native_event.rejected",
                     mapOf(
                         "error" to diagnosticErrorName(error),
+                        "kind" to malinkApplicationEventKind(event.rawJson),
                         "code" to if (error is MalinkSecurityException) {
                             error.code.name
                         } else {
@@ -1390,6 +1404,11 @@ class NativeClientRuntime(
                         },
                         submitReconciliation = {
                             sendPublishedCommandReconciliation(command, roomId)
+                        },
+                        awaitReconciliation = {
+                            awaitPublishedCommandReconciliation(isTerminal = {
+                                outbox.get(command.commandId)?.state?.isTerminal == true
+                            })
                         },
                         scanTimeline = {
                             val scannedPages = matrix.recoverApplicationTimeline(
@@ -1790,65 +1809,57 @@ class NativeClientRuntime(
         }
     }
 
-    private fun startMatrixMlp3ProjectionRefresh(
-        recoverTransport: Boolean,
-    ) {
-        authoritativeStateRefreshJob?.cancel()
-        authoritativeStateRefreshJob = scope.launch {
-            if (recoverTransport) {
-                mutex.withLock {
-                    runCatching { recoverGatewayTransportSnapshotLocked() }
+    private fun startMatrixMlp3ProjectionRefresh() {
+        synchronized(authoritativeStateRefreshLock) {
+            if (authoritativeStateRefreshJob?.isActive == true) {
+                diagnostics.record("matrix.v3_projection.refresh_coalesced")
+                return
+            }
+            authoritativeStateRefreshJob = scope.launch {
+                var completedAttempts = 0
+                while (
+                    isActive &&
+                    trust != null &&
+                    completedAttempts < MAX_AUTHORITATIVE_STATE_REFRESH_ATTEMPTS
+                ) {
+                    if (trust == null) break
+                    var refreshed = false
+                    runCatching { matrix.refreshApplicationProjection() }
+                        .onSuccess {
+                            refreshed = true
+                            diagnostics.record("matrix.v3_projection.refresh_completed")
+                        }
                         .onFailure { error ->
                             diagnostics.record(
-                                "gateway.transport.recovery.failure",
+                                "matrix.v3_projection.refresh_failure",
                                 mapOf("error" to diagnosticErrorName(error)),
                             )
                         }
-                }
-            }
-            var completedAttempts = 0
-            while (
-                isActive &&
-                trust != null &&
-                completedAttempts < MAX_AUTHORITATIVE_STATE_REFRESH_ATTEMPTS
-            ) {
-                if (trust == null) break
-                var refreshed = false
-                runCatching { matrix.refreshApplicationProjection() }
-                    .onSuccess {
-                        refreshed = true
-                        diagnostics.record("matrix.v3_projection.refresh_completed")
-                    }
-                    .onFailure { error ->
+                    if (
+                        (gatewayStateSynchronized && refreshed) ||
+                        trust == null
+                    ) break
+                    completedAttempts += 1
+                    val delayMs = authoritativeStateRefreshRetryDelayMs(completedAttempts)
+                    if (delayMs == null) {
                         diagnostics.record(
-                            "matrix.v3_projection.refresh_failure",
-                            mapOf("error" to diagnosticErrorName(error)),
+                            "matrix.v3_projection.refresh_exhausted",
+                            mapOf("attempt" to completedAttempts.toString()),
                         )
+                        break
                     }
-                if (
-                    (gatewayStateSynchronized && refreshed) ||
-                    trust == null
-                ) break
-                completedAttempts += 1
-                val delayMs = authoritativeStateRefreshRetryDelayMs(completedAttempts)
-                if (delayMs == null) {
                     diagnostics.record(
-                        "matrix.v3_projection.refresh_exhausted",
-                        mapOf("attempt" to completedAttempts.toString()),
+                        "matrix.v3_projection.refresh_retry_scheduled",
+                        mapOf(
+                            "attempt" to (completedAttempts - 1).toString(),
+                            "transport_ready" to matrix.commandTransportReady.toString(),
+                        ),
                     )
-                    break
+                    delay(delayMs)
                 }
-                diagnostics.record(
-                    "matrix.v3_projection.refresh_retry_scheduled",
-                    mapOf(
-                        "attempt" to (completedAttempts - 1).toString(),
-                        "transport_ready" to matrix.commandTransportReady.toString(),
-                    ),
-                )
-                delay(delayMs)
-            }
-            if (gatewayStateSynchronized) {
-                diagnostics.record("matrix.v3_projection.converged")
+                if (gatewayStateSynchronized) {
+                    diagnostics.record("matrix.v3_projection.converged")
+                }
             }
         }
     }
@@ -2838,7 +2849,7 @@ class NativeClientRuntime(
                     "gateway.state.fallback_requested",
                     mapOf("action" to operation.wireName),
                 )
-                startMatrixMlp3ProjectionRefresh(recoverTransport = false)
+                startMatrixMlp3ProjectionRefresh()
             }
         }
     }
@@ -3012,6 +3023,10 @@ internal fun shouldRetireRecoveredCommandForRemovedProject(
     targetProjectId != null &&
     targetStillAuthorized == false
 
+internal fun requiresProjectionRefreshForCommandRecovery(
+    gatewayStateSynchronized: Boolean,
+): Boolean = !gatewayStateSynchronized
+
 internal fun authoritativeStateRefreshDelayMs(completedAttempts: Int): Long {
     require(completedAttempts >= 0)
     return when (completedAttempts) {
@@ -3057,6 +3072,7 @@ internal fun pairingRecoveryExpiresAt(request: SignedPairingRequest): Long =
 internal suspend fun recoverPublishedCommandDelivery(
     isTerminal: () -> Boolean,
     submitReconciliation: suspend () -> Unit,
+    awaitReconciliation: suspend () -> Unit = {},
     scanTimeline: suspend () -> Unit,
     onReconciliationFailure: (Exception) -> Unit = {},
     onTimelineFailure: (Exception) -> Unit = {},
@@ -3075,6 +3091,9 @@ internal suspend fun recoverPublishedCommandDelivery(
             onReconciliationFailure(error)
             false
         }
+    }
+    if (!isTerminal() && reconciliationSubmitted) {
+        awaitReconciliation()
     }
     if (!isTerminal()) {
         try {
@@ -3100,9 +3119,22 @@ internal suspend fun recoverPublishedCommandDelivery(
     }
 }
 
+internal suspend fun awaitPublishedCommandReconciliation(
+    isTerminal: () -> Boolean,
+    timeoutMs: Long = COMMAND_RECONCILIATION_DELIVERY_GRACE_MS,
+    pollIntervalMs: Long = 100L,
+) {
+    require(timeoutMs >= 0)
+    require(pollIntervalMs > 0)
+    withTimeoutOrNull(timeoutMs) {
+        while (!isTerminal()) delay(pollIntervalMs)
+    }
+}
+
 private const val PAIRING_RECOVERY_WINDOW_MS = 366L * 24 * 60 * 60_000
 private const val MAX_PAIRING_EXPIRY_SLEEP_MS = 24L * 60 * 60_000
 private const val MAX_AUTHORITATIVE_STATE_REFRESH_ATTEMPTS = 6
+private const val COMMAND_RECONCILIATION_DELIVERY_GRACE_MS = 12_000L
 
 internal fun recoverableCommandIds(commands: List<DurableView>): List<String> =
     commands

@@ -177,8 +177,11 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /onReviewGatewayUpdates=\{reviewGatewayUpdatesForRecoveredNativeCommand\}/);
   assert.match(
     source,
-    /const noLiveReply = error instanceof CommandCompletionTimeoutError;[\s\S]*?state: noLiveReply \? "failed" : "error"/,
+    /error instanceof CommandCompletionTimeoutError && commandId !== null[\s\S]*?state: "pending"/,
   );
+  assert.match(source, /pending\.completion\.then\(\(completion\) =>/);
+  assert.match(source, /gatewayUpdateProbe\.consume\(result\)/);
+  assert.match(source, /commandId &&\s*!recoveringLateReply &&/);
   assert.match(
     source,
     /if \(!gatewayRelease \|\| gatewayUpdatePlan\.length === 0\)[\s\S]*?setSettingsOpen\(true\);[\s\S]*?refreshGatewayUpdateDiscovery\(\)/,

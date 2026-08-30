@@ -1619,6 +1619,11 @@ function MalinkAppRuntime() {
   const pwaReloadBlockedRef = useRef(false);
   const gatewayUpdateDiscoveryBusyRef = useRef(false);
   const gatewayUpdateProbeKeysRef = useRef(new Set<string>());
+  const gatewayUpdateProbeCommandsRef = useRef(new Map<string, {
+    commandId: string;
+    completion: Promise<CommandCompletion>;
+    consume(completion: CommandCompletion): void;
+  }>());
   const executeGatewayUpdateRef = useRef<(
     payload: Extract<CommandPayload, { operation: `gateway.update.${string}` }>,
     targetProjectId: string,
@@ -5228,6 +5233,16 @@ function MalinkAppRuntime() {
             );
             return;
           }
+          const gatewayUpdateProbe = [...gatewayUpdateProbeCommandsRef.current.values()]
+            .find(probe => probe.commandId === result.commandId);
+          if (gatewayUpdateProbe) {
+            // A native WebView can reconnect after the foreground waiter has
+            // timed out. Consume the authenticated terminal event through the
+            // still-owned node probe instead of leaving that probe attached to
+            // the disposed client's Promise or submitting another command.
+            gatewayUpdateProbe.consume(result);
+            return;
+          }
           const promptSessionId =
             activePromptCommandsRef.current.get(result.commandId);
           if (promptSessionId) {
@@ -5980,24 +5995,17 @@ function MalinkAppRuntime() {
   ): Promise<GatewayUpdateStatus | null> {
     const target = gatewayUpdateTarget(node);
     if (!target || connectionStatusRef.current !== "connected") return null;
+    if (gatewayUpdateProbeCommandsRef.current.has(node.gatewayNodeId)) return null;
     setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
       ...current,
       state: "checking",
       detail: undefined,
     }));
     let commandId: string | null = null;
-    try {
-      const sent = await sendRealCommand({
-        operation: "gateway.update.status",
-      }, target.targetProjectId, {
-        autoRetryRevisionConflict: true,
-        propagateFailure: true,
-      });
-      if (!sent) {
-        throw new Error("The client could not send the signed live-status request.");
-      }
-      commandId = sent.commandId;
-      const completion = await waitForCommandCompletion(sent.completion, 12_000);
+    let recoveringLateReply = false;
+    let consumedCompletion = false;
+    let consumedStatus: GatewayUpdateStatus | null = null;
+    const applyCompletion = (completion: CommandCompletion): GatewayUpdateStatus | null => {
       const checkedAt = Date.now();
       if (completion.outcome !== "succeeded") {
         setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
@@ -6023,24 +6031,104 @@ function MalinkAppRuntime() {
         detail: undefined,
       }));
       return status;
+    };
+    const releaseProbe = async (completedCommandId: string): Promise<void> => {
+      const pending = gatewayUpdateProbeCommandsRef.current.get(node.gatewayNodeId);
+      if (pending?.commandId === completedCommandId) {
+        gatewayUpdateProbeCommandsRef.current.delete(node.gatewayNodeId);
+      }
+      completedCommandResultsRef.current.delete(completedCommandId);
+      await malinkClientRef.current?.releaseCommand(completedCommandId).catch(() => undefined);
+    };
+    const consumeCompletion = (completion: CommandCompletion): void => {
+      if (consumedCompletion) return;
+      const pending = gatewayUpdateProbeCommandsRef.current.get(node.gatewayNodeId);
+      if (pending?.commandId !== completion.commandId) return;
+      consumedCompletion = true;
+      try {
+        consumedStatus = applyCompletion(completion);
+      } catch (error) {
+        setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
+          ...current,
+          state: "error",
+          checkedAt: Date.now(),
+          detail: `The Gateway returned an invalid live-status result: ${formatUiError(error)}`,
+        }));
+      } finally {
+        void releaseProbe(completion.commandId);
+      }
+    };
+    try {
+      const sent = await sendRealCommand({
+        operation: "gateway.update.status",
+      }, target.targetProjectId, {
+        autoRetryRevisionConflict: true,
+        propagateFailure: true,
+      });
+      if (!sent) {
+        throw new Error("The client could not send the signed live-status request.");
+      }
+      commandId = sent.commandId;
+      gatewayUpdateProbeCommandsRef.current.set(node.gatewayNodeId, {
+        commandId,
+        completion: sent.completion,
+        consume: consumeCompletion,
+      });
+      const completion = await waitForCommandCompletion(sent.completion, 12_000);
+      consumeCompletion(completion);
+      return consumedStatus;
     } catch (error) {
-      const noLiveReply = error instanceof CommandCompletionTimeoutError;
-      const detail = noLiveReply
-        ? "No signed reply arrived within 12 seconds. The command remains durable, but this Gateway is not proven online now."
-        : commandId === null
-          ? `The live-status command was not sent: ${formatUiError(error)}`
-          : formatUiError(error);
+      if (error instanceof CommandCompletionTimeoutError && commandId !== null) {
+        recoveringLateReply = true;
+        setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
+          ...current,
+          state: "pending",
+          checkedAt: Date.now(),
+          detail: "The signed request is saved on this device. Matrix catch-up is still in progress; this panel will accept only the result of the same command and update automatically.",
+        }));
+        const pending = gatewayUpdateProbeCommandsRef.current.get(node.gatewayNodeId);
+        if (pending?.commandId === commandId) {
+          void pending.completion.then((completion) => {
+            pending.consume(completion);
+          }).catch((lateError) => {
+            if (
+              gatewayUpdateProbeCommandsRef.current.get(node.gatewayNodeId)?.commandId !==
+              commandId
+            ) return;
+            setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
+              ...current,
+              state: "error",
+              checkedAt: Date.now(),
+              detail: `The saved live-status request could not be recovered: ${formatUiError(lateError)}`,
+            }));
+          }).finally(() => {
+            if (
+              gatewayUpdateProbeCommandsRef.current.get(node.gatewayNodeId)?.commandId ===
+              commandId
+            ) {
+              void releaseProbe(commandId!);
+            }
+          });
+        }
+        return null;
+      }
+      const detail = commandId === null
+        ? `The live-status command was not sent: ${formatUiError(error)}`
+        : formatUiError(error);
       setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
         ...current,
-        state: noLiveReply ? "failed" : "error",
+        state: "error",
         checkedAt: Date.now(),
         detail,
       }));
       return null;
     } finally {
-      if (commandId) {
-        completedCommandResultsRef.current.delete(commandId);
-        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      if (
+        commandId &&
+        !recoveringLateReply &&
+        gatewayUpdateProbeCommandsRef.current.get(node.gatewayNodeId)?.commandId === commandId
+      ) {
+        await releaseProbe(commandId);
       }
     }
   }
