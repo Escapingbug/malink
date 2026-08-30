@@ -4591,6 +4591,8 @@ select:focus-visible {
 .durable-command-recovery {
   display: grid;
   gap: 10px;
+  max-height: min(55dvh, 440px);
+  overflow: auto;
   padding: 14px;
   border: 1px solid #e5d3a7;
   border-radius: 13px;
@@ -4620,10 +4622,32 @@ select:focus-visible {
   font-weight: 800;
 }
 
-.durable-command-recovery-heading > span:last-child {
+.durable-command-recovery-heading > span:nth-child(2) {
   display: grid;
   min-width: 0;
+  flex: 1;
   gap: 2px;
+}
+
+.durable-command-recovery-close {
+  display: grid;
+  width: 30px;
+  min-height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #806c45;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.durable-command-recovery-close:hover,
+.durable-command-recovery-close:focus-visible {
+  background: #f5e8c8;
 }
 
 .durable-command-recovery strong {

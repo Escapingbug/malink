@@ -116,9 +116,11 @@ describe("durableCommandRecoveryPresentation", () => {
     });
 
     expect(presentation.primaryAction).toBe("review-gateway-updates");
-    expect(presentation.primaryLabel).toBe("Review Gateway updates");
+    expect(presentation.primaryLabel).toBe("Open Gateway software");
     expect(presentation.detail).toContain("2 Gateways have a software update");
-    expect(presentation.detail).toContain("Repeating the check");
+    expect(presentation.detail).toContain("different, unavailable Gateway");
+    expect(presentation.detail).toContain("will not clear it");
+    expect(presentation.detail).toContain("hide this notice");
   });
 
   it("opens Gateway software instead of another no-op check when no update is known", () => {
@@ -138,6 +140,6 @@ describe("durableCommandRecoveryPresentation", () => {
     expect(presentation.primaryLabel).toBe("Review Gateway software");
     expect(presentation.detail).toContain("may be offline");
     expect(presentation.detail).toContain("Export diagnostics");
-    expect(presentation.detail).toContain("Repeating Check now cannot change");
+    expect(presentation.detail).toContain("hide this notice");
   });
 });

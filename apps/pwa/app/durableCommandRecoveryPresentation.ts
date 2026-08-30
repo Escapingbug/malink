@@ -94,16 +94,16 @@ export function durableCommandRecoveryPresentation(input: {
         detail:
           `No signed journal reply arrived during the last check. ${updateCount} ` +
           `${updateCount === 1 ? "Gateway has" : "Gateways have"} a software update available. ` +
-          "Review and update the Gateway that accepted this action; Malink will then retry the same command identity automatically. Repeating the check before that Gateway changes will not produce a different result.",
+          "Open Gateway software to update a responding Gateway. If this saved action belongs to a different, unavailable Gateway, updating the responding Gateway will not clear it; that action will recover when its Gateway returns. You can hide this notice while Malink continues automatic recovery.",
         stateLabel,
         primaryAction: "review-gateway-updates",
-        primaryLabel: "Review Gateway updates",
+        primaryLabel: "Open Gateway software",
       };
     }
     return {
       title: "The Gateway did not answer this check",
       detail:
-        "No signed journal reply arrived during the last check. The target Gateway may be offline, may not support journal replies, or may no longer own this command route. Bring that Gateway online and ensure it is current; Malink will retry the same command automatically. Export diagnostics if it is already online. Repeating Check now cannot change the result.",
+        "No signed journal reply arrived during the last check. The target Gateway may be offline, may not support journal replies, or may no longer own this command route. Bring that Gateway online and ensure it is current; Malink will retry this saved command automatically. You can hide this notice while recovery continues. Export diagnostics if the target Gateway is already online.",
       stateLabel,
       primaryAction: "review-gateway-updates",
       primaryLabel: "Review Gateway software",

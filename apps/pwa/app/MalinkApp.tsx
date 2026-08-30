@@ -1071,6 +1071,7 @@ function DurableCommandRecoveryNotice({
   onUpdateAndroid,
   onOpenAndroidReleases,
   onExportDiagnostics,
+  onDismiss,
 }: {
   command: MalinkRecoveredDurableCommand;
   connectionStatus: MatrixConnectionStatus;
@@ -1086,6 +1087,7 @@ function DurableCommandRecoveryNotice({
   onUpdateAndroid(): void;
   onOpenAndroidReleases(): void;
   onExportDiagnostics(): void;
+  onDismiss(): void;
 }) {
   const presentation = durableCommandRecoveryPresentation({
     state: command.state,
@@ -1107,6 +1109,15 @@ function DurableCommandRecoveryNotice({
           <strong>{presentation.title}</strong>
           <small>{presentation.stateLabel}</small>
         </span>
+        <button
+          type="button"
+          className="durable-command-recovery-close"
+          aria-label="Hide previous action recovery"
+          title="Hide this notice; background recovery will continue"
+          onClick={onDismiss}
+        >
+          ×
+        </button>
       </div>
       <p>{presentation.detail}</p>
       <small className="durable-command-recovery-meta">
@@ -1126,7 +1137,10 @@ function DurableCommandRecoveryNotice({
                 : presentation.primaryAction === "reconnect"
                   ? onReconnect
                   : presentation.primaryAction === "review-gateway-updates"
-                    ? onReviewGatewayUpdates
+                    ? () => {
+                        onDismiss();
+                        onReviewGatewayUpdates();
+                      }
                     : presentation.primaryAction === "update-native-app"
                       ? onUpdateAndroid
                       : onOpenAndroidReleases
@@ -1143,6 +1157,9 @@ function DurableCommandRecoveryNotice({
         )}
         <button type="button" onClick={onExportDiagnostics}>
           Export diagnostics
+        </button>
+        <button type="button" onClick={onDismiss}>
+          Hide
         </button>
       </div>
     </section>
@@ -1602,6 +1619,8 @@ function MalinkAppRuntime() {
     useState<Set<string>>(() => new Set());
   const [recoveredNativeCommandChecks, setRecoveredNativeCommandChecks] =
     useState<Record<string, DurableCommandRecoveryCheckResult>>({});
+  const [dismissedRecoveredCommandVersions, setDismissedRecoveredCommandVersions] =
+    useState<Set<string>>(() => new Set());
   const [sessionLifecycleBusy, setSessionLifecycleBusy] = useState<
     Map<string, SessionLifecycleAction>
   >(() => new Map());
@@ -2103,7 +2122,8 @@ function MalinkAppRuntime() {
   const visibleRecoveredNativeCommand = recoveredNativeCommands.find(
     command =>
       command.state !== "needs_review" &&
-      !recoveredNativeCommandIsOwned(command.commandId),
+      !recoveredNativeCommandIsOwned(command.commandId) &&
+      !dismissedRecoveredCommandVersions.has(recoveredCommandNoticeVersion(command)),
   ) ?? null;
   const gatewayConnected = gatewayAvailable;
   const isStreaming = Boolean(
@@ -2539,6 +2559,21 @@ function MalinkAppRuntime() {
       });
     }
     syncRecoveredNativeCommands();
+  }
+
+  function dismissRecoveredNativeCommandNotices(): void {
+    const noticeVersions = [...recoveredNativeCommandsRef.current.values()]
+      .filter(command =>
+        command.state !== "needs_review" &&
+        !recoveredNativeCommandIsOwned(command.commandId),
+      )
+      .map(recoveredCommandNoticeVersion);
+    if (noticeVersions.length === 0) return;
+    setDismissedRecoveredCommandVersions((current) => {
+      const next = new Set(current);
+      for (const noticeVersion of noticeVersions) next.add(noticeVersion);
+      return next.size === current.size ? current : next;
+    });
   }
 
   function selectGatewayFilter(gatewayNodeId: string): void {
@@ -9658,6 +9693,7 @@ function MalinkAppRuntime() {
               onUpdateAndroid={updateAndroidForRecoveredNativeCommand}
               onOpenAndroidReleases={openOfficialAndroidReleases}
               onExportDiagnostics={exportConnectionDiagnostics}
+              onDismiss={dismissRecoveredNativeCommandNotices}
             />
           )}
         </div>
@@ -12054,6 +12090,12 @@ function formatRecoveryTimestamp(timestamp: number): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function recoveredCommandNoticeVersion(
+  command: MalinkRecoveredDurableCommand,
+): string {
+  return `${command.commandId}\0${command.state}\0${command.updatedAt}`;
 }
 
 function formatFileSize(bytes: number): string {

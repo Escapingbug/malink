@@ -342,6 +342,16 @@ test("ships a complete installable offline shell", async () => {
     /@media \(max-width: 900px\)[\s\S]*?\.gateway-card\s*\{[\s\S]*?margin:\s*0 12px 7px;[\s\S]*?background:\s*#f7f6fc/,
   );
   assert.match(source, /className="gateway-mobile-status-copy"/);
+  assert.match(source, /aria-label="Hide previous action recovery"/);
+  assert.match(source, /onDismiss\(\);\s*onReviewGatewayUpdates\(\);/);
+  assert.match(
+    source,
+    /dismissedRecoveredCommandVersions\.has\(recoveredCommandNoticeVersion\(command\)\)/,
+  );
+  assert.match(
+    styles,
+    /\.durable-command-recovery\s*\{[\s\S]*?max-height:\s*min\(55dvh, 440px\);[\s\S]*?overflow:\s*auto;/,
+  );
   assert.match(
     source,
     /title=\{`Connection: \$\{mobileConnectionSignal\.label\}\$\{/,
