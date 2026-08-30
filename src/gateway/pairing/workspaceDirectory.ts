@@ -109,8 +109,14 @@ export class FileWorkspaceGatewayDirectory {
         for (const gateway of signed.directory.gateways) {
           if (removed.has(gateway.gatewayNodeId)) continue
           const current = merged[gateway.gatewayNodeId]
+          // Every Gateway is the sole runtime authority for its own node
+          // descriptor. Another node may relay an older signed copy, but it
+          // must never overwrite the local build, routes, or transport merely
+          // because that copy was republished with a later timestamp.
           merged[gateway.gatewayNodeId] = current
-            ? preferredGatewayDescriptor(current, gateway)
+            ? gateway.gatewayNodeId === this.identity.gatewayNodeId
+              ? current
+              : preferredGatewayDescriptor(current, gateway)
             : gateway
         }
         const mergedGateways = Object.values(merged).sort((a, b) =>

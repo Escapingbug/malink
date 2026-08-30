@@ -4,7 +4,10 @@ import React, { useRef } from "react";
 import type { GatewayUpdateStatus } from "@malink/protocol";
 import type { GatewayReleaseBuild } from "./buildInfo";
 import { useDialogFocus } from "./dialogFocus";
-import type { GatewayUpdatePlanNode } from "./gatewayUpdateTrigger";
+import {
+  gatewayUpdateCanApplyStaged,
+  type GatewayUpdatePlanNode,
+} from "./gatewayUpdateTrigger";
 import { gatewayProjectOwner } from "./projectCatalog";
 
 export type GatewayUpdateNodeRuntime = {
@@ -130,11 +133,16 @@ function GatewayUpdateDialogContent({
               node.computerName,
             );
             const runtime = runtimeByNode[node.gatewayNodeId] ?? { state: "unchecked" };
+            const targetInstalled = runtime.status?.currentBuildId === release.buildId;
+            const stagedReady = gatewayUpdateCanApplyStaged({
+              status: runtime.status,
+            });
             const canProbe = connected && node.onlineUpdate && Boolean(node.targetProjectId);
             const canStart =
               node.state === "available" &&
               runtime.state === "online" &&
               Boolean(runtime.status) &&
+              (!runtime.maintenanceSessionId || stagedReady) &&
               activeGatewayNodeId === null;
             const active = activeGatewayNodeId === node.gatewayNodeId;
             return (
@@ -170,12 +178,13 @@ function GatewayUpdateDialogContent({
                   <span aria-hidden="true" />
                   <span>
                     <strong>{runtimeStateTitle(runtime, node)}</strong>
-                    <small>{runtimeStateDetail(runtime, node, connected)}</small>
+                    <small>{runtimeStateDetail(runtime, node, release, connected)}</small>
                   </span>
                 </div>
 
                 <div className="gateway-update-node-actions">
-                  {runtime.maintenanceSessionId && !runtime.maintenanceSessionAmbiguous && (
+                  {!targetInstalled && runtime.maintenanceSessionId &&
+                    !runtime.maintenanceSessionAmbiguous && (
                     <button
                       type="button"
                       className="secondary-button"
@@ -184,11 +193,13 @@ function GatewayUpdateDialogContent({
                       Open update session
                     </button>
                   )}
-                  {runtime.maintenanceSessionAmbiguous && (
+                  {!targetInstalled && runtime.maintenanceSessionAmbiguous && (
                     <>
                       <p className="gateway-update-session-warning" role="alert">
-                        This Gateway has an update session left by an older Malink version. You can
-                        safely archive it here; only this Gateway is affected.
+                        {runtime.maintenanceSessionArchiveAvailable ||
+                          runtime.maintenanceSessionArchived
+                          ? "This Gateway has an update session left by an older Malink version. Cleanup is safe; only this Gateway is affected."
+                          : "Malink is tracking this Gateway through its signed update status. It will keep checking progress automatically."}
                       </p>
                       {runtime.maintenanceSessionArchived ? (
                         <span className="gateway-update-session-warning" role="status">
@@ -208,7 +219,7 @@ function GatewayUpdateDialogContent({
                       ) : null}
                     </>
                   )}
-                  {runtime.legacyMaintenanceSessionId && (
+                  {!targetInstalled && runtime.legacyMaintenanceSessionId && (
                     <>
                       <p className="gateway-update-session-warning" role="alert">
                         This Gateway also has an update session left by an older Malink version.
@@ -252,14 +263,21 @@ function GatewayUpdateDialogContent({
                           : "Check live status"}
                     </button>
                   )}
-                  {node.state === "available" && !runtime.maintenanceSessionId && (
+                  {node.state === "available" &&
+                    (!runtime.maintenanceSessionId || stagedReady) && (
                     <button
                       type="button"
                       className="primary-button"
                       disabled={!canStart && !active}
                       onClick={() => onStart(node)}
                     >
-                      {active ? "Creating update session…" : "Create update session"}
+                      {active
+                        ? stagedReady
+                          ? "Installing staged update…"
+                          : "Creating update session…"
+                        : stagedReady
+                          ? "Install staged update"
+                          : "Create update session"}
                     </button>
                   )}
                 </div>
@@ -325,6 +343,7 @@ function runtimeStateTitle(
 function runtimeStateDetail(
   runtime: GatewayUpdateNodeRuntime,
   node: GatewayUpdatePlanNode,
+  release: GatewayReleaseBuild,
   connected: boolean,
 ): string {
   if (runtime.state === "checking") {
@@ -343,8 +362,14 @@ function runtimeStateDetail(
     return runtime.detail ?? "The current Gateway build remains unchanged.";
   }
   if (runtime.state === "online") {
-    const supervisor = runtime.status
-      ? gatewayUpdatePhaseText(runtime.status)
+    const supervisor = runtime.status?.phase === "staged" &&
+      runtime.status.targetBuildId !== release.buildId
+      ? `Build ${runtime.status.targetBuildId} is staged locally and ready to install`
+      : runtime.status?.currentBuildId === release.buildId &&
+      !["activating", "probation"].includes(runtime.status.phase)
+      ? "Installed build verified"
+      : runtime.status
+        ? gatewayUpdatePhaseText(runtime.status)
       : runtime.detail ?? "The node returned a signed response.";
     return runtime.checkedAt
       ? `${supervisor} · replied ${formatCheckedTime(runtime.checkedAt)}`

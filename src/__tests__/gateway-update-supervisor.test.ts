@@ -214,6 +214,62 @@ describe('GatewayUpdateSupervisor', () => {
     }
   })
 
+  it('converges a stale maintenance phase when the signed target is already installed', async () => {
+    const fixture = await agentUpdateFixture()
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fixture.fetch })
+    await supervisor.initialize()
+    await supervisor.stage('release-2')
+    const instruction = await supervisor.agentInstruction('release-2')
+    await supervisor.beginAgentUpdate('release-2', 'maintenance-1', 'stage-command-1')
+    await writeFile(
+      join(instruction.candidateDirectory, 'ops', 'matrix-local-gateway.js'),
+      '// Agent-built Gateway release 2\n',
+    )
+    await writeFile(
+      join(instruction.candidateDirectory, 'ops', 'gatewayUpdateSupervisorMain.js'),
+      '// Agent-built supervisor release 2\n',
+    )
+    await writeFile(
+      join(instruction.candidateDirectory, 'ops', 'gatewayAgentUpdateCli.js'),
+      '// Agent-built update CLI release 2\n',
+    )
+    await writeFile(
+      join(instruction.candidateDirectory, 'mcp', 'stdio.js'),
+      '// Agent-built MCP release 2\n',
+    )
+    await supervisor.submitAgentRelease('release-2')
+
+    const statePath = join(fixture.installRoot, 'supervisor-state.json')
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as {
+      status: { phase: string; detail?: string }
+      agentOwnerCommandId?: string
+    }
+    state.status.phase = 'agent_running'
+    state.status.detail = 'A stale maintenance process still appears to be running'
+    state.agentOwnerCommandId = 'stage-command-1'
+    await writeFile(statePath, `${JSON.stringify(state)}\n`)
+    await rm(join(fixture.installRoot, 'current'))
+    await symlink(
+      join(fixture.installRoot, 'releases', 'release-2'),
+      join(fixture.installRoot, 'current'),
+    )
+
+    await expect(supervisor.status()).resolves.toMatchObject({
+      phase: 'committed',
+      releaseId: 'release-2',
+      targetBuildId: 'build-2',
+      currentBuildId: 'build-2',
+      maintenanceSessionId: 'maintenance-1',
+    })
+    const converged = JSON.parse(await readFile(statePath, 'utf8')) as {
+      status: { phase: string; detail?: string }
+      agentOwnerCommandId?: string
+    }
+    expect(converged.status.phase).toBe('committed')
+    expect(converged.status.detail).toBeUndefined()
+    expect(converged.agentOwnerCommandId).toBeUndefined()
+  })
+
   it('copies and seals empty regular dependency files', async () => {
     const fixture = await agentUpdateFixture({ emptyAuxiliaryFile: true })
     const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fixture.fetch })

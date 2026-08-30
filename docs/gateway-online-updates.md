@@ -216,6 +216,14 @@ This visibility does not turn liveness into execution authority or a global
 write lock: ordinary authenticated commands remain durable and may wait for an
 offline Gateway to return.
 
+The directory's build ID is also only a discovery hint. Once a signed
+`gateway.update.status` reply arrives, its installed build is authoritative for
+that check and immediately corrects the node's displayed current/target state.
+Each Gateway owns its own directory descriptor: relayed copies from another
+node cannot replace that local runtime description merely by carrying a newer
+timestamp, and an online Gateway periodically republishes its actual build and
+routes so stale inventory converges without a restart.
+
 The `Gateway software` row remains visible whenever App & updates is available.
 Gateway release discovery resolves `gateway-agent-updates/latest.json` below the
 compiled static-service base path. Root-hosted services therefore use
@@ -241,6 +249,15 @@ The PWA then sends `apply`, which progresses through:
 ```text
 waiting_for_idle -> scheduled -> activating -> probation -> committed
 ```
+
+While the review panel is open, Malink polls signed status during nonterminal
+maintenance and activation phases. Reaching `staged` stops automatic polling
+and always exposes an explicit install action for that exact staged release,
+even if the static release channel has since advanced. If the supervisor finds
+that the signed installed build already equals its target while an older state
+still says `agent_running`, `agent_validating`, or `staged`, it atomically
+converges that state to `committed`; the UI then treats the update as installed
+instead of presenting obsolete maintenance cleanup as a blocking error.
 
 The maintenance Agent's session is deterministic per physical Gateway node and
 release: its identity is derived from `gatewayNodeId`, never the shared

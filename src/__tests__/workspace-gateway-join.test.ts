@@ -12,6 +12,7 @@ import {
 import {
   exportPairingPublicKey,
   generateDeviceKeyPair,
+  signWorkspaceGatewayDirectory,
   signWorkspaceDeviceGrant,
   signWorkspaceDeviceRevocation,
 } from '@malink/security'
@@ -156,6 +157,60 @@ describe('Workspace Gateway join', () => {
     expect(await secondDirectory.load()).toEqual(resolved)
     expect(resolved.directory.gateways.find(value =>
       value.gatewayNodeId === first.gatewayNodeId)?.gatewayName).toBe('Gateway A renamed')
+  })
+
+  it('does not let another node overwrite this Gateway own runtime descriptor', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-workspace-own-node-'))
+    const first = await new FileGatewayIdentityStore(join(directory, 'first.json'))
+      .loadOrCreate('workspace-1', 1_800_000_000_000)
+    const firstDirectory = new FileWorkspaceGatewayDirectory(
+      join(directory, 'first-directory.json'), first,
+    )
+    const firstOnly = await firstDirectory.publishLocal(
+      'Gateway A', transport, 1_800_000_000_001, [],
+      { buildId: 'gateway-build-current', onlineUpdate: true },
+    )
+    const invitation = createGatewayJoinInvitation(
+      first, firstOnly, 1_800_000_000_002, 60_000,
+    )
+    const joined = await acceptGatewayJoinInvitation(
+      new FileGatewayIdentityStore(join(directory, 'second.json')),
+      invitation.link,
+      'gateway-node-b',
+      1_800_000_000_003,
+    )
+    const secondDirectory = new FileWorkspaceGatewayDirectory(
+      join(directory, 'second-directory.json'), joined.identity,
+    )
+    await secondDirectory.merge(joined.directory)
+    const both = await secondDirectory.publishLocal('Gateway B', {
+      ...transport,
+      userId: '@gateway-b:example.org',
+      deviceId: 'GATEWAY-B',
+    }, 1_800_000_000_004)
+    await firstDirectory.merge(both)
+    const stale = await signWorkspaceGatewayDirectory({
+      kind: 'malink.workspace.gateway-directory',
+      version: 1,
+      directoryId: 'stale-relay',
+      workspaceId: first.workspaceId,
+      revision: both.directory.revision + 1,
+      gateways: both.directory.gateways.map(gateway =>
+        gateway.gatewayNodeId === first.gatewayNodeId
+          ? {
+              ...gateway,
+              buildId: 'gateway-build-stale',
+              issuedAt: 1_800_000_000_100,
+            }
+          : gateway),
+      issuedAt: 1_800_000_000_100,
+    }, joined.identity.keys.privateKey, joined.identity.keys.keyId)
+
+    const reconciled = await firstDirectory.merge(stale)
+
+    expect(reconciled.directory.gateways.find(gateway =>
+      gateway.gatewayNodeId === first.gatewayNodeId)?.buildId,
+    ).toBe('gateway-build-current')
   })
 
   it('propagates Gateway removal tombstones and never resurrects a stale node', async () => {

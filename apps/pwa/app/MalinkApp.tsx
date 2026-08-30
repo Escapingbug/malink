@@ -126,6 +126,8 @@ import { uncertainCommandRecoveryPresentation } from "./uncertainCommandRecovery
 import {
   collidingGatewayMaintenanceSessionIds,
   gatewayUpdatePlan as buildGatewayUpdatePlan,
+  gatewayUpdatePlanNodeWithLiveStatus,
+  gatewayUpdateStatusNeedsPolling,
   gatewayUpdateTarget,
   legacyGatewayMaintenanceSessionsByNode,
   recoverAmbiguousGatewayUpdateCompletion,
@@ -578,6 +580,7 @@ const PROJECT_CREATE_RESULT_TIMEOUT_MS = 60_000;
 const PROVIDER_HISTORY_RESULT_TIMEOUT_MS = 60_000;
 const GATEWAY_UPDATE_DISCOVERY_INTERVAL_MS = 15 * 60_000;
 const GATEWAY_LIVE_STATUS_TIMEOUT_MS = 12_000;
+const GATEWAY_UPDATE_PROGRESS_POLL_MS = 10_000;
 
 type GatewayUpdateProbeRecord = {
   commandId: string;
@@ -2455,22 +2458,12 @@ function MalinkAppRuntime() {
     ),
     [gatewayNodeProbeTargets],
   );
-  const gatewayUpdatePlan = useMemo(() =>
+  const gatewayUpdateDirectoryPlan = useMemo(() =>
     buildGatewayUpdatePlan({
       directory: gatewayState?.gatewayDirectory,
       knownProjectIds: knownGatewayProjectIds,
       release: gatewayRelease,
     }), [gatewayRelease, gatewayState?.gatewayDirectory, knownGatewayProjectIds]);
-  const legacyGatewayMaintenanceSessions = useMemo(
-    () => legacyGatewayMaintenanceSessionsByNode({
-      nodes: gatewayUpdatePlan,
-      projectedSessions: gatewayState?.sessions ?? [],
-    }),
-    [gatewayState?.sessions, gatewayUpdatePlan],
-  );
-  const gatewayUpdateAvailableCount = gatewayUpdatePlan.filter(
-    node => node.state === "available",
-  ).length;
   const gatewayUpdateReleaseKey = gatewayRelease
     ? `${gatewayRelease.releaseId}\0${gatewayRelease.buildId}`
     : null;
@@ -2482,6 +2475,26 @@ function MalinkAppRuntime() {
     ),
     [gatewayUpdateReleaseKey, gatewayUpdateRuntimeByNode],
   );
+  const gatewayUpdatePlan = useMemo(
+    () => gatewayRelease
+      ? gatewayUpdateDirectoryPlan.map(node => gatewayUpdatePlanNodeWithLiveStatus({
+          node,
+          release: gatewayRelease,
+          status: gatewayUpdateRuntimeForRelease[node.gatewayNodeId]?.status,
+        }))
+      : gatewayUpdateDirectoryPlan,
+    [gatewayRelease, gatewayUpdateDirectoryPlan, gatewayUpdateRuntimeForRelease],
+  );
+  const legacyGatewayMaintenanceSessions = useMemo(
+    () => legacyGatewayMaintenanceSessionsByNode({
+      nodes: gatewayUpdatePlan,
+      projectedSessions: gatewayState?.sessions ?? [],
+    }),
+    [gatewayState?.sessions, gatewayUpdatePlan],
+  );
+  const gatewayUpdateAvailableCount = gatewayUpdatePlan.filter(
+    node => node.state === "available",
+  ).length;
   const gatewayUpdateRuntimePresentation = useMemo(() => {
     if (!gatewayRelease || !gatewayState) return gatewayUpdateRuntimeForRelease;
     let presentation = gatewayUpdateRuntimeForRelease;
@@ -3276,8 +3289,11 @@ function MalinkAppRuntime() {
   }, [gatewayNodeProbeTargets, settingsOpen]);
 
   useEffect(() => {
+    if (!gatewayUpdateDialogOpen) {
+      gatewayUpdateProbeKeysRef.current.clear();
+      return;
+    }
     if (
-      !gatewayUpdateDialogOpen ||
       connectionStatus !== "connected" ||
       !gatewayRelease
     ) return;
@@ -3298,6 +3314,46 @@ function MalinkAppRuntime() {
     gatewayRelease,
     gatewayUpdateDialogOpen,
     gatewayUpdatePlan,
+  ]);
+
+  useEffect(() => {
+    if (
+      !gatewayUpdateDialogOpen ||
+      connectionStatus !== "connected" ||
+      !gatewayRelease
+    ) return;
+    const checkProgress = () => {
+      for (const node of gatewayUpdatePlan) {
+        const runtime = gatewayUpdateRuntimeForRelease[node.gatewayNodeId];
+        const status = runtime?.status;
+        const activationStillSettling = status !== undefined && [
+          "waiting_for_idle",
+          "scheduled",
+          "activating",
+          "probation",
+        ].includes(status.phase);
+        const needsProgress = runtime?.state === "starting" || (
+          gatewayUpdateStatusNeedsPolling(status) &&
+          (status?.currentBuildId !== gatewayRelease.buildId || activationStillSettling)
+        );
+        if (!needsProgress) continue;
+        const target = gatewayNodeProbeTargetsById.get(node.gatewayNodeId);
+        if (target?.canProbe) void probeGatewayNodeLiveness(target);
+      }
+    };
+    const timer = window.setInterval(checkProgress, GATEWAY_UPDATE_PROGRESS_POLL_MS);
+    return () => window.clearInterval(timer);
+    // Probe flights are de-duplicated by node. Runtime status changes recreate
+    // this bounded timer and stop it as soon as the update reaches a user or
+    // terminal boundary.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    connectionStatus,
+    gatewayNodeProbeTargetsById,
+    gatewayRelease,
+    gatewayUpdateDialogOpen,
+    gatewayUpdatePlan,
+    gatewayUpdateRuntimeForRelease,
   ]);
 
   useEffect(() => {
@@ -6411,9 +6467,10 @@ function MalinkAppRuntime() {
         state: "online",
         checkedAt,
         status,
-        ...(status.releaseId === gatewayRelease?.releaseId && status.maintenanceSessionId
-          ? { maintenanceSessionId: status.maintenanceSessionId }
-          : {}),
+        maintenanceSessionId:
+          status.releaseId === gatewayRelease?.releaseId
+            ? status.maintenanceSessionId
+            : undefined,
         detail: undefined,
       }));
       return status;
@@ -6587,28 +6644,37 @@ function MalinkAppRuntime() {
         startedAt: Date.now(),
         detail: undefined,
       }));
-      const status = await triggerGatewayUpdate({
-        release: gatewayRelease,
-        target,
-        send: (command, targetProjectId) =>
-          executeGatewayUpdateRef.current(command, targetProjectId),
-      });
+      const stagedReleaseId = liveStatus.phase === "staged"
+        ? liveStatus.releaseId
+        : undefined;
+      const status = stagedReleaseId && liveStatus.targetBuildId
+        ? await executeGatewayUpdateRef.current({
+            operation: "gateway.update.apply",
+            releaseId: stagedReleaseId,
+            mode: "when_idle",
+          }, target.targetProjectId)
+        : await triggerGatewayUpdate({
+            release: gatewayRelease,
+            target,
+            send: (command, targetProjectId) =>
+              executeGatewayUpdateRef.current(command, targetProjectId),
+          });
       setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
         ...current,
         state: "online",
         checkedAt: Date.now(),
         status,
-        ...(status.maintenanceSessionId
-          ? { maintenanceSessionId: status.maintenanceSessionId }
-          : {}),
+        maintenanceSessionId: status.maintenanceSessionId,
       }));
       showUiNotice(
         `gateway-update:${node.gatewayNodeId}`,
         "connection",
         "success",
         status.phase === "committed"
-          ? `${node.gatewayName} already runs release ${gatewayRelease.releaseId}.`
-          : `${node.gatewayName} created its maintenance session and will switch after current Agent work finishes.`,
+          ? `${node.gatewayName} already runs release ${status.releaseId ?? gatewayRelease.releaseId}.`
+          : ["waiting_for_idle", "scheduled", "activating", "probation"].includes(status.phase)
+            ? `${node.gatewayName} scheduled release ${status.releaseId ?? gatewayRelease.releaseId} and will switch after current Agent work finishes.`
+            : `${node.gatewayName} created its maintenance session and will continue automatically.`,
         8_000,
       );
     } catch (error) {

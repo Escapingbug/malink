@@ -220,3 +220,73 @@ test("keeps a new release actionable while offering cleanup for an older collisi
   assert.match(html, /only this Gateway is affected/);
   assert.match(html, /Create update session/);
 });
+
+test("offers installation when the maintenance Agent already staged the target", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [nodes[0]!],
+    runtimeByNode: {
+      "node-office": {
+        state: "online",
+        maintenanceSessionId: "gateway-update-existing",
+        status: {
+          version: 1,
+          phase: "staged",
+          releaseId: "older-staged-release",
+          targetBuildId: "gateway-staged-arm64",
+          currentBuildId: "gateway-old-arm64",
+          updatedAt: 1,
+        },
+      },
+    },
+    activeGatewayNodeId: null,
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+  }));
+
+  assert.match(html, /gateway-staged-arm64.*staged locally and ready to install/);
+  assert.match(html, /Install staged update/);
+});
+
+test("treats a verified installed build as complete without cleanup warnings", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [nodes[1]!],
+    runtimeByNode: {
+      "node-server": {
+        state: "online",
+        maintenanceSessionId: "gateway-update-shared-old",
+        maintenanceSessionAmbiguous: true,
+        maintenanceSessionArchiveAvailable: true,
+        legacyMaintenanceSessionId: "gateway-update-even-older",
+        legacyMaintenanceSessionArchiveAvailable: true,
+        status: {
+          version: 1,
+          phase: "agent_running",
+          releaseId: release.releaseId,
+          targetBuildId: release.buildId,
+          currentBuildId: release.buildId,
+          updatedAt: 1,
+        },
+      },
+    },
+    activeGatewayNodeId: null,
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+  }));
+
+  assert.match(html, /Installed build verified/);
+  assert.doesNotMatch(html, /left by an older Malink version/);
+  assert.doesNotMatch(html, /Archive old update session/);
+  assert.doesNotMatch(html, /Maintenance Agent running/);
+});

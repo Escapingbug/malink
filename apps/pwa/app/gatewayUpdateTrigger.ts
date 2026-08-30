@@ -108,6 +108,55 @@ export function gatewayUpdateTarget(
 }
 
 /**
+ * A directory build is a durable discovery hint. Once the named Gateway has
+ * answered a signed live-status command, its supervisor-observed installed
+ * build is authoritative for that checked point in time.
+ */
+export function gatewayUpdatePlanNodeWithLiveStatus(input: {
+  node: GatewayUpdatePlanNode;
+  release: GatewayReleaseBuild;
+  status: GatewayUpdateStatus | undefined;
+}): GatewayUpdatePlanNode {
+  const currentBuildId = input.status?.currentBuildId;
+  if (!currentBuildId) return input.node;
+  const state = currentBuildId === input.release.buildId
+    ? "current"
+    : !input.node.onlineUpdate
+      ? "manual"
+      : !input.node.targetProjectId
+        ? "unrouted"
+        : "available";
+  return {
+    ...input.node,
+    currentBuildId,
+    state,
+  };
+}
+
+export function gatewayUpdateStatusNeedsPolling(
+  status: GatewayUpdateStatus | undefined,
+): boolean {
+  return status !== undefined && [
+    "staging",
+    "agent_required",
+    "agent_running",
+    "agent_validating",
+    "waiting_for_idle",
+    "scheduled",
+    "activating",
+    "probation",
+  ].includes(status.phase);
+}
+
+export function gatewayUpdateCanApplyStaged(input: {
+  status: GatewayUpdateStatus | undefined;
+}): boolean {
+  return input.status?.phase === "staged" &&
+    Boolean(input.status.releaseId) &&
+    Boolean(input.status.targetBuildId);
+}
+
+/**
  * Detect maintenance IDs that cannot safely identify one Gateway session.
  *
  * Gateways released before node-scoped update identities derived this value

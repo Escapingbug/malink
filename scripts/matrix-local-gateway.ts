@@ -832,7 +832,7 @@ runner = new MatrixMlp3GatewayRunner(config, {
 await runner.start()
 await synchronizeWorkspaceControl()
 const workspaceControlTimer = setInterval(() => {
-    void synchronizeWorkspaceControl().catch(error => {
+    void synchronizeWorkspaceControl(publishLocalWorkspaceDirectory).catch(error => {
         process.stderr.write(`[workspace-control] synchronization failed: ${formatError(error)}\n`)
     })
 }, config.gatewayHeartbeatIntervalMs ?? 30_000)

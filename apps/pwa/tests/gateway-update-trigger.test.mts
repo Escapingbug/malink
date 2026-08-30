@@ -3,7 +3,10 @@ import test from "node:test";
 import type { SignedWorkspaceGatewayDirectory } from "@malink/protocol";
 import {
   collidingGatewayMaintenanceSessionIds,
+  gatewayUpdateCanApplyStaged,
   gatewayUpdatePlan,
+  gatewayUpdatePlanNodeWithLiveStatus,
+  gatewayUpdateStatusNeedsPolling,
   gatewayUpdateTarget,
   legacyGatewayMaintenanceSessionsByNode,
   recoverAmbiguousGatewayUpdateCompletion,
@@ -243,6 +246,76 @@ test("routes the newest active legacy maintenance collision to each exact node",
 
   assert.equal(sessions.get("node-a")?.id, "gateway-update-shared-old");
   assert.equal(sessions.get("node-b")?.id, "gateway-update-shared-new");
+});
+
+test("lets a signed live status correct a stale directory build", () => {
+  const node = gatewayUpdatePlanNodeWithLiveStatus({
+    node: {
+      gatewayNodeId: "node-a",
+      gatewayName: "Gateway A",
+      currentBuildId: "gateway-new",
+      targetProjectId: "project-a",
+      onlineUpdate: true,
+      state: "current",
+    },
+    release: {
+      releaseId: "release-new",
+      buildId: "gateway-new",
+    },
+    status: {
+      version: 1,
+      phase: "staged",
+      releaseId: "release-new",
+      targetBuildId: "gateway-new",
+      currentBuildId: "gateway-old",
+      updatedAt: 10,
+    },
+  });
+
+  assert.equal(node.currentBuildId, "gateway-old");
+  assert.equal(node.state, "available");
+});
+
+test("recognizes phases that need automatic progress checks", () => {
+  const status = (phase: "agent_running" | "staged" | "probation") => ({
+    version: 1 as const,
+    phase,
+    updatedAt: 10,
+  });
+  assert.equal(gatewayUpdateStatusNeedsPolling(status("agent_running")), true);
+  assert.equal(gatewayUpdateStatusNeedsPolling(status("probation")), true);
+  assert.equal(gatewayUpdateStatusNeedsPolling(status("staged")), false);
+});
+
+test("offers activation for any complete staged release identity", () => {
+  assert.equal(gatewayUpdateCanApplyStaged({
+    status: {
+      version: 1,
+      phase: "staged",
+      releaseId: "release-older-than-channel",
+      targetBuildId: "gateway-staged",
+      currentBuildId: "gateway-older",
+      updatedAt: 10,
+    },
+  }), true);
+  assert.equal(gatewayUpdateCanApplyStaged({
+    status: {
+      version: 1,
+      phase: "agent_running",
+      releaseId: "release-new",
+      targetBuildId: "gateway-new",
+      currentBuildId: "gateway-old",
+      updatedAt: 10,
+    },
+  }), false);
+  assert.equal(gatewayUpdateCanApplyStaged({
+    status: {
+      version: 1,
+      phase: "staged",
+      currentBuildId: "gateway-old",
+      updatedAt: 10,
+    },
+  }), false);
 });
 
 function gateway(

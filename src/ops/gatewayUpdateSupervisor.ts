@@ -171,6 +171,37 @@ export class GatewayUpdateSupervisor {
     const installedBuildId = await this.installedBuildId()
     return this.stateFile.transaction(defaultState, state => {
       validateState(state)
+      const targetReleaseId = state.status.releaseId
+      const installedTarget = installedBuildId !== undefined
+        && targetReleaseId !== undefined
+        && state.status.targetBuildId === installedBuildId
+        && [
+          'agent_required',
+          'agent_running',
+          'agent_validating',
+          'staged',
+        ].includes(state.status.phase)
+      if (installedTarget) {
+        state.agentOwnerCommandId = undefined
+        state.scheduledAt = undefined
+        state.previousTarget = undefined
+        state.status = {
+          version: 1,
+          phase: 'committed',
+          ...(state.status.updateId ? { updateId: state.status.updateId } : {}),
+          releaseId: targetReleaseId,
+          targetBuildId: installedBuildId,
+          currentBuildId: installedBuildId,
+          ...(state.status.previousReleaseId
+            ? { previousReleaseId: state.status.previousReleaseId }
+            : {}),
+          ...(state.status.maintenanceSessionId
+            ? { maintenanceSessionId: state.status.maintenanceSessionId }
+            : {}),
+          updatedAt: this.now(),
+        }
+        return { result: structuredClone(state.status), changed: true }
+      }
       const changed = installedBuildId !== undefined
         && state.status.currentBuildId !== installedBuildId
         && [
