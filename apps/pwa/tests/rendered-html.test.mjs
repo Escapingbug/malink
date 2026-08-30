@@ -180,7 +180,11 @@ test("ships a complete installable offline shell", async () => {
     /error instanceof CommandCompletionTimeoutError && commandId !== null && probe[\s\S]*?state: "unreachable"/,
   );
   assert.match(source, /connection\.recoverCommand\(probe\.commandId\)/);
-  assert.match(source, /if \(!await releaseProbe\(commandId, false\)\)[\s\S]*?observeLateCompletion\(probe\)/);
+  assert.match(
+    source,
+    /error instanceof CommandCompletionTimeoutError[\s\S]*?connection\.recoverCommand\(commandId\)[\s\S]*?observeLateCompletion\(probe\)/,
+  );
+  assert.doesNotMatch(source, /releaseProbe\(commandId, false\)/);
   assert.match(source, /gatewayUpdateProbe\.consume\(result\)/);
   assert.doesNotMatch(source, /state: "pending"[\s\S]*?Recovering the signed reply/);
   assert.match(

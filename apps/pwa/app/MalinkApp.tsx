@@ -6469,10 +6469,7 @@ function MalinkAppRuntime() {
       }));
       return status;
     };
-    const releaseProbe = async (
-      completedCommandId: string,
-      terminal: boolean,
-    ): Promise<boolean> => {
+    const releaseProbe = async (completedCommandId: string): Promise<boolean> => {
       const pending = gatewayUpdateProbeCommandsRef.current.get(gatewayNodeId);
       if (pending?.commandId !== completedCommandId) return false;
       try {
@@ -6480,7 +6477,6 @@ function MalinkAppRuntime() {
         if (!connection) return false;
         await connection.releaseCommand(completedCommandId);
       } catch (error) {
-        if (!terminal) return false;
         console.warn(
           `[gateway-update/probe-release] ${formatUiError(error)}`,
           error,
@@ -6549,7 +6545,7 @@ function MalinkAppRuntime() {
               }));
               return null;
             } finally {
-              void releaseProbe(completion.commandId, true);
+              void releaseProbe(completion.commandId);
             }
           },
         };
@@ -6585,9 +6581,27 @@ function MalinkAppRuntime() {
           consecutiveNoReplies: liveness.consecutiveNoReplies,
           detail: liveness.detail,
         }));
-        if (!await releaseProbe(commandId, false)) {
-          observeLateCompletion(probe);
+        // A timeout is not a terminal result. Keep the exact read-only command
+        // durable and ask the native host to reconcile it through the Gateway
+        // journal and bounded Matrix history. Releasing here would discard the
+        // command identity immediately before the recovery path can use it.
+        try {
+          const connection = malinkClientRef.current;
+          if (!connection) throw new Error("The connected client is unavailable.");
+          const recovered = await connection.recoverCommand(commandId);
+          if (recovered.commandId !== probe.commandId) {
+            gatewayUpdateProbeCommandsRef.current.delete(gatewayNodeId);
+            probe.commandId = recovered.commandId;
+          }
+          probe.completion = recovered.completion;
+          gatewayUpdateProbeCommandsRef.current.set(gatewayNodeId, probe);
+        } catch (recoveryError) {
+          console.warn(
+            `[gateway-update/probe-recovery] ${formatUiError(recoveryError)}`,
+            recoveryError,
+          );
         }
+        observeLateCompletion(probe);
         return null;
       }
       const detail = commandId === null
