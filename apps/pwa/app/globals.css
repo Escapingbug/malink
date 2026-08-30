@@ -7413,11 +7413,20 @@ select:focus-visible {
 }
 
 .gateway-update-live-checking > span:first-child,
-.gateway-update-live-pending > span:first-child,
 .gateway-update-live-starting > span:first-child {
   border-color: #7765df;
   border-top-color: transparent;
   animation: motion-spin 720ms linear infinite;
+}
+
+.gateway-update-live-unreachable > span:first-child {
+  border-color: #c28a35;
+  background: #e0aa57;
+}
+
+.gateway-update-live-unreachable strong,
+.gateway-update-live-unreachable small {
+  color: #8a642b;
 }
 
 .gateway-update-live-error > span:first-child {

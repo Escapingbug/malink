@@ -8,7 +8,7 @@ import type { GatewayUpdatePlanNode } from "./gatewayUpdateTrigger";
 import { gatewayProjectOwner } from "./projectCatalog";
 
 export type GatewayUpdateNodeRuntime = {
-  state: "unchecked" | "checking" | "pending" | "online" | "starting" | "error";
+  state: "unchecked" | "checking" | "unreachable" | "online" | "starting" | "error";
   releaseKey?: string;
   checkedAt?: number;
   startedAt?: number;
@@ -159,7 +159,7 @@ function GatewayUpdateDialogContent({
 
                 <div
                   className={`gateway-update-live gateway-update-live-${runtime.state}`}
-                  role={runtime.state === "error" ? "alert" : "status"}
+                  role={runtime.state === "error" || runtime.state === "unreachable" ? "alert" : "status"}
                 >
                   <span aria-hidden="true" />
                   <span>
@@ -184,15 +184,14 @@ function GatewayUpdateDialogContent({
                       className="secondary-button"
                       disabled={
                         runtime.state === "checking" ||
-                        runtime.state === "pending" ||
                         activeGatewayNodeId !== null
                       }
                       onClick={() => onProbe(node)}
                     >
                       {runtime.state === "checking"
                         ? "Checking…"
-                        : runtime.state === "pending"
-                          ? "Recovering same reply…"
+                        : runtime.state === "unreachable"
+                          ? "Retry live check"
                           : "Check live status"}
                     </button>
                   )}
@@ -253,7 +252,7 @@ function runtimeStateTitle(
   node: GatewayUpdatePlanNode,
 ): string {
   if (runtime.state === "checking") return "Checking this Gateway…";
-  if (runtime.state === "pending") return "Recovering the signed reply…";
+  if (runtime.state === "unreachable") return "No live reply";
   if (runtime.state === "starting") return "Update requested by this device";
   if (runtime.state === "error") return "Update needs attention";
   if (runtime.state === "online") return "Online now";
@@ -271,9 +270,9 @@ function runtimeStateDetail(
   if (runtime.state === "checking") {
     return "Waiting for a signed terminal reply from this node.";
   }
-  if (runtime.state === "pending") {
+  if (runtime.state === "unreachable") {
     return runtime.detail ??
-      "The request is saved. This client is catching up with Matrix and will update automatically without submitting it again.";
+      "Matrix accepted the status request, but this Gateway did not return a signed reply. Check that the named computer and Malink Gateway Host are running, then retry.";
   }
   if (runtime.state === "starting") {
     return runtime.maintenanceSessionId

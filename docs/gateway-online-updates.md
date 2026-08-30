@@ -193,6 +193,16 @@ confirms one exact node, which sends `stage` and creates the visible maintenance
 Agent session for that Gateway and release. Multiple nodes are updated as
 separate confirmed operations so it is always clear which node is executing.
 
+The live check has a bounded foreground wait. If no signed reply arrives within
+12 seconds, the node becomes `No live reply`, identifies the named Gateway
+computer as the component to check, and immediately offers a retry. An
+unanswered `gateway.update.status` is safe to retire because it is strictly
+read-only; Android preserves an idempotency tombstone, and a newer status probe
+for the same project atomically retires older unfinished probes. No other MLP/3
+command gains this exception: unfinished session, Prompt, cancel, update-stage,
+and update-apply commands remain durable until an authenticated terminal result
+or an existing authoritative retirement rule applies.
+
 The `Gateway software` row remains visible whenever App & updates is available.
 Gateway release discovery resolves `gateway-agent-updates/latest.json` below the
 compiled static-service base path. Root-hosted services therefore use

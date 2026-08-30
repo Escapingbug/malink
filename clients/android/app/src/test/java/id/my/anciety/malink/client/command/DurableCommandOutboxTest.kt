@@ -153,6 +153,102 @@ class DurableCommandOutboxTest {
     }
 
     @Test
+    fun `unfinished mutations cannot be released`() {
+        val fixture = fixture()
+        val receipt = fixture.outbox.enqueue(
+            UUID.randomUUID().toString(),
+            payload("prompt", "keep-running"),
+            "session-1",
+        )
+        fixture.outbox.claimForTransmission(receipt.commandId)
+        fixture.outbox.recordPublished(receipt.commandId, "\$prompt-event")
+
+        assertThrows(IllegalArgumentException::class.java) {
+            fixture.outbox.release(receipt.commandId)
+        }
+        assertEquals(CommandState.PUBLISHED, fixture.outbox.get(receipt.commandId)?.state)
+    }
+
+    @Test
+    fun `unfinished read-only Gateway status probe can be released safely`() {
+        val fixture = fixture()
+        val key = UUID.randomUUID().toString()
+        val body = payload("gateway.update.status")
+        val receipt = fixture.outbox.enqueue(key, body, projectId = "project-a")
+        fixture.outbox.claimForTransmission(receipt.commandId)
+        fixture.outbox.recordPublished(receipt.commandId, "\$status-event")
+
+        assertTrue(fixture.outbox.release(receipt.commandId))
+        assertNull(fixture.outbox.get(receipt.commandId))
+        assertThrows(ReleasedCommandException::class.java) {
+            fixture.outbox.enqueue(key, body, projectId = "project-a")
+        }
+    }
+
+    @Test
+    fun `new Gateway status probe retires older probes only on the same project`() {
+        val fixture = fixture()
+        val firstKey = UUID.randomUUID().toString()
+        val first = fixture.outbox.enqueue(
+            firstKey,
+            payload("gateway.update.status"),
+            projectId = "project-a",
+        )
+        fixture.outbox.claimForTransmission(first.commandId)
+        fixture.outbox.recordPublished(first.commandId, "\$status-a-old")
+        val other = fixture.outbox.enqueue(
+            UUID.randomUUID().toString(),
+            payload("gateway.update.status"),
+            projectId = "project-b",
+        )
+        assertEquals(
+            listOf(first.commandId),
+            fixture.outbox.unfinishedGatewayStatusProbeIds("project-a"),
+        )
+
+        val replacement = fixture.outbox.enqueue(
+            UUID.randomUUID().toString(),
+            payload("gateway.update.status"),
+            projectId = "project-a",
+        )
+
+        assertNull(fixture.outbox.get(first.commandId))
+        assertEquals(
+            listOf(replacement.commandId),
+            fixture.outbox.unfinishedGatewayStatusProbeIds("project-a"),
+        )
+        assertEquals(other.commandId, fixture.outbox.get(other.commandId)?.commandId)
+        assertEquals(replacement.commandId, fixture.outbox.get(replacement.commandId)?.commandId)
+        assertThrows(ReleasedCommandException::class.java) {
+            fixture.outbox.enqueue(
+                firstKey,
+                payload("gateway.update.status"),
+                projectId = "project-a",
+            )
+        }
+    }
+
+    @Test
+    fun `duplicate Gateway status idempotency keeps its original command`() {
+        val fixture = fixture()
+        val key = UUID.randomUUID().toString()
+        val first = fixture.outbox.enqueue(
+            key,
+            payload("gateway.update.status"),
+            projectId = "project-a",
+        )
+
+        val duplicate = fixture.outbox.enqueue(
+            key,
+            payload("gateway.update.status"),
+            projectId = "project-a",
+        )
+
+        assertEquals(first, duplicate)
+        assertEquals(first.commandId, fixture.outbox.list().single().commandId)
+    }
+
+    @Test
     fun `failed durable write leaves the in-memory state unchanged`() {
         val store = FailingStore()
         val outbox = DurableCommandOutbox(store, MutableClock(), QueueIds())

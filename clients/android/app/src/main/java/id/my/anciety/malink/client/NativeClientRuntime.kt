@@ -918,12 +918,33 @@ class NativeClientRuntime(
                 validatedPayload,
                 activeTrust.certificate.allowedOperations,
             )
+            val supersededStatusProbeIds = if (
+                validatedPayload.operation == CommandOperation.GATEWAY_UPDATE_STATUS
+            ) {
+                outbox.unfinishedGatewayStatusProbeIds(projectId)
+            } else {
+                emptyList()
+            }
             val receipt = outbox.enqueue(
                 idempotencyKey,
                 payload,
                 payload.string("sessionId"),
                 projectId,
             )
+            if (receipt.commandId !in supersededStatusProbeIds) {
+                supersededStatusProbeIds.forEach { supersededCommandId ->
+                    cancelCommandTransmission(supersededCommandId)
+                    cancelScheduledCommandRecovery(supersededCommandId)
+                    cancelPublishedCommandResultRecovery(supersededCommandId)
+                    matrixMlp3CommandContent.remove(supersededCommandId)
+                }
+                if (supersededStatusProbeIds.isNotEmpty()) {
+                    diagnostics.record(
+                        "command.status_probe.superseded",
+                        mapOf("count" to supersededStatusProbeIds.size.toString()),
+                    )
+                }
+            }
             val current = outbox.get(receipt.commandId) ?: error("Durable command disappeared.")
             if (current.state == DurableState.QUEUED) {
                 launchCommandTransmission(current.commandId, recovery = false)
@@ -1029,6 +1050,13 @@ class NativeClientRuntime(
     }
 
     fun releaseCommand(commandId: String): Boolean {
+        val current = outbox.get(commandId) ?: return false
+        val operation = outbox.operation(commandId)
+        require(
+            current.state.isTerminal || operation == CommandOperation.GATEWAY_UPDATE_STATUS,
+        ) {
+            "Only completed commands and read-only Gateway status probes can be released."
+        }
         cancelCommandTransmission(commandId)
         cancelScheduledCommandRecovery(commandId)
         cancelPublishedCommandResultRecovery(commandId)

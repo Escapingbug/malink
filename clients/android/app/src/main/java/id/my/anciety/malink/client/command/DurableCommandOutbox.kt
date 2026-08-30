@@ -87,7 +87,22 @@ class DurableCommandOutbox internal constructor(
                 "Command ${released.commandId} was already completed and released; it will not be executed again.",
             )
         }
-        require(snapshot.commands.size < MAX_ACTIVE_COMMANDS) {
+        val supersededStatusProbes = if (
+            validatedPayload.operation == CommandOperation.GATEWAY_UPDATE_STATUS
+        ) {
+            snapshot.commands.filter { candidate ->
+                !candidate.state.isTerminal &&
+                    candidate.projectId == projectId &&
+                    CommandPayloadValidator.validate(candidate.payload).operation ==
+                    CommandOperation.GATEWAY_UPDATE_STATUS
+            }
+        } else {
+            emptyList()
+        }
+        require(snapshot.released.size + supersededStatusProbes.size <= MAX_RELEASED_TOMBSTONES) {
+            "The released-command safety ledger is full; revoke this native account before clearing it."
+        }
+        require(snapshot.commands.size - supersededStatusProbes.size < MAX_ACTIVE_COMMANDS) {
             "Release completed commands before adding another command."
         }
         val now = nonnegativeNow()
@@ -109,7 +124,12 @@ class DurableCommandOutbox internal constructor(
             completion = null,
             payload = payload,
         )
-        commit(snapshot.copy(commands = snapshot.commands + command))
+        commit(snapshot.copy(
+            commands = snapshot.commands - supersededStatusProbes.toSet() + command,
+            released = snapshot.released + supersededStatusProbes.map { candidate ->
+                candidate.toReleasedTombstone(now)
+            },
+        ))
         return command.toView().toReceipt()
     }
 
@@ -245,20 +265,27 @@ class DurableCommandOutbox internal constructor(
     fun list(): List<CommandView> = snapshot.commands.map(PersistedCommand::toView)
 
     @Synchronized
+    fun unfinishedGatewayStatusProbeIds(projectId: String?): List<String> =
+        snapshot.commands.filter { candidate ->
+            !candidate.state.isTerminal &&
+                candidate.projectId == projectId &&
+                CommandPayloadValidator.validate(candidate.payload).operation ==
+                CommandOperation.GATEWAY_UPDATE_STATUS
+        }.map(PersistedCommand::commandId)
+
+    @Synchronized
     fun release(commandId: String): Boolean {
         val command = findCurrent(commandId) ?: return false
-        require(command.state.isTerminal) { "Only completed commands can be released." }
+        val operation = CommandPayloadValidator.validate(command.payload).operation
+        require(
+            command.state.isTerminal || operation == CommandOperation.GATEWAY_UPDATE_STATUS,
+        ) {
+            "Only completed commands and read-only Gateway status probes can be released."
+        }
         require(snapshot.released.size < MAX_RELEASED_TOMBSTONES) {
             "The released-command safety ledger is full; revoke this native account before clearing it."
         }
-        val tombstone = ReleasedCommandTombstone(
-            operationId = command.operationId,
-            commandId = command.commandId,
-            retiredCommandIds = command.retiredCommandIds,
-            idempotencyKey = command.idempotencyKey,
-            requestFingerprint = command.requestFingerprint,
-            releasedAt = nonnegativeNow(),
-        )
+        val tombstone = command.toReleasedTombstone(nonnegativeNow())
         commit(snapshot.copy(commands = snapshot.commands - command, released = snapshot.released + tombstone))
         return true
     }
@@ -280,14 +307,7 @@ class DurableCommandOutbox internal constructor(
         require(snapshot.released.size < MAX_RELEASED_TOMBSTONES) {
             "The released-command safety ledger is full; revoke this native account before clearing it."
         }
-        val tombstone = ReleasedCommandTombstone(
-            operationId = command.operationId,
-            commandId = command.commandId,
-            retiredCommandIds = command.retiredCommandIds,
-            idempotencyKey = command.idempotencyKey,
-            requestFingerprint = command.requestFingerprint,
-            releasedAt = nonnegativeNow(),
-        )
+        val tombstone = command.toReleasedTombstone(nonnegativeNow())
         commit(snapshot.copy(commands = snapshot.commands - command, released = snapshot.released + tombstone))
         return true
     }
@@ -360,6 +380,16 @@ private fun PersistedCommand.toTransmission(recovery: Boolean) = CommandTransmis
     payload = payload,
     recovery = recovery,
 )
+
+private fun PersistedCommand.toReleasedTombstone(releasedAt: Long) =
+    ReleasedCommandTombstone(
+        operationId = operationId,
+        commandId = commandId,
+        retiredCommandIds = retiredCommandIds,
+        idempotencyKey = idempotencyKey,
+        requestFingerprint = requestFingerprint,
+        releasedAt = releasedAt,
+    )
 
 private fun PersistedCommand.toView() = CommandView(
     operationId = operationId,
