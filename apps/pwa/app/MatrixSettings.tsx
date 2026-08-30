@@ -38,6 +38,10 @@ import { gatewayProjectOwner } from "./projectCatalog";
 import { injectedNativeBridgePort } from "./client/native/NativeRpcBridge";
 import { nativeUpdateDownloadProgress } from "./nativeUpdatePolling";
 import { gatewayUpdateSettingsPresentation } from "./gatewayUpdateSettingsPresentation";
+import {
+  gatewayNodeLivenessPresentation,
+  type GatewayNodeLiveness,
+} from "./gatewayNodeLiveness";
 
 export const OFFICIAL_ANDROID_RELEASES_URL =
   "https://github.com/Escapingbug/malink/releases";
@@ -65,6 +69,8 @@ type Props = {
   gatewayEnrollmentError: string | null;
   gatewayProfileBusy: string | null;
   gatewayProfileError: string | null;
+  gatewayNodeLivenessById: Readonly<Record<string, GatewayNodeLiveness>>;
+  gatewayLivenessNow: number;
   gatewayRelease: GatewayReleaseBuild | null;
   gatewayUpdateAvailableCount: number;
   gatewayUpdateNodeCount: number;
@@ -95,6 +101,7 @@ type Props = {
     gatewayName: string,
     targetProjectId: string,
   ): Promise<void>;
+  onCheckGatewayLiveness(gatewayNodeId: string): void;
   onReviewGatewayUpdates(): void;
   onRetryGatewayUpdateDiscovery(): void;
   onReconnectGatewayUpdates(): void;
@@ -137,6 +144,8 @@ function MatrixSettingsDialog({
   gatewayEnrollmentError,
   gatewayProfileBusy,
   gatewayProfileError,
+  gatewayNodeLivenessById,
+  gatewayLivenessNow,
   gatewayRelease,
   gatewayUpdateAvailableCount,
   gatewayUpdateNodeCount,
@@ -163,6 +172,7 @@ function MatrixSettingsDialog({
   onApproveGatewayEnrollment,
   onClearGatewayEnrollment,
   onRenameGateway,
+  onCheckGatewayLiveness,
   onReviewGatewayUpdates,
   onRetryGatewayUpdateDiscovery,
   onReconnectGatewayUpdates,
@@ -233,6 +243,7 @@ function MatrixSettingsDialog({
       gatewayName: gateway.gatewayName,
       computerName: gateway.computerName,
       buildId: gateway.buildId,
+      onlineUpdate: gateway.onlineUpdate === true,
       targetProjectId: gateway.projects?.[0]?.projectId,
     }),
   );
@@ -246,6 +257,7 @@ function MatrixSettingsDialog({
         gatewayName: gateway.gatewayName,
         computerName: undefined as string | undefined,
         buildId: undefined as string | undefined,
+        onlineUpdate: false,
         targetProjectId: undefined as string | undefined,
       }));
   const gatewayProfiles = directoryGatewayProfiles.length > 0
@@ -433,6 +445,22 @@ function MatrixSettingsDialog({
                 );
                 const editing = editingGatewayNodeId === gatewayProfileId;
                 const targetProjectId = gateway.targetProjectId;
+                const liveCheckAvailable = gateway.onlineUpdate && Boolean(targetProjectId);
+                const liveness = gatewayNodeLivenessPresentation(
+                  liveCheckAvailable
+                    ? gatewayNodeLivenessById[gatewayProfileId]
+                    : {
+                        state: "unavailable",
+                        detail: targetProjectId
+                          ? "This Gateway build does not advertise the signed live-status capability."
+                          : "This client has no synchronized project route for a signed live check.",
+                      },
+                  gatewayLivenessNow,
+                );
+                const lastVerified = gatewayLastVerifiedText(
+                  gatewayNodeLivenessById[gatewayProfileId]?.lastVerifiedAt,
+                  gatewayLivenessNow,
+                );
                 return (
                   <div
                     key={gatewayProfileId}
@@ -449,6 +477,18 @@ function MatrixSettingsDialog({
                       <small title={gateway.buildId ?? "This Gateway did not report a build ID"}>
                         Build: {gateway.buildId ?? "Not reported"} · Node {gatewayIdentity.shortId}
                       </small>
+                      <span
+                        className={`gateway-profile-liveness gateway-profile-liveness-${liveness.state}`}
+                        aria-live="polite"
+                      >
+                        <i aria-hidden="true" />
+                        <span>
+                          <strong>{liveness.label}</strong>
+                          <small>
+                            {liveness.detail}{lastVerified ? ` ${lastVerified}` : ""}
+                          </small>
+                        </span>
+                      </span>
                       {editing && (
                         <form
                           className="gateway-profile-rename"
@@ -501,19 +541,38 @@ function MatrixSettingsDialog({
                     {editing ? (
                       <b aria-hidden="true">✓</b>
                     ) : (
-                      <button
-                        type="button"
-                        disabled={busy || !gatewayManagementReady || !targetProjectId}
-                        title={targetProjectId
-                          ? `Rename ${gatewayIdentity.label}`
-                          : "This Gateway has no available project route"}
-                        onClick={() => {
-                          setEditingGatewayNodeId(gatewayProfileId);
-                          setGatewayNameDraft(gateway.gatewayName);
-                        }}
-                      >
-                        Rename
-                      </button>
+                      <span className="gateway-profile-actions">
+                        <button
+                          type="button"
+                          disabled={
+                            busy ||
+                            !gatewayManagementReady ||
+                            !liveCheckAvailable ||
+                            !liveness.canCheck
+                          }
+                          title={liveness.detail}
+                          onClick={() => onCheckGatewayLiveness(gatewayProfileId)}
+                        >
+                          {liveness.state === "checking"
+                            ? "Checking…"
+                            : liveness.state === "unreachable"
+                              ? "Retry live check"
+                              : "Check live status"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy || !gatewayManagementReady || !targetProjectId}
+                          title={targetProjectId
+                            ? `Rename ${gatewayIdentity.label}`
+                            : "This Gateway has no available project route"}
+                          onClick={() => {
+                            setEditingGatewayNodeId(gatewayProfileId);
+                            setGatewayNameDraft(gateway.gatewayName);
+                          }}
+                        >
+                          Rename
+                        </button>
+                      </span>
                     )}
                   </div>
                 );
@@ -1012,6 +1071,24 @@ function currentDocumentBaseUrl(): string {
   } catch {
     return document.baseURI;
   }
+}
+
+function gatewayLastVerifiedText(
+  lastVerifiedAt: number | undefined,
+  now: number,
+): string | null {
+  if (lastVerifiedAt === undefined) return null;
+  const elapsed = Math.max(0, now - lastVerifiedAt);
+  if (elapsed < 60_000) return "Last verified just now.";
+  if (elapsed < 60 * 60_000) {
+    const minutes = Math.floor(elapsed / 60_000);
+    return `Last verified ${minutes} ${minutes === 1 ? "minute" : "minutes"} ago.`;
+  }
+  if (elapsed < 24 * 60 * 60_000) {
+    const hours = Math.floor(elapsed / (60 * 60_000));
+    return `Last verified ${hours} ${hours === 1 ? "hour" : "hours"} ago.`;
+  }
+  return `Last verified ${new Date(lastVerifiedAt).toLocaleString()}.`;
 }
 
 function updateStatusText(state: PwaUpdateState): string {

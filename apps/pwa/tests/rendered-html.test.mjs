@@ -344,8 +344,11 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /className="gateway-mobile-status-copy"/);
   assert.match(
     source,
-    /title=\{`Connection: \$\{mobileConnectionSignal\.label\}`\}/,
+    /title=\{`Connection: \$\{mobileConnectionSignal\.label\}\$\{/,
   );
+  assert.match(source, /Gateways: \$\{gatewayNodeSummary\}/);
+  assert.match(source, /gatewayNodeLivenessPresentation\(/);
+  assert.match(source, /onCheckGatewayLiveness=/);
   assert.match(
     styles,
     /\.gateway-mobile-status-copy\s*\{[\s\S]*?min-width:\s*0;[\s\S]*?text-overflow:\s*ellipsis/,

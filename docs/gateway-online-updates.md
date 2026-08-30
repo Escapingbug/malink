@@ -203,6 +203,19 @@ command gains this exception: unfinished session, Prompt, cancel, update-stage,
 and update-apply commands remain durable until an authenticated terminal result
 or an existing authoritative retirement rule applies.
 
+Workspace membership and the signed Gateway Directory are inventory, not
+presence. The main Gateway card, computer filter, and Settings therefore keep a
+separate status for every stable `gatewayNodeId`. A fresh signed status reply is
+shown as `Online now`; that proof expires after 90 seconds instead of remaining
+green indefinitely. A request accepted by Matrix without a signed reply becomes
+`Not responding`, while a route or capability mismatch is shown as `Live check
+unavailable`. Malink checks once after each Matrix client start and when the app
+returns to the foreground after the prior check is old; it does not create a
+continuous Matrix-command heartbeat. Manual retry remains available per node.
+This visibility does not turn liveness into execution authority or a global
+write lock: ordinary authenticated commands remain durable and may wait for an
+offline Gateway to return.
+
 The `Gateway software` row remains visible whenever App & updates is available.
 Gateway release discovery resolves `gateway-agent-updates/latest.json` below the
 compiled static-service base path. Root-hosted services therefore use

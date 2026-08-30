@@ -6271,6 +6271,65 @@ select:focus-visible {
   flex: 0 0 auto;
 }
 
+.gateway-profile-liveness {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 8px;
+  color: #60697a;
+}
+
+.gateway-profile-liveness > i {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+
+.gateway-profile-liveness > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.gateway-profile-liveness strong {
+  font-size: 12px;
+}
+
+.gateway-profile-liveness-online > i {
+  background: var(--green);
+  box-shadow: 0 0 0 3px rgb(40 175 119 / 10%);
+}
+
+.gateway-profile-liveness-unreachable > i {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgb(188 68 82 / 10%);
+}
+
+.gateway-profile-liveness-checking > i {
+  background: #8a72df;
+  box-shadow: 0 0 0 3px rgb(138 114 223 / 12%);
+}
+
+.gateway-profile-liveness-stale > i,
+.gateway-profile-liveness-unavailable > i {
+  background: #a7acb8;
+}
+
+.gateway-profile-actions {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 6px;
+  justify-items: stretch;
+}
+
+.gateway-profile-actions button {
+  min-height: 32px;
+  white-space: nowrap;
+}
+
 .gateway-profile-rename {
   display: grid;
   gap: 8px;

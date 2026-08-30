@@ -396,6 +396,14 @@ as an external prerequisite and is retried automatically; the client does not
 present a no-op “check again” button. Release discovery, Workspace projection,
 and Gateway liveness remain separate visible states, so a missing prerequisite
 never hides the Gateway software panel or masquerades as another layer's retry.
+The signed Gateway Directory establishes stable node identity and project
+ownership, but it is not a presence service. Clients keep independent
+short-lived liveness evidence per `gatewayNodeId`: only a fresh authenticated
+reply proves `Online now`, that proof expires locally, and an accepted request
+without a reply is presented as `Not responding`. Foreground checks are bounded
+and sparse rather than a continuous Matrix-command heartbeat. Liveness remains
+presentation evidence only; it neither authorizes execution nor prevents a
+durable command from waiting for its owning Gateway to return.
 If a bounded journal check receives no signed reply, the client records the
 check time and presents that outcome separately from the command's unchanged
 durable timestamp. Gateway software is always the recovery action: a known
