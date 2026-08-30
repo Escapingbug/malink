@@ -51,6 +51,23 @@ test("discovers the published Gateway release from the signed Prompt", async () 
   assert.equal(request?.init?.cache, "no-store");
 });
 
+test("discovers the Gateway release below a static-service base path", async () => {
+  let requestUrl: string | undefined;
+  const fetcher = (async (input: string | URL | Request) => {
+    requestUrl = String(input);
+    return new Response(JSON.stringify(signedPrompt), { status: 200 });
+  }) as typeof fetch;
+
+  assert.deepEqual(
+    await discoverLatestGatewayAgentUpdate(fetcher, undefined, "/malink/"),
+    {
+      releaseId: "2026.08.26.4",
+      buildId: "gateway-2026.08.26.4-arm64",
+    },
+  );
+  assert.equal(requestUrl, "/malink/gateway-agent-updates/latest.json");
+});
+
 test("treats an unconfigured update route as no published release", async () => {
   const fetcher = (async () => new Response("missing", { status: 404 })) as typeof fetch;
   assert.equal(await discoverLatestGatewayAgentUpdate(fetcher), null);

@@ -1,14 +1,15 @@
 import { signedGatewayAgentUpdatePromptSchema } from "@malink/protocol";
-import type { GatewayReleaseBuild } from "./buildInfo";
+import { MALINK_BASE_PATH, type GatewayReleaseBuild } from "./buildInfo";
 
-const LATEST_GATEWAY_AGENT_UPDATE_PATH = "/gateway-agent-updates/latest.json";
+const LATEST_GATEWAY_AGENT_UPDATE_PATH = "gateway-agent-updates/latest.json";
 const MAX_PROMPT_BYTES = 128 * 1024;
 
 export async function discoverLatestGatewayAgentUpdate(
   fetcher: typeof fetch = fetch,
   signal?: AbortSignal,
+  basePath = MALINK_BASE_PATH,
 ): Promise<GatewayReleaseBuild | null> {
-  const response = await fetcher(LATEST_GATEWAY_AGENT_UPDATE_PATH, {
+  const response = await fetcher(`${basePath}${LATEST_GATEWAY_AGENT_UPDATE_PATH}`, {
     cache: "no-store",
     credentials: "same-origin",
     headers: { accept: "application/json" },

@@ -121,7 +121,7 @@ describe("durableCommandRecoveryPresentation", () => {
     expect(presentation.detail).toContain("Repeating the check");
   });
 
-  it("does not offer another no-op check when a current Gateway does not answer", () => {
+  it("opens Gateway software instead of another no-op check when no update is known", () => {
     const presentation = durableCommandRecoveryPresentation({
       state: "running",
       connectionStatus: "connected",
@@ -134,7 +134,8 @@ describe("durableCommandRecoveryPresentation", () => {
       },
     });
 
-    expect(presentation.primaryAction).toBeNull();
+    expect(presentation.primaryAction).toBe("review-gateway-updates");
+    expect(presentation.primaryLabel).toBe("Review Gateway software");
     expect(presentation.detail).toContain("may be offline");
     expect(presentation.detail).toContain("Export diagnostics");
     expect(presentation.detail).toContain("Repeating Check now cannot change");

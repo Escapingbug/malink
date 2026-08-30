@@ -383,8 +383,9 @@ and Gateway liveness remain separate visible states, so a missing prerequisite
 never hides the Gateway software panel or masquerades as another layer's retry.
 If a bounded journal check receives no signed reply, the client records the
 check time and presents that outcome separately from the command's unchanged
-durable timestamp. An available Gateway release becomes the recovery action;
-otherwise the client explains the target Gateway prerequisites and continues
+durable timestamp. Gateway software is always the recovery action: a known
+release opens its per-node review, while missing release or directory state
+opens the owning settings layer and refreshes discovery. The client continues
 automatic same-identity recovery without offering another immediate no-op check.
 
 ## Gateway online-update boundary

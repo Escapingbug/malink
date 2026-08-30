@@ -194,6 +194,10 @@ Agent session for that Gateway and release. Multiple nodes are updated as
 separate confirmed operations so it is always clear which node is executing.
 
 The `Gateway software` row remains visible whenever App & updates is available.
+Gateway release discovery resolves `gateway-agent-updates/latest.json` below the
+compiled static-service base path. Root-hosted services therefore use
+`/gateway-agent-updates/latest.json`, while a GitHub Pages deployment at
+`/malink/` uses `/malink/gateway-agent-updates/latest.json`.
 Release discovery, Gateway Directory projection, and live node status are shown
 as separate states instead of hiding the entry. A primary action is rendered
 only when it can change the blocking state: discovery failures can retry release

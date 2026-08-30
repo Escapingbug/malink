@@ -8174,6 +8174,12 @@ function MalinkAppRuntime() {
   }
 
   function reviewGatewayUpdatesForRecoveredNativeCommand(): void {
+    if (!gatewayRelease || gatewayUpdatePlan.length === 0) {
+      setGatewayUpdateDialogOpen(false);
+      setSettingsOpen(true);
+      void refreshGatewayUpdateDiscovery();
+      return;
+    }
     setSettingsOpen(false);
     setGatewayUpdateDialogOpen(true);
   }

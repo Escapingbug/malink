@@ -105,7 +105,8 @@ export function durableCommandRecoveryPresentation(input: {
       detail:
         "No signed journal reply arrived during the last check. The target Gateway may be offline, may not support journal replies, or may no longer own this command route. Bring that Gateway online and ensure it is current; Malink will retry the same command automatically. Export diagnostics if it is already online. Repeating Check now cannot change the result.",
       stateLabel,
-      primaryAction: null,
+      primaryAction: "review-gateway-updates",
+      primaryLabel: "Review Gateway software",
     };
   }
 
