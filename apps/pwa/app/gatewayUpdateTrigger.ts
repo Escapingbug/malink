@@ -184,19 +184,9 @@ export function collidingGatewayMaintenanceSessionIds(input: {
   projectedSessions: readonly ProjectedGatewayMaintenanceSession[];
 }): ReadonlySet<string> {
   const collisions = new Set<string>();
-  const workspaceHasMultipleNodes = new Set(
-    input.nodeSessions.map(reference => reference.gatewayNodeId),
-  ).size > 1;
   const nodesBySession = new Map<string, Set<string>>();
   for (const reference of input.nodeSessions) {
     if (!reference.maintenanceSessionId) continue;
-    if (
-      workspaceHasMultipleNodes &&
-      reference.maintenanceSessionId.startsWith("gateway-update-") &&
-      !reference.maintenanceSessionId.startsWith("gateway-update-node-")
-    ) {
-      collisions.add(reference.maintenanceSessionId);
-    }
     const nodes = nodesBySession.get(reference.maintenanceSessionId) ?? new Set<string>();
     nodes.add(reference.gatewayNodeId);
     nodesBySession.set(reference.maintenanceSessionId, nodes);

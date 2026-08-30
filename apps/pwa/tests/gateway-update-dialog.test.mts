@@ -111,6 +111,41 @@ test("turns repeated missing replies into actionable Gateway attention", () => {
   assert.match(html, /update-supervisor\.error\.log/);
 });
 
+test("does not say an existing supervised update was never started", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [nodes[0]!],
+    runtimeByNode: {
+      "node-office": {
+        state: "unreachable",
+        maintenanceSessionId: "gateway-update-node-specific-hash",
+        status: {
+          version: 1,
+          phase: "scheduled",
+          releaseId: release.releaseId,
+          currentBuildId: "gateway-old-arm64",
+          targetBuildId: release.buildId,
+          updatedAt: 1,
+        },
+      },
+    },
+    activeGatewayNodeId: null,
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  assert.match(html, /already has a supervised update transaction/);
+  assert.match(html, /timed-out check did not start it again or cancel it/);
+  assert.match(html, /Open update session/);
+  assert.doesNotMatch(html, /No update was started/);
+});
+
 test("presents a signed supervisor repair failure as an actionable error", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
     open: true,

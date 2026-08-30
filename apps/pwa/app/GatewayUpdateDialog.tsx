@@ -407,6 +407,17 @@ function runtimeStateDetail(
     return "Waiting for a signed terminal reply from this node.";
   }
   if (runtime.state === "unreachable") {
+    if (
+      runtime.maintenanceSessionId ||
+      (runtime.status?.releaseId === release.releaseId &&
+        runtime.status.targetBuildId === release.buildId)
+    ) {
+      return (
+        `No signed status reply arrived from ${node.computerName ?? node.gatewayName} within 12 seconds. ` +
+        "This Gateway already has a supervised update transaction; the timed-out check did not start it again or cancel it. " +
+        "Open the update session to review progress, or wait a moment and check live status again."
+      );
+    }
     return runtime.detail ?? gatewayNoReplyPresentation({
       gatewayLabel: node.computerName ?? node.gatewayName,
       consecutiveNoReplies: runtime.consecutiveNoReplies,

@@ -171,7 +171,7 @@ test("blocks a maintenance ID projected in multiple projects", () => {
   assert.deepEqual([...collisions], ["legacy-session"]);
 });
 
-test("blocks one recognizable legacy maintenance ID in a multi-Gateway workspace", () => {
+test("does not guess a collision from the maintenance ID spelling", () => {
   const collisions = collidingGatewayMaintenanceSessionIds({
     nodeSessions: [
       {
@@ -185,7 +185,7 @@ test("blocks one recognizable legacy maintenance ID in a multi-Gateway workspace
     ],
   });
 
-  assert.deepEqual([...collisions], ["gateway-update-legacy-workspace-hash"]);
+  assert.deepEqual([...collisions], []);
 });
 
 test("allows one node-scoped maintenance ID in a multi-Gateway workspace", () => {
