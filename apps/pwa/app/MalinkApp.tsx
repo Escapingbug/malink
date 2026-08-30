@@ -201,6 +201,7 @@ import {
 } from "./projectCreateRecovery";
 import {
   pendingSessionLifecycleIds,
+  sessionLifecycleRouteKey,
   sessionsAvailableForAutomaticSelection,
 } from "./pendingSessionDeletion";
 import {
@@ -481,6 +482,7 @@ type PendingSessionLifecycleRecovery = {
   commandId: string;
   action: "archive";
   sessionId: string;
+  projectId: string;
   onSucceeded?: () => void | Promise<void>;
   onFailed?: () => void | Promise<void>;
   timer: number | null;
@@ -1812,7 +1814,9 @@ function MalinkAppRuntime() {
     : null;
   const selected = gatewaySelected ?? optimisticSelectedSummary;
   const selectedLifecycleAction = gatewaySelected
-    ? sessionLifecycleBusy.get(gatewaySelected.id) ?? null
+    ? sessionLifecycleBusy.get(
+        sessionLifecycleRouteKey(gatewaySelected.projectId, gatewaySelected.id),
+      ) ?? null
     : null;
   const selectedLifecycleBusy = selectedLifecycleAction !== null;
   const completedTurns = useMemo(
@@ -2514,11 +2518,30 @@ function MalinkAppRuntime() {
           !runtime?.maintenanceSessionId ||
           !collidingSessionIds.has(runtime.maintenanceSessionId)
         ) continue;
+        const maintenanceSession = node.targetProjectId
+          ? gatewayState.sessions.find(session =>
+              session.id === runtime.maintenanceSessionId &&
+              session.projectId === node.targetProjectId,
+            )
+          : undefined;
         presentation = {
           ...presentation,
           [node.gatewayNodeId]: {
             ...runtime,
             maintenanceSessionAmbiguous: true,
+            maintenanceSessionArchiveAvailable:
+              maintenanceSession !== undefined &&
+              maintenanceSession.status !== "archived",
+            maintenanceSessionArchived:
+              maintenanceSession?.status === "archived",
+            maintenanceSessionArchiveBusy: Boolean(
+              maintenanceSession && sessionLifecycleBusy.has(
+                sessionLifecycleRouteKey(
+                  maintenanceSession.projectId,
+                  maintenanceSession.id,
+                ),
+              ),
+            ),
           },
         };
       }
@@ -2529,7 +2552,17 @@ function MalinkAppRuntime() {
     gatewayState,
     gatewayUpdatePlan,
     gatewayUpdateRuntimeForRelease,
+    sessionLifecycleBusy,
   ]);
+  const ambiguousGatewayMaintenanceSessionIds = useMemo(
+    () => new Set(
+      [...collidingGatewayMaintenanceSessionIds({
+        nodeSessions: [],
+        projectedSessions: gatewayState?.sessions ?? [],
+      })].filter(sessionId => sessionId.startsWith("gateway-update-")),
+    ),
+    [gatewayState?.sessions],
+  );
   const gatewayUpdateNoticeKey = gatewayRelease && gatewayUpdateAvailableCount > 0
     ? `${gatewayRelease.releaseId}\0${gatewayRelease.buildId}\0${gatewayUpdatePlan
         .filter(node => node.state === "available")
@@ -8407,12 +8440,31 @@ function MalinkAppRuntime() {
   async function runSessionLifecycle(
     action: "archive",
     sessionId: string,
+    requestedProjectId?: string,
     onSucceeded?: () => void | Promise<void>,
     onFailed?: () => void | Promise<void>,
   ): Promise<boolean> {
-    const sessionProjectId = gatewayState?.sessions.find(session => session.id === sessionId)
-      ?.projectId;
-    if (!sessionProjectId) {
+    const matchingSessions = gatewayState?.sessions.filter(
+      session => session.id === sessionId,
+    ) ?? [];
+    if (!requestedProjectId && matchingSessions.length > 1) {
+      const gatewayMaintenanceSession = sessionId.startsWith("gateway-update-");
+      showUiNotice(
+        `session:${action}`,
+        "session",
+        "warning",
+        gatewayMaintenanceSession
+          ? "This older Gateway update session exists on more than one computer. Open Gateway software and archive it from the named Gateway so Malink cannot send the action to the wrong computer."
+          : "This session identity appears under more than one project. Refresh conversations before trying again; Malink did not send an ambiguous archive command.",
+      );
+      if (gatewayMaintenanceSession) setGatewayUpdateDialogOpen(true);
+      return false;
+    }
+    const sessionProjectId = requestedProjectId ?? matchingSessions[0]?.projectId;
+    const session = sessionProjectId
+      ? matchingSessions.find(candidate => candidate.projectId === sessionProjectId)
+      : undefined;
+    if (!sessionProjectId || !session) {
       showUiNotice(
         `session:${action}`,
         "session",
@@ -8435,9 +8487,10 @@ function MalinkAppRuntime() {
       );
       return false;
     }
+    const lifecycleKey = sessionLifecycleRouteKey(sessionProjectId, sessionId);
     updateSessionLifecycleBusy((current) => {
       const next = new Map(current);
-      next.set(sessionId, action);
+      next.set(lifecycleKey, action);
       return next;
     });
     let connection: MalinkClient | null = null;
@@ -8449,9 +8502,9 @@ function MalinkAppRuntime() {
       );
       if (!sent || !connection) {
         updateSessionLifecycleBusy((current) => {
-          if (current.get(sessionId) !== action) return current;
+          if (current.get(lifecycleKey) !== action) return new Map(current);
           const next = new Map(current);
-          next.delete(sessionId);
+          next.delete(lifecycleKey);
           return next;
         });
         return false;
@@ -8462,6 +8515,7 @@ function MalinkAppRuntime() {
         sent,
         action,
         sessionId,
+        sessionProjectId,
         onSucceeded,
         onFailed,
       );
@@ -8472,6 +8526,7 @@ function MalinkAppRuntime() {
           error.commandId,
           action,
           sessionId,
+          sessionProjectId,
           onSucceeded,
           onFailed,
         );
@@ -8492,9 +8547,9 @@ function MalinkAppRuntime() {
         formatUiError(error),
       );
       updateSessionLifecycleBusy((current) => {
-        if (current.get(sessionId) !== action) return current;
+        if (current.get(lifecycleKey) !== action) return new Map(current);
         const next = new Map(current);
-        next.delete(sessionId);
+        next.delete(lifecycleKey);
         return next;
       });
       return false;
@@ -8505,6 +8560,7 @@ function MalinkAppRuntime() {
     commandId: string,
     action: "archive",
     sessionId: string,
+    projectId: string,
     onSucceeded?: () => void | Promise<void>,
     onFailed?: () => void | Promise<void>,
   ): PendingSessionLifecycleRecovery {
@@ -8514,6 +8570,7 @@ function MalinkAppRuntime() {
       commandId,
       action,
       sessionId,
+      projectId,
       ...(onSucceeded ? { onSucceeded } : {}),
       ...(onFailed ? { onFailed } : {}),
       timer: null,
@@ -8718,6 +8775,7 @@ function MalinkAppRuntime() {
           sent,
           recovery.action,
           recovery.sessionId,
+          recovery.projectId,
           recovery.onSucceeded,
           recovery.onFailed,
         );
@@ -8749,9 +8807,13 @@ function MalinkAppRuntime() {
           formatUiError(error),
         );
         updateSessionLifecycleBusy((current) => {
-          if (current.get(recovery.sessionId) !== recovery.action) return current;
+          const lifecycleKey = sessionLifecycleRouteKey(
+            recovery.projectId,
+            recovery.sessionId,
+          );
+          if (current.get(lifecycleKey) !== recovery.action) return new Map(current);
           const next = new Map(current);
-          next.delete(recovery.sessionId);
+          next.delete(lifecycleKey);
           return next;
         });
       } finally {
@@ -8765,6 +8827,7 @@ function MalinkAppRuntime() {
     sent: MalinkCommandSendResult,
     action: "archive",
     sessionId: string,
+    projectId: string,
     onSucceeded?: () => void | Promise<void>,
     onFailed?: () => void | Promise<void>,
   ): Promise<void> {
@@ -8781,6 +8844,7 @@ function MalinkAppRuntime() {
           sent.commandId,
           action,
           sessionId,
+          projectId,
           onSucceeded,
           onFailed,
         );
@@ -8801,9 +8865,10 @@ function MalinkAppRuntime() {
         formatUiError(error),
       );
       updateSessionLifecycleBusy((current) => {
-        if (current.get(sessionId) !== action) return current;
+        const lifecycleKey = sessionLifecycleRouteKey(projectId, sessionId);
+        if (current.get(lifecycleKey) !== action) return new Map(current);
         const next = new Map(current);
-        next.delete(sessionId);
+        next.delete(lifecycleKey);
         return next;
       });
       return;
@@ -8817,6 +8882,7 @@ function MalinkAppRuntime() {
           sent.commandId,
           action,
           sessionId,
+          projectId,
           onSucceeded,
           onFailed,
         );
@@ -8834,7 +8900,7 @@ function MalinkAppRuntime() {
     completedCommandResultsRef.current.delete(sent.commandId);
     forgetRecoveredNativeCommand(sent.commandId);
     const recovery = sessionLifecycleRecoveriesRef.current.get(sent.commandId);
-    if (recovery?.timer !== null) window.clearTimeout(recovery.timer);
+    if (recovery?.timer != null) window.clearTimeout(recovery.timer);
     sessionLifecycleRecoveriesRef.current.delete(sent.commandId);
     try {
       if (completion.outcome !== "succeeded") {
@@ -8859,20 +8925,24 @@ function MalinkAppRuntime() {
       );
     } finally {
       updateSessionLifecycleBusy((current) => {
-        if (current.get(sessionId) !== action) return current;
+        const lifecycleKey = sessionLifecycleRouteKey(projectId, sessionId);
+        if (current.get(lifecycleKey) !== action) return new Map(current);
         const next = new Map(current);
-        next.delete(sessionId);
+        next.delete(lifecycleKey);
         return next;
       });
     }
   }
 
-  async function archiveSession(sessionId: string) {
-    const session = gatewayState?.sessions.find(candidate => candidate.id === sessionId);
+  async function archiveSession(sessionId: string, projectId?: string) {
+    const session = gatewayState?.sessions.find(candidate =>
+      candidate.id === sessionId &&
+      (!projectId || candidate.projectId === projectId),
+    );
     const historySource = session
       ? providerHistorySources.find(source => source.projectId === session.projectId) ?? null
       : null;
-    await runSessionLifecycle("archive", sessionId, () => {
+    await runSessionLifecycle("archive", sessionId, projectId, () => {
       if (!session || !historySource) return;
       providerHistoryFocusRef.current = {
         gatewayNodeId: historySource.gatewayNodeId,
@@ -10755,7 +10825,9 @@ function MalinkAppRuntime() {
                 const signal = sessionListSignal(session, sessionReadState);
                 const activity = agentActivitiesBySession.get(session.id);
                 const lifecycleAction =
-                  sessionLifecycleBusy.get(session.id) ?? null;
+                  sessionLifecycleBusy.get(
+                    sessionLifecycleRouteKey(session.projectId, session.id),
+                  ) ?? null;
                 const statusSummary = lifecycleAction
                   ? `${lifecycleAction === "delete" ? "Deleting" : lifecycleAction === "archive" ? "Archiving" : "Restoring"}…`
                   : activity?.detail ||
@@ -10795,7 +10867,13 @@ function MalinkAppRuntime() {
                       ? "selected"
                       : ""
                   } session-state-${indicator.activity} session-signal-${visualSignal} ${indicator.unread ? "unread" : ""} ${lifecycleAction ? "is-busy" : ""}`}
-                  onClick={() => void chooseSession(session.id)}
+                  onClick={() => {
+                    if (ambiguousGatewayMaintenanceSessionIds.has(session.id)) {
+                      setGatewayUpdateDialogOpen(true);
+                      return;
+                    }
+                    void chooseSession(session.id);
+                  }}
                   disabled={lifecycleAction === "delete"}
                 >
                   <span className="session-avatar violet">
@@ -11100,14 +11178,27 @@ function MalinkAppRuntime() {
                     !gatewayAvailable ||
                     !activeCapabilities?.canArchiveSession
                   }
-                  onClick={() => void archiveSession(gatewaySelected.id)}
+                  onClick={() => {
+                    if (ambiguousGatewayMaintenanceSessionIds.has(gatewaySelected.id)) {
+                      setDetailsOpen(false);
+                      setGatewayUpdateDialogOpen(true);
+                      return;
+                    }
+                    void archiveSession(gatewaySelected.id, gatewaySelected.projectId);
+                  }}
                 >
                   <span aria-hidden="true">▣</span>
                   <span>
                     <strong>
-                      {isStreaming ? "Archive & stop agent" : "Archive session"}
+                      {ambiguousGatewayMaintenanceSessionIds.has(gatewaySelected.id)
+                        ? "Choose Gateway to archive"
+                        : isStreaming ? "Archive & stop agent" : "Archive session"}
                     </strong>
-                    <small>Remove from Malink; provider history remains</small>
+                    <small>
+                      {ambiguousGatewayMaintenanceSessionIds.has(gatewaySelected.id)
+                        ? "This older update session needs an exact computer route"
+                        : "Remove from Malink; provider history remains"}
+                    </small>
                   </span>
                 </button>
               </div>
@@ -12164,6 +12255,11 @@ function MalinkAppRuntime() {
           }}
           onStart={(node) => void startGatewayUpdateNode(node)}
           onOpenSession={openGatewayUpdateSession}
+          onArchiveSession={(node, sessionId) => {
+            if (node.targetProjectId) {
+              void archiveSession(sessionId, node.targetProjectId);
+            }
+          }}
         />
       )}
 

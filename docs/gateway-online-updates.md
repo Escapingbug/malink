@@ -250,8 +250,11 @@ cannot collide. The normal Gateway software panel links to that session and
 owns the confirmation and retry actions; advanced diagnostics is not the
 product update entry point. Clients refuse to open a legacy maintenance ID if
 it is attributed to multiple nodes or project rooms, or if its Workspace-scoped
-format is unsafe in a multi-Gateway Workspace. Users never enter a release ID
-or manually transfer Gateway credentials or artifacts.
+format is unsafe in a multi-Gateway Workspace. The Gateway software panel can
+still archive each legacy session through the named node's exact project route;
+the client keys progress and recovery by both `projectId` and `sessionId`, so
+cleanup on one Gateway cannot mark or command the other one. Users never enter
+a release ID or manually transfer Gateway credentials or artifacts.
 
 ## Recovery
 

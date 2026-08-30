@@ -18,12 +18,28 @@ export function reconcilePendingSessionDeletions(
   );
 }
 
-export function sessionsAvailableForAutomaticSelection<T extends { id: string }>(
+export function sessionLifecycleRouteKey(
+  projectId: string,
+  sessionId: string,
+): string {
+  return `${projectId}\u0000${sessionId}`;
+}
+
+export function sessionsAvailableForAutomaticSelection<
+  T extends { id: string; projectId?: string },
+>(
   sessions: readonly T[],
-  pendingLifecycleSessionIds: ReadonlySet<string>,
+  pendingLifecycleSessionKeys: ReadonlySet<string>,
 ): T[] {
   return sessions.filter(
-    (session) => !pendingLifecycleSessionIds.has(session.id),
+    (session) =>
+      !pendingLifecycleSessionKeys.has(session.id) &&
+      !(
+        session.projectId &&
+        pendingLifecycleSessionKeys.has(
+          sessionLifecycleRouteKey(session.projectId, session.id),
+        )
+      ),
   );
 }
 

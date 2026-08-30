@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   pendingSessionLifecycleIds,
   reconcilePendingSessionDeletions,
+  sessionLifecycleRouteKey,
   sessionsAvailableForAutomaticSelection,
   setSessionDeletionPending,
 } from "./pendingSessionDeletion";
@@ -46,5 +47,19 @@ describe("pending session deletion", () => {
     ]);
 
     expect([...pendingSessionLifecycleIds(actions)]).toEqual(["first", "second"]);
+  });
+
+  it("keeps same-ID lifecycle work isolated by project route", () => {
+    const sessions = [
+      { id: "shared-update", projectId: "project-a" },
+      { id: "shared-update", projectId: "project-b" },
+    ];
+    const pending = new Set([
+      sessionLifecycleRouteKey("project-a", "shared-update"),
+    ]);
+
+    expect(sessionsAvailableForAutomaticSelection(sessions, pending)).toEqual([
+      { id: "shared-update", projectId: "project-b" },
+    ]);
   });
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import React, { useRef } from "react";
 import type { GatewayUpdateStatus } from "@malink/protocol";
 import type { GatewayReleaseBuild } from "./buildInfo";
 import { useDialogFocus } from "./dialogFocus";
@@ -16,6 +16,9 @@ export type GatewayUpdateNodeRuntime = {
   status?: GatewayUpdateStatus;
   maintenanceSessionId?: string;
   maintenanceSessionAmbiguous?: boolean;
+  maintenanceSessionArchiveAvailable?: boolean;
+  maintenanceSessionArchiveBusy?: boolean;
+  maintenanceSessionArchived?: boolean;
 };
 
 type Props = {
@@ -29,6 +32,7 @@ type Props = {
   onProbe(node: GatewayUpdatePlanNode): void;
   onStart(node: GatewayUpdatePlanNode): void;
   onOpenSession(sessionId: string): void;
+  onArchiveSession(node: GatewayUpdatePlanNode, sessionId: string): void;
 };
 
 export function GatewayUpdateDialog(props: Props) {
@@ -47,6 +51,7 @@ function GatewayUpdateDialogContent({
   onProbe,
   onStart,
   onOpenSession,
+  onArchiveSession,
 }: Props) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -176,11 +181,29 @@ function GatewayUpdateDialogContent({
                     </button>
                   )}
                   {runtime.maintenanceSessionAmbiguous && (
-                    <p className="gateway-update-session-warning" role="alert">
-                      This older Gateway release reused a maintenance session ID from another
-                      node. The update still runs on the named computer, but Malink will not open
-                      an ambiguous session. Future updates use node-specific session IDs.
-                    </p>
+                    <>
+                      <p className="gateway-update-session-warning" role="alert">
+                        This older Gateway release reused a maintenance session ID from another
+                        node. Malink will route cleanup through this named computer; future updates
+                        use node-specific session IDs.
+                      </p>
+                      {runtime.maintenanceSessionArchived ? (
+                        <span className="gateway-update-session-warning" role="status">
+                          Update session archived on this Gateway.
+                        </span>
+                      ) : runtime.maintenanceSessionArchiveAvailable ? (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={!connected || runtime.maintenanceSessionArchiveBusy}
+                          onClick={() => onArchiveSession(node, runtime.maintenanceSessionId!)}
+                        >
+                          {runtime.maintenanceSessionArchiveBusy
+                            ? "Archiving on this Gateway…"
+                            : "Archive this Gateway’s update session"}
+                        </button>
+                      ) : null}
+                    </>
                   )}
                   {canProbe && !active && (
                     <button

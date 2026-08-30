@@ -59,6 +59,7 @@ test("shows node identity, version need, and signed live status before consent",
     onProbe() {},
     onStart() {},
     onOpenSession() {},
+    onArchiveSession() {},
   }));
 
   assert.match(html, /Review Gateway update/);
@@ -89,6 +90,7 @@ test("does not render the review panel while closed", () => {
     onProbe() {},
     onStart() {},
     onOpenSession() {},
+    onArchiveSession() {},
   }));
   assert.equal(html, "");
 });
@@ -110,6 +112,7 @@ test("keeps the panel dismissible while a Gateway maintenance Agent starts", () 
     onProbe() {},
     onStart() {},
     onOpenSession() {},
+    onArchiveSession() {},
   }));
 
   const closeControl = html.match(
@@ -133,6 +136,7 @@ test("does not open a legacy maintenance session shared by multiple nodes", () =
         state: "online",
         maintenanceSessionId: "legacy-shared-session",
         maintenanceSessionAmbiguous: true,
+        maintenanceSessionArchiveAvailable: true,
       },
     },
     activeGatewayNodeId: null,
@@ -140,8 +144,43 @@ test("does not open a legacy maintenance session shared by multiple nodes", () =
     onProbe() {},
     onStart() {},
     onOpenSession() {},
+    onArchiveSession() {},
   }));
 
   assert.match(html, /reused a maintenance session ID from another node/);
   assert.doesNotMatch(html, /Open update session/);
+  assert.match(html, /Archive this Gateway’s update session/);
+});
+
+test("shows exact-node archival progress for a legacy maintenance session", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes,
+    runtimeByNode: {
+      "node-office": {
+        state: "online",
+        maintenanceSessionId: "legacy-shared-session",
+        maintenanceSessionAmbiguous: true,
+        maintenanceSessionArchiveAvailable: true,
+        maintenanceSessionArchiveBusy: true,
+      },
+      "node-server": {
+        state: "online",
+        maintenanceSessionId: "legacy-shared-session",
+        maintenanceSessionAmbiguous: true,
+        maintenanceSessionArchived: true,
+      },
+    },
+    activeGatewayNodeId: null,
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+  }));
+
+  assert.match(html, /Archiving on this Gateway…/);
+  assert.match(html, /Update session archived on this Gateway/);
 });
