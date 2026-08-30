@@ -139,6 +139,16 @@ test("closes provider history while its background request is still loading", ()
   );
 });
 
+test("closes the notification center without changing its active operations", () => {
+  assert.equal(
+    resolveMalinkBackAction({
+      ...emptyState,
+      notificationCenterOpen: true,
+    }),
+    "close-notification-center",
+  );
+});
+
 test("closes Gateway update while its background maintenance Agent is still running", () => {
   assert.equal(
     resolveMalinkBackAction({

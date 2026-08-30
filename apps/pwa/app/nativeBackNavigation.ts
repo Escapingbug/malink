@@ -49,6 +49,7 @@ export class NativeBackDispatcher {
 export type MalinkBackState = {
   deleteDialogOpen: boolean;
   deleteDialogBusy: boolean;
+  notificationCenterOpen?: boolean;
   providerHistoryOpen?: boolean;
   gatewayUpdateDialogOpen?: boolean;
   newProjectOpen?: boolean;
@@ -65,6 +66,7 @@ export type MalinkBackState = {
 export type MalinkBackAction =
   | "close-delete-dialog"
   | "block-delete-dialog"
+  | "close-notification-center"
   | "close-provider-history"
   | "close-gateway-update"
   | "close-new-project"
@@ -83,6 +85,9 @@ export function resolveMalinkBackAction(
     return state.deleteDialogBusy
       ? "block-delete-dialog"
       : "close-delete-dialog";
+  }
+  if (state.notificationCenterOpen) {
+    return "close-notification-center";
   }
   if (state.providerHistoryOpen) {
     return "close-provider-history";

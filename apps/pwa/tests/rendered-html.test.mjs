@@ -343,7 +343,7 @@ test("ships a complete installable offline shell", async () => {
   );
   assert.match(source, /className="gateway-mobile-status-copy"/);
   assert.match(source, /aria-label="Hide previous action recovery"/);
-  assert.match(source, /onDismiss\(\);\s*onReviewGatewayUpdates\(\);/);
+  assert.match(source, /onDismiss\?\.\(\);\s*onReviewGatewayUpdates\(\);/);
   assert.match(
     source,
     /dismissedRecoveredCommandVersions\.has\(recoveredCommandNoticeVersion\(command\)\)/,
@@ -352,6 +352,8 @@ test("ships a complete installable offline shell", async () => {
     styles,
     /\.durable-command-recovery\s*\{[\s\S]*?max-height:\s*min\(55dvh, 440px\);[\s\S]*?overflow:\s*auto;/,
   );
+  assert.match(source, /aria-label=\{`Notifications and issues,/);
+  assert.match(source, /<NotificationCenter[\s\S]*?items=\{notificationCenterItems\}/);
   assert.match(
     source,
     /title=\{`Connection: \$\{mobileConnectionSignal\.label\}\$\{/,

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  allUiNotices,
   EMPTY_UI_NOTICE_STATE,
   globalUiNotices,
   noticesForScope,
@@ -78,7 +79,7 @@ test("dialog-owned operations remain globally visible at every severity", () => 
   );
 });
 
-test("info and success expire while warnings and errors remain actionable", () => {
+test("info and success leave inline UI but remain in the notice center", () => {
   let state = reduceUiNotices(EMPTY_UI_NOTICE_STATE, {
     type: "show",
     key: "session:created",
@@ -105,11 +106,13 @@ test("info and success expire while warnings and errors remain actionable", () =
   });
 
   state = reduceUiNotices(state, { type: "tick", now: 5_000 });
-  assert.equal(state["session:created"], undefined);
+  assert.equal(state["session:created"].hidden, true);
+  assert.equal(noticesForScope(state, "session").length, 0);
   assert.ok(state["history:loading"]);
   assert.ok(state["connection:offline"]);
   state = reduceUiNotices(state, { type: "tick", now: 7_000 });
-  assert.equal(state["history:loading"], undefined);
+  assert.equal(state["history:loading"].hidden, true);
+  assert.equal(allUiNotices(state).length, 3);
   assert.ok(state["connection:offline"]);
 });
 
@@ -175,8 +178,27 @@ test("showing the same operation replaces stale copy and resets its lifetime", (
   assert.equal(next["composer:send"].severity, "error");
   assert.equal(next["composer:send"].expiresAt, null);
 
+  const hidden = reduceUiNotices(next, {
+    type: "dismiss",
+    key: "composer:send",
+  });
+  assert.equal(noticesForScope(hidden, "composer").length, 0);
+  assert.equal(allUiNotices(hidden).length, 1);
+  assert.equal(allUiNotices(hidden)[0].hidden, true);
+
+  const resurfaced = reduceUiNotices(hidden, {
+    type: "show",
+    key: "composer:send",
+    scope: "composer",
+    severity: "error",
+    message: "Still could not send.",
+    now: 30,
+  });
+  assert.equal(noticesForScope(resurfaced, "composer").length, 1);
+  assert.equal(resurfaced["composer:send"].hidden, false);
+
   assert.deepEqual(
-    reduceUiNotices(next, { type: "dismiss", key: "composer:send" }),
+    reduceUiNotices(resurfaced, { type: "clear", key: "composer:send" }),
     {},
   );
 });

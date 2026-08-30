@@ -55,6 +55,7 @@ import {
 } from "./agentActivity";
 import {
   MatrixSettings,
+  nativeUpdateStatusText,
   OFFICIAL_ANDROID_RELEASES_URL,
 } from "./MatrixSettings";
 import { ConnectionOnboarding } from "./ConnectionOnboarding";
@@ -300,6 +301,7 @@ import {
   writeGatewayFilter,
 } from "./gatewayFilter";
 import {
+  allUiNotices,
   EMPTY_UI_NOTICE_STATE,
   globalUiNotices,
   noticesForScope,
@@ -308,6 +310,10 @@ import {
   type UiNoticeScope,
   type UiNoticeSeverity,
 } from "./uiNotices";
+import {
+  NotificationCenter,
+  type NotificationCenterItem,
+} from "./NotificationCenter";
 import { writeClipboardTextWithTimeout } from "./uiClipboard";
 import {
   NATIVE_BACK_PRIORITY,
@@ -620,6 +626,15 @@ function FilesIcon() {
       <path d="M4.25 5.25h15.5v13.5H4.25z" />
       <path d="M8 14.75h1.5l1 1.5h3l1-1.5H16" />
       <path d="M12 7.75v5M9.75 10.5 12 12.75l2.25-2.25" />
+    </svg>
+  );
+}
+
+function NotificationIcon() {
+  return (
+    <svg aria-hidden="true" className="rail-icon toolbar-icon" viewBox="0 0 24 24">
+      <path d="M6.25 16.75h11.5l-1.5-2.25V10a4.25 4.25 0 0 0-8.5 0v4.5l-1.5 2.25Z" />
+      <path d="M10 19a2.2 2.2 0 0 0 4 0" />
     </svg>
   );
 }
@@ -1088,7 +1103,7 @@ function DurableCommandRecoveryNotice({
   onUpdateAndroid(): void;
   onOpenAndroidReleases(): void;
   onExportDiagnostics(): void;
-  onDismiss(): void;
+  onDismiss?: () => void;
 }) {
   const presentation = durableCommandRecoveryPresentation({
     state: command.state,
@@ -1110,15 +1125,17 @@ function DurableCommandRecoveryNotice({
           <strong>{presentation.title}</strong>
           <small>{presentation.stateLabel}</small>
         </span>
-        <button
-          type="button"
-          className="durable-command-recovery-close"
-          aria-label="Hide previous action recovery"
-          title="Hide this notice; background recovery will continue"
-          onClick={onDismiss}
-        >
-          ×
-        </button>
+        {onDismiss && (
+          <button
+            type="button"
+            className="durable-command-recovery-close"
+            aria-label="Hide previous action recovery"
+            title="Hide this notice; background recovery will continue"
+            onClick={onDismiss}
+          >
+            ×
+          </button>
+        )}
       </div>
       <p>{presentation.detail}</p>
       <small className="durable-command-recovery-meta">
@@ -1139,7 +1156,7 @@ function DurableCommandRecoveryNotice({
                   ? onReconnect
                   : presentation.primaryAction === "review-gateway-updates"
                     ? () => {
-                        onDismiss();
+                        onDismiss?.();
                         onReviewGatewayUpdates();
                       }
                     : presentation.primaryAction === "update-native-app"
@@ -1159,9 +1176,11 @@ function DurableCommandRecoveryNotice({
         <button type="button" onClick={onExportDiagnostics}>
           Export diagnostics
         </button>
-        <button type="button" onClick={onDismiss}>
-          Hide
-        </button>
+        {onDismiss && (
+          <button type="button" onClick={onDismiss}>
+            Hide
+          </button>
+        )}
       </div>
     </section>
   );
@@ -1459,6 +1478,10 @@ function MalinkAppRuntime() {
   const [composerOptionsOpen, setComposerOptionsOpen] = useState(false);
   const [providerCommandsOpen, setProviderCommandsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
+  const [hiddenAttentionKeys, setHiddenAttentionKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [matrixConfig, setMatrixConfig] = useState<MatrixConnectionConfig>(
     initialGatewayUi.config,
   );
@@ -1803,6 +1826,7 @@ function MalinkAppRuntime() {
   const nativeBackAction = resolveMalinkBackAction({
     deleteDialogOpen: false,
     deleteDialogBusy: false,
+    notificationCenterOpen,
     providerHistoryOpen,
     gatewayUpdateDialogOpen,
     newProjectOpen,
@@ -1820,6 +1844,9 @@ function MalinkAppRuntime() {
     () => {
       switch (nativeBackAction) {
         case "close-delete-dialog":
+          break;
+        case "close-notification-center":
+          setNotificationCenterOpen(false);
           break;
         case "close-provider-history":
           closeProviderHistory();
@@ -2124,10 +2151,14 @@ function MalinkAppRuntime() {
   const sessionNotices = noticesForScope(uiNotices, "session");
   const historyNotices = noticesForScope(uiNotices, "history");
   const globalNotices = globalUiNotices(uiNotices);
-  const visibleRecoveredNativeCommand = recoveredNativeCommands.find(
+  const centerUiNotices = allUiNotices(uiNotices);
+  const recoveredNativeCommandNotices = recoveredNativeCommands.filter(
     command =>
       command.state !== "needs_review" &&
-      !recoveredNativeCommandIsOwned(command.commandId) &&
+      !recoveredNativeCommandIsOwned(command.commandId),
+  );
+  const visibleRecoveredNativeCommand = recoveredNativeCommandNotices.find(
+    command =>
       !dismissedRecoveredCommandVersions.has(recoveredCommandNoticeVersion(command)),
   ) ?? null;
   const gatewayConnected = gatewayAvailable;
@@ -2617,6 +2648,59 @@ function MalinkAppRuntime() {
 
   function dismissUiNotice(key: string) {
     dispatchUiNotice({ type: "dismiss", key });
+  }
+
+  function clearUiNotice(key: string) {
+    dispatchUiNotice({ type: "clear", key });
+  }
+
+  function hideAttention(key: string): void {
+    setHiddenAttentionKeys((current) => {
+      if (current.has(key)) return current;
+      const next = new Set(current);
+      next.add(key);
+      return next;
+    });
+  }
+
+  function showAttention(key: string): void {
+    setHiddenAttentionKeys((current) => {
+      if (!current.has(key)) return current;
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
+  }
+
+  function openNotificationCenter(): void {
+    for (const notice of globalUiNotices(uiNotices)) {
+      dismissUiNotice(notice.key);
+    }
+    dismissRecoveredNativeCommandNotices();
+    if (gatewayUpdateNoticeKey) {
+      setDismissedGatewayUpdateNoticeKey(gatewayUpdateNoticeKey);
+    }
+    const keys = [
+      connectionAttentionKey,
+      revisionConflict
+        ? `state:revision:${revisionConflict.commandId}`
+        : null,
+      nativeCommandReview
+        ? `state:native-review:${nativeCommandReview.commandId}`
+        : null,
+      optimisticSession && optimisticSession.phase !== "creating"
+        ? `state:session-create:${optimisticSession.localSessionId}:${optimisticSession.phase}`
+        : null,
+      optimisticProjectCreate &&
+        (optimisticProjectCreate.phase === "failed" ||
+          optimisticProjectCreate.phase === "uncertain")
+        ? `state:project-create:${optimisticProjectCreate.localId}:${optimisticProjectCreate.phase}`
+        : null,
+    ].filter((key): key is string => key !== null);
+    if (keys.length > 0) {
+      setHiddenAttentionKeys((current) => new Set([...current, ...keys]));
+    }
+    setNotificationCenterOpen(true);
   }
 
   function recoverUiNotice(key: string) {
@@ -9690,9 +9774,348 @@ function MalinkAppRuntime() {
       })
     : null;
 
+  const closeNotificationsThen = (action: () => void) => () => {
+    setNotificationCenterOpen(false);
+    action();
+  };
+  const notificationCenterItems: NotificationCenterItem[] = centerUiNotices.map(
+    (notice) => ({
+      key: `ui:${notice.key}`,
+      severity: notice.severity,
+      title: uiNoticeTitle(notice.scope),
+      detail: notice.message,
+      meta: `${notice.hidden ? "Hidden" : "Visible"} · ${formatRecoveryTimestamp(notice.createdAt)}`,
+      actions: [{
+        label: "Clear",
+        onClick: () => clearUiNotice(notice.key),
+      }],
+    }),
+  );
+
+  for (const command of recoveredNativeCommandNotices) {
+    const presentation = durableCommandRecoveryPresentation({
+      state: command.state,
+      connectionStatus,
+      gatewayAvailable,
+      journalReconciliationAvailable,
+      manualAndroidUpdateRequired,
+      gatewayUpdateAvailableCount,
+      lastCheck: recoveredNativeCommandChecks[command.commandId],
+    });
+    const primaryAction = (() => {
+      switch (presentation.primaryAction) {
+        case "check": return checkRecoveredNativeCommandsNow;
+        case "reconnect": return reconnectForRecoveredNativeCommand;
+        case "review-gateway-updates": return reviewGatewayUpdatesForRecoveredNativeCommand;
+        case "update-native-app": return updateAndroidForRecoveredNativeCommand;
+        case "open-apk-releases": return openOfficialAndroidReleases;
+        case null: return null;
+      }
+    })();
+    notificationCenterItems.push({
+      key: `recovery:${recoveredCommandNoticeVersion(command)}`,
+      severity: command.state === "failed" ? "error" : "warning",
+      title: presentation.title,
+      detail: presentation.detail,
+      meta: `Command ${command.commandId} · saved ${formatRecoveryTimestamp(command.submittedAt)} · last changed ${formatRecoveryTimestamp(command.updatedAt)}`,
+      actions: [
+        ...(primaryAction && presentation.primaryLabel
+          ? [{
+              label: presentation.primaryLabel,
+              primary: true,
+              disabled: recoveredNativeCommandFlightIds.has(command.commandId),
+              onClick: closeNotificationsThen(primaryAction),
+            }]
+          : []),
+        {
+          label: "Export diagnostics",
+          onClick: exportConnectionDiagnostics,
+        },
+      ],
+    });
+  }
+
+  const connectionAttention = pairingError ?? connectionError;
+  const connectionAttentionKey = connectionAttention
+    ? `state:connection:${connectionAttention}`
+    : null;
+  if (connectionAttention) {
+    notificationCenterItems.push({
+      key: "state:connection",
+      severity: "error",
+      title: "Connection needs attention",
+      detail: connectionAttention,
+      actions: [{
+        label: "Open settings",
+        primary: true,
+        onClick: closeNotificationsThen(() => setSettingsOpen(true)),
+      }],
+    });
+  }
+  if (historyError) {
+    notificationCenterItems.push({
+      key: "state:history",
+      severity: "error",
+      title: "Conversation history could not be loaded",
+      detail: historyError,
+      actions: [{
+        label: "Open conversation",
+        primary: true,
+        onClick: closeNotificationsThen(() => {
+          setPrimaryView("chats");
+          setMobileChatOpen(true);
+        }),
+      }],
+    });
+  }
+  if (optimisticSession && optimisticSession.phase !== "creating") {
+    notificationCenterItems.push({
+      key: `state:session-create:${optimisticSession.localSessionId}:${optimisticSession.phase}`,
+      severity: optimisticSession.phase === "failed" ? "error" : "warning",
+      title: optimisticSession.phase === "failed"
+        ? "Conversation creation failed"
+        : "Conversation creation is awaiting confirmation",
+      detail: optimisticSession.phase === "uncertain"
+        ? uncertainSessionRecovery?.detail ?? "Malink is verifying the original command."
+        : optimisticSession.error ?? "Retry creation to keep the queued conversation.",
+      actions: [{
+        label: "Open conversation",
+        primary: true,
+        onClick: closeNotificationsThen(() => {
+          showAttention(
+            `state:session-create:${optimisticSession.localSessionId}:${optimisticSession.phase}`,
+          );
+          setPrimaryView("chats");
+          setMobileChatOpen(true);
+          activateLocalSession(optimisticSession.localSessionId);
+        }),
+      }],
+    });
+  }
+  if (
+    optimisticProjectCreate &&
+    (optimisticProjectCreate.phase === "failed" ||
+      optimisticProjectCreate.phase === "uncertain")
+  ) {
+    notificationCenterItems.push({
+      key: `state:project-create:${optimisticProjectCreate.localId}:${optimisticProjectCreate.phase}`,
+      severity: optimisticProjectCreate.phase === "failed" ? "error" : "warning",
+      title: optimisticProjectCreate.phase === "failed"
+        ? "Project creation failed"
+        : "Project creation is awaiting confirmation",
+      detail: optimisticProjectCreate.phase === "uncertain"
+        ? uncertainProjectRecovery?.detail ?? "Malink is verifying the original command."
+        : optimisticProjectCreate.error ?? "Open the project entry to retry or discard it.",
+      actions: [
+        {
+          label: "Show in projects",
+          primary: true,
+          onClick: closeNotificationsThen(() => {
+            showAttention(
+              `state:project-create:${optimisticProjectCreate.localId}:${optimisticProjectCreate.phase}`,
+            );
+            setPrimaryView("chats");
+            setMobileChatOpen(false);
+          }),
+        },
+        {
+          label: "Stop tracking",
+          onClick: dismissOptimisticProjectCreate,
+        },
+      ],
+    });
+  }
+  if (revisionConflict) {
+    notificationCenterItems.push({
+      key: `state:revision:${revisionConflict.commandId}`,
+      severity: "warning",
+      title: "Another device updated this conversation",
+      detail: `${describeConflictedAction(revisionConflict.payload)} was not replayed. Review the latest messages before deciding whether to send it again.`,
+      actions: [{
+        label: "Open conversation",
+        primary: true,
+        onClick: closeNotificationsThen(() => {
+          showAttention(`state:revision:${revisionConflict.commandId}`);
+          setPrimaryView("chats");
+          setMobileChatOpen(true);
+        }),
+      }],
+    });
+  }
+  if (nativeCommandReview) {
+    notificationCenterItems.push({
+      key: `state:native-review:${nativeCommandReview.commandId}`,
+      severity: "warning",
+      title: nativeCommandReviewTitle(nativeCommandReview.operation),
+      detail: nativeCommandReviewDescription(nativeCommandReview.operation),
+      actions: [{
+        label: "Open conversation",
+        primary: true,
+        onClick: closeNotificationsThen(() => {
+          showAttention(`state:native-review:${nativeCommandReview.commandId}`);
+          setPrimaryView("chats");
+          setMobileChatOpen(true);
+        }),
+      }],
+    });
+  }
+
+  if (gatewayUpdateAvailableCount > 0 && gatewayRelease) {
+    notificationCenterItems.push({
+      key: `state:gateway-release:${gatewayUpdateNoticeKey ?? gatewayRelease.releaseId}`,
+      severity: "info",
+      title: "Gateway software update available",
+      detail: `${gatewayUpdateAvailableCount} ${gatewayUpdateAvailableCount === 1 ? "Gateway has" : "Gateways have"} release ${gatewayRelease.releaseId} available.`,
+      actions: [{
+        label: "Review Gateways",
+        primary: true,
+        onClick: closeNotificationsThen(() => setGatewayUpdateDialogOpen(true)),
+      }],
+    });
+  }
+  for (const [gatewayNodeId, runtime] of Object.entries(
+    gatewayUpdateRuntimePresentation,
+  )) {
+    if (runtime.state === "unchecked" || runtime.state === "online") continue;
+    const node = gatewayUpdatePlan.find(candidate =>
+      candidate.gatewayNodeId === gatewayNodeId
+    );
+    const owner = gatewayProjectOwner(
+      gatewayNodeId,
+      node?.gatewayName ?? "",
+      node?.computerName ?? "",
+    );
+    notificationCenterItems.push({
+      key: `state:gateway-update:${gatewayNodeId}:${runtime.state}`,
+      severity: runtime.state === "error"
+        ? "error"
+        : runtime.state === "unreachable"
+          ? "warning"
+          : "info",
+      title: runtime.state === "starting"
+        ? `${owner.label} is preparing its update`
+        : runtime.state === "checking"
+          ? `Checking ${owner.label}`
+          : runtime.state === "unreachable"
+            ? `${owner.label} did not answer`
+            : `${owner.label} update failed`,
+      detail: runtime.detail ?? (runtime.state === "starting"
+        ? "The local maintenance Agent continues in the background."
+        : "Open Gateway software for the latest signed status."),
+      actions: [{
+        label: "Open Gateway software",
+        primary: true,
+        onClick: closeNotificationsThen(() => setGatewayUpdateDialogOpen(true)),
+      }],
+    });
+  }
+  if (gatewayUpdateDiscoveryError) {
+    notificationCenterItems.push({
+      key: "state:gateway-update-discovery",
+      severity: "error",
+      title: "Gateway release channel could not be loaded",
+      detail: gatewayUpdateDiscoveryError,
+      actions: [{
+        label: "Open settings",
+        primary: true,
+        onClick: closeNotificationsThen(() => setSettingsOpen(true)),
+      }],
+    });
+  }
+
+  const settingsErrors = [
+    ["device-invitation", "Device invitation needs attention", invitationError],
+    ["gateway-enrollment", "Gateway setup needs attention", gatewayEnrollmentError],
+    ["gateway-profile", "Gateway profile update failed", gatewayProfileError],
+  ] as const;
+  for (const [key, title, detail] of settingsErrors) {
+    if (!detail) continue;
+    notificationCenterItems.push({
+      key: `state:${key}`,
+      severity: "error",
+      title,
+      detail,
+      actions: [{
+        label: "Open settings",
+        primary: true,
+        onClick: closeNotificationsThen(() => setSettingsOpen(true)),
+      }],
+    });
+  }
+  if (providerHistoryError) {
+    notificationCenterItems.push({
+      key: "state:provider-history",
+      severity: "error",
+      title: "Provider history could not be loaded",
+      detail: providerHistoryError,
+      actions: [{
+        label: "Open Provider History",
+        primary: true,
+        onClick: closeNotificationsThen(() => setProviderHistoryOpen(true)),
+      }],
+    });
+  }
+  if (privilegeTotpError) {
+    notificationCenterItems.push({
+      key: "state:privilege-totp",
+      severity: "error",
+      title: "Permission verification failed",
+      detail: privilegeTotpError,
+    });
+  }
+  if (nativeUpdateState && [
+    "available",
+    "downloading",
+    "ready",
+    "installing",
+    "permission_required",
+    "failed",
+  ].includes(nativeUpdateState.phase)) {
+    notificationCenterItems.push({
+      key: `state:native-update:${nativeUpdateState.phase}`,
+      severity: nativeUpdateState.phase === "failed"
+        ? "error"
+        : nativeUpdateState.phase === "permission_required"
+          ? "warning"
+          : "info",
+      title: "Android app update",
+      detail: nativeUpdateStatusText(nativeUpdateState),
+      actions: [{
+        label: "Open settings",
+        primary: true,
+        onClick: closeNotificationsThen(() => setSettingsOpen(true)),
+      }],
+    });
+  }
+  if (pwaUpdateState.phase !== "current" && pwaUpdateState.phase !== "checking") {
+    notificationCenterItems.push({
+      key: `state:pwa-update:${pwaUpdateState.phase}`,
+      severity: pwaUpdateState.phase === "unavailable" ? "warning" : "info",
+      title: pwaUpdateState.phase === "updated"
+        ? "Malink was updated"
+        : pwaUpdateState.phase === "unavailable"
+          ? "Malink update check is unavailable"
+          : "Malink update in progress",
+      detail: pwaUpdateState.phase === "updated"
+        ? `Now running build ${pwaUpdateState.currentVersion}.`
+        : pwaUpdateState.phase === "unavailable"
+          ? "The current version remains active. You can retry from settings."
+          : `Preparing build ${pwaUpdateState.latestVersion}.`,
+      actions: pwaUpdateState.phase === "unavailable"
+        ? [{
+            label: "Open settings",
+            primary: true,
+            onClick: closeNotificationsThen(() => setSettingsOpen(true)),
+          }]
+        : undefined,
+    });
+  }
+  const notificationCount = notificationCenterItems.length;
+
   return (
     <main className={`app-shell ${mobileChatOpen ? "mobile-chat-open" : ""} ${primaryView === "files" ? "file-inbox-open" : ""}`}>
-      {(globalNotices.length > 0 || visibleRecoveredNativeCommand) && (
+      {!notificationCenterOpen &&
+        (globalNotices.length > 0 || visibleRecoveredNativeCommand) && (
         <div className="global-ui-notices">
           <UiNoticeList
             notices={globalNotices}
@@ -9753,6 +10176,21 @@ function MalinkAppRuntime() {
         <div className="rail-spacer" />
         <button
           type="button"
+          className={`rail-button rail-notification-button ${notificationCenterOpen ? "active" : ""}`}
+          aria-label={`Notifications and issues, ${notificationCount} active`}
+          aria-expanded={notificationCenterOpen}
+          onClick={openNotificationCenter}
+        >
+          <NotificationIcon />
+          <span>Notices</span>
+          {notificationCount > 0 && (
+            <b className="notification-count" aria-hidden="true">
+              {notificationCount > 99 ? "99+" : notificationCount}
+            </b>
+          )}
+        </button>
+        <button
+          type="button"
           className="rail-button"
           aria-label="Settings"
           onClick={() => setSettingsOpen(true)}
@@ -9811,6 +10249,20 @@ function MalinkAppRuntime() {
             <h1>Malink</h1>
           </div>
           <div className="session-header-actions">
+            <button
+              type="button"
+              className="mobile-notification-button"
+              aria-label={`Notifications and issues, ${notificationCount} active`}
+              aria-expanded={notificationCenterOpen}
+              onClick={openNotificationCenter}
+            >
+              <NotificationIcon />
+              {notificationCount > 0 && (
+                <b className="notification-count" aria-hidden="true">
+                  {notificationCount > 99 ? "99+" : notificationCount}
+                </b>
+              )}
+            </button>
             {trustedGateway && (
               <button
                 type="button"
@@ -10068,6 +10520,11 @@ function MalinkAppRuntime() {
           {optimisticProjectCreate &&
             (activeGatewayFilter === ALL_GATEWAYS_FILTER ||
               optimisticProjectCreate.input.gatewayNodeId === activeGatewayFilter) &&
+            (!(optimisticProjectCreate.phase === "failed" ||
+              optimisticProjectCreate.phase === "uncertain") ||
+              !hiddenAttentionKeys.has(
+                `state:project-create:${optimisticProjectCreate.localId}:${optimisticProjectCreate.phase}`,
+              )) &&
             (!search.trim() ||
               `${optimisticProjectCreate.input.name} ${optimisticProjectCreate.input.cwd} ${optimisticProjectCreate.gatewayLabel}`
                 .toLowerCase()
@@ -10146,8 +10603,10 @@ function MalinkAppRuntime() {
                     optimisticProjectCreate.phase === "uncertain") && (
                     <button
                       type="button"
-                      aria-label="Dismiss project creation"
-                      onClick={dismissOptimisticProjectCreate}
+                      aria-label="Hide project creation notice"
+                      onClick={() => hideAttention(
+                        `state:project-create:${optimisticProjectCreate.localId}:${optimisticProjectCreate.phase}`,
+                      )}
                     >
                       ×
                     </button>
@@ -11055,7 +11514,9 @@ function MalinkAppRuntime() {
             <span className="context-spacer" />
           </div>
 
-          {revisionConflict && (
+          {revisionConflict && !hiddenAttentionKeys.has(
+            `state:revision:${revisionConflict.commandId}`,
+          ) && (
             <section className="revision-conflict-card" role="alert">
               <div>
                 <strong>Another device updated this session</strong>
@@ -11067,6 +11528,15 @@ function MalinkAppRuntime() {
                 </p>
               </div>
               <div className="revision-conflict-actions">
+                <button
+                  type="button"
+                  disabled={revisionConflict.busy}
+                  onClick={() => hideAttention(
+                    `state:revision:${revisionConflict.commandId}`,
+                  )}
+                >
+                  Hide
+                </button>
                 <button
                   key="stop-agent"
                   type="button"
@@ -11086,7 +11556,9 @@ function MalinkAppRuntime() {
             </section>
           )}
 
-          {nativeCommandReview && (
+          {nativeCommandReview && !hiddenAttentionKeys.has(
+            `state:native-review:${nativeCommandReview.commandId}`,
+          ) && (
             <section className="revision-conflict-card" role="alert">
               <div>
                 <strong>{nativeCommandReviewTitle(nativeCommandReview.operation)}</strong>
@@ -11095,6 +11567,15 @@ function MalinkAppRuntime() {
                 </p>
               </div>
               <div className="revision-conflict-actions">
+                <button
+                  type="button"
+                  disabled={nativeCommandReview.busy}
+                  onClick={() => hideAttention(
+                    `state:native-review:${nativeCommandReview.commandId}`,
+                  )}
+                >
+                  Hide
+                </button>
                 <button
                   type="button"
                   disabled={nativeCommandReview.busy}
@@ -11113,7 +11594,11 @@ function MalinkAppRuntime() {
             </section>
           )}
 
-          {optimisticSelected && optimisticSession && (
+          {optimisticSelected &&
+            optimisticSession &&
+            !hiddenAttentionKeys.has(
+              `state:session-create:${optimisticSession.localSessionId}:${optimisticSession.phase}`,
+            ) && (
             <section
               className={`optimistic-session-card phase-${optimisticSession.phase}`}
               role={optimisticSession.phase === "creating" ? "status" : "alert"}
@@ -11148,6 +11633,14 @@ function MalinkAppRuntime() {
                 <div className="optimistic-session-actions">
                   <button
                     type="button"
+                    onClick={() => hideAttention(
+                      `state:session-create:${optimisticSession.localSessionId}:${optimisticSession.phase}`,
+                    )}
+                  >
+                    Hide
+                  </button>
+                  <button
+                    type="button"
                     onClick={retryFailedOptimisticSession}
                     disabled={newSessionBusy}
                   >
@@ -11164,6 +11657,14 @@ function MalinkAppRuntime() {
               )}
               {optimisticSession.phase === "uncertain" && (
                 <div className="optimistic-session-actions">
+                  <button
+                    type="button"
+                    onClick={() => hideAttention(
+                      `state:session-create:${optimisticSession.localSessionId}:${optimisticSession.phase}`,
+                    )}
+                  >
+                    Hide
+                  </button>
                   {uncertainSessionRecovery?.primaryAction && (
                     <button
                       type="button"
@@ -11533,7 +12034,8 @@ function MalinkAppRuntime() {
       {gatewayRelease &&
         gatewayUpdateNoticeKey &&
         dismissedGatewayUpdateNoticeKey !== gatewayUpdateNoticeKey &&
-        !gatewayUpdateDialogOpen && (
+        !gatewayUpdateDialogOpen &&
+        !notificationCenterOpen && (
         <div className="gateway-update-toast" role="status" aria-live="polite">
           <span aria-hidden="true">G</span>
           <span>
@@ -11547,7 +12049,10 @@ function MalinkAppRuntime() {
           <button
             type="button"
             className="gateway-update-toast-review"
-            onClick={() => setGatewayUpdateDialogOpen(true)}
+            onClick={() => {
+              setDismissedGatewayUpdateNoticeKey(gatewayUpdateNoticeKey);
+              setGatewayUpdateDialogOpen(true);
+            }}
           >
             Review
           </button>
@@ -11562,19 +12067,31 @@ function MalinkAppRuntime() {
         </div>
       )}
 
-      {(pairingError ?? connectionError) && !settingsOpen && (
-        <button
-          className="connection-toast"
-          role="alert"
-          onClick={() => setSettingsOpen(true)}
-        >
+      {connectionAttention &&
+        connectionAttentionKey &&
+        !hiddenAttentionKeys.has(connectionAttentionKey) &&
+        !settingsOpen &&
+        !notificationCenterOpen && (
+        <div className="connection-toast" role="alert">
           <span>!</span>
-          <span>
+          <button
+            type="button"
+            className="connection-toast-open"
+            onClick={() => setSettingsOpen(true)}
+          >
             <strong>Connection needs attention</strong>
-            <small>{pairingError ?? connectionError}</small>
-          </span>
-          <b>Open settings</b>
-        </button>
+            <small>{connectionAttention}</small>
+            <b>Open settings</b>
+          </button>
+          <button
+            type="button"
+            className="connection-toast-dismiss"
+            aria-label="Hide connection notice"
+            onClick={() => hideAttention(connectionAttentionKey)}
+          >
+            ×
+          </button>
+        </div>
       )}
 
       {gatewayState && (
@@ -11621,6 +12138,12 @@ function MalinkAppRuntime() {
           onOpenSession={openGatewayUpdateSession}
         />
       )}
+
+      <NotificationCenter
+        open={notificationCenterOpen}
+        items={notificationCenterItems}
+        onClose={() => setNotificationCenterOpen(false)}
+      />
 
       {gatewayState && (
         <NewSessionDialog
@@ -12121,6 +12644,19 @@ function recoveredCommandNoticeVersion(
   command: MalinkRecoveredDurableCommand,
 ): string {
   return `${command.commandId}\0${command.state}\0${command.updatedAt}`;
+}
+
+function uiNoticeTitle(scope: UiNoticeScope): string {
+  switch (scope) {
+    case "connection": return "Connection";
+    case "pairing": return "Authorization";
+    case "background": return "Background operation";
+    case "history": return "Conversation history";
+    case "session": return "Conversation or project";
+    case "composer": return "Agent command";
+    case "attachment": return "Attachment";
+    case "update": return "Software update";
+  }
 }
 
 function formatFileSize(bytes: number): string {
