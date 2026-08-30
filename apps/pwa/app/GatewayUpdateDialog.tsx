@@ -187,13 +187,12 @@ function GatewayUpdateDialogContent({
                   {runtime.maintenanceSessionAmbiguous && (
                     <>
                       <p className="gateway-update-session-warning" role="alert">
-                        This older Gateway release reused a maintenance session ID from another
-                        node. Malink will route cleanup through this named computer; future updates
-                        use node-specific session IDs.
+                        This Gateway has an update session left by an older Malink version. You can
+                        safely archive it here; only this Gateway is affected.
                       </p>
                       {runtime.maintenanceSessionArchived ? (
                         <span className="gateway-update-session-warning" role="status">
-                          Update session archived on this Gateway.
+                          Old update session archived on this Gateway.
                         </span>
                       ) : runtime.maintenanceSessionArchiveAvailable ? (
                         <button
@@ -203,8 +202,8 @@ function GatewayUpdateDialogContent({
                           onClick={() => onArchiveSession(node, runtime.maintenanceSessionId!)}
                         >
                           {runtime.maintenanceSessionArchiveBusy
-                            ? "Archiving on this Gateway…"
-                            : "Archive this Gateway’s update session"}
+                            ? "Archiving old update session…"
+                            : "Archive old update session"}
                         </button>
                       ) : null}
                     </>
@@ -212,12 +211,12 @@ function GatewayUpdateDialogContent({
                   {runtime.legacyMaintenanceSessionId && (
                     <>
                       <p className="gateway-update-session-warning" role="alert">
-                        This Gateway still has an older update session whose ID was shared with
-                        another node. Clean it up here without affecting the current release.
+                        This Gateway also has an update session left by an older Malink version.
+                        You can safely archive it here; only this Gateway is affected.
                       </p>
                       {runtime.legacyMaintenanceSessionArchived ? (
                         <span className="gateway-update-session-warning" role="status">
-                          Older update session archived on this Gateway.
+                          Old update session archived on this Gateway.
                         </span>
                       ) : runtime.legacyMaintenanceSessionArchiveAvailable ? (
                         <button
@@ -230,8 +229,8 @@ function GatewayUpdateDialogContent({
                           )}
                         >
                           {runtime.legacyMaintenanceSessionArchiveBusy
-                            ? "Archiving older session on this Gateway…"
-                            : "Archive this Gateway’s older update session"}
+                            ? "Archiving old update session…"
+                            : "Archive old update session"}
                         </button>
                       ) : null}
                     </>

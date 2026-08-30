@@ -11224,7 +11224,7 @@ function MalinkAppRuntime() {
                     </strong>
                     <small>
                       {ambiguousGatewayMaintenanceSessionIds.has(gatewaySelected.id)
-                        ? "This older update session needs an exact computer route"
+                        ? "Choose the Gateway that owns this old update session"
                         : "Remove from Malink; provider history remains"}
                     </small>
                   </span>

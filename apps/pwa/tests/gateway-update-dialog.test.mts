@@ -147,9 +147,11 @@ test("does not open a legacy maintenance session shared by multiple nodes", () =
     onArchiveSession() {},
   }));
 
-  assert.match(html, /reused a maintenance session ID from another node/);
+  assert.match(html, /update session left by an older Malink version/);
+  assert.match(html, /only this Gateway is affected/);
+  assert.doesNotMatch(html, /maintenance session ID|node-specific session IDs/);
   assert.doesNotMatch(html, /Open update session/);
-  assert.match(html, /Archive this Gateway’s update session/);
+  assert.match(html, /Archive old update session/);
 });
 
 test("shows exact-node archival progress for a legacy maintenance session", () => {
@@ -181,8 +183,8 @@ test("shows exact-node archival progress for a legacy maintenance session", () =
     onArchiveSession() {},
   }));
 
-  assert.match(html, /Archiving on this Gateway…/);
-  assert.match(html, /Update session archived on this Gateway/);
+  assert.match(html, /Archiving old update session…/);
+  assert.match(html, /Old update session archived on this Gateway/);
 });
 
 test("keeps a new release actionable while offering cleanup for an older collision", () => {
@@ -214,6 +216,7 @@ test("keeps a new release actionable while offering cleanup for an older collisi
     onArchiveSession() {},
   }));
 
-  assert.match(html, /Archive this Gateway’s older update session/);
+  assert.match(html, /Archive old update session/);
+  assert.match(html, /only this Gateway is affected/);
   assert.match(html, /Create update session/);
 });
