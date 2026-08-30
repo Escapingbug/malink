@@ -124,6 +124,7 @@ import {
 import { discoverLatestGatewayAgentUpdate } from "./gatewayAgentUpdateDiscovery";
 import { uncertainCommandRecoveryPresentation } from "./uncertainCommandRecoveryPresentation";
 import {
+  collidingGatewayMaintenanceSessionIds,
   gatewayUpdatePlan as buildGatewayUpdatePlan,
   gatewayUpdateTarget,
   recoverAmbiguousGatewayUpdateCompletion,
@@ -2494,6 +2495,33 @@ function MalinkAppRuntime() {
           maintenanceSessionId: session.id,
         },
       };
+    }
+    const collidingSessionIds = collidingGatewayMaintenanceSessionIds({
+      nodeSessions: gatewayUpdatePlan.map(node => {
+        const maintenanceSessionId =
+          presentation[node.gatewayNodeId]?.maintenanceSessionId;
+        return {
+          gatewayNodeId: node.gatewayNodeId,
+          ...(maintenanceSessionId ? { maintenanceSessionId } : {}),
+        };
+      }),
+      projectedSessions: gatewayState.sessions,
+    });
+    if (collidingSessionIds.size > 0) {
+      for (const node of gatewayUpdatePlan) {
+        const runtime = presentation[node.gatewayNodeId];
+        if (
+          !runtime?.maintenanceSessionId ||
+          !collidingSessionIds.has(runtime.maintenanceSessionId)
+        ) continue;
+        presentation = {
+          ...presentation,
+          [node.gatewayNodeId]: {
+            ...runtime,
+            maintenanceSessionAmbiguous: true,
+          },
+        };
+      }
     }
     return presentation;
   }, [

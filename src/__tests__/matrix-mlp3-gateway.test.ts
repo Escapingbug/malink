@@ -35,7 +35,10 @@ import type {
   MatrixGatewayEventListener,
 } from '@/gateway/matrix/client'
 import type { MatrixGatewayConfig, MatrixGatewayCryptoConfig } from '@/gateway/matrix/config'
-import { MatrixMlp3GatewayRunner } from '@/gateway/matrix/mlp3Gateway'
+import {
+  gatewayMaintenanceSessionId,
+  MatrixMlp3GatewayRunner,
+} from '@/gateway/matrix/mlp3Gateway'
 import { gatewayProjectIdentity } from '@/gateway/matrix/project'
 import type { GatewayWebPushService } from '@/gateway/matrix/webPush'
 import { createTopicSessionRecord } from '@/bridge/topicSession'
@@ -86,6 +89,14 @@ class TestMatrixClient extends InMemoryMatrixTransport implements MatrixGatewayC
 }
 
 describe('MatrixMlp3GatewayRunner', () => {
+  it('scopes maintenance sessions to one physical Gateway node', () => {
+    const first = gatewayMaintenanceSessionId('gateway-node-a', 'release-2')
+    const second = gatewayMaintenanceSessionId('gateway-node-b', 'release-2')
+
+    expect(first).not.toBe(second)
+    expect(first).toBe(gatewayMaintenanceSessionId('gateway-node-a', 'release-2'))
+  })
+
   it('starts without a recipient so the first device can pair', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-v3-empty-gateway-'))
     const gatewayKeys = await generateDeviceKeyPair()
@@ -93,6 +104,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     const roomId = '!empty-project:example.org'
     const runner = new MatrixMlp3GatewayRunner({
       gatewayId: 'workspace-empty',
+      gatewayNodeId: 'gateway-node-empty',
       connection: {
         baseUrl: 'https://matrix.example.org',
         accessToken: 'gateway-token',
@@ -137,6 +149,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     const roomId = '!stable-project:example.org'
     const config: MatrixGatewayConfig = {
       gatewayId: 'workspace-stable',
+      gatewayNodeId: 'gateway-node-stable',
       connection: {
         baseUrl: 'https://matrix.example.org',
         accessToken: 'gateway-token',
@@ -204,6 +217,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     const projectId = gatewayProjectIdentity('/repo').id
     const config: MatrixGatewayConfig = {
       gatewayId: 'workspace-1',
+      gatewayNodeId: 'gateway-node-1',
       connection: {
         baseUrl: 'https://matrix.example.org',
         accessToken: 'gateway-token',
@@ -820,8 +834,9 @@ describe('MatrixMlp3GatewayRunner', () => {
     )).toBe(true)
     expect(gatewayUpdateCalls).toContain('stage:release-2')
     expect(gatewayUpdateCalls).toContain('instruction:release-2')
-    expect(gatewayUpdateCalls.some(call => call.startsWith('begin:release-2:gateway-update-')))
-      .toBe(true)
+    expect(gatewayUpdateCalls).toContain(
+      `begin:release-2:${gatewayMaintenanceSessionId('gateway-node-1', 'release-2')}`,
+    )
     expect(dispatched.some(item =>
       item.sessionId.startsWith('gateway-update-')
       && item.text.includes('exact Git commit: 0123456789abcdef0123456789abcdef01234567')
@@ -1357,12 +1372,12 @@ describe('MatrixMlp3GatewayRunner', () => {
       && event.payload.type === 'session.ready'
     )
     expect(recovered.map(event => event.sessionId).sort()).toEqual([
-      `gateway-update-${createHash('sha256')
-        .update('workspace-1\0release-2')
+      `gateway-update-node-${createHash('sha256')
+        .update('gateway-node-1\0release-2')
         .digest('hex')
         .slice(0, 40)}`,
-      `gateway-update-${createHash('sha256')
-        .update('workspace-1\0release-no-submit')
+      `gateway-update-node-${createHash('sha256')
+        .update('gateway-node-1\0release-no-submit')
         .digest('hex')
         .slice(0, 40)}`,
       'session-b',

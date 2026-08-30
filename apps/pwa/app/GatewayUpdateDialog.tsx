@@ -15,6 +15,7 @@ export type GatewayUpdateNodeRuntime = {
   detail?: string;
   status?: GatewayUpdateStatus;
   maintenanceSessionId?: string;
+  maintenanceSessionAmbiguous?: boolean;
 };
 
 type Props = {
@@ -165,7 +166,7 @@ function GatewayUpdateDialogContent({
                 </div>
 
                 <div className="gateway-update-node-actions">
-                  {runtime.maintenanceSessionId && (
+                  {runtime.maintenanceSessionId && !runtime.maintenanceSessionAmbiguous && (
                     <button
                       type="button"
                       className="secondary-button"
@@ -173,6 +174,13 @@ function GatewayUpdateDialogContent({
                     >
                       Open update session
                     </button>
+                  )}
+                  {runtime.maintenanceSessionAmbiguous && (
+                    <p className="gateway-update-session-warning" role="alert">
+                      This older Gateway release reused a maintenance session ID from another
+                      node. The update still runs on the named computer, but Malink will not open
+                      an ambiguous session. Future updates use node-specific session IDs.
+                    </p>
                   )}
                   {canProbe && !active && (
                     <button

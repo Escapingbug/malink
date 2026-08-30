@@ -121,3 +121,27 @@ test("keeps the panel dismissible while a Gateway maintenance Agent starts", () 
   assert.match(html, /continues this update in the background/);
   assert.match(html, />Close<\/button>/);
 });
+
+test("does not open a legacy maintenance session shared by multiple nodes", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes,
+    runtimeByNode: {
+      "node-office": {
+        state: "online",
+        maintenanceSessionId: "legacy-shared-session",
+        maintenanceSessionAmbiguous: true,
+      },
+    },
+    activeGatewayNodeId: null,
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+  }));
+
+  assert.match(html, /reused a maintenance session ID from another node/);
+  assert.doesNotMatch(html, /Open update session/);
+});

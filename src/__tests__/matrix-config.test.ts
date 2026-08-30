@@ -5,6 +5,15 @@ import {
 } from '@/gateway/matrix/config'
 
 describe('Matrix gateway configuration', () => {
+    it('requires one physical Gateway node identity', () => {
+        const config = fixture()
+        Reflect.deleteProperty(config, 'gatewayNodeId')
+
+        expect(() => validateMatrixGatewayConfig(config)).toThrow(
+            'gatewayNodeId must not be empty',
+        )
+    })
+
     it('requires application-layer security', () => {
         const config = fixture()
         Reflect.deleteProperty(config, 'applicationSecurity')
@@ -45,6 +54,7 @@ describe('Matrix gateway configuration', () => {
 function fixture(): MatrixGatewayConfig {
     return {
         gatewayId: 'gateway-1',
+        gatewayNodeId: 'gateway-node-1',
         connection: {
             baseUrl: 'https://matrix.example.org',
             accessToken: 'secret-token',

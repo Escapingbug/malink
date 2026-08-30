@@ -22,6 +22,16 @@ export type GatewayUpdateTarget = {
   targetProjectId: string;
 };
 
+type GatewayMaintenanceSessionReference = {
+  gatewayNodeId: string;
+  maintenanceSessionId?: string;
+};
+
+type ProjectedGatewayMaintenanceSession = {
+  id: string;
+  projectId: string;
+};
+
 export type GatewayUpdateCommand =
   | { operation: "gateway.update.stage"; releaseId: string }
   | {
@@ -90,6 +100,50 @@ export function gatewayUpdateTarget(
     currentBuildId: node.currentBuildId,
     targetProjectId: node.targetProjectId,
   };
+}
+
+/**
+ * Detect maintenance IDs that cannot safely identify one Gateway session.
+ *
+ * Gateways released before node-scoped update identities derived this value
+ * from the shared Workspace ID. Keep their updates running, but never let the
+ * client open an arbitrary same-ID session from another project.
+ */
+export function collidingGatewayMaintenanceSessionIds(input: {
+  nodeSessions: readonly GatewayMaintenanceSessionReference[];
+  projectedSessions: readonly ProjectedGatewayMaintenanceSession[];
+}): ReadonlySet<string> {
+  const collisions = new Set<string>();
+  const workspaceHasMultipleNodes = new Set(
+    input.nodeSessions.map(reference => reference.gatewayNodeId),
+  ).size > 1;
+  const nodesBySession = new Map<string, Set<string>>();
+  for (const reference of input.nodeSessions) {
+    if (!reference.maintenanceSessionId) continue;
+    if (
+      workspaceHasMultipleNodes &&
+      reference.maintenanceSessionId.startsWith("gateway-update-") &&
+      !reference.maintenanceSessionId.startsWith("gateway-update-node-")
+    ) {
+      collisions.add(reference.maintenanceSessionId);
+    }
+    const nodes = nodesBySession.get(reference.maintenanceSessionId) ?? new Set<string>();
+    nodes.add(reference.gatewayNodeId);
+    nodesBySession.set(reference.maintenanceSessionId, nodes);
+  }
+  const projectsBySession = new Map<string, Set<string>>();
+  for (const session of input.projectedSessions) {
+    const projects = projectsBySession.get(session.id) ?? new Set<string>();
+    projects.add(session.projectId);
+    projectsBySession.set(session.id, projects);
+  }
+  for (const [sessionId, nodes] of nodesBySession) {
+    if (nodes.size > 1) collisions.add(sessionId);
+  }
+  for (const [sessionId, projects] of projectsBySession) {
+    if (projects.size > 1) collisions.add(sessionId);
+  }
+  return collisions;
 }
 
 export async function triggerGatewayUpdate(input: {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { SignedWorkspaceGatewayDirectory } from "@malink/protocol";
 import {
+  collidingGatewayMaintenanceSessionIds,
   gatewayUpdatePlan,
   gatewayUpdateTarget,
   recoverAmbiguousGatewayUpdateCompletion,
@@ -136,6 +137,67 @@ test("does not repeat an ambiguous apply operation", async () => {
 
   assert.equal(result.phase, "scheduled");
   assert.equal(reads, 1);
+});
+
+test("blocks legacy maintenance IDs shared by multiple Gateway nodes", () => {
+  const collisions = collidingGatewayMaintenanceSessionIds({
+    nodeSessions: [
+      { gatewayNodeId: "node-a", maintenanceSessionId: "legacy-session" },
+      { gatewayNodeId: "node-b", maintenanceSessionId: "legacy-session" },
+      { gatewayNodeId: "node-c", maintenanceSessionId: "node-c-session" },
+    ],
+    projectedSessions: [],
+  });
+
+  assert.deepEqual([...collisions], ["legacy-session"]);
+});
+
+test("blocks a maintenance ID projected in multiple projects", () => {
+  const collisions = collidingGatewayMaintenanceSessionIds({
+    nodeSessions: [
+      { gatewayNodeId: "node-a", maintenanceSessionId: "legacy-session" },
+    ],
+    projectedSessions: [
+      { id: "legacy-session", projectId: "project-a" },
+      { id: "legacy-session", projectId: "project-b" },
+    ],
+  });
+
+  assert.deepEqual([...collisions], ["legacy-session"]);
+});
+
+test("blocks one recognizable legacy maintenance ID in a multi-Gateway workspace", () => {
+  const collisions = collidingGatewayMaintenanceSessionIds({
+    nodeSessions: [
+      {
+        gatewayNodeId: "node-a",
+        maintenanceSessionId: "gateway-update-legacy-workspace-hash",
+      },
+      { gatewayNodeId: "node-b" },
+    ],
+    projectedSessions: [
+      { id: "gateway-update-legacy-workspace-hash", projectId: "project-a" },
+    ],
+  });
+
+  assert.deepEqual([...collisions], ["gateway-update-legacy-workspace-hash"]);
+});
+
+test("allows one node-scoped maintenance ID in a multi-Gateway workspace", () => {
+  const collisions = collidingGatewayMaintenanceSessionIds({
+    nodeSessions: [
+      {
+        gatewayNodeId: "node-a",
+        maintenanceSessionId: "gateway-update-node-node-specific-hash",
+      },
+      { gatewayNodeId: "node-b" },
+    ],
+    projectedSessions: [
+      { id: "gateway-update-node-node-specific-hash", projectId: "project-a" },
+    ],
+  });
+
+  assert.deepEqual([...collisions], []);
 });
 
 function gateway(

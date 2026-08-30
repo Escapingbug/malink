@@ -538,6 +538,7 @@ const stopPairingRecovery = listenForMatrixPairingRequests({
 })
 const config: MatrixGatewayConfig = {
     gatewayId: identity.gatewayId,
+    gatewayNodeId: identity.gatewayNodeId,
     connection: {
         baseUrl: fixture.homeserver,
         accessToken: login.access_token,

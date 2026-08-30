@@ -79,7 +79,10 @@ export interface MatrixGatewayApplicationSecurityConfig {
 }
 
 export interface MatrixGatewayConfig {
+    /** Shared MLP Workspace trust-domain ID. */
     gatewayId: string
+    /** Stable identity of this exact Gateway computer inside the Workspace. */
+    gatewayNodeId: string
     connection: MatrixGatewayConnectionConfig
     crypto: MatrixGatewayCryptoConfig
     rooms: MatrixGatewayRoomConfig[]
@@ -99,6 +102,7 @@ export interface MatrixGatewayConfig {
 
 export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
     requireText(config.gatewayId, 'gatewayId')
+    requireText(config.gatewayNodeId, 'gatewayNodeId')
     requireText(config.connection.baseUrl, 'connection.baseUrl')
     requireText(config.connection.accessToken, 'connection.accessToken')
     requireText(config.connection.userId, 'connection.userId')
@@ -209,8 +213,10 @@ export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
     }
 }
 
-function requireText(value: string, name: string): void {
-    if (!value.trim()) throw new Error(`${name} must not be empty`)
+function requireText(value: unknown, name: string): asserts value is string {
+    if (typeof value !== 'string' || !value.trim()) {
+        throw new Error(`${name} must not be empty`)
+    }
 }
 
 function assertUnique(values: string[], label: string): void {

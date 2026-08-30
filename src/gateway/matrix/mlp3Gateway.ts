@@ -958,15 +958,12 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private maintenanceAgentSessionId(releaseId: string): string {
-    return `gateway-update-${createHash('sha256')
-      .update(`${this.config.gatewayId}\0${releaseId}`)
-      .digest('hex')
-      .slice(0, 40)}`
+    return gatewayMaintenanceSessionId(this.config.gatewayNodeId, releaseId)
   }
 
   private maintenanceAgentTurnId(commandId: string, releaseId: string): string {
     return `gateway-update-turn-${createHash('sha256')
-      .update(`${this.config.gatewayId}\0${releaseId}\0${commandId}`)
+      .update(`${this.config.gatewayNodeId}\0${releaseId}\0${commandId}`)
       .digest('hex')
       .slice(0, 40)}`
   }
@@ -2902,6 +2899,23 @@ export class MatrixMlp3GatewayRunner {
   private log(message: string): void {
     this.dependencies.onLog?.(message)
   }
+}
+
+/**
+ * Stable per-node maintenance session identity.
+ *
+ * gatewayId is intentionally not accepted here: it is the shared Workspace
+ * trust-domain ID after a second Gateway joins, so using it would make every
+ * node updating the same release publish the same session ID.
+ */
+export function gatewayMaintenanceSessionId(
+  gatewayNodeId: string,
+  releaseId: string,
+): string {
+  return `gateway-update-node-${createHash('sha256')
+    .update(`${gatewayNodeId}\0${releaseId}`)
+    .digest('hex')
+    .slice(0, 40)}`
 }
 
 function isSendFileCommandResult(value: unknown): value is SendFileCommandResult {

@@ -242,12 +242,16 @@ The PWA then sends `apply`, which progresses through:
 waiting_for_idle -> scheduled -> activating -> probation -> committed
 ```
 
-The maintenance Agent's session is deterministic per Gateway and release, so a
-retry resumes the same visible session and supervisor workspace. The normal
-Gateway software panel links to that session and owns the confirmation and
-retry actions; advanced diagnostics is not the product update entry point.
-Users never enter a release ID or manually transfer Gateway credentials or
-artifacts.
+The maintenance Agent's session is deterministic per physical Gateway node and
+release: its identity is derived from `gatewayNodeId`, never the shared
+Workspace `gatewayId`. A retry on one node therefore resumes the same visible
+session and supervisor workspace, while two nodes updating the same release
+cannot collide. The normal Gateway software panel links to that session and
+owns the confirmation and retry actions; advanced diagnostics is not the
+product update entry point. Clients refuse to open a legacy maintenance ID if
+it is attributed to multiple nodes or project rooms, or if its Workspace-scoped
+format is unsafe in a multi-Gateway Workspace. Users never enter a release ID
+or manually transfer Gateway credentials or artifacts.
 
 ## Recovery
 

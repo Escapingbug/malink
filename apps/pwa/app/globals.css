@@ -7794,6 +7794,14 @@ select:focus-visible {
   gap: 8px;
 }
 
+.gateway-update-session-warning {
+  flex: 1 1 100%;
+  margin: 0;
+  color: #9a4f57;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
 .gateway-update-node-actions button,
 .gateway-update-dialog > footer button {
   min-height: 36px;
