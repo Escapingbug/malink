@@ -381,6 +381,55 @@ class MatrixApplicationControlClientTest {
     }
 
     @Test
+    fun `durable reply recovery reads one bounded recent page in causal order`() = runBlocking {
+        lateinit var endpoint: URI
+        val responseBody = """
+            {
+              "chunk":[
+                {
+                  "type":"m.room.message",
+                  "event_id":"${'$'}terminal",
+                  "sender":"@gateway:example.org",
+                  "origin_server_ts":20,
+                  "content":${secureContent()}
+                },
+                {
+                  "type":"m.room.message",
+                  "event_id":"${'$'}progress",
+                  "sender":"@gateway:example.org",
+                  "origin_server_ts":10,
+                  "content":${secureContent()}
+                },
+                {
+                  "type":"m.room.message",
+                  "event_id":"${'$'}attacker",
+                  "sender":"@attacker:example.org",
+                  "origin_server_ts":30,
+                  "content":${secureContent()}
+                }
+              ]
+            }
+        """.trimIndent().toByteArray()
+        val client = MatrixApplicationTimelineClient(
+            MatrixApplicationReadTransport { target, token ->
+                endpoint = target
+                assertEquals("secret-access-token", token)
+                MatrixHttpResponse(200, responseBody)
+            },
+        )
+
+        val page = client.latest(storedSession(), "!room:example.org", 32)
+
+        assertEquals(listOf("${'$'}progress", "${'$'}terminal"), page.events.map { it.eventId })
+        assertEquals(
+            "/_matrix/client/v3/rooms/%21room%3Aexample.org/messages",
+            endpoint.rawPath,
+        )
+        assertEquals("dir=b&limit=32", endpoint.rawQuery)
+        assertTrue(responseBody.all { it == 0.toByte() })
+    }
+
+    @Test
     fun `thread history pages only one session relation and filters untrusted senders`() =
         runBlocking {
             lateinit var endpoint: URI

@@ -1025,12 +1025,11 @@ class NativeClientRuntime(
                 // Matrix already durably accepted this transaction. Sending
                 // the same transaction again can only return its original
                 // event id; it cannot create a new timeline delivery. Recover
-                // the exact command through the Gateway journal. The SDK
-                // timeline is only a short compatibility fallback when that
-                // journal probe cannot be published. A synchronized projection
-                // is already authoritative current state; rescanning every
-                // project thread here blocks live replies behind unrelated
-                // historical events.
+                // the exact command through the Gateway journal. If the SDK
+                // live timeline omits the signed reply, recovery reads only one
+                // recent durable Matrix page through the same raw inbox. A
+                // synchronized projection remains authoritative current state;
+                // recovery never walks every project thread.
                 if (requiresProjectionRefreshForCommandRecovery(gatewayStateSynchronized)) {
                     startMatrixMlp3ProjectionRefresh()
                 }
@@ -3139,9 +3138,10 @@ internal fun pairingRecoveryExpiresAt(request: SignedPairingRequest): Long =
 
 /**
  * A journal probe is the authoritative recovery path for a command that
- * Matrix already accepted. Once Matrix accepts that probe, do not paginate the
- * SDK timeline: the Gateway journal will return the exact signed terminal and
- * live delivery must not compete with historical repair work.
+ * Matrix already accepted. The Gateway journal returns the exact signed
+ * terminal. If the SDK live timeline still has not delivered that terminal
+ * after the bounded wait, read one recent durable Matrix page and feed it
+ * through the same raw-inbox verification path.
  *
  * Timeline scanning is only a compatibility fallback when the journal probe
  * itself could not be submitted. It is deliberately followed by one more
@@ -3172,7 +3172,7 @@ internal suspend fun recoverPublishedCommandDelivery(
     }
     if (!isTerminal() && reconciliationSubmitted) {
         awaitReconciliation()
-        return
+        if (isTerminal()) return
     }
     if (!isTerminal()) {
         try {

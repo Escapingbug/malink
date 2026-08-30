@@ -226,6 +226,10 @@ data class MatrixApplicationRoomStateBatch(
     val candidateEventCount: Int,
 )
 
+data class MatrixApplicationTimelineBatch(
+    val events: List<MatrixDecryptedEvent>,
+)
+
 data class MatrixSessionDirectoryLocator(
     val generation: Long,
     val stateVersion: Long,
@@ -535,6 +539,75 @@ class MatrixApplicationEventClient(
 
     private fun encode(value: String): String =
         URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
+}
+
+/**
+ * Reads one bounded recent room page when the SDK's live UI timeline omits a
+ * durable Matrix event. This is a recovery path, not a second sync loop: the
+ * normal SDK callback remains the fast path and the native raw inbox performs
+ * the same verification and event-ID deduplication for recovered events.
+ */
+class MatrixApplicationTimelineClient(
+    private val transport: MatrixApplicationReadTransport =
+        RestrictedHttpsMatrixApplicationReadTransport(),
+) {
+    suspend fun latest(
+        session: StoredMatrixSession,
+        roomId: String,
+        limit: Int,
+    ): MatrixApplicationTimelineBatch {
+        require(limit in 1..MAX_RECOVERY_PAGE_EVENTS)
+        val homeserver = MatrixIdentifiers.normalizeHomeserver(session.homeserverUrl)
+        val binding = session.roomBindings
+            .map(MatrixIdentifiers::validateRoomBinding)
+            .singleOrNull { it.roomId == roomId }
+            ?: throw IllegalArgumentException("Unknown Matrix project room: $roomId")
+        val response = transport.getJson(
+            URI(
+                "$homeserver/_matrix/client/v3/rooms/${encode(binding.roomId)}/messages" +
+                    "?dir=b&limit=$limit",
+            ),
+            session.accessToken,
+        )
+        return try {
+            if (response.status !in 200..299) {
+                throw MatrixApplicationReadException(
+                    response.status,
+                    parseMatrixRetryAfterMs(response.body),
+                )
+            }
+            val root = runCatching {
+                Json.parseToJsonElement(response.body.toString(Charsets.UTF_8)) as? JsonObject
+            }.getOrNull() ?: throw MatrixApplicationControlPayloadException(
+                "The Matrix recovery timeline response is not an object.",
+            )
+            val chunk = root["chunk"] as? JsonArray
+                ?: throw MatrixApplicationControlPayloadException(
+                    "The Matrix recovery timeline response has no event page.",
+                )
+            require(chunk.size <= MAX_RECOVERY_PAGE_EVENTS) {
+                "The Matrix recovery timeline exceeded its requested limit."
+            }
+            val events = chunk.mapNotNull { value ->
+                val event = value as? JsonObject ?: return@mapNotNull null
+                if (event["sender"]?.jsonPrimitive?.contentOrNull != binding.gatewayUserId) {
+                    return@mapNotNull null
+                }
+                if (!isMalinkApplicationControlEvent(event.toString())) return@mapNotNull null
+                matrixApplicationEvent(binding.roomId, event)
+            }.asReversed()
+            MatrixApplicationTimelineBatch(events)
+        } finally {
+            response.body.fill(0)
+        }
+    }
+
+    private fun encode(value: String): String =
+        URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
+
+    private companion object {
+        const val MAX_RECOVERY_PAGE_EVENTS = 64
+    }
 }
 
 /** Pages one session thread without scanning or materializing the room timeline. */

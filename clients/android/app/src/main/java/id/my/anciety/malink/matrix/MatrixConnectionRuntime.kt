@@ -41,6 +41,8 @@ class MatrixConnectionRuntime(
         MatrixThreadDirectoryClient(),
     private val applicationEventClient: MatrixApplicationEventClient =
         MatrixApplicationEventClient(),
+    private val applicationTimelineClient: MatrixApplicationTimelineClient =
+        MatrixApplicationTimelineClient(),
     private val threadHistoryClient: MatrixThreadHistoryClient = MatrixThreadHistoryClient(),
     private val roomMembershipClient: MatrixRoomMembershipClient = MatrixRoomMembershipClient(),
     private val networkMonitor: NetworkMonitor = AndroidNetworkMonitor(context),
@@ -419,36 +421,27 @@ class MatrixConnectionRuntime(
         roomId: String,
         stopWhen: () -> Boolean,
     ): Int {
-        val activeDriver = mutex.withLock {
+        val session = mutex.withLock {
             check(started.get()) { "The native Matrix runtime is stopped." }
             if (!networkAvailable) throw MatrixOfflineException()
-            if (!sdkTimelineReady) throw MatrixOfflineException(
-                "The Matrix SDK timeline is unavailable.",
-            )
-            driver ?: throw MatrixOfflineException("The Matrix SDK driver is unavailable.")
+            secrets?.session ?: throw MatrixOfflineException("The Matrix session is unavailable.")
         }
-        // This is a legacy fallback for a journal probe that could not be
-        // submitted. Advance only one small page per explicit recovery call.
-        // Repeated pages would monopolize the SDK timeline listener also used
-        // by current signed Gateway replies.
+        // Read exactly one recent durable page. This bypasses a Matrix SDK UI
+        // timeline callback that can omit an otherwise synchronized event,
+        // while the native raw inbox keeps verification and deduplication
+        // identical to the live path.
         return withTimeout(COMMAND_TIMELINE_RECOVERY_TIMEOUT_MS) {
-            var pages = 0
-            repeat(MAX_COMMAND_TIMELINE_RECOVERY_PAGES) {
-                if (stopWhen()) return@withTimeout pages
-                val reachedStart = activeDriver.paginateApplicationTimelineBackwards(
-                    roomId,
-                    MAX_COMMAND_TIMELINE_RECOVERY_EVENTS,
-                )
-                pages += 1
-                val stillCurrent = mutex.withLock {
-                    driver === activeDriver && sdkTimelineReady && networkAvailable
-                }
-                if (!stillCurrent) throw MatrixOfflineException(
-                    "The Matrix SDK timeline changed during command recovery.",
-                )
-                if (stopWhen() || reachedStart) return@withTimeout pages
+            if (stopWhen()) return@withTimeout 0
+            val page = applicationTimelineClient.latest(
+                session,
+                roomId,
+                MAX_COMMAND_TIMELINE_RECOVERY_EVENTS,
+            )
+            for (event in page.events) {
+                if (stopWhen()) break
+                onDecryptedEvent(event)
             }
-            pages
+            1
         }.also { pages ->
             diagnostics.record(
                 "matrix.command_recovery.timeline_scanned",
@@ -864,7 +857,6 @@ class MatrixConnectionRuntime(
         const val MEDIA_OPERATION_TIMEOUT_MS = 120_000L
         const val LOGOUT_OPERATION_TIMEOUT_MS = 45_000L
         const val MAX_THREAD_DIRECTORY_PAGES = 1_000
-        const val MAX_COMMAND_TIMELINE_RECOVERY_PAGES = 1
         const val MAX_COMMAND_TIMELINE_RECOVERY_EVENTS = 32
     }
 }

@@ -78,7 +78,7 @@ class GatewayStateSyncPolicyTest {
     }
 
     @Test
-    fun `accepted Gateway journal probe never starts Matrix history scanning`() = runBlocking {
+    fun `accepted Gateway journal probe recovers a signed reply omitted by the live timeline`() = runBlocking {
         val steps = mutableListOf<String>()
 
         recoverPublishedCommandDelivery(
@@ -88,7 +88,7 @@ class GatewayStateSyncPolicyTest {
             scanTimeline = { steps += "timeline" },
         )
 
-        assertEquals(listOf("journal", "wait"), steps)
+        assertEquals(listOf("journal", "wait", "timeline"), steps)
     }
 
     @Test
