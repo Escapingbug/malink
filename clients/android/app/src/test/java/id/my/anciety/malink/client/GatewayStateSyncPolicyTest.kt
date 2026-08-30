@@ -12,6 +12,8 @@ import id.my.anciety.malink.security.malink.PairingRequest
 import id.my.anciety.malink.security.malink.SignedPairingRequest
 import id.my.anciety.malink.security.malink.TestP256Identity
 import java.util.UUID
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -44,16 +46,17 @@ class GatewayStateSyncPolicyTest {
     }
 
     @Test
-    fun `published command asks the Gateway journal before scanning Matrix history`() = runBlocking {
+    fun `accepted Gateway journal probe never starts Matrix history scanning`() = runBlocking {
         val steps = mutableListOf<String>()
 
         recoverPublishedCommandDelivery(
             isTerminal = { false },
             submitReconciliation = { steps += "journal" },
+            awaitReconciliation = { steps += "wait" },
             scanTimeline = { steps += "timeline" },
         )
 
-        assertEquals(listOf("journal", "timeline"), steps)
+        assertEquals(listOf("journal", "wait"), steps)
     }
 
     @Test
@@ -75,13 +78,18 @@ class GatewayStateSyncPolicyTest {
     }
 
     @Test
-    fun `timeline timeout cannot cancel a submitted Gateway journal probe`() = runBlocking {
+    fun `legacy timeline timeout cannot prevent a second Gateway journal attempt`() = runBlocking {
         val steps = mutableListOf<String>()
         val timelineFailures = mutableListOf<String>()
+        var attempts = 0
 
         recoverPublishedCommandDelivery(
             isTerminal = { false },
-            submitReconciliation = { steps += "journal" },
+            submitReconciliation = {
+                attempts += 1
+                steps += "journal-$attempts"
+                if (attempts == 1) throw IllegalStateException("send interrupted")
+            },
             scanTimeline = {
                 steps += "timeline"
                 withTimeout(1) { delay(50) }
@@ -89,7 +97,7 @@ class GatewayStateSyncPolicyTest {
             onTimelineFailure = { timelineFailures += it::class.java.simpleName },
         )
 
-        assertEquals(listOf("journal", "timeline"), steps)
+        assertEquals(listOf("journal-1", "timeline", "journal-2"), steps)
         assertEquals(listOf("TimeoutCancellationException"), timelineFailures)
     }
 
@@ -112,6 +120,25 @@ class GatewayStateSyncPolicyTest {
 
         assertEquals(listOf("journal-1", "timeline", "journal-2"), steps)
         assertEquals(listOf("send interrupted"), journalFailures)
+    }
+
+    @Test
+    fun `legacy timeline recovery skips concurrent callers instead of queuing them`() = runBlocking {
+        val gate = LegacyTimelineRecoveryGate()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val first = async {
+            gate.runIfIdle {
+                entered.complete(Unit)
+                release.await()
+            }
+        }
+
+        entered.await()
+        assertEquals(false, gate.runIfIdle { error("A busy recovery must not run.") })
+        release.complete(Unit)
+        assertEquals(true, first.await())
+        assertEquals(true, gate.runIfIdle { })
     }
 
     @Test
@@ -164,7 +191,7 @@ class GatewayStateSyncPolicyTest {
     fun `journal reconciliation wait is bounded and observes terminal state`() = runBlocking {
         var checks = 0
 
-        awaitPublishedCommandReconciliation(
+        val terminal = awaitPublishedCommandReconciliation(
             isTerminal = {
                 checks += 1
                 checks >= 2
@@ -173,7 +200,19 @@ class GatewayStateSyncPolicyTest {
             pollIntervalMs = 1,
         )
 
-        assertEquals(2, checks)
+        assertEquals(true, terminal)
+        assertEquals(true, checks >= 2)
+    }
+
+    @Test
+    fun `journal reconciliation wait reports a still pending result without scanning`() = runBlocking {
+        val terminal = awaitPublishedCommandReconciliation(
+            isTerminal = { false },
+            timeoutMs = 1,
+            pollIntervalMs = 1,
+        )
+
+        assertEquals(false, terminal)
     }
 
     @Test

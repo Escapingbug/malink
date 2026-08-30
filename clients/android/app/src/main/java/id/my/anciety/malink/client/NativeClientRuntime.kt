@@ -81,6 +81,7 @@ import java.security.MessageDigest
 import java.util.ArrayDeque
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -281,7 +282,8 @@ class NativeClientRuntime(
     }
     private val commandTransmissionJobs = ConcurrentHashMap<String, Job>()
     private val commandRecoveryJobs = ConcurrentHashMap<String, Job>()
-    private val commandTimelineRecoveryJobs = ConcurrentHashMap<String, Job>()
+    private val publishedCommandRecoveryJobs = ConcurrentHashMap<String, Job>()
+    private val legacyTimelineRecoveryGate = LegacyTimelineRecoveryGate()
     private val commandRecoveryAttempts = ConcurrentHashMap<String, Int>()
     private val json = Json { isLenient = false; allowSpecialFloatingPointValues = false }
     private val restoredTrust = runCatching { trustStore.load() }
@@ -959,7 +961,7 @@ class NativeClientRuntime(
             val operation = outbox.operation(current.commandId)
             cancelCommandTransmission(current.commandId)
             cancelScheduledCommandRecovery(current.commandId)
-            cancelCommandTimelineRecovery(current.commandId)
+            cancelPublishedCommandResultRecovery(current.commandId)
             if (outbox.retireUnavailableProjectCommand(current.commandId)) {
                 matrixMlp3CommandContent.remove(current.commandId)
                 refreshSnapshot(publishLifecycle = false)
@@ -989,14 +991,16 @@ class NativeClientRuntime(
                 // Matrix already durably accepted this transaction. Sending
                 // the same transaction again can only return its original
                 // event id; it cannot create a new timeline delivery. Recover
-                // the exact command through the Gateway journal and its SDK
-                // timeline. A synchronized projection is already authoritative
-                // current state; rescanning every project thread here blocks
-                // live replies behind unrelated historical events.
+                // the exact command through the Gateway journal. The SDK
+                // timeline is only a short compatibility fallback when that
+                // journal probe cannot be published. A synchronized projection
+                // is already authoritative current state; rescanning every
+                // project thread here blocks live replies behind unrelated
+                // historical events.
                 if (requiresProjectionRefreshForCommandRecovery(gatewayStateSynchronized)) {
                     startMatrixMlp3ProjectionRefresh()
                 }
-                startPublishedCommandTimelineRecovery(current)
+                startPublishedCommandResultRecovery(current)
             }
             else -> Unit
         }
@@ -1027,7 +1031,7 @@ class NativeClientRuntime(
     fun releaseCommand(commandId: String): Boolean {
         cancelCommandTransmission(commandId)
         cancelScheduledCommandRecovery(commandId)
-        cancelCommandTimelineRecovery(commandId)
+        cancelPublishedCommandResultRecovery(commandId)
         val released = outbox.release(commandId)
         if (released) matrixMlp3CommandContent.remove(commandId)
         if (released) refreshSnapshot(publishLifecycle = false)
@@ -1065,7 +1069,7 @@ class NativeClientRuntime(
         }
         cancelAllCommandTransmissions()
         cancelAllCommandRecoveries()
-        cancelAllCommandTimelineRecoveries()
+        cancelAllPublishedCommandResultRecoveries()
         authoritativeStateRefreshJob?.cancel()
         authoritativeStateRefreshJob = null
         cancelGatewayConvergenceFallback()
@@ -1102,7 +1106,7 @@ class NativeClientRuntime(
         matrix.setObserver(null)
         cancelAllCommandTransmissions()
         cancelAllCommandRecoveries()
-        cancelAllCommandTimelineRecoveries()
+        cancelAllPublishedCommandResultRecoveries()
         authoritativeStateRefreshJob?.cancel()
         authoritativeStateRefreshJob = null
         cancelGatewayConvergenceFallback()
@@ -1384,9 +1388,9 @@ class NativeClientRuntime(
         commandRecoveryAttempts.clear()
     }
 
-    private fun startPublishedCommandTimelineRecovery(command: DurableView) {
-        synchronized(commandTimelineRecoveryJobs) {
-            if (commandTimelineRecoveryJobs[command.commandId]?.isActive == true) return
+    private fun startPublishedCommandResultRecovery(command: DurableView) {
+        synchronized(publishedCommandRecoveryJobs) {
+            if (publishedCommandRecoveryJobs[command.commandId]?.isActive == true) return
             val job = scope.launch(start = CoroutineStart.LAZY) {
                 try {
                     val projectId = outbox.projectId(command.commandId)
@@ -1406,24 +1410,42 @@ class NativeClientRuntime(
                             sendPublishedCommandReconciliation(command, roomId)
                         },
                         awaitReconciliation = {
-                            awaitPublishedCommandReconciliation(isTerminal = {
+                            val terminal = awaitPublishedCommandReconciliation(isTerminal = {
                                 outbox.get(command.commandId)?.state?.isTerminal == true
                             })
-                        },
-                        scanTimeline = {
-                            val scannedPages = matrix.recoverApplicationTimeline(
-                                roomId,
-                            ) {
-                                outbox.get(command.commandId)?.state?.isTerminal == true
-                            }
                             diagnostics.record(
-                                "command.timeline_recovery.completed",
+                                "command.reconciliation.await_completed",
                                 mapOf(
                                     "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
-                                    "pages" to scannedPages.toString(),
-                                    "terminal" to (outbox.get(command.commandId)?.state?.isTerminal == true).toString(),
+                                    "terminal" to terminal.toString(),
                                 ),
                             )
+                        },
+                        scanTimeline = legacyTimeline@{
+                            val acquired = legacyTimelineRecoveryGate.runIfIdle {
+                                val scannedPages = matrix.recoverApplicationTimeline(
+                                    roomId,
+                                ) {
+                                    outbox.get(command.commandId)?.state?.isTerminal == true
+                                }
+                                diagnostics.record(
+                                    "command.timeline_recovery.completed",
+                                    mapOf(
+                                        "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                                        "pages" to scannedPages.toString(),
+                                        "terminal" to (outbox.get(command.commandId)?.state?.isTerminal == true).toString(),
+                                    ),
+                                )
+                            }
+                            if (!acquired) {
+                                diagnostics.record(
+                                    "command.timeline_recovery.skipped_busy",
+                                    mapOf(
+                                        "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                                    ),
+                                )
+                                return@legacyTimeline
+                            }
                         },
                         onReconciliationFailure = { error ->
                             diagnostics.record(
@@ -1461,11 +1483,11 @@ class NativeClientRuntime(
                 } finally {
                     val currentJob = coroutineContext[Job]
                     if (currentJob != null) {
-                        commandTimelineRecoveryJobs.remove(command.commandId, currentJob)
+                        publishedCommandRecoveryJobs.remove(command.commandId, currentJob)
                     }
                 }
             }
-            commandTimelineRecoveryJobs[command.commandId] = job
+            publishedCommandRecoveryJobs[command.commandId] = job
             job.start()
         }
     }
@@ -1498,13 +1520,13 @@ class NativeClientRuntime(
         )
     }
 
-    private fun cancelCommandTimelineRecovery(commandId: String) {
-        commandTimelineRecoveryJobs.remove(commandId)?.cancel()
+    private fun cancelPublishedCommandResultRecovery(commandId: String) {
+        publishedCommandRecoveryJobs.remove(commandId)?.cancel()
     }
 
-    private fun cancelAllCommandTimelineRecoveries() {
-        commandTimelineRecoveryJobs.values.forEach(Job::cancel)
-        commandTimelineRecoveryJobs.clear()
+    private fun cancelAllPublishedCommandResultRecoveries() {
+        publishedCommandRecoveryJobs.values.forEach(Job::cancel)
+        publishedCommandRecoveryJobs.clear()
     }
 
     private fun signedCommandContent(transmission: CommandTransmission): JsonObject {
@@ -2464,7 +2486,7 @@ class NativeClientRuntime(
         // Gateway scope and reporting a spurious transmission failure.
         cancelCommandTransmission(completion.commandId)
         cancelScheduledCommandRecovery(completion.commandId)
-        cancelCommandTimelineRecovery(completion.commandId)
+        cancelPublishedCommandResultRecovery(completion.commandId)
         outbox.get(completion.commandId)?.let(::publishCommand)
         runCatching {
             operation?.let { completedOperation ->
@@ -3064,10 +3086,14 @@ internal fun pairingRecoveryExpiresAt(request: SignedPairingRequest): Long =
     Math.addExact(request.request.issuedAt, PAIRING_RECOVERY_WINDOW_MS)
 
 /**
- * A journal probe is the authoritative and cheap recovery path for a command
- * that Matrix already accepted. Submit it before optional timeline pagination
- * so a slow or very old timeline can never prevent Gateway reconciliation.
- * Timeline scanning remains as a compatibility fallback for older Gateways.
+ * A journal probe is the authoritative recovery path for a command that
+ * Matrix already accepted. Once Matrix accepts that probe, do not paginate the
+ * SDK timeline: the Gateway journal will return the exact signed terminal and
+ * live delivery must not compete with historical repair work.
+ *
+ * Timeline scanning is only a compatibility fallback when the journal probe
+ * itself could not be submitted. It is deliberately followed by one more
+ * journal attempt so a recovered transport returns to the authoritative path.
  */
 internal suspend fun recoverPublishedCommandDelivery(
     isTerminal: () -> Boolean,
@@ -3094,6 +3120,7 @@ internal suspend fun recoverPublishedCommandDelivery(
     }
     if (!isTerminal() && reconciliationSubmitted) {
         awaitReconciliation()
+        return
     }
     if (!isTerminal()) {
         try {
@@ -3119,16 +3146,36 @@ internal suspend fun recoverPublishedCommandDelivery(
     }
 }
 
+/**
+ * Legacy SDK pagination is best-effort repair, never queued work. A second
+ * caller skips the scan instead of waiting behind old history and delaying the
+ * Matrix listener that carries live signed replies.
+ */
+internal class LegacyTimelineRecoveryGate {
+    private val active = AtomicBoolean(false)
+
+    suspend fun runIfIdle(block: suspend () -> Unit): Boolean {
+        if (!active.compareAndSet(false, true)) return false
+        return try {
+            block()
+            true
+        } finally {
+            active.set(false)
+        }
+    }
+}
+
 internal suspend fun awaitPublishedCommandReconciliation(
     isTerminal: () -> Boolean,
     timeoutMs: Long = COMMAND_RECONCILIATION_DELIVERY_GRACE_MS,
     pollIntervalMs: Long = 100L,
-) {
+): Boolean {
     require(timeoutMs >= 0)
     require(pollIntervalMs > 0)
     withTimeoutOrNull(timeoutMs) {
         while (!isTerminal()) delay(pollIntervalMs)
     }
+    return isTerminal()
 }
 
 private const val PAIRING_RECOVERY_WINDOW_MS = 366L * 24 * 60 * 60_000

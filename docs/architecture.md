@@ -196,10 +196,14 @@ unverified commands produce no application event.
 7. The client saves exact outbound content before send and reuses a stable
    Matrix transaction ID. A returned Matrix event ID records homeserver
    persistence and stops ordinary transport retransmission; terminal
-   convergence comes from the signed Gateway chain. If bounded timeline
-   recovery cannot find that terminal chain, the client may publish the exact
-   saved content under a fresh reconciliation transaction ID. It must not
-   create, resign, or re-encrypt a replacement command.
+   convergence comes from the signed Gateway chain. Recovery publishes the
+   exact saved content under a fresh reconciliation transaction ID so the
+   Gateway journal can return its authoritative state. Once Matrix accepts
+   that probe, the client must not start timeline pagination while waiting for
+   the signed reply. A single short history page is permitted only as a legacy
+   compatibility fallback when the journal probe itself could not be
+   published. The client must not create, resign, or re-encrypt a replacement
+   command.
 8. The Gateway journals a command before execution. Redelivery of the same
    exact command ID emits a signed `command.reconciled` view of its recorded
    accepted, running, or terminal state and cannot execute twice. A terminal
@@ -365,6 +369,14 @@ MLP/3 Room State and thread-directory recovery without creating another sync
 cursor. Additional Workspace project rooms converge independently in the
 background and cannot hold an already-authoritative primary project in
 `Connecting`.
+
+Client recovery has strict priority lanes. Live SDK timeline delivery is the
+highest-priority lane and cannot wait behind historical repair. Exact-command
+Gateway journal reconciliation is the normal durable recovery lane. Legacy SDK
+timeline pagination is a best-effort, globally single-instance lane: callers do
+not queue behind an active scan, and each explicit recovery advances at most
+one small page. Multiple unfinished commands therefore cannot form a pagination
+storm or starve a newly delivered signed terminal event.
 
 No layer substitutes for another. In particular, increasing an in-memory event
 window or publishing a manual checkpoint is not a recovery strategy. An

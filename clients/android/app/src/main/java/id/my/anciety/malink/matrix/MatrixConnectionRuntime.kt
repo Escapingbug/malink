@@ -427,6 +427,10 @@ class MatrixConnectionRuntime(
             )
             driver ?: throw MatrixOfflineException("The Matrix SDK driver is unavailable.")
         }
+        // This is a legacy fallback for a journal probe that could not be
+        // submitted. Advance only one small page per explicit recovery call.
+        // Repeated pages would monopolize the SDK timeline listener also used
+        // by current signed Gateway replies.
         return withTimeout(COMMAND_TIMELINE_RECOVERY_TIMEOUT_MS) {
             var pages = 0
             repeat(MAX_COMMAND_TIMELINE_RECOVERY_PAGES) {
@@ -855,12 +859,12 @@ class MatrixConnectionRuntime(
         const val PROFILE_OPERATION_TIMEOUT_MS = 45_000L
         const val LOGIN_TOKEN_OPERATION_TIMEOUT_MS = 45_000L
         const val HISTORY_OPERATION_TIMEOUT_MS = 45_000L
-        const val COMMAND_TIMELINE_RECOVERY_TIMEOUT_MS = 45_000L
+        const val COMMAND_TIMELINE_RECOVERY_TIMEOUT_MS = 10_000L
         const val THREAD_DIRECTORY_OPERATION_TIMEOUT_MS = 120_000L
         const val MEDIA_OPERATION_TIMEOUT_MS = 120_000L
         const val LOGOUT_OPERATION_TIMEOUT_MS = 45_000L
         const val MAX_THREAD_DIRECTORY_PAGES = 1_000
-        const val MAX_COMMAND_TIMELINE_RECOVERY_PAGES = 64
+        const val MAX_COMMAND_TIMELINE_RECOVERY_PAGES = 1
         const val MAX_COMMAND_TIMELINE_RECOVERY_EVENTS = 32
     }
 }
