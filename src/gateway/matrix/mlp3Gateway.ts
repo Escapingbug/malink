@@ -865,6 +865,15 @@ export class MatrixMlp3GatewayRunner {
           throw error
         }
         status = await supervisor.status()
+        if (status.phase === 'agent_running') {
+          status = await supervisor.failAgentUpdate(
+            command.payload.releaseId,
+            command.commandId,
+            'The maintenance Agent finished without submitting a staged Gateway release. '
+              + 'Open the maintenance session to review its report, fix the reported release '
+              + 'or validation problem, then retry the signed update.',
+          )
+        }
       } else {
         status = await this.waitForMaintenanceAgent(command.payload.releaseId)
       }

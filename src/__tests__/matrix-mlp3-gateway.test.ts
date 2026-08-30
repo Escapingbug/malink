@@ -295,6 +295,8 @@ describe('MatrixMlp3GatewayRunner', () => {
     let projectCreatedHooks = 0
     const gatewayUpdateCalls: string[] = []
     let gatewayAgentStaged = false
+    let gatewayAgentShouldSubmit = true
+    let gatewayAgentRunningReleaseId: string | null = null
     const webPushService: GatewayWebPushService = {
       initialize: async () => undefined,
       publicKey: () => 'B'.repeat(87),
@@ -429,7 +431,9 @@ describe('MatrixMlp3GatewayRunner', () => {
                 })
                 decisionResults.push(response.value)
               }
-              if (input.text.includes('SIGNED RELEASE PROMPT')) gatewayAgentStaged = true
+              if (input.text.includes('SIGNED RELEASE PROMPT') && gatewayAgentShouldSubmit) {
+                gatewayAgentStaged = true
+              }
               await port.send({
                 text: `reply:${input.text}`,
                 format: 'markdown',
@@ -487,6 +491,16 @@ describe('MatrixMlp3GatewayRunner', () => {
               updatedAt: 13,
             }
           }
+          if (gatewayAgentRunningReleaseId) {
+            return {
+              version: 1,
+              phase: 'agent_running',
+              releaseId: gatewayAgentRunningReleaseId,
+              targetBuildId: 'build-2',
+              currentBuildId: 'build-1',
+              updatedAt: 12,
+            }
+          }
           return {
             version: 1,
             phase: 'idle',
@@ -524,6 +538,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         },
         async beginAgentUpdate(releaseId, maintenanceSessionId, ownerCommandId) {
           gatewayUpdateCalls.push(`begin:${releaseId}:${maintenanceSessionId}`)
+          gatewayAgentRunningReleaseId = releaseId
           return {
             started: true,
             status: {
@@ -539,6 +554,8 @@ describe('MatrixMlp3GatewayRunner', () => {
           }
         },
         async failAgentUpdate(releaseId, _ownerCommandId, detail) {
+          gatewayUpdateCalls.push(`fail:${releaseId}:${detail}`)
+          gatewayAgentRunningReleaseId = null
           return {
             version: 1,
             phase: 'failed',
@@ -809,6 +826,24 @@ describe('MatrixMlp3GatewayRunner', () => {
       item.sessionId.startsWith('gateway-update-')
       && item.text.includes('exact Git commit: 0123456789abcdef0123456789abcdef01234567')
     )).toBe(true)
+    gatewayAgentStaged = false
+    gatewayAgentShouldSubmit = false
+    await send({
+      ...base,
+      commandId: 'gateway-update-stage-no-submit',
+      operation: 'gateway.update.stage',
+      payload: { operation: 'gateway.update.stage', releaseId: 'release-no-submit' },
+    }, '$gateway-update-stage-no-submit')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'gateway-update-stage-no-submit'
+        && event.payload.type === 'command.rejected'
+      ))
+    expect(gatewayUpdateCalls.some(call =>
+      call.startsWith('fail:release-no-submit:The maintenance Agent finished without submitting')
+    )).toBe(true)
+    gatewayAgentStaged = true
+    gatewayAgentShouldSubmit = true
     dispatched.splice(0)
     await send({
       ...base,
@@ -1324,6 +1359,10 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(recovered.map(event => event.sessionId).sort()).toEqual([
       `gateway-update-${createHash('sha256')
         .update('workspace-1\0release-2')
+        .digest('hex')
+        .slice(0, 40)}`,
+      `gateway-update-${createHash('sha256')
+        .update('workspace-1\0release-no-submit')
         .digest('hex')
         .slice(0, 40)}`,
       'session-b',
