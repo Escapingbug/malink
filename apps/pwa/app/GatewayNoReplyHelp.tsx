@@ -53,10 +53,12 @@ export function GatewayNoReplyHelp({
 export function GatewayUpdateFailureHelp({
   gatewayLabel,
   status,
+  retryAvailable,
   onExportDiagnostics,
 }: {
   gatewayLabel: string;
   status: GatewayUpdateStatus;
+  retryAvailable: boolean;
   onExportDiagnostics(): void;
 }) {
   const repairRequired = status.phase === "repair_required";
@@ -66,17 +68,26 @@ export function GatewayUpdateFailureHelp({
       <div>
         <p>
           {repairRequired
-            ? `The update supervisor on ${gatewayLabel} could not prove either activation or rollback healthy. Repeating the update request will not repair this state.`
+            ? retryAvailable
+              ? `${gatewayLabel} is answering again. The published signed release can replace the interrupted update state.`
+              : `The update supervisor on ${gatewayLabel} could not prove either activation or rollback healthy.`
             : `The update stopped on ${gatewayLabel}. Its active build was not replaced by an unverified candidate.`}
         </p>
         {repairRequired ? (
           <ol>
+            {retryAvailable ? (
+              <li>
+                Choose <strong>Retry with published release</strong> below. Malink will recheck
+                this exact Gateway and start or resume its node-specific maintenance session.
+              </li>
+            ) : (
+              <li>
+                Restart the Gateway once on that Mac:
+                <code>{GATEWAY_RESTART_COMMAND}</code>
+              </li>
+            )}
             <li>
-              Restart the Gateway once on that Mac:
-              <code>{GATEWAY_RESTART_COMMAND}</code>
-            </li>
-            <li>
-              Check again. If repair is still required, collect
+              If repair is still required after that, collect
               <code>~/.config/malink/gateway.error.log</code> and
               <code>~/.local/share/malink-matrix/update-supervisor.error.log</code>.
             </li>

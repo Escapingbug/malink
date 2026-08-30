@@ -367,6 +367,50 @@ describe('GatewayUpdateSupervisor', () => {
     })
   })
 
+  it('converges a stale repair state when status proves the rollback healthy', async () => {
+    const fixture = await agentUpdateFixture()
+    const now = 10_000
+    const supervisor = new GatewayUpdateSupervisor({
+      ...fixture.config,
+      syncFreshnessMs: 5_000,
+    }, {
+      fetch: fixture.fetch,
+      now: () => now,
+      gatewayHealth: async () => ({
+        version: 1,
+        gatewayId: 'workspace-1',
+        workspaceId: 'workspace-1',
+        gatewayNodeId: 'node-1',
+        gatewayShortId: 'NODE1',
+        gatewayName: 'Test Gateway',
+        state: 'running',
+        pid: 123,
+        startedAt: 1,
+        activeDeviceCount: 1,
+        openInvitationCount: 0,
+        buildId: 'build-1',
+        matrixReady: true,
+        lastMatrixSyncAt: now - 1,
+      }),
+    })
+    await supervisor.initialize()
+    await supervisor.stage('release-2')
+    const statePath = join(fixture.installRoot, 'supervisor-state.json')
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as {
+      status: { phase: string; detail?: string }
+    }
+    state.status.phase = 'repair_required'
+    state.status.detail = 'Rollback health result arrived after the activation deadline'
+    await writeFile(statePath, `${JSON.stringify(state)}\n`)
+
+    await expect(supervisor.status()).resolves.toMatchObject({
+      phase: 'rolled_back',
+      currentBuildId: 'build-1',
+      targetBuildId: 'build-2',
+      detail: 'Gateway health was verified after local repair; the previous build remains active',
+    })
+  })
+
   it('copies and seals empty regular dependency files', async () => {
     const fixture = await agentUpdateFixture({ emptyAuxiliaryFile: true })
     const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fixture.fetch })

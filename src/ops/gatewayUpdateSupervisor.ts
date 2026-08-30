@@ -172,7 +172,7 @@ export class GatewayUpdateSupervisor {
 
   async status(): Promise<GatewayUpdateStatus> {
     const installedBuildId = await this.installedBuildId()
-    return this.stateFile.transaction(defaultState, state => {
+    const status = await this.stateFile.transaction(defaultState, state => {
       validateState(state)
       const targetReleaseId = state.status.releaseId
       const installedTarget = installedBuildId !== undefined
@@ -219,6 +219,13 @@ export class GatewayUpdateSupervisor {
       if (changed) state.status.currentBuildId = installedBuildId
       return { result: structuredClone(state.status), changed }
     })
+    if (status.phase !== 'repair_required') return status
+    try {
+      return await this.acknowledgeGatewayRecovery()
+    } catch (error) {
+      this.log(`[gateway-update] repair reconciliation is still pending: ${formatError(error)}`)
+      return status
+    }
   }
 
   async stage(releaseId: string): Promise<GatewayUpdateStatus> {

@@ -212,7 +212,11 @@ or an existing authoritative retirement rule applies.
 When a signed reply does arrive with `failed` or `repair_required`, the panel
 shows that as an update error instead of the generic `Online now` state, retains
 the supervisor's signed detail, and offers recovery steps appropriate to that
-phase. Connection diagnostics include bounded per-node liveness timestamps,
+phase. If that exact node is answering and a signed release is available, the
+panel keeps a primary retry action even when an earlier maintenance session ID
+exists. The new attempt rechecks the node and lets the supervisor replace the
+interrupted update state; an obsolete session must never hide the recovery
+entry point. Connection diagnostics include bounded per-node liveness timestamps,
 consecutive no-reply counts, and update phase/build identifiers without
 exporting credentials or unstructured Gateway errors.
 
@@ -257,7 +261,11 @@ pnpm repair:gateway-journal -- recover \
 After Matrix-ready Gateway health is proven, the owner-only supervisor socket
 acknowledges the recovery. A target build that is healthy becomes `committed`;
 a healthy previous build becomes `rolled_back`, so stale `repair_required`
-status cannot survive a successful recovery.
+status cannot survive a successful recovery. Status reads perform the same
+bounded reconciliation automatically: they clear `repair_required` only when
+the installed build identity matches the failed target or previous build and
+the Gateway reports fresh Matrix-ready health. A Gateway that is still down or
+returns stale synchronization remains in `repair_required`.
 
 The repair refuses to choose between different terminal results when the first
 result was not already delivered. That ambiguity requires manual incident
@@ -343,7 +351,10 @@ a release ID or manually transfer Gateway credentials or artifacts.
   release is running.
 - `repair_required`: activation and safe rollback could not be proven. Preserve
   the inbox, journal, Matrix crypto store, supervisor state, Agent workspace,
-  release directories, and logs for local diagnosis.
+  release directories, and logs for local diagnosis. Once the installed target
+  or previous build returns with fresh Matrix-ready health, the supervisor
+  converges automatically; if a signed release is available while the node is
+  online, the Gateway software panel also permits a new supervised attempt.
 
 Quarantined inbox records are retained evidence of invalid or unsupported
 Matrix events and are never silently deleted during update.

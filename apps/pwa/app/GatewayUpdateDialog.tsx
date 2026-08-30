@@ -155,12 +155,13 @@ function GatewayUpdateDialogContent({
             const stagedReady = gatewayUpdateCanApplyStaged({
               status: runtime.status,
             });
+            const canReplaceFailedAttempt = knownUpdateFailure;
             const canProbe = connected && node.onlineUpdate && Boolean(node.targetProjectId);
             const canStart =
               node.state === "available" &&
               runtime.state === "online" &&
               Boolean(runtime.status) &&
-              (!runtime.maintenanceSessionId || stagedReady) &&
+              (!runtime.maintenanceSessionId || stagedReady || canReplaceFailedAttempt) &&
               activeGatewayNodeId === null;
             const active = activeGatewayNodeId === node.gatewayNodeId;
             return (
@@ -216,6 +217,9 @@ function GatewayUpdateDialogContent({
                   <GatewayUpdateFailureHelp
                     gatewayLabel={owner.label}
                     status={runtime.status}
+                    retryAvailable={
+                      node.state === "available" && runtime.state === "online"
+                    }
                     onExportDiagnostics={onExportDiagnostics}
                   />
                 )}
@@ -302,7 +306,7 @@ function GatewayUpdateDialogContent({
                     </button>
                   )}
                   {node.state === "available" &&
-                    (!runtime.maintenanceSessionId || stagedReady) && (
+                    (!runtime.maintenanceSessionId || stagedReady || canReplaceFailedAttempt) && (
                     <button
                       type="button"
                       className="primary-button"
@@ -312,9 +316,13 @@ function GatewayUpdateDialogContent({
                       {active
                         ? stagedReady
                           ? "Installing staged update…"
+                          : canReplaceFailedAttempt
+                            ? "Starting recovery update…"
                           : "Creating update session…"
                         : stagedReady
                           ? "Install staged update"
+                          : canReplaceFailedAttempt
+                            ? "Retry with published release"
                           : "Create update session"}
                     </button>
                   )}

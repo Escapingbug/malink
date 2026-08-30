@@ -121,6 +121,7 @@ test("presents a signed supervisor repair failure as an actionable error", () =>
       "node-office": {
         state: "online",
         checkedAt: 1,
+        maintenanceSessionId: "gateway-update-node-interrupted",
         status: {
           version: 1,
           phase: "repair_required",
@@ -144,7 +145,14 @@ test("presents a signed supervisor repair failure as an actionable error", () =>
   assert.match(html, /Gateway repair required/);
   assert.match(html, /Activation and rollback health checks both failed/);
   assert.match(html, /Repair this Gateway/);
-  assert.match(html, /Repeating the update request will not repair this state/);
+  assert.match(html, /is answering again/);
+  assert.match(html, /Retry with published release/);
+  assert.doesNotMatch(html, /Repeating the update request will not repair this state/);
+  const retryControl = html.match(
+    /<button[^>]*class="primary-button"[^>]*>Retry with published release<\/button>/,
+  )?.[0];
+  assert.ok(retryControl);
+  assert.doesNotMatch(retryControl, /disabled/);
   assert.match(html, /role="alert"/);
 });
 
