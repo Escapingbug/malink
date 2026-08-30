@@ -19,6 +19,10 @@ export type GatewayUpdateNodeRuntime = {
   maintenanceSessionArchiveAvailable?: boolean;
   maintenanceSessionArchiveBusy?: boolean;
   maintenanceSessionArchived?: boolean;
+  legacyMaintenanceSessionId?: string;
+  legacyMaintenanceSessionArchiveAvailable?: boolean;
+  legacyMaintenanceSessionArchiveBusy?: boolean;
+  legacyMaintenanceSessionArchived?: boolean;
 };
 
 type Props = {
@@ -201,6 +205,33 @@ function GatewayUpdateDialogContent({
                           {runtime.maintenanceSessionArchiveBusy
                             ? "Archiving on this Gateway…"
                             : "Archive this Gateway’s update session"}
+                        </button>
+                      ) : null}
+                    </>
+                  )}
+                  {runtime.legacyMaintenanceSessionId && (
+                    <>
+                      <p className="gateway-update-session-warning" role="alert">
+                        This Gateway still has an older update session whose ID was shared with
+                        another node. Clean it up here without affecting the current release.
+                      </p>
+                      {runtime.legacyMaintenanceSessionArchived ? (
+                        <span className="gateway-update-session-warning" role="status">
+                          Older update session archived on this Gateway.
+                        </span>
+                      ) : runtime.legacyMaintenanceSessionArchiveAvailable ? (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={!connected || runtime.legacyMaintenanceSessionArchiveBusy}
+                          onClick={() => onArchiveSession(
+                            node,
+                            runtime.legacyMaintenanceSessionId!,
+                          )}
+                        >
+                          {runtime.legacyMaintenanceSessionArchiveBusy
+                            ? "Archiving older session on this Gateway…"
+                            : "Archive this Gateway’s older update session"}
                         </button>
                       ) : null}
                     </>

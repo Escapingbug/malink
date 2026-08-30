@@ -184,3 +184,36 @@ test("shows exact-node archival progress for a legacy maintenance session", () =
   assert.match(html, /Archiving on this Gateway…/);
   assert.match(html, /Update session archived on this Gateway/);
 });
+
+test("keeps a new release actionable while offering cleanup for an older collision", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes,
+    runtimeByNode: {
+      "node-office": {
+        state: "online",
+        status: {
+          version: 1,
+          phase: "committed",
+          releaseId: "older-release",
+          targetBuildId: "gateway-older",
+          currentBuildId: "gateway-old-arm64",
+          updatedAt: 1,
+        },
+        legacyMaintenanceSessionId: "gateway-update-shared-old",
+        legacyMaintenanceSessionArchiveAvailable: true,
+      },
+    },
+    activeGatewayNodeId: null,
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+  }));
+
+  assert.match(html, /Archive this Gateway’s older update session/);
+  assert.match(html, /Create update session/);
+});

@@ -32,6 +32,11 @@ type ProjectedGatewayMaintenanceSession = {
   projectId: string;
 };
 
+type LegacyGatewayMaintenanceSession = ProjectedGatewayMaintenanceSession & {
+  status: string;
+  updatedAt: number;
+};
+
 export type GatewayUpdateCommand =
   | { operation: "gateway.update.stage"; releaseId: string }
   | {
@@ -144,6 +149,44 @@ export function collidingGatewayMaintenanceSessionIds(input: {
     if (projects.size > 1) collisions.add(sessionId);
   }
   return collisions;
+}
+
+/**
+ * Select one legacy, Workspace-scoped maintenance session per Gateway.
+ *
+ * These sessions belong to an older release than the one currently offered by
+ * the static channel, so they must not occupy `maintenanceSessionId` or hide
+ * the new release action. Active sessions are offered for cleanup first; once
+ * one converges to archived, the next legacy collision becomes visible.
+ */
+export function legacyGatewayMaintenanceSessionsByNode(input: {
+  nodes: readonly {
+    gatewayNodeId: string;
+    targetProjectId?: string;
+  }[];
+  projectedSessions: readonly LegacyGatewayMaintenanceSession[];
+}): ReadonlyMap<string, LegacyGatewayMaintenanceSession> {
+  const collisions = collidingGatewayMaintenanceSessionIds({
+    nodeSessions: [],
+    projectedSessions: input.projectedSessions,
+  });
+  const selected = new Map<string, LegacyGatewayMaintenanceSession>();
+  for (const node of input.nodes) {
+    if (!node.targetProjectId) continue;
+    const candidate = input.projectedSessions
+      .filter(session =>
+        session.projectId === node.targetProjectId &&
+        session.id.startsWith("gateway-update-") &&
+        !session.id.startsWith("gateway-update-node-") &&
+        collisions.has(session.id),
+      )
+      .sort((left, right) =>
+        Number(left.status === "archived") - Number(right.status === "archived") ||
+        right.updatedAt - left.updatedAt,
+      )[0];
+    if (candidate) selected.set(node.gatewayNodeId, candidate);
+  }
+  return selected;
 }
 
 export async function triggerGatewayUpdate(input: {

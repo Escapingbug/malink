@@ -127,6 +127,7 @@ import {
   collidingGatewayMaintenanceSessionIds,
   gatewayUpdatePlan as buildGatewayUpdatePlan,
   gatewayUpdateTarget,
+  legacyGatewayMaintenanceSessionsByNode,
   recoverAmbiguousGatewayUpdateCompletion,
   triggerGatewayUpdate,
   type GatewayUpdatePlanNode,
@@ -2460,6 +2461,13 @@ function MalinkAppRuntime() {
       knownProjectIds: knownGatewayProjectIds,
       release: gatewayRelease,
     }), [gatewayRelease, gatewayState?.gatewayDirectory, knownGatewayProjectIds]);
+  const legacyGatewayMaintenanceSessions = useMemo(
+    () => legacyGatewayMaintenanceSessionsByNode({
+      nodes: gatewayUpdatePlan,
+      projectedSessions: gatewayState?.sessions ?? [],
+    }),
+    [gatewayState?.sessions, gatewayUpdatePlan],
+  );
   const gatewayUpdateAvailableCount = gatewayUpdatePlan.filter(
     node => node.state === "available",
   ).length;
@@ -2546,12 +2554,32 @@ function MalinkAppRuntime() {
         };
       }
     }
+    for (const node of gatewayUpdatePlan) {
+      const legacySession = legacyGatewayMaintenanceSessions.get(node.gatewayNodeId);
+      const runtime = presentation[node.gatewayNodeId];
+      if (!legacySession || legacySession.id === runtime?.maintenanceSessionId) continue;
+      presentation = {
+        ...presentation,
+        [node.gatewayNodeId]: {
+          ...(runtime ?? { state: "unchecked" as const }),
+          legacyMaintenanceSessionId: legacySession.id,
+          legacyMaintenanceSessionArchiveAvailable:
+            legacySession.status !== "archived",
+          legacyMaintenanceSessionArchived:
+            legacySession.status === "archived",
+          legacyMaintenanceSessionArchiveBusy: sessionLifecycleBusy.has(
+            sessionLifecycleRouteKey(legacySession.projectId, legacySession.id),
+          ),
+        },
+      };
+    }
     return presentation;
   }, [
     gatewayRelease,
     gatewayState,
     gatewayUpdatePlan,
     gatewayUpdateRuntimeForRelease,
+    legacyGatewayMaintenanceSessions,
     sessionLifecycleBusy,
   ]);
   const ambiguousGatewayMaintenanceSessionIds = useMemo(

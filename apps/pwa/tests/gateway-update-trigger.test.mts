@@ -5,6 +5,7 @@ import {
   collidingGatewayMaintenanceSessionIds,
   gatewayUpdatePlan,
   gatewayUpdateTarget,
+  legacyGatewayMaintenanceSessionsByNode,
   recoverAmbiguousGatewayUpdateCompletion,
   triggerGatewayUpdate,
 } from "../app/gatewayUpdateTrigger.ts";
@@ -198,6 +199,50 @@ test("allows one node-scoped maintenance ID in a multi-Gateway workspace", () =>
   });
 
   assert.deepEqual([...collisions], []);
+});
+
+test("routes the newest active legacy maintenance collision to each exact node", () => {
+  const sessions = legacyGatewayMaintenanceSessionsByNode({
+    nodes: [
+      { gatewayNodeId: "node-a", targetProjectId: "project-a" },
+      { gatewayNodeId: "node-b", targetProjectId: "project-b" },
+    ],
+    projectedSessions: [
+      {
+        id: "gateway-update-shared-new",
+        projectId: "project-a",
+        status: "archived",
+        updatedAt: 30,
+      },
+      {
+        id: "gateway-update-shared-new",
+        projectId: "project-b",
+        status: "idle",
+        updatedAt: 30,
+      },
+      {
+        id: "gateway-update-shared-old",
+        projectId: "project-a",
+        status: "idle",
+        updatedAt: 20,
+      },
+      {
+        id: "gateway-update-shared-old",
+        projectId: "project-b",
+        status: "idle",
+        updatedAt: 20,
+      },
+      {
+        id: "gateway-update-node-current",
+        projectId: "project-a",
+        status: "idle",
+        updatedAt: 40,
+      },
+    ],
+  });
+
+  assert.equal(sessions.get("node-a")?.id, "gateway-update-shared-old");
+  assert.equal(sessions.get("node-b")?.id, "gateway-update-shared-new");
 });
 
 function gateway(
