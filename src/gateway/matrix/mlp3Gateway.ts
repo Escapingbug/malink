@@ -3226,9 +3226,13 @@ Supervisor-owned paths:
 
 The candidate directory starts as a local copy of the active Gateway. Work only in the update workspace and a Git worktree or clone for the exact signed commit. Never modify the active current release, supervisor state, release signer, Matrix state, or durable Gateway data.
 
-Follow the signed release Prompt below. Resolve local runtime, dependency, build, and test issues autonomously. The final candidate must contain regular files at runtime/node, ops/matrix-local-gateway.js, ops/gatewayUpdateSupervisorMain.js, and ops/gatewayAgentUpdateCli.js. Do not leave symbolic links in the candidate.
+Follow the signed release Prompt below. Resolve local runtime, dependency, build, and test issues autonomously. The final candidate must contain regular files at runtime/node, ops/matrix-local-gateway.js, ops/gatewayUpdateSupervisorMain.js, ops/gatewayAgentUpdateCli.js, and ops/gatewayJournalRepairCli.js. Do not leave symbolic links in the candidate.
 
-After every required test passes and the candidate is complete, run this exact owner-only submission command:
+Never execute candidate/ops/matrix-local-gateway.js, candidate/ops/gatewayUpdateSupervisorMain.js,
+or any other candidate entrypoint. Changing cwd or supplying --help does not isolate production
+MALINK_* environment variables. Candidate runtime validation belongs exclusively to the supervisor.
+
+After every required test passes and the candidate is complete, run this exact owner-only finish command unchanged:
 
 ${instruction.submitCommand}
 

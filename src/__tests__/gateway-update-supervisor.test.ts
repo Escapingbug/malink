@@ -22,6 +22,7 @@ import {
   GatewayUpdateSupervisorClient,
   startGatewayUpdateSupervisorServer,
 } from '@/ops/gatewayUpdateSupervisorServer'
+import { runGatewayAgentUpdateCli } from '@/ops/gatewayAgentUpdateCli'
 import { GATEWAY_STATE_CATALOG } from '@/gateway/matrix/stateUpgradeCatalog'
 
 const temporaryDirectories: string[] = []
@@ -45,6 +46,10 @@ describe('GatewayUpdateSupervisor', () => {
     try {
       const client = new GatewayUpdateSupervisorClient(server.socketPath, 5_000)
       await expect(client.status()).resolves.toMatchObject({
+        phase: 'idle',
+        currentBuildId: 'build-1',
+      })
+      await expect(client.acknowledgeGatewayRecovery()).resolves.toMatchObject({
         phase: 'idle',
         currentBuildId: 'build-1',
       })
@@ -140,6 +145,7 @@ describe('GatewayUpdateSupervisor', () => {
         },
       })
       expect(instruction.submitCommand).toContain('gatewayAgentUpdateCli.js')
+      expect(instruction.submitCommand).toContain(' finish ')
       expect(instruction.submitCommand).toContain(server.socketPath)
       await expect(client.beginAgentUpdate(
         'release-2',
@@ -177,10 +183,18 @@ describe('GatewayUpdateSupervisor', () => {
         '// Agent-built update CLI release 2\n',
       )
       await writeFile(
+        join(instruction.candidateDirectory, 'ops', 'gatewayJournalRepairCli.js'),
+        '// Agent-built journal repair CLI release 2\n',
+      )
+      await writeFile(
         join(instruction.candidateDirectory, 'mcp', 'stdio.js'),
         '// Agent-built MCP release 2\n',
       )
-      await expect(client.submitAgentRelease('release-2')).resolves.toMatchObject({
+      await expect(runGatewayAgentUpdateCli([
+        'finish',
+        '--socket', server.socketPath,
+        '--release-id', 'release-2',
+      ])).resolves.toMatchObject({
         phase: 'staged',
         maintenanceSessionId: 'maintenance-1',
       })
@@ -214,6 +228,41 @@ describe('GatewayUpdateSupervisor', () => {
     }
   })
 
+  it('statically checks Agent candidate entrypoints without executing them', async () => {
+    const fixture = await agentUpdateFixture()
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fixture.fetch })
+    await supervisor.initialize()
+    await supervisor.stage('release-2')
+    const instruction = await supervisor.agentInstruction('release-2')
+    const executionMarker = join(fixture.installRoot, 'candidate-executed')
+    await writeFile(
+      join(instruction.candidateDirectory, 'ops', 'matrix-local-gateway.js'),
+      `import { writeFile } from 'node:fs/promises'; await writeFile(${JSON.stringify(executionMarker)}, 'unsafe');\n`,
+    )
+
+    await expect(supervisor.submitAgentRelease('release-2')).resolves.toMatchObject({
+      phase: 'staged',
+    })
+    await expect(readFile(executionMarker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('rejects invalid Agent candidate JavaScript through the finish boundary', async () => {
+    const fixture = await agentUpdateFixture()
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fixture.fetch })
+    await supervisor.initialize()
+    await supervisor.stage('release-2')
+    const instruction = await supervisor.agentInstruction('release-2')
+    await writeFile(
+      join(instruction.candidateDirectory, 'ops', 'matrix-local-gateway.js'),
+      'const invalid = ;\n',
+    )
+
+    await expect(supervisor.submitAgentRelease('release-2')).rejects.toThrow(
+      /failed static validation: ops\/matrix-local-gateway\.js/u,
+    )
+    await expect(supervisor.status()).resolves.toMatchObject({ phase: 'failed' })
+  })
+
   it('converges a stale maintenance phase when the signed target is already installed', async () => {
     const fixture = await agentUpdateFixture()
     const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fixture.fetch })
@@ -232,6 +281,10 @@ describe('GatewayUpdateSupervisor', () => {
     await writeFile(
       join(instruction.candidateDirectory, 'ops', 'gatewayAgentUpdateCli.js'),
       '// Agent-built update CLI release 2\n',
+    )
+    await writeFile(
+      join(instruction.candidateDirectory, 'ops', 'gatewayJournalRepairCli.js'),
+      '// Agent-built journal repair CLI release 2\n',
     )
     await writeFile(
       join(instruction.candidateDirectory, 'mcp', 'stdio.js'),
@@ -268,6 +321,50 @@ describe('GatewayUpdateSupervisor', () => {
     expect(converged.status.phase).toBe('committed')
     expect(converged.status.detail).toBeUndefined()
     expect(converged.agentOwnerCommandId).toBeUndefined()
+  })
+
+  it('acknowledges a healthy rollback after local journal repair', async () => {
+    const fixture = await agentUpdateFixture()
+    const now = 10_000
+    const supervisor = new GatewayUpdateSupervisor({
+      ...fixture.config,
+      syncFreshnessMs: 5_000,
+    }, {
+      fetch: fixture.fetch,
+      now: () => now,
+      gatewayHealth: async () => ({
+        version: 1,
+        gatewayId: 'workspace-1',
+        workspaceId: 'workspace-1',
+        gatewayNodeId: 'node-1',
+        gatewayShortId: 'NODE1',
+        gatewayName: 'Test Gateway',
+        state: 'running',
+        pid: 123,
+        startedAt: 1,
+        activeDeviceCount: 1,
+        openInvitationCount: 0,
+        buildId: 'build-1',
+        matrixReady: true,
+        lastMatrixSyncAt: now - 1,
+      }),
+    })
+    await supervisor.initialize()
+    await supervisor.stage('release-2')
+    const statePath = join(fixture.installRoot, 'supervisor-state.json')
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as {
+      status: { phase: string; detail?: string }
+    }
+    state.status.phase = 'repair_required'
+    state.status.detail = 'Activation and rollback health checks failed'
+    await writeFile(statePath, `${JSON.stringify(state)}\n`)
+
+    await expect(supervisor.acknowledgeGatewayRecovery()).resolves.toMatchObject({
+      phase: 'rolled_back',
+      currentBuildId: 'build-1',
+      targetBuildId: 'build-2',
+      detail: 'Gateway health was verified after local repair; the previous build remains active',
+    })
   })
 
   it('copies and seals empty regular dependency files', async () => {
@@ -812,6 +909,10 @@ async function agentUpdateFixture(options: {
     '// old supervisor\n',
   )
   await writeFile(join(oldRelease, 'ops', 'gatewayAgentUpdateCli.js'), '// old CLI\n')
+  await writeFile(
+    join(oldRelease, 'ops', 'gatewayJournalRepairCli.js'),
+    '// old journal repair CLI\n',
+  )
   if (options.emptyAuxiliaryFile) {
     const typesDirectory = join(
       oldRelease,

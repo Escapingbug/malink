@@ -78,6 +78,10 @@ export async function startGatewayUpdateSupervisorServer(input: {
         ))
         return
       }
+      if (request.method === 'POST' && path === '/v1/repairs/acknowledge') {
+        sendJson(response, 200, await input.supervisor.acknowledgeGatewayRecovery())
+        return
+      }
       throw new SupervisorHttpError(404, 'not_found')
     } catch (error) {
       const mapped = mapError(error)
@@ -158,6 +162,11 @@ export class GatewayUpdateSupervisorClient {
       ownerCommandId,
       detail,
     }).then(value => gatewayUpdateStatusSchema.parse(value))
+  }
+
+  acknowledgeGatewayRecovery(): Promise<GatewayUpdateStatus> {
+    return this.request('POST', '/v1/repairs/acknowledge')
+      .then(value => gatewayUpdateStatusSchema.parse(value))
   }
 
   private request<T>(method: string, path: string, body?: unknown): Promise<T> {

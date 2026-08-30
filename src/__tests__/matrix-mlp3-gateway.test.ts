@@ -547,7 +547,7 @@ describe('MatrixMlp3GatewayRunner', () => {
             workspaceDirectory: '/updates/release-2',
             sourceDirectory: '/updates/release-2/source',
             candidateDirectory: '/updates/release-2/candidate',
-            submitCommand: '/current/runtime/node gatewayAgentUpdateCli.js submit',
+            submitCommand: '/current/runtime/node gatewayAgentUpdateCli.js finish',
           }
         },
         async beginAgentUpdate(releaseId, maintenanceSessionId, ownerCommandId) {

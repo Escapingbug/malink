@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import {
   chmod,
   copyFile,
@@ -41,6 +42,7 @@ import {
   type MacosGatewayReleaseOptions,
 } from './macosGatewayRelease.js'
 import { GATEWAY_STATE_CATALOG } from '@/gateway/matrix/stateUpgradeCatalog'
+import { GatewayAdminClient, type GatewayAdminStatus } from '@/gateway/admin'
 
 interface GatewayUpdateSupervisorState {
   version: 1
@@ -104,6 +106,7 @@ export interface GatewayUpdateSupervisorDependencies {
   now?: () => number
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>
   activate?: (options: MacosGatewayReleaseOptions) => Promise<void>
+  gatewayHealth?: () => Promise<GatewayAdminStatus>
   onCommitted?: () => void | Promise<void>
   onLog?: (message: string) => void
 }
@@ -277,6 +280,61 @@ export class GatewayUpdateSupervisor {
 
   async submitAgentRelease(releaseId: string): Promise<GatewayUpdateStatus> {
     return this.serializeRequest(() => this.submitAgentReleaseOnce(releaseId))
+  }
+
+  async acknowledgeGatewayRecovery(): Promise<GatewayUpdateStatus> {
+    return this.serializeRequest(async () => {
+      const existing = await this.readState()
+      if (existing.status.phase !== 'repair_required') {
+        return structuredClone(existing.status)
+      }
+      const health = await (this.dependencies.gatewayHealth
+        ? this.dependencies.gatewayHealth()
+        : new GatewayAdminClient({
+            socketPath: this.config.gatewayAdminSocketPath,
+            timeoutMs: 5_000,
+          }).status())
+      const installedBuildId = await this.installedBuildId()
+      if (
+        health.state !== 'running'
+        || health.matrixReady !== true
+        || !installedBuildId
+        || health.buildId !== installedBuildId
+      ) {
+        throw new Error(
+          'Gateway repair cannot be acknowledged until the installed build returns Matrix-ready health',
+        )
+      }
+      const syncFreshnessMs = this.config.syncFreshnessMs ?? 45_000
+      if (
+        typeof health.lastMatrixSyncAt !== 'number'
+        || this.now() - health.lastMatrixSyncAt > syncFreshnessMs
+      ) {
+        throw new Error('Gateway repair cannot be acknowledged with stale Matrix synchronization')
+      }
+      return this.writeState(state => {
+        if (state.status.phase !== 'repair_required') return
+        const targetInstalled = state.status.targetBuildId === installedBuildId
+        const rollbackInstalled = state.status.currentBuildId === installedBuildId
+        if (!targetInstalled && !rollbackInstalled) {
+          throw new Error(
+            `Healthy Gateway build ${installedBuildId} does not match the failed update or rollback`,
+          )
+        }
+        state.agentOwnerCommandId = undefined
+        state.scheduledAt = undefined
+        state.previousTarget = undefined
+        state.status = {
+          ...state.status,
+          phase: targetInstalled ? 'committed' : 'rolled_back',
+          currentBuildId: installedBuildId,
+          detail: targetInstalled
+            ? 'Gateway health was verified after local repair; the target build is active'
+            : 'Gateway health was verified after local repair; the previous build remains active',
+          updatedAt: this.now(),
+        }
+      })
+    })
   }
 
   async failAgentUpdate(
@@ -868,7 +926,7 @@ export class GatewayUpdateSupervisor {
       submitCommand: [
         shellQuote(runtime),
         shellQuote(cli),
-        'submit',
+        'finish',
         '--socket',
         shellQuote(socket),
         '--release-id',
@@ -1340,8 +1398,11 @@ async function copyAgentReleaseTree(
 async function validateAgentReleaseEntrypoints(releaseDirectory: string): Promise<void> {
   await validateMacosGatewayRelease(releaseDirectory)
   for (const relativePath of [
+    'ops/matrix-local-gateway.js',
     'ops/gatewayUpdateSupervisorMain.js',
     'ops/gatewayAgentUpdateCli.js',
+    'ops/gatewayJournalRepairCli.js',
+    'mcp/stdio.js',
   ]) {
     const path = join(releaseDirectory, ...relativePath.split('/'))
     const metadata = await lstat(path)
@@ -1351,7 +1412,36 @@ async function validateAgentReleaseEntrypoints(releaseDirectory: string): Promis
     if (metadata.size < 1) {
       throw new Error(`Agent-built Gateway release entrypoint is empty: ${relativePath}`)
     }
+    await checkJavaScriptWithoutExecution(releaseDirectory, relativePath)
   }
+}
+
+function checkJavaScriptWithoutExecution(
+  releaseDirectory: string,
+  relativePath: string,
+): Promise<void> {
+  const path = join(releaseDirectory, ...relativePath.split('/'))
+  return new Promise((resolveCheck, reject) => {
+    execFile(process.execPath, ['--check', path], {
+      cwd: releaseDirectory,
+      env: {
+        PATH: '/usr/bin:/bin',
+        LANG: process.env.LANG ?? 'C',
+        MALINK_GATEWAY_VALIDATION_MODE: 'static-only',
+      },
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    }, error => {
+      if (error) {
+        reject(new Error(
+          `Agent-built Gateway release entrypoint failed static validation: ${relativePath}`,
+          { cause: error },
+        ))
+        return
+      }
+      resolveCheck()
+    })
+  })
 }
 
 async function createAgentReleaseSeal(

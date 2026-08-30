@@ -61,6 +61,8 @@ describe('Gateway update release publisher', () => {
     )).resolves.toBe(true)
     expect(signed.manifest.files.map(file => file.path)).toEqual([
       'mcp/stdio.js',
+      'ops/gatewayAgentUpdateCli.js',
+      'ops/gatewayJournalRepairCli.js',
       'ops/gatewayUpdateSupervisorMain.js',
       'ops/matrix-local-gateway.js',
       'runtime/node',
@@ -134,6 +136,14 @@ async function preparedRelease(root: string): Promise<void> {
   await writeFile(join(root, 'runtime', 'node'), '#!/bin/sh\n', { mode: 0o755 })
   await writeFile(join(root, 'mcp', 'stdio.js'), '// mcp\n')
   await writeFile(join(root, 'ops', 'matrix-local-gateway.js'), '// gateway\n')
+  await writeFile(
+    join(root, 'ops', 'gatewayAgentUpdateCli.js'),
+    '// Agent update CLI\n',
+  )
+  await writeFile(
+    join(root, 'ops', 'gatewayJournalRepairCli.js'),
+    '// journal repair CLI\n',
+  )
   await writeFile(
     join(root, 'ops', 'gatewayUpdateSupervisorMain.js'),
     '// supervisor\n',

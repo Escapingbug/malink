@@ -216,6 +216,54 @@ phase. Connection diagnostics include bounded per-node liveness timestamps,
 consecutive no-reply counts, and update phase/build identifiers without
 exporting credentials or unstructured Gateway errors.
 
+## Agent-safe candidate completion
+
+The maintenance Agent is never allowed to execute a candidate Gateway,
+supervisor, MCP, or recovery entrypoint. Those programs are production
+entrypoints, not validation commands; changing cwd or adding `--help` does not
+clear inherited `MALINK_*` state. The signed Prompt gives the Agent one exact
+`gatewayAgentUpdateCli.js finish` command. That owner-only command asks the
+independent supervisor to copy and inspect the candidate, parse every JavaScript
+entrypoint with the trusted Gateway Host runtime's non-executing `--check`
+mode, hash-seal the result, and transition it to `staged`.
+
+Before Matrix login or any replay/journal file is opened, the Gateway first
+probes the configured admin socket for a live older Gateway and then acquires
+`gateway-instance.lock` inside its production data directory. The legacy socket
+probe protects the first upgrade from releases that predate the lock. The lock
+is atomically published with its owner PID. A second live process fails closed
+before it can read or append production state; a later process may quarantine a
+stale lock only after the recorded owner PID is no longer alive.
+
+## Duplicate-terminal journal recovery
+
+If an older release has already allowed two processes to append terminal
+results for one command, use the repair CLI from the matching release or exact
+source checkout. `diagnose` is read-only. `recover` performs one bounded
+operation: it stops the named
+LaunchAgent, rechecks the journal, acquires the data-directory lock, writes a
+byte-for-byte backup, removes only later terminal/delivery pairs whose first
+terminal was already durably delivered, writes a JSON audit record, restarts
+the same LaunchAgent, and waits for Matrix-ready admin health.
+
+```sh
+pnpm repair:gateway-journal -- recover \
+  --data-dir "$HOME/.config/malink/gateway-data" \
+  --service-label com.malink.matrix-gateway \
+  --launch-agent "$HOME/Library/LaunchAgents/com.malink.matrix-gateway.plist" \
+  --supervisor-socket "$HOME/.local/share/malink-matrix/update-supervisor.sock"
+```
+
+After Matrix-ready Gateway health is proven, the owner-only supervisor socket
+acknowledges the recovery. A target build that is healthy becomes `committed`;
+a healthy previous build becomes `rolled_back`, so stale `repair_required`
+status cannot survive a successful recovery.
+
+The repair refuses to choose between different terminal results when the first
+result was not already delivered. That ambiguity requires manual incident
+review; it is never resolved by deleting the newest line or resetting the whole
+journal.
+
 Workspace membership and the signed Gateway Directory are inventory, not
 presence. The main Gateway card, computer filter, and Settings therefore keep a
 separate status for every stable `gatewayNodeId`. A fresh signed status reply is

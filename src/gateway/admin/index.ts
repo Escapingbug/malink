@@ -1,4 +1,5 @@
 export * from './client.js'
+export * from './gatewayAdminSocketGuard.js'
 export * from './matrixLoginTokenIssuer.js'
 export * from './providerPrompt.js'
 export * from './server.js'

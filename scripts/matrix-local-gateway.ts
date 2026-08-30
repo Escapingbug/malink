@@ -39,6 +39,7 @@ import {
     gatewayNodeShortId,
 } from '../src/gateway/pairing/index.js'
 import {
+    assertGatewayAdminSocketUnclaimed,
     FileMatrixLoginTokenIssuer,
     runGatewayProviderPrompt,
     startGatewayAdminServer,
@@ -55,6 +56,7 @@ import {
     type MatrixGatewayRoomConfig,
     type MatrixGatewayTrustedDevice,
 } from '../src/gateway/matrix/index.js'
+import { acquireGatewayDataDirectoryLock } from '../src/gateway/matrix/gatewayDataDirectoryLock.js'
 import { registerConfiguredProviders } from '../src/providers/configured.js'
 import { getProvider, registerProvider } from '../src/providers/registry.js'
 import type {
@@ -79,6 +81,13 @@ interface LocalMatrixFixture {
 
 const dataDirectory = process.env.MALINK_MATRIX_DATA_DIR
     ?? join(process.cwd(), 'dev', 'matrix', 'gateway-data')
+const adminSocketPath = process.env.MALINK_GATEWAY_ADMIN_SOCKET
+    ?? join(dataDirectory, 'admin.sock')
+await assertGatewayAdminSocketUnclaimed(adminSocketPath)
+// This lock is acquired before Matrix login, replay state, or the command
+// journal is opened. A candidate validation process can therefore never share
+// production execution state with the active Gateway.
+const dataDirectoryLock = await acquireGatewayDataDirectoryLock(dataDirectory)
 const enrolledFixturePath = join(dataDirectory, 'matrix-fixture.json')
 const fixture = await readJson<LocalMatrixFixture>(
     process.env.MALINK_MATRIX_FIXTURE
@@ -111,8 +120,6 @@ if (deterministicE2eProvider) {
 }
 const cwd = process.env.MALINK_CWD ?? process.cwd()
 const sessionExtensionRegistry = await createSessionExtensionRegistryFromEnvironment()
-const adminSocketPath = process.env.MALINK_GATEWAY_ADMIN_SOCKET
-    ?? join(dataDirectory, 'admin.sock')
 process.env.MALINK_GATEWAY_ADMIN_SOCKET = adminSocketPath
 const defaultPrivilegeCredentialPath = join(dataDirectory, 'privilege-client.json')
 const privilegeCredentialPath = process.env.MALINK_PRIVILEGE_CREDENTIAL_FILE?.trim()
@@ -1032,6 +1039,7 @@ const stopResult = await stopped
 stopSyncWatchdog()
 stopPairingRecovery()
 stopWorkspaceControl()
+await dataDirectoryLock.release()
 const exitCode = stopResult.failure ? 1 : 0
 if (stopResult.forced) process.exit(exitCode)
 if (stopResult.failure) process.exitCode = exitCode

@@ -17,7 +17,9 @@ Update this Malink Gateway from the exact signed Git commit supplied above.
 4. The supplied candidate is an independent copy of the active release. Replace
    its Gateway and update-supervisor bundles with the target commit's production
    bundles, including `ops/matrix-local-gateway.js`,
-   `ops/gatewayUpdateSupervisorMain.js`, and `ops/gatewayAgentUpdateCli.js`.
+   `ops/gatewayUpdateSupervisorMain.js`, `ops/gatewayAgentUpdateCli.js`, and
+   `ops/gatewayJournalRepairCli.js`. Recovery tooling must remain release-pinned
+   to the journal implementation it validates.
    Replace the target commit's `dist/mcp/stdio.js` bundle at
    `mcp/stdio.js` in the candidate as well; ACP sessions cannot open without
    this release-pinned subprocess entrypoint.
@@ -32,9 +34,16 @@ Update this Malink Gateway from the exact signed Git commit supplied above.
 6. Inspect the complete candidate. It must be self-contained, contain only
    regular files and directories, and must not contain secrets, Git metadata,
    caches, source maps, test output, package-manager stores, sockets, or release
-   metadata files. Run the candidate's entrypoints with safe validation/help
-   inputs where supported.
-7. Only after all checks pass, run the exact supervisor submission command
-   supplied above. The supervisor will copy, hash-seal, and validate the result.
+   metadata files. Never execute any candidate Gateway or supervisor entrypoint,
+   including with `--help`, a temporary working directory, or modified
+   environment variables. These entrypoints do not expose an Agent-safe runtime
+   validation mode. Starting one can attach it to production Matrix and journal
+   state. The independent supervisor owns all candidate entrypoint validation.
+7. Only after all repository tests and candidate assembly checks pass, run the
+   exact supervisor completion command supplied above. Do not alter, wrap, or
+   replace that command. Current supervisors name this operation `finish`;
+   earlier compatible supervisors may still supply its `submit` alias. The
+   supervisor will safely validate, copy, hash-seal, and submit the candidate
+   without starting a second Gateway.
    Success means the returned phase is exactly `staged`; otherwise report the
    failure and leave the active Gateway unchanged.

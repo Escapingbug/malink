@@ -10,6 +10,7 @@ export async function runGatewayAgentUpdateCli(argv: readonly string[]): Promise
   switch (command) {
     case 'instruction':
       return client.agentInstruction(releaseId)
+    case 'finish':
     case 'submit':
       return client.submitAgentRelease(releaseId)
     case 'status':

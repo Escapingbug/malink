@@ -146,6 +146,8 @@ async function requirePreparedRelease(source: string): Promise<void> {
     ['ops/matrix-local-gateway.js', constants.R_OK],
     ['mcp/stdio.js', constants.R_OK],
     ['ops/gatewayUpdateSupervisorMain.js', constants.R_OK],
+    ['ops/gatewayAgentUpdateCli.js', constants.R_OK],
+    ['ops/gatewayJournalRepairCli.js', constants.R_OK],
   ] as const) {
     const absolute = join(source, ...path.split('/'))
     const metadata = await lstat(absolute)

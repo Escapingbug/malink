@@ -78,7 +78,12 @@ type TerminalDeliveredEntry = {
   deliveredAt: number
 }
 
-type JournalEntry = HeaderEntry | AcceptedEntry | DispatchedEntry | TerminalEntry | TerminalDeliveredEntry
+export type Mlp3CommandJournalEntry =
+  | HeaderEntry
+  | AcceptedEntry
+  | DispatchedEntry
+  | TerminalEntry
+  | TerminalDeliveredEntry
 
 export type Mlp3CommandClaim =
   | { kind: 'accepted'; record: Mlp3CommandJournalRecord }
@@ -117,8 +122,8 @@ export class FileMlp3CommandJournal {
     return this.serial(async () => {
       if (!this.initialized) await this.load()
       const command = mlp3CommandSchema.parse(commandInput)
-      const key = commandKey(command)
-      const fingerprint = commandFingerprint(command)
+      const key = mlp3CommandKey(command)
+      const fingerprint = mlp3CommandFingerprint(command)
       const current = this.records.get(key)
       if (current) {
         if (current.fingerprint !== fingerprint) {
@@ -199,9 +204,9 @@ export class FileMlp3CommandJournal {
   get(command: Mlp3Command): Promise<Mlp3CommandJournalRecord | undefined> {
     return this.serial(async () => {
       if (!this.initialized) await this.load()
-      const current = this.records.get(commandKey(command))
+      const current = this.records.get(mlp3CommandKey(command))
       if (!current) return undefined
-      if (current.fingerprint !== commandFingerprint(command)) {
+      if (current.fingerprint !== mlp3CommandFingerprint(command)) {
         throw new SecurityError(
           'idempotency_conflict',
           'Command ID does not match its durable journal fingerprint',
@@ -282,8 +287,8 @@ export class FileMlp3CommandJournal {
     fingerprint: string
     record: Mlp3CommandJournalRecord
   } {
-    const key = commandKey(command)
-    const fingerprint = commandFingerprint(command)
+    const key = mlp3CommandKey(command)
+    const fingerprint = mlp3CommandFingerprint(command)
     const record = this.records.get(key)
     if (!record || record.fingerprint !== fingerprint) {
       throw new Error('Command has no exact durable MLP/3 acceptance')
@@ -317,7 +322,7 @@ export class FileMlp3CommandJournal {
       } catch {
         throw new Error(`Corrupt MLP/3 command journal at line ${index + 1}`)
       }
-      const entry = parseEntry(value, index + 1)
+      const entry = parseMlp3CommandJournalEntry(value, index + 1)
       if (entry.kind === 'journal') {
         headerCount += 1
         if (headerCount > 1) throw new Error('Duplicate MLP/3 command journal header')
@@ -329,8 +334,8 @@ export class FileMlp3CommandJournal {
           throw new Error(`Duplicate MLP/3 command acceptance at line ${index + 1}`)
         }
         if (
-          entry.key !== commandKey(entry.command)
-          || entry.fingerprint !== commandFingerprint(entry.command)
+          entry.key !== mlp3CommandKey(entry.command)
+          || entry.fingerprint !== mlp3CommandFingerprint(entry.command)
         ) {
           throw new Error(`Invalid MLP/3 command acceptance binding at line ${index + 1}`)
         }
@@ -374,7 +379,7 @@ export class FileMlp3CommandJournal {
     this.initialized = true
   }
 
-  private async append(entry: JournalEntry): Promise<void> {
+  private async append(entry: Mlp3CommandJournalEntry): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true })
     const handle = await open(this.filePath, 'a', 0o600)
     try {
@@ -386,7 +391,7 @@ export class FileMlp3CommandJournal {
   }
 }
 
-function commandKey(command: Mlp3Command): string {
+export function mlp3CommandKey(command: Mlp3Command): string {
   return canonicalJson([
     command.workspaceId,
     command.deviceId,
@@ -395,14 +400,17 @@ function commandKey(command: Mlp3Command): string {
   ])
 }
 
-function commandFingerprint(command: Mlp3Command): string {
+export function mlp3CommandFingerprint(command: Mlp3Command): string {
   return `v3:${createHash('sha256')
     .update('malink-command:v3\0')
     .update(canonicalJson(command))
     .digest('hex')}`
 }
 
-function parseEntry(value: unknown, line: number): JournalEntry {
+export function parseMlp3CommandJournalEntry(
+  value: unknown,
+  line: number,
+): Mlp3CommandJournalEntry {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`Invalid MLP/3 command journal entry at line ${line}`)
   }

@@ -423,6 +423,15 @@ in the default update mode, and keeps durably staging new Matrix events. The
 replacement process resumes that inbox before the Matrix sync cursor can skip
 an accepted event.
 
+The maintenance Agent assembles a candidate but never executes its production
+entrypoints. It invokes one supervisor-owned completion command; the supervisor
+performs non-executing static entrypoint validation and sealing. Gateway startup
+probes the legacy admin socket and atomically locks the production data
+directory before Matrix login or journal access, so a candidate or duplicate
+launchd process cannot become a second journal writer. Offline duplicate-
+terminal recovery is an owner-local, backup-first operation and never changes
+which MLP/3 terminal result was already delivered first.
+
 There is no Gateway-side release-channel poller. Each node publishes its
 current build ID and supervised-update capability in the root-signed Gateway
 Directory. A manually deployed PWA may discover one exact signed Gateway

@@ -76,7 +76,10 @@ export async function installGatewayUpdateSupervisor(
     join(currentRoot, 'mcp', 'stdio.js'),
     join(currentRoot, 'ops', 'gatewayUpdateSupervisorMain.js'),
     ...(options.agentPromptBaseUrl
-      ? [join(currentRoot, 'ops', 'gatewayAgentUpdateCli.js')]
+      ? [
+          join(currentRoot, 'ops', 'gatewayAgentUpdateCli.js'),
+          join(currentRoot, 'ops', 'gatewayJournalRepairCli.js'),
+        ]
       : []),
     resolve(options.gatewayLaunchAgent),
   ]) {
