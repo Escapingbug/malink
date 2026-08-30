@@ -4,6 +4,7 @@ import {
   ChangeEvent,
   FormEvent,
   KeyboardEvent,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -52,7 +53,10 @@ import {
   reduceAgentActivity,
   type AgentActivity,
 } from "./agentActivity";
-import { MatrixSettings } from "./MatrixSettings";
+import {
+  MatrixSettings,
+  OFFICIAL_ANDROID_RELEASES_URL,
+} from "./MatrixSettings";
 import { ConnectionOnboarding } from "./ConnectionOnboarding";
 import { MalinkMark } from "./MalinkMark";
 import type { GatewayEnrollmentBusyState } from "./GatewayEnrollmentPanel";
@@ -117,6 +121,7 @@ import {
   MALINK_GATEWAY_RELEASE,
 } from "./buildInfo";
 import { discoverLatestGatewayAgentUpdate } from "./gatewayAgentUpdateDiscovery";
+import { uncertainCommandRecoveryPresentation } from "./uncertainCommandRecoveryPresentation";
 import {
   gatewayUpdatePlan as buildGatewayUpdatePlan,
   gatewayUpdateTarget,
@@ -1036,20 +1041,26 @@ function DurableCommandRecoveryNotice({
   connectionStatus,
   gatewayAvailable,
   journalReconciliationAvailable,
+  manualAndroidUpdateRequired,
   busy,
   lastError,
   onCheck,
   onReconnect,
+  onUpdateAndroid,
+  onOpenAndroidReleases,
   onExportDiagnostics,
 }: {
   command: MalinkRecoveredDurableCommand;
   connectionStatus: MatrixConnectionStatus;
   gatewayAvailable: boolean;
   journalReconciliationAvailable: boolean;
+  manualAndroidUpdateRequired: boolean;
   busy: boolean;
   lastError?: string;
   onCheck(): void;
   onReconnect(): void;
+  onUpdateAndroid(): void;
+  onOpenAndroidReleases(): void;
   onExportDiagnostics(): void;
 }) {
   const presentation = durableCommandRecoveryPresentation({
@@ -1057,6 +1068,7 @@ function DurableCommandRecoveryNotice({
     connectionStatus,
     gatewayAvailable,
     journalReconciliationAvailable,
+    manualAndroidUpdateRequired,
     lastError,
   });
   const commandLabel = command.commandId.length > 16
@@ -1077,14 +1089,30 @@ function DurableCommandRecoveryNotice({
         last changed {formatRecoveryTimestamp(command.updatedAt)}
       </small>
       <div className="durable-command-recovery-actions">
-        <button
-          type="button"
-          className="primary"
-          disabled={busy}
-          onClick={presentation.primaryAction === "check" ? onCheck : onReconnect}
-        >
-          {busy ? "Checking…" : presentation.primaryLabel}
-        </button>
+        {presentation.primaryAction && presentation.primaryLabel && (
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={
+              presentation.primaryAction === "check"
+                ? onCheck
+                : presentation.primaryAction === "reconnect"
+                  ? onReconnect
+                  : presentation.primaryAction === "update-native-app"
+                    ? onUpdateAndroid
+                    : onOpenAndroidReleases
+            }
+          >
+            {busy
+              ? presentation.primaryAction === "reconnect"
+                ? "Reconnecting…"
+                : presentation.primaryAction === "update-native-app"
+                  ? "Opening Android update…"
+                  : "Checking…"
+              : presentation.primaryLabel}
+          </button>
+        )}
         <button type="button" onClick={onExportDiagnostics}>
           Export diagnostics
         </button>
@@ -1464,6 +1492,8 @@ function MalinkAppRuntime() {
   >({});
   const [gatewayUpdateDiscoveryError, setGatewayUpdateDiscoveryError] =
     useState<string | null>(null);
+  const [gatewayUpdateDiscoveryBusy, setGatewayUpdateDiscoveryBusy] =
+    useState(false);
   const [gatewayRelease, setGatewayRelease] = useState(MALINK_GATEWAY_RELEASE);
   const [approvedGatewayEnrollmentIds, setApprovedGatewayEnrollmentIds] =
     useState<Set<string>>(() => new Set());
@@ -1576,6 +1606,7 @@ function MalinkAppRuntime() {
     currentVersion: MALINK_BUILD_VERSION,
   });
   const pwaReloadBlockedRef = useRef(false);
+  const gatewayUpdateDiscoveryBusyRef = useRef(false);
   const gatewayUpdateProbeKeysRef = useRef(new Set<string>());
   const executeGatewayUpdateRef = useRef<(
     payload: Extract<CommandPayload, { operation: `gateway.update.${string}` }>,
@@ -2849,27 +2880,37 @@ function MalinkAppRuntime() {
     };
   }, []);
 
+  const refreshGatewayUpdateDiscovery = useCallback(async (
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    if (gatewayUpdateDiscoveryBusyRef.current) return;
+    gatewayUpdateDiscoveryBusyRef.current = true;
+    setGatewayUpdateDiscoveryBusy(true);
+    try {
+      const release = await discoverLatestGatewayAgentUpdate(fetch, signal);
+      if (signal?.aborted) return;
+      setGatewayUpdateDiscoveryError(null);
+      setGatewayRelease((current) =>
+        release && current?.releaseId === release.releaseId && current.buildId === release.buildId
+          ? current
+          : release,
+      );
+    } catch (error) {
+      if (signal?.aborted) return;
+      const detail = formatUiError(error);
+      console.warn(`[gateway-update/discovery] ${detail}`, error);
+      setGatewayUpdateDiscoveryError(detail);
+    } finally {
+      gatewayUpdateDiscoveryBusyRef.current = false;
+      if (!signal?.aborted) setGatewayUpdateDiscoveryBusy(false);
+    }
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     const refresh = () => {
       if (document.visibilityState !== "visible") return;
-      void discoverLatestGatewayAgentUpdate(fetch, controller.signal)
-        .then((release) => {
-          if (controller.signal.aborted) return;
-          setGatewayUpdateDiscoveryError(null);
-          if (!release) return;
-          setGatewayRelease((current) =>
-            current?.releaseId === release.releaseId && current.buildId === release.buildId
-              ? current
-              : release,
-          );
-        })
-        .catch((error) => {
-          if (controller.signal.aborted) return;
-          const detail = formatUiError(error);
-          console.warn(`[gateway-update/discovery] ${detail}`, error);
-          setGatewayUpdateDiscoveryError(detail);
-        });
+      void refreshGatewayUpdateDiscovery(controller.signal);
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") refresh();
@@ -2882,7 +2923,7 @@ function MalinkAppRuntime() {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, []);
+  }, [refreshGatewayUpdateDiscovery]);
 
   useEffect(() => {
     if (
@@ -8107,6 +8148,15 @@ function MalinkAppRuntime() {
     void connectMalinkClient(matrixConfig, false);
   }
 
+  function updateAndroidForRecoveredNativeCommand(): void {
+    setSettingsOpen(true);
+    void recoverNativeAppUpdate(true);
+  }
+
+  function openOfficialAndroidReleases(): void {
+    window.open(OFFICIAL_ANDROID_RELEASES_URL, "_blank", "noopener,noreferrer");
+  }
+
   function clearSessionLifecycleRecoveries(): void {
     for (const recovery of sessionLifecycleRecoveriesRef.current.values()) {
       if (recovery.timer !== null) window.clearTimeout(recovery.timer);
@@ -9219,6 +9269,28 @@ function MalinkAppRuntime() {
     ? sessionSettingsUpdate
     : null;
   const settingsUpdateBusy = sessionSettingsUpdate !== null;
+  const journalReconciliationAvailable = nativeRuntime === null ||
+    nativeRuntime.commandJournalReconciliation === true;
+  const manualAndroidUpdateRequired =
+    nativeUpdateState?.detailCode === "manual_check_unavailable";
+  const uncertainSessionRecovery = optimisticSession?.phase === "uncertain"
+    ? uncertainCommandRecoveryPresentation({
+        subject: "conversation",
+        connectionStatus,
+        gatewayAvailable,
+        journalReconciliationAvailable,
+        manualAndroidUpdateRequired,
+      })
+    : null;
+  const uncertainProjectRecovery = optimisticProjectCreate?.phase === "uncertain"
+    ? uncertainCommandRecoveryPresentation({
+        subject: "project",
+        connectionStatus,
+        gatewayAvailable,
+        journalReconciliationAvailable,
+        manualAndroidUpdateRequired,
+      })
+    : null;
 
   return (
     <main className={`app-shell ${mobileChatOpen ? "mobile-chat-open" : ""} ${primaryView === "files" ? "file-inbox-open" : ""}`}>
@@ -9233,9 +9305,8 @@ function MalinkAppRuntime() {
               command={visibleRecoveredNativeCommand}
               connectionStatus={connectionStatus}
               gatewayAvailable={gatewayAvailable}
-              journalReconciliationAvailable={
-                nativeRuntime?.commandJournalReconciliation === true
-              }
+              journalReconciliationAvailable={journalReconciliationAvailable}
+              manualAndroidUpdateRequired={manualAndroidUpdateRequired}
               busy={recoveredNativeCommandFlightIds.has(
                 visibleRecoveredNativeCommand.commandId,
               )}
@@ -9244,6 +9315,8 @@ function MalinkAppRuntime() {
               ]}
               onCheck={checkRecoveredNativeCommandsNow}
               onReconnect={reconnectForRecoveredNativeCommand}
+              onUpdateAndroid={updateAndroidForRecoveredNativeCommand}
+              onOpenAndroidReleases={openOfficialAndroidReleases}
               onExportDiagnostics={exportConnectionDiagnostics}
             />
           )}
@@ -9634,12 +9707,26 @@ function MalinkAppRuntime() {
                     </button>
                   )}
                   {optimisticProjectCreate.phase === "uncertain" && (
-                    <button
-                      type="button"
-                      onClick={recheckUncertainOptimisticProjectCreate}
-                      disabled={!gatewayAvailable}
-                    >
-                      Check
+                    uncertainProjectRecovery?.primaryAction && (
+                      <button
+                        type="button"
+                        onClick={
+                          uncertainProjectRecovery.primaryAction === "check"
+                            ? recheckUncertainOptimisticProjectCreate
+                            : uncertainProjectRecovery.primaryAction === "reconnect"
+                              ? reconnectForRecoveredNativeCommand
+                            : uncertainProjectRecovery.primaryAction === "update-native-app"
+                              ? updateAndroidForRecoveredNativeCommand
+                              : openOfficialAndroidReleases
+                        }
+                      >
+                        {uncertainProjectRecovery.primaryLabel}
+                      </button>
+                    )
+                  )}
+                  {optimisticProjectCreate.phase === "uncertain" && (
+                    <button type="button" onClick={exportConnectionDiagnostics}>
+                      Export diagnostics
                     </button>
                   )}
                   {(optimisticProjectCreate.phase === "failed" ||
@@ -9663,9 +9750,9 @@ function MalinkAppRuntime() {
                         : "now"}
                 </b>
               </div>
-              {optimisticProjectCreate.error && (
+              {(optimisticProjectCreate.error || uncertainProjectRecovery) && (
                 <p className="project-create-error">
-                  {optimisticProjectCreate.error}
+                  {uncertainProjectRecovery?.detail ?? optimisticProjectCreate.error}
                 </p>
               )}
             </section>
@@ -10637,8 +10724,11 @@ function MalinkAppRuntime() {
                 <p>
                   {optimisticSession.phase === "creating"
                     ? "You can start now. Messages are saved here and will be sent in order as soon as creation succeeds."
-                    : optimisticSession.error ||
-                      "Retry creation to keep this conversation and its queued messages."}
+                    : optimisticSession.phase === "uncertain"
+                      ? uncertainSessionRecovery?.detail ??
+                        "Malink is still verifying the original creation command."
+                      : optimisticSession.error ||
+                        "Retry creation to keep this conversation and its queued messages."}
                 </p>
               </div>
               {optimisticSession.phase === "failed" && (
@@ -10661,12 +10751,24 @@ function MalinkAppRuntime() {
               )}
               {optimisticSession.phase === "uncertain" && (
                 <div className="optimistic-session-actions">
-                  <button
-                    type="button"
-                    onClick={recheckUncertainOptimisticSession}
-                    disabled={connectionStatus !== "connected"}
-                  >
-                    Check result again
+                  {uncertainSessionRecovery?.primaryAction && (
+                    <button
+                      type="button"
+                      onClick={
+                        uncertainSessionRecovery.primaryAction === "check"
+                          ? recheckUncertainOptimisticSession
+                          : uncertainSessionRecovery.primaryAction === "reconnect"
+                            ? reconnectForRecoveredNativeCommand
+                          : uncertainSessionRecovery.primaryAction === "update-native-app"
+                            ? updateAndroidForRecoveredNativeCommand
+                            : openOfficialAndroidReleases
+                      }
+                    >
+                      {uncertainSessionRecovery.primaryLabel}
+                    </button>
+                  )}
+                  <button type="button" onClick={exportConnectionDiagnostics}>
+                    Export diagnostics
                   </button>
                   <button
                     type="button"
@@ -11140,11 +11242,24 @@ function MalinkAppRuntime() {
           messages={providerHistoryMessages}
           loading={providerHistoryLoad?.kind ?? null}
           error={providerHistoryError}
+          recoveryLabel={providerHistoryError
+            ? connectionStatus !== "connected"
+              ? "Reconnect Workspace"
+              : providerHistorySource
+                ? "Retry request"
+                : null
+            : null}
           onClose={closeProviderHistory}
           onSourceChange={(sourceKey) => void openProviderHistory({ sourceKey })}
           onProviderChange={(provider) => void openProviderHistory({ provider })}
           onInspect={(session) => void inspectProviderHistorySession(session)}
           onRetry={() => {
+            if (connectionStatus !== "connected") {
+              setProviderHistoryOpen(false);
+              reconnectForRecoveredNativeCommand();
+              return;
+            }
+            if (!providerHistorySource) return;
             if (providerHistorySelected) {
               void inspectProviderHistorySession(providerHistorySelected);
             } else {
@@ -11183,6 +11298,7 @@ function MalinkAppRuntime() {
         gatewayUpdateAvailableCount={gatewayUpdateAvailableCount}
         gatewayUpdateNodeCount={gatewayUpdatePlan.length}
         gatewayUpdateDiscoveryError={gatewayUpdateDiscoveryError}
+        gatewayUpdateDiscoveryBusy={gatewayUpdateDiscoveryBusy}
         updateState={pwaUpdateState}
         nativeUpdateState={nativeUpdateState}
         nativeUpdateBusy={nativeUpdateBusy}
@@ -11238,6 +11354,12 @@ function MalinkAppRuntime() {
         onReviewGatewayUpdates={() => {
           setSettingsOpen(false);
           setGatewayUpdateDialogOpen(true);
+        }}
+        onRetryGatewayUpdateDiscovery={() => {
+          void refreshGatewayUpdateDiscovery();
+        }}
+        onReconnectGatewayUpdates={() => {
+          void connectMalinkClient(matrixConfig, false);
         }}
         onCheckForUpdates={() => void checkForPwaUpdates()}
         onUpdateNativeApp={() => void recoverNativeAppUpdate(true)}

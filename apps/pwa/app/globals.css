@@ -5779,6 +5779,7 @@ select:focus-visible {
 
 .web-push-settings button,
 .native-update-settings button,
+.native-update-settings .native-update-action,
 .pwa-update-settings button,
 .settings-diagnostic-card button {
   min-height: 36px;
@@ -5788,6 +5789,13 @@ select:focus-visible {
   color: white;
   font-size: 9px;
   font-weight: 700;
+}
+
+.native-update-settings .native-update-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
 }
 
 .web-push-settings button:disabled,
@@ -9984,6 +9992,7 @@ body {
 
   .web-push-settings button,
   .native-update-settings button,
+  .native-update-settings .native-update-action,
   .pwa-update-settings button,
   .settings-diagnostic-card button,
   .gateway-update-settings button {

@@ -37,6 +37,10 @@ import {
 import { gatewayProjectOwner } from "./projectCatalog";
 import { injectedNativeBridgePort } from "./client/native/NativeRpcBridge";
 import { nativeUpdateDownloadProgress } from "./nativeUpdatePolling";
+import { gatewayUpdateSettingsPresentation } from "./gatewayUpdateSettingsPresentation";
+
+export const OFFICIAL_ANDROID_RELEASES_URL =
+  "https://github.com/Escapingbug/malink/releases";
 
 type Props = {
   open: boolean;
@@ -65,6 +69,7 @@ type Props = {
   gatewayUpdateAvailableCount: number;
   gatewayUpdateNodeCount: number;
   gatewayUpdateDiscoveryError: string | null;
+  gatewayUpdateDiscoveryBusy: boolean;
   updateState: PwaUpdateState;
   nativeUpdateState: NativeUpdateStatus | null;
   nativeUpdateBusy: boolean;
@@ -91,6 +96,8 @@ type Props = {
     targetProjectId: string,
   ): Promise<void>;
   onReviewGatewayUpdates(): void;
+  onRetryGatewayUpdateDiscovery(): void;
+  onReconnectGatewayUpdates(): void;
   onCheckForUpdates(): void;
   onUpdateNativeApp(): void;
   onRestartApp(): void;
@@ -134,6 +141,7 @@ function MatrixSettingsDialog({
   gatewayUpdateAvailableCount,
   gatewayUpdateNodeCount,
   gatewayUpdateDiscoveryError,
+  gatewayUpdateDiscoveryBusy,
   updateState,
   nativeUpdateState,
   nativeUpdateBusy,
@@ -156,6 +164,8 @@ function MatrixSettingsDialog({
   onClearGatewayEnrollment,
   onRenameGateway,
   onReviewGatewayUpdates,
+  onRetryGatewayUpdateDiscovery,
+  onReconnectGatewayUpdates,
   onCheckForUpdates,
   onUpdateNativeApp,
   onRestartApp,
@@ -182,6 +192,20 @@ function MatrixSettingsDialog({
     status === "securing" ||
     status === "reconnecting";
   const nativeHostDetected = injectedNativeBridgePort() !== null;
+  const gatewaySoftware = gatewayUpdateSettingsPresentation({
+    trusted: trustedGateway !== null,
+    ...(gatewayRelease ? { releaseId: gatewayRelease.releaseId } : {}),
+    discoveryBusy: gatewayUpdateDiscoveryBusy,
+    discoveryError: gatewayUpdateDiscoveryError,
+    directoryState: gatewayDirectory === null
+      ? "missing"
+      : gatewayDirectory.directory.gateways.length === 0
+        ? "empty"
+        : "ready",
+    connectionStatus: status,
+    availableCount: gatewayUpdateAvailableCount,
+    nodeCount: gatewayUpdateNodeCount,
+  });
   const actionBusy =
     pairingBusy ||
     invitationBusy ||
@@ -729,24 +753,29 @@ function MatrixSettingsDialog({
 
             <PwaUpdateSettings state={updateState} onCheck={onCheckForUpdates} />
 
-            {trustedGateway && gatewayRelease && gatewayUpdateNodeCount > 0 && (
-              <section className="gateway-update-settings" aria-live="polite">
-                <span>
-                  <strong>Gateway software</strong>
-                  <small>
-                    {gatewayUpdateAvailableCount > 0
-                      ? `${gatewayUpdateAvailableCount} ${gatewayUpdateAvailableCount === 1 ? "Gateway needs" : "Gateways need"} release ${gatewayRelease.releaseId}.`
-                      : `Review ${gatewayUpdateNodeCount} ${gatewayUpdateNodeCount === 1 ? "Gateway" : "Gateways"} and their live status.`}
-                  </small>
-                  {gatewayUpdateDiscoveryError && (
-                    <em role="alert">Update discovery: {gatewayUpdateDiscoveryError}</em>
-                  )}
-                </span>
-                <button type="button" onClick={onReviewGatewayUpdates}>
-                  {gatewayUpdateAvailableCount > 0 ? "Review update" : "View versions"}
+            <section className="gateway-update-settings" aria-live="polite">
+              <span>
+                <strong>Gateway software</strong>
+                <small role={gatewaySoftware.attention ? "alert" : "status"}>
+                  {gatewaySoftware.detail}
+                </small>
+              </span>
+              {gatewaySoftware.action && gatewaySoftware.actionLabel && (
+                <button
+                  type="button"
+                  disabled={gatewayUpdateDiscoveryBusy}
+                  onClick={
+                    gatewaySoftware.action === "review"
+                      ? onReviewGatewayUpdates
+                      : gatewaySoftware.action === "retry-discovery"
+                        ? onRetryGatewayUpdateDiscovery
+                        : onReconnectGatewayUpdates
+                  }
+                >
+                  {gatewaySoftware.actionLabel}
                 </button>
-              </section>
-            )}
+              )}
+            </section>
           </section>
         )}
 
@@ -1031,7 +1060,7 @@ export function NativeUpdateSettings({
         ? "Install APK update"
         : state?.phase === "failed"
           ? legacyManualCheck
-            ? "Refresh APK status"
+            ? "Open APK releases"
             : "Retry APK check"
           : state
             ? "Refresh APK status"
@@ -1059,13 +1088,24 @@ export function NativeUpdateSettings({
           </small>
         )}
       </span>
-      <button
-        type="button"
-        disabled={busy || installing}
-        onClick={installable ? onInstall : onRefresh}
-      >
-        {label}
-      </button>
+      {legacyManualCheck ? (
+        <a
+          className="native-update-action"
+          href={OFFICIAL_ANDROID_RELEASES_URL}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {label}
+        </a>
+      ) : (
+        <button
+          type="button"
+          disabled={busy || installing}
+          onClick={installable ? onInstall : onRefresh}
+        >
+          {label}
+        </button>
+      )}
     </section>
   );
 }

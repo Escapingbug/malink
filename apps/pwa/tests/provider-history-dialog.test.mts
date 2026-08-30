@@ -123,6 +123,59 @@ test("keeps the provider history retry action after a background failure", () =>
   assert.match(html, /<button type="button">Retry<\/button>/);
 });
 
+test("shows the prerequisite action instead of an ineffective retry", () => {
+  const html = renderToStaticMarkup(createElement(ProviderHistoryDialog, {
+    open: true,
+    sourceKey: defaultSource.key,
+    sources: [defaultSource],
+    provider: "codex",
+    providers: [],
+    sessions: [],
+    selected: null,
+    messages: [],
+    loading: null,
+    error: "Reconnect before loading Provider History.",
+    recoveryLabel: "Reconnect Workspace",
+    onClose() {},
+    onSourceChange() {},
+    onProviderChange() {},
+    onInspect() {},
+    onRetry() {},
+    onOpenManaged() {},
+    onContinue() {},
+  }));
+
+  assert.match(html, /Reconnect Workspace/);
+  assert.doesNotMatch(html, />Retry<\/button>/);
+});
+
+test("does not render an action when the user must choose another route", () => {
+  const html = renderToStaticMarkup(createElement(ProviderHistoryDialog, {
+    open: true,
+    sourceKey: "",
+    sources: [],
+    provider: "codex",
+    providers: [],
+    sessions: [],
+    selected: null,
+    messages: [],
+    loading: null,
+    error: "No connected computer exposes Provider History.",
+    recoveryLabel: null,
+    onClose() {},
+    onSourceChange() {},
+    onProviderChange() {},
+    onInspect() {},
+    onRetry() {},
+    onOpenManaged() {},
+    onContinue() {},
+  }));
+
+  assert.match(html, /No connected computer exposes Provider History/);
+  assert.doesNotMatch(html, />Retry<\/button>/);
+  assert.doesNotMatch(html, /Reconnect Workspace/);
+});
+
 test("groups archived sessions first and sorts them by Malink archive time", () => {
   const sessions = [
     {

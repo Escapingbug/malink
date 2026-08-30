@@ -193,6 +193,16 @@ confirms one exact node, which sends `stage` and creates the visible maintenance
 Agent session for that Gateway and release. Multiple nodes are updated as
 separate confirmed operations so it is always clear which node is executing.
 
+The `Gateway software` row remains visible whenever App & updates is available.
+Release discovery, Gateway Directory projection, and live node status are shown
+as separate states instead of hiding the entry. A primary action is rendered
+only when it can change the blocking state: discovery failures can retry release
+discovery, disconnected clients can reconnect Matrix, and an available release
+can open the review panel. When Matrix is already connected but no Gateway
+Directory has arrived, the UI explains that a Gateway must be brought online and
+that projection will resume automatically; it does not present a no-op reconnect
+or status-check button.
+
 `stage` now progresses through:
 
 ```text

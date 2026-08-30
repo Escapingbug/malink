@@ -74,6 +74,12 @@ test("ships a complete installable offline shell", async () => {
   assert.match(serviceWorker, /notificationclick/);
   assert.match(serviceWorker, /claimPushEvent/);
   assert.match(matrixSettings, /Agent notifications/);
+  assert.match(matrixSettings, /<strong>Gateway software<\/strong>/);
+  assert.match(matrixSettings, /gatewaySoftware\.action && gatewaySoftware\.actionLabel/);
+  assert.doesNotMatch(
+    matrixSettings,
+    /trustedGateway && gatewayRelease && gatewayUpdateNodeCount > 0/,
+  );
   assert.match(source, /function NewProjectIcon\(\)[\s\S]*className="toolbar-icon"/);
   assert.match(source, /aria-label="New project"[\s\S]*title="New project"[\s\S]*<NewProjectIcon \/>/);
   assert.doesNotMatch(source, /▱\+/);
@@ -102,7 +108,10 @@ test("ships a complete installable offline shell", async () => {
   assert.doesNotMatch(buildDetails, /Change address|Check for updates|onExportDiagnostics/);
   assert.match(matrixSettings, /recoveryPlan\.secondary\.label/);
   assert.match(matrixSettings, /setManualRepairReason\("manual"\)/);
-  assert.match(providerHistory, /role="alert"[\s\S]*onClick=\{onRetry\}[\s\S]*Retry/);
+  assert.match(
+    providerHistory,
+    /role="alert"[\s\S]*recoveryLabel &&[\s\S]*onClick=\{onRetry\}[\s\S]*\{recoveryLabel\}/,
+  );
   assert.match(
     source,
     /registerPwaUpdates\(\(state\) => \{[\s\S]*pwaUpdateStateRef\.current = state;[\s\S]*setPwaUpdateState\(state\);[\s\S]*canReload:/,
@@ -162,7 +171,8 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /Conversation creation failed/);
   assert.match(source, /Retry creation/);
   assert.match(source, /Creation result not confirmed/);
-  assert.match(source, /Check result again/);
+  assert.match(source, /uncertainSessionRecovery\.primaryLabel/);
+  assert.match(source, /uncertainSessionRecovery\.primaryAction === "check"/);
   assert.match(source, /Stop waiting/);
   assert.match(source, /discardFailedOptimisticSession/);
   assert.match(

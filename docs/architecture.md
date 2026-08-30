@@ -373,6 +373,15 @@ event remains MLP/3 because older peers safely ignore it and current peers keep
 their existing terminal-event fallback; protocol versions are compatibility
 boundaries rather than semantic revision counters.
 
+Recovery presentation follows the same ownership boundary. A primary UI action
+is rendered only when it can change the blocking state at its owning layer. An
+older Android host that cannot query the Gateway journal must offer the Android
+update path, not another Matrix-history scan. An offline Gateway is described
+as an external prerequisite and is retried automatically; the client does not
+present a no-op “check again” button. Release discovery, Workspace projection,
+and Gateway liveness remain separate visible states, so a missing prerequisite
+never hides the Gateway software panel or masquerades as another layer's retry.
+
 ## Gateway online-update boundary
 
 The Gateway process does not update itself. An independently launched,

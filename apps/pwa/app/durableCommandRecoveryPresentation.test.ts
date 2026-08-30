@@ -13,7 +13,7 @@ describe("durableCommandRecoveryPresentation", () => {
       title: "Waiting for a verified result",
       stateLabel: "Accepted by your computer",
       primaryAction: "check",
-      primaryLabel: "Check now",
+      primaryLabel: "Check Gateway journal",
     });
     expect(presentation.detail).toContain("Gateway journal");
     expect(presentation.detail).toContain("will not run twice");
@@ -46,9 +46,10 @@ describe("durableCommandRecoveryPresentation", () => {
     expect(presentation.title).toBe("Waiting for your computer");
     expect(presentation.detail).toContain("Matrix is connected");
     expect(presentation.detail).toContain("Gateway");
+    expect(presentation.primaryAction).toBeNull();
   });
 
-  it("does not claim journal recovery for an older Android runtime", () => {
+  it("offers the Android update that unlocks recovery for an older runtime", () => {
     const presentation = durableCommandRecoveryPresentation({
       state: "accepted",
       connectionStatus: "connected",
@@ -56,9 +57,48 @@ describe("durableCommandRecoveryPresentation", () => {
       journalReconciliationAvailable: false,
     });
 
-    expect(presentation.primaryLabel).toBe("Check Matrix again");
-    expect(presentation.detail).toContain("Update the Android app");
+    expect(presentation.primaryAction).toBe("update-native-app");
+    expect(presentation.primaryLabel).toBe("Update Android app");
+    expect(presentation.detail).toContain("Update Android");
     expect(presentation.detail).toContain("cannot ask the Gateway journal");
-    expect(presentation.detail).toContain("will not run twice");
+    expect(presentation.detail).toContain("without executing it twice");
+  });
+
+  it("does not offer an ineffective check while the Gateway is offline", () => {
+    const presentation = durableCommandRecoveryPresentation({
+      state: "running",
+      connectionStatus: "connected",
+      gatewayAvailable: false,
+      journalReconciliationAvailable: true,
+    });
+
+    expect(presentation.primaryAction).toBeNull();
+    expect(presentation.primaryLabel).toBeUndefined();
+    expect(presentation.detail).toContain("There is nothing this client can verify");
+  });
+
+  it("can still retry a locally queued identity without journal support", () => {
+    const presentation = durableCommandRecoveryPresentation({
+      state: "queued",
+      connectionStatus: "connected",
+      gatewayAvailable: true,
+      journalReconciliationAvailable: false,
+    });
+
+    expect(presentation.primaryAction).toBe("check");
+    expect(presentation.primaryLabel).toBe("Check now");
+  });
+
+  it("opens official releases when the installed APK cannot check immediately", () => {
+    const presentation = durableCommandRecoveryPresentation({
+      state: "accepted",
+      connectionStatus: "connected",
+      gatewayAvailable: true,
+      journalReconciliationAvailable: false,
+      manualAndroidUpdateRequired: true,
+    });
+
+    expect(presentation.primaryAction).toBe("open-apk-releases");
+    expect(presentation.primaryLabel).toBe("Open APK releases");
   });
 });

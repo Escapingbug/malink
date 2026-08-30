@@ -91,10 +91,12 @@ test("keeps a pre-extension v1 APK on an actionable compatibility path", () => {
   }));
 
   assert.match(html, /cannot start an immediate check/);
-  assert.match(html, /Refresh APK status/);
+  assert.match(html, /Open APK releases/);
   assert.match(html, /open the official APK releases/);
   assert.match(html, /github\.com\/Escapingbug\/malink\/releases/);
+  assert.match(html, /target="_blank"/);
   assert.doesNotMatch(html, /Retry APK check/);
+  assert.doesNotMatch(html, /Refresh APK status/);
 });
 
 test("offers the verified APK when the native host reports it ready", () => {

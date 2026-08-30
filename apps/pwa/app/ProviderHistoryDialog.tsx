@@ -32,6 +32,7 @@ type Props = {
   messages: ProviderHistoryMessage[];
   loading: "sessions" | "session" | null;
   error: string | null;
+  recoveryLabel?: string | null;
   onClose(): void;
   onSourceChange(sourceKey: string): void;
   onProviderChange(provider: string): void;
@@ -57,6 +58,7 @@ function ProviderHistoryDialogContent({
   messages,
   loading,
   error,
+  recoveryLabel = "Retry",
   onClose,
   onSourceChange,
   onProviderChange,
@@ -242,9 +244,11 @@ function ProviderHistoryDialogContent({
             {error && (
               <div className="provider-history-error" role="alert">
                 <p>{error}</p>
-                <button type="button" onClick={onRetry} disabled={loading !== null}>
-                  Retry
-                </button>
+                {recoveryLabel && (
+                  <button type="button" onClick={onRetry} disabled={loading !== null}>
+                    {recoveryLabel}
+                  </button>
+                )}
               </div>
             )}
             {loading === "session" && <p className="provider-history-empty">Loading session history…</p>}
