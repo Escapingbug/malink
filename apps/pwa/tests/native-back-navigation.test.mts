@@ -8,6 +8,7 @@ import {
 const emptyState = {
   deleteDialogOpen: false,
   deleteDialogBusy: false,
+  gatewayUpdateDialogOpen: false,
   newProjectOpen: false,
   newProjectBusy: false,
   newSessionOpen: false,
@@ -37,6 +38,15 @@ test("selects the topmost visible Malink UI layer", () => {
       mobileChatOpen: true,
     }),
     "close-provider-history",
+  );
+  assert.equal(
+    resolveMalinkBackAction({
+      ...emptyState,
+      gatewayUpdateDialogOpen: true,
+      newProjectOpen: true,
+      settingsOpen: true,
+    }),
+    "close-gateway-update",
   );
   assert.equal(
     resolveMalinkBackAction({
@@ -126,6 +136,16 @@ test("closes provider history while its background request is still loading", ()
       providerHistoryOpen: true,
     }),
     "close-provider-history",
+  );
+});
+
+test("closes Gateway update while its background maintenance Agent is still running", () => {
+  assert.equal(
+    resolveMalinkBackAction({
+      ...emptyState,
+      gatewayUpdateDialogOpen: true,
+    }),
+    "close-gateway-update",
   );
 });
 

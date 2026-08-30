@@ -92,3 +92,32 @@ test("does not render the review panel while closed", () => {
   }));
   assert.equal(html, "");
 });
+
+test("keeps the panel dismissible while a Gateway maintenance Agent starts", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes,
+    runtimeByNode: {
+      "node-office": {
+        state: "starting",
+        startedAt: 1,
+      },
+    },
+    activeGatewayNodeId: "node-office",
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+  }));
+
+  const closeControl = html.match(
+    /<button[^>]*aria-label="Close Gateway update"[^>]*>/,
+  )?.[0];
+  assert.ok(closeControl);
+  assert.doesNotMatch(closeControl, /disabled/);
+  assert.match(html, /You can close this panel/);
+  assert.match(html, /continues this update in the background/);
+  assert.match(html, />Close<\/button>/);
+});

@@ -1804,6 +1804,7 @@ function MalinkAppRuntime() {
     deleteDialogOpen: false,
     deleteDialogBusy: false,
     providerHistoryOpen,
+    gatewayUpdateDialogOpen,
     newProjectOpen,
     newProjectBusy,
     newSessionOpen,
@@ -1822,6 +1823,9 @@ function MalinkAppRuntime() {
           break;
         case "close-provider-history":
           closeProviderHistory();
+          break;
+        case "close-gateway-update":
+          setGatewayUpdateDialogOpen(false);
           break;
         case "close-new-project":
           setNewProjectOpen(false);

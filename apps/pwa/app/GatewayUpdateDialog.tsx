@@ -53,7 +53,6 @@ function GatewayUpdateDialogContent({
     open,
     containerRef: dialogRef,
     initialFocusRef: closeRef,
-    escapeDisabled: activeGatewayNodeId !== null,
     onEscape: onClose,
   });
   const availableCount = nodes.filter(node => node.state === "available").length;
@@ -66,9 +65,7 @@ function GatewayUpdateDialogContent({
     <div
       className="gateway-update-backdrop"
       role="presentation"
-      onMouseDown={() => {
-        if (activeGatewayNodeId === null) onClose();
-      }}
+      onMouseDown={onClose}
     >
       <section
         ref={dialogRef}
@@ -93,7 +90,6 @@ function GatewayUpdateDialogContent({
             ref={closeRef}
             type="button"
             aria-label="Close Gateway update"
-            disabled={activeGatewayNodeId !== null}
             onClick={onClose}
           >
             ×
@@ -212,11 +208,14 @@ function GatewayUpdateDialogContent({
         </div>
 
         <footer>
-          <small>Requested by this Malink device; executed by the named Gateway.</small>
+          <small>
+            {activeGatewayNodeId
+              ? "The named Gateway continues this update in the background when this panel closes."
+              : "Requested by this Malink device; executed by the named Gateway."}
+          </small>
           <button
             type="button"
             className="secondary-button"
-            disabled={activeGatewayNodeId !== null}
             onClick={onClose}
           >
             Close
@@ -276,8 +275,8 @@ function runtimeStateDetail(
   }
   if (runtime.state === "starting") {
     return runtime.maintenanceSessionId
-      ? "The local Agent maintenance session is visible and running."
-      : "The Gateway is creating its local Agent maintenance session.";
+      ? "The local Agent maintenance session is visible and running. You can close this panel."
+      : "The Gateway is creating its local Agent maintenance session. You can close this panel; the update continues in the background.";
   }
   if (runtime.state === "error") {
     return runtime.detail ?? "The current Gateway build remains unchanged.";
