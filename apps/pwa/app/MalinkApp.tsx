@@ -6024,12 +6024,15 @@ function MalinkAppRuntime() {
       }));
       return status;
     } catch (error) {
-      const detail = error instanceof CommandCompletionTimeoutError
+      const noLiveReply = error instanceof CommandCompletionTimeoutError;
+      const detail = noLiveReply
         ? "No signed reply arrived within 12 seconds. The command remains durable, but this Gateway is not proven online now."
-        : formatUiError(error);
+        : commandId === null
+          ? `The live-status command was not sent: ${formatUiError(error)}`
+          : formatUiError(error);
       setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
         ...current,
-        state: "failed",
+        state: noLiveReply ? "failed" : "error",
         checkedAt: Date.now(),
         detail,
       }));

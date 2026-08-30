@@ -185,6 +185,9 @@ the current protocol's ordinary operation set so existing clients inherit new
 product operations without re-pairing or rotating every project key grant.
 Explicitly restricted certificates remain restricted. Root privilege approval
 is never inherited and still requires the separate `privilege.approve` grant.
+Native command preflight must apply this same Workspace-member rule; it must
+not request an out-of-band certificate renewal for an ordinary operation that
+the MLP/3 Gateway already authorizes through `device.invite`.
 Once a command signature and immutable bindings have been verified, a policy
 denial is journaled and returned as a signed `command.rejected` terminal event;
 unverified commands produce no application event.

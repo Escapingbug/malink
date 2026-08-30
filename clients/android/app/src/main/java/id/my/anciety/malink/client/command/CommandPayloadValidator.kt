@@ -733,10 +733,15 @@ object CommandAuthorizationPolicy {
     fun requireAuthorized(
         payload: ValidatedCommandPayload,
         certificateGrants: Collection<PairingOperation>,
+    ) = requireAuthorized(payload.operation, certificateGrants)
+
+    fun requireAuthorized(
+        operation: CommandOperation,
+        certificateGrants: Collection<PairingOperation>,
     ) {
-        val decision = evaluate(payload.operation, certificateGrants)
+        val decision = evaluate(operation, certificateGrants)
         require(decision.authorized) {
-            "The pairing certificate does not authorize ${payload.operation.wireName}."
+            "The pairing certificate does not authorize ${operation.wireName}."
         }
     }
 }

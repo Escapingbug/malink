@@ -369,6 +369,19 @@ class CommandPayloadValidatorTest {
                 ).source,
             )
         }
+        for (
+            operation in listOf(
+                CommandOperation.GATEWAY_UPDATE_STAGE,
+                CommandOperation.GATEWAY_UPDATE_APPLY,
+                CommandOperation.GATEWAY_UPDATE_STATUS,
+            )
+        ) {
+            assertEquals(PairingOperation.GATEWAY_UPDATE, requiredCertificateOperation(operation))
+            CommandAuthorizationPolicy.requireAuthorized(
+                operation,
+                listOf(PairingOperation.DEVICE_INVITE),
+            )
+        }
 
         val denied = CommandAuthorizationPolicy.evaluate(
             CommandOperation.SESSION_DELETE,

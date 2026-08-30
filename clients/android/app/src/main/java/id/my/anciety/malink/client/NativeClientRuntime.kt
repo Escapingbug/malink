@@ -7,7 +7,6 @@ import id.my.anciety.malink.client.command.CommandAuthorizationPolicy
 import id.my.anciety.malink.client.command.CommandPayloadValidator
 import id.my.anciety.malink.client.command.CommandOutcome as DurableOutcome
 import id.my.anciety.malink.client.command.CommandOperation
-import id.my.anciety.malink.client.command.requiredCertificateOperation
 import id.my.anciety.malink.client.command.CommandReceipt as DurableReceipt
 import id.my.anciety.malink.client.command.CommandState as DurableState
 import id.my.anciety.malink.client.command.CommandTransmission
@@ -44,7 +43,6 @@ import id.my.anciety.malink.client.events.compactSnapshotCommands
 import id.my.anciety.malink.diagnostics.NativeDiagnosticLog
 import id.my.anciety.malink.update.NativeUpdateStore
 import id.my.anciety.malink.matrix.MatrixBootstrap
-import id.my.anciety.malink.matrix.MALINK_MATRIX_APPLICATION_CONTROL_EVENT_TYPE
 import id.my.anciety.malink.matrix.MatrixDecryptedEvent
 import id.my.anciety.malink.matrix.MatrixIdentifiers
 import id.my.anciety.malink.matrix.MatrixLoginTokenIssueResult
@@ -56,9 +54,6 @@ import id.my.anciety.malink.security.SecretCipher
 import id.my.anciety.malink.security.malink.AndroidKeystoreP256Identity
 import id.my.anciety.malink.security.malink.Base64Url
 import id.my.anciety.malink.security.malink.CanonicalJson
-import id.my.anciety.malink.security.malink.CapabilityRenewalCodec
-import id.my.anciety.malink.security.malink.CapabilityRenewalOffer
-import id.my.anciety.malink.security.malink.CapabilityRenewalRequest
 import id.my.anciety.malink.security.malink.MalinkCrypto
 import id.my.anciety.malink.security.malink.MalinkPrivateIdentity
 import id.my.anciety.malink.security.malink.MalinkSecurityException
@@ -78,10 +73,6 @@ import id.my.anciety.malink.security.malink.PairingSecurity
 import id.my.anciety.malink.security.malink.SignedPairingOffer
 import id.my.anciety.malink.security.malink.SignedPairingRequest
 import id.my.anciety.malink.security.malink.SignedPairingResponse
-import id.my.anciety.malink.security.malink.SecureEnvelopeBindings
-import id.my.anciety.malink.security.malink.SecureEnvelopeCodec
-import id.my.anciety.malink.security.malink.SecureEnvelopeDirection
-import id.my.anciety.malink.security.malink.SecureEnvelopes
 import id.my.anciety.malink.security.malink.requiredObject
 import id.my.anciety.malink.security.malink.requiredOpaqueId
 import java.security.SecureRandom
@@ -165,16 +156,10 @@ class NativeClientRuntime(
         val job: Job,
     )
 
-    private data class CapabilityRenewalWaiter(
-        val certificateId: String,
-        val result: CompletableDeferred<CapabilityRenewalOffer>,
-    )
-
     val deviceId: String = identity.publicIdentity.keyId
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
-    private val capabilityRenewalMutex = Mutex()
     private val commandSendMutex = Mutex()
     // History pagination is an explicit, per-conversation user action. Never
     // serialize unrelated sessions behind one slow Matrix relation page.
@@ -296,8 +281,6 @@ class NativeClientRuntime(
     private val commandRecoveryJobs = ConcurrentHashMap<String, Job>()
     private val commandTimelineRecoveryJobs = ConcurrentHashMap<String, Job>()
     private val commandRecoveryAttempts = ConcurrentHashMap<String, Int>()
-    private val capabilityRenewalWaiters =
-        ConcurrentHashMap<String, CapabilityRenewalWaiter>()
     private val json = Json { isLenient = false; allowSpecialFloatingPointValues = false }
     private val restoredTrust = runCatching { trustStore.load() }
     private val restoredPairing: Result<PersistedPairingTransaction?> = runCatching {
@@ -1893,7 +1876,6 @@ class NativeClientRuntime(
     }
 
     private suspend fun ensureCommandCapability(operation: CommandOperation) {
-        val requiredOperation = requiredCertificateOperation(operation)
         val currentTrust = mutex.withLock {
             val activeTrust = trust
                 ?: throw NativeTrustRequiredException("Pair the Gateway before sending commands.")
@@ -1904,180 +1886,10 @@ class NativeClientRuntime(
             ) { "Gateway command transport is not synchronized yet." }
             activeTrust
         }
-        if (requiredOperation in currentTrust.certificate.allowedOperations) return
-        capabilityRenewalMutex.withLock renewal@{
-            var activeTrust = mutex.withLock {
-                trust ?: throw NativeTrustRequiredException("Pair the Gateway before sending commands.")
-            }
-            if (requiredOperation in activeTrust.certificate.allowedOperations) {
-                return@renewal
-            }
-            require(PairingOperation.DEVICE_INVITE in activeTrust.certificate.allowedOperations) {
-                "This device certificate cannot renew its permissions. Pair this device again with a new invitation."
-            }
-
-            val resumable = mutex.withLock {
-                pendingPairing?.takeIf { pending ->
-                    pending.repairingSession &&
-                        requiredOperation in pending.offer.offer.allowedOperations
-                }
-            }
-            if (resumable != null) {
-                completePairing(
-                    resumable.offer.offer.offerId,
-                    activeTrust.certificate.deviceName,
-                )
-                activeTrust = mutex.withLock {
-                    trust ?: throw NativeTrustRequiredException(
-                        "The renewed Gateway trust was not saved.",
-                    )
-                }
-                if (requiredOperation in activeTrust.certificate.allowedOperations) {
-                    return@renewal
-                }
-            }
-
-            val renewal = requestCapabilityRenewalOffer(activeTrust, listOf(requiredOperation))
-            val offer = PairingCodec.decodePairingLink(renewal.pairingLink)
-            PairingSecurity.verifyOffer(offer, now = now())
-            assertOfferRoute(offer)
-            MatrixSessionRepairPolicy.requirePinnedOffer(activeTrust, offer)
-            require(requiredOperation in offer.offer.allowedOperations) {
-                "The Gateway renewal offer does not authorize ${requiredOperation.wireName}."
-            }
-            val pending = mutex.withLock {
-                pendingPairing?.let { existing ->
-                    check(existing.request == null) {
-                        "A confirmed pairing transaction must finish before permissions can be renewed."
-                    }
-                    pairingStore.clear()
-                }
-                pairingStore.save(PersistedPairingTransaction(offer, null, null))
-                PendingPairing(offer, repairingSession = true).also {
-                    pendingPairing = it
-                    schedulePendingPairingExpiry()
-                }
-            }
-            completePairing(
-                pending.offer.offer.offerId,
-                activeTrust.certificate.deviceName,
-            )
-            activeTrust = mutex.withLock {
-                trust ?: throw NativeTrustRequiredException(
-                    "The renewed Gateway trust was not saved.",
-                )
-            }
-            require(requiredOperation in activeTrust.certificate.allowedOperations) {
-                "The renewed device certificate does not authorize ${requiredOperation.wireName}."
-            }
-        }
-    }
-
-    private suspend fun requestCapabilityRenewalOffer(
-        activeTrust: GatewayTrust,
-        requestedOperations: List<PairingOperation>,
-    ): CapabilityRenewalOffer {
-        val session = matrix.publicSession()
-            ?: throw IllegalStateException("A native Matrix session is required to renew permissions.")
-        val issuedAt = now()
-        val request = CapabilityRenewalRequest(
-            requestId = UUID.randomUUID().toString(),
-            gatewayId = activeTrust.gatewayId,
-            deviceId = activeTrust.certificate.deviceId,
-            certificateId = activeTrust.certificate.certificateId,
-            requestedOperations = requestedOperations.distinct(),
-            issuedAt = issuedAt,
-            expiresAt = issuedAt + CAPABILITY_RENEWAL_REQUEST_MS,
+        CommandAuthorizationPolicy.requireAuthorized(
+            operation,
+            currentTrust.certificate.allowedOperations,
         )
-        val waiter = CapabilityRenewalWaiter(
-            certificateId = request.certificateId,
-            result = CompletableDeferred(),
-        )
-        check(capabilityRenewalWaiters.putIfAbsent(request.requestId, waiter) == null)
-        try {
-            val plaintext = buildJsonObject {
-                put("msgtype", "m.notice")
-                put("body", "Encrypted Malink device permission renewal")
-                put("io.malink", request.toJson())
-            }
-            val secureEnvelope = SecureEnvelopes.sealSecureEnvelope(
-                bindings = SecureEnvelopeBindings(
-                    gatewayId = activeTrust.gatewayId,
-                    conversationId = session.roomBinding.conversationId,
-                    direction = SecureEnvelopeDirection.DEVICE_TO_GATEWAY,
-                    senderDeviceId = activeTrust.certificate.deviceId,
-                    recipientDeviceId = activeTrust.certificate.gatewayId,
-                    senderKeyId = identity.publicIdentity.keyId,
-                    recipientKeyId = activeTrust.gatewayKey.keyId,
-                ),
-                plaintext = plaintext,
-                senderIdentity = identity,
-                recipientPublicKey = activeTrust.gatewayKey,
-                envelopeId = "capability-renewal.${request.requestId}",
-                now = issuedAt,
-                lifetimeMs = CAPABILITY_RENEWAL_REQUEST_MS,
-            )
-            val content = buildJsonObject {
-                put("msgtype", "m.notice")
-                put("body", "Encrypted Malink device permission renewal")
-                put("io.malink", buildJsonObject {
-                    put("version", 1)
-                    put("kind", "secure_envelope")
-                    put("secure_envelope", secureEnvelope.toJson())
-                })
-            }
-            sendTrustedControlMessage(
-                content.toString(),
-                "malink.capability-renewal.${request.requestId}",
-            )
-            return try {
-                withTimeout(CAPABILITY_RENEWAL_TIMEOUT_MS) { waiter.result.await() }
-            } catch (_: TimeoutCancellationException) {
-                throw IllegalStateException(
-                    "The Gateway did not renew this device's permissions in time.",
-                )
-            }
-        } finally {
-            capabilityRenewalWaiters.remove(request.requestId, waiter)
-        }
-    }
-
-    private fun acceptCapabilityRenewalOffer(
-        event: MatrixDecryptedEvent,
-        extension: JsonObject,
-    ) {
-        val activeTrust = trust ?: return
-        if (event.sender != activeTrust.transportTrust.currentTransport.userId) return
-        require(extension.long("version") == 1L)
-        require(extension.string("kind") == "secure_envelope")
-        val session = matrix.publicSession()
-            ?: throw IllegalStateException("The Matrix room binding is unavailable.")
-        val signed = SecureEnvelopeCodec.parse(
-            extension.objectValue("secure_envelope").toString(),
-        )
-        val opened = SecureEnvelopes.openSecureEnvelope(
-            signed = signed,
-            recipientIdentity = identity,
-            senderPublicKey = activeTrust.gatewayKey,
-            expected = SecureEnvelopeBindings(
-                gatewayId = activeTrust.gatewayId,
-                conversationId = session.roomBinding.conversationId,
-                direction = SecureEnvelopeDirection.GATEWAY_TO_DEVICE,
-                senderDeviceId = activeTrust.certificate.gatewayId,
-                recipientDeviceId = activeTrust.certificate.deviceId,
-                senderKeyId = activeTrust.gatewayKey.keyId,
-                recipientKeyId = identity.publicIdentity.keyId,
-            ),
-            replayStore = replayStore,
-            now = now(),
-        )
-        val offer = CapabilityRenewalCodec.parseOfferContent(opened.plaintext)
-        require(offer.expiresAt > now()) { "The capability renewal offer has expired." }
-        val waiter = capabilityRenewalWaiters[offer.requestId] ?: return
-        require(waiter.certificateId == offer.certificateId) {
-            "The capability renewal offer is bound to a different certificate."
-        }
-        waiter.result.complete(offer)
     }
 
     private suspend fun processMatrixEvent(event: MatrixDecryptedEvent) {
@@ -2092,12 +1904,6 @@ class NativeClientRuntime(
         if (processMatrixMlp3Event(event, root, content, eventType)) return
         val extension = content["io.malink"] as? JsonObject ?: return
         val kind = extension.string("kind") ?: return
-        if (eventType == MALINK_MATRIX_APPLICATION_CONTROL_EVENT_TYPE) {
-            if (kind == "secure_envelope") {
-                acceptCapabilityRenewalOffer(event, extension)
-            }
-            return
-        }
         if (kind == "pairing_response") {
             acceptPairingResponse(event, extension)
             return
@@ -3147,8 +2953,6 @@ class NativeClientRuntime(
         const val MAX_PRE_TRUST_EVENTS = 256
         const val PAIRING_REQUEST_MS = 2 * 60_000L
         const val PAIRING_RESPONSE_TIMEOUT_MS = 60_000L
-        const val CAPABILITY_RENEWAL_REQUEST_MS = 2 * 60_000L
-        const val CAPABILITY_RENEWAL_TIMEOUT_MS = 60_000L
         const val PAIRING_AUTO_RESUME_DELAY_MS = 30_000L
         const val GATEWAY_TRANSPORT_PROFILE_FIELD = "io.malink.gateway_transport"
         const val GATEWAY_CONVERGENCE_GRACE_MS = 3_000L
