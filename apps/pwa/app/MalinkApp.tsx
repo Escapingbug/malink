@@ -50,8 +50,14 @@ import {
   WAITING_AGENT_ACTIVITY,
   WORKING_AGENT_ACTIVITY,
   agentExecutionSignal,
+  agentActivityWatermarkForEvent,
+  agentActivityWatermarkForSession,
+  isAgentActivityEvent,
+  isStaleAgentActivityWatermark,
+  mergeAgentActivityWatermark,
   reduceAgentActivity,
   type AgentActivity,
+  type AgentActivityWatermark,
 } from "./agentActivity";
 import {
   MatrixSettings,
@@ -1837,6 +1843,14 @@ function MalinkAppRuntime() {
   const revisionConflictRef = useRef<RevisionConflictNotice | null>(null);
   const nativeCommandReviewRef = useRef<NativeCommandReviewNotice | null>(null);
   const activePromptCommandsRef = useRef(new Map<string, string>());
+  const agentActivityWatermarksRef = useRef(
+    new Map<string, AgentActivityWatermark>(
+      initialGatewayUi.gatewayState?.sessions.map((session) => [
+        session.id,
+        agentActivityWatermarkForSession(session),
+      ] as const),
+    ),
+  );
   const completedCommandResultsRef = useRef(new Set<string>());
   const completionObservationOrderRef = useRef(0);
   const presentedCompletedTurnIdsRef = useRef(new Set<string>());
@@ -3115,6 +3129,19 @@ function MalinkAppRuntime() {
     });
   }
 
+  function observeAgentActivityWatermark(
+    sessionId: string,
+    incoming: AgentActivityWatermark,
+  ): boolean {
+    const current = agentActivityWatermarksRef.current.get(sessionId);
+    if (isStaleAgentActivityWatermark(current, incoming)) return false;
+    agentActivityWatermarksRef.current.set(
+      sessionId,
+      mergeAgentActivityWatermark(current, incoming),
+    );
+    return true;
+  }
+
   function hasActivePromptCommand(sessionId: string): boolean {
     return [...activePromptCommandsRef.current.values()].some(
       (candidate) => candidate === sessionId,
@@ -4104,26 +4131,36 @@ function MalinkAppRuntime() {
     const liveSessionKey = sessionId
       ? historyCacheSessionId(sessionId, incoming.projectId)
       : undefined;
-    if (sessionId && isLiveMessageDelivery(incoming)) {
-      setSessionAgentActivity(sessionId, (current) => {
-        if (incoming.kind === "user") {
-          return current?.phase === "starting" ||
-            current?.phase === "working" ||
-            current?.phase === "stopping"
-            ? current
-            : WAITING_AGENT_ACTIVITY;
+    if (
+      sessionId &&
+      isLiveMessageDelivery(incoming) &&
+      (incoming.kind === "user" || isAgentActivityEvent(incoming.raw))
+    ) {
+      const activityIsCurrent = observeAgentActivityWatermark(
+        sessionId,
+        agentActivityWatermarkForEvent(incoming),
+      );
+      if (activityIsCurrent) {
+        setSessionAgentActivity(sessionId, (current) => {
+          if (incoming.kind === "user") {
+            return current?.phase === "starting" ||
+              current?.phase === "working" ||
+              current?.phase === "stopping"
+              ? current
+              : WAITING_AGENT_ACTIVITY;
+          }
+          return reduceAgentActivity(current, incoming.raw);
+        });
+        const executionSignal = agentExecutionSignal(incoming.raw);
+        if (executionSignal === "running") {
+          setSessionRunning(sessionId, true);
+        } else if (executionSignal === "stopping") {
+          setSessionRunning(sessionId, true);
+          setSessionStopping(sessionId, true);
+        } else if (executionSignal === "stopped") {
+          setSessionRunning(sessionId, false);
+          setSessionStopping(sessionId, false);
         }
-        return reduceAgentActivity(current, incoming.raw);
-      });
-      const executionSignal = agentExecutionSignal(incoming.raw);
-      if (executionSignal === "running") {
-        setSessionRunning(sessionId, true);
-      } else if (executionSignal === "stopping") {
-        setSessionRunning(sessionId, true);
-        setSessionStopping(sessionId, true);
-      } else if (executionSignal === "stopped") {
-        setSessionRunning(sessionId, false);
-        setSessionStopping(sessionId, false);
       }
     }
     const lifecycleFailure = agentLifecycleFailureText(incoming.raw);
@@ -5559,6 +5596,7 @@ function MalinkAppRuntime() {
       stoppingSessionIdsRef.current = new Set();
       setStoppingSessionIds(new Set());
       setAgentActivitiesBySession(new Map());
+      agentActivityWatermarksRef.current.clear();
       pendingCreatedSessionIdRef.current = null;
       updateSessionLifecycleBusy(new Map());
       setPendingSessionCreate(sessionCreateRecovery?.input ?? null);
@@ -5776,6 +5814,12 @@ function MalinkAppRuntime() {
               );
             }
             setGatewayState(state.gatewayState);
+            for (const session of state.gatewayState.sessions) {
+              observeAgentActivityWatermark(
+                session.id,
+                agentActivityWatermarkForSession(session),
+              );
+            }
             const runningIds = new Set(
               state.gatewayState.sessions
                 .filter(
@@ -6096,6 +6140,7 @@ function MalinkAppRuntime() {
     setRunningSessionIds(new Set());
     setStoppingSessionIds(new Set());
     setAgentActivitiesBySession(new Map());
+    agentActivityWatermarksRef.current.clear();
     setSelectedSessionId(null);
     setSelectedProjectId(null);
     setGatewayState(null);

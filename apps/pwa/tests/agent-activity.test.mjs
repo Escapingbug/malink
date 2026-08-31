@@ -8,9 +8,67 @@ import {
   WORKING_AGENT_ACTIVITY,
   agentExecutionSignal,
   agentActivityForPhase,
+  agentActivityWatermarkForEvent,
+  agentActivityWatermarkForSession,
+  isAgentActivityEvent,
+  isStaleAgentActivityWatermark,
+  mergeAgentActivityWatermark,
   reduceAgentActivity,
   shouldApplyAgentActivity,
 } from "../app/agentActivity.ts";
+
+test("only semantic Agent events may advance a session activity watermark", () => {
+  assert.equal(isAgentActivityEvent({ type: "assistant.message" }), true);
+  assert.equal(isAgentActivityEvent({ type: "turn.completed" }), true);
+  assert.equal(isAgentActivityEvent({ kind: "status", state: "idle" }), true);
+  assert.equal(isAgentActivityEvent({ kind: "decision_request" }), true);
+  assert.equal(isAgentActivityEvent({ kind: "collaboration_command" }), false);
+  assert.equal(isAgentActivityEvent({ kind: "status", state: "unknown" }), false);
+});
+
+test("rejects activity callbacks older than an authoritative terminal state", () => {
+  const terminal = agentActivityWatermarkForSession({
+    stateVersion: 17,
+    updatedAt: 1_000,
+  });
+  const delayedAssistant = agentActivityWatermarkForEvent({
+    timestamp: 990,
+    raw: {
+      type: "assistant.message",
+      projection: { stateVersion: 16, updatedAt: 900 },
+    },
+  });
+  const sameTerminal = agentActivityWatermarkForEvent({
+    timestamp: 1_010,
+    raw: {
+      type: "turn.completed",
+      projection: { stateVersion: 17, updatedAt: 1_000 },
+    },
+  });
+
+  assert.equal(isStaleAgentActivityWatermark(terminal, delayedAssistant), true);
+  assert.equal(isStaleAgentActivityWatermark(terminal, sameTerminal), false);
+});
+
+test("uses timestamps for old native hosts and preserves the version fence", () => {
+  const terminal = { stateVersion: 17, updatedAt: 1_000 };
+  const delayedUser = agentActivityWatermarkForEvent({ timestamp: 999, raw: {} });
+  const nextUser = agentActivityWatermarkForEvent({ timestamp: 1_001, raw: {} });
+
+  assert.equal(isStaleAgentActivityWatermark(terminal, delayedUser), true);
+  assert.equal(isStaleAgentActivityWatermark(terminal, nextUser), false);
+  assert.deepEqual(mergeAgentActivityWatermark(terminal, nextUser), {
+    stateVersion: 17,
+    updatedAt: 1_001,
+  });
+
+  const nextTurn = { stateVersion: 18, updatedAt: 1_000 };
+  assert.equal(isStaleAgentActivityWatermark(terminal, nextTurn), false);
+  assert.deepEqual(mergeAgentActivityWatermark(
+    mergeAgentActivityWatermark(terminal, nextUser),
+    nextTurn,
+  ), nextTurn);
+});
 
 test("exports stable, human-readable activity for local transitions", () => {
   assert.deepEqual(SENDING_AGENT_ACTIVITY, {

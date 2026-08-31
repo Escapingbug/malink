@@ -1550,6 +1550,7 @@ internal class MatrixMlp3NativeProjection(
         put("id", session.id)
         put("title", session.title)
         put("updated_at", session.updatedAt)
+        put("state_version", session.stateVersion)
         put("status", when (session.activity) {
             "queued", "working", "attention" -> "running"
             "failed" -> "failed"

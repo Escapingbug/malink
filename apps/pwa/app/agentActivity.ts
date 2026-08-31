@@ -14,6 +14,16 @@ export type AgentActivity = Readonly<{
   detail?: string;
 }>;
 
+/**
+ * Monotonic position of the authoritative session state that activity was
+ * derived from. New clients provide a per-session state version; timestamps
+ * keep the ordering safe while an older native host is still installed.
+ */
+export type AgentActivityWatermark = Readonly<{
+  stateVersion?: number;
+  updatedAt: number;
+}>;
+
 const ACTIVITY_LABELS: Readonly<Record<AgentActivityPhase, string>> = {
   sending: "Sending…",
   waiting: "Message sent · Waiting for agent…",
@@ -47,6 +57,111 @@ export function shouldApplyAgentActivity(
     Boolean(currentSessionId) &&
     event.sessionId === currentSessionId
   );
+}
+
+export function isAgentActivityEvent(raw: unknown): boolean {
+  const event = asRecord(raw);
+  if (!event) return false;
+  if (event.kind === "status") {
+    return [
+      "starting",
+      "querying",
+      "running",
+      "working",
+      "stopping",
+      "canceling",
+      "idle",
+      "failed",
+    ].includes(String(event.activity_phase ?? event.state));
+  }
+  if (
+    event.type === "turn.queued" ||
+    event.type === "turn.started" ||
+    event.type === "turn.completed" ||
+    event.type === "turn.failed" ||
+    event.type === "assistant.message" ||
+    event.type === "tool.activity"
+  ) {
+    return true;
+  }
+  return event.kind === "message" || event.kind === "decision_request";
+}
+
+export function agentActivityWatermarkForEvent(event: {
+  timestamp: number;
+  raw: unknown;
+}): AgentActivityWatermark {
+  const raw = asRecord(event.raw);
+  const projection = asRecord(raw?.projection);
+  const stateVersion = positiveInteger(projection?.stateVersion);
+  const projectedAt = nonnegativeInteger(projection?.updatedAt);
+  return Object.freeze({
+    ...(stateVersion === undefined ? {} : { stateVersion }),
+    updatedAt: projectedAt ?? Math.max(0, event.timestamp),
+  });
+}
+
+export function agentActivityWatermarkForSession(session: {
+  stateVersion?: number;
+  updatedAt: number;
+}): AgentActivityWatermark {
+  return Object.freeze({
+    ...(positiveInteger(session.stateVersion) === undefined
+      ? {}
+      : { stateVersion: session.stateVersion }),
+    updatedAt: Math.max(0, session.updatedAt),
+  });
+}
+
+/** A delayed Matrix callback must never move transient activity behind a terminal snapshot. */
+export function isStaleAgentActivityWatermark(
+  current: AgentActivityWatermark | undefined,
+  incoming: AgentActivityWatermark,
+): boolean {
+  if (!current) return false;
+  if (
+    current.stateVersion !== undefined &&
+    incoming.stateVersion !== undefined
+  ) {
+    if (incoming.stateVersion < current.stateVersion) return true;
+    if (incoming.stateVersion > current.stateVersion) return false;
+  }
+  return incoming.updatedAt < current.updatedAt;
+}
+
+export function mergeAgentActivityWatermark(
+  current: AgentActivityWatermark | undefined,
+  incoming: AgentActivityWatermark,
+): AgentActivityWatermark {
+  if (!current) return incoming;
+  if (
+    incoming.stateVersion !== undefined &&
+    (current.stateVersion === undefined ||
+      incoming.stateVersion > current.stateVersion)
+  ) {
+    // A newer projection version supersedes the timestamp-only gap between
+    // turns. Keeping that unversioned timestamp could reject legitimate
+    // events whose authoritative projection clock is slightly earlier.
+    return incoming;
+  }
+  if (
+    current.stateVersion !== undefined &&
+    incoming.stateVersion !== undefined &&
+    incoming.stateVersion < current.stateVersion
+  ) {
+    return current;
+  }
+  return Object.freeze({
+    ...(current.stateVersion === undefined && incoming.stateVersion === undefined
+      ? {}
+      : {
+          stateVersion: Math.max(
+            current.stateVersion ?? 0,
+            incoming.stateVersion ?? 0,
+          ),
+        }),
+    updatedAt: Math.max(current.updatedAt, incoming.updatedAt),
+  });
 }
 
 /**
@@ -191,4 +306,16 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object"
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
+function nonnegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
 }

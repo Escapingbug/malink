@@ -549,6 +549,7 @@ class MatrixMlp3NativeProjectionTest {
 
         val running = original.snapshot()!!.getValue("sessions").jsonArray.single().jsonObject
         assertEquals("turn-1", running.getValue("active_turn_id").jsonPrimitive.content)
+        assertEquals(2L, running.getValue("state_version").jsonPrimitive.content.toLong())
 
         val restored = MatrixMlp3NativeProjection(
             gatewayId = { "gateway-1" },
@@ -562,6 +563,7 @@ class MatrixMlp3NativeProjectionTest {
         restored.applyGatewayEvent(turn("completed", 3, "idle"), "\$completed-a", "\$root-a")
         val completed = restored.snapshot()!!.getValue("sessions").jsonArray.single().jsonObject
         assertFalse("active_turn_id" in completed)
+        assertEquals(3L, completed.getValue("state_version").jsonPrimitive.content.toLong())
     }
 
     @Test

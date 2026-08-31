@@ -1579,6 +1579,7 @@ function gatewayState(
       id: session.sessionId,
       title: session.title,
       updatedAt: session.updatedAt,
+      stateVersion: session.stateVersion,
       status: session.lifecycle === "archived"
         ? "archived"
         : session.activity === "working" || session.activity === "queued"

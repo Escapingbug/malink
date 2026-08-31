@@ -1227,9 +1227,11 @@ class NativeClientRuntime(
         refreshSnapshot(publishLifecycle = true)
         if (trust != null) {
             scheduleWorkspaceDirectoryConvergence()
-            if (!gatewayStateSynchronized) {
-                startMatrixMlp3ProjectionRefresh()
-            }
+            // A durable cache makes startup usable offline, but it is not proof
+            // that the SDK timeline delivered the latest terminal event. Every
+            // fresh trusted transport performs one coalesced, bounded baseline
+            // refresh so a missed completion cannot remain "running" forever.
+            startMatrixMlp3ProjectionRefresh()
             scope.launch {
                 mutex.withLock {
                     runCatching { recoverGatewayTransportSnapshotLocked() }

@@ -39,6 +39,8 @@ export type GatewaySessionSummary = {
   id: string;
   title: string;
   updatedAt: number;
+  /** Monotonic MLP/3 session projection version when exposed by the client. */
+  stateVersion?: number;
   status: "idle" | "running" | "stopping" | "failed" | "archived";
   activityPhase?:
     | "starting"
@@ -215,6 +217,10 @@ export function parseGatewayStateExtension(
       !session.title ||
       !isNonnegativeInteger(session.updated_at) ||
       !(
+        session.state_version === undefined ||
+        isPositiveInteger(session.state_version)
+      ) ||
+      !(
         session.status === "idle" ||
         session.status === "running" ||
         session.status === "stopping" ||
@@ -273,6 +279,9 @@ export function parseGatewayStateExtension(
       id: session.id,
       title: session.title,
       updatedAt: session.updated_at,
+      ...(typeof session.state_version === "number"
+        ? { stateVersion: session.state_version }
+        : {}),
       status,
       ...(session.scope === "scratch" || session.scope === "project"
         ? { scope: session.scope }
@@ -313,6 +322,9 @@ export function parseGatewayStateExtension(
       id: session.id,
       title: session.title,
       updatedAt: session.updatedAt,
+      ...(session.stateVersion === undefined
+        ? {}
+        : { stateVersion: session.stateVersion }),
       status: session.status,
       ...(session.scope ? { scope: session.scope } : {}),
       ...(session.activityPhase ? { activityPhase: session.activityPhase } : {}),
@@ -657,6 +669,9 @@ export function gatewayStateExtension(
       id: session.id,
       title: session.title,
       updated_at: session.updatedAt,
+      ...(session.stateVersion === undefined
+        ? {}
+        : { state_version: session.stateVersion }),
       status: session.status === "archived" ? "idle" : session.status,
       ...(session.activityPhase ? { activity_phase: session.activityPhase } : {}),
       ...(session.status === "archived" ? { archived: true } : {}),
