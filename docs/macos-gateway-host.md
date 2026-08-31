@@ -32,9 +32,14 @@ pnpm install:gateway-update-supervisor -- \
   --gateway-service-label io.malink.gateway \
   --gateway-admin-socket "$HOME/.malink/gateway/admin.sock" \
   --current-build-id gateway-initial-arm64 \
-  --agent-prompt-base-url https://rd.anciety.my.id/gateway-agent-updates/releases/ \
+  --agent-channel-url https://escapingbug.github.io/malink/gateway-agent-updates/channels/stable.json \
   --signer-file ./release-signer.json
 ```
+
+The channel flag is optional for new installations; the installer defaults to
+this GitHub Pages URL. The URL is only a bootstrap location. The supervisor
+trusts the pinned release signer, persists the highest verified channel
+generation, and follows only mirror URLs contained in that signed channel.
 
 On a Mac where access has not been granted, the first run is expected to stop
 with `local_permission_required`. It stops before changing or restarting either

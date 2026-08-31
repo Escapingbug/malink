@@ -381,7 +381,7 @@ function classifyGatewayUpdateFailure(error: unknown): {
   if (/\bHTTP 404\b/u.test(message)) {
     return { code: 'gateway_update_release_unavailable', retryable: false }
   }
-  if (/(?:signature|signer|signed .* invalid|untrusted origin|invalid JSON|ID does not match|immutable|changed after|rollback is unsafe|state version|targets .* not|missing file|integrity verification)/iu.test(message)) {
+  if (/(?:signature|signer|signed .* invalid|untrusted origin|invalid JSON|ID does not match|channel .* (?:advanced|changed|equivocal)|immutable|changed after|rollback is unsafe|state version|targets .* not|missing file|integrity verification)/iu.test(message)) {
     return { code: 'gateway_update_invalid_release', retryable: false }
   }
   if (/(?:not staged|not prepared|Cannot .* while update is|already draining)/u.test(message)) {

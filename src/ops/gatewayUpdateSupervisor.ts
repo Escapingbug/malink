@@ -20,12 +20,14 @@ import {
   canonicalJson,
   canonicalJsonBytes,
   gatewayUpdateStatusSchema,
+  signedGatewayAgentUpdateChannelSchema,
   signedGatewayAgentUpdatePromptSchema,
   signedGatewayReleaseManifestSchema,
   type GatewayAgentUpdatePrompt,
   type GatewayReleaseManifest,
   type GatewayUpdateStatus,
   type PairingPublicKey,
+  type SignedGatewayAgentUpdateChannel,
   type SignedGatewayAgentUpdatePrompt,
   type SignedGatewayReleaseManifest,
 } from '@malink/protocol'
@@ -47,6 +49,7 @@ import { GatewayAdminClient, type GatewayAdminStatus } from '@/gateway/admin'
 interface GatewayUpdateSupervisorState {
   version: 1
   status: GatewayUpdateStatus
+  agentChannel?: SignedGatewayAgentUpdateChannel
   staged?: SignedGatewayReleaseManifest
   agentUpdate?: SignedGatewayAgentUpdatePrompt
   agentSeal?: GatewayAgentReleaseSeal
@@ -86,6 +89,7 @@ export interface GatewayAgentUpdateBeginResult {
 export interface GatewayUpdateSupervisorConfig {
   installRoot: string
   manifestBaseUrl?: string
+  agentChannelUrl?: string
   agentPromptBaseUrl?: string
   trustedSigner: PairingPublicKey
   launchAgentPath: string
@@ -100,6 +104,13 @@ export interface GatewayUpdateSupervisorConfig {
   manifestFetchTimeoutMs?: number
   fileFetchTimeoutMs?: number
 }
+
+const OFFICIAL_GATEWAY_UPDATE_CHANNEL_URL =
+  'https://escapingbug.github.io/malink/gateway-agent-updates/channels/stable.json'
+const LEGACY_GATEWAY_AGENT_PROMPT_BASE_URL =
+  'https://rd.anciety.my.id/gateway-agent-updates/releases/'
+const LEGACY_GATEWAY_UPDATE_CHANNEL_URL =
+  'https://rd.anciety.my.id/gateway-agent-updates/channels/stable.json'
 
 export interface GatewayUpdateSupervisorDependencies {
   fetch?: typeof fetch
@@ -128,8 +139,8 @@ export class GatewayUpdateSupervisor {
     this.releasesRoot = join(this.installRoot, 'releases')
     this.agentUpdatesRoot = join(this.installRoot, 'agent-updates')
     this.stateFile = new AtomicJsonFile(join(this.installRoot, 'supervisor-state.json'))
-    if (!config.manifestBaseUrl && !config.agentPromptBaseUrl) {
-      throw new Error('A Gateway update Prompt or legacy manifest base URL is required')
+    if (!config.manifestBaseUrl && !config.agentChannelUrl && !config.agentPromptBaseUrl) {
+      throw new Error('A Gateway update channel, Prompt, or legacy manifest URL is required')
     }
     if (config.manifestBaseUrl) {
       const manifestBase = new URL(config.manifestBaseUrl)
@@ -153,6 +164,18 @@ export class GatewayUpdateSupervisor {
         || promptBase.hash
       ) {
         throw new Error('Gateway Agent update Prompt base must be credential-free HTTPS')
+      }
+    }
+    if (config.agentChannelUrl) {
+      const channelUrl = new URL(config.agentChannelUrl)
+      if (
+        (channelUrl.protocol !== 'https:' && !isLoopbackHttp(channelUrl))
+        || channelUrl.username
+        || channelUrl.password
+        || channelUrl.search
+        || channelUrl.hash
+      ) {
+        throw new Error('Gateway Agent update channel must be credential-free HTTPS')
       }
     }
   }
@@ -229,7 +252,7 @@ export class GatewayUpdateSupervisor {
   }
 
   async stage(releaseId: string): Promise<GatewayUpdateStatus> {
-    return this.serializeRequest(() => this.config.agentPromptBaseUrl
+    return this.serializeRequest(() => (this.config.agentChannelUrl || this.config.agentPromptBaseUrl)
       ? this.prepareAgentUpdateOnce(releaseId)
       : this.stageOnce(releaseId))
   }
@@ -813,6 +836,16 @@ export class GatewayUpdateSupervisor {
   private async fetchAndVerifyAgentPrompt(
     releaseId: string,
   ): Promise<SignedGatewayAgentUpdatePrompt> {
+    const state = await this.readState()
+    const channel = await this.refreshAgentUpdateChannel(state.agentChannel)
+    if (channel) return this.fetchAgentPromptFromChannel(releaseId, channel)
+    if (
+      this.config.agentChannelUrl
+      || normalizedBaseUrl(this.config.agentPromptBaseUrl)
+        === LEGACY_GATEWAY_AGENT_PROMPT_BASE_URL
+    ) {
+      throw new Error('Gateway Agent update channel could not be verified')
+    }
     const configuredBase = this.config.agentPromptBaseUrl
     if (!configuredBase) throw new Error('Gateway Agent update Prompt delivery is not configured')
     const base = new URL(configuredBase.endsWith('/') ? configuredBase : `${configuredBase}/`)
@@ -847,6 +880,226 @@ export class GatewayUpdateSupervisor {
     }
     await this.verifyAgentPrompt(signed)
     return signed
+  }
+
+  private async refreshAgentUpdateChannel(
+    cached: SignedGatewayAgentUpdateChannel | undefined,
+  ): Promise<SignedGatewayAgentUpdateChannel | undefined> {
+    const urls = this.agentUpdateChannelUrls(cached)
+    if (urls.length === 0) return cached
+    let lastError: unknown
+    for (const url of urls) {
+      try {
+        const candidate = await this.fetchAndVerifyAgentChannel(url)
+        if (cached && candidate.channel.channelId !== cached.channel.channelId) {
+          throw new GatewayUpdateChannelConsistencyError(
+            'Gateway Agent update channel ID changed after it was pinned',
+          )
+        }
+        if (cached && candidate.channel.generation < cached.channel.generation) {
+          this.log(
+            `[gateway-update] ignored rolled-back channel generation `
+            + `${candidate.channel.generation} from ${url.href}`,
+          )
+          continue
+        }
+        if (cached && candidate.channel.generation === cached.channel.generation) {
+          if (canonicalJson(candidate.channel) !== canonicalJson(cached.channel)) {
+            throw new GatewayUpdateChannelConsistencyError(
+              'Gateway Agent update channel generation is equivocal',
+            )
+          }
+          return cached
+        }
+        await this.persistAgentUpdateChannel(candidate)
+        return candidate
+      } catch (error) {
+        if (error instanceof GatewayUpdateChannelConsistencyError) throw error
+        lastError = error
+        this.log(
+          `[gateway-update] update channel ${url.href} was unavailable: ${formatError(error)}`,
+        )
+      }
+    }
+    if (cached) return cached
+    if (
+      lastError
+      && (
+        this.config.agentChannelUrl
+        || normalizedBaseUrl(this.config.agentPromptBaseUrl)
+          === LEGACY_GATEWAY_AGENT_PROMPT_BASE_URL
+      )
+    ) throw lastError
+    return undefined
+  }
+
+  private async persistAgentUpdateChannel(
+    candidate: SignedGatewayAgentUpdateChannel,
+  ): Promise<void> {
+    await this.writeState(state => {
+      const current = state.agentChannel
+      if (current && current.channel.channelId !== candidate.channel.channelId) {
+        throw new GatewayUpdateChannelConsistencyError(
+          'Gateway Agent update channel ID changed after it was pinned',
+        )
+      }
+      if (current && current.channel.generation > candidate.channel.generation) {
+        throw new GatewayUpdateChannelConsistencyError(
+          'Gateway Agent update channel state advanced during refresh',
+        )
+      }
+      if (
+        current
+        && current.channel.generation === candidate.channel.generation
+        && canonicalJson(current.channel) !== canonicalJson(candidate.channel)
+      ) {
+        throw new GatewayUpdateChannelConsistencyError(
+          'Gateway Agent update channel generation is equivocal',
+        )
+      }
+      state.agentChannel = candidate
+    })
+    this.log(
+      `[gateway-update] pinned channel ${candidate.channel.channelId} generation `
+      + `${candidate.channel.generation}`,
+    )
+  }
+
+  private agentUpdateChannelUrls(
+    cached: SignedGatewayAgentUpdateChannel | undefined,
+  ): URL[] {
+    const values: string[] = []
+    if (cached) {
+      for (const mirror of cached.channel.mirrors) {
+        values.push(new URL(
+          `channels/${encodeURIComponent(cached.channel.channelId)}.json`,
+          mirror,
+        ).href)
+      }
+    }
+    if (this.config.agentChannelUrl) values.push(new URL(this.config.agentChannelUrl).href)
+    if (normalizedBaseUrl(this.config.agentPromptBaseUrl) === LEGACY_GATEWAY_AGENT_PROMPT_BASE_URL) {
+      values.push(OFFICIAL_GATEWAY_UPDATE_CHANNEL_URL, LEGACY_GATEWAY_UPDATE_CHANNEL_URL)
+    }
+    return [...new Set(values)].map(value => new URL(value))
+  }
+
+  private async fetchAndVerifyAgentChannel(
+    url: URL,
+  ): Promise<SignedGatewayAgentUpdateChannel> {
+    const text = await withFetchTimeout(
+      this.config.manifestFetchTimeoutMs ?? 30_000,
+      'Gateway Agent update channel download',
+      signal => this.retryTransientFetch('Agent update channel download', signal, async () => {
+        const response = await (this.dependencies.fetch ?? fetch)(url, {
+          signal,
+          headers: { 'accept-encoding': 'identity' },
+        })
+        if (response.url && new URL(response.url).origin !== url.origin) {
+          throw new Error('Gateway Agent update channel redirected to an untrusted origin')
+        }
+        if (!response.ok) {
+          throw fetchStatusError('Gateway Agent update channel', response.status)
+        }
+        return readBoundedText(response, 64 * 1024, 'Gateway Agent update channel')
+      }),
+    )
+    let input: unknown
+    try {
+      input = JSON.parse(text)
+    } catch (error) {
+      throw new Error('Gateway Agent update channel is invalid JSON', { cause: error })
+    }
+    const signed = signedGatewayAgentUpdateChannelSchema.parse(input)
+    await this.verifyAgentChannel(signed)
+    return signed
+  }
+
+  private async verifyAgentChannel(signed: SignedGatewayAgentUpdateChannel): Promise<void> {
+    const trustedKeyId = await publicKeyId(this.config.trustedSigner.publicKey)
+    if (
+      signed.signer.keyId !== trustedKeyId
+      || signed.signature.keyId !== trustedKeyId
+      || canonicalJson(signed.signer) !== canonicalJson(this.config.trustedSigner)
+    ) {
+      throw new Error('Gateway Agent update channel signer is not trusted')
+    }
+    const key = await webCrypto().subtle.importKey(
+      'jwk',
+      signed.signer.publicKey,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['verify'],
+    )
+    const verified = await webCrypto().subtle.verify(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      key,
+      toArrayBuffer(base64UrlDecode(signed.signature.value)),
+      toArrayBuffer(canonicalJsonBytes(signed.channel)),
+    )
+    if (!verified) throw new Error('Gateway Agent update channel signature is invalid')
+  }
+
+  private async fetchAgentPromptFromChannel(
+    releaseId: string,
+    signedChannel: SignedGatewayAgentUpdateChannel,
+  ): Promise<SignedGatewayAgentUpdatePrompt> {
+    const target = signedChannel.channel.release
+    if (target.releaseId !== releaseId) {
+      throw new Error(
+        `Gateway update channel ${signedChannel.channel.channelId} targets `
+        + `${target.releaseId}, not ${releaseId}`,
+      )
+    }
+    let lastError: unknown
+    for (const mirror of signedChannel.channel.mirrors) {
+      const base = new URL(mirror)
+      const url = new URL(`releases/${encodeURIComponent(releaseId)}.json`, base)
+      try {
+        const text = await withFetchTimeout(
+          this.config.manifestFetchTimeoutMs ?? 30_000,
+          'Gateway Agent update Prompt download',
+          signal => this.retryTransientFetch('Agent update Prompt download', signal, async () => {
+            const response = await (this.dependencies.fetch ?? fetch)(url, {
+              signal,
+              headers: { 'accept-encoding': 'identity' },
+            })
+            if (response.url && new URL(response.url).origin !== base.origin) {
+              throw new Error('Gateway Agent update Prompt redirected to an untrusted origin')
+            }
+            if (!response.ok) {
+              throw fetchStatusError('Gateway Agent update Prompt', response.status)
+            }
+            return readBoundedText(response, 128 * 1024, 'Gateway Agent update Prompt')
+          }),
+        )
+        let input: unknown
+        try {
+          input = JSON.parse(text)
+        } catch (error) {
+          throw new Error('Gateway Agent update Prompt is invalid JSON', { cause: error })
+        }
+        const signed = signedGatewayAgentUpdatePromptSchema.parse(input)
+        if (signed.update.releaseId !== releaseId) {
+          throw new Error('Gateway Agent update Prompt ID does not match the request')
+        }
+        if (signed.update.buildId !== target.buildId) {
+          throw new Error('Gateway Agent update Prompt build ID does not match the channel')
+        }
+        await this.verifyAgentPrompt(signed)
+        const digest = createHash('sha256').update(canonicalJsonBytes(signed)).digest('hex')
+        if (digest !== target.sha256) {
+          throw new Error('Gateway Agent update Prompt integrity does not match the channel')
+        }
+        return signed
+      } catch (error) {
+        lastError = error
+        this.log(
+          `[gateway-update] release ${releaseId} mirror ${base.href} failed: ${formatError(error)}`,
+        )
+      }
+    }
+    throw lastError ?? new Error('Gateway Agent update channel has no usable mirror')
   }
 
   private async verifyAgentPrompt(signed: SignedGatewayAgentUpdatePrompt): Promise<void> {
@@ -1645,6 +1898,8 @@ async function withFetchTimeout<T>(
 
 class RetryableGatewayUpdateFetchError extends Error {}
 
+class GatewayUpdateChannelConsistencyError extends Error {}
+
 class ManuallyRetryableGatewayUpdateFetchError extends RetryableGatewayUpdateFetchError {
   readonly commandCode = 'gateway_update_transient_failure'
   readonly retryable = true
@@ -1699,6 +1954,7 @@ function defaultState(): GatewayUpdateSupervisorState {
 function validateState(state: GatewayUpdateSupervisorState): void {
   if (state.version !== 1) throw new Error('Unsupported Gateway update supervisor state')
   gatewayUpdateStatusSchema.parse(state.status)
+  if (state.agentChannel) signedGatewayAgentUpdateChannelSchema.parse(state.agentChannel)
   if (state.staged) signedGatewayReleaseManifestSchema.parse(state.staged)
   if (state.agentUpdate) signedGatewayAgentUpdatePromptSchema.parse(state.agentUpdate)
   if (state.agentSeal) parseAgentReleaseSeal(state.agentSeal)
@@ -1761,6 +2017,12 @@ function requireReleaseId(value: string): void {
 
 function isLoopbackHttp(url: URL): boolean {
   return url.protocol === 'http:' && (url.hostname === '127.0.0.1' || url.hostname === 'localhost')
+}
+
+function normalizedBaseUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  const url = new URL(value.endsWith('/') ? value : `${value}/`)
+  return url.href
 }
 
 async function readBoundedText(

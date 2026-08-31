@@ -12,6 +12,7 @@ const signer = pairingPublicKeySchema.parse(JSON.parse(await readFile(
 const supervisor = new GatewayUpdateSupervisor({
   installRoot,
   manifestBaseUrl: optionalEnvironment('MALINK_GATEWAY_RELEASE_MANIFEST_BASE_URL'),
+  agentChannelUrl: optionalEnvironment('MALINK_GATEWAY_AGENT_UPDATE_CHANNEL_URL'),
   agentPromptBaseUrl: optionalEnvironment('MALINK_GATEWAY_AGENT_UPDATE_PROMPT_BASE_URL'),
   trustedSigner: signer,
   launchAgentPath: requiredEnvironment('MALINK_GATEWAY_LAUNCH_AGENT'),

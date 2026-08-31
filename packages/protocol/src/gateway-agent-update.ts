@@ -6,6 +6,7 @@ import { signatureSchema } from './schema.js'
 const opaqueId = z.string().min(1).max(256)
 const timestamp = z.number().int().nonnegative()
 const releaseId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u)
+const sha256 = z.string().regex(/^[0-9a-f]{64}$/u)
 
 export const gatewayAgentUpdatePromptSchema = z
   .object({
@@ -53,6 +54,52 @@ export type SignedGatewayAgentUpdatePrompt = z.infer<
   typeof signedGatewayAgentUpdatePromptSchema
 >
 
+export const gatewayAgentUpdateChannelSchema = z
+  .object({
+    kind: z.literal('malink.gateway.agent-update-channel'),
+    version: z.literal(1),
+    channelId: releaseId,
+    generation: z.number().int().nonnegative(),
+    publishedAt: timestamp,
+    release: z
+      .object({
+        releaseId,
+        buildId: opaqueId,
+        sha256,
+      })
+      .strict(),
+    mirrors: z
+      .array(z.url().max(2_048).refine(isCredentialFreeHttpsBaseUrl, {
+        message: 'Gateway update mirrors require a credential-free HTTPS base URL',
+      }))
+      .min(1)
+      .max(8),
+  })
+  .strict()
+  .superRefine((channel, context) => {
+    if (new Set(channel.mirrors).size !== channel.mirrors.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['mirrors'],
+        message: 'Gateway update mirror URLs must be unique',
+      })
+    }
+  })
+
+export type GatewayAgentUpdateChannel = z.infer<typeof gatewayAgentUpdateChannelSchema>
+
+export const signedGatewayAgentUpdateChannelSchema = z
+  .object({
+    channel: gatewayAgentUpdateChannelSchema,
+    signer: pairingPublicKeySchema,
+    signature: signatureSchema,
+  })
+  .strict()
+
+export type SignedGatewayAgentUpdateChannel = z.infer<
+  typeof signedGatewayAgentUpdateChannelSchema
+>
+
 function isCredentialFreeHttpsUrl(value: string): boolean {
   try {
     const url = new URL(value)
@@ -64,4 +111,9 @@ function isCredentialFreeHttpsUrl(value: string): boolean {
   } catch {
     return false
   }
+}
+
+function isCredentialFreeHttpsBaseUrl(value: string): boolean {
+  if (!isCredentialFreeHttpsUrl(value)) return false
+  return new URL(value).pathname.endsWith('/')
 }

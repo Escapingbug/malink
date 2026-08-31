@@ -484,8 +484,13 @@ activity from that node. The explicit `gateway.update.status` command is the
 legacy/manual fallback, not the routine observation path; other
 causation-bearing status events remain update-operation results. Matrix
 connectivity alone is never presented as proof that the Gateway process is
-online. The public website stores immutable files but does not become execution
-or release-signing authority.
+online. When an authenticated update request arrives, the supervisor refreshes
+a monotonically versioned channel document, verifies it against the locally
+pinned release signer, and persists the highest accepted generation. The
+signed channel binds the current release ID, build ID, Prompt digest, and
+ordered mirror list, so a Gateway can move between GitHub Pages and another
+static host without accepting a client-supplied URL. The public website stores
+immutable files but does not become execution or release-signing authority.
 
 Activation requires the expected build ID, a ready and recent Matrix sync, and
 a readable durable inbox throughout probation. Failure restores the previous

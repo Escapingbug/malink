@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -6,6 +7,7 @@ import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   canonicalJsonBytes,
+  signedGatewayAgentUpdateChannelSchema,
   signedGatewayAgentUpdatePromptSchema,
 } from '@malink/protocol'
 import {
@@ -49,6 +51,28 @@ describe('Gateway Agent update publisher', () => {
       releaseId: '2026.08.28-020315Z-12b086d',
       versionName: '2026.08.28-020315Z-12b086d',
       buildId: 'gateway-2026.08.28-020315Z-12b086d',
+      channelId: 'stable',
+      channelGeneration: Date.UTC(2026, 7, 28, 2, 3, 15),
+      mirrorBaseUrls: ['https://escapingbug.github.io/malink/gateway-agent-updates/'],
+    })
+  })
+
+  it('accepts repeated signed mirror URLs for an intentional channel', () => {
+    expect(parseGatewayAgentUpdateArguments([
+      '--commit', '12b086dc33867a4a4205d4d1938b694d7634a020',
+      '--prompt-file', '/tmp/PROMPT.md',
+      '--private-key', '/tmp/release-key.json',
+      '--channel-id', 'candidate',
+      '--channel-generation', '7',
+      '--mirror-base-url', 'https://one.example.test/gateway-agent-updates/',
+      '--mirror-base-url', 'https://two.example.test/gateway-agent-updates/',
+    ])).toMatchObject({
+      channelId: 'candidate',
+      channelGeneration: 7,
+      mirrorBaseUrls: [
+        'https://one.example.test/gateway-agent-updates/',
+        'https://two.example.test/gateway-agent-updates/',
+      ],
     })
   })
 
@@ -78,6 +102,9 @@ describe('Gateway Agent update publisher', () => {
     const signed = signedGatewayAgentUpdatePromptSchema.parse(JSON.parse(
       await readFile(result.releasePath, 'utf8'),
     ))
+    const signedChannel = signedGatewayAgentUpdateChannelSchema.parse(JSON.parse(
+      await readFile(result.channelPath, 'utf8'),
+    ))
     expect(JSON.parse(await readFile(result.latestPath, 'utf8'))).toEqual(signed)
     expect(signed.update).toMatchObject({
       releaseId: 'release-2',
@@ -101,6 +128,36 @@ describe('Gateway Agent update publisher', () => {
       toArrayBuffer(base64UrlDecode(signed.signature.value)),
       toArrayBuffer(canonicalJsonBytes(signed.update)),
     )).resolves.toBe(true)
+    expect(signedChannel.channel).toMatchObject({
+      channelId: 'stable',
+      generation: 42,
+      release: {
+        releaseId: 'release-2',
+        buildId: 'build-2',
+        sha256: createHash('sha256').update(canonicalJsonBytes(signed)).digest('hex'),
+      },
+      mirrors: ['https://escapingbug.github.io/malink/gateway-agent-updates/'],
+    })
+    await expect(webCrypto().subtle.verify(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      publicKey,
+      toArrayBuffer(base64UrlDecode(signedChannel.signature.value)),
+      toArrayBuffer(canonicalJsonBytes(signedChannel.channel)),
+    )).resolves.toBe(true)
+
+    await expect(publishGatewayAgentUpdate({
+      output,
+      releaseId: 'release-3',
+      versionName: '3.0.0',
+      buildId: 'build-3',
+      repositoryUrl: 'https://github.com/Escapingbug/malink.git',
+      commit,
+      promptFile: promptPath,
+      privateKeyFile: keyPath,
+      publishedAt: 43,
+      channelGeneration: 41,
+    })).rejects.toThrow(/roll back Gateway update channel/u)
+    expect(JSON.parse(await readFile(result.channelPath, 'utf8'))).toEqual(signedChannel)
 
     await writeFile(promptPath, 'A different Prompt.\n')
     await expect(publishGatewayAgentUpdate({

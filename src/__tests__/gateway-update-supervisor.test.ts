@@ -5,9 +5,11 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   canonicalJsonBytes,
+  type GatewayAgentUpdateChannel,
   type GatewayAgentUpdatePrompt,
   type GatewayReleaseManifest,
   type PairingPublicKey,
+  type SignedGatewayAgentUpdateChannel,
   type SignedGatewayAgentUpdatePrompt,
   type SignedGatewayReleaseManifest,
 } from '@malink/protocol'
@@ -312,6 +314,142 @@ describe('GatewayUpdateSupervisor', () => {
       await server.stop()
       await supervisor.stop()
     }
+  })
+
+  it('pins a signed update channel and fails over between its release mirrors', async () => {
+    const fixture = await agentUpdateFixture()
+    const signedChannel = await signAgentUpdateChannel(fixture, {
+      generation: 7,
+      mirrors: [
+        'https://one.example.test/gateway-agent-updates/',
+        'https://two.example.test/gateway-agent-updates/',
+      ],
+    })
+    const requestedUrls: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      requestedUrls.push(url)
+      if (url === 'https://bootstrap.example.test/channels/stable.json') {
+        return new Response(JSON.stringify(signedChannel), { status: 200 })
+      }
+      if (url.startsWith('https://one.example.test/')) {
+        return new Response('temporarily unavailable', { status: 503 })
+      }
+      return fixture.fetch(input, init)
+    }) as unknown as typeof fetch
+    const supervisor = new GatewayUpdateSupervisor({
+      ...fixture.config,
+      agentChannelUrl: 'https://bootstrap.example.test/channels/stable.json',
+    }, {
+      fetch: fetchMock,
+      sleep: async () => undefined,
+    })
+    await supervisor.initialize()
+
+    await expect(supervisor.stage('release-2')).resolves.toMatchObject({
+      phase: 'agent_required',
+      releaseId: 'release-2',
+      targetBuildId: 'build-2',
+    })
+    expect(requestedUrls[0]).toBe('https://bootstrap.example.test/channels/stable.json')
+    expect(requestedUrls).toContain(
+      'https://two.example.test/gateway-agent-updates/releases/release-2.json',
+    )
+    const state = JSON.parse(await readFile(
+      join(fixture.installRoot, 'supervisor-state.json'),
+      'utf8',
+    )) as { agentChannel?: SignedGatewayAgentUpdateChannel }
+    expect(state.agentChannel?.channel).toEqual(signedChannel.channel)
+  })
+
+  it('rejects a channel rollback after persisting a newer signed generation', async () => {
+    const fixture = await agentUpdateFixture()
+    const newer = await signAgentUpdateChannel(fixture, { generation: 8 })
+    const older = await signAgentUpdateChannel(fixture, {
+      generation: 7,
+      releaseId: 'release-1',
+      buildId: 'build-1',
+    })
+    let advertised = newer
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith('/channels/stable.json')) {
+        return new Response(JSON.stringify(advertised), { status: 200 })
+      }
+      return fixture.fetch(input, init)
+    }) as unknown as typeof fetch
+    const supervisor = new GatewayUpdateSupervisor({
+      ...fixture.config,
+      agentChannelUrl: 'https://bootstrap.example.test/channels/stable.json',
+    }, { fetch: fetchMock })
+    await supervisor.initialize()
+    await supervisor.stage('release-2')
+
+    advertised = older
+    await expect(supervisor.stage('release-1')).rejects.toThrow(
+      /targets release-2, not release-1/u,
+    )
+    const state = JSON.parse(await readFile(
+      join(fixture.installRoot, 'supervisor-state.json'),
+      'utf8',
+    )) as { agentChannel?: SignedGatewayAgentUpdateChannel }
+    expect(state.agentChannel?.channel.generation).toBe(8)
+  })
+
+  it('migrates a legacy rd Prompt bootstrap to the signed GitHub Pages channel', async () => {
+    const fixture = await agentUpdateFixture()
+    const signedChannel = await signAgentUpdateChannel(fixture, {
+      generation: 9,
+      mirrors: ['https://escapingbug.github.io/malink/gateway-agent-updates/'],
+    })
+    const requestedUrls: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      requestedUrls.push(url)
+      if (url === 'https://escapingbug.github.io/malink/gateway-agent-updates/channels/stable.json') {
+        return new Response(JSON.stringify(signedChannel), { status: 200 })
+      }
+      if (url === 'https://rd.anciety.my.id/gateway-agent-updates/channels/stable.json') {
+        return new Response('not mirrored yet', { status: 404 })
+      }
+      return fixture.fetch(input, init)
+    }) as unknown as typeof fetch
+    const supervisor = new GatewayUpdateSupervisor({
+      ...fixture.config,
+      agentPromptBaseUrl: 'https://rd.anciety.my.id/gateway-agent-updates/releases/',
+    }, { fetch: fetchMock })
+    await supervisor.initialize()
+
+    await expect(supervisor.stage('release-2')).resolves.toMatchObject({
+      phase: 'agent_required',
+    })
+    expect(requestedUrls).toContain(
+      'https://escapingbug.github.io/malink/gateway-agent-updates/releases/release-2.json',
+    )
+    expect(requestedUrls).not.toContain(
+      'https://rd.anciety.my.id/gateway-agent-updates/releases/release-2.json',
+    )
+  })
+
+  it('does not replay the old rd Prompt path when migration channel verification fails', async () => {
+    const fixture = await agentUpdateFixture()
+    const requestedUrls: string[] = []
+    const supervisor = new GatewayUpdateSupervisor({
+      ...fixture.config,
+      agentPromptBaseUrl: 'https://rd.anciety.my.id/gateway-agent-updates/releases/',
+    }, {
+      fetch: async input => {
+        requestedUrls.push(String(input))
+        return new Response('missing', { status: 404 })
+      },
+    })
+    await supervisor.initialize()
+
+    await expect(supervisor.stage('release-2')).rejects.toThrow(
+      /update channel returned HTTP 404/u,
+    )
+    expect(requestedUrls).not.toContain(
+      'https://rd.anciety.my.id/gateway-agent-updates/releases/release-2.json',
+    )
   })
 
   it('statically checks Agent candidate entrypoints without executing them', async () => {
@@ -1112,6 +1250,8 @@ async function agentUpdateFixture(options: {
   return {
     installRoot,
     fetch: fetchMock,
+    keys,
+    signed,
     config: {
       installRoot,
       agentPromptBaseUrl: 'https://updates.example.test/agent-prompts/',
@@ -1121,6 +1261,46 @@ async function agentUpdateFixture(options: {
       gatewayAdminSocketPath: join(installRoot, 'gateway.sock'),
       updateSocketPath: join(installRoot, 'supervisor.sock'),
       currentBuildId: 'build-1',
+    },
+  }
+}
+
+async function signAgentUpdateChannel(
+  fixture: Awaited<ReturnType<typeof agentUpdateFixture>>,
+  options: {
+    generation: number
+    releaseId?: string
+    buildId?: string
+    mirrors?: string[]
+  },
+): Promise<SignedGatewayAgentUpdateChannel> {
+  const channel: GatewayAgentUpdateChannel = {
+    kind: 'malink.gateway.agent-update-channel',
+    version: 1,
+    channelId: 'stable',
+    generation: options.generation,
+    publishedAt: 42,
+    release: {
+      releaseId: options.releaseId ?? fixture.signed.update.releaseId,
+      buildId: options.buildId ?? fixture.signed.update.buildId,
+      sha256: createHash('sha256')
+        .update(canonicalJsonBytes(fixture.signed))
+        .digest('hex'),
+    },
+    mirrors: options.mirrors ?? ['https://updates.example.test/gateway-agent-updates/'],
+  }
+  const signature = await webCrypto().subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    fixture.keys.privateKey,
+    toArrayBuffer(canonicalJsonBytes(channel)),
+  )
+  return {
+    channel,
+    signer: fixture.signed.signer,
+    signature: {
+      algorithm: 'ES256',
+      keyId: fixture.signed.signer.keyId,
+      value: base64UrlEncode(new Uint8Array(signature)),
     },
   }
 }

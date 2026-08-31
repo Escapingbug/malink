@@ -34,12 +34,16 @@ import {
 } from '../src/ops/macosGatewayHost.js'
 import { assertLocalDirectoryAccess } from '../src/ops/localFilesystemAccess.js'
 
+const DEFAULT_GATEWAY_UPDATE_CHANNEL_URL =
+  'https://escapingbug.github.io/malink/gateway-agent-updates/channels/stable.json'
+
 interface InstallOptions {
   installRoot: string
   gatewayLaunchAgent: string
   gatewayServiceLabel: string
   gatewayAdminSocket: string
   manifestBaseUrl?: string
+  agentChannelUrl?: string
   agentPromptBaseUrl?: string
   signerFile: string
   supervisorLaunchAgent: string
@@ -68,6 +72,10 @@ export async function installGatewayUpdateSupervisor(
   options: InstallOptions,
 ): Promise<GatewayUpdateSupervisorInstallResult> {
   if (process.platform !== 'darwin') throw new Error('Gateway update supervisor installation requires macOS')
+  const agentChannelUrl = options.agentChannelUrl
+    ?? (!options.manifestBaseUrl && !options.agentPromptBaseUrl
+      ? DEFAULT_GATEWAY_UPDATE_CHANNEL_URL
+      : undefined)
   const installRoot = resolve(options.installRoot)
   const currentRoot = join(installRoot, 'current')
   for (const path of [
@@ -75,7 +83,7 @@ export async function installGatewayUpdateSupervisor(
     join(currentRoot, 'ops', 'matrix-local-gateway.js'),
     join(currentRoot, 'mcp', 'stdio.js'),
     join(currentRoot, 'ops', 'gatewayUpdateSupervisorMain.js'),
-    ...(options.agentPromptBaseUrl
+    ...(agentChannelUrl || options.agentPromptBaseUrl
       ? [
           join(currentRoot, 'ops', 'gatewayAgentUpdateCli.js'),
           join(currentRoot, 'ops', 'gatewayJournalRepairCli.js'),
@@ -86,8 +94,8 @@ export async function installGatewayUpdateSupervisor(
     const metadata = await stat(path)
     if (!metadata.isFile()) throw new Error(`Required Gateway installation file is missing: ${path}`)
   }
-  if (!options.manifestBaseUrl && !options.agentPromptBaseUrl) {
-    throw new Error('A Gateway update Prompt or legacy manifest base URL is required')
+  if (!options.manifestBaseUrl && !agentChannelUrl && !options.agentPromptBaseUrl) {
+    throw new Error('A Gateway update channel, Prompt, or legacy manifest URL is required')
   }
   if (options.manifestBaseUrl) {
     const manifestBase = new URL(options.manifestBaseUrl)
@@ -115,6 +123,20 @@ export async function installGatewayUpdateSupervisor(
       || promptBase.hash
     ) {
       throw new Error('Gateway Agent update Prompt base must be credential-free HTTPS')
+    }
+  }
+  if (agentChannelUrl) {
+    const channelUrl = new URL(agentChannelUrl)
+    const channelLoopback = channelUrl.protocol === 'http:'
+      && (channelUrl.hostname === '127.0.0.1' || channelUrl.hostname === 'localhost')
+    if (
+      (channelUrl.protocol !== 'https:' && !channelLoopback)
+      || channelUrl.username
+      || channelUrl.password
+      || channelUrl.search
+      || channelUrl.hash
+    ) {
+      throw new Error('Gateway Agent update channel must be credential-free HTTPS')
     }
   }
   const signer = pairingPublicKeySchema.parse(JSON.parse(await readFile(
@@ -148,6 +170,7 @@ export async function installGatewayUpdateSupervisor(
   await writePinnedSigner(pinnedSignerPath, `${JSON.stringify(signer)}\n`)
   const supervisorPlist = supervisorLaunchAgentPlist({
     ...options,
+    ...(agentChannelUrl ? { agentChannelUrl } : {}),
     currentBuildId,
     installRoot,
     signerFile: pinnedSignerPath,
@@ -221,6 +244,9 @@ function supervisorLaunchAgentPlist(options: ResolvedInstallOptions): string {
       : {}),
     ...(options.agentPromptBaseUrl
       ? { MALINK_GATEWAY_AGENT_UPDATE_PROMPT_BASE_URL: options.agentPromptBaseUrl }
+      : {}),
+    ...(options.agentChannelUrl
+      ? { MALINK_GATEWAY_AGENT_UPDATE_CHANNEL_URL: options.agentChannelUrl }
       : {}),
     MALINK_GATEWAY_LAUNCH_AGENT: options.gatewayLaunchAgent,
     MALINK_GATEWAY_SERVICE_LABEL: options.gatewayServiceLabel,
@@ -491,6 +517,14 @@ function parseArguments(argv: readonly string[]): InstallOptions {
     ...(values.get('agent-prompt-base-url')?.trim()
       ? { agentPromptBaseUrl: values.get('agent-prompt-base-url')!.trim() }
       : {}),
+    ...(!values.get('manifest-base-url')?.trim() && !values.get('agent-prompt-base-url')?.trim()
+      ? {
+          agentChannelUrl: values.get('agent-channel-url')?.trim()
+            || DEFAULT_GATEWAY_UPDATE_CHANNEL_URL,
+        }
+      : values.get('agent-channel-url')?.trim()
+        ? { agentChannelUrl: values.get('agent-channel-url')!.trim() }
+        : {}),
     signerFile: resolve(required('signer-file')),
     supervisorLaunchAgent: resolve(
       values.get('supervisor-launch-agent')

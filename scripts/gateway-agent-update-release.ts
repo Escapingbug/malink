@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import {
   link,
@@ -12,9 +12,12 @@ import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import {
+  canonicalJson,
   canonicalJsonBytes,
+  gatewayAgentUpdateChannelSchema,
   gatewayAgentUpdatePromptSchema,
   pairingPublicKeySchema,
+  signedGatewayAgentUpdateChannelSchema,
   signedGatewayAgentUpdatePromptSchema,
 } from '@malink/protocol'
 import {
@@ -27,6 +30,8 @@ import {
 import { GATEWAY_STATE_CATALOG } from '../src/gateway/matrix/stateUpgradeCatalog.js'
 
 const DEFAULT_REPOSITORY_URL = 'https://github.com/Escapingbug/malink.git'
+export const DEFAULT_GATEWAY_UPDATE_MIRROR_URL =
+  'https://escapingbug.github.io/malink/gateway-agent-updates/'
 const execFileAsync = promisify(execFile)
 
 export interface GatewayAgentUpdateReleaseOptions {
@@ -39,6 +44,9 @@ export interface GatewayAgentUpdateReleaseOptions {
   promptFile: string
   privateKeyFile: string
   publishedAt: number
+  channelId?: string
+  channelGeneration?: number
+  mirrorBaseUrls?: readonly string[]
 }
 
 export function defaultGatewayReleaseVersion(commit: string, publishedAt: number): string {
@@ -59,7 +67,12 @@ export function defaultGatewayReleaseVersion(commit: string, publishedAt: number
 
 export async function publishGatewayAgentUpdate(
   options: GatewayAgentUpdateReleaseOptions,
-): Promise<{ releasePath: string; latestPath: string; signerPath: string }> {
+): Promise<{
+  releasePath: string
+  latestPath: string
+  signerPath: string
+  channelPath: string
+}> {
   await assertLocalGitCommit(options.commit)
   const serialized = JSON.parse(
     await readFile(resolve(options.privateKeyFile), 'utf8'),
@@ -105,14 +118,43 @@ export async function publishGatewayAgentUpdate(
       value: base64UrlEncode(new Uint8Array(rawSignature)),
     },
   })
+  const channel = gatewayAgentUpdateChannelSchema.parse({
+    kind: 'malink.gateway.agent-update-channel',
+    version: 1,
+    channelId: options.channelId ?? 'stable',
+    generation: options.channelGeneration ?? options.publishedAt,
+    publishedAt: options.publishedAt,
+    release: {
+      releaseId: signed.update.releaseId,
+      buildId: signed.update.buildId,
+      sha256: createHash('sha256').update(canonicalJsonBytes(signed)).digest('hex'),
+    },
+    mirrors: options.mirrorBaseUrls ?? [DEFAULT_GATEWAY_UPDATE_MIRROR_URL],
+  })
+  const rawChannelSignature = await webCrypto().subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    keys.privateKey,
+    toArrayBuffer(canonicalJsonBytes(channel)),
+  )
+  const signedChannel = signedGatewayAgentUpdateChannelSchema.parse({
+    channel,
+    signer,
+    signature: {
+      algorithm: 'ES256',
+      keyId: keys.keyId,
+      value: base64UrlEncode(new Uint8Array(rawChannelSignature)),
+    },
+  })
   const output = resolve(options.output)
   const releasePath = join(output, 'releases', `${options.releaseId}.json`)
   const latestPath = join(output, 'latest.json')
   const signerPath = join(output, 'release-signer.json')
+  const channelPath = join(output, 'channels', `${channel.channelId}.json`)
   await writeImmutableJson(releasePath, signed)
   await writeImmutableJson(signerPath, signer)
+  await writeChannelJson(channelPath, signedChannel)
   await writeAtomicJson(latestPath, signed)
-  return { releasePath, latestPath, signerPath }
+  return { releasePath, latestPath, signerPath, channelPath }
 }
 
 export async function assertLocalGitCommit(commit: string, cwd = process.cwd()): Promise<void> {
@@ -166,16 +208,44 @@ async function writeAtomicJson(path: string, value: unknown): Promise<void> {
   await rename(temporary, path)
 }
 
+async function writeChannelJson(
+  path: string,
+  value: ReturnType<typeof signedGatewayAgentUpdateChannelSchema.parse>,
+): Promise<void> {
+  try {
+    const existing = signedGatewayAgentUpdateChannelSchema.parse(JSON.parse(
+      await readFile(path, 'utf8'),
+    ))
+    if (existing.channel.generation > value.channel.generation) {
+      throw new Error(`Refusing to roll back Gateway update channel: ${path}`)
+    }
+    if (existing.channel.generation === value.channel.generation) {
+      if (canonicalJson(existing.channel) !== canonicalJson(value.channel)) {
+        throw new Error(`Refusing equivocal Gateway update channel generation: ${path}`)
+      }
+      return
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  await writeAtomicJson(path, value)
+}
+
 export function parseGatewayAgentUpdateArguments(
   argv: readonly string[],
 ): GatewayAgentUpdateReleaseOptions {
   const values = new Map<string, string>()
+  const mirrorBaseUrls: string[] = []
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!
     if (!argument.startsWith('--')) throw new Error(`Unexpected argument: ${argument}`)
     const value = argv[index + 1]
     if (!value || value.startsWith('--')) throw new Error(`Missing value for ${argument}`)
-    values.set(argument.slice(2), value)
+    if (argument === '--mirror-base-url') {
+      mirrorBaseUrls.push(value)
+    } else {
+      values.set(argument.slice(2), value)
+    }
     index += 1
   }
   const required = (name: string): string => {
@@ -188,6 +258,12 @@ export function parseGatewayAgentUpdateArguments(
     : Date.now()
   if (!Number.isSafeInteger(publishedAt) || publishedAt < 0) {
     throw new Error('--published-at must be a non-negative integer')
+  }
+  const channelGeneration = values.has('channel-generation')
+    ? Number(required('channel-generation'))
+    : publishedAt
+  if (!Number.isSafeInteger(channelGeneration) || channelGeneration < 0) {
+    throw new Error('--channel-generation must be a non-negative integer')
   }
   const commit = required('commit')
   const defaultVersion = defaultGatewayReleaseVersion(commit, publishedAt)
@@ -204,6 +280,11 @@ export function parseGatewayAgentUpdateArguments(
     promptFile: required('prompt-file'),
     privateKeyFile: required('private-key'),
     publishedAt,
+    channelId: values.get('channel-id')?.trim() || 'stable',
+    channelGeneration,
+    mirrorBaseUrls: mirrorBaseUrls.length > 0
+      ? mirrorBaseUrls
+      : [DEFAULT_GATEWAY_UPDATE_MIRROR_URL],
   }
 }
 

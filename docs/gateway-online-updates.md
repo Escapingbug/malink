@@ -17,10 +17,10 @@ https://github.com/Escapingbug/malink.git
 
 The components deliberately have different authority:
 
-- The public site owns discovery. `latest.json` tells clients that a version is
-  available; `releases/<release-id>.json` is the immutable signed Prompt.
-- PWA and Android WebView clients discover the same `latest.json`, compare its
-  build ID with every node in the signed Gateway Directory, and send normal
+- The public site owns availability. `channels/stable.json` is a signed mutable
+  pointer; `releases/<release-id>.json` is the immutable signed Prompt.
+- PWA and Android WebView clients discover the same channel, compare its build
+  ID with every node in the signed Gateway Directory, and send normal
   authenticated MLP/3 update commands through a project owned by that node.
 - The Gateway owns the maintenance Agent session. It supplies only the exact
   signed repository, commit, Prompt, isolated workspace, and supervisor submit
@@ -28,9 +28,10 @@ The components deliberately have different authority:
   visible in the ordinary session model.
 - The maintenance Agent owns Git checkout, dependency/runtime preparation,
   build, test, and candidate assembly. It never owns activation.
-- The launchd supervisor owns the pinned ES256 public key, Prompt verification,
-  state-compatibility check, candidate copy and local SHA-256 seal, atomic
-  switch, deep Matrix health checks, probation, and rollback.
+- The launchd supervisor owns the pinned ES256 public key, monotonic channel and
+  Prompt verification, mirror failover, state-compatibility check, candidate
+  copy and local SHA-256 seal, atomic switch, deep Matrix health checks,
+  probation, and rollback.
 
 The release signing private key stays off Gateways. A Matrix server or web site
 cannot make a Gateway execute an unsigned Prompt. An Agent cannot activate an
@@ -39,15 +40,17 @@ the staged release.
 
 ## Network behavior
 
-For each update a Gateway downloads only one JSON Prompt (bounded to 128 KiB)
-plus the Git objects and genuinely changed dependencies needed by the exact
-commit. The active Node runtime and unchanged production files are copied
-locally with copy-on-write when supported. Node is downloaded only when the
-target source requires a newer runtime; the Agent verifies the official
-runtime checksum and stores the executable inside the release.
+For each update a Gateway downloads one small channel document (bounded to
+64 KiB), one JSON Prompt (bounded to 128 KiB), plus the Git objects and
+genuinely changed dependencies needed by the exact commit. The active Node
+runtime and unchanged production files are copied locally with copy-on-write
+when supported. Node is downloaded only when the target source requires a newer
+runtime; the Agent verifies the official runtime checksum and stores the
+executable inside the release.
 
-The old signed-manifest/artifact flow remains as a compatibility path when no
-Agent Prompt base URL is configured. It is not the primary release channel.
+The old signed-manifest/artifact flow remains as a compatibility path when
+neither a signed channel nor an Agent Prompt base URL is configured. It is not
+the primary release channel.
 
 ## Availability contract
 
@@ -134,15 +137,22 @@ time and target commit, for example
 and directly traceable to Git. `--release-id`, `--version-name`, and
 `--build-id` remain available only for an intentional compatibility override.
 
-The publisher refuses to replace an immutable release file. Upload the version
-file first and atomically replace `latest.json` last. Server routing and the
-complete order are in `deploy/gateway-agent-update/README.md`.
+The publisher refuses to replace an immutable release file. It also emits a
+signed `channels/stable.json` document that binds a monotonically increasing
+generation to the release ID, build ID, canonical Prompt SHA-256, and ordered
+mirror list. Use repeatable `--mirror-base-url` arguments when more than the
+default GitHub Pages mirror should be trusted. Upload the immutable version file
+to every listed mirror first, verify each public URL, and replace the channel
+document last. `latest.json` remains a transition pointer for older clients.
+Server routing and the complete order are in
+`deploy/gateway-agent-update/README.md`.
 
-The PWA checks `latest.json` on load, every 15 minutes, and whenever it becomes
-visible. A newly published version therefore reaches both browser and Android
-clients without rebuilding either client. Each client records one attempt per
-Gateway and version; the supervisor independently deduplicates concurrent
-requests from multiple clients.
+The PWA checks `channels/stable.json` on load, every 15 minutes, and whenever it
+becomes visible, with a 404-only fallback to `latest.json` during migration. A
+newly published version therefore reaches both browser and Android clients
+without rebuilding either client. Each client records one attempt per Gateway
+and version; the supervisor independently deduplicates concurrent requests from
+multiple clients.
 
 ## One-time local installation
 
@@ -156,13 +166,19 @@ pnpm install:gateway-update-supervisor -- \
   --gateway-service-label io.malink.gateway \
   --gateway-admin-socket "$HOME/.malink/gateway/admin.sock" \
   --current-build-id gateway-initial-arm64 \
-  --agent-prompt-base-url https://rd.anciety.my.id/gateway-agent-updates/releases/ \
+  --agent-channel-url https://escapingbug.github.io/malink/gateway-agent-updates/channels/stable.json \
   --signer-file ./release-signer.json
 ```
 
 Installation pins the public signer, starts the independent supervisor first,
-and then reloads the Gateway with its owner-only socket. If the active release
-contains a valid signed `release-prompt.json` or legacy
+and then reloads the Gateway with its owner-only socket. The channel argument
+may be omitted for a new installation because GitHub Pages is the default. Its
+URL is only a bootstrap location: the supervisor accepts the channel only under
+the pinned signer, persists the highest verified generation, and downloads the
+bound release from its signed mirror list. Matrix commands carry only the
+release ID and cannot replace any URL.
+
+If the active release contains a valid signed `release-prompt.json` or legacy
 `release-manifest.json`, the installer verifies it and derives the build ID;
 otherwise the first installation needs `--current-build-id` so rollback can
 prove the baseline returned. Signer rotation remains an explicit offline
@@ -330,10 +346,12 @@ timestamp, and an online Gateway periodically republishes its actual build and
 routes so stale inventory converges without a restart.
 
 The `Gateway software` row remains visible whenever App & updates is available.
-Gateway release discovery resolves `gateway-agent-updates/latest.json` below the
-compiled static-service base path. Root-hosted services therefore use
-`/gateway-agent-updates/latest.json`, while a GitHub Pages deployment at
-`/malink/` uses `/malink/gateway-agent-updates/latest.json`.
+Gateway release discovery resolves
+`gateway-agent-updates/channels/stable.json` below the compiled static-service
+base path. Root-hosted services therefore use
+`/gateway-agent-updates/channels/stable.json`, while a GitHub Pages deployment
+at `/malink/` uses
+`/malink/gateway-agent-updates/channels/stable.json`.
 Release discovery, Gateway Directory projection, and live node status are shown
 as separate states instead of hiding the entry. A primary action is rendered
 only when it can change the blocking state: discovery failures can retry release

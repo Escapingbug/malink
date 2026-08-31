@@ -12,10 +12,27 @@ CANDIDATE="$(mktemp)"
 trap 'rm -f "$CANDIDATE"' EXIT
 
 install -d -o root -g root -m 755 \
-    /srv/malink-gateway-agent-updates/releases
+    /srv/malink-gateway-agent-updates/releases \
+    /srv/malink-gateway-agent-updates/channels
 
 if grep -q '# Malink Gateway Agent updates' "$CONFIG"; then
-    cp "$CONFIG" "$CANDIDATE"
+    if grep -q 'handle_path /gateway-agent-updates/channels/\*' "$CONFIG"; then
+        cp "$CONFIG" "$CANDIDATE"
+    else
+        awk '
+            {
+                print $0
+                if ($0 ~ /# Malink Gateway Agent updates/) {
+                    print "\thandle_path /gateway-agent-updates/channels/* {"
+                    print "\t\troot * /srv/malink-gateway-agent-updates"
+                    print "\t\theader Cache-Control \"no-store\""
+                    print "\t\tfile_server"
+                    print "\t}"
+                    print ""
+                }
+            }
+        ' "$CONFIG" > "$CANDIDATE"
+    fi
 else
     awk -v site_address="$SITE_ADDRESS" '
         BEGIN { inserted = 0 }
@@ -29,6 +46,12 @@ else
                 print "\thandle /gateway-agent-updates/latest.json {"
                 print "\t\troot * /srv/malink-gateway-agent-updates"
                 print "\t\trewrite * /latest.json"
+                print "\t\theader Cache-Control \"no-store\""
+                print "\t\tfile_server"
+                print "\t}"
+                print ""
+                print "\thandle_path /gateway-agent-updates/channels/* {"
+                print "\t\troot * /srv/malink-gateway-agent-updates"
                 print "\t\theader Cache-Control \"no-store\""
                 print "\t\tfile_server"
                 print "\t}"
