@@ -860,6 +860,60 @@ select:focus-visible {
   scrollbar-color: #d9dce4 transparent;
 }
 
+.session-order-refresh {
+  position: sticky;
+  z-index: 4;
+  top: 5px;
+  display: flex;
+  width: calc(100% - 24px);
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  margin: 5px 12px 9px;
+  padding: 6px 10px;
+  border: 1px solid rgb(105 87 229 / 20%);
+  border-radius: 12px;
+  background: rgb(248 247 255 / 96%);
+  box-shadow: 0 5px 16px rgb(48 39 112 / 10%);
+  color: #5140bd;
+  text-align: left;
+  backdrop-filter: blur(12px);
+}
+
+.session-order-refresh:hover {
+  background: #f1efff;
+  border-color: rgb(105 87 229 / 30%);
+}
+
+.session-order-refresh > span {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: #6655d3;
+  color: white;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.session-order-refresh > strong {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-size: 9px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-order-refresh > b {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 800;
+}
+
 .gateway-group-heading {
   display: flex;
   align-items: center;
@@ -1107,6 +1161,13 @@ select:focus-visible {
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
+}
+
+.project-latest-time {
+  color: #7b8393;
+  font-size: 8px;
+  font-weight: 650;
+  white-space: nowrap;
 }
 
 .project-signal {

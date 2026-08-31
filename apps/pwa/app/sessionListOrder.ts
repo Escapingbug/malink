@@ -4,6 +4,7 @@ import {
   sessionIndicator,
   type SessionReadState,
 } from "./sessionIndicators";
+import type { SessionMeaningfulActivityState } from "./sessionMeaningfulActivity";
 
 export type SessionListSignal = "failed" | "ready" | "working" | "idle";
 
@@ -66,10 +67,13 @@ export function sessionListSignal(
 export function reconcileSessionDisplayOrder(
   current: SessionDisplayOrder,
   sessions: readonly GatewaySessionSummary[],
+  meaningfulActivity: SessionMeaningfulActivityState = {},
 ): SessionDisplayOrder {
   const unseen = sessions
     .filter((session) => !current.has(sessionDisplayKey(session)))
-    .sort(compareSessionsByRecency);
+    .sort((left, right) =>
+      compareSessionsByRecency(left, right, meaningfulActivity),
+    );
   if (unseen.length === 0) return current;
 
   const next = new Map(current);
@@ -93,7 +97,52 @@ export function compareSessionsForDisplay(
   }
   if (leftRank !== undefined) return -1;
   if (rightRank !== undefined) return 1;
-  return compareSessionsByRecency(left, right);
+  return compareSessionsByRecency(left, right, {});
+}
+
+/** Rebuilds every rank after the user explicitly asks to show latest activity. */
+export function rebuildSessionDisplayOrder(
+  sessions: readonly GatewaySessionSummary[],
+  meaningfulActivity: SessionMeaningfulActivityState,
+): SessionDisplayOrder {
+  return new Map(
+    [...sessions]
+      .sort((left, right) =>
+        compareSessionsByRecency(left, right, meaningfulActivity),
+      )
+      .map((session, rank) => [sessionDisplayKey(session), rank]),
+  );
+}
+
+export function sessionMeaningfulActivityAt(
+  session: Pick<GatewaySessionSummary, "id" | "projectId" | "updatedAt">,
+  meaningfulActivity: SessionMeaningfulActivityState,
+): number {
+  return meaningfulActivity[sessionDisplayKey(session)] ?? session.updatedAt;
+}
+
+export function sessionHasKnownMeaningfulActivity(
+  session: Pick<GatewaySessionSummary, "id" | "projectId">,
+  meaningfulActivity: SessionMeaningfulActivityState,
+): boolean {
+  return meaningfulActivity[sessionDisplayKey(session)] !== undefined;
+}
+
+export function sessionDisplayOrderWouldChange(
+  current: SessionDisplayOrder,
+  sessions: readonly GatewaySessionSummary[],
+  meaningfulActivity: SessionMeaningfulActivityState,
+): boolean {
+  const displayed = [...sessions].sort((left, right) =>
+    compareSessionsForDisplay(left, right, current),
+  );
+  const refreshed = [...sessions].sort((left, right) =>
+    compareSessionsByRecency(left, right, meaningfulActivity),
+  );
+  return displayed.some(
+    (session, index) =>
+      sessionDisplayKey(session) !== sessionDisplayKey(refreshed[index]!),
+  );
 }
 
 export function summarizeProjectSessions(
@@ -152,13 +201,16 @@ export function sessionSignalLabel(signal: SessionListSignal): string | null {
 function compareSessionsByRecency(
   left: GatewaySessionSummary,
   right: GatewaySessionSummary,
+  meaningfulActivity: SessionMeaningfulActivityState,
 ): number {
-  if (right.updatedAt !== left.updatedAt) return right.updatedAt - left.updatedAt;
+  const leftActivityAt = sessionMeaningfulActivityAt(left, meaningfulActivity);
+  const rightActivityAt = sessionMeaningfulActivityAt(right, meaningfulActivity);
+  if (rightActivityAt !== leftActivityAt) return rightActivityAt - leftActivityAt;
   const title = left.title.localeCompare(right.title);
   return title || sessionDisplayKey(left).localeCompare(sessionDisplayKey(right));
 }
 
-function sessionDisplayKey(
+export function sessionDisplayKey(
   session: Pick<GatewaySessionSummary, "id" | "projectId">,
 ): string {
   return `${session.projectId}\0${session.id}`;

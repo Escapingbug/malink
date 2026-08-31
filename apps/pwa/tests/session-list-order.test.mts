@@ -5,6 +5,10 @@ import {
   compareSessionsForDisplay,
   projectSessionSummaryLabel,
   reconcileSessionDisplayOrder,
+  rebuildSessionDisplayOrder,
+  sessionDisplayKey,
+  sessionDisplayOrderWouldChange,
+  sessionMeaningfulActivityAt,
   sessionListSignal,
   sessionSignalLabel,
   sessionStatusTone,
@@ -104,6 +108,45 @@ test("keeps session rows stable when activity, recency, or read state changes", 
   assert.equal(sessionListSignal(updated[1]!, read), "working");
   updated.sort((left, right) => compareSessionsForDisplay(left, right, order));
   assert.deepEqual(updated.map((item) => item.id), ["first", "second"]);
+});
+
+test("batches meaningful recency changes until the user refreshes the order", () => {
+  const initial = [
+    session("first", "idle", 100),
+    session("second", "idle", 90),
+  ];
+  const order = reconcileSessionDisplayOrder(new Map(), initial);
+  const meaningfulActivity = {
+    [sessionDisplayKey(initial[0]!)]: 100,
+    [sessionDisplayKey(initial[1]!)]: 120,
+  };
+
+  const stable = [...initial].sort((left, right) =>
+    compareSessionsForDisplay(left, right, order),
+  );
+  assert.deepEqual(stable.map((item) => item.id), ["first", "second"]);
+  assert.equal(
+    sessionDisplayOrderWouldChange(order, initial, meaningfulActivity),
+    true,
+  );
+  assert.equal(
+    sessionMeaningfulActivityAt(initial[1]!, meaningfulActivity),
+    120,
+  );
+
+  const refreshedOrder = rebuildSessionDisplayOrder(initial, meaningfulActivity);
+  const refreshed = [...initial].sort((left, right) =>
+    compareSessionsForDisplay(left, right, refreshedOrder),
+  );
+  assert.deepEqual(refreshed.map((item) => item.id), ["second", "first"]);
+  assert.equal(
+    sessionDisplayOrderWouldChange(
+      refreshedOrder,
+      initial,
+      meaningfulActivity,
+    ),
+    false,
+  );
 });
 
 test("places genuinely new sessions first without forgetting temporarily absent rows", () => {

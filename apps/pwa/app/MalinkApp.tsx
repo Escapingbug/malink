@@ -307,10 +307,23 @@ import {
   type SessionReadState,
 } from "./sessionIndicators";
 import {
+  EMPTY_SESSION_MEANINGFUL_ACTIVITY,
+  isMeaningfulSessionMessage,
+  readSessionMeaningfulActivity,
+  recordSessionMeaningfulActivity,
+  writeSessionMeaningfulActivity,
+  type SessionMeaningfulActivityState,
+} from "./sessionMeaningfulActivity";
+import {
   compareSessionsForDisplay,
   projectSessionSummaryLabel,
   reconcileSessionDisplayOrder,
+  rebuildSessionDisplayOrder,
+  sessionDisplayKey,
+  sessionDisplayOrderWouldChange,
+  sessionHasKnownMeaningfulActivity,
   sessionListSignal,
+  sessionMeaningfulActivityAt,
   sessionSignalLabel,
   sessionStatusTone,
   summarizeProjectSessions,
@@ -1702,6 +1715,17 @@ function MalinkAppRuntime() {
       ? EMPTY_SESSION_READ_STATE
       : readSessionReadState(window.localStorage),
   );
+  const [sessionMeaningfulActivity, setSessionMeaningfulActivity] =
+    useState<SessionMeaningfulActivityState>(() =>
+      typeof window === "undefined"
+        ? EMPTY_SESSION_MEANINGFUL_ACTIVITY
+        : readSessionMeaningfulActivity(window.localStorage),
+    );
+  const [pendingSessionReorderKeys, setPendingSessionReorderKeys] = useState<
+    Set<string>
+  >(() => new Set());
+  const [sessionDisplayOrderRevision, setSessionDisplayOrderRevision] =
+    useState(0);
   const [uiNotices, dispatchUiNotice] = useReducer(
     reduceUiNotices,
     EMPTY_UI_NOTICE_STATE,
@@ -1732,6 +1756,7 @@ function MalinkAppRuntime() {
     null,
   );
   const feedRef = useRef<HTMLDivElement>(null);
+  const sessionListRef = useRef<HTMLDivElement>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const sessionSearchRef = useRef<HTMLInputElement>(null);
   const detailsButtonRef = useRef<HTMLButtonElement>(null);
@@ -1893,6 +1918,11 @@ function MalinkAppRuntime() {
     scrollTop: number;
   } | null>(null);
   const sessionDisplayOrderRef = useRef<SessionDisplayOrder>(new Map());
+  const sessionMeaningfulActivityRef =
+    useRef<SessionMeaningfulActivityState>(sessionMeaningfulActivity);
+  const visibleGatewaySessionsRef = useRef<readonly GatewaySessionSummary[]>(
+    initialGatewayUi.gatewayState?.sessions ?? [],
+  );
 
   const gatewaySelected =
     gatewayState?.sessions.find(
@@ -2003,14 +2033,36 @@ function MalinkAppRuntime() {
     () => gatewayState?.sessions ?? [],
     [gatewayState],
   );
+  visibleGatewaySessionsRef.current = visibleGatewaySessions;
+  sessionMeaningfulActivityRef.current = sessionMeaningfulActivity;
   const sessionDisplayOrder = useMemo(() => {
+    // The revision is an explicit commit signal from "Show latest"; activity
+    // updates alone intentionally leave the current ranks untouched.
+    void sessionDisplayOrderRevision;
     const next = reconcileSessionDisplayOrder(
       sessionDisplayOrderRef.current,
       visibleGatewaySessions,
+      sessionMeaningfulActivityRef.current,
     );
     sessionDisplayOrderRef.current = next;
     return next;
-  }, [visibleGatewaySessions]);
+  }, [sessionDisplayOrderRevision, visibleGatewaySessions]);
+  const visibleSessionKeys = useMemo(
+    () => new Set(visibleGatewaySessions.map(sessionDisplayKey)),
+    [visibleGatewaySessions],
+  );
+  const pendingSessionReorderCount = useMemo(
+    () => [...pendingSessionReorderKeys]
+      .filter((sessionKey) => visibleSessionKeys.has(sessionKey)).length,
+    [pendingSessionReorderKeys, visibleSessionKeys],
+  );
+  const sessionOrderRefreshAvailable =
+    pendingSessionReorderCount > 0 &&
+    sessionDisplayOrderWouldChange(
+      sessionDisplayOrder,
+      visibleGatewaySessions,
+      sessionMeaningfulActivity,
+    );
   const fallbackProjectGateway = useMemo(() => {
     const expectedGatewayNodeId = matrixConfig.gatewayNodeId
       ?? trustedGateway?.gatewayNodeId
@@ -2240,10 +2292,32 @@ function MalinkAppRuntime() {
     projectGatewaysById,
     sessionDisplayOrder,
   ]);
-  const conversationGroups = useMemo(() => [
-    ...scratchGroups,
-    ...projectGroups.map((project) => ({ ...project, temporary: false as const })),
-  ], [projectGroups, scratchGroups]);
+  const conversationGroups = useMemo(() => {
+    const groups = [
+      ...scratchGroups,
+      ...projectGroups.map((project) => ({ ...project, temporary: false as const })),
+    ];
+    groups.sort((left, right) => {
+      const leftRank = Math.min(
+        Number.POSITIVE_INFINITY,
+        ...left.sessions.map(
+          (session) => sessionDisplayOrder.get(sessionDisplayKey(session)) ??
+            Number.POSITIVE_INFINITY,
+        ),
+      );
+      const rightRank = Math.min(
+        Number.POSITIVE_INFINITY,
+        ...right.sessions.map(
+          (session) => sessionDisplayOrder.get(sessionDisplayKey(session)) ??
+            Number.POSITIVE_INFINITY,
+        ),
+      );
+      return leftRank - rightRank ||
+        left.projectName.localeCompare(right.projectName) ||
+        left.gatewayLabel.localeCompare(right.gatewayLabel);
+    });
+    return groups;
+  }, [projectGroups, scratchGroups, sessionDisplayOrder]);
   const inboxFiles = gatewayState?.inboxFiles ?? [];
   const matrixConnectionPresentation = useMemo(
     () => deriveConnectionPresentation(connectionStatus, connectionDetail),
@@ -3134,6 +3208,84 @@ function MalinkAppRuntime() {
     });
   }
 
+  function observeMeaningfulSessionMessage(
+    incoming: IncomingMalinkMessage,
+    sessionId: string,
+  ): void {
+    if (!isMeaningfulSessionMessage(incoming)) return;
+    const projectId = resolveIncomingProjectId(incoming, sessionId);
+    if (!projectId) return;
+    const sessionKey = sessionDisplayKey({ id: sessionId, projectId });
+    const current = sessionMeaningfulActivityRef.current;
+    const next = recordSessionMeaningfulActivity(
+      current,
+      sessionKey,
+      incoming.timestamp,
+    );
+    if (next === current) return;
+    sessionMeaningfulActivityRef.current = next;
+    setSessionMeaningfulActivity(next);
+    if (
+      !isHistoricalMessageDelivery(incoming) &&
+      sessionDisplayOrderRef.current.has(sessionKey)
+    ) {
+      setPendingSessionReorderKeys((pending) => {
+        if (pending.has(sessionKey)) return pending;
+        const updated = new Set(pending);
+        updated.add(sessionKey);
+        return updated;
+      });
+    }
+  }
+
+  function resolveIncomingProjectId(
+    incoming: IncomingMalinkMessage,
+    sessionId: string,
+  ): string | undefined {
+    if (incoming.projectId) return incoming.projectId;
+    if (
+      selectedSessionIdRef.current === sessionId &&
+      selectedProjectIdRef.current
+    ) {
+      return selectedProjectIdRef.current;
+    }
+    const matches = visibleGatewaySessionsRef.current.filter(
+      (session) => session.id === sessionId,
+    );
+    return matches.length === 1 ? matches[0]?.projectId : undefined;
+  }
+
+  function showLatestSessionActivity(): void {
+    const list = sessionListRef.current;
+    const anchor = list
+      ? [...list.querySelectorAll<HTMLElement>(".session-row[data-session-id]")]
+        .find((row) =>
+          row.dataset.sessionId === selectedSessionIdRef.current &&
+          row.dataset.projectId === selectedProjectIdRef.current,
+        )
+      : undefined;
+    const anchorTop = anchor?.getBoundingClientRect().top;
+
+    sessionDisplayOrderRef.current = rebuildSessionDisplayOrder(
+      visibleGatewaySessionsRef.current,
+      sessionMeaningfulActivityRef.current,
+    );
+    setPendingSessionReorderKeys(new Set());
+    setSessionDisplayOrderRevision((revision) => revision + 1);
+
+    if (!list || anchorTop === undefined) return;
+    window.requestAnimationFrame(() => {
+      const movedAnchor = [
+        ...list.querySelectorAll<HTMLElement>(".session-row[data-session-id]"),
+      ].find((row) =>
+        row.dataset.sessionId === selectedSessionIdRef.current &&
+        row.dataset.projectId === selectedProjectIdRef.current,
+      );
+      if (!movedAnchor) return;
+      list.scrollTop += movedAnchor.getBoundingClientRect().top - anchorTop;
+    });
+  }
+
   function reconcileSessionActivityUpdatedAt(
     sessions: readonly GatewaySessionSummary[],
   ): void {
@@ -3255,6 +3407,13 @@ function MalinkAppRuntime() {
   useEffect(() => {
     writeSessionReadState(window.localStorage, sessionReadState);
   }, [sessionReadState]);
+
+  useEffect(() => {
+    writeSessionMeaningfulActivity(
+      window.localStorage,
+      sessionMeaningfulActivity,
+    );
+  }, [sessionMeaningfulActivity]);
 
   useEffect(() => {
     if (!Object.values(uiNotices).some((notice) => notice.expiresAt !== null)) {
@@ -4156,6 +4315,7 @@ function MalinkAppRuntime() {
     }
     const sessionId =
       incoming.sessionId ?? selectedSessionIdRef.current ?? undefined;
+    if (sessionId) observeMeaningfulSessionMessage(incoming, sessionId);
     const liveSessionKey = sessionId
       ? historyCacheSessionId(sessionId, incoming.projectId)
       : undefined;
@@ -11443,7 +11603,27 @@ function MalinkAppRuntime() {
           onDismiss={dismissUiNotice}
         />
 
-        <div className="session-list">
+        <div className="session-list" ref={sessionListRef}>
+          {sessionOrderRefreshAvailable && (
+            <button
+              type="button"
+              className="session-order-refresh"
+              onClick={showLatestSessionActivity}
+              aria-label={`${pendingSessionReorderCount} ${
+                pendingSessionReorderCount === 1
+                  ? "conversation has"
+                  : "conversations have"
+              } new activity. Reorder conversations to show the latest first.`}
+            >
+              <span aria-hidden="true">↓</span>
+              <strong>
+                {pendingSessionReorderCount === 1
+                  ? "1 conversation updated"
+                  : `${pendingSessionReorderCount} conversations updated`}
+              </strong>
+              <b>Show latest</b>
+            </button>
+          )}
           {optimisticSession && projectMatchesGatewayFilter(
             activeGatewayFilter,
             optimisticSession.input.projectId ?? gatewayState?.workspace.projectId ?? "",
@@ -11640,6 +11820,22 @@ function MalinkAppRuntime() {
               project.sessions,
               sessionReadState,
             );
+            const projectLatestActivityAt = project.sessions.reduce(
+              (latest, session) => Math.max(
+                latest,
+                sessionMeaningfulActivityAt(
+                  session,
+                  sessionMeaningfulActivity,
+                ),
+              ),
+              0,
+            );
+            const projectHasKnownMeaningfulActivity = project.sessions.some(
+              (session) => sessionHasKnownMeaningfulActivity(
+                session,
+                sessionMeaningfulActivity,
+              ),
+            );
             const contentId = `project-sessions-${encodeURIComponent(project.key)}`;
             return (
             <section className="project-session-group" key={project.key}>
@@ -11655,7 +11851,13 @@ function MalinkAppRuntime() {
                 aria-label={`${projectSessionSummaryLabel(
                   `${project.projectName} on ${project.gatewayLabel}`,
                   projectSummary,
-                )}. ${expanded ? "Collapse project" : "Expand project"}`}
+                )}.${projectLatestActivityAt > 0 ? ` ${
+                  projectHasKnownMeaningfulActivity
+                    ? "Latest message"
+                    : "Latest update"
+                } ${formatSessionTime(projectLatestActivityAt)}.` : ""} ${
+                  expanded ? "Collapse project" : "Expand project"
+                }`}
                 onClick={() =>
                   setCollapsedProjects((current) =>
                     toggleProjectCollapsed(current, project.key),
@@ -11678,6 +11880,18 @@ function MalinkAppRuntime() {
                   </small>
                 </span>
                 <span className="project-indicators" aria-hidden="true">
+                  {projectLatestActivityAt > 0 && (
+                    <time
+                      className="project-latest-time"
+                      title={`${
+                        projectHasKnownMeaningfulActivity
+                          ? "Latest message"
+                          : "Latest update"
+                      }: ${formatSessionTime(projectLatestActivityAt)}`}
+                    >
+                      {formatSessionTime(projectLatestActivityAt)}
+                    </time>
+                  )}
                   {projectSummary.failed > 0 && (
                     <span
                       className="project-signal project-signal-failed"
@@ -11756,12 +11970,23 @@ function MalinkAppRuntime() {
                 });
                 const showStatusSummary =
                   Boolean(lifecycleAction || activity) || signal !== "idle";
+                const meaningfulActivityAt = sessionMeaningfulActivityAt(
+                  session,
+                  sessionMeaningfulActivity,
+                );
+                const meaningfulActivityKnown = sessionHasKnownMeaningfulActivity(
+                  session,
+                  sessionMeaningfulActivity,
+                );
                 return (
                 <button
                   key={`${session.projectId}\0${session.id}`}
                   data-session-id={session.id}
+                  data-project-id={session.projectId}
                   data-project-name={session.projectName}
-                  aria-label={`${session.title}. ${statusSummary}. ${technicalSummary}. Updated ${formatSessionTime(session.updatedAt)}`}
+                  aria-label={`${session.title}. ${statusSummary}. ${technicalSummary}. ${
+                    meaningfulActivityKnown ? "Last message" : "Updated"
+                  } ${formatSessionTime(meaningfulActivityAt)}`}
                   title={`${session.title} · ${statusSummary}`}
                   data-session-signal={visualSignal}
                   aria-pressed={
@@ -11786,7 +12011,13 @@ function MalinkAppRuntime() {
                     <span className="session-title-line">
                       <strong>{session.title}</strong>
                       <span className="session-title-meta">
-                        <time>{formatSessionTime(session.updatedAt)}</time>
+                        <time
+                          title={`${
+                            meaningfulActivityKnown ? "Last message" : "Updated"
+                          }: ${formatSessionTime(meaningfulActivityAt)}`}
+                        >
+                          {formatSessionTime(meaningfulActivityAt)}
+                        </time>
                         {visualSignal !== "idle" && (
                           <span
                             className={`session-signal-mark signal-${visualSignal} ${
