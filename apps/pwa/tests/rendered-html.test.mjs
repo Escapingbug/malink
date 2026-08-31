@@ -165,7 +165,10 @@ test("ships a complete installable offline shell", async () => {
     styles,
     /\.project-folder-shell\s*\{[\s\S]*?fill:\s*var\(--violet-soft\);[\s\S]*?stroke-width:\s*1\.55/,
   );
-  assert.match(source, /aria-pressed=\{selectedSessionId === session\.id\}/);
+  assert.match(
+    source,
+    /aria-pressed=\{\s*selectedSessionId === session\.id &&\s*selectedProjectId === session\.projectId\s*\}/,
+  );
   assert.match(source, /Creating this conversation/);
   assert.match(source, /Creating · Ready for messages/);
   assert.match(source, /Conversation creation failed/);
@@ -181,7 +184,7 @@ test("ships a complete installable offline shell", async () => {
   assert.doesNotMatch(source, /reviewGatewayUpdatesForRecoveredNativeCommand/);
   assert.match(
     source,
-    /error instanceof CommandCompletionTimeoutError && commandId !== null && probe[\s\S]*?state: "unreachable"/,
+    /error instanceof CommandCompletionTimeoutError && commandId !== null && probe[\s\S]*?gatewayNodeLivenessAfterProbeTimeout\([\s\S]*?state: liveness\.state === "online" \? "online" : "unreachable"/,
   );
   assert.match(source, /connection\.recoverCommand\(probe\.commandId\)/);
   assert.match(
@@ -221,7 +224,7 @@ test("ships a complete installable offline shell", async () => {
   assert.doesNotMatch(source, /operation: "session\.select"/);
   assert.match(
     source,
-    /function chooseSession\(id: string\)[\s\S]*?activateLocalSession\(id\)/,
+    /function chooseSession\(id: string, projectId\?: string\)[\s\S]*?activateLocalSession\(id, malinkClientRef\.current, true, false, projectId\)/,
   );
   assert.match(source, /agentActivitiesBySession/);
   assert.match(source, /setSessionAgentActivity\(sessionId/);

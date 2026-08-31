@@ -32,7 +32,10 @@ export type MalinkNativeRuntimeInfo = HelloResult["native"] & {
   /** Additive capability for permanently retiring an unverified local command. */
   orphanCommandRetirement?: boolean;
 };
-export type MalinkMessage = ClientMessage;
+export type MalinkMessage = ClientMessage & {
+  /** Browser-only verified route context; absent on legacy/native hosts. */
+  projectId?: string;
+};
 export type MalinkPairingPreview = PairingPreview;
 export type MalinkPublicTrust = Extract<
   PublicTrustState,
@@ -134,12 +137,17 @@ export interface MalinkClient {
   downloadAttachment(attachment: MalinkAttachment): Promise<Blob>;
   confirmRevisionRetry(commandId: string): Promise<MalinkCommandSendResult>;
   discardRevisionConflict(commandId: string): Promise<void>;
-  markHistoryLoaded(sessionId: string, eventIds: readonly string[]): void;
+  markHistoryLoaded(
+    sessionId: string,
+    eventIds: readonly string[],
+    projectId?: string,
+  ): void;
   /** Reads the runtime's durable local projection without Matrix I/O. */
-  loadLocalHistory(sessionId: string): Promise<MalinkHistoryPage>;
+  loadLocalHistory(sessionId: string, projectId?: string): Promise<MalinkHistoryPage>;
   loadHistoryPage(
     sessionId: string,
     limit?: number,
+    projectId?: string,
   ): Promise<MalinkHistoryPage>;
   observeCommandCompletion(
     commandId: string,

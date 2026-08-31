@@ -184,14 +184,23 @@ need no separate Gateway implementation. Their shared `gateway.update` grant
 authorizes only requests—the local pinned signer remains the release authority.
 
 Release discovery never starts an update. The PWA presents a node-level update
-notice, and its review panel identifies the exact Gateway name, stable short
+notice, and its management panel identifies the exact Gateway name, stable short
 node ID, current build, target build, and update capability. Opening the panel
 sends a read-only `gateway.update.status` command to each routed capable node;
-only a recent signed terminal reply is shown as `Online now`. A connected
+only a recent signed status reply or newer signed node activity is shown as
+`Online now`. A connected
 Matrix client or an old cached snapshot is not Gateway liveness. The user then
-confirms one exact node, which sends `stage` and creates the visible maintenance
-Agent session for that Gateway and release. Multiple nodes are updated as
+confirms one exact node once. The client sends `stage`, creates the visible
+maintenance Agent session, and sends `apply` as soon as the signed staged
+checkpoint is ready. These remain separate compatible wire commands, but they
+are one user transaction. Multiple nodes are updated as
 separate confirmed operations so it is always clear which node is executing.
+The current client persists that explicit update intent before sending `stage`.
+If it is closed between the two old wire commands, it resumes only that exact
+project/node/release from `staged` after reconnecting. Pre-existing staged
+updates without a current-client intent are never activated automatically. An
+unused intent expires after 24 hours so old consent cannot activate a later,
+coincidentally matching checkpoint.
 
 The live check has a bounded foreground wait. If no signed reply arrives within
 12 seconds, the first miss is presented as `Live check timed out`: it is a
@@ -209,24 +218,30 @@ command gains this exception: unfinished session, Prompt, cancel, update-stage,
 and update-apply commands remain durable until an authenticated terminal result
 or an existing authoritative retirement rule applies.
 
-When a signed reply does arrive with `failed` or `repair_required`, the panel
+When a signed reply does arrive with `failed`, `rolled_back`, or
+`repair_required`, the panel
 shows that as an update error instead of the generic `Online now` state, retains
-the supervisor's signed detail, and offers recovery steps appropriate to that
-phase. If that exact node is answering and a signed release is available, the
-panel keeps a primary retry action even when an earlier maintenance session ID
-exists. The new attempt rechecks the node and lets the supervisor replace the
-interrupted update state; an obsolete session must never hide the recovery
-entry point. Connection diagnostics include bounded per-node liveness timestamps,
+the supervisor's signed detail, and offers only recovery steps that can change
+the result. Prompt/artifact downloads automatically retry bounded network,
+408, 425, 429, and 5xx failures. If those attempts are exhausted, the client
+offers a later retry. HTTP 404, invalid publication/signature, incompatible
+state, candidate validation, integrity, and rollback failures do not expose a
+same-release retry; the client offers diagnostic export and a bug-report link.
+`repair_required` exposes local repair guidance, not update retry. A genuinely
+new immutable release remains actionable after an older failure. Connection
+diagnostics include bounded per-node liveness timestamps,
 consecutive no-reply counts, and update phase/build identifiers without
 exporting credentials or unstructured Gateway errors.
 
 The maintenance session is transaction-owned state, not ordinary conversation
 history. Neither a client nor the Gateway may archive the session while the
-supervisor reports an active, staged, failed-but-retryable, or repair-required
-update. The client rechecks signed live status immediately before cleanup and
-the Gateway enforces the same rule before changing session lifecycle. This
-prevents a stale multi-Gateway presentation from cancelling the maintenance
-Agent or making a deterministic same-release retry impossible.
+supervisor reports an active, staged, transiently retryable, or repair-required
+update. Successfully committed transactions are archived automatically by an
+authenticated lifecycle command. Rolled-back and deterministic failed sessions
+remain visible for diagnosis and can be archived after their evidence is
+collected because repeating that release is not a supported recovery. The
+client rechecks signed live status immediately before manual cleanup and the
+Gateway enforces the same rule before changing session lifecycle.
 
 ## Agent-safe candidate completion
 
@@ -286,9 +301,11 @@ separate status for every stable `gatewayNodeId`. A fresh signed status reply is
 shown as `Online now`; that proof expires after 90 seconds instead of remaining
 green indefinitely. A request accepted by Matrix without a signed reply becomes
 `Not responding`, while a route or capability mismatch is shown as `Live check
-unavailable`. Malink checks once after each Matrix client start and when the app
-returns to the foreground after the prior check is old; it does not create a
-continuous Matrix-command heartbeat. Manual retry remains available per node.
+unavailable`. While a connected client page is visible, Malink rechecks before
+the 90-second proof expires. Any newer signed Agent/session activity from that
+node also refreshes the proof, and a delayed status timeout cannot overwrite
+that newer evidence with an offline state. Manual status refresh remains
+available per node.
 This visibility does not turn liveness into execution authority or a global
 write lock: ordinary authenticated commands remain durable and may wait for an
 offline Gateway to return.
@@ -310,7 +327,7 @@ Release discovery, Gateway Directory projection, and live node status are shown
 as separate states instead of hiding the entry. A primary action is rendered
 only when it can change the blocking state: discovery failures can retry release
 discovery, disconnected clients can reconnect Matrix, and an available release
-can open the review panel. When Matrix is already connected but no Gateway
+can open the management panel. When Matrix is already connected but no Gateway
 Directory has arrived, the UI explains that a Gateway must be brought online and
 that projection will resume automatically; it does not present a no-op reconnect
 or status-check button.
@@ -327,10 +344,12 @@ The PWA then sends `apply`, which progresses through:
 waiting_for_idle -> scheduled -> activating -> probation -> committed
 ```
 
-While the review panel is open, Malink polls signed status during nonterminal
-maintenance and activation phases. Reaching `staged` stops automatic polling
-and always exposes an explicit install action for that exact staged release,
-even if the static release channel has since advanced. If the supervisor finds
+Malink polls signed status during nonterminal maintenance and activation phases
+even after the panel is closed. The current client automatically continues a
+`staged` checkpoint only when its persisted user intent matches the exact
+project, node, release, and build. An older staged checkpoint without that
+intent exposes `Continue update`, even if the static release channel has since
+advanced. If the supervisor finds
 that the signed installed build already equals its target while an older state
 still says `agent_running`, `agent_validating`, or `staged`, it atomically
 converges that state to `committed`; the UI then treats the update as installed
@@ -338,32 +357,27 @@ instead of presenting obsolete maintenance cleanup as a blocking error.
 
 The maintenance Agent's session is deterministic per physical Gateway node and
 release: its identity is derived from `gatewayNodeId`, never the shared
-Workspace `gatewayId`. A retry on one node therefore resumes the same visible
-session and supervisor workspace, while two nodes updating the same release
-cannot collide. The normal Gateway software panel links to that session and
-owns the confirmation and retry actions; advanced diagnostics is not the
-product update entry point. Clients refuse to open a legacy maintenance ID if
-it is attributed to multiple nodes or project rooms, or if its Workspace-scoped
-format is unsafe in a multi-Gateway Workspace. The Gateway software panel can
-still archive each legacy session through the named node's exact project route;
-the client keys progress and recovery by both `projectId` and `sessionId`, so
-cleanup on one Gateway cannot mark or command the other one. Users never enter
+Workspace `gatewayId`. Two nodes updating the same release therefore cannot
+collide. Legacy Workspace-scoped IDs are not rewritten. Current clients select,
+open, restore history for, and archive them by `projectId + sessionId`; the old
+scalar browser selection is read as a compatibility fallback and dual-written
+alongside the exact route. Cleanup on one Gateway cannot mark or command the
+other one. Users never enter
 a release ID or manually transfer Gateway credentials or artifacts.
 
 ## Recovery
 
-- `failed`: the active release was not changed. Inspect the maintenance session
-  and supervisor detail, correct the Prompt/commit, and publish a new immutable
-  release ID. Do not archive the session named by the supervisor: it remains
-  evidence for the failure and may still be required by a same-release retry.
+- `failed`: the active release was not changed. Transient delivery failures
+  have already received bounded automatic retries and may be tried later.
+  Deterministic failures require diagnostics and a corrected immutable release,
+  not the same command again; their maintenance session may be archived.
 - `rolled_back`: the candidate failed health or probation and the previous
   release is running.
 - `repair_required`: activation and safe rollback could not be proven. Preserve
   the inbox, journal, Matrix crypto store, supervisor state, Agent workspace,
   release directories, and logs for local diagnosis. Once the installed target
   or previous build returns with fresh Matrix-ready health, the supervisor
-  converges automatically; if a signed release is available while the node is
-  online, the Gateway software panel also permits a new supervised attempt.
+  converges automatically. The same update request is not a repair action.
 
 Quarantined inbox records are retained evidence of invalid or unsupported
 Matrix events and are never silently deleted during update.

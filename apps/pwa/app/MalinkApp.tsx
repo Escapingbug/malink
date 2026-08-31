@@ -126,6 +126,7 @@ import { uncertainCommandRecoveryPresentation } from "./uncertainCommandRecovery
 import {
   collidingGatewayMaintenanceSessionIds,
   gatewayMaintenanceSessionCanBeArchived,
+  gatewayMaintenanceSessionShouldAutoArchive,
   gatewayUpdatePlan as buildGatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
   gatewayUpdateStatusNeedsPolling,
@@ -133,8 +134,14 @@ import {
   legacyGatewayMaintenanceSessionsByNode,
   recoverAmbiguousGatewayUpdateCompletion,
   triggerGatewayUpdate,
+  GatewayUpdateCommandFailure,
   type GatewayUpdatePlanNode,
 } from "./gatewayUpdateTrigger";
+import {
+  clearGatewayUpdateIntent,
+  readGatewayUpdateIntent,
+  writeGatewayUpdateIntent,
+} from "./gatewayUpdateIntent";
 import {
   registerPwaUpdates,
   type PwaUpdateHandle,
@@ -261,7 +268,7 @@ import {
 } from "./connectionRecovery";
 import { deriveGatewayLiveness } from "./gatewayLiveness";
 import {
-  gatewayNoReplyPresentation,
+  gatewayNodeLivenessAfterProbeTimeout,
   gatewayNodeLivenessPresentation,
   gatewayNodeLivenessSummary,
   gatewayNodeLivenessTargets,
@@ -387,8 +394,8 @@ import {
   turnTimelineMessages,
 } from "./turnTimeline";
 import {
-  readSelectedSession,
-  writeSelectedSession,
+  readSelectedSessionRoute,
+  writeSelectedSessionRoute,
 } from "./selectedSessionState";
 import {
   CommandRevisionConflictError,
@@ -524,6 +531,7 @@ type InitialGatewayUiState = {
   config: MatrixConnectionConfig;
   gatewayState: GatewayStateSnapshot | null;
   selectedSessionId: string | null;
+  selectedProjectId: string | null;
   historyScope: string;
 };
 
@@ -533,29 +541,49 @@ function loadInitialGatewayUiState(): InitialGatewayUiState {
       config: emptyMatrixConfig,
       gatewayState: null,
       selectedSessionId: null,
+      selectedProjectId: null,
       historyScope: "",
     };
   }
   const config = loadMatrixConfig() ?? emptyMatrixConfig;
   const gatewayState = readGatewayUiCache(window.localStorage, config);
   if (!gatewayState) {
-    return { config, gatewayState: null, selectedSessionId: null, historyScope: "" };
+    return {
+      config,
+      gatewayState: null,
+      selectedSessionId: null,
+      selectedProjectId: null,
+      historyScope: "",
+    };
   }
   const historyScope = matrixHistoryScope({
     gatewayId: config.gatewayId,
     conversationId: config.conversationId,
     roomId: config.roomId,
   });
-  const selectableIds = new Set(gatewayState.sessions.map((session) => session.id));
-  const rememberedSessionId = readSelectedSession(window.localStorage, historyScope);
-  const selectedSessionId = rememberedSessionId && selectableIds.has(rememberedSessionId)
-    ? rememberedSessionId
-    : gatewayState.currentSessionId && selectableIds.has(gatewayState.currentSessionId)
-      ? gatewayState.currentSessionId
-      : gatewayState.sessions.find((session) => session.status !== "archived")?.id ??
-        gatewayState.sessions[0]?.id ??
-        null;
-  return { config, gatewayState, selectedSessionId, historyScope };
+  const remembered = readSelectedSessionRoute(window.localStorage, historyScope);
+  const selectedSession = remembered
+    ? gatewayState.sessions.find(session =>
+        session.id === remembered.sessionId &&
+        (!remembered.projectId || session.projectId === remembered.projectId),
+      )
+    : undefined;
+  const fallbackSession = selectedSession ??
+    (gatewayState.currentSessionId
+      ? gatewayState.sessions.find(session =>
+          session.id === gatewayState.currentSessionId &&
+          session.projectId === gatewayState.workspace.projectId,
+        ) ?? gatewayState.sessions.find(session => session.id === gatewayState.currentSessionId)
+      : undefined) ??
+    gatewayState.sessions.find(session => session.status !== "archived") ??
+    gatewayState.sessions[0];
+  return {
+    config,
+    gatewayState,
+    selectedSessionId: fallbackSession?.id ?? null,
+    selectedProjectId: fallbackSession?.projectId ?? null,
+    historyScope,
+  };
 }
 
 function sessionIdsWithStatus(
@@ -1510,6 +1538,9 @@ function MalinkAppRuntime() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
     initialGatewayUi.selectedSessionId,
   );
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
+    initialGatewayUi.selectedProjectId,
+  );
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(
     () => sessionIdsWithStatus(initialGatewayUi.gatewayState, "running", "stopping"),
   );
@@ -1748,6 +1779,15 @@ function MalinkAppRuntime() {
   const gatewayUpdateProbeCommandsRef = useRef(
     new Map<string, GatewayUpdateProbeRecord>(),
   );
+  const gatewayAutoArchiveKeysRef = useRef(new Set<string>());
+  const gatewayUpdateResumeKeysRef = useRef(new Set<string>());
+  const gatewayNodeByProjectRef = useRef(
+    new Map<string, { gatewayNodeId: string }>(),
+  );
+  const gatewayNodeBySessionRef = useRef(new Map<string, string>());
+  const ambiguousGatewayMaintenanceSessionIdsRef = useRef<ReadonlySet<string>>(
+    new Set(),
+  );
   const gatewayNodeLivenessRef = useRef<Record<string, GatewayNodeLiveness>>({});
   const gatewayNodeProbeFlightsRef = useRef(new Set<string>());
   const gatewayNodeAutomaticProbeKeysRef = useRef(new Set<string>());
@@ -1810,6 +1850,9 @@ function MalinkAppRuntime() {
   const selectedSessionIdRef = useRef<string | null>(
     initialGatewayUi.selectedSessionId,
   );
+  const selectedProjectIdRef = useRef<string | null>(
+    initialGatewayUi.selectedProjectId,
+  );
   const pendingCreatedSessionIdRef = useRef<string | null>(null);
   const optimisticSessionRef = useRef<OptimisticSessionRecord | null>(null);
   const pendingOpenedSessionIdRef = useRef<string | null>(null);
@@ -1820,11 +1863,15 @@ function MalinkAppRuntime() {
   const liveMessagesBySessionRef = useRef(new Map<string, ChatMessage[]>());
   const historyScopeRef = useRef(initialGatewayUi.historyScope);
   const historySessionIdRef = useRef<string | null>(null);
+  const historyProjectIdRef = useRef<string | null>(
+    initialGatewayUi.selectedProjectId,
+  );
   const historyCursorRef = useRef<MessageHistoryCursor | null>(null);
   const historyGenerationRef = useRef(0);
   const historyLoadingRef = useRef(false);
   const historyRemoteFlightRef = useRef<{
     sessionId: string;
+    projectId?: string;
     generation: number;
     connection: MalinkClient;
   } | null>(null);
@@ -1862,7 +1909,8 @@ function MalinkAppRuntime() {
 
   const gatewaySelected =
     gatewayState?.sessions.find(
-      (session) => session.id === selectedSessionId,
+      (session) => session.id === selectedSessionId &&
+        (!selectedProjectId || session.projectId === selectedProjectId),
     ) ?? null;
   const optimisticSelected = Boolean(
     optimisticSession &&
@@ -1980,6 +2028,24 @@ function MalinkAppRuntime() {
     ),
     [gatewayState?.gatewayDirectory],
   );
+  gatewayNodeByProjectRef.current = projectGatewaysById;
+  const gatewayNodeBySession = new Map<string, string>();
+  const ambiguousGatewayNodeSessions = new Set<string>();
+  for (const session of gatewayState?.sessions ?? []) {
+    const gatewayNodeId = projectGatewaysById.get(session.projectId)?.gatewayNodeId ??
+      (session.projectId === gatewayState?.workspace.projectId
+        ? fallbackProjectGateway.gatewayNodeId
+        : undefined);
+    if (!gatewayNodeId || ambiguousGatewayNodeSessions.has(session.id)) continue;
+    const existing = gatewayNodeBySession.get(session.id);
+    if (existing && existing !== gatewayNodeId) {
+      gatewayNodeBySession.delete(session.id);
+      ambiguousGatewayNodeSessions.add(session.id);
+    } else {
+      gatewayNodeBySession.set(session.id, gatewayNodeId);
+    }
+  }
+  gatewayNodeBySessionRef.current = gatewayNodeBySession;
   const gatewayFilterOptions = useMemo(
     () => (gatewayState?.gatewayDirectory?.directory.gateways ?? [])
       .map(gateway => gatewayProjectOwner(
@@ -2582,6 +2648,34 @@ function MalinkAppRuntime() {
         },
       };
     }
+    for (const node of gatewayUpdatePlan) {
+      const runtime = presentation[node.gatewayNodeId];
+      if (!runtime?.maintenanceSessionId || !node.targetProjectId) continue;
+      const maintenanceSession = gatewayState.sessions.find(session =>
+        session.id === runtime.maintenanceSessionId &&
+        session.projectId === node.targetProjectId,
+      );
+      if (!maintenanceSession) continue;
+      presentation = {
+        ...presentation,
+        [node.gatewayNodeId]: {
+          ...runtime,
+          maintenanceSessionArchiveAvailable:
+            maintenanceSession.status !== "archived" &&
+            gatewayMaintenanceSessionCanBeArchived(runtime.status),
+          maintenanceSessionArchived:
+            maintenanceSession.status === "archived",
+          maintenanceSessionArchiveBusy: sessionLifecycleBusy.has(
+            sessionLifecycleRouteKey(
+              maintenanceSession.projectId,
+              maintenanceSession.id,
+            ),
+          ) || gatewayArchivePreflightSessionIds.has(runtime.maintenanceSessionId),
+          maintenanceSessionArchiveChecking:
+            gatewayArchivePreflightSessionIds.has(runtime.maintenanceSessionId),
+        },
+      };
+    }
     const collidingSessionIds = collidingGatewayMaintenanceSessionIds({
       nodeSessions: gatewayUpdatePlan.map(node => {
         const maintenanceSessionId =
@@ -2672,6 +2766,8 @@ function MalinkAppRuntime() {
     ),
     [gatewayState?.sessions],
   );
+  ambiguousGatewayMaintenanceSessionIdsRef.current =
+    ambiguousGatewayMaintenanceSessionIds;
   const gatewayUpdateNoticeKey = gatewayRelease && gatewayUpdateAvailableCount > 0
     ? `${gatewayRelease.releaseId}\0${gatewayRelease.buildId}\0${gatewayUpdatePlan
         .filter(node => node.state === "available")
@@ -3330,7 +3426,7 @@ function MalinkAppRuntime() {
     const generation = matrixStartupGenerationRef.current;
     for (const target of gatewayNodeProbeTargets) {
       if (!target.canProbe) continue;
-      const key = `${generation}\0${target.gatewayNodeId}\0${target.targetProjectId ?? ""}`;
+      const key = `${generation}\0${target.gatewayNodeId}\0${target.targetProjectId ?? ""}\0${gatewayUpdateReleaseKey ?? ""}`;
       if (gatewayNodeAutomaticProbeKeysRef.current.has(key)) continue;
       gatewayNodeAutomaticProbeKeysRef.current.add(key);
       void probeGatewayNodeLiveness(target);
@@ -3338,7 +3434,7 @@ function MalinkAppRuntime() {
     // The generation and per-node key prevent duplicate probes while allowing
     // every replacement Matrix client to verify each Gateway independently.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionStatus, gatewayNodeProbeTargets]);
+  }, [connectionStatus, gatewayNodeProbeTargets, gatewayUpdateReleaseKey]);
 
   useEffect(() => {
     const checkStaleNodes = () => {
@@ -3359,16 +3455,20 @@ function MalinkAppRuntime() {
         }
       }
     };
-    if (settingsOpen) checkStaleNodes();
+    checkStaleNodes();
+    const timer = window.setInterval(checkStaleNodes, 30_000);
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") checkStaleNodes();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
     // The probe function owns its per-node flight lock; current refs keep this
     // foreground trigger independent from render-local callback identities.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gatewayNodeProbeTargets, settingsOpen]);
+  }, [gatewayNodeProbeTargets, gatewayUpdateReleaseKey]);
 
   useEffect(() => {
     if (!gatewayUpdateDialogOpen) {
@@ -3400,7 +3500,6 @@ function MalinkAppRuntime() {
 
   useEffect(() => {
     if (
-      !gatewayUpdateDialogOpen ||
       connectionStatus !== "connected" ||
       !gatewayRelease
     ) return;
@@ -3423,6 +3522,7 @@ function MalinkAppRuntime() {
         if (target?.canProbe) void probeGatewayNodeLiveness(target);
       }
     };
+    checkProgress();
     const timer = window.setInterval(checkProgress, GATEWAY_UPDATE_PROGRESS_POLL_MS);
     return () => window.clearInterval(timer);
     // Probe flights are de-duplicated by node. Runtime status changes recreate
@@ -3433,9 +3533,96 @@ function MalinkAppRuntime() {
     connectionStatus,
     gatewayNodeProbeTargetsById,
     gatewayRelease,
-    gatewayUpdateDialogOpen,
     gatewayUpdatePlan,
     gatewayUpdateRuntimeForRelease,
+  ]);
+
+  useEffect(() => {
+    if (connectionStatus !== "connected") return;
+    for (const node of gatewayUpdatePlan) {
+      if (!node.targetProjectId) continue;
+      const intent = readGatewayUpdateIntent(
+        window.localStorage,
+        matrixConfig.gatewayId,
+        node.gatewayNodeId,
+      );
+      if (!intent || intent.projectId !== node.targetProjectId) continue;
+      const status = gatewayUpdateRuntimeForRelease[node.gatewayNodeId]?.status;
+      if (!status) continue;
+      if (
+        ["scheduled", "activating", "probation", "committed", "rolled_back", "failed", "repair_required"]
+          .includes(status.phase)
+      ) {
+        clearGatewayUpdateIntent(
+          window.localStorage,
+          matrixConfig.gatewayId,
+          node.gatewayNodeId,
+        );
+        continue;
+      }
+      if (
+        status.phase !== "staged" ||
+        status.releaseId !== intent.releaseId ||
+        status.targetBuildId !== intent.buildId ||
+        gatewayUpdateActiveNodeId !== null
+      ) continue;
+      const key = `${node.gatewayNodeId}\0${status.updateId ?? status.releaseId}\0${status.updatedAt}`;
+      if (gatewayUpdateResumeKeysRef.current.has(key)) continue;
+      gatewayUpdateResumeKeysRef.current.add(key);
+      void startGatewayUpdateNode(node).finally(() => {
+        gatewayUpdateResumeKeysRef.current.delete(key);
+      });
+    }
+    // The saved intent is written only after an explicit user action. It lets
+    // a current client finish the old two-command protocol if the browser was
+    // closed after stage but before apply, without touching pre-existing staged
+    // updates that have no current-client intent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    connectionStatus,
+    gatewayUpdateActiveNodeId,
+    gatewayUpdatePlan,
+    gatewayUpdateRuntimeForRelease,
+    matrixConfig.gatewayId,
+  ]);
+
+  useEffect(() => {
+    if (connectionStatus !== "connected") return;
+    for (const node of gatewayUpdatePlan) {
+      if (!node.targetProjectId) continue;
+      const runtime = gatewayUpdateRuntimePresentation[node.gatewayNodeId];
+      const status = runtime?.status;
+      if (!gatewayMaintenanceSessionShouldAutoArchive(status)) continue;
+      const sessionIds = [
+        runtime.maintenanceSessionId,
+        runtime.legacyMaintenanceSessionId,
+      ].filter((value): value is string => Boolean(value));
+      for (const sessionId of sessionIds) {
+        const session = gatewayState?.sessions.find(candidate =>
+          candidate.id === sessionId && candidate.projectId === node.targetProjectId,
+        );
+        if (!session || session.status === "archived") continue;
+        const key = `${node.targetProjectId}\0${sessionId}\0${status.updatedAt}`;
+        if (gatewayAutoArchiveKeysRef.current.has(key)) continue;
+        gatewayAutoArchiveKeysRef.current.add(key);
+        void archiveSession(sessionId, node.targetProjectId).catch(error => {
+          gatewayAutoArchiveKeysRef.current.delete(key);
+          console.warn(
+            `[gateway-update/auto-archive] ${formatUiError(error)}`,
+            error,
+          );
+        });
+      }
+    }
+    // A committed status is the authenticated update transaction's cleanup
+    // boundary. archiveSession sends the existing authenticated lifecycle
+    // command, so old Gateways require no state migration.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    connectionStatus,
+    gatewayState?.sessions,
+    gatewayUpdatePlan,
+    gatewayUpdateRuntimePresentation,
   ]);
 
   useEffect(() => {
@@ -3928,6 +4115,35 @@ function MalinkAppRuntime() {
   );
 
   function receiveMatrixMessage(incoming: IncomingMalinkMessage) {
+    if (
+      incoming.encrypted &&
+      isLiveMessageDelivery(incoming)
+    ) {
+      const gatewayNodeId = incoming.projectId
+        ? gatewayNodeByProjectRef.current.get(incoming.projectId)?.gatewayNodeId
+        : incoming.sessionId
+          ? gatewayNodeBySessionRef.current.get(incoming.sessionId)
+          : undefined;
+      if (gatewayNodeId) {
+        const verifiedAt = Date.now();
+        updateGatewayNodeLiveness(gatewayNodeId, current => ({
+          ...current,
+          state: "online",
+          checkedAt: verifiedAt,
+          lastVerifiedAt: verifiedAt,
+          consecutiveNoReplies: 0,
+          detail: "Recent signed Gateway activity was received.",
+        }));
+        setGatewayUpdateNodeRuntime(gatewayNodeId, current => ({
+          ...current,
+          state: "online",
+          checkedAt: verifiedAt,
+          lastVerifiedAt: verifiedAt,
+          consecutiveNoReplies: 0,
+          detail: undefined,
+        }));
+      }
+    }
     if (incoming.revision !== undefined) {
       setGatewayRevision((current) =>
         current === null ? incoming.revision! : Math.max(current, incoming.revision!),
@@ -3935,6 +4151,9 @@ function MalinkAppRuntime() {
     }
     const sessionId =
       incoming.sessionId ?? selectedSessionIdRef.current ?? undefined;
+    const liveSessionKey = sessionId
+      ? historyCacheSessionId(sessionId, incoming.projectId)
+      : undefined;
     if (sessionId && isLiveMessageDelivery(incoming)) {
       setSessionAgentActivity(sessionId, (current) => {
         if (incoming.kind === "user") {
@@ -3964,8 +4183,11 @@ function MalinkAppRuntime() {
     ) {
       if (sessionId && incoming.replacesEventId) {
         const replacementTarget = incoming.replacesEventId;
-        removeLiveMessage(sessionId, replacementTarget);
-        if (selectedSessionIdRef.current === sessionId) {
+        removeLiveMessage(liveSessionKey ?? sessionId, replacementTarget);
+        if (
+          selectedSessionIdRef.current === sessionId &&
+          (!incoming.projectId || selectedProjectIdRef.current === incoming.projectId)
+        ) {
           setMessages((current) =>
             current.filter(
               (message) =>
@@ -4013,20 +4235,24 @@ function MalinkAppRuntime() {
       recoverUiNotice("composer:send");
     }
     if (sessionId && isLiveMessageDelivery(incoming)) {
-      rememberLiveMessage(sessionId, message, {
+      rememberLiveMessage(liveSessionKey ?? sessionId, message, {
         reconcileMessageId: optimisticMessageId,
       });
     }
     if (sessionId && historyScopeRef.current) {
+      const cacheSessionId = historyCacheSessionId(
+        sessionId,
+        incoming.projectId,
+      );
       const persist =
         message.kind === "user" && message.eventId
           ? reconcileMessageHistory(
               historyScopeRef.current,
-              sessionId,
+              cacheSessionId,
               message,
               optimisticMessageId,
             )
-          : saveMessageHistory(historyScopeRef.current, sessionId, [message]);
+          : saveMessageHistory(historyScopeRef.current, cacheSessionId, [message]);
       void persist.catch((error) => {
         showUiNotice(
           "history:save",
@@ -4038,7 +4264,9 @@ function MalinkAppRuntime() {
     }
     if (
       sessionId &&
-      sessionId !== selectedSessionIdRef.current
+      (sessionId !== selectedSessionIdRef.current ||
+        (incoming.projectId !== undefined &&
+          selectedProjectIdRef.current !== incoming.projectId))
     ) {
       return;
     }
@@ -4063,6 +4291,16 @@ function MalinkAppRuntime() {
     );
   }
 
+  function historyCacheSessionId(
+    sessionId: string,
+    projectId?: string,
+  ): string {
+    return projectId &&
+      ambiguousGatewayMaintenanceSessionIdsRef.current.has(sessionId)
+      ? `project:${projectId}\0session:${sessionId}`
+      : sessionId;
+  }
+
   function recoverLateHistory(page: MalinkHistoryRecovery): void {
     const scope = historyScopeRef.current;
     if (!scope) return;
@@ -4080,8 +4318,17 @@ function MalinkAppRuntime() {
     });
     // Presentation persistence is a cache, not a delivery gate. A blocked
     // IndexedDB write must not hide already-verified native history.
-    persistRecoveredHistoryInBackground(scope, page.sessionId, recovered);
+    const recoveredProjectId = page.messages.find(message => message.projectId)?.projectId;
+    persistRecoveredHistoryInBackground(
+      scope,
+      historyCacheSessionId(page.sessionId, recoveredProjectId),
+      recovered,
+    );
     if (historySessionIdRef.current !== page.sessionId) return;
+    if (
+      recoveredProjectId &&
+      historyProjectIdRef.current !== recoveredProjectId
+    ) return;
     historyCursorRef.current = olderHistoryCursor(
       historyCursorRef.current,
       recovered,
@@ -4110,6 +4357,7 @@ function MalinkAppRuntime() {
 
   function loadRemoteHistoryInBackground(
     sessionId: string,
+    projectId: string | undefined,
     scope: string,
     connection: MalinkClient,
     generation: number,
@@ -4118,6 +4366,7 @@ function MalinkAppRuntime() {
     const active = historyRemoteFlightRef.current;
     if (
       active?.sessionId === sessionId
+      && active.projectId === projectId
       && active.generation === generation
       && active.connection === connection
     ) return;
@@ -4125,9 +4374,11 @@ function MalinkAppRuntime() {
     const isCurrent = () =>
       generation === historyGenerationRef.current
       && historySessionIdRef.current === sessionId
+      && historyProjectIdRef.current === (projectId ?? null)
       && malinkClientRef.current === connection;
     const flight = {
       sessionId,
+      ...(projectId ? { projectId } : {}),
       generation,
       connection,
     };
@@ -4140,7 +4391,7 @@ function MalinkAppRuntime() {
     void (async () => {
       try {
         const remote = await waitForHistoryOperation(
-          connection.loadHistoryPage(sessionId),
+          connection.loadHistoryPage(sessionId, undefined, projectId),
           BACKGROUND_HISTORY_SOURCE_TIMEOUT_MS,
           "Matrix conversation history",
         );
@@ -4154,7 +4405,11 @@ function MalinkAppRuntime() {
             message.sessionId ?? sessionId,
           ),
         );
-        persistRecoveredHistoryInBackground(scope, sessionId, olderMessages);
+        persistRecoveredHistoryInBackground(
+          scope,
+          historyCacheSessionId(sessionId, projectId),
+          olderMessages,
+        );
         if (!isCurrent()) return;
         if (olderMessages.length > 0) {
           if (prepend) prepareHistoryPrepend(feedRef.current, prependScrollRef);
@@ -4187,6 +4442,7 @@ function MalinkAppRuntime() {
 
   function loadInitialConnectionHistoryInBackground(
     sessionId: string,
+    projectId: string | undefined,
     scope: string,
     connection: MalinkClient,
     generation: number,
@@ -4195,6 +4451,7 @@ function MalinkAppRuntime() {
     const active = historyRemoteFlightRef.current;
     if (
       active?.sessionId === sessionId
+      && active.projectId === projectId
       && active.generation === generation
       && active.connection === connection
     ) return;
@@ -4202,8 +4459,14 @@ function MalinkAppRuntime() {
     const isCurrent = () =>
       generation === historyGenerationRef.current
       && historySessionIdRef.current === sessionId
+      && historyProjectIdRef.current === (projectId ?? null)
       && malinkClientRef.current === connection;
-    const flight = { sessionId, generation, connection };
+    const flight = {
+      sessionId,
+      ...(projectId ? { projectId } : {}),
+      generation,
+      connection,
+    };
     historyRemoteFlightRef.current = flight;
     if (isCurrent()) {
       setHistoryCheckingRemote(true);
@@ -4213,7 +4476,7 @@ function MalinkAppRuntime() {
     void (async () => {
       try {
         const local = await waitForHistoryOperation(
-          connection.loadLocalHistory(sessionId),
+          connection.loadLocalHistory(sessionId, projectId),
           BACKGROUND_HISTORY_SOURCE_TIMEOUT_MS,
           "Local client conversation projection",
         );
@@ -4227,7 +4490,11 @@ function MalinkAppRuntime() {
             message.sessionId ?? sessionId,
           ),
         );
-        persistRecoveredHistoryInBackground(scope, sessionId, localMessages);
+        persistRecoveredHistoryInBackground(
+          scope,
+          historyCacheSessionId(sessionId, projectId),
+          localMessages,
+        );
         if (!isCurrent()) return;
         if (localMessages.length > 0) {
           historyCursorRef.current = olderHistoryCursor(
@@ -4245,7 +4512,7 @@ function MalinkAppRuntime() {
         }
 
         const remote = await waitForHistoryOperation(
-          connection.loadHistoryPage(sessionId),
+          connection.loadHistoryPage(sessionId, undefined, projectId),
           BACKGROUND_HISTORY_SOURCE_TIMEOUT_MS,
           "Matrix conversation history",
         );
@@ -4259,7 +4526,11 @@ function MalinkAppRuntime() {
             message.sessionId ?? sessionId,
           ),
         );
-        persistRecoveredHistoryInBackground(scope, sessionId, remoteMessages);
+        persistRecoveredHistoryInBackground(
+          scope,
+          historyCacheSessionId(sessionId, projectId),
+          remoteMessages,
+        );
         if (!isCurrent()) return;
         if (remoteMessages.length > 0) {
           historyCursorRef.current = olderHistoryCursor(
@@ -4290,11 +4561,14 @@ function MalinkAppRuntime() {
   async function restoreSessionHistory(
     sessionId: string,
     connection: MalinkClient | null = malinkClientRef.current,
+    projectId?: string,
   ): Promise<void> {
     const scope = historyScopeRef.current;
     if (!scope) return;
+    const cacheSessionId = historyCacheSessionId(sessionId, projectId);
     const generation = ++historyGenerationRef.current;
     historySessionIdRef.current = sessionId;
+    historyProjectIdRef.current = projectId ?? null;
     historyCursorRef.current = null;
     followLatestRef.current = true;
     historyLoadingRef.current = true;
@@ -4307,13 +4581,14 @@ function MalinkAppRuntime() {
     setDecisionStates({});
     try {
       const cached = await waitForHistoryOperation(
-        loadMessageHistoryPage(scope, sessionId),
+        loadMessageHistoryPage(scope, cacheSessionId),
         LOCAL_HISTORY_FOREGROUND_TIMEOUT_MS,
         "Local conversation history",
       );
       if (
         generation !== historyGenerationRef.current ||
-        historySessionIdRef.current !== sessionId
+        historySessionIdRef.current !== sessionId ||
+        historyProjectIdRef.current !== (projectId ?? null)
       ) {
         return;
       }
@@ -4335,7 +4610,7 @@ function MalinkAppRuntime() {
       if (interruptedSends.length > 0) {
         void saveMessageHistory(
           scope,
-          sessionId,
+          cacheSessionId,
           interruptedSends,
         ).catch((error) => {
           showUiNotice(
@@ -4347,7 +4622,7 @@ function MalinkAppRuntime() {
         });
       }
       const liveMessages =
-        liveMessagesBySessionRef.current.get(sessionId) ?? [];
+        liveMessagesBySessionRef.current.get(cacheSessionId) ?? [];
       historyCursorRef.current = cached.cursor;
       setMessages((current) =>
         mergeChatMessages(
@@ -4372,6 +4647,7 @@ function MalinkAppRuntime() {
         cachedMessages.flatMap((message) =>
           message.eventId ? [message.eventId] : [],
         ),
+        projectId,
       );
       // Browser persistence is the only foreground restore. Native/Web local
       // projection and Matrix relations continue behind a bounded status row,
@@ -4379,6 +4655,7 @@ function MalinkAppRuntime() {
       // `Loading earlier messages`.
       loadInitialConnectionHistoryInBackground(
         sessionId,
+        projectId,
         scope,
         connection,
         generation,
@@ -4399,6 +4676,7 @@ function MalinkAppRuntime() {
           // restore clears this transient cache error.
           loadInitialConnectionHistoryInBackground(
             sessionId,
+            projectId,
             scope,
             connection,
             generation,
@@ -4416,6 +4694,7 @@ function MalinkAppRuntime() {
 
   async function loadOlderHistory(): Promise<void> {
     const sessionId = historySessionIdRef.current;
+    const projectId = historyProjectIdRef.current ?? undefined;
     const scope = historyScopeRef.current;
     if (
       !sessionId ||
@@ -4425,6 +4704,7 @@ function MalinkAppRuntime() {
     ) {
       return;
     }
+    const cacheSessionId = historyCacheSessionId(sessionId, projectId);
     const generation = historyGenerationRef.current;
     historyLoadingRef.current = true;
     setHistoryLoading(true);
@@ -4432,7 +4712,7 @@ function MalinkAppRuntime() {
     setHistoryRetryMode(null);
     try {
       const cached = await waitForHistoryOperation(
-        loadMessageHistoryPage(scope, sessionId, {
+        loadMessageHistoryPage(scope, cacheSessionId, {
           before: historyCursorRef.current,
         }),
         LOCAL_HISTORY_FOREGROUND_TIMEOUT_MS,
@@ -4474,11 +4754,13 @@ function MalinkAppRuntime() {
           olderMessages.flatMap((message) =>
             message.eventId ? [message.eventId] : [],
           ),
+          projectId,
         );
         setHistoryHasMore(cached.hasMore);
         if (!cached.hasMore) {
           loadRemoteHistoryInBackground(
             sessionId,
+            projectId,
             scope,
             connection,
             generation,
@@ -4496,6 +4778,7 @@ function MalinkAppRuntime() {
       setHistoryHasMore(false);
       loadRemoteHistoryInBackground(
         sessionId,
+        projectId,
         scope,
         connection,
         generation,
@@ -4515,6 +4798,7 @@ function MalinkAppRuntime() {
           setHistoryHasMore(false);
           loadRemoteHistoryInBackground(
             sessionId,
+            projectId,
             scope,
             connection,
             generation,
@@ -4561,20 +4845,28 @@ function MalinkAppRuntime() {
     connection: MalinkClient | null = malinkClientRef.current,
     revealProject = true,
     skipHistoryRestore = false,
+    requestedProjectId?: string,
   ) {
-    const sessionChanged = selectedSessionIdRef.current !== sessionId;
+    const openedSession = gatewayState?.sessions.find(
+      (session) => session.id === sessionId &&
+        (!requestedProjectId || session.projectId === requestedProjectId),
+    );
+    const projectId = sessionId
+      ? openedSession?.projectId ?? requestedProjectId ?? null
+      : null;
+    const sessionChanged = selectedSessionIdRef.current !== sessionId ||
+      selectedProjectIdRef.current !== projectId;
     selectedSessionIdRef.current = sessionId;
+    selectedProjectIdRef.current = projectId;
     setSelectedSessionId(sessionId);
+    setSelectedProjectId(projectId);
     if (historyScopeRef.current) {
-      writeSelectedSession(
+      writeSelectedSessionRoute(
         window.localStorage,
         historyScopeRef.current,
-        sessionId,
+        sessionId ? { sessionId, ...(projectId ? { projectId } : {}) } : null,
       );
     }
-    const openedSession = gatewayState?.sessions.find(
-      (session) => session.id === sessionId,
-    );
     if (openedSession) {
       setSessionReadState((current) => markSessionRead(current, openedSession));
       if (sessionChanged && revealProject) {
@@ -4600,6 +4892,7 @@ function MalinkAppRuntime() {
     setComposerOptionsOpen(false);
     historyGenerationRef.current += 1;
     historySessionIdRef.current = sessionId;
+    historyProjectIdRef.current = projectId;
     historyCursorRef.current = null;
     setHistoryCheckingRemote(false);
     setMessages([]);
@@ -4611,7 +4904,7 @@ function MalinkAppRuntime() {
       historyLoadingRef.current = false;
       setHistoryLoading(false);
     } else if (connection) {
-      void restoreSessionHistory(sessionId, connection);
+      void restoreSessionHistory(sessionId, connection, projectId ?? undefined);
     }
   }
   activateLocalSessionRef.current = (sessionId) => activateLocalSession(sessionId);
@@ -5311,6 +5604,7 @@ function MalinkAppRuntime() {
     if (!automaticRecovery && !preserveGatewayProjection) {
       setMessages([]);
       setSelectedSessionId(null);
+      setSelectedProjectId(null);
       setRunningSessionIds(new Set());
       stoppingSessionIdsRef.current = new Set();
       setStoppingSessionIds(new Set());
@@ -5330,7 +5624,9 @@ function MalinkAppRuntime() {
       setGatewayState(null);
       setGatewayRevision(null);
       selectedSessionIdRef.current = null;
+      selectedProjectIdRef.current = null;
       historySessionIdRef.current = null;
+      historyProjectIdRef.current = null;
       historyCursorRef.current = null;
       historyGenerationRef.current += 1;
       historyLoadingRef.current = false;
@@ -5348,13 +5644,15 @@ function MalinkAppRuntime() {
         conversationId: normalized.conversationId,
         roomId: normalized.roomId,
       });
-      const rememberedSessionId = readSelectedSession(
+      const rememberedSession = readSelectedSessionRoute(
         window.localStorage,
         historyScopeRef.current,
       );
       if (!automaticRecovery && !preserveGatewayProjection) {
-        selectedSessionIdRef.current = rememberedSessionId;
-        setSelectedSessionId(rememberedSessionId);
+        selectedSessionIdRef.current = rememberedSession?.sessionId ?? null;
+        selectedProjectIdRef.current = rememberedSession?.projectId ?? null;
+        setSelectedSessionId(rememberedSession?.sessionId ?? null);
+        setSelectedProjectId(rememberedSession?.projectId ?? null);
       }
       setMatrixConfig(normalized);
       saveMatrixConfig(normalized);
@@ -5766,7 +6064,11 @@ function MalinkAppRuntime() {
           ) {
             void restoreOptimisticSessionMessages(optimisticSessionRef.current);
           } else if (sessionId) {
-            void restoreSessionHistory(sessionId, connection);
+            void restoreSessionHistory(
+              sessionId,
+              connection,
+              selectedProjectIdRef.current ?? undefined,
+            );
           }
         })
         .catch(() => undefined);
@@ -5853,11 +6155,14 @@ function MalinkAppRuntime() {
     setStoppingSessionIds(new Set());
     setAgentActivitiesBySession(new Map());
     setSelectedSessionId(null);
+    setSelectedProjectId(null);
     setGatewayState(null);
     setGatewayRevision(null);
     selectedSessionIdRef.current = null;
+    selectedProjectIdRef.current = null;
     historyGenerationRef.current += 1;
     historySessionIdRef.current = null;
+    historyProjectIdRef.current = null;
     historyCursorRef.current = null;
     historyLoadingRef.current = false;
     setHistoryLoading(false);
@@ -5932,6 +6237,9 @@ function MalinkAppRuntime() {
     setGatewayRevision(null);
     setGatewayState(null);
     selectedSessionIdRef.current = null;
+    selectedProjectIdRef.current = null;
+    setSelectedSessionId(null);
+    setSelectedProjectId(null);
     setPairingPreview(null);
     setDeviceInvitation(null);
     setInvitationReauthRequired(false);
@@ -5939,7 +6247,7 @@ function MalinkAppRuntime() {
     setPairingError(null);
     setMessages([]);
     if (historyScope) {
-      writeSelectedSession(window.localStorage, historyScope, null);
+      writeSelectedSessionRoute(window.localStorage, historyScope, null);
     }
     historyScopeRef.current = "";
     if (historyScope) {
@@ -6478,7 +6786,7 @@ function MalinkAppRuntime() {
           `gateway-update:archive-blocked:${node.gatewayNodeId}`,
           "update",
           "warning",
-          "This update session is still owned by the Gateway supervisor. Open it to review the report or retry the published release; cleanup becomes available only after the update is committed or rolled back.",
+          "This update session is still owned by the Gateway supervisor. It will be archived automatically after the update is committed or safely rolled back.",
           10_000,
         );
         return;
@@ -6527,10 +6835,11 @@ function MalinkAppRuntime() {
     if (connectionStatusRef.current !== "connected") return null;
     if (gatewayNodeProbeFlightsRef.current.has(gatewayNodeId)) return null;
     gatewayNodeProbeFlightsRef.current.add(gatewayNodeId);
+    const probeStartedAt = Date.now();
     updateGatewayNodeLiveness(gatewayNodeId, current => ({
       ...current,
       state: "checking",
-      checkedAt: Date.now(),
+      checkedAt: probeStartedAt,
       detail: undefined,
     }));
     setGatewayUpdateNodeRuntime(gatewayNodeId, current => ({
@@ -6675,23 +6984,18 @@ function MalinkAppRuntime() {
     } catch (error) {
       if (error instanceof CommandCompletionTimeoutError && commandId !== null && probe) {
         const checkedAt = Date.now();
-        const liveness = updateGatewayNodeLiveness(gatewayNodeId, current => {
-          const consecutiveNoReplies = (current.consecutiveNoReplies ?? 0) + 1;
-          return {
-            ...current,
-            state: "unreachable",
+        const liveness = updateGatewayNodeLiveness(gatewayNodeId, current =>
+          gatewayNodeLivenessAfterProbeTimeout({
+            current,
+            probeStartedAt,
             checkedAt,
-            consecutiveNoReplies,
-            detail: gatewayNoReplyPresentation({
-              gatewayLabel,
-              consecutiveNoReplies,
-            }).detail,
-          };
-        });
+            gatewayLabel,
+          }),
+        );
         setGatewayUpdateNodeRuntime(gatewayNodeId, current => ({
           ...current,
-          state: "unreachable",
-          checkedAt,
+          state: liveness.state === "online" ? "online" : "unreachable",
+          checkedAt: liveness.checkedAt,
           lastVerifiedAt: liveness.lastVerifiedAt,
           consecutiveNoReplies: liveness.consecutiveNoReplies,
           detail: liveness.detail,
@@ -6766,6 +7070,33 @@ function MalinkAppRuntime() {
             },
           );
       if (!liveStatus) return;
+      const intentRelease = liveStatus.phase === "staged" &&
+        liveStatus.releaseId &&
+        liveStatus.targetBuildId
+        ? {
+            releaseId: liveStatus.releaseId,
+            buildId: liveStatus.targetBuildId,
+          }
+        : {
+            releaseId: gatewayRelease.releaseId,
+            buildId: gatewayRelease.buildId,
+          };
+      const intentPersisted = writeGatewayUpdateIntent(window.localStorage, {
+        version: 1,
+        workspaceId: matrixConfig.gatewayId,
+        gatewayNodeId: node.gatewayNodeId,
+        projectId: target.targetProjectId,
+        ...intentRelease,
+        requestedAt: Date.now(),
+      });
+      if (!intentPersisted) {
+        showUiNotice(
+          `gateway-update:intent:${node.gatewayNodeId}`,
+          "update",
+          "warning",
+          "The update can continue now, but this browser could not save automatic resume state. Keep this page open until preparation finishes.",
+        );
+      }
       if (gatewayUpdateNoticeKey) {
         setDismissedGatewayUpdateNoticeKey(gatewayUpdateNoticeKey);
       }
@@ -6774,6 +7105,8 @@ function MalinkAppRuntime() {
         state: "starting",
         startedAt: Date.now(),
         detail: undefined,
+        commandFailureCode: undefined,
+        commandFailureRetryable: undefined,
       }));
       const stagedReleaseId = liveStatus.phase === "staged"
         ? liveStatus.releaseId
@@ -6796,7 +7129,14 @@ function MalinkAppRuntime() {
         checkedAt: Date.now(),
         status,
         maintenanceSessionId: status.maintenanceSessionId,
+        commandFailureCode: undefined,
+        commandFailureRetryable: undefined,
       }));
+      clearGatewayUpdateIntent(
+        window.localStorage,
+        matrixConfig.gatewayId,
+        node.gatewayNodeId,
+      );
       showUiNotice(
         `gateway-update:${node.gatewayNodeId}`,
         "connection",
@@ -6809,12 +7149,41 @@ function MalinkAppRuntime() {
         8_000,
       );
     } catch (error) {
+      clearGatewayUpdateIntent(
+        window.localStorage,
+        matrixConfig.gatewayId,
+        node.gatewayNodeId,
+      );
       const detail = formatUiError(error);
+      const commandFailure = error instanceof GatewayUpdateCommandFailure
+        ? error
+        : null;
       setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
         ...current,
         state: "error",
         detail,
+        ...(commandFailure
+          ? {
+              commandFailureCode: commandFailure.code,
+              commandFailureRetryable: commandFailure.retryable,
+            }
+          : {}),
       }));
+      // Stage failures such as a missing published Prompt are persisted by the
+      // supervisor before the command fails. Refresh that signed status now so
+      // the user immediately receives the correct recovery action instead of
+      // being left with a disabled panel that only changes after a manual check.
+      const probeTarget = gatewayNodeProbeTargetsById.get(node.gatewayNodeId);
+      if (probeTarget) {
+        const refreshed = await probeGatewayNodeLiveness(probeTarget);
+        if (refreshed && commandFailure) {
+          setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
+            ...current,
+            commandFailureCode: commandFailure.code,
+            commandFailureRetryable: commandFailure.retryable,
+          }));
+        }
+      }
       showUiNotice(
         `gateway-update:${node.gatewayNodeId}`,
         "connection",
@@ -6826,11 +7195,11 @@ function MalinkAppRuntime() {
     }
   }
 
-  function openGatewayUpdateSession(sessionId: string): void {
+  function openGatewayUpdateSession(projectId: string, sessionId: string): void {
     setGatewayUpdateDialogOpen(false);
     setPrimaryView("chats");
     setMobileChatOpen(true);
-    activateLocalSession(sessionId);
+    activateLocalSession(sessionId, malinkClientRef.current, true, false, projectId);
   }
 
   async function executeGatewayUpdate(
@@ -6858,8 +7227,10 @@ function MalinkAppRuntime() {
       }
     }
     if (completion.outcome !== "succeeded") {
-      throw new Error(
+      throw new GatewayUpdateCommandFailure(
         completion.error?.message ?? "The Gateway update request did not complete.",
+        completion.error?.code ?? "gateway_update_failed",
+        completion.error?.retryable === true,
       );
     }
     const parsed = gatewayUpdateStatusSchema.safeParse(completion.result);
@@ -7351,15 +7722,22 @@ function MalinkAppRuntime() {
         liveMessagesBySessionRef.current.set(remoteSessionId, localMessages);
         pendingCreatedSessionIdRef.current = null;
         if (selectedDraft) {
+          const projectId = current.input.projectId ?? null;
           selectedSessionIdRef.current = remoteSessionId;
+          selectedProjectIdRef.current = projectId;
           historySessionIdRef.current = remoteSessionId;
+          historyProjectIdRef.current = projectId;
           setSelectedSessionId(remoteSessionId);
+          setSelectedProjectId(projectId);
           setMessages(localMessages);
           if (scope) {
-            writeSelectedSession(
+            writeSelectedSessionRoute(
               window.localStorage,
               scope,
-              remoteSessionId,
+              {
+                sessionId: remoteSessionId,
+                ...(projectId ? { projectId } : {}),
+              },
             );
           }
           setMobileChatOpen(true);
@@ -7771,10 +8149,10 @@ function MalinkAppRuntime() {
     }
   }
 
-  function chooseSession(id: string) {
+  function chooseSession(id: string, projectId?: string) {
     setPrimaryView("chats");
     setMobileChatOpen(true);
-    activateLocalSession(id);
+    activateLocalSession(id, malinkClientRef.current, true, false, projectId);
   }
 
   async function sendOrRecoverProviderHistoryCommand(
@@ -8178,7 +8556,7 @@ function MalinkAppRuntime() {
     providerHistoryBackgroundedRef.current = false;
     recoverUiNotice("provider:history-background");
     setProviderHistoryOpen(false);
-    chooseSession(sessionId);
+    chooseSession(sessionId, source.projectId);
   }
 
   function continueProviderHistorySession(session: ProviderSessionEntry, text: string) {
@@ -11261,24 +11639,24 @@ function MalinkAppRuntime() {
                   Boolean(lifecycleAction || activity) || signal !== "idle";
                 return (
                 <button
-                  key={session.id}
+                  key={`${session.projectId}\0${session.id}`}
                   data-session-id={session.id}
                   data-project-name={session.projectName}
                   aria-label={`${session.title}. ${statusSummary}. ${technicalSummary}. Updated ${formatSessionTime(session.updatedAt)}`}
                   title={`${session.title} · ${statusSummary}`}
                   data-session-signal={visualSignal}
-                  aria-pressed={selectedSessionId === session.id}
+                  aria-pressed={
+                    selectedSessionId === session.id &&
+                    selectedProjectId === session.projectId
+                  }
                   className={`session-row ${
-                    selectedSessionId === session.id
+                    selectedSessionId === session.id &&
+                    selectedProjectId === session.projectId
                       ? "selected"
                       : ""
                   } session-state-${indicator.activity} session-signal-${visualSignal} ${indicator.unread ? "unread" : ""} ${lifecycleAction ? "is-busy" : ""}`}
                   onClick={() => {
-                    if (ambiguousGatewayMaintenanceSessionIds.has(session.id)) {
-                      setGatewayUpdateDialogOpen(true);
-                      return;
-                    }
-                    void chooseSession(session.id);
+                    void chooseSession(session.id, session.projectId);
                   }}
                   disabled={lifecycleAction === "delete"}
                 >
@@ -11585,25 +11963,16 @@ function MalinkAppRuntime() {
                     !activeCapabilities?.canArchiveSession
                   }
                   onClick={() => {
-                    if (ambiguousGatewayMaintenanceSessionIds.has(gatewaySelected.id)) {
-                      setDetailsOpen(false);
-                      setGatewayUpdateDialogOpen(true);
-                      return;
-                    }
                     void archiveSession(gatewaySelected.id, gatewaySelected.projectId);
                   }}
                 >
                   <span aria-hidden="true">▣</span>
                   <span>
                     <strong>
-                      {ambiguousGatewayMaintenanceSessionIds.has(gatewaySelected.id)
-                        ? "Choose Gateway to archive"
-                        : isStreaming ? "Archive & stop agent" : "Archive session"}
+                      {isStreaming ? "Archive & stop agent" : "Archive session"}
                     </strong>
                     <small>
-                      {ambiguousGatewayMaintenanceSessionIds.has(gatewaySelected.id)
-                        ? "Choose the Gateway that owns this old update session"
-                        : "Remove from Malink; provider history remains"}
+                      Remove from Malink; provider history remains
                     </small>
                   </span>
                 </button>
@@ -11640,7 +12009,11 @@ function MalinkAppRuntime() {
                   onClick={() =>
                     historyRetryMode === "restore" &&
                     historySessionIdRef.current
-                      ? void restoreSessionHistory(historySessionIdRef.current)
+                      ? void restoreSessionHistory(
+                          historySessionIdRef.current,
+                          malinkClientRef.current,
+                          historyProjectIdRef.current ?? undefined,
+                        )
                       : void loadOlderHistory()
                   }
                 >
@@ -13006,6 +13379,7 @@ function incomingMessageFromClient(
     kind: message.kind,
     text: message.text ?? "",
     sessionId: message.sessionId,
+    projectId: message.projectId,
     deliveryMode: message.deliveryMode,
     historical: message.historical,
     operationId: message.operationId,

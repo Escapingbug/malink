@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   readSelectedSession,
+  readSelectedSessionRoute,
   selectedSessionStorageKey,
   writeSelectedSession,
+  writeSelectedSessionRoute,
 } from "../app/selectedSessionState.ts";
 
 test("persists the selected conversation independently for each Gateway scope", () => {
@@ -66,4 +68,40 @@ test("storage failures and invalid persisted ids do not break startup", () => {
   assert.equal(readSelectedSession(blocked, "scope"), null);
   assert.equal(writeSelectedSession(blocked, "scope", "session-a"), false);
   assert.equal(readSelectedSession({ getItem: () => "x".repeat(513) }, "scope"), null);
+});
+
+test("persists an exact project route while retaining the v1 session id", () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  };
+
+  assert.equal(writeSelectedSessionRoute(storage, "scope", {
+    projectId: "project-b",
+    sessionId: "shared-update-session",
+  }), true);
+  assert.deepEqual(readSelectedSessionRoute(storage, "scope"), {
+    projectId: "project-b",
+    sessionId: "shared-update-session",
+  });
+  assert.equal(readSelectedSession(storage, "scope"), "shared-update-session");
+
+  assert.equal(writeSelectedSessionRoute(storage, "scope", null), true);
+  assert.equal(readSelectedSessionRoute(storage, "scope"), null);
+  assert.equal(readSelectedSession(storage, "scope"), null);
+});
+
+test("upgrades a legacy scalar selection without rewriting it", () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  };
+  writeSelectedSession(storage, "scope", "legacy-session");
+  assert.deepEqual(readSelectedSessionRoute(storage, "scope"), {
+    sessionId: "legacy-session",
+  });
 });

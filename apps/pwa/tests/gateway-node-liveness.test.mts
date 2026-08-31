@@ -4,6 +4,7 @@ import {
   GATEWAY_AUTOMATIC_RECHECK_AFTER_MS,
   GATEWAY_ONLINE_PROOF_WINDOW_MS,
   gatewayNodeLivenessPresentation,
+  gatewayNodeLivenessAfterProbeTimeout,
   gatewayNodeLivenessSummary,
   gatewayNodeLivenessTargets,
   shouldAutomaticallyCheckGatewayNode,
@@ -184,4 +185,30 @@ test("summarizes independently verified nodes without hiding failures", () => {
     },
     now,
   }), "1 online · 1 needs attention · 1 unverified");
+});
+
+test("a delayed status timeout cannot overrule newer signed Agent activity", () => {
+  assert.deepEqual(gatewayNodeLivenessAfterProbeTimeout({
+    current: {
+      state: "online",
+      checkedAt: now + 10,
+      lastVerifiedAt: now + 10,
+      consecutiveNoReplies: 0,
+    },
+    probeStartedAt: now,
+    checkedAt: now + 12_000,
+    gatewayLabel: "Office Gateway",
+  }), {
+    state: "online",
+    checkedAt: now + 10,
+    lastVerifiedAt: now + 10,
+    consecutiveNoReplies: 0,
+    detail: "Recent signed Gateway activity was received while the status check was pending.",
+  });
+  assert.equal(gatewayNodeLivenessAfterProbeTimeout({
+    current: { state: "checking", checkedAt: now },
+    probeStartedAt: now,
+    checkedAt: now + 12_000,
+    gatewayLabel: "Office Gateway",
+  }).state, "unreachable");
 });
