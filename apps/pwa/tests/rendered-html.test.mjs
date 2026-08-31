@@ -91,11 +91,11 @@ test("ships a complete installable offline shell", async () => {
   assert.match(matrixSettings, /case "copy-page-link"[\s\S]*onCopyPageLink\(\)/);
   assert.match(
     matrixSettings,
-    /onExportDiagnostics\(\);[\s\S]*setDiagnosticExportStatus\("started"\)/,
+    /const exported = await onExportDiagnostics\(\);[\s\S]*setDiagnosticExportStatus\(exported \? "started" : "failed"\)/,
   );
   assert.match(
     matrixSettings,
-    /className="settings-diagnostic-card"[\s\S]*Diagnostic report download started[\s\S]*onExportDiagnostics\(\)[\s\S]*<details className="settings-build-details">[\s\S]*Build and version details/,
+    /className="settings-diagnostic-card"[\s\S]*Diagnostic report download started[\s\S]*await onExportDiagnostics\(\)[\s\S]*Exporting diagnostics…[\s\S]*<details className="settings-build-details">[\s\S]*Build and version details/,
   );
   assert.match(
     matrixSettings,

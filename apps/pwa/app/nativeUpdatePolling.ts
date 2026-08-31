@@ -3,6 +3,15 @@ import type { NativeUpdateStatus } from "@malink/native-bridge";
 export const NATIVE_UPDATE_POLL_INTERVAL_MS = 750;
 export const NATIVE_UPDATE_DISCOVERY_GRACE_MS = 15_000;
 
+export function nativeUpdateOperationInProgress(
+  state: NativeUpdateStatus | null,
+): boolean {
+  return state?.phase === "checking" ||
+    state?.phase === "available" ||
+    state?.phase === "downloading" ||
+    state?.phase === "installing";
+}
+
 export function shouldPollNativeUpdateStatus(
   state: NativeUpdateStatus | null,
   elapsedMs: number,

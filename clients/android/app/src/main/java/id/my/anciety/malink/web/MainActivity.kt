@@ -1026,6 +1026,14 @@ class MainActivity : ComponentActivity() {
             ).show()
             return
         }
+        if (manager.status().phase == NativeUpdatePhase.INSTALLING) {
+            Toast.makeText(
+                this,
+                "The verified update is already waiting for Android confirmation.",
+                Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
         Toast.makeText(
             this,
             "Preparing the verified Malink update…",

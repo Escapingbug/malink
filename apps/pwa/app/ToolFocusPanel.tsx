@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type {
   ToolGroupPresentation,
   ToolPhase,
@@ -17,8 +17,9 @@ export function ToolFocusPanel({
   const [outputToolId, setOutputToolId] = useState<string | null>(null);
   const [copyFeedback, setCopyFeedback] = useState<{
     toolId: string;
-    state: "copied" | "failed";
+    state: "copying" | "copied" | "failed";
   } | null>(null);
+  const copyInFlightRef = useRef(false);
 
   if (!tool) return null;
   const outputOpen = outputToolId === tool.id;
@@ -33,11 +34,16 @@ export function ToolFocusPanel({
   const invocation = tool.detail || tool.title || tool.name;
 
   async function copyInvocation() {
+    if (copyInFlightRef.current) return;
+    copyInFlightRef.current = true;
+    setCopyFeedback({ toolId: tool.id, state: "copying" });
     try {
       await writeClipboardTextWithTimeout(invocation);
       setCopyFeedback({ toolId: tool.id, state: "copied" });
     } catch {
       setCopyFeedback({ toolId: tool.id, state: "failed" });
+    } finally {
+      copyInFlightRef.current = false;
     }
     const copiedToolId = tool.id;
     window.setTimeout(
@@ -68,6 +74,8 @@ export function ToolFocusPanel({
             aria-label={
               copyState === "copied"
                 ? "Tool call copied"
+                : copyState === "copying"
+                  ? "Copying tool call"
                 : copyState === "failed"
                   ? "Tool call could not be copied"
                   : "Copy tool call"
@@ -75,10 +83,14 @@ export function ToolFocusPanel({
             title={
               copyState === "copied"
                 ? "Copied"
+                : copyState === "copying"
+                  ? "Copying…"
                 : copyState === "failed"
                   ? "Copy failed"
                   : "Copy"
             }
+            disabled={copyState === "copying"}
+            aria-busy={copyState === "copying"}
             onClick={() => void copyInvocation()}
           >
             {copyState === "copied" ? <CheckIcon /> : <CopyIcon />}

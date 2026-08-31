@@ -28,10 +28,12 @@ export type GatewayUpdateNodeRuntime = {
   maintenanceSessionAmbiguous?: boolean;
   maintenanceSessionArchiveAvailable?: boolean;
   maintenanceSessionArchiveBusy?: boolean;
+  maintenanceSessionArchiveChecking?: boolean;
   maintenanceSessionArchived?: boolean;
   legacyMaintenanceSessionId?: string;
   legacyMaintenanceSessionArchiveAvailable?: boolean;
   legacyMaintenanceSessionArchiveBusy?: boolean;
+  legacyMaintenanceSessionArchiveChecking?: boolean;
   legacyMaintenanceSessionArchived?: boolean;
 };
 
@@ -48,6 +50,7 @@ type Props = {
   onOpenSession(sessionId: string): void;
   onArchiveSession(node: GatewayUpdatePlanNode, sessionId: string): void;
   onExportDiagnostics(): void;
+  diagnosticExportBusy?: boolean;
 };
 
 export function GatewayUpdateDialog(props: Props) {
@@ -68,6 +71,7 @@ function GatewayUpdateDialogContent({
   onOpenSession,
   onArchiveSession,
   onExportDiagnostics,
+  diagnosticExportBusy = false,
 }: Props) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -211,6 +215,7 @@ function GatewayUpdateDialogContent({
                     gatewayLabel={owner.label}
                     consecutiveNoReplies={runtime.consecutiveNoReplies}
                     onExportDiagnostics={onExportDiagnostics}
+                    diagnosticExportBusy={diagnosticExportBusy}
                   />
                 )}
                 {runtime.status && knownUpdateFailure && (
@@ -221,6 +226,7 @@ function GatewayUpdateDialogContent({
                       node.state === "available" && runtime.state === "online"
                     }
                     onExportDiagnostics={onExportDiagnostics}
+                    diagnosticExportBusy={diagnosticExportBusy}
                   />
                 )}
 
@@ -251,10 +257,17 @@ function GatewayUpdateDialogContent({
                         <button
                           type="button"
                           className="secondary-button"
-                          disabled={!connected || runtime.maintenanceSessionArchiveBusy}
+                          disabled={
+                            !connected ||
+                            runtime.state === "checking" ||
+                            runtime.maintenanceSessionArchiveBusy
+                          }
+                          aria-busy={runtime.maintenanceSessionArchiveBusy}
                           onClick={() => onArchiveSession(node, runtime.maintenanceSessionId!)}
                         >
-                          {runtime.maintenanceSessionArchiveBusy
+                          {runtime.maintenanceSessionArchiveChecking
+                            ? "Checking before archive…"
+                            : runtime.maintenanceSessionArchiveBusy
                             ? "Archiving old update session…"
                             : "Archive old update session"}
                         </button>
@@ -277,13 +290,20 @@ function GatewayUpdateDialogContent({
                         <button
                           type="button"
                           className="secondary-button"
-                          disabled={!connected || runtime.legacyMaintenanceSessionArchiveBusy}
+                          disabled={
+                            !connected ||
+                            runtime.state === "checking" ||
+                            runtime.legacyMaintenanceSessionArchiveBusy
+                          }
+                          aria-busy={runtime.legacyMaintenanceSessionArchiveBusy}
                           onClick={() => onArchiveSession(
                             node,
                             runtime.legacyMaintenanceSessionId!,
                           )}
                         >
-                          {runtime.legacyMaintenanceSessionArchiveBusy
+                          {runtime.legacyMaintenanceSessionArchiveChecking
+                            ? "Checking before archive…"
+                            : runtime.legacyMaintenanceSessionArchiveBusy
                             ? "Archiving old update session…"
                             : "Archive old update session"}
                         </button>

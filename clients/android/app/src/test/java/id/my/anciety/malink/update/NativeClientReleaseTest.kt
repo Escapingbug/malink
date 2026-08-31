@@ -41,6 +41,20 @@ class NativeClientReleaseTest {
         assertFalse(canReusePublishedReleaseStatus(43, 41, ready))
     }
 
+    @Test
+    fun `an already submitted APK install is idempotent`() {
+        val ready = NativeUpdateStatus(
+            phase = NativeUpdatePhase.READY,
+            currentVersionCode = 41,
+            currentVersionName = "41",
+            latestVersionCode = 42,
+        )
+        assertFalse(nativeUpdateInstallAlreadySubmitted(ready))
+        assertTrue(nativeUpdateInstallAlreadySubmitted(ready.copy(
+            phase = NativeUpdatePhase.INSTALLING,
+        )))
+    }
+
     private val parser = NativeClientReleaseParser(
         StaticServiceEndpoint.parse("https://updates.example"),
     )

@@ -262,6 +262,10 @@ class NativeUpdateManager private constructor(context: Context) {
     }
 
     suspend fun installReady(): NativeUpdateStatus = mutex.withLock {
+        if (nativeUpdateInstallAlreadySubmitted(status)) {
+            diagnostics.record("update.install_already_submitted")
+            return@withLock status
+        }
         val release = readyRelease
         val apk = readyApk
         if (release == null || apk == null || !apk.isFile) {
@@ -280,6 +284,7 @@ class NativeUpdateManager private constructor(context: Context) {
         try {
             artifactVerifier.verify(apk, release)
             installer.install(apk, release)
+            notifier.clear()
             diagnostics.record("update.install_submitted")
             publish(statusFor(release, NativeUpdatePhase.INSTALLING))
         } catch (error: Exception) {
@@ -485,3 +490,6 @@ internal fun canReusePublishedReleaseStatus(
     -> status.latestVersionCode == releaseVersionCode
     else -> false
 }
+
+internal fun nativeUpdateInstallAlreadySubmitted(status: NativeUpdateStatus): Boolean =
+    status.phase == NativeUpdatePhase.INSTALLING

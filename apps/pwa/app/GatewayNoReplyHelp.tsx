@@ -10,10 +10,12 @@ export function GatewayNoReplyHelp({
   gatewayLabel,
   consecutiveNoReplies,
   onExportDiagnostics,
+  diagnosticExportBusy = false,
 }: {
   gatewayLabel: string;
   consecutiveNoReplies: number | undefined;
   onExportDiagnostics(): void;
+  diagnosticExportBusy?: boolean;
 }) {
   const persistent = (consecutiveNoReplies ?? 1) >= 2;
   return (
@@ -42,8 +44,14 @@ export function GatewayNoReplyHelp({
           Malink cannot remotely restart a Gateway that is not answering. The exported report
           records what this client observed; startup failures also require the Gateway logs above.
         </p>
-        <button type="button" className="secondary-button" onClick={onExportDiagnostics}>
-          Export client diagnostics
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={diagnosticExportBusy}
+          aria-busy={diagnosticExportBusy}
+          onClick={onExportDiagnostics}
+        >
+          {diagnosticExportBusy ? "Exporting diagnostics…" : "Export client diagnostics"}
         </button>
       </div>
     </details>
@@ -55,11 +63,13 @@ export function GatewayUpdateFailureHelp({
   status,
   retryAvailable,
   onExportDiagnostics,
+  diagnosticExportBusy = false,
 }: {
   gatewayLabel: string;
   status: GatewayUpdateStatus;
   retryAvailable: boolean;
   onExportDiagnostics(): void;
+  diagnosticExportBusy?: boolean;
 }) {
   const repairRequired = status.phase === "repair_required";
   return (
@@ -98,8 +108,14 @@ export function GatewayUpdateFailureHelp({
             step. Retry only after the reported cause has changed.
           </p>
         )}
-        <button type="button" className="secondary-button" onClick={onExportDiagnostics}>
-          Export client diagnostics
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={diagnosticExportBusy}
+          aria-busy={diagnosticExportBusy}
+          onClick={onExportDiagnostics}
+        >
+          {diagnosticExportBusy ? "Exporting diagnostics…" : "Export client diagnostics"}
         </button>
       </div>
     </details>

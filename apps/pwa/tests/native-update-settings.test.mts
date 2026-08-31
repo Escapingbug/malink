@@ -9,6 +9,7 @@ import {
 } from "../app/MatrixSettings.tsx";
 import {
   NATIVE_UPDATE_DISCOVERY_GRACE_MS,
+  nativeUpdateOperationInProgress,
   shouldPollNativeUpdateStatus,
 } from "../app/nativeUpdatePolling.ts";
 
@@ -137,6 +138,31 @@ test("shows live APK bytes and a native progress bar", () => {
   assert.match(html, /downloading 49% \(18\.5 MB \/ 37\.0 MB\)/);
   assert.match(html, /<progress aria-label="APK download progress" max="38764593" value="19382296"><\/progress>/);
   assert.doesNotMatch(html, /from your Gateway/i);
+  assert.match(html, /<button type="button" disabled="" aria-busy="true">Downloading APK…<\/button>/);
+});
+
+test("keeps the APK action locked for the complete native background operation", () => {
+  for (const phase of ["checking", "available", "downloading", "installing"] as const) {
+    const state = {
+      phase,
+      currentVersionCode: 1,
+      currentVersionName: "0.1.0-old",
+    };
+    assert.equal(nativeUpdateOperationInProgress(state), true);
+    const html = renderToStaticMarkup(createElement(NativeUpdateSettings, {
+      state,
+      busy: false,
+      onRefresh() {},
+      onInstall() {},
+    }));
+    assert.match(html, /<button type="button" disabled="" aria-busy="true">/);
+    assert.doesNotMatch(html, /Refresh APK status/);
+  }
+  assert.equal(nativeUpdateOperationInProgress({
+    phase: "ready",
+    currentVersionCode: 1,
+    currentVersionName: "0.1.0-old",
+  }), false);
 });
 
 test("polls active downloads and bounds the initial discovery race", () => {

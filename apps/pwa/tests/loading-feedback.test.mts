@@ -163,6 +163,26 @@ test("keeps async operation context visible until terminal completion", async ()
     /diagnosticExportStatus[\s\S]*?Diagnostic report download started[\s\S]*?could not be downloaded/,
   );
   assert.match(
+    settings,
+    /disabled=\{diagnosticExportBusy\}[\s\S]*?await onExportDiagnostics\(\)[\s\S]*?Exporting diagnostics…/,
+  );
+  assert.match(
+    app,
+    /async function stopStreaming[\s\S]*?try \{[\s\S]*?await sent\.completion[\s\S]*?finally \{[\s\S]*?setSessionStopping\(sessionId, false\)/,
+  );
+  assert.match(
+    app,
+    /function exportConnectionDiagnostics\(\): Promise<boolean>[\s\S]*?diagnosticExportFlightRef\.current[\s\S]*?return existing[\s\S]*?setDiagnosticExportBusy\(false\)/,
+  );
+  assert.match(
+    app,
+    /const resetBlockedConnection = async \(\)[\s\S]*?upgradeRepairBusyRef\.current[\s\S]*?await resetBlockedPwaIndexedDb[\s\S]*?setUpgradeRepairError/,
+  );
+  assert.match(
+    app,
+    /function reconnectWorkspaceFromUi\(\)[\s\S]*?status === "reconnecting"[\s\S]*?connectMalinkClient\(matrixConfig, false\)/,
+  );
+  assert.match(
     app,
     /async function checkForPwaUpdates\(\)[\s\S]*?Checking for a newer Malink version in the background[\s\S]*?await updater\.checkNow\(\)[\s\S]*?Malink is up to date/,
   );
@@ -196,6 +216,10 @@ test("keeps async operation context visible until terminal completion", async ()
     /showWebLoading\([\s\S]*?Loading Malink…[\s\S]*?onPageCommitVisible[\s\S]*?hideWebLoading\(view\)/,
   );
   assert.match(androidActivity, /The update service is still starting/);
+  assert.match(
+    androidActivity,
+    /manager\.status\(\)\.phase == NativeUpdatePhase\.INSTALLING[\s\S]*?already waiting for Android confirmation/,
+  );
   assert.match(
     androidActivity,
     /if \(!isEnabled\) return@setOnClickListener[\s\S]*?isEnabled = false[\s\S]*?text = "\$action…"/,

@@ -304,6 +304,43 @@ test("shows exact-node archival progress for a legacy maintenance session", () =
   assert.match(html, /Old update session archived on this Gateway/);
 });
 
+test("locks archive and diagnostic actions during their asynchronous preflight", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [nodes[0]!, nodes[1]!],
+    runtimeByNode: {
+      "node-office": {
+        state: "checking",
+        maintenanceSessionId: "legacy-shared-session",
+        maintenanceSessionAmbiguous: true,
+        maintenanceSessionArchiveAvailable: true,
+        maintenanceSessionArchiveBusy: true,
+        maintenanceSessionArchiveChecking: true,
+      },
+      "node-server": {
+        state: "unreachable",
+        consecutiveNoReplies: 2,
+      },
+    },
+    activeGatewayNodeId: null,
+    diagnosticExportBusy: true,
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  assert.match(
+    html,
+    /<button type="button" class="secondary-button" disabled="" aria-busy="true">Checking before archive…<\/button>/,
+  );
+  assert.match(html, /disabled="" aria-busy="true">Exporting diagnostics…<\/button>/);
+});
+
 test("keeps a new release actionable while offering cleanup for an older collision", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
     open: true,

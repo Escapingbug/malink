@@ -36,7 +36,10 @@ import {
 } from "./GatewayEnrollmentPanel";
 import { gatewayProjectOwner } from "./projectCatalog";
 import { injectedNativeBridgePort } from "./client/native/NativeRpcBridge";
-import { nativeUpdateDownloadProgress } from "./nativeUpdatePolling";
+import {
+  nativeUpdateDownloadProgress,
+  nativeUpdateOperationInProgress,
+} from "./nativeUpdatePolling";
 import { gatewayUpdateSettingsPresentation } from "./gatewayUpdateSettingsPresentation";
 import {
   gatewayNoReplyPresentation,
@@ -81,6 +84,8 @@ type Props = {
   updateState: PwaUpdateState;
   nativeUpdateState: NativeUpdateStatus | null;
   nativeUpdateBusy: boolean;
+  nativeUpdateRequestBusy: boolean;
+  diagnosticExportBusy: boolean;
   nativeRuntime: MalinkNativeRuntimeInfo | null;
   webPushState: WebPushNotificationState;
   webPushBusy: boolean;
@@ -113,7 +118,7 @@ type Props = {
   onCopyPageLink(): void;
   onRefreshNativeUpdate(): void;
   onInstallNativeUpdate(): void;
-  onExportDiagnostics(): void;
+  onExportDiagnostics(): Promise<boolean>;
   onEnableWebPush(): void;
   onDisableWebPush(): void;
 };
@@ -156,6 +161,8 @@ function MatrixSettingsDialog({
   updateState,
   nativeUpdateState,
   nativeUpdateBusy,
+  nativeUpdateRequestBusy,
+  diagnosticExportBusy,
   nativeRuntime,
   webPushState,
   webPushBusy,
@@ -224,11 +231,13 @@ function MatrixSettingsDialog({
     gatewayEnrollmentBusy !== null ||
     gatewayProfileBusy !== null ||
     webPushBusy ||
-    nativeUpdateBusy ||
+    nativeUpdateRequestBusy ||
+    diagnosticExportBusy ||
     copyPageLinkBusy;
   const busy =
     status === "connecting" ||
     status === "securing" ||
+    status === "reconnecting" ||
     actionBusy;
   const needsAccount =
     Boolean(pairingPreview) && (!trustedGateway || repairRequired);
@@ -321,7 +330,7 @@ function MatrixSettingsDialog({
         onCopyPageLink();
         return;
       case "export-diagnostics":
-        onExportDiagnostics();
+        void onExportDiagnostics();
     }
   };
   const pwaUpdateBusy =
@@ -508,6 +517,7 @@ function MatrixSettingsDialog({
                           gatewayLabel={gatewayIdentity.label}
                           consecutiveNoReplies={livenessValue.consecutiveNoReplies}
                           onExportDiagnostics={onExportDiagnostics}
+                          diagnosticExportBusy={diagnosticExportBusy}
                         />
                       )}
                       {editing && (
@@ -843,7 +853,13 @@ function MatrixSettingsDialog({
               {gatewaySoftware.action && gatewaySoftware.actionLabel && (
                 <button
                   type="button"
-                  disabled={gatewayUpdateDiscoveryBusy}
+                  disabled={gatewayUpdateDiscoveryBusy || busy}
+                  aria-busy={
+                    gatewayUpdateDiscoveryBusy ||
+                    status === "connecting" ||
+                    status === "securing" ||
+                    status === "reconnecting"
+                  }
                   onClick={
                     gatewaySoftware.action === "review"
                       ? onReviewGatewayUpdates
@@ -852,7 +868,12 @@ function MatrixSettingsDialog({
                         : onReconnectGatewayUpdates
                   }
                 >
-                  {gatewaySoftware.actionLabel}
+                  {gatewaySoftware.action === "reconnect" &&
+                  (status === "connecting" ||
+                    status === "securing" ||
+                    status === "reconnecting")
+                    ? "Reconnecting…"
+                    : gatewaySoftware.actionLabel}
                 </button>
               )}
             </section>
@@ -931,17 +952,15 @@ function MatrixSettingsDialog({
             </span>
             <button
               type="button"
-              onClick={() => {
+              disabled={diagnosticExportBusy}
+              aria-busy={diagnosticExportBusy}
+              onClick={() => void (async () => {
                 setDiagnosticExportStatus(null);
-                try {
-                  onExportDiagnostics();
-                  setDiagnosticExportStatus("started");
-                } catch {
-                  setDiagnosticExportStatus("failed");
-                }
-              }}
+                const exported = await onExportDiagnostics();
+                setDiagnosticExportStatus(exported ? "started" : "failed");
+              })()}
             >
-              Export diagnostics
+              {diagnosticExportBusy ? "Exporting diagnostics…" : "Export diagnostics"}
             </button>
           </div>
           <div className="settings-build-version">
@@ -996,11 +1015,16 @@ function MatrixSettingsDialog({
         {connected && (
           <footer>
             <button
+              type="button"
               className="disconnect-button"
               onClick={onDisconnect}
-              disabled={pairingBusy || invitationBusy}
+              disabled={busy}
             >
-              Disconnect
+              {status === "connecting" ||
+              status === "securing" ||
+              status === "reconnecting"
+                ? "Connection in progress…"
+                : "Disconnect"}
             </button>
           </footer>
         )}
@@ -1145,9 +1169,14 @@ export function NativeUpdateSettings({
   const installable =
     state?.phase === "ready" || state?.phase === "permission_required";
   const installing = state?.phase === "installing";
+  const operationInProgress = busy || nativeUpdateOperationInProgress(state);
   const downloadProgress = nativeUpdateDownloadProgress(state);
   const label = installing
     ? "Installing APK…"
+    : state?.phase === "downloading" || state?.phase === "available"
+      ? "Downloading APK…"
+    : state?.phase === "checking"
+      ? "Checking APK…"
     : busy
       ? installable
         ? "Installing APK…"
@@ -1198,7 +1227,8 @@ export function NativeUpdateSettings({
       ) : (
         <button
           type="button"
-          disabled={busy || installing}
+          disabled={operationInProgress}
+          aria-busy={operationInProgress}
           onClick={installable ? onInstall : onRefresh}
         >
           {label}
