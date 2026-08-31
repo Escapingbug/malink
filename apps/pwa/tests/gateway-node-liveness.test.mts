@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  GATEWAY_AUTOMATIC_RECHECK_AFTER_MS,
   GATEWAY_ONLINE_PROOF_WINDOW_MS,
   gatewayNodeLivenessPresentation,
   gatewayNodeLivenessAfterProbeTimeout,
   gatewayNodeLivenessSummary,
   gatewayNodeLivenessTargets,
-  shouldAutomaticallyCheckGatewayNode,
 } from "../app/gatewayNodeLiveness.ts";
 
 const now = 10_000_000;
@@ -156,24 +154,6 @@ test("online proof expires instead of presenting cached registration as liveness
   }, now);
   assert.equal(repeated.label, "Gateway needs attention");
   assert.match(repeated.detail, /missed 2 consecutive signed checks/);
-});
-
-test("automatic checks are bounded while manual status remains explicit", () => {
-  assert.equal(shouldAutomaticallyCheckGatewayNode(undefined, now), true);
-  assert.equal(shouldAutomaticallyCheckGatewayNode({
-    state: "online",
-    checkedAt: now,
-    lastVerifiedAt: now,
-  }, now + GATEWAY_AUTOMATIC_RECHECK_AFTER_MS - 1), false);
-  assert.equal(shouldAutomaticallyCheckGatewayNode({
-    state: "online",
-    checkedAt: now,
-    lastVerifiedAt: now,
-  }, now + GATEWAY_AUTOMATIC_RECHECK_AFTER_MS), true);
-  assert.equal(shouldAutomaticallyCheckGatewayNode({
-    state: "checking",
-    checkedAt: now,
-  }, now + GATEWAY_AUTOMATIC_RECHECK_AFTER_MS), false);
 });
 
 test("summarizes independently verified nodes without hiding failures", () => {

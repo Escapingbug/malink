@@ -278,6 +278,10 @@ export class MatrixMlp3GatewayRunner {
   }>()
   private publishedClientReleases: NativeClientRelease[] = []
   private readonly runtimeEpoch = randomUUID()
+  private gatewayNodeStatusTimer: ReturnType<typeof setTimeout> | null = null
+  private gatewayNodeStatusFingerprint: string | null = null
+  private gatewayNodeStatusLastPublishedAt = 0
+  private gatewayNodeStatusControlRoomId: string | null | undefined
 
   constructor(
     private readonly config: MatrixGatewayConfig,
@@ -412,6 +416,9 @@ export class MatrixMlp3GatewayRunner {
         await this.publishProjectSnapshot(project)
       }
       this.state = 'running'
+      this.scheduleGatewayNodeStatusObservation(
+        Math.min(1_000, this.gatewayNodeStatusHeartbeatIntervalMs()),
+      )
       await this.recoverJournal()
       await this.drainInbox()
       await this.eventChain
@@ -1141,11 +1148,104 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private async publishGatewayUpdateStatus(): Promise<void> {
-    for (const project of this.projects.values()) {
-      await this.publishWorkspaceSnapshot(project).catch(error => {
-        this.log(`[mlp3/matrix] Gateway update snapshot failed: ${formatError(error)}`)
+    await this.publishGatewayNodeStatus(true).catch(error => {
+      this.log(`[mlp3/matrix] Gateway node status publication failed: ${formatError(error)}`)
+    })
+  }
+
+  /**
+   * Observe the local supervisor frequently but publish to Matrix only when
+   * its semantic status changes or one shared heartbeat becomes due. Client
+   * count and project count therefore do not multiply status traffic.
+   */
+  private scheduleGatewayNodeStatusObservation(delayMs: number): void {
+    if (this.gatewayNodeStatusTimer !== null) clearTimeout(this.gatewayNodeStatusTimer)
+    if (this.state !== 'running') return
+    this.gatewayNodeStatusTimer = setTimeout(() => {
+      this.gatewayNodeStatusTimer = null
+      const observe = this.eventChain.then(() => this.publishGatewayNodeStatus(false))
+      this.eventChain = observe.then(() => undefined, error => {
+        this.log(`[mlp3/matrix] Gateway node status observation failed: ${formatError(error)}`)
       })
+      void observe.catch(() => undefined).finally(() => {
+        this.scheduleGatewayNodeStatusObservation(this.gatewayNodeStatusObservationIntervalMs())
+      })
+    }, delayMs)
+    this.gatewayNodeStatusTimer.unref?.()
+  }
+
+  private gatewayNodeStatusHeartbeatIntervalMs(): number {
+    return this.config.gatewayHeartbeatIntervalMs ?? 60_000
+  }
+
+  private gatewayNodeStatusObservationIntervalMs(): number {
+    return Math.min(2_000, Math.max(250, this.gatewayNodeStatusHeartbeatIntervalMs() / 4))
+  }
+
+  private async publishGatewayNodeStatus(force: boolean): Promise<void> {
+    if (this.state !== 'running') return
+    const update = await this.dependencies.gatewayUpdateSupervisor?.status().catch(error => {
+      this.log(`[mlp3/matrix] Gateway update status unavailable: ${formatError(error)}`)
+      return undefined
+    })
+    if (!update) return
+    const fingerprint = canonicalJson(update as JsonValue)
+    const now = this.now()
+    if (
+      !force
+      && fingerprint === this.gatewayNodeStatusFingerprint
+      && now - this.gatewayNodeStatusLastPublishedAt < this.gatewayNodeStatusHeartbeatIntervalMs()
+    ) return
+    const project = await this.gatewayNodeStatusProject()
+    if (!project) return
+    const observedAt = Math.max(now, this.gatewayNodeStatusLastPublishedAt + 1)
+    const event: Mlp3Event = {
+      kind: 'malink.event',
+      version: 3,
+      eventId: logicalGatewayNodeStatusEventId(
+        this.config.gatewayId,
+        this.config.gatewayNodeId,
+        observedAt,
+      ),
+      workspaceId: this.config.gatewayId,
+      projectId: project.project.projectId,
+      occurredAt: observedAt,
+      payload: {
+        // Reuse the existing compatible event shape. The absence of a
+        // causationCommandId distinguishes this shared observation from a
+        // manual gateway.update.status command result.
+        type: 'gateway.update.status',
+        status: update,
+      },
     }
+    await this.content.queueEvent(project.config, event, this.client)
+    this.gatewayNodeStatusFingerprint = fingerprint
+    this.gatewayNodeStatusLastPublishedAt = observedAt
+  }
+
+  private async gatewayNodeStatusProject(): Promise<V3ProjectRuntime | null> {
+    if (this.gatewayNodeStatusControlRoomId === undefined) {
+      const directory = await this.dependencies.workspaceGatewayDirectory?.().catch(error => {
+        this.log(`[mlp3/matrix] Gateway status control route unavailable: ${formatError(error)}`)
+        return undefined
+      })
+      this.gatewayNodeStatusControlRoomId = directory?.directory.gateways.find(gateway =>
+        gateway.gatewayNodeId === this.config.gatewayNodeId
+      )?.transport.roomId ?? null
+    }
+    const controlRoomId = this.gatewayNodeStatusControlRoomId
+    const controlProject = controlRoomId ? this.projects.get(controlRoomId) : undefined
+    if (
+      controlProject
+      && await this.content.hasActiveDevices(controlProject.config.roomId)
+    ) return controlProject
+    const projects = [...this.projects.values()].sort((left, right) =>
+      left.project.projectId.localeCompare(right.project.projectId),
+    )
+    for (const project of projects) {
+      if (await this.content.hasActiveDevices(project.config.roomId)) return project
+    }
+    return null
   }
 
   private async subscribeNotifications(
@@ -2917,6 +3017,10 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private async cleanup(): Promise<void> {
+    if (this.gatewayNodeStatusTimer !== null) {
+      clearTimeout(this.gatewayNodeStatusTimer)
+      this.gatewayNodeStatusTimer = null
+    }
     this.content.stopRetries()
     this.webPush.stop()
     // Stop /sync before removing the listener. A response already being
@@ -3126,6 +3230,16 @@ function logicalWorkspaceSnapshotEventId(
 ): string {
   return createHash('sha256')
     .update(`malink-v3-workspace-snapshot\0${workspaceId}\0${projectId}\0${snapshotVersion}`)
+    .digest('base64url')
+}
+
+function logicalGatewayNodeStatusEventId(
+  workspaceId: string,
+  gatewayNodeId: string,
+  observedAt: number,
+): string {
+  return createHash('sha256')
+    .update(`malink-v3-gateway-node-status\0${workspaceId}\0${gatewayNodeId}\0${observedAt}`)
     .digest('base64url')
 }
 

@@ -1536,6 +1536,20 @@ function gatewayState(
   const inboxFiles = protocol.projection.visibleInboxFiles();
   const gatewayDirectory = trust?.gatewayDirectory
     ?? protocol.projection.workspace?.gatewayDirectory;
+  const gatewayNodeId = gatewayDirectory?.directory.gateways.find(gateway =>
+    (gateway.projects ?? []).some(route => route.projectId === project?.projectId)
+  )?.gatewayNodeId;
+  const updateObservation = protocol.projection.gatewayUpdateObservation;
+  const gatewayNodeStatuses = gatewayNodeId && updateObservation
+    ? {
+        [gatewayNodeId]: {
+          version: 1 as const,
+          gatewayNodeId,
+          observedAt: updateObservation.observedAt,
+          update: structuredClone(updateObservation.status),
+        },
+      }
+    : {};
   const capabilities = protocol.projection.workspace
     ? parseGatewayCapabilities(protocol.projection.workspace.capabilities)
     : {
@@ -1558,6 +1572,7 @@ function gatewayState(
       0,
       ...sessions.map(session => session.updatedAt),
       ...inboxFiles.map(file => file.receivedAt),
+      ...Object.values(gatewayNodeStatuses).map(status => status.observedAt),
     ),
     currentSessionId: null,
     sessions: sessions.map(session => ({
@@ -1615,6 +1630,9 @@ function gatewayState(
       : {}),
     pendingGatewayEnrollments:
       protocol.projection.workspace?.pendingGatewayEnrollments ?? [],
+    ...(Object.keys(gatewayNodeStatuses).length > 0
+      ? { gatewayNodeStatuses }
+      : {}),
     ...(protocol.projection.workspace?.gatewayUpdate
       ? { gatewayUpdate: protocol.projection.workspace.gatewayUpdate }
       : {}),
@@ -1642,6 +1660,17 @@ function aggregateGatewayState(
     .map(value => value.gatewayUpdate)
     .filter((value): value is NonNullable<typeof value> => Boolean(value))
     .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+  const gatewayNodeStatuses = states.reduce<NonNullable<GatewayStateSnapshot["gatewayNodeStatuses"]>>(
+    (result, state) => {
+      for (const [gatewayNodeId, status] of Object.entries(state.gatewayNodeStatuses ?? {})) {
+        if (!result[gatewayNodeId] || result[gatewayNodeId]!.observedAt < status.observedAt) {
+          result[gatewayNodeId] = status;
+        }
+      }
+      return result;
+    },
+    {},
+  );
   return {
     ...first,
     stateVersion: Math.max(...states.map(value => value.stateVersion)),
@@ -1657,6 +1686,9 @@ function aggregateGatewayState(
       .filter((value, index, all) => all.findIndex(candidate => candidate.buildId === value.buildId) === index),
     ...(directory ? { gatewayDirectory: directory } : {}),
     pendingGatewayEnrollments,
+    ...(Object.keys(gatewayNodeStatuses).length > 0
+      ? { gatewayNodeStatuses }
+      : {}),
     ...(gatewayUpdate ? { gatewayUpdate } : {}),
   };
 }

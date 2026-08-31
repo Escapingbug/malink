@@ -119,11 +119,18 @@ internal class MatrixMlp3NativeProjection(
         val attachment: JsonObject,
     )
 
+    private data class GatewayUpdateObservation(
+        val observedAt: Long,
+        val status: JsonObject,
+    )
+
     private val projects = linkedMapOf<String, Project>()
     private val projectCapabilities = linkedMapOf<String, WorkspaceCapabilities>()
     private var workspaceGatewayDirectory: JsonObject? = null
     private val workspacePendingGatewayEnrollmentsByProject = linkedMapOf<String, JsonArray>()
     private var gatewayUpdateStatus: JsonObject? = null
+    private val gatewayUpdateObservationsByProject =
+        linkedMapOf<String, GatewayUpdateObservation>()
     private val sessions = linkedMapOf<String, Session>()
     private val inboxFiles = linkedMapOf<String, InboxFile>()
     private val seenEvents = mutableSetOf<String>()
@@ -285,9 +292,16 @@ internal class MatrixMlp3NativeProjection(
             val currentUpdatedAt = gatewayUpdateStatus?.requiredLong("updatedAt") ?: -1
             val incomingUpdatedAt = status.requiredLong("updatedAt")
             if (incomingUpdatedAt >= currentUpdatedAt) gatewayUpdateStatus = status
+            val currentObservation = projectId?.let(gatewayUpdateObservationsByProject::get)
+            val observationChanged = projectId != null &&
+                (currentObservation == null || occurredAt > currentObservation.observedAt)
+            if (projectId != null && observationChanged) {
+                gatewayUpdateObservationsByProject[projectId] =
+                    GatewayUpdateObservation(occurredAt, status)
+            }
             return MatrixMlp3NativeProjectionResult(
                 terminal = terminal(type, event, payload, causation, sessionId),
-                changed = incomingUpdatedAt >= currentUpdatedAt,
+                changed = incomingUpdatedAt >= currentUpdatedAt || observationChanged,
             )
         }
 
@@ -297,6 +311,7 @@ internal class MatrixMlp3NativeProjection(
             projects.remove(projectId)
             projectCapabilities.remove(projectId)
             workspacePendingGatewayEnrollmentsByProject.remove(projectId)
+            gatewayUpdateObservationsByProject.remove(projectId)
             val deletedSessionIds = sessions.values
                 .filter { it.projectId == projectId }
                 .map { it.id }
@@ -533,6 +548,7 @@ internal class MatrixMlp3NativeProjection(
             visible.maxOfOrNull { it.updatedAt } ?: 0L,
             inboxFiles.values.maxOfOrNull { it.receivedAt } ?: 0L,
             gatewayUpdateStatus?.requiredLong("updatedAt") ?: 0L,
+            gatewayUpdateObservationsByProject.values.maxOfOrNull { it.observedAt } ?: 0L,
         )
         return buildJsonObject {
             put("version", 1)
@@ -577,6 +593,7 @@ internal class MatrixMlp3NativeProjection(
             workspaceGatewayDirectory?.let { put("gateway_directory", it) }
             put("pending_gateway_enrollments", mergedPendingGatewayEnrollments())
             gatewayUpdateStatus?.let { put("gateway_update", it) }
+            put("gateway_node_statuses", gatewayNodeStatuses())
         }
     }
 
@@ -601,6 +618,37 @@ internal class MatrixMlp3NativeProjection(
         JsonArray(emptyList()),
     ) { releases, capabilities ->
         mergeNativeClientReleases(releases, capabilities.clientReleases)
+    }
+
+    private fun gatewayNodeStatuses(): JsonObject {
+        val gateways = workspaceGatewayDirectory
+            ?.requiredObject("directory")
+            ?.get("gateways") as? JsonArray
+            ?: return JsonObject(emptyMap())
+        return buildJsonObject {
+            gateways.forEach { element ->
+                val gateway = element as? JsonObject
+                    ?: throw IllegalArgumentException(
+                        "Workspace Gateway Directory entry is invalid.",
+                    )
+                val gatewayNodeId = gateway.requiredString("gatewayNodeId", 256)
+                val routes = gateway["projects"] as? JsonArray ?: JsonArray(emptyList())
+                val latest = routes.mapNotNull { route ->
+                    val projectId = (route as? JsonObject)
+                        ?.requiredString("projectId", 256)
+                        ?: throw IllegalArgumentException(
+                            "Workspace Gateway Directory project route is invalid.",
+                        )
+                    gatewayUpdateObservationsByProject[projectId]
+                }.maxByOrNull(GatewayUpdateObservation::observedAt) ?: return@forEach
+                put(gatewayNodeId, buildJsonObject {
+                    put("version", 1)
+                    put("gatewayNodeId", gatewayNodeId)
+                    put("observedAt", latest.observedAt)
+                    put("update", latest.status)
+                })
+            }
+        }
     }
 
     @Synchronized
@@ -677,6 +725,7 @@ internal class MatrixMlp3NativeProjection(
         projects.keys.retainAll(projectIds)
         projectCapabilities.keys.retainAll(projectIds)
         workspacePendingGatewayEnrollmentsByProject.keys.retainAll(projectIds + "__legacy__")
+        gatewayUpdateObservationsByProject.keys.retainAll(projectIds)
         sessions.entries.removeAll { it.value.projectId !in projectIds }
     }
 
@@ -687,6 +736,7 @@ internal class MatrixMlp3NativeProjection(
         workspaceGatewayDirectory = null
         workspacePendingGatewayEnrollmentsByProject.clear()
         gatewayUpdateStatus = null
+        gatewayUpdateObservationsByProject.clear()
         sessions.clear()
         inboxFiles.clear()
         seenEvents.clear()
@@ -744,7 +794,7 @@ internal class MatrixMlp3NativeProjection(
             .toList()
             .takeLast(policy.assistantVersionLimit)
         val value = buildJsonObject {
-            put("schemaVersion", 13)
+            put("schemaVersion", 14)
             put("projectCapabilities", buildJsonArray {
                 projectCapabilities.entries.sortedBy { it.key }.forEach { (projectId, capabilities) ->
                     add(buildJsonObject {
@@ -761,6 +811,15 @@ internal class MatrixMlp3NativeProjection(
                     .forEach { (projectId, enrollments) -> put(projectId, enrollments) }
             })
             put("gatewayUpdateStatus", gatewayUpdateStatus ?: JsonNull)
+            put("gatewayUpdateObservationsByProject", buildJsonObject {
+                gatewayUpdateObservationsByProject.entries.sortedBy { it.key }
+                    .forEach { (projectId, observation) ->
+                    put(projectId, buildJsonObject {
+                        put("observedAt", observation.observedAt)
+                        put("status", observation.status)
+                    })
+                }
+            })
             put("projects", buildJsonArray {
                 projects.values.sortedBy(Project::id).forEach { activeProject ->
                     add(buildJsonObject {
@@ -855,7 +914,7 @@ internal class MatrixMlp3NativeProjection(
 
     private fun restore(value: JsonObject) {
         val schemaVersion = value.requiredLong("schemaVersion")
-        require(schemaVersion in 1L..13L)
+        require(schemaVersion in 1L..14L)
         val legacyWorkspaceCapabilities = if (schemaVersion == 1L || schemaVersion >= 9L) {
             null
         } else {
@@ -933,6 +992,26 @@ internal class MatrixMlp3NativeProjection(
         } else {
             null
         }
+        if (schemaVersion >= 14L) {
+            val observations = value.requiredObject("gatewayUpdateObservationsByProject")
+            require(observations.size <= 256)
+            observations.entries.forEach { (projectId, element) ->
+                require(projectId.isNotBlank() && projectId.length <= 256)
+                val observation = element as? JsonObject
+                    ?: throw IllegalArgumentException("The Gateway update observation is invalid.")
+                observation.requireKeys(
+                    setOf("observedAt", "status"),
+                    emptySet(),
+                    "Gateway update observation",
+                )
+                val status = observation.requiredObject("status")
+                validateGatewayUpdateStatus(status)
+                gatewayUpdateObservationsByProject[projectId] = GatewayUpdateObservation(
+                    observation.requiredLong("observedAt").also { require(it >= 0) },
+                    status,
+                )
+            }
+        }
         val restoredProjects = if (schemaVersion >= 7L) {
             value["projects"] as? JsonArray
                 ?: throw IllegalArgumentException("The MLP/3 project projection is invalid.")
@@ -971,6 +1050,9 @@ internal class MatrixMlp3NativeProjection(
         }
         require(projectCapabilities.keys.all(projects::containsKey)) {
             "The MLP/3 project capabilities name an unknown project."
+        }
+        require(gatewayUpdateObservationsByProject.keys.all(projects::containsKey)) {
+            "The Gateway update observations name an unknown project."
         }
         val restoredSessions = value["sessions"] as? JsonArray
             ?: throw IllegalArgumentException("The MLP/3 session projection is invalid.")

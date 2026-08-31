@@ -1,13 +1,12 @@
 import type { SignedWorkspaceGatewayDirectory } from "@malink/protocol";
 
-export const GATEWAY_ONLINE_PROOF_WINDOW_MS = 90_000;
+// A Gateway publishes one shared heartbeat every 60 seconds. Allow one missed
+// delivery under Matrix backpressure before presenting the proof as stale.
+export const GATEWAY_ONLINE_PROOF_WINDOW_MS = 150_000;
 // Matrix delivery, Gateway journal execution, and the signed reply are each
 // asynchronous. Keep the UI deadline above the native HTTP send timeout so a
 // healthy but delayed round trip is not reported as a Gateway fault.
 export const GATEWAY_LIVE_STATUS_TIMEOUT_MS = 30_000;
-// Recheck before the proof expires so a visible, connected client does not
-// oscillate through a stale state between automatic probes.
-export const GATEWAY_AUTOMATIC_RECHECK_AFTER_MS = 60_000;
 
 export type GatewayNodeLivenessState =
   | "unknown"
@@ -152,16 +151,6 @@ export function gatewayNodeLivenessPresentation(
     detail: current.detail ?? "Run a signed live check to verify this Gateway.",
     canCheck: true,
   };
-}
-
-export function shouldAutomaticallyCheckGatewayNode(
-  value: GatewayNodeLiveness | undefined,
-  now: number,
-): boolean {
-  if (!value || value.state === "unknown") return true;
-  if (value.state === "checking" || value.state === "unavailable") return false;
-  return value.checkedAt === undefined ||
-    now - value.checkedAt >= GATEWAY_AUTOMATIC_RECHECK_AFTER_MS;
 }
 
 /**

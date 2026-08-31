@@ -204,8 +204,11 @@ All three require the `gateway.update` pairing grant. This grant is not an
 arbitrary code-install capability: the remote command contains no URL or key,
 and the local supervisor accepts only manifests signed by its pinned release
 signer. Results use `gateway.update.status` and are also carried in subsequent
-`workspace.snapshot` events so another authorized client converges after the
-Gateway restart.
+uncaused `gateway.update.status` events so every authorized client converges
+from one shared node publication after the Gateway restart. Reusing the existing
+event type is wire-compatible; the absence of `causationCommandId` identifies
+the shared observation. It is emitted on supervisor phase changes and as a
+sparse heartbeat; clients do not poll it in the background.
 
 ## Current state and recovery
 
@@ -357,13 +360,17 @@ Traffic scales with visible business activity:
 
 There is no per-device fan-out for ordinary conversation output, heartbeat
 state, focus refresh, reconnect RPC, session-directory page rewrite, or manual
-checkpoint publication. Gateway invitation reconciliation reuses membership
+checkpoint publication. One node heartbeat is shared by all clients and uses
+outbox supersession so an undelivered older heartbeat is replaced rather than
+queued behind its successor. Gateway invitation reconciliation reuses membership
 from `/sync`; it does not poll every device in every project on a timer.
 Identical signed snapshot pointers and root-signed
 Workspace control documents are durably recognized across process restart; an
-unchanged Gateway restart performs zero Matrix writes. Gateway and client
-outboxes honor Matrix `retry_after` and stable transaction IDs, so homeserver
-rate limits affect latency rather than correctness.
+unchanged Gateway restart performs zero semantic snapshot rewrites and then
+publishes one shared node heartbeat. Gateway and client outboxes honor Matrix
+`retry_after` and stable transaction IDs; the Gateway sender also carries the
+learned `retry_after` cadence forward to the next queued room write, so
+homeserver rate limits affect latency rather than correctness.
 
 ## Cutover invariants
 

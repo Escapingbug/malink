@@ -8,7 +8,6 @@ import {
   gatewayUpdateCanApplyStaged,
   gatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
-  gatewayUpdateStatusNeedsPolling,
   gatewayUpdateTarget,
   legacyGatewayMaintenanceSessionsByNode,
   recoverAmbiguousGatewayUpdateCompletion,
@@ -324,17 +323,6 @@ test("lets a signed live status correct a stale directory build", () => {
 
   assert.equal(node.currentBuildId, "gateway-old");
   assert.equal(node.state, "available");
-});
-
-test("recognizes phases that need automatic progress checks", () => {
-  const status = (phase: "agent_running" | "staged" | "probation") => ({
-    version: 1 as const,
-    phase,
-    updatedAt: 10,
-  });
-  assert.equal(gatewayUpdateStatusNeedsPolling(status("agent_running")), true);
-  assert.equal(gatewayUpdateStatusNeedsPolling(status("probation")), true);
-  assert.equal(gatewayUpdateStatusNeedsPolling(status("staged")), false);
 });
 
 test("archives terminal or deterministic failures but preserves useful retry checkpoints", () => {

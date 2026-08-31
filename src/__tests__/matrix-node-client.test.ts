@@ -381,8 +381,10 @@ describe('MatrixNodeSdkGatewayClient', () => {
         let calls = 0
         let active = 0
         let maxActive = 0
+        const callTimes: number[] = []
         const fetchMock = vi.fn(async () => {
             const call = ++calls
+            callTimes.push(Date.now())
             active += 1
             maxActive = Math.max(maxActive, active)
             await Promise.resolve()
@@ -435,6 +437,7 @@ describe('MatrixNodeSdkGatewayClient', () => {
 
         expect(calls).toBe(3)
         expect(maxActive).toBe(1)
+        expect(callTimes[2]! - callTimes[1]!).toBeGreaterThanOrEqual(450)
         expect(logs.some(message =>
             message.startsWith('[matrix-node] PUT /_matrix/client/v3/rooms/')
             && message.endsWith('rate limited; retrying in 250ms'))).toBe(true)

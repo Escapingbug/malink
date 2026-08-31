@@ -185,16 +185,20 @@ authorizes only requests—the local pinned signer remains the release authority
 
 Release discovery never starts an update. The PWA presents a node-level update
 notice, and its management panel identifies the exact Gateway name, stable short
-node ID, current build, target build, and update capability. Opening the panel
-sends a read-only `gateway.update.status` command to each routed capable node;
-only a recent signed status reply or newer signed node activity is shown as
-`Online now`. A connected
-Matrix client or an old cached snapshot is not Gateway liveness. The user then
-confirms one exact node once. The client sends `stage`, creates the visible
-maintenance Agent session, and sends `apply` as soon as the signed staged
-checkpoint is ready. These remain separate compatible wire commands, but they
-are one user transaction. Multiple nodes are updated as
-separate confirmed operations so it is always clear which node is executing.
+node ID, current build, target build, and update capability. Each Gateway
+publishes one signed, encrypted `gateway.update.status` observation without a
+`causationCommandId` when its supervisor phase changes and at a sparse heartbeat
+interval. Reusing the established event shape keeps older MLP/3 clients able to
+parse the event; the missing causation ID distinguishes shared observation from
+a command reply. Opening the panel only reads that shared projection and sends
+no Matrix command. A recent node observation or newer signed node activity is
+shown as `Online now`. A connected Matrix client or an old cached snapshot is
+not Gateway liveness. The user then confirms one exact node once. The client
+sends `stage`, creates the visible maintenance Agent session, and sends `apply`
+as soon as the signed staged checkpoint is ready. These remain separate
+compatible wire commands, but they are one user transaction. Multiple nodes are
+updated as separate, concurrent node-local operations; one node's maintenance
+Agent never disables another node's action.
 The current client persists that explicit update intent before sending `stage`.
 If it is closed between the two old wire commands, it resumes only that exact
 project/node/release from `staged` after reconnecting. Pre-existing staged
@@ -202,8 +206,10 @@ updates without a current-client intent are never activated automatically. An
 unused intent expires after 24 hours so old consent cannot activate a later,
 coincidentally matching checkpoint.
 
-The live check has a bounded foreground wait. If no signed reply arrives within
-12 seconds, the first miss is presented as `Live check timed out`: it is a
+The explicit compatibility check has a bounded foreground wait and is used
+only when the user chooses `Check live status` or a legacy Gateway has not yet
+published a node observation. If no signed reply arrives within 30 seconds,
+the first miss is presented as `Gateway reply delayed`: it is a
 warning that may still be caused by wake-up or Matrix latency, not proof of a
 Gateway fault. A second consecutive miss becomes `Gateway needs attention`,
 identifies the named Gateway computer as the component to inspect, and explains
@@ -211,7 +217,7 @@ that repeated checks cannot repair a startup failure. The recovery disclosure
 provides the local restart command, bounded Gateway log paths, and a client
 diagnostic export; it also states that the client report cannot replace logs
 from a Gateway that is failing before it can reply. An
-unanswered `gateway.update.status` is safe to retire because it is strictly
+unanswered manual `gateway.update.status` is safe to retire because it is strictly
 read-only; Android preserves an idempotency tombstone, and a newer status probe
 for the same project atomically retires older unfinished probes. No other MLP/3
 command gains this exception: unfinished session, Prompt, cancel, update-stage,

@@ -85,7 +85,13 @@ test("keeps the explicit intent until the update command succeeds", () => {
   const writeIndex = flow.indexOf("writeGatewayUpdateIntent(");
   const executeIndex = flow.indexOf("const status = stagedReleaseId");
   const clearIndex = flow.indexOf("clearGatewayUpdateIntent(");
+  const catchFlow = flow.slice(flow.indexOf("} catch (error) {"));
   assert.ok(writeIndex >= 0, "the explicit update intent must be persisted");
   assert.ok(executeIndex > writeIndex, "the update must start after persistence");
   assert.ok(clearIndex > executeIndex, "success must clear the intent after execution");
+  assert.equal(
+    catchFlow.includes("clearGatewayUpdateIntent("),
+    false,
+    "an ambiguous command failure must retain the resumable update intent",
+  );
 });

@@ -90,7 +90,7 @@ export interface MatrixGatewayConfig {
     replayLedgerPath: string
     applicationSecurity: MatrixGatewayApplicationSecurityConfig
     startupEventQueueLimit?: number
-    /** Refreshes signed Gateway Room State so clients can distinguish Matrix availability from Gateway availability. */
+    /** Publishes one shared signed node heartbeat; defaults to 60 seconds. */
     gatewayHeartbeatIntervalMs?: number
     webPush?: {
         /** Contact URI included in VAPID JWTs. Defaults to Malink's notification address. */

@@ -21,7 +21,7 @@ import {
   gatewayUpdateStatusSchema,
 } from "@malink/protocol";
 
-export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 6 as const;
+export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 7 as const;
 
 export type V3ProjectedSession = Mlp3SessionProjection & {
   sessionId: string;
@@ -93,6 +93,11 @@ export type V3WorkspaceProjection = {
   gatewayUpdate?: GatewayUpdateStatus;
 };
 
+export type GatewayUpdateObservation = {
+  observedAt: number;
+  status: GatewayUpdateStatus;
+};
+
 export type MatrixMlp3ProjectionState = {
   version: typeof MATRIX_MLP3_PROJECTION_STATE_VERSION;
   workspace: V3WorkspaceProjection | null;
@@ -101,6 +106,7 @@ export type MatrixMlp3ProjectionState = {
   messages: V3ProjectedMessage[];
   inboxFiles: V3ProjectedInboxFile[];
   completions: Mlp3CommandCompletion[];
+  gatewayUpdateObservation: GatewayUpdateObservation | null;
   seenLogicalEvents: string[];
 };
 
@@ -115,6 +121,7 @@ export class MatrixMlp3Projection {
   readonly messages = new Map<string, V3ProjectedMessage>();
   readonly inboxFiles = new Map<string, V3ProjectedInboxFile>();
   readonly completions = new Map<string, Mlp3CommandCompletion>();
+  gatewayUpdateObservation: GatewayUpdateObservation | null = null;
   readonly seenLogicalEvents = new Set<string>();
   workspace: V3WorkspaceProjection | null = null;
   project: V3ProjectProjection | null = null;
@@ -126,6 +133,7 @@ export class MatrixMlp3Projection {
     this.messages.clear();
     this.inboxFiles.clear();
     this.completions.clear();
+    this.gatewayUpdateObservation = null;
     this.seenLogicalEvents.clear();
   }
 
@@ -138,6 +146,7 @@ export class MatrixMlp3Projection {
       messages: [...this.messages.values()],
       inboxFiles: [...this.inboxFiles.values()],
       completions: [...this.completions.values()],
+      gatewayUpdateObservation: this.gatewayUpdateObservation,
       seenLogicalEvents: [...this.seenLogicalEvents],
     });
   }
@@ -153,6 +162,7 @@ export class MatrixMlp3Projection {
     for (const completion of state.completions) {
       this.completions.set(completion.commandId, completion);
     }
+    this.gatewayUpdateObservation = state.gatewayUpdateObservation;
     for (const logicalId of state.seenLogicalEvents) this.seenLogicalEvents.add(logicalId);
     // Version four could persist a terminal command together with a stale
     // working session. Reconcile from the durable completion on every restore
@@ -237,7 +247,9 @@ export class MatrixMlp3Projection {
       const pendingGatewayEnrollments = structuredClone(
         payload.pendingGatewayEnrollments ?? [],
       );
-      const gatewayUpdate = payload.gatewayUpdate ?? this.workspace?.gatewayUpdate;
+      const gatewayUpdate = this.gatewayUpdateObservation?.status
+        ?? payload.gatewayUpdate
+        ?? this.workspace?.gatewayUpdate;
       if (this.workspace && payload.snapshotVersion <= this.workspace.snapshotVersion) {
         const gatewayDirectory = payload.gatewayDirectory ?? this.workspace.gatewayDirectory;
         if (
@@ -267,6 +279,20 @@ export class MatrixMlp3Projection {
         ...(payload.gatewayDirectory ? { gatewayDirectory: payload.gatewayDirectory } : {}),
         ...(gatewayUpdate ? { gatewayUpdate } : {}),
       };
+      return true;
+    }
+    if (payload.type === "gateway.update.status" && !event.causationCommandId) {
+      if ((this.gatewayUpdateObservation?.observedAt ?? -1) >= event.occurredAt) return false;
+      this.gatewayUpdateObservation = {
+        observedAt: event.occurredAt,
+        status: structuredClone(payload.status),
+      };
+      if (this.workspace) {
+        this.workspace = {
+          ...this.workspace,
+          gatewayUpdate: structuredClone(payload.status),
+        };
+      }
       return true;
     }
     if (this.seenLogicalEvents.has(event.eventId)) return false;
@@ -317,10 +343,16 @@ export class MatrixMlp3Projection {
       return true;
     }
     if (payload.type === "gateway.update.status" && this.workspace) {
-      this.workspace = {
-        ...this.workspace,
-        gatewayUpdate: structuredClone(payload.status),
-      };
+      if ((this.gatewayUpdateObservation?.observedAt ?? -1) < event.occurredAt) {
+        this.gatewayUpdateObservation = {
+          observedAt: event.occurredAt,
+          status: structuredClone(payload.status),
+        };
+        this.workspace = {
+          ...this.workspace,
+          gatewayUpdate: structuredClone(payload.status),
+        };
+      }
     }
     if (event.sessionId && "projection" in payload) {
       this.applySessionProjection(event, payload.projection, threadRootHint);
@@ -624,6 +656,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
     && value?.version !== 4
     && value?.version !== 5
     && value?.version !== 6
+    && value?.version !== 7
   ) {
     throw new Error("Unsupported MLP/3 projection version.");
   }
@@ -710,6 +743,20 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
       event: mlp3EventSchema.parse(completion.event),
     } as Mlp3CommandCompletion;
   });
+  const gatewayUpdateObservation = value.version >= 7
+    ? value.gatewayUpdateObservation === null
+      ? null
+      : (() => {
+          const observation = record(value.gatewayUpdateObservation);
+          if (!observation || !integer(observation.observedAt)) {
+            throw new Error("The Gateway update observation is invalid.");
+          }
+          return {
+            observedAt: observation.observedAt,
+            status: gatewayUpdateStatusSchema.parse(observation.status),
+          };
+        })()
+    : null;
   const seenLogicalEvents = boundedArray(value.seenLogicalEvents, "logical events")
     .map(item => {
       if (!text(item)) throw new Error("The MLP/3 logical event ID is invalid.");
@@ -749,6 +796,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
     messages,
     inboxFiles,
     completions,
+    gatewayUpdateObservation,
     seenLogicalEvents,
   };
 }

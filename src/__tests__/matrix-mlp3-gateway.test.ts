@@ -653,7 +653,16 @@ describe('MatrixMlp3GatewayRunner', () => {
         workspaceId: 'workspace-1',
         projectId,
         roomId,
-      })
+    })
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.payload.type === 'gateway.update.status'
+        && event.causationCommandId === undefined))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.payload.type === 'gateway.update.status'
+        && event.causationCommandId === undefined
+    )?.payload).toMatchObject({
+      status: { currentBuildId: 'build-1' },
+    })
 
     await expect(runner.publishNativeClientRelease(nativeRelease(42))).resolves.toMatchObject({
       changed: true,

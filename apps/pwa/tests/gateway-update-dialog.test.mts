@@ -54,7 +54,7 @@ test("shows node identity, version need, and signed live status before consent",
         state: "unreachable",
       },
     },
-    activeGatewayNodeId: null,
+    activeGatewayNodeIds: new Set(),
     onClose() {},
     onProbe() {},
     onStart() {},
@@ -93,7 +93,7 @@ test("turns repeated missing replies into actionable Gateway attention", () => {
         consecutiveNoReplies: 2,
       },
     },
-    activeGatewayNodeId: null,
+    activeGatewayNodeIds: new Set(),
     onClose() {},
     onProbe() {},
     onStart() {},
@@ -131,7 +131,7 @@ test("does not say an existing supervised update was never started", () => {
         },
       },
     },
-    activeGatewayNodeId: null,
+    activeGatewayNodeIds: new Set(),
     onClose() {},
     onProbe() {},
     onStart() {},
@@ -168,7 +168,7 @@ test("presents a signed supervisor repair failure as an actionable error", () =>
         },
       },
     },
-    activeGatewayNodeId: null,
+    activeGatewayNodeIds: new Set(),
     onClose() {},
     onProbe() {},
     onStart() {},
@@ -207,7 +207,7 @@ test("does not offer a useless retry for an unpublished 404 release", () => {
         commandFailureRetryable: false,
       },
     },
-    activeGatewayNodeId: null,
+    activeGatewayNodeIds: new Set(),
     onClose() {},
     onProbe() {},
     onStart() {},
@@ -231,7 +231,7 @@ test("does not render the review panel while closed", () => {
     release,
     nodes,
     runtimeByNode: {},
-    activeGatewayNodeId: null,
+    activeGatewayNodeIds: new Set(),
     onClose() {},
     onProbe() {},
     onStart() {},
@@ -254,7 +254,7 @@ test("keeps the panel dismissible while a Gateway maintenance Agent starts", () 
         startedAt: 1,
       },
     },
-    activeGatewayNodeId: "node-office",
+    activeGatewayNodeIds: new Set(["node-office"]),
     onClose() {},
     onProbe() {},
     onStart() {},
@@ -269,8 +269,47 @@ test("keeps the panel dismissible while a Gateway maintenance Agent starts", () 
   assert.ok(closeControl);
   assert.doesNotMatch(closeControl, /disabled/);
   assert.match(html, /You can close this panel/);
-  assert.match(html, /continues this update in the background/);
+  assert.match(html, /continues updating independently in the background/);
   assert.match(html, />Close<\/button>/);
+});
+
+test("one active Gateway update does not disable another Gateway", () => {
+  const secondAvailable = {
+    ...nodes[0]!,
+    gatewayNodeId: "node-second",
+    gatewayName: "Second Gateway",
+    currentBuildId: "gateway-old-second",
+    targetProjectId: "project-second",
+  };
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [nodes[0]!, secondAvailable],
+    runtimeByNode: {
+      "node-office": {
+        state: "starting",
+        status: { version: 1, phase: "idle", updatedAt: 1 },
+      },
+      "node-second": {
+        state: "online",
+        status: { version: 1, phase: "idle", updatedAt: 1 },
+      },
+    },
+    activeGatewayNodeIds: new Set(["node-office"]),
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  const primaryButtons = html.match(/<button type="button" class="primary-button"[^>]*>/g) ?? [];
+  assert.equal(primaryButtons.length, 2);
+  assert.match(primaryButtons[0]!, /disabled/);
+  assert.doesNotMatch(primaryButtons[1]!, /disabled/);
+  assert.match(html, /1 Gateway continues updating independently/);
 });
 
 test("opens a legacy maintenance session through its exact project route", () => {
@@ -287,7 +326,7 @@ test("opens a legacy maintenance session through its exact project route", () =>
         maintenanceSessionArchiveAvailable: true,
       },
     },
-    activeGatewayNodeId: null,
+    activeGatewayNodeIds: new Set(),
     onClose() {},
     onProbe() {},
     onStart() {},
@@ -324,7 +363,7 @@ test("shows exact-node archival progress for a legacy maintenance session", () =
         maintenanceSessionArchived: true,
       },
     },
-    activeGatewayNodeId: null,
+    activeGatewayNodeIds: new Set(),
     onClose() {},
     onProbe() {},
     onStart() {},
@@ -357,7 +396,7 @@ test("locks archive and diagnostic actions during their asynchronous preflight",
         consecutiveNoReplies: 2,
       },
     },
-    activeGatewayNodeId: null,
+    activeGatewayNodeIds: new Set(),
     diagnosticExportBusy: true,
     onClose() {},
     onProbe() {},
@@ -395,7 +434,7 @@ test("keeps a new release actionable while offering cleanup for an older collisi
         legacyMaintenanceSessionArchiveAvailable: true,
       },
     },
-    activeGatewayNodeId: null,
+    activeGatewayNodeIds: new Set(),
     onClose() {},
     onProbe() {},
     onStart() {},
@@ -429,7 +468,7 @@ test("offers installation when the maintenance Agent already staged the target",
         },
       },
     },
-    activeGatewayNodeId: null,
+    activeGatewayNodeIds: new Set(),
     onClose() {},
     onProbe() {},
     onStart() {},
@@ -466,7 +505,7 @@ test("treats a verified installed build as complete without cleanup warnings", (
         },
       },
     },
-    activeGatewayNodeId: null,
+    activeGatewayNodeIds: new Set(),
     onClose() {},
     onProbe() {},
     onStart() {},

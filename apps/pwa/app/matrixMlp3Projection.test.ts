@@ -385,6 +385,54 @@ describe("MatrixMlp3Projection", () => {
     expect(restored.workspace?.gatewayUpdate).toEqual(projection.workspace?.gatewayUpdate);
   });
 
+  it("converges shared Gateway status observations without a client command", () => {
+    const projection = new MatrixMlp3Projection();
+    projection.applyEvent(workspaceSnapshot(1, "gpt-5.6-sol"), "$workspace");
+    const nodeStatus = (observedAt: number, phase: "staged" | "committed"): Mlp3Event => ({
+      kind: "malink.event",
+      version: 3,
+      eventId: `gateway-node-status-${observedAt}`,
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      occurredAt: observedAt,
+      payload: {
+        type: "gateway.update.status",
+        status: {
+          version: 1,
+          phase,
+          currentBuildId: phase === "committed" ? "build-2" : "build-1",
+          targetBuildId: "build-2",
+          updatedAt: observedAt,
+        },
+      },
+    });
+
+    expect(projection.applyEvent(nodeStatus(20, "staged"), "$status-20")).toBe(true);
+    expect(projection.applyEvent(nodeStatus(19, "staged"), "$status-19")).toBe(false);
+    expect(projection.applyEvent(nodeStatus(21, "committed"), "$status-21")).toBe(true);
+    expect(projection.workspace?.gatewayUpdate).toMatchObject({
+      phase: "committed",
+      currentBuildId: "build-2",
+    });
+    expect(projection.gatewayUpdateObservation).toMatchObject({
+      observedAt: 21,
+      status: { phase: "committed", currentBuildId: "build-2" },
+    });
+
+    const restored = new MatrixMlp3Projection();
+    restored.restore(projection.durableState());
+    expect(restored.gatewayUpdateObservation).toEqual(projection.gatewayUpdateObservation);
+
+    const historyFirst = new MatrixMlp3Projection();
+    expect(historyFirst.applyEvent(nodeStatus(22, "committed"), "$status-22")).toBe(true);
+    expect(historyFirst.applyEvent(workspaceSnapshot(2, "gpt-5.6-sol"), "$workspace-2"))
+      .toBe(true);
+    expect(historyFirst.workspace?.gatewayUpdate).toMatchObject({
+      phase: "committed",
+      currentBuildId: "build-2",
+    });
+  });
+
   it("projects extension defaults and resolves an interaction on every device", () => {
     const projection = new MatrixMlp3Projection();
     projection.applyEvent(projectSnapshot(), "$project");

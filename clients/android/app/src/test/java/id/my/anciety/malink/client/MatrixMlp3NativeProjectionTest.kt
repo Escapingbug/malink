@@ -661,6 +661,57 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `shared Gateway update observation survives durable restore`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyWorkspaceGatewayDirectory(buildJsonObject {
+            put("directory", buildJsonObject {
+                put("revision", 1)
+                put("gateways", buildJsonArray {
+                    add(buildJsonObject {
+                        put("gatewayNodeId", "gateway-node-1")
+                        put("projects", buildJsonArray {
+                            add(buildJsonObject { put("projectId", "project-1") })
+                        })
+                    })
+                })
+            })
+        })
+        projection.applyGatewayEvent(
+            event(
+                eventId = "gateway-update-observation-1",
+                projectId = "project-1",
+                payload = buildJsonObject {
+                    put("type", "gateway.update.status")
+                    put("status", buildJsonObject {
+                        put("version", 1)
+                        put("phase", "committed")
+                        put("currentBuildId", "build-2")
+                        put("targetBuildId", "build-2")
+                        put("updatedAt", 29)
+                    })
+                },
+            ),
+            "\$gateway-update-observation",
+            null,
+        )
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        val status = restored.snapshot()!!
+            .getValue("gateway_node_statuses").jsonObject
+            .getValue("gateway-node-1").jsonObject
+        assertEquals(1000L, status.getValue("observedAt").jsonPrimitive.content.toLong())
+        assertEquals(
+            "committed",
+            status.getValue("update").jsonObject.getValue("phase").jsonPrimitive.content,
+        )
+    }
+
+    @Test
     fun `new account release survives a lower version project capability snapshot`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)

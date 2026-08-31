@@ -46,7 +46,7 @@ type Props = {
   release: GatewayReleaseBuild;
   nodes: GatewayUpdatePlanNode[];
   runtimeByNode: Readonly<Record<string, GatewayUpdateNodeRuntime>>;
-  activeGatewayNodeId: string | null;
+  activeGatewayNodeIds: ReadonlySet<string>;
   onClose(): void;
   onProbe(node: GatewayUpdatePlanNode): void;
   onStart(node: GatewayUpdatePlanNode): void;
@@ -67,7 +67,7 @@ function GatewayUpdateDialogContent({
   release,
   nodes,
   runtimeByNode,
-  activeGatewayNodeId,
+  activeGatewayNodeIds,
   onClose,
   onProbe,
   onStart,
@@ -135,10 +135,10 @@ function GatewayUpdateDialogContent({
         </div>
 
         <p className="gateway-update-explanation">
-          Malink keeps each node's signed status current while this page is
-          visible. One update action creates a visible maintenance session,
-          prepares the release, waits for current work to finish, and activates
-          it. Completed maintenance sessions are archived automatically.
+          Each Gateway publishes one shared signed status for every client.
+          One update action creates a visible maintenance session, prepares the
+          release, waits for current work to finish, and activates it. Completed
+          maintenance sessions are archived automatically.
         </p>
 
         <div className="gateway-update-node-list">
@@ -176,8 +176,8 @@ function GatewayUpdateDialogContent({
               runtime.state === "online" &&
               Boolean(runtime.status) &&
               updateActionAvailable &&
-              activeGatewayNodeId === null;
-            const active = activeGatewayNodeId === node.gatewayNodeId;
+              !activeGatewayNodeIds.has(node.gatewayNodeId);
+            const active = activeGatewayNodeIds.has(node.gatewayNodeId);
             return (
               <article
                 key={node.gatewayNodeId}
@@ -350,8 +350,7 @@ function GatewayUpdateDialogContent({
                       type="button"
                       className="secondary-button"
                       disabled={
-                        runtime.state === "checking" ||
-                        activeGatewayNodeId !== null
+                        runtime.state === "checking" || active
                       }
                       onClick={() => onProbe(node)}
                     >
@@ -366,7 +365,7 @@ function GatewayUpdateDialogContent({
                     <button
                       type="button"
                       className="primary-button"
-                      disabled={!canStart && !active}
+                      disabled={!canStart}
                       onClick={() => onStart(node)}
                     >
                       {active
@@ -382,8 +381,8 @@ function GatewayUpdateDialogContent({
 
         <footer>
           <small>
-            {activeGatewayNodeId
-              ? "The named Gateway continues this update in the background when this panel closes."
+            {activeGatewayNodeIds.size > 0
+              ? `${activeGatewayNodeIds.size} ${activeGatewayNodeIds.size === 1 ? "Gateway continues" : "Gateways continue"} updating independently in the background when this panel closes.`
               : "Requested by this Malink device; executed by the named Gateway."}
           </small>
           <button
@@ -436,7 +435,22 @@ function runtimeStateTitle(
     if (runtime.status?.phase === "repair_required") return "Gateway repair required";
     if (runtime.status?.phase === "failed") return "Gateway update failed";
     if (runtime.status?.phase === "rolled_back") return "Gateway update rolled back";
-    return "Online now";
+    switch (runtime.status?.phase) {
+      case "staging":
+      case "agent_required":
+      case "agent_running":
+      case "agent_validating":
+        return "Preparing Gateway update";
+      case "staged": return "Update ready to install";
+      case "waiting_for_idle": return "Waiting for current Agent work";
+      case "scheduled": return "Gateway restart scheduled";
+      case "activating": return "Restarting Gateway for update";
+      case "probation": return "Verifying updated Gateway";
+      case "committed": return "Gateway update complete";
+      case "idle":
+      case undefined:
+        return "Online now";
+    }
   }
   if (node.state === "manual") return "Online update is not installed";
   if (node.state === "unrouted") return "No synchronized project route";

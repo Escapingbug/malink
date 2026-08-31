@@ -221,6 +221,17 @@ unverified commands produce no application event.
 12. MLP/1 and MLP/2 application events are neither emitted nor parsed by
     production Gateway, PWA, or APK entry points. There is no negotiated data
     downgrade.
+13. Gateway liveness and update progress are shared observations, not Matrix
+    RPC polling. Each node publishes one signed, application-encrypted
+    `gateway.update.status` event without a `causationCommandId` on a single
+    authorized project route when its supervisor phase changes and at a sparse
+    heartbeat interval. This reuses the existing compatible event shape rather
+    than introducing a new protocol type. Pending heartbeats supersede older
+    ones in the Gateway outbox. Every PWA and Android client consumes the same
+    projection; adding clients or opening UI surfaces creates no additional
+    status writes. Causation-bearing status events remain results of explicit
+    update operations; the `gateway.update.status` command itself is a
+    deduplicated manual compatibility check only.
 
 The normative wire and recovery rules are in
 [`malink-protocol.md`](malink-protocol.md).
@@ -397,11 +408,11 @@ present a no-op “check again” button. Release discovery, Workspace projectio
 and Gateway liveness remain separate visible states, so a missing prerequisite
 never hides the Gateway software panel or masquerades as another layer's retry.
 The signed Gateway Directory establishes stable node identity and project
-ownership, but it is not a presence service. Clients keep independent
-short-lived liveness evidence per `gatewayNodeId`: only a fresh authenticated
-reply proves `Online now`, that proof expires locally, and an accepted request
-without a reply is presented as `Not responding`. Foreground checks are bounded
-and sparse rather than a continuous Matrix-command heartbeat. Liveness remains
+ownership, but it is not a presence service. Each Gateway publishes one shared,
+short-lived signed observation per `gatewayNodeId`; clients expire that proof
+locally and do not create per-device polling traffic. A manual compatibility
+check remains bounded and deduplicated when no current observation exists.
+Liveness remains
 presentation evidence only; it neither authorizes execution nor prevents a
 durable command from waiting for its owning Gateway to return.
 If a bounded journal check receives no signed reply, the client records the
@@ -442,10 +453,13 @@ Directory. A manually deployed PWA may discover one exact signed Gateway
 release, but discovery is presentation-only: it lists every node that is
 current, outdated, manual-only, or unrouted and waits for explicit user
 confirmation. Before enabling the per-node update action, the client requires
-a recent terminal reply to a signed `gateway.update.status` command through a
-project owned by that node. Matrix connectivity alone is never presented as
-proof that the Gateway process is online. The public website stores immutable
-files but does not become execution or release-signing authority.
+a recent signed, uncaused `gateway.update.status` observation or newer signed
+activity from that node. The explicit `gateway.update.status` command is the
+legacy/manual fallback, not the routine observation path; other
+causation-bearing status events remain update-operation results. Matrix
+connectivity alone is never presented as proof that the Gateway process is
+online. The public website stores immutable files but does not become execution
+or release-signing authority.
 
 Activation requires the expected build ID, a ready and recent Matrix sync, and
 a readable durable inbox throughout probation. Failure restores the previous

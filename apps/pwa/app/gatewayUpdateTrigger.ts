@@ -144,21 +144,6 @@ export function gatewayUpdatePlanNodeWithLiveStatus(input: {
   };
 }
 
-export function gatewayUpdateStatusNeedsPolling(
-  status: GatewayUpdateStatus | undefined,
-): boolean {
-  return status !== undefined && [
-    "staging",
-    "agent_required",
-    "agent_running",
-    "agent_validating",
-    "waiting_for_idle",
-    "scheduled",
-    "activating",
-    "probation",
-  ].includes(status.phase);
-}
-
 /**
  * Maintenance sessions remain part of the signed update transaction until the
  * supervisor has reached a terminal, non-retryable state. Archiving one while

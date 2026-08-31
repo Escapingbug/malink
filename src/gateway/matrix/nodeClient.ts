@@ -148,6 +148,8 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
     private lastSyncProgressAt = 0
     private cryptoChain: Promise<void> = Promise.resolve()
     private roomSendChain: Promise<void> = Promise.resolve()
+    private roomSendPacingMs = 0
+    private roomSendNotBefore = 0
 
     constructor(
         private readonly connection: MatrixGatewayConnectionConfig,
@@ -896,6 +898,16 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             const record = asRecord(body)
             const retryAfterMs = retryDelay(response, record)
             if (response.status === 429 && options.retryRateLimit) {
+                // Learn the account's effective message cadence. The retry
+                // consumes the next available token, so the following queued
+                // room write must wait another interval instead of
+                // immediately causing a second 429.
+                if (isMatrixRoomWritePath(path)) {
+                    this.roomSendPacingMs = Math.max(
+                        this.roomSendPacingMs,
+                        Math.min(300_000, retryAfterMs + 250),
+                    )
+                }
                 this.onLog?.(
                     `[matrix-node] ${method} ${path} rate limited; `
                     + `retrying in ${retryAfterMs}ms`,
@@ -925,7 +937,17 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
      * of waking several independent retries into the same empty token bucket.
      */
     private withRoomSendLock<T>(operation: () => Promise<T>): Promise<T> {
-        const run = this.roomSendChain.then(operation)
+        const run = this.roomSendChain.then(async () => {
+            const delayMs = this.roomSendNotBefore - Date.now()
+            if (delayMs > 0) await wait(delayMs)
+            try {
+                return await operation()
+            } finally {
+                if (this.roomSendPacingMs > 0) {
+                    this.roomSendNotBefore = Date.now() + this.roomSendPacingMs
+                }
+            }
+        })
         this.roomSendChain = run.then(() => undefined, () => undefined)
         return run
     }
@@ -1052,6 +1074,11 @@ function retryDelay(response: Response, body: Record<string, unknown> | null): n
         return Math.min(300_000, Math.max(250, Math.ceil(headerSeconds * 1_000)))
     }
     return 1_000
+}
+
+function isMatrixRoomWritePath(path: string): boolean {
+    return path.startsWith('/_matrix/client/v3/rooms/')
+        && (path.includes('/send/') || path.includes('/state/'))
 }
 
 function transientRetryDelay(attempt: number): number {

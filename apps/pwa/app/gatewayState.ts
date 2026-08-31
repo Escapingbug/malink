@@ -13,6 +13,13 @@ import {
   type GatewayUpdateStatus,
 } from "@malink/protocol";
 
+export type GatewayNodeStatusObservation = {
+  version: 1;
+  gatewayNodeId: string;
+  observedAt: number;
+  update: GatewayUpdateStatus;
+};
+
 export type GatewayCapabilityOption = {
   id: string;
   name: string;
@@ -107,6 +114,8 @@ export type GatewayStateSnapshot = {
   nativeClientReleases?: NativeClientRelease[];
   gatewayDirectory?: import('@malink/protocol').SignedWorkspaceGatewayDirectory;
   pendingGatewayEnrollments?: import('@malink/protocol').GatewayEnrollmentPending[];
+  /** Latest shared signed heartbeat/update observation for each Gateway node. */
+  gatewayNodeStatuses?: Record<string, GatewayNodeStatusObservation>;
   gatewayUpdate?: GatewayUpdateStatus;
 };
 
@@ -363,7 +372,35 @@ export function parseGatewayStateExtension(
     ...(extension.gateway_update === undefined
       ? {}
       : { gatewayUpdate: gatewayUpdateStatusSchema.parse(extension.gateway_update) }),
+    ...(extension.gateway_node_statuses === undefined
+      ? {}
+      : {
+          gatewayNodeStatuses: parseGatewayNodeStatuses(extension.gateway_node_statuses),
+        }),
   };
+}
+
+function parseGatewayNodeStatuses(input: unknown): Record<string, GatewayNodeStatusObservation> {
+  const values = asRecord(input);
+  if (!values) throw new Error("Gateway node statuses are malformed.");
+  const parsed: Record<string, GatewayNodeStatusObservation> = {};
+  for (const [gatewayNodeId, value] of Object.entries(values)) {
+    const status = asRecord(value);
+    if (
+      status?.version !== 1 ||
+      status.gatewayNodeId !== gatewayNodeId ||
+      !isNonnegativeInteger(status.observedAt)
+    ) {
+      throw new Error("A Gateway node status is stored under the wrong node ID.");
+    }
+    parsed[gatewayNodeId] = {
+      version: 1,
+      gatewayNodeId,
+      observedAt: status.observedAt,
+      update: gatewayUpdateStatusSchema.parse(status.update),
+    };
+  }
+  return parsed;
 }
 
 function parseGatewayWorkspaceState(input: unknown): GatewayWorkspaceState {
@@ -666,6 +703,9 @@ export function gatewayStateExtension(
     ...(state.gatewayUpdate === undefined
       ? {}
       : { gateway_update: state.gatewayUpdate }),
+    ...(state.gatewayNodeStatuses === undefined
+      ? {}
+      : { gateway_node_statuses: state.gatewayNodeStatuses }),
     capabilities: gatewayCapabilitiesExtension(state.capabilities),
   };
 }

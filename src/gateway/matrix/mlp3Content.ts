@@ -883,6 +883,15 @@ function eventDeliveryMetadata(event: Mlp3Event): MatrixMlp3DeliveryMetadata {
         : {}),
     }
   }
+  if (payload.type === 'gateway.update.status' && !event.causationCommandId) {
+    return {
+      priority: 'control',
+      supersession: {
+        key: `gateway-update-observation:${event.workspaceId}:${event.projectId ?? 'workspace'}`,
+        version: event.occurredAt,
+      },
+    }
+  }
   if (
     payload.type === 'session.ready'
     || payload.type === 'session.updated'
