@@ -10,6 +10,7 @@ import {
   type JsonValue,
 } from '@malink/protocol'
 import { SecurityError } from '@malink/security'
+import { isRecoverableLegacyProviderHistoryEvent } from './providerHistoryTransport'
 
 export type Mlp3CommandTerminal = {
   outcome: 'succeeded' | 'failed' | 'rejected' | 'interrupted'
@@ -480,7 +481,11 @@ function isTerminal(value: unknown): value is Mlp3CommandTerminal {
   return ['succeeded', 'failed', 'rejected', 'interrupted'].includes(String(terminal.outcome))
     && typeof terminal.eventId === 'string'
     && terminal.eventId.length > 0
-    && (terminal.event === undefined || mlp3EventSchema.safeParse(terminal.event).success)
+    && (
+      terminal.event === undefined
+      || mlp3EventSchema.safeParse(terminal.event).success
+      || isRecoverableLegacyProviderHistoryEvent(terminal.event)
+    )
 }
 
 function isMissingFile(error: unknown): boolean {

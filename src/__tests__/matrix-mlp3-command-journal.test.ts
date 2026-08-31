@@ -46,6 +46,21 @@ function terminalEvent(): Mlp3Event {
   }
 }
 
+function providerListCommand(): Mlp3Command {
+  return {
+    kind: 'malink.command',
+    version: 3,
+    commandId: 'provider-list-command',
+    workspaceId: 'workspace-1',
+    projectId: 'project-1',
+    deviceId: 'device-1',
+    certificateId: 'certificate-1',
+    createdAt: 1,
+    operation: 'provider.sessions.list',
+    payload: { operation: 'provider.sessions.list', provider: 'codex' },
+  }
+}
+
 describe('FileMlp3CommandJournal', () => {
   it('accepts independent command IDs without a global sequence slot', async () => {
     const path = join(await mkdtemp(join(tmpdir(), 'malink-v3-journal-')), 'journal.jsonl')
@@ -105,5 +120,46 @@ describe('FileMlp3CommandJournal', () => {
     await expect(recovered.unfinished()).resolves.toMatchObject([
       { status: 'dispatched', command: { commandId: 'command-1' } },
     ])
+  })
+
+  it('loads an undelivered legacy Provider History terminal with oversized provider fields', async () => {
+    const path = join(await mkdtemp(join(tmpdir(), 'malink-v3-journal-')), 'journal.jsonl')
+    const input = providerListCommand()
+    const first = new FileMlp3CommandJournal(path)
+    await first.initialize()
+    await first.claim(input, 1)
+    await first.markDispatched(input, 2)
+    const legacyPayload = {
+      type: 'provider.sessions.listed' as const,
+      provider: 'codex',
+      sessions: [{
+        sessionId: 'legacy-provider-session',
+        title: '历史标题'.repeat(700),
+        updatedAt: 1,
+        cwd: '/workspace',
+      }],
+    }
+    await first.settle(input, {
+      outcome: 'succeeded',
+      eventId: 'legacy-provider-terminal',
+      event: {
+        kind: 'malink.event',
+        version: 3,
+        eventId: 'legacy-provider-terminal',
+        workspaceId: 'workspace-1',
+        projectId: 'project-1',
+        occurredAt: 3,
+        causationCommandId: input.commandId,
+        payload: legacyPayload,
+      } as Mlp3Event,
+      result: legacyPayload,
+    }, 3)
+
+    const recovered = new FileMlp3CommandJournal(path)
+    await expect(recovered.initialize()).resolves.toBeUndefined()
+    await expect(recovered.pendingTerminalDeliveries()).resolves.toMatchObject([{
+      command: { commandId: input.commandId },
+      terminal: { eventId: 'legacy-provider-terminal' },
+    }])
   })
 })

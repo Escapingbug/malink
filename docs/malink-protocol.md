@@ -160,7 +160,12 @@ signed, encrypted envelope always fits the Matrix timeline budget. A session
 list may return the existing optional `nextCursor`; clients request each page
 with a new command and concatenate the results. This is an additive MLP/3
 capability, not a protocol-version change. Transcript previews retain the most
-recent messages that fit the same transport budget.
+recent messages that fit the same transport budget. The durable journal reader
+also recognizes the narrow pre-pagination Provider History shape whose
+provider-owned title, path, or message fields exceeded current bounds. It
+validates the rest of the MLP/3 event, normalizes only those known fields for a
+new bounded recovery event, and never re-executes or silently deletes the
+historical command.
 Creating a session with `providerSessionId` adopts that existing provider
 conversation; the first message sent from the preview is carried as the create
 command's initial prompt. A provider session already managed by an active

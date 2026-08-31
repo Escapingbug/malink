@@ -1,5 +1,7 @@
 import {
+  mlp3EventSchema,
   mlp3EventPayloadSchema,
+  providerSessionEntrySchema,
   type JsonValue,
   type Mlp3Command,
   type Mlp3EventPayload,
@@ -101,15 +103,14 @@ export function boundedProviderHistoryResult(
   command: Mlp3Command,
   value: JsonValue,
 ): JsonValue {
-  const parsed = mlp3EventPayloadSchema.safeParse(value)
-  if (!parsed.success) return value
-  const payload = parsed.data
+  const payload = normalizeProviderHistoryPayload(value)
+  if (!payload) return value
   if (
     command.operation === 'provider.sessions.list'
     && payload.type === 'provider.sessions.listed'
   ) {
     return providerSessionsPage(
-      payload.provider,
+      command.payload.provider,
       payload.sessions,
       command.payload.cursor,
     )
@@ -118,7 +119,11 @@ export function boundedProviderHistoryResult(
     command.operation === 'provider.session.inspect'
     && payload.type === 'provider.session.inspected'
   ) {
-    return boundedProviderSessionInspection(payload)
+    return boundedProviderSessionInspection({
+      ...payload,
+      provider: command.payload.provider,
+      providerSessionId: command.payload.providerSessionId,
+    })
   }
   return value
 }
@@ -128,6 +133,135 @@ export function boundedProviderHistoryEventPayload(
   payload: Mlp3EventPayload,
 ): Mlp3EventPayload {
   return boundedProviderHistoryResult(command, payload as JsonValue) as Mlp3EventPayload
+}
+
+/**
+ * A few pre-pagination Gateways persisted Provider History terminal events
+ * whose individual provider-owned strings exceeded the MLP schema. Those
+ * entries are still structurally trustworthy journal records and must remain
+ * readable so recovery can replace their payload with a bounded event. Keep
+ * this exception narrow: the complete event envelope and a normalized known
+ * Provider History payload must pass the current MLP/3 schema.
+ */
+export function isRecoverableLegacyProviderHistoryEvent(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  const payload = normalizeProviderHistoryPayload(value.payload)
+  if (!payload) return false
+  return mlp3EventSchema.safeParse({ ...value, payload }).success
+}
+
+function normalizeProviderHistoryPayload(
+  value: unknown,
+): ProviderSessionsListedPayload | ProviderSessionInspectedPayload | undefined {
+  const current = mlp3EventPayloadSchema.safeParse(value)
+  if (
+    current.success
+    && (
+      current.data.type === 'provider.sessions.listed'
+      || current.data.type === 'provider.session.inspected'
+    )
+  ) return current.data
+  if (!isRecord(value)) return undefined
+  if (value.type === 'provider.sessions.listed') return normalizeProviderSessionsPayload(value)
+  if (value.type === 'provider.session.inspected') return normalizeProviderInspectionPayload(value)
+  return undefined
+}
+
+function normalizeProviderSessionsPayload(
+  value: Record<string, unknown>,
+): ProviderSessionsListedPayload | undefined {
+  if (!validOpaqueId(value.provider) || !Array.isArray(value.sessions)) return undefined
+  const sessions: ProviderSessionEntry[] = []
+  for (const input of value.sessions.slice(0, MAX_PROVIDER_SESSIONS)) {
+    if (!isRecord(input) || !validOpaqueId(input.sessionId) || typeof input.title !== 'string') {
+      return undefined
+    }
+    const parsed = providerSessionEntrySchema.safeParse({
+      sessionId: input.sessionId,
+      title: truncateText(input.title.trim() || 'Untitled provider session', 512),
+      updatedAt: input.updatedAt,
+      ...(typeof input.cwd === 'string' && input.cwd
+        ? { cwd: truncateText(input.cwd, 8_192) }
+        : {}),
+      ...(input.managedSessionId === undefined
+        ? {}
+        : { managedSessionId: input.managedSessionId }),
+      ...(input.latestArchivedSessionId === undefined
+        ? {}
+        : { latestArchivedSessionId: input.latestArchivedSessionId }),
+      ...(input.lastArchivedAt === undefined ? {} : { lastArchivedAt: input.lastArchivedAt }),
+    })
+    if (!parsed.success) return undefined
+    sessions.push(parsed.data)
+  }
+  const parsed = mlp3EventPayloadSchema.safeParse({
+    type: 'provider.sessions.listed',
+    provider: value.provider,
+    sessions,
+    ...(typeof value.nextCursor === 'string' && value.nextCursor
+      ? { nextCursor: value.nextCursor }
+      : {}),
+  })
+  return parsed.success && parsed.data.type === 'provider.sessions.listed'
+    ? parsed.data
+    : undefined
+}
+
+function normalizeProviderInspectionPayload(
+  value: Record<string, unknown>,
+): ProviderSessionInspectedPayload | undefined {
+  if (
+    !validOpaqueId(value.provider)
+    || !validOpaqueId(value.providerSessionId)
+    || typeof value.title !== 'string'
+    || !Array.isArray(value.messages)
+  ) return undefined
+  const messages: ProviderHistoryMessage[] = []
+  for (const [index, input] of value.messages.slice(-MAX_PROVIDER_MESSAGES).entries()) {
+    if (
+      !isRecord(input)
+      || typeof input.id !== 'string'
+      || (input.role !== 'user' && input.role !== 'assistant')
+      || typeof input.text !== 'string'
+    ) return undefined
+    messages.push({
+      id: truncateText(input.id, 256) || `message-${index + 1}`,
+      role: input.role,
+      text: input.text,
+    })
+  }
+  try {
+    return boundedProviderSessionInspection({
+      type: 'provider.session.inspected',
+      provider: value.provider,
+      providerSessionId: value.providerSessionId,
+      title: truncateText(value.title.trim() || 'Provider session', 512),
+      ...(value.managedSessionId === undefined
+        ? {}
+        : { managedSessionId: value.managedSessionId as string }),
+      ...(value.latestArchivedSessionId === undefined
+        ? {}
+        : { latestArchivedSessionId: value.latestArchivedSessionId as string }),
+      ...(value.lastArchivedAt === undefined
+        ? {}
+        : { lastArchivedAt: value.lastArchivedAt as number }),
+      messages,
+    })
+  } catch {
+    return undefined
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function validOpaqueId(value: unknown): value is string {
+  return typeof value === 'string' && value.length >= 1 && value.length <= 256
+}
+
+function truncateText(value: string, maximumCharacters: number): string {
+  return value.length <= maximumCharacters ? value : value.slice(0, maximumCharacters)
 }
 
 function providerHistoryCursor(offset: number): string {
