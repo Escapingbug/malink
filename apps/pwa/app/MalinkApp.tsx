@@ -468,6 +468,7 @@ type ProviderHistoryLoadState = ProviderHistoryRouteIdentity & {
   provider: string;
   kind: "sessions" | "session";
   providerSessionId?: string;
+  cursor?: string;
 };
 
 type ProviderHistoryPendingCommand = ProviderHistoryRouteIdentity & {
@@ -475,6 +476,7 @@ type ProviderHistoryPendingCommand = ProviderHistoryRouteIdentity & {
   provider: string;
   kind: "sessions" | "session";
   providerSessionId?: string;
+  cursor?: string;
 };
 
 type ProviderHistoryFocus = ProviderHistoryRouteIdentity & {
@@ -2912,7 +2914,7 @@ function MalinkAppRuntime() {
       "background",
       failure ? "warning" : "success",
       failure
-        ? `Provider History finished in the background but needs attention: ${failure}`
+        ? `Provider History needs attention: ${failure}`
         : "Provider History finished loading. Reopen it whenever you are ready.",
       failure ? undefined : 5_000,
     );
@@ -7711,6 +7713,7 @@ function MalinkAppRuntime() {
       ...(load.providerSessionId === undefined
         ? {}
         : { providerSessionId: load.providerSessionId }),
+      ...(load.cursor === undefined ? {} : { cursor: load.cursor }),
     });
     return sent;
   }
@@ -7918,23 +7921,43 @@ function MalinkAppRuntime() {
     let focusedSession: ProviderSessionEntry | null = null;
     let backgroundFailure: string | null = null;
     try {
-      const completion = await executeProviderHistoryCommand(
-        load,
-        { operation: "provider.sessions.list", provider },
-      );
-      if (completion.outcome !== "succeeded") {
-        throw new Error(completion.error?.message || "Provider history could not be loaded.");
-      }
-      const result = completion.result;
-      if (!result || typeof result !== "object" || Array.isArray(result) || result.type !== "provider.sessions.listed") {
-        throw new Error("The provider returned an invalid session list.");
-      }
-      const sessions = Array.isArray(result.sessions)
-        ? result.sessions.map(entry => providerSessionEntrySchema.parse(entry))
-        : [];
+      const loadedProviderSessions: ProviderSessionEntry[] = [];
+      let cursor: string | undefined;
+      do {
+        const pageLoad: ProviderHistoryLoadState = {
+          ...load,
+          ...(cursor === undefined ? {} : { cursor }),
+        };
+        const completion = await executeProviderHistoryCommand(
+          pageLoad,
+          {
+            operation: "provider.sessions.list",
+            provider,
+            ...(cursor === undefined ? {} : { cursor }),
+          },
+        );
+        if (completion.outcome !== "succeeded") {
+          throw new Error(completion.error?.message || "Provider history could not be loaded.");
+        }
+        const result = completion.result;
+        if (!result || typeof result !== "object" || Array.isArray(result) || result.type !== "provider.sessions.listed") {
+          throw new Error("The provider returned an invalid session list.");
+        }
+        const page = Array.isArray(result.sessions)
+          ? result.sessions.map(entry => providerSessionEntrySchema.parse(entry))
+          : [];
+        loadedProviderSessions.push(...page);
+        cursor = typeof result.nextCursor === "string" ? result.nextCursor : undefined;
+        if (cursor && page.length === 0) {
+          throw new Error("The provider returned an empty history page with another page pending.");
+        }
+        if (providerHistoryLoadRef.current?.id === load.id) {
+          setProviderHistorySessions([...loadedProviderSessions]);
+        }
+      } while (cursor);
       if (providerHistoryLoadRef.current?.id === load.id) {
         providerHistoryLoadedProviderRef.current = providerKey;
-        setProviderHistorySessions(sessions);
+        setProviderHistorySessions(loadedProviderSessions);
         const currentFocus = providerHistoryFocusRef.current;
         if (
           currentFocus?.gatewayNodeId === source.gatewayNodeId
@@ -7942,7 +7965,7 @@ function MalinkAppRuntime() {
           && currentFocus.provider === provider
         ) {
           focusedSession = findRecentlyArchivedProviderSession(
-            sessions,
+            loadedProviderSessions,
             currentFocus.archivedSessionId,
           );
           if (focusedSession) {
@@ -7954,7 +7977,9 @@ function MalinkAppRuntime() {
       }
     } catch (error) {
       if (providerHistoryLoadRef.current?.id === load.id) {
-        backgroundFailure = formatUiError(error);
+        backgroundFailure = error instanceof CommandCompletionTimeoutError
+          ? "The signed result has not reached this device yet. Reopen Provider History to recover the same request safely; it will not run twice."
+          : formatUiError(error);
         setProviderHistoryError(backgroundFailure);
       }
     } finally {

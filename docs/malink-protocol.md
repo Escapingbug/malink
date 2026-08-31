@@ -155,6 +155,12 @@ fan out snapshots across every project room.
 Provider-owned history is a separate surface. `provider.sessions.list` lists
 the sessions still retained by a configured provider and
 `provider.session.inspect` returns a bounded read-only transcript preview.
+History results are bounded before they enter the command journal so their
+signed, encrypted envelope always fits the Matrix timeline budget. A session
+list may return the existing optional `nextCursor`; clients request each page
+with a new command and concatenate the results. This is an additive MLP/3
+capability, not a protocol-version change. Transcript previews retain the most
+recent messages that fit the same transport budget.
 Creating a session with `providerSessionId` adopts that existing provider
 conversation; the first message sent from the preview is carried as the create
 command's initial prompt. A provider session already managed by an active

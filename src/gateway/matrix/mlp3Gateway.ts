@@ -83,6 +83,12 @@ import {
   FileGatewayWebPushService,
   type GatewayWebPushService,
 } from './webPush'
+import {
+  boundedProviderHistoryEventPayload,
+  boundedProviderHistoryResult,
+  boundedProviderSessionInspection,
+  providerSessionsPage,
+} from './providerHistoryTransport'
 
 interface Mlp3SessionRuntime {
   record: PersistedMlp3Session
@@ -1938,17 +1944,17 @@ export class MatrixMlp3GatewayRunner {
         )
         return {
           sessionId: entry.sessionId,
-          title: entry.title.trim() || 'Untitled provider session',
+          title: (entry.title.trim() || 'Untitled provider session').slice(0, 512),
           updatedAt: Math.max(0, Math.trunc(entry.updated)),
-          ...(entry.cwd ? { cwd: entry.cwd } : {}),
+          ...(entry.cwd ? { cwd: entry.cwd.slice(0, 8_192) } : {}),
           ...relation,
         }
       })
-      const payload = {
-        type: 'provider.sessions.listed' as const,
-        provider: command.payload.provider,
+      const payload = providerSessionsPage(
+        command.payload.provider,
         sessions,
-      }
+        command.payload.cursor,
+      )
       await this.settleAndDeliver(
         project,
         command,
@@ -1986,14 +1992,18 @@ export class MatrixMlp3GatewayRunner {
         command.payload.provider,
         command.payload.providerSessionId,
       )
-      const payload = {
+      const payload = boundedProviderSessionInspection({
         type: 'provider.session.inspected' as const,
         provider: command.payload.provider,
         providerSessionId: command.payload.providerSessionId,
-        title: history.title.trim() || 'Provider session',
+        title: (history.title.trim() || 'Provider session').slice(0, 512),
         ...relation,
-        messages: limitProviderHistoryMessages(history.messages),
-      }
+        messages: history.messages.map((message, index) => ({
+          id: message.id.slice(0, 256) || `message-${index + 1}`,
+          role: message.role,
+          text: message.text,
+        })),
+      })
       await this.settleAndDeliver(
         project,
         command,
@@ -2234,8 +2244,19 @@ export class MatrixMlp3GatewayRunner {
     project: V3ProjectRuntime,
     record: Mlp3CommandJournalRecord,
   ): void {
-    const terminalEvent = record.terminal?.event
-    if (!terminalEvent) return
+    const originalEvent = record.terminal?.event
+    if (!originalEvent) return
+    const boundedPayload = boundedProviderHistoryEventPayload(record.command, originalEvent.payload)
+    const terminalEvent: Mlp3Event = canonicalJson(boundedPayload) === canonicalJson(
+      originalEvent.payload,
+    )
+      ? originalEvent
+      : {
+          ...originalEvent,
+          eventId: providerHistoryRecoveryEventId(record.command),
+          occurredAt: this.now(),
+          payload: boundedPayload,
+        }
     const task = this.enqueueTerminalNotification(project, terminalEvent).then(() => this.emit(
       project,
       record.command.sessionId
@@ -2996,25 +3017,6 @@ function boundedAvailableCommands(commands: readonly ProviderCommand[]): Provide
   return result
 }
 
-function limitProviderHistoryMessages(
-  input: readonly import('@/providers/provider').ProviderHistoryMessage[],
-): import('@malink/protocol').ProviderHistoryMessage[] {
-  const result: import('@malink/protocol').ProviderHistoryMessage[] = []
-  let bytes = 0
-  for (const message of input.slice(-256)) {
-    const normalized = {
-      id: message.id.slice(0, 256) || `message-${result.length + 1}`,
-      role: message.role,
-      text: message.text.slice(0, 16 * 1024),
-    }
-    const nextBytes = Buffer.byteLength(JSON.stringify(normalized), 'utf8')
-    if (bytes + nextBytes > 90 * 1024) break
-    result.push(normalized)
-    bytes += nextBytes
-  }
-  return result
-}
-
 function providerSessionMalinkRelation(
   sessions: readonly PersistedMlp3Session[],
   provider: string,
@@ -3169,6 +3171,9 @@ function commandReconciliationPayload(
   if (!terminal) throw new Error('A terminal command journal record has no terminal outcome')
   const outcome = reconciledCommandOutcome(terminal)
   const error = reconciledCommandError(terminal, outcome)
+  const result = terminal.result === undefined
+    ? undefined
+    : boundedProviderHistoryResult(record.command, terminal.result)
   return {
     type: 'command.reconciled',
     commandId: record.command.commandId,
@@ -3177,9 +3182,15 @@ function commandReconciliationPayload(
     ...(record.dispatchedAt === undefined ? {} : { dispatchedAt: record.dispatchedAt }),
     ...(record.terminalAt === undefined ? {} : { terminalAt: record.terminalAt }),
     outcome,
-    ...(terminal.result === undefined ? {} : { result: terminal.result }),
+    ...(result === undefined ? {} : { result }),
     ...(error ? { error } : {}),
   }
+}
+
+function providerHistoryRecoveryEventId(command: Mlp3Command): string {
+  return createHash('sha256')
+    .update(`malink-v3-provider-history-recovery\0${command.commandId}`)
+    .digest('base64url')
 }
 
 function reconciledCommandOutcome(

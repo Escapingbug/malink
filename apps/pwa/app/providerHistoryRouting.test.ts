@@ -152,6 +152,10 @@ describe("Provider History routing", () => {
       ...request,
       projectId: "project-web",
     })).toBe(false);
+    expect(providerHistoryRequestMatches(request, {
+      ...request,
+      cursor: "provider-history-offset-v1:10",
+    })).toBe(false);
   });
 
   it("keeps pending commands distinct across Project, Provider, and session", () => {
@@ -166,6 +170,7 @@ describe("Provider History routing", () => {
       providerHistoryCommandKey({ ...request, projectId: "project-web" }),
       providerHistoryCommandKey({ ...request, gatewayNodeId: "gateway-home" }),
       providerHistoryCommandKey({ ...request, provider: "cursor" }),
+      providerHistoryCommandKey({ ...request, cursor: "provider-history-offset-v1:10" }),
       providerHistoryCommandKey({
         ...request,
         kind: "session",

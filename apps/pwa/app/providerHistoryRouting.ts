@@ -17,6 +17,7 @@ export type ProviderHistoryRequestIdentity = ProviderHistoryRouteIdentity & {
   provider: string;
   kind: "sessions" | "session";
   providerSessionId?: string;
+  cursor?: string;
 };
 
 export function providerHistorySourceKey(
@@ -41,6 +42,7 @@ export function providerHistoryCommandKey(
     request.provider,
     request.kind,
     request.providerSessionId ?? null,
+    request.cursor ?? null,
   ]);
 }
 
@@ -119,5 +121,6 @@ export function providerHistoryRequestMatches(
     && left.projectId === right.projectId
     && left.provider === right.provider
     && left.kind === right.kind
-    && left.providerSessionId === right.providerSessionId;
+    && left.providerSessionId === right.providerSessionId
+    && left.cursor === right.cursor;
 }
