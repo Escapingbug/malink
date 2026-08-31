@@ -53,19 +53,21 @@ export class CommandCompletionTimeoutError extends Error {
 
 export function waitForCommandCompletion(
   completion: Promise<CommandCompletion>,
-  timeoutMs = COMMAND_COMPLETION_TIMEOUT_MS,
+  timeoutMs: number | null = COMMAND_COMPLETION_TIMEOUT_MS,
 ): Promise<CommandCompletion> {
   return new Promise((resolve, reject) => {
-    const timeout = globalThis.setTimeout(() => {
-      reject(new CommandCompletionTimeoutError());
-    }, timeoutMs);
+    const timeout = timeoutMs === null
+      ? undefined
+      : globalThis.setTimeout(() => {
+          reject(new CommandCompletionTimeoutError());
+        }, timeoutMs);
     completion.then(
       (result) => {
-        globalThis.clearTimeout(timeout);
+        if (timeout !== undefined) globalThis.clearTimeout(timeout);
         resolve(result);
       },
       (error) => {
-        globalThis.clearTimeout(timeout);
+        if (timeout !== undefined) globalThis.clearTimeout(timeout);
         reject(error);
       },
     );

@@ -1471,12 +1471,16 @@ internal class MatrixMlp3NativeProjection(
                     put("computerName", payload.requiredString("computerName", 128))
                 },
             )
-            "gateway.update.status" -> MatrixMlp3NativeTerminal(
-                commandId,
-                "succeeded",
-                sessionId,
-                result = payload.requiredObject("status"),
-            )
+            "gateway.update.status" -> payload.requiredObject("status")
+                .takeUnless { it.requiredString("phase", 64) == "waiting_for_idle" }
+                ?.let { status ->
+                    MatrixMlp3NativeTerminal(
+                        commandId,
+                        "succeeded",
+                        sessionId,
+                        result = status,
+                    )
+                }
             else -> null
         }
     }

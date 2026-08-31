@@ -665,6 +665,65 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `waiting for idle Gateway update progress is not a command terminal`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(workspaceSnapshot(1, "gpt-5.6-sol"), "\$workspace", null)
+        val waiting = projection.applyGatewayEvent(
+            event(
+                eventId = "gateway-update-waiting-1",
+                projectId = "project-1",
+                causationCommandId = "gateway-update-apply-1",
+                payload = buildJsonObject {
+                    put("type", "gateway.update.status")
+                    put("status", buildJsonObject {
+                        put("version", 1)
+                        put("phase", "waiting_for_idle")
+                        put("releaseId", "release-2")
+                        put("targetBuildId", "build-2")
+                        put("currentBuildId", "build-1")
+                        put("activeTurns", 1)
+                        put("updatedAt", 20)
+                    })
+                },
+            ),
+            "\$gateway-update-waiting",
+            null,
+        )
+
+        assertNull(waiting.terminal)
+        assertEquals(
+            "waiting_for_idle",
+            projection.snapshot()!!.getValue("gateway_update").jsonObject
+                .getValue("phase").jsonPrimitive.content,
+        )
+
+        val scheduled = projection.applyGatewayEvent(
+            event(
+                eventId = "gateway-update-scheduled-1",
+                projectId = "project-1",
+                causationCommandId = "gateway-update-apply-1",
+                payload = buildJsonObject {
+                    put("type", "gateway.update.status")
+                    put("status", buildJsonObject {
+                        put("version", 1)
+                        put("phase", "scheduled")
+                        put("releaseId", "release-2")
+                        put("targetBuildId", "build-2")
+                        put("currentBuildId", "build-1")
+                        put("updatedAt", 21)
+                    })
+                },
+            ),
+            "\$gateway-update-scheduled",
+            null,
+        )
+
+        assertEquals("gateway-update-apply-1", scheduled.terminal?.commandId)
+        assertEquals("succeeded", scheduled.terminal?.outcome)
+    }
+
+    @Test
     fun `shared Gateway update observation survives durable restore`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)

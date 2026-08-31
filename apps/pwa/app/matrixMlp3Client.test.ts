@@ -21,6 +21,31 @@ import {
 } from "./matrixMlp3Client";
 
 describe("MatrixMlp3ProtocolClient", () => {
+  it("does not impose a local deadline on a durable completion waiter", async () => {
+    const store = new MemoryMatrixMlp3ClientStore();
+    const client = new MatrixMlp3ProtocolClient(
+      {
+        workspaceId: "workspace-1",
+        roomId: "!project:example.org",
+        projectId: "project-1",
+      },
+      {} as DeviceIdentity,
+      {} as TrustedGateway,
+      { sendMessage: async () => ({ eventId: "$unused" }) },
+      store,
+    );
+    await client.initialize();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      void client.observeCompletion("durable-command-1");
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(setTimeoutSpy).not.toHaveBeenCalled();
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
   it("persists exact commands, quarantines one bad event, and continues projection", async () => {
     const gateway = await generateDeviceKeyPair();
     const device = await generateDeviceKeyPair();

@@ -1126,6 +1126,29 @@ test("recovers structured tool cards from older native agent messages", async ()
   client.dispose();
 });
 
+test("does not expire native Gateway update commands while Agent work is active", async () => {
+  const port = new RuntimePort();
+  const client = await createTestClient(port);
+  const originalSetTimeout = globalThis.setTimeout;
+  const scheduledDelays: number[] = [];
+  globalThis.setTimeout = ((handler, timeout, ...args) => {
+    scheduledDelays.push(Number(timeout));
+    return originalSetTimeout(handler, timeout, ...args);
+  }) as typeof globalThis.setTimeout;
+  try {
+    const sent = await client.send({
+      operation: "gateway.update.apply",
+      releaseId: "release-2",
+      mode: "when_idle",
+    });
+    void sent.completion.catch(() => undefined);
+    assert.equal(scheduledDelays.includes(24 * 60 * 60_000), false);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    client.dispose();
+  }
+});
+
 test("checks the static APK channel and installs a verified release", async () => {
   const port = new RuntimePort();
   const client = await createTestClient(port);

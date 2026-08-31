@@ -385,6 +385,65 @@ describe("MatrixMlp3Projection", () => {
     expect(restored.workspace?.gatewayUpdate).toEqual(projection.workspace?.gatewayUpdate);
   });
 
+  it("keeps waiting-for-idle update progress non-terminal until apply is scheduled", () => {
+    const projection = new MatrixMlp3Projection();
+    projection.applyEvent(workspaceSnapshot(1, "gpt-5.6-sol"), "$workspace");
+    projection.applyEvent({
+      kind: "malink.event",
+      version: 3,
+      eventId: "gateway-update-waiting-1",
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      causationCommandId: "gateway-update-apply-1",
+      occurredAt: 20,
+      payload: {
+        type: "gateway.update.status",
+        status: {
+          version: 1,
+          phase: "waiting_for_idle",
+          releaseId: "release-2",
+          targetBuildId: "build-2",
+          currentBuildId: "build-1",
+          activeTurns: 1,
+          updatedAt: 20,
+        },
+      },
+    }, "$gateway-update-waiting");
+
+    expect(projection.workspace?.gatewayUpdate).toMatchObject({
+      phase: "waiting_for_idle",
+      activeTurns: 1,
+    });
+    expect(projection.completions.has("gateway-update-apply-1")).toBe(false);
+
+    projection.applyEvent({
+      kind: "malink.event",
+      version: 3,
+      eventId: "gateway-update-scheduled-1",
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      causationCommandId: "gateway-update-apply-1",
+      occurredAt: 21,
+      payload: {
+        type: "gateway.update.status",
+        status: {
+          version: 1,
+          phase: "scheduled",
+          releaseId: "release-2",
+          targetBuildId: "build-2",
+          currentBuildId: "build-1",
+          updatedAt: 21,
+        },
+      },
+    }, "$gateway-update-scheduled");
+
+    expect(projection.completions.get("gateway-update-apply-1")).toMatchObject({
+      commandId: "gateway-update-apply-1",
+      outcome: "succeeded",
+      event: { payload: { status: { phase: "scheduled" } } },
+    });
+  });
+
   it("converges shared Gateway status observations without a client command", () => {
     const projection = new MatrixMlp3Projection();
     projection.applyEvent(workspaceSnapshot(1, "gpt-5.6-sol"), "$workspace");

@@ -944,9 +944,15 @@ function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
     case "gateway.enrollment.approved":
     case "gateway.profile.updated":
     case "notification.subscription.changed":
-    case "gateway.update.status":
     case "provider.sessions.listed":
     case "provider.session.inspected":
+      return { commandId, outcome: "succeeded", ...(event.sessionId ? { sessionId: event.sessionId } : {}), event };
+    case "gateway.update.status":
+      // `when_idle` publishes this phase while the apply command still owns
+      // the closed execution gate and waits for active turns. Treating it as
+      // terminal releases the durable command before the Gateway actually
+      // schedules the update.
+      if (event.payload.status.phase === "waiting_for_idle") return null;
       return { commandId, outcome: "succeeded", ...(event.sessionId ? { sessionId: event.sessionId } : {}), event };
     case "turn.completed":
       return {

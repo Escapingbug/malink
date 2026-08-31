@@ -7233,7 +7233,7 @@ function MalinkAppRuntime() {
       commandId = sent.commandId;
       completion = await waitForCommandCompletion(
         sent.completion,
-        timeoutMs ?? (payload.operation === "gateway.update.status" ? 60_000 : 30 * 60_000),
+        timeoutMs ?? (payload.operation === "gateway.update.status" ? 60_000 : null),
       );
     } finally {
       if (commandId) {

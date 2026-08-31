@@ -377,24 +377,31 @@ export class MatrixMlp3ProtocolClient {
     return operation;
   }
 
-  observeCompletion(commandId: string, timeoutMs = 120_000): Promise<Mlp3CommandCompletion> {
+  observeCompletion(commandId: string, timeoutMs?: number): Promise<Mlp3CommandCompletion> {
     return this.initialize().then(() => this.store.getOutbox(commandId)).then(record => {
       if (record?.completion) return record.completion;
       return new Promise<Mlp3CommandCompletion>((resolve, reject) => {
-        const waiter = { resolve, reject };
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const waiter: CompletionWaiter = {
+          resolve(value) {
+            if (timeout !== undefined) clearTimeout(timeout);
+            resolve(value);
+          },
+          reject(error) {
+            if (timeout !== undefined) clearTimeout(timeout);
+            reject(error);
+          },
+        };
         const waiters = this.waiters.get(commandId) ?? new Set<CompletionWaiter>();
         waiters.add(waiter);
         this.waiters.set(commandId, waiters);
-        const timeout = setTimeout(() => {
-          waiters.delete(waiter);
-          if (waiters.size === 0) this.waiters.delete(commandId);
-          reject(new Error(`Command ${commandId} did not reach a terminal event in time.`));
-        }, timeoutMs);
-        const originalResolve = waiter.resolve;
-        waiter.resolve = value => {
-          clearTimeout(timeout);
-          originalResolve(value);
-        };
+        if (timeoutMs !== undefined) {
+          timeout = setTimeout(() => {
+            waiters.delete(waiter);
+            if (waiters.size === 0) this.waiters.delete(commandId);
+            reject(new Error(`Command ${commandId} did not reach a terminal event in time.`));
+          }, timeoutMs);
+        }
       });
     });
   }

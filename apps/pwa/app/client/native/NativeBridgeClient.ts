@@ -295,7 +295,15 @@ export class NativeBridgeClient implements MalinkClient {
     await this.ready;
     const idempotencyKey = crypto.randomUUID();
     const receipt = await this.#sendWhenOutboxAvailable(payload, idempotencyKey, projectId);
-    return this.#sendResult(receipt, payload.operation === "session.create");
+    const completionTimeoutMs = payload.operation === "gateway.update.stage"
+      || payload.operation === "gateway.update.apply"
+      ? null
+      : DEFAULT_COMMAND_TIMEOUT_MS;
+    return this.#sendResult(
+      receipt,
+      payload.operation === "session.create",
+      completionTimeoutMs,
+    );
   }
 
   async requestMatrixLoginToken(
@@ -989,7 +997,7 @@ export class NativeBridgeClient implements MalinkClient {
   async #sendResult(
     receipt: CommandReceipt,
     createsSession = false,
-    completionTimeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+    completionTimeoutMs: number | null = DEFAULT_COMMAND_TIMEOUT_MS,
     completionTimeoutError?: (commandId: string) => Error,
   ): Promise<MalinkCommandSendResult> {
     if (!receipt.commandId) {
@@ -1033,7 +1041,7 @@ export class NativeBridgeClient implements MalinkClient {
 
   #waitForCompletion(
     commandId: string,
-    timeoutMs: number,
+    timeoutMs: number | null,
     timeoutError: () => Error,
   ): Promise<CommandCompletion> {
     const completed = this.#completions.get(commandId);
@@ -1044,18 +1052,20 @@ export class NativeBridgeClient implements MalinkClient {
         waiters.delete(waiter);
         if (waiters.size === 0) this.#completionWaiters.delete(commandId);
       };
-      const timer = globalThis.setTimeout(() => {
-        remove();
-        reject(timeoutError());
-      }, Math.max(1, timeoutMs));
+      const timer = timeoutMs === null
+        ? undefined
+        : globalThis.setTimeout(() => {
+            remove();
+            reject(timeoutError());
+          }, Math.max(1, timeoutMs));
       const waiter: CompletionWaiter = {
         resolve: (completion) => {
-          globalThis.clearTimeout(timer);
+          if (timer !== undefined) globalThis.clearTimeout(timer);
           remove();
           resolve(completion);
         },
         reject: (error) => {
-          globalThis.clearTimeout(timer);
+          if (timer !== undefined) globalThis.clearTimeout(timer);
           remove();
           reject(error);
         },
