@@ -16,6 +16,7 @@ import {
   signMlp3Command,
 } from '@malink/security'
 import { InMemoryMatrixTransport } from '@/channel/matrix'
+import type { MatrixGatewayTrustedDevice } from '@/gateway/matrix'
 import {
   GatewayMlp3ContentLayer,
   MAX_MLP3_MATRIX_TIMELINE_CONTENT_BYTES,
@@ -147,6 +148,95 @@ describe('GatewayMlp3ContentLayer', () => {
       ...newerSnapshot,
       eventId: 'conflicting-project-snapshot-2',
     }, sentNewerSnapshot.eventId, transport)).rejects.toThrow(/immutable/)
+  })
+
+  it('publishes only the joining device grant on the pairing fast path', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-pairing-content-'))
+    const gateway = await generateDeviceKeyPair()
+    const firstDevice = await generateDeviceKeyPair()
+    const joiningDevice = await generateDeviceKeyPair()
+    const room = {
+      roomId: '!project:example.org',
+      conversationId: 'legacy-conversation-unused',
+      cwd: '/repo',
+      providerName: 'test',
+    }
+    const devices: MatrixGatewayTrustedDevice[] = [{
+      deviceId: 'phone-1',
+      publicKey: firstDevice.publicJwk,
+      allowedRoomIds: [room.roomId],
+      allowedOperations: ['prompt'],
+      matrixUserId: '@owner:example.org',
+      matrixDeviceId: 'PHONE_ONE',
+      matrixDeviceKeys: ['matrix-phone-key-one'],
+      certificateExpiresAt: Date.now() + 60_000,
+      sequenceEpoch: 'certificate-1',
+    }]
+    const layer = new GatewayMlp3ContentLayer(
+      'workspace-1',
+      {
+        gatewayDeviceId: 'workspace-1',
+        gatewayKeyPair: await exportDeviceKeyPair(gateway),
+        envelopeReplayLedgerPath: join(directory, 'security'),
+      },
+      [],
+      async () => devices,
+    )
+    await layer.initialize()
+    const transport = new InMemoryMatrixTransport()
+    let stateWrites = 0
+    const setState = transport.setApplicationRoomState.bind(transport)
+    transport.setApplicationRoomState = async request => {
+      stateWrites += 1
+      return setState(request)
+    }
+    await layer.provisionProject(room, transport)
+    expect(stateWrites).toBe(1)
+
+    devices.push({
+      deviceId: 'phone-2',
+      publicKey: joiningDevice.publicJwk,
+      allowedRoomIds: [room.roomId],
+      allowedOperations: ['prompt'],
+      matrixUserId: '@owner:example.org',
+      matrixDeviceId: 'PHONE_TWO',
+      matrixDeviceKeys: ['matrix-phone-key-two'],
+      certificateExpiresAt: Date.now() + 60_000,
+      sequenceEpoch: 'certificate-2',
+    })
+    await layer.provisionPairingDevice(room, 'phone-2', transport)
+
+    expect(stateWrites).toBe(2)
+    expect(transport.state.size).toBe(2)
+    expect(layer.hasDeliveredAuthoritativePointers(room)).toBe(false)
+    const grant = mlp3ProjectKeyGrantStateSchema.parse(
+      [...transport.state.values()].find(value =>
+        (value.content as { deviceId?: unknown }).deviceId === 'phone-2'
+      )?.content,
+    )
+    await expect(openMlp3ProjectKeyGrant(grant.sealedGrant, {
+      expected: {
+        grantId: grant.grantId,
+        workspaceId: grant.workspaceId,
+        projectId: grant.projectId,
+        roomId: grant.roomId,
+        deviceId: grant.deviceId,
+        certificateId: grant.certificateId,
+        senderKeyId: grant.sealedGrant.envelope.senderKeyId,
+        recipientKeyId: grant.sealedGrant.envelope.recipientKeyId,
+      },
+      recipientPrivateKey: joiningDevice.privateKey,
+      senderPublicKey: gateway.publicKey,
+    })).resolves.toMatchObject({ deviceId: 'phone-2' })
+
+    // Recovery remains idempotent and full post-response provisioning does
+    // not manufacture redundant grants for an additive device change.
+    await layer.provisionPairingDevice(room, 'phone-2', transport)
+    await layer.provisionProject(room, transport)
+    expect(stateWrites).toBe(2)
+    await expect(
+      layer.provisionPairingDevice(room, 'unknown-device', transport),
+    ).rejects.toThrow(/not active/)
   })
 
   it('opens a client command from the same project key without comparing Matrix relations', async () => {

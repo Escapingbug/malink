@@ -307,6 +307,92 @@ describe('long-lived Matrix pairing recovery', () => {
     expect(client.sent).toHaveLength(3)
   })
 
+  it('coalesces retries while one durable pairing transaction is provisioning', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-pairing-coalesce-'))
+    temporaryDirectories.push(directory)
+    const gatewayTransport = {
+      homeserver: 'http://localhost:8008',
+      roomId: '!secure:localhost',
+      userId: '@gateway:localhost',
+      deviceId: 'GATEWAY_MATRIX',
+      ed25519: 'gateway-matrix-ed25519',
+    }
+    const deviceTransport = {
+      homeserver: gatewayTransport.homeserver,
+      roomId: gatewayTransport.roomId,
+      userId: '@phone:localhost',
+      deviceId: 'PHONE_MATRIX',
+      ed25519: 'phone-matrix-ed25519',
+    }
+    const identity = await new FileGatewayIdentityStore(
+      join(directory, 'identity.json'),
+    ).loadOrCreate('gateway-one')
+    const registry = new FileTrustedDeviceRegistry(join(directory, 'registry.json'))
+    const service = new GatewayPairingService(
+      identity,
+      registry,
+      new PairingOfferGuard(new FileReplayStore(join(directory, 'offers.json'))),
+    )
+    const offer = await service.createOffer({
+      gatewayName: 'Gateway',
+      gatewayTransport,
+    })
+    const request = await createSignedPairingRequest({
+      signedOffer: offer.signedOffer,
+      deviceId: 'phone-one',
+      deviceName: 'Alice phone',
+      deviceKeys: await generateDeviceKeyPair(),
+      deviceTransport,
+    })
+    const client = new FakePairingClient()
+    let releaseProvisioning!: () => void
+    const provisioningBlocked = new Promise<void>(resolve => {
+      releaseProvisioning = resolve
+    })
+    const onProvisioned = vi.fn(() => provisioningBlocked)
+    const stop = listenForMatrixPairingRequests({
+      client,
+      service,
+      registry,
+      gatewayTransport,
+      acceptNewOffers: true,
+      onProvisioned,
+    })
+    const event = (eventId: string): MatrixIncomingEvent => ({
+      roomId: gatewayTransport.roomId,
+      eventId,
+      eventType: 'm.room.message',
+      sender: deviceTransport.userId,
+      senderDeviceId: deviceTransport.ed25519,
+      encrypted: true,
+      content: {
+        [MALINK_MATRIX_EXTENSION]: {
+          version: 1,
+          kind: 'pairing_request',
+          pairing_request: request.signedRequest,
+        },
+      },
+    })
+
+    client.emit(event('$request'))
+    client.emit(event('$request-duplicate'))
+    await vi.waitFor(() => expect(onProvisioned).toHaveBeenCalledOnce())
+    expect(client.sent).toHaveLength(0)
+
+    releaseProvisioning()
+    await vi.waitFor(() => expect(client.sent).toHaveLength(1))
+    expect(onProvisioned).toHaveBeenCalledOnce()
+    await expect(registry.listActive()).resolves.toHaveLength(1)
+
+    // Once the first attempt is complete, a genuine response-loss recovery
+    // still republishes the persisted signed response with a fresh event.
+    client.emit(event('$request-after-response-loss'))
+    await vi.waitFor(() => expect(client.sent).toHaveLength(2))
+    expect(onProvisioned).toHaveBeenCalledTimes(2)
+    expect(client.sent[1]?.transactionId).not.toBe(client.sent[0]?.transactionId)
+    stop()
+  })
+
   it('returns an immediate signed rejection for a verified approval failure', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-pairing-rejection-'))
     temporaryDirectories.push(directory)

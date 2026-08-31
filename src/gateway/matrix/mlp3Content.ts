@@ -165,6 +165,54 @@ export class GatewayMlp3ContentLayer {
     })
   }
 
+  /**
+   * Publishes only the room key grant required to make a signed pairing
+   * response usable by the joining device.
+   *
+   * Full project provisioning is intentionally excluded from this path. The
+   * existing pointers and snapshots remain authoritative, while the durable
+   * post-response convergence path provisions every other Workspace route.
+   */
+  async provisionPairingDevice(
+    room: MatrixGatewayRoomConfig,
+    deviceId: string,
+    transport: MatrixTransport,
+  ): Promise<void> {
+    this.transports.set(room.roomId, transport)
+    const devices = await this.activeDevices(room.roomId)
+    const device = devices.find(candidate => candidate.deviceId === deviceId)
+    if (!device) {
+      throw new Error(
+        `Pairing device ${deviceId} is not active for Matrix room ${room.roomId}`,
+      )
+    }
+    const ring = await this.projectKeys.ensureRoom(
+      room.roomId,
+      devices.map(candidate => candidate.deviceId),
+    )
+    await this.publishKeyGrant(room, ring, device, transport)
+  }
+
+  hasDeliveredAuthoritativePointers(room: MatrixGatewayRoomConfig): boolean {
+    const projectId = this.projectId(room)
+    const pointers = [
+      this.outbox.latestState(
+        room.roomId,
+        MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
+        this.workspaceId,
+      ),
+      this.outbox.latestState(
+        room.roomId,
+        MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
+        projectId,
+      ),
+    ]
+    return pointers.every(pointer =>
+      pointer !== undefined
+      && this.outbox.deliveredEventId(pointer.deliveryId) !== undefined
+    )
+  }
+
   async openIncoming(
     input: unknown,
     room: MatrixGatewayRoomConfig,

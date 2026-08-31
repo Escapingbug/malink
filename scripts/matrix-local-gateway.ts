@@ -522,11 +522,15 @@ const stopPairingRecovery = listenForMatrixPairingRequests({
     // Only offers persisted by GatewayPairingService can be accepted, so the
     // listener can remain available for invitations created by an active PWA.
     acceptNewOffers: true,
-    onProvisioned: async () => {
+    onProvisioned: async record => {
         if (!runner || runner.getState() !== 'running') {
             throw new Error('Gateway Room State is not ready for pairing')
         }
-        await runner.provisionCurrentState()
+        const certificate = record.certificate.certificate
+        await runner.provisionPairingDevice(
+            certificate.deviceId,
+            certificate.deviceTransport.roomId,
+        )
     },
     onAccepted: async record => {
         if (record.workspaceGrant) {

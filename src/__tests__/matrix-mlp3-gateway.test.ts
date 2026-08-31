@@ -34,7 +34,11 @@ import type {
   MatrixGatewayClient,
   MatrixGatewayEventListener,
 } from '@/gateway/matrix/client'
-import type { MatrixGatewayConfig, MatrixGatewayCryptoConfig } from '@/gateway/matrix/config'
+import type {
+  MatrixGatewayConfig,
+  MatrixGatewayCryptoConfig,
+  MatrixGatewayTrustedDevice,
+} from '@/gateway/matrix/config'
 import {
   gatewayMaintenanceSessionId,
   MatrixMlp3GatewayRunner,
@@ -138,6 +142,88 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(runner.getState()).toBe('running')
     expect(client.delivered).toHaveLength(0)
     expect(client.state.size).toBe(0)
+    await runner.stop()
+  })
+
+  it('establishes authoritative pointers for the first device before using the pairing fast path', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-first-pair-'))
+    const gatewayKeys = await generateDeviceKeyPair()
+    const firstPhoneKeys = await generateDeviceKeyPair()
+    const secondPhoneKeys = await generateDeviceKeyPair()
+    const client = new TestMatrixClient()
+    const roomId = '!first-pair-project:example.org'
+    const trustedDevices: MatrixGatewayTrustedDevice[] = []
+    const runner = new MatrixMlp3GatewayRunner({
+      gatewayId: 'workspace-first-pair',
+      gatewayNodeId: 'gateway-node-first-pair',
+      connection: {
+        baseUrl: 'https://matrix.example.org',
+        accessToken: 'gateway-token',
+        userId: '@gateway:example.org',
+        deviceId: 'GATEWAY',
+      },
+      crypto: {
+        backend: 'memory',
+        databasePrefix: 'first-pair-test',
+        allowInMemoryForTesting: true,
+      },
+      rooms: [{
+        roomId,
+        conversationId: roomId,
+        cwd: '/first-pair-repo',
+        providerName: 'test',
+      }],
+      trustedDevices: [],
+      replayLedgerPath: join(directory, 'replay'),
+      applicationSecurity: {
+        gatewayDeviceId: 'workspace-first-pair',
+        gatewayKeyPair: await exportDeviceKeyPair(gatewayKeys),
+        envelopeReplayLedgerPath: join(directory, 'security'),
+      },
+    }, {
+      client,
+      listTrustedDevices: async () => trustedDevices,
+    })
+
+    await runner.start()
+    expect(client.delivered).toHaveLength(0)
+    expect(client.state.size).toBe(0)
+
+    trustedDevices.push({
+      deviceId: 'phone-1',
+      publicKey: firstPhoneKeys.publicJwk,
+      allowedRoomIds: [roomId],
+      allowedOperations: ['prompt'],
+      matrixUserId: '@phone:example.org',
+      matrixDeviceId: 'PHONE1',
+      matrixDeviceKeys: ['matrix-phone-key-1'],
+      certificateExpiresAt: Date.now() + 60_000,
+      sequenceEpoch: 'certificate-1',
+    })
+    await runner.provisionPairingDevice('phone-1', roomId)
+
+    expect(client.delivered).toHaveLength(2)
+    expect(client.state.size).toBe(3)
+
+    await runner.provisionPairingDevice('phone-1', roomId)
+    expect(client.delivered).toHaveLength(2)
+    expect(client.state.size).toBe(3)
+
+    trustedDevices.push({
+      deviceId: 'phone-2',
+      publicKey: secondPhoneKeys.publicJwk,
+      allowedRoomIds: [roomId],
+      allowedOperations: ['prompt'],
+      matrixUserId: '@phone:example.org',
+      matrixDeviceId: 'PHONE2',
+      matrixDeviceKeys: ['matrix-phone-key-2'],
+      certificateExpiresAt: Date.now() + 60_000,
+      sequenceEpoch: 'certificate-2',
+    })
+    await runner.provisionPairingDevice('phone-2', roomId)
+
+    expect(client.delivered).toHaveLength(2)
+    expect(client.state.size).toBe(4)
     await runner.stop()
   })
 

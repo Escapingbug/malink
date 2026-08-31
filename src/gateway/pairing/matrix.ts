@@ -21,9 +21,11 @@ export interface MatrixPairingRequestOptions {
   registry: FileTrustedDeviceRegistry
   gatewayTransport: MatrixTransportBinding
   /**
-   * Commits every Gateway-side resource the new device needs before the
-   * signed response makes pairing observable to that device. Throwing keeps
-   * the persisted request recoverable and suppresses the response.
+   * Commits the minimum Gateway-side resource the new device needs to use the
+   * signed response, including its addressed project key grant. Existing
+   * snapshots remain authoritative and other routes may converge after the
+   * response. Throwing keeps the persisted request recoverable and suppresses
+   * the response.
    */
   onProvisioned: (record: TrustedDeviceRecord) => void | Promise<void>
   onRejected?: (error: unknown) => void
@@ -129,12 +131,25 @@ export function listenForMatrixPairingRequests(
 ): () => void {
   let stopped = false
   let chain = Promise.resolve()
+  const queuedRequestIds = new Set<string>()
   const unsubscribe = options.client.onRoomEvent((event) => {
     if (stopped || !isPairingEvent(event, options.gatewayTransport.roomId)) return
-    chain = chain
+    let request: SignedPairingRequest
+    try {
+      const extension = asRecord(event.content[MALINK_MATRIX_EXTENSION])
+      request = signedPairingRequestSchema.parse(extension?.pairing_request)
+    } catch (error) {
+      options.onRejected?.(error)
+      return
+    }
+    const requestId = request.request.requestId
+    // Matrix may redeliver or the client may retry while the first durable
+    // transaction is still provisioning. One in-flight execution owns that
+    // request; a later retry remains available if its response was lost.
+    if (queuedRequestIds.has(requestId)) return
+    queuedRequestIds.add(requestId)
+    const operation = chain
       .then(async () => {
-        const extension = asRecord(event.content[MALINK_MATRIX_EXTENSION])
-        const request = signedPairingRequestSchema.parse(extension?.pairing_request)
         const persisted = await options.registry.getPending(request.request.requestId)
         // A verified pending request may be retried after an approval or
         // process failure; an approved request replays its persisted response.
@@ -149,6 +164,10 @@ export function listenForMatrixPairingRequests(
       .catch(error => {
         options.onRejected?.(error)
       })
+      .finally(() => {
+        queuedRequestIds.delete(requestId)
+      })
+    chain = operation
   })
   return () => {
     stopped = true
@@ -209,10 +228,10 @@ async function acceptMatrixPairing(
     throw new Error('Paired device was not persisted')
   }
   // The response is the pairing commit marker from the client's point of
-  // view. Publish Room State (including the key bundle for this device)
-  // first, so a client that immediately reads /state can always decrypt a
-  // complete authoritative snapshot. A failed publication is safe to retry:
-  // receiveRequest returns the exact persisted response for this request.
+  // view. Publish the addressed key grant first, so the client can decrypt
+  // the already-authoritative snapshot immediately after accepting it. A
+  // failed publication is safe to retry: receiveRequest returns the exact
+  // persisted response for this request.
   await options.onProvisioned(record)
   await options.client.sendEncryptedRoomEvent({
     roomId: options.gatewayTransport.roomId,

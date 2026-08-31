@@ -515,6 +515,29 @@ export class MatrixMlp3GatewayRunner {
     }
   }
 
+  async provisionPairingDevice(deviceId: string, roomId: string): Promise<void> {
+    if (this.state !== 'running') {
+      throw new Error(`Cannot provision MLP/3 pairing while Gateway is ${this.state}`)
+    }
+    const project = this.projects.get(roomId)
+    if (!project) {
+      throw new Error(`Cannot provision pairing for unknown Matrix room ${roomId}`)
+    }
+    await this.content.provisionPairingDevice(
+      project.config,
+      deviceId,
+      this.client,
+    )
+    // Existing clients already left durable snapshot pointers in Room State,
+    // so additive pairing only needs the addressed key grant. A brand-new
+    // Gateway has no pointers yet and must publish its first readable
+    // authoritative snapshot before making pairing observable.
+    if (!this.content.hasDeliveredAuthoritativePointers(project.config)) {
+      await this.publishWorkspaceSnapshot(project)
+      await this.publishProjectSnapshot(project)
+    }
+  }
+
   publishNativeClientRelease(
     input: NativeClientRelease,
   ): Promise<PublishNativeClientReleaseResult> {
