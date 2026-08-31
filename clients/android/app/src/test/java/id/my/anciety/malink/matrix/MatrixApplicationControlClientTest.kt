@@ -351,6 +351,47 @@ class MatrixApplicationControlClientTest {
     }
 
     @Test
+    fun `command reports a missing project route distinctly`() = runBlocking {
+        var called = false
+        val client = MatrixApplicationControlClient(
+            MatrixApplicationControlTransport { _, _, _ ->
+                called = true
+                MatrixHttpResponse(200, "{}".toByteArray())
+            },
+        )
+
+        val error = runCatching {
+            client.send(
+                storedSession(), secureContent(), "command-missing", "!missing:example.org",
+            )
+        }.exceptionOrNull()
+
+        assertTrue(
+            error?.javaClass?.name ?: "No exception was thrown",
+            error is UnknownMatrixProjectRoomException,
+        )
+        assertFalse(called)
+    }
+
+    @Test
+    fun `command reports a Matrix HTTP rejection distinctly`() = runBlocking {
+        val responseBody = """{"errcode":"M_LIMIT_EXCEEDED"}""".toByteArray()
+        val client = MatrixApplicationControlClient(
+            MatrixApplicationControlTransport { _, _, _ ->
+                MatrixHttpResponse(429, responseBody)
+            },
+        )
+
+        val error = runCatching {
+            client.send(storedSession(), secureContent(), "command-rate-limited")
+        }.exceptionOrNull()
+
+        assertTrue(error is MatrixApplicationControlRequestException)
+        assertEquals(429, (error as MatrixApplicationControlRequestException).statusCode)
+        assertTrue(responseBody.all { it == 0.toByte() })
+    }
+
+    @Test
     fun `project pointer fetches one exact trusted MLP3 event without scanning history`() = runBlocking {
         lateinit var endpoint: URI
         val responseBody = """

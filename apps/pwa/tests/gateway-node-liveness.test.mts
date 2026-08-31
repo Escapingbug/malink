@@ -148,7 +148,7 @@ test("online proof expires instead of presenting cached registration as liveness
     state: "unreachable",
     checkedAt: now,
     consecutiveNoReplies: 1,
-  }, now).label, "Live check timed out");
+  }, now).label, "Gateway reply delayed");
   const repeated = gatewayNodeLivenessPresentation({
     state: "unreachable",
     checkedAt: now,

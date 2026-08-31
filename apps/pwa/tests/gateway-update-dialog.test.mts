@@ -70,7 +70,7 @@ test("shows node identity, version need, and signed live status before consent",
   assert.match(html, /Update Gateway/);
   assert.match(html, /Server/);
   assert.match(html, /Up to date/);
-  assert.match(html, /Live check timed out/);
+  assert.match(html, /Gateway reply delayed/);
   assert.match(html, /temporary Matrix delay/);
   assert.match(html, /Check again/);
   assert.match(html, /What should I do\?/);

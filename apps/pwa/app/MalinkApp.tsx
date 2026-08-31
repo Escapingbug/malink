@@ -268,6 +268,7 @@ import {
 } from "./connectionRecovery";
 import { deriveGatewayLiveness } from "./gatewayLiveness";
 import {
+  GATEWAY_LIVE_STATUS_TIMEOUT_MS,
   gatewayNodeLivenessAfterProbeTimeout,
   gatewayNodeLivenessPresentation,
   gatewayNodeLivenessSummary,
@@ -620,7 +621,6 @@ const BACKGROUND_HISTORY_SOURCE_TIMEOUT_MS = 65_000;
 const PROJECT_CREATE_RESULT_TIMEOUT_MS = 60_000;
 const PROVIDER_HISTORY_RESULT_TIMEOUT_MS = 60_000;
 const GATEWAY_UPDATE_DISCOVERY_INTERVAL_MS = 15 * 60_000;
-const GATEWAY_LIVE_STATUS_TIMEOUT_MS = 12_000;
 const GATEWAY_UPDATE_PROGRESS_POLL_MS = 10_000;
 
 type GatewayUpdateProbeRecord = {
@@ -3605,7 +3605,19 @@ function MalinkAppRuntime() {
         const key = `${node.targetProjectId}\0${sessionId}\0${status.updatedAt}`;
         if (gatewayAutoArchiveKeysRef.current.has(key)) continue;
         gatewayAutoArchiveKeysRef.current.add(key);
-        void archiveSession(sessionId, node.targetProjectId).catch(error => {
+        void runSessionLifecycle(
+          "archive",
+          sessionId,
+          node.targetProjectId,
+          undefined,
+          () => {
+            // A deterministic command failure is not a completed cleanup.
+            // Let the next signed status/projection change retry this session.
+            gatewayAutoArchiveKeysRef.current.delete(key);
+          },
+        ).then(started => {
+          if (!started) gatewayAutoArchiveKeysRef.current.delete(key);
+        }).catch(error => {
           gatewayAutoArchiveKeysRef.current.delete(key);
           console.warn(
             `[gateway-update/auto-archive] ${formatUiError(error)}`,
@@ -3614,9 +3626,9 @@ function MalinkAppRuntime() {
         });
       }
     }
-    // A committed status is the authenticated update transaction's cleanup
-    // boundary. archiveSession sends the existing authenticated lifecycle
-    // command, so old Gateways require no state migration.
+    // Idle, committed, and safely rolled-back statuses are authenticated
+    // cleanup boundaries. The lifecycle callback clears the guard after an
+    // actual failure so a stale maintenance session cannot become permanent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     connectionStatus,

@@ -1,6 +1,10 @@
 import type { SignedWorkspaceGatewayDirectory } from "@malink/protocol";
 
 export const GATEWAY_ONLINE_PROOF_WINDOW_MS = 90_000;
+// Matrix delivery, Gateway journal execution, and the signed reply are each
+// asynchronous. Keep the UI deadline above the native HTTP send timeout so a
+// healthy but delayed round trip is not reported as a Gateway fault.
+export const GATEWAY_LIVE_STATUS_TIMEOUT_MS = 30_000;
 // Recheck before the proof expires so a visible, connected client does not
 // oscillate through a stale state between automatic probes.
 export const GATEWAY_AUTOMATIC_RECHECK_AFTER_MS = 60_000;
@@ -51,10 +55,10 @@ export function gatewayNoReplyPresentation(input: {
   const attempts = Math.max(1, input.consecutiveNoReplies ?? 1);
   if (attempts === 1) {
     return {
-      title: "Live check timed out",
+      title: "Gateway reply delayed",
       detail:
-        `No signed reply arrived from ${input.gatewayLabel} within 12 seconds. ` +
-        "This can be a temporary Matrix delay or a Gateway waking up. Wait a moment, then check once more. No update was started.",
+        `No signed reply arrived from ${input.gatewayLabel} within 30 seconds. ` +
+        "The request remains attached to its durable command and can still complete in the background. This can be a temporary Matrix delay or a Gateway waking up. No update was started.",
       persistent: false,
       retryLabel: "Check again",
     };
@@ -217,7 +221,7 @@ export function gatewayNodeLivenessSummary(input: {
   const parts: string[] = [];
   if (online > 0) parts.push(`${online} online`);
   if (attention > 0) parts.push(`${attention} ${attention === 1 ? "needs" : "need"} attention`);
-  if (timedOut > 0) parts.push(`${timedOut} ${timedOut === 1 ? "check" : "checks"} timed out`);
+  if (timedOut > 0) parts.push(`${timedOut} ${timedOut === 1 ? "reply" : "replies"} delayed`);
   if (checking > 0) parts.push(`${checking} checking`);
   if (unverified > 0) parts.push(`${unverified} unverified`);
   return parts.join(" · ");

@@ -181,7 +181,11 @@ export function gatewayMaintenanceSessionCanBeArchived(
 export function gatewayMaintenanceSessionShouldAutoArchive(
   status: GatewayUpdateStatus | undefined,
 ): boolean {
-  return status?.phase === "committed";
+  return status !== undefined && [
+    "idle",
+    "committed",
+    "rolled_back",
+  ].includes(status.phase);
 }
 
 export function gatewayUpdateCanApplyStaged(input: {

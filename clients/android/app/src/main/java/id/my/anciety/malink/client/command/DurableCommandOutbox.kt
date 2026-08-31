@@ -87,22 +87,20 @@ class DurableCommandOutbox internal constructor(
                 "Command ${released.commandId} was already completed and released; it will not be executed again.",
             )
         }
-        val supersededStatusProbes = if (
-            validatedPayload.operation == CommandOperation.GATEWAY_UPDATE_STATUS
-        ) {
-            snapshot.commands.filter { candidate ->
+        if (validatedPayload.operation == CommandOperation.GATEWAY_UPDATE_STATUS) {
+            snapshot.commands.firstOrNull { candidate ->
                 !candidate.state.isTerminal &&
                     candidate.projectId == projectId &&
                     CommandPayloadValidator.validate(candidate.payload).operation ==
                     CommandOperation.GATEWAY_UPDATE_STATUS
+            }?.let { existing ->
+                // A liveness check is read-only. Reuse its stable command identity so
+                // WebView reloads and overlapping foreground/background checks wait
+                // for the same Gateway result instead of orphaning one another.
+                return existing.toView().toReceipt()
             }
-        } else {
-            emptyList()
         }
-        require(snapshot.released.size + supersededStatusProbes.size <= MAX_RELEASED_TOMBSTONES) {
-            "The released-command safety ledger is full; revoke this native account before clearing it."
-        }
-        require(snapshot.commands.size - supersededStatusProbes.size < MAX_ACTIVE_COMMANDS) {
+        require(snapshot.commands.size < MAX_ACTIVE_COMMANDS) {
             "Release completed commands before adding another command."
         }
         val now = nonnegativeNow()
@@ -124,12 +122,7 @@ class DurableCommandOutbox internal constructor(
             completion = null,
             payload = payload,
         )
-        commit(snapshot.copy(
-            commands = snapshot.commands - supersededStatusProbes.toSet() + command,
-            released = snapshot.released + supersededStatusProbes.map { candidate ->
-                candidate.toReleasedTombstone(now)
-            },
-        ))
+        commit(snapshot.copy(commands = snapshot.commands + command))
         return command.toView().toReceipt()
     }
 

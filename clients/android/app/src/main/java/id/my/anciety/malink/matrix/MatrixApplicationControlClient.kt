@@ -32,6 +32,14 @@ internal const val MALINK_MATRIX_SESSION_STATE_EVENT_TYPE =
     "io.malink.session.current.v2"
 internal const val MALINK_MATRIX_SESSION_DIRECTORY_EVENT_TYPE =
     "io.malink.session.directory.v2"
+
+internal class UnknownMatrixProjectRoomException(roomId: String) :
+    IllegalStateException("Unknown Matrix project room: $roomId")
+
+internal class MatrixApplicationControlRequestException(
+    val statusCode: Int,
+) : IllegalStateException("Matrix control request failed ($statusCode).")
+
 internal fun isMalinkApplicationControlEvent(rawJson: String): Boolean = runCatching {
     val root = Json.parseToJsonElement(rawJson).jsonObject
     val eventType = root["type"]?.jsonPrimitive?.contentOrNull
@@ -735,7 +743,7 @@ class MatrixApplicationControlClient(
         val bindings = session.roomBindings.map(MatrixIdentifiers::validateRoomBinding)
         val binding = roomId?.let { targetRoomId ->
             bindings.singleOrNull { it.roomId == targetRoomId }
-                ?: throw IllegalArgumentException("Unknown Matrix project room: $targetRoomId")
+                ?: throw UnknownMatrixProjectRoomException(targetRoomId)
         } ?: MatrixIdentifiers.validateRoomBinding(session.roomBinding)
         val endpoint = URI(
             "$homeserver/_matrix/client/v3/rooms/${encode(binding.roomId)}/send/" +
@@ -748,8 +756,8 @@ class MatrixApplicationControlClient(
             requestBytes.fill(0)
         }
         return try {
-            require(response.status in 200..299) {
-                "Matrix control request failed (${response.status})."
+            if (response.status !in 200..299) {
+                throw MatrixApplicationControlRequestException(response.status)
             }
             val root = Json.parseToJsonElement(
                 response.body.toString(Charsets.UTF_8),

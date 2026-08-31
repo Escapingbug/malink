@@ -661,9 +661,7 @@ internal class MatrixMlp3NativeProjection(
         val revision = signed.requiredObject("directory").requiredLong("revision")
         require(revision >= 0)
         val currentRevision = workspaceGatewayDirectoryRevision()
-        if (revision < currentRevision) {
-            throw IllegalArgumentException("Workspace Gateway Directory rolled back.")
-        }
+        if (revision < currentRevision) return false
         if (revision == currentRevision && workspaceGatewayDirectory != null) {
             require(workspaceGatewayDirectory == signed) {
                 "Workspace Gateway Directory revision is immutable."

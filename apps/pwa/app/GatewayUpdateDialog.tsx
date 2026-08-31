@@ -9,7 +9,10 @@ import {
   GatewayNoReplyHelp,
   GatewayUpdateFailureHelp,
 } from "./GatewayNoReplyHelp";
-import { gatewayNoReplyPresentation } from "./gatewayNodeLiveness";
+import {
+  GATEWAY_LIVE_STATUS_TIMEOUT_MS,
+  gatewayNoReplyPresentation,
+} from "./gatewayNodeLiveness";
 import { gatewayProjectOwner } from "./projectCatalog";
 import { gatewayUpdateRecoveryAction } from "./gatewayUpdateRecovery";
 
@@ -457,7 +460,7 @@ function runtimeStateDetail(
         runtime.status.targetBuildId === release.buildId)
     ) {
       return (
-        `No signed status reply arrived from ${node.computerName ?? node.gatewayName} within 12 seconds. ` +
+        `No signed status reply arrived from ${node.computerName ?? node.gatewayName} within ${GATEWAY_LIVE_STATUS_TIMEOUT_MS / 1_000} seconds. ` +
         "This Gateway already has a supervised update transaction; the timed-out check did not start it again or cancel it. " +
         "Open the update session to review progress, or wait a moment and check live status again."
       );

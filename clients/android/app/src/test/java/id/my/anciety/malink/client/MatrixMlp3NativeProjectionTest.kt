@@ -40,6 +40,29 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `historical Workspace Directory replay cannot replace the current route`() {
+        val projection = projection()
+        fun directory(revision: Int, projectId: String) = buildJsonObject {
+            put("directory", buildJsonObject {
+                put("revision", revision)
+                put("gateways", buildJsonArray {
+                    add(buildJsonObject {
+                        put("projects", buildJsonArray {
+                            add(buildJsonObject { put("projectId", projectId) })
+                        })
+                    })
+                })
+            })
+        }
+        assertTrue(projection.applyWorkspaceGatewayDirectory(directory(2, "project-current")))
+
+        assertFalse(projection.applyWorkspaceGatewayDirectory(directory(1, "project-stale")))
+        assertEquals(2, projection.workspaceGatewayDirectoryRevision())
+        assertEquals(true, projection.workspaceHasProject("project-current"))
+        assertEquals(false, projection.workspaceHasProject("project-stale"))
+    }
+
+    @Test
     fun `two Gateway projects remain distinct across durable restore and route removal`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project-a", null)

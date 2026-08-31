@@ -46,9 +46,11 @@ import id.my.anciety.malink.matrix.MatrixBootstrap
 import id.my.anciety.malink.matrix.MatrixDecryptedEvent
 import id.my.anciety.malink.matrix.MatrixIdentifiers
 import id.my.anciety.malink.matrix.MatrixLoginTokenIssueResult
+import id.my.anciety.malink.matrix.MatrixApplicationControlRequestException
 import id.my.anciety.malink.matrix.MatrixRuntimePhase
 import id.my.anciety.malink.matrix.MatrixTransportIdentity
 import id.my.anciety.malink.matrix.PublicMatrixSession
+import id.my.anciety.malink.matrix.UnknownMatrixProjectRoomException
 import id.my.anciety.malink.matrix.malinkApplicationEventKind
 import id.my.anciety.malink.security.AndroidKeystoreSecretCipher
 import id.my.anciety.malink.security.SecretCipher
@@ -931,7 +933,7 @@ class NativeClientRuntime(
                 validatedPayload,
                 activeTrust.certificate.allowedOperations,
             )
-            val supersededStatusProbeIds = if (
+            val reusableStatusProbeIds = if (
                 validatedPayload.operation == CommandOperation.GATEWAY_UPDATE_STATUS
             ) {
                 outbox.unfinishedGatewayStatusProbeIds(projectId)
@@ -944,23 +946,15 @@ class NativeClientRuntime(
                 payload.string("sessionId"),
                 projectId,
             )
-            if (receipt.commandId !in supersededStatusProbeIds) {
-                supersededStatusProbeIds.forEach { supersededCommandId ->
-                    cancelCommandTransmission(supersededCommandId)
-                    cancelScheduledCommandRecovery(supersededCommandId)
-                    cancelPublishedCommandResultRecovery(supersededCommandId)
-                    matrixMlp3CommandContent.remove(supersededCommandId)
-                }
-                if (supersededStatusProbeIds.isNotEmpty()) {
-                    diagnostics.record(
-                        "command.status_probe.superseded",
-                        mapOf("count" to supersededStatusProbeIds.size.toString()),
-                    )
-                }
+            if (receipt.commandId in reusableStatusProbeIds) {
+                diagnostics.record("command.status_probe.reused")
             }
             val current = outbox.get(receipt.commandId) ?: error("Durable command disappeared.")
-            if (current.state == DurableState.QUEUED) {
-                launchCommandTransmission(current.commandId, recovery = false)
+            when (current.state) {
+                DurableState.QUEUED -> launchCommandTransmission(current.commandId, recovery = false)
+                DurableState.RECOVERY_REQUIRED -> scheduleCommandRecovery(current.commandId, immediate = true)
+                DurableState.PUBLISHED, DurableState.RUNNING -> startPublishedCommandResultRecovery(current)
+                else -> Unit
             }
             publicReceipt(outbox.get(receipt.commandId) ?: current)
         }
@@ -1019,7 +1013,7 @@ class NativeClientRuntime(
             DurableState.QUEUED -> launchCommandTransmission(current.commandId, recovery = false)
             DurableState.RECOVERY_REQUIRED -> {
                 cancelScheduledCommandRecovery(current.commandId, resetAttempts = false)
-                launchCommandTransmission(current.commandId, recovery = true)
+                scheduleCommandRecovery(current.commandId, immediate = true)
             }
             DurableState.PUBLISHED, DurableState.RUNNING -> {
                 // Matrix already durably accepted this transaction. Sending
@@ -1266,7 +1260,6 @@ class NativeClientRuntime(
                 )
                 if (isV3) {
                     matrixMlp3Inbox.quarantine(event.eventId, error)
-                    publishStatus(lifecycle().phase, "matrix_v3_event_quarantined")
                     return@withLock
                 }
                 if (error !is MalinkSecurityException) {
@@ -1297,8 +1290,7 @@ class NativeClientRuntime(
                                 recovery -> "recovery"
                                 else -> "initial"
                             },
-                            "error" to diagnosticErrorName(error),
-                        ),
+                        ) + diagnosticCommandDeliveryError(error),
                     )
                 } finally {
                     val currentJob = coroutineContext[Job]
@@ -1404,6 +1396,39 @@ class NativeClientRuntime(
                             )
                             return@withLock false
                         }
+                        val targetProjectId = outbox.projectId(commandId)
+                        val targetStillAuthorized = targetProjectId?.let {
+                            matrixMlp3Projection.workspaceHasProject(it)
+                        }
+                        if (shouldRetireRecoveredCommandForRemovedProject(
+                            command.state,
+                            gatewayStateSynchronized,
+                            targetProjectId,
+                            targetStillAuthorized,
+                        )) {
+                            val operation = outbox.operation(commandId)
+                            cancelCommandTransmission(commandId)
+                            cancelPublishedCommandResultRecovery(commandId)
+                            if (outbox.retireUnavailableProjectCommand(commandId)) {
+                                matrixMlp3CommandContent.remove(commandId)
+                                refreshSnapshot(publishLifecycle = false)
+                                diagnostics.record(
+                                    "command.removed_project_retired",
+                                    mapOf("action" to (operation?.wireName ?: "unknown")),
+                                )
+                            }
+                            return@withLock false
+                        }
+                        if (!commandProjectRouteReady(commandId)) {
+                            commandRecoveryAttempts[commandId] = completedAttempts + 1
+                            retryAfterFailure = true
+                            diagnostics.record(
+                                "command.recovery.waiting_for_route",
+                                mapOf("action" to (outbox.operation(commandId)?.wireName ?: "unknown")),
+                            )
+                            scheduleWorkspaceDirectoryConvergence()
+                            return@withLock false
+                        }
                         commandRecoveryAttempts[commandId] = completedAttempts + 1
                         diagnostics.record(
                             "command.recovery.attempted",
@@ -1420,11 +1445,38 @@ class NativeClientRuntime(
                         } catch (error: CancellationException) {
                             throw error
                         } catch (error: Exception) {
-                            retryAfterFailure = true
-                            diagnostics.record(
-                                "command.recovery.failure",
-                                mapOf("error" to diagnosticErrorName(error)),
-                            )
+                            if (isDeterministicCommandEnvelopeFailure(error)) {
+                                val operation = outbox.operation(commandId)
+                                val retirement = runCatching {
+                                    mutex.withLock {
+                                        if (!outbox.retireUnverifiedCommand(commandId)) {
+                                            return@withLock false
+                                        }
+                                        matrixMlp3CommandContent.remove(commandId)
+                                        refreshSnapshot(publishLifecycle = false)
+                                        true
+                                    }
+                                }
+                                if (retirement.getOrDefault(false)) {
+                                    diagnostics.record(
+                                        "command.invalid_envelope_retired",
+                                        mapOf("action" to (operation?.wireName ?: "unknown")) +
+                                            diagnosticCommandDeliveryError(error),
+                                    )
+                                } else if (retirement.isFailure) {
+                                    retryAfterFailure = true
+                                    diagnostics.record(
+                                        "command.invalid_envelope_retirement_failed",
+                                        diagnosticCommandDeliveryError(retirement.exceptionOrNull()!!),
+                                    )
+                                }
+                            } else {
+                                retryAfterFailure = true
+                                diagnostics.record(
+                                    "command.recovery.failure",
+                                    diagnosticCommandDeliveryError(error),
+                                )
+                            }
                         }
                     }
                 } finally {
@@ -1449,6 +1501,19 @@ class NativeClientRuntime(
         commandRecoveryJobs.values.forEach(Job::cancel)
         commandRecoveryJobs.clear()
         commandRecoveryAttempts.clear()
+    }
+
+    private fun commandProjectRouteReady(commandId: String): Boolean {
+        val targetProjectId = outbox.projectId(commandId)
+            ?: matrixMlp3ProjectKeys.values().singleOrNull()?.projectId
+            ?: return false
+        val keys = matrixMlp3ProjectKeys.value(targetProjectId) ?: return false
+        val roomId = try {
+            keys.roomId
+        } finally {
+            keys.wipe()
+        }
+        return matrix.publicSession()?.roomBindings?.any { it.roomId == roomId } == true
     }
 
     private fun startPublishedCommandResultRecovery(command: DurableView) {
@@ -1515,8 +1580,7 @@ class NativeClientRuntime(
                                 "command.reconciliation.failed",
                                 mapOf(
                                     "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
-                                    "error" to diagnosticErrorName(error),
-                                ),
+                                ) + diagnosticCommandDeliveryError(error),
                             )
                         },
                         onTimelineFailure = { error ->
@@ -1952,6 +2016,23 @@ class NativeClientRuntime(
     private fun diagnosticErrorName(error: Throwable): String =
         error::class.simpleName?.take(160)?.takeIf { it.isNotBlank() } ?: "Exception"
 
+    private fun diagnosticCommandDeliveryError(error: Throwable): Map<String, String> = mapOf(
+        "error" to diagnosticErrorName(error),
+        "reason" to when (error) {
+            is UnknownMatrixProjectRoomException -> "route_not_synchronized"
+            is MatrixApplicationControlRequestException -> "matrix_http_${error.statusCode}"
+            is TimeoutCancellationException,
+            is java.net.SocketTimeoutException,
+            -> "timeout"
+            is java.io.IOException -> "network_io"
+            is IllegalArgumentException -> "invalid_command_envelope"
+            else -> "unexpected"
+        },
+    )
+
+    private fun isDeterministicCommandEnvelopeFailure(error: Throwable): Boolean =
+        error is IllegalArgumentException
+
     /**
      * The content is already signed and encrypted to the paired Gateway by
      * Malink. Sending it as an application control event avoids coupling
@@ -2179,12 +2260,28 @@ class NativeClientRuntime(
     private fun acceptWorkspaceGatewayDirectory(signed: JsonObject) {
         val activeTrust = trust
             ?: throw MatrixMlp3EventDeferredException("gateway_trust_pending")
-        MatrixMlp3Protocol.verifyWorkspaceGatewayDirectory(
+        val verified = MatrixMlp3Protocol.verifyWorkspaceGatewayDirectory(
             signed,
             activeTrust.gatewayKey,
             activeTrust.gatewayId,
-            matrixMlp3Projection.workspaceGatewayDirectoryRevision(),
+            minimumRevision = 0,
         )
+        val revision = verified["revision"]?.jsonPrimitive?.longOrNull
+            ?: throw IllegalArgumentException("Workspace Gateway Directory revision is invalid.")
+        val currentRevision = matrixMlp3Projection.workspaceGatewayDirectoryRevision()
+        if (revision < currentRevision) {
+            // Matrix state/history recovery can legitimately replay an older,
+            // correctly signed directory after a newer revision is already
+            // projected. It is evidence from the past, not a current failure.
+            diagnostics.record(
+                "matrix.workspace_directory.stale_ignored",
+                mapOf(
+                    "revision" to revision.toString(),
+                    "current_revision" to currentRevision.toString(),
+                ),
+            )
+            return
+        }
         if (!matrixMlp3Projection.applyWorkspaceGatewayDirectory(signed)) return
         val bindings = workspaceRoomBindingsFromDirectory(signed, activeTrust.gatewayId)
         val gateways = signed.requiredObject("directory")["gateways"] as? JsonArray

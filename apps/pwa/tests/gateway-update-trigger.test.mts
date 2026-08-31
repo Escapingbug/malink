@@ -356,14 +356,15 @@ test("archives terminal or deterministic failures but preserves useful retry che
   assert.equal(gatewayMaintenanceSessionCanBeArchived(status("rolled_back")), true);
 });
 
-test("automatically archives only a successfully committed update", () => {
-  const status = (phase: "committed" | "rolled_back" | "failed") => ({
+test("automatically archives inactive terminal maintenance sessions", () => {
+  const status = (phase: "idle" | "committed" | "rolled_back" | "failed") => ({
     version: 1 as const,
     phase,
     updatedAt: 10,
   });
+  assert.equal(gatewayMaintenanceSessionShouldAutoArchive(status("idle")), true);
   assert.equal(gatewayMaintenanceSessionShouldAutoArchive(status("committed")), true);
-  assert.equal(gatewayMaintenanceSessionShouldAutoArchive(status("rolled_back")), false);
+  assert.equal(gatewayMaintenanceSessionShouldAutoArchive(status("rolled_back")), true);
   assert.equal(gatewayMaintenanceSessionShouldAutoArchive(status("failed")), false);
 });
 

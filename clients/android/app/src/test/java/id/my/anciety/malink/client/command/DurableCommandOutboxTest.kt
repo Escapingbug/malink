@@ -202,7 +202,7 @@ class DurableCommandOutboxTest {
     }
 
     @Test
-    fun `new Gateway status probe retires older probes only on the same project`() {
+    fun `new Gateway status probe reuses an unfinished probe only on the same project`() {
         val fixture = fixture()
         val firstKey = UUID.randomUUID().toString()
         val first = fixture.outbox.enqueue(
@@ -222,26 +222,24 @@ class DurableCommandOutboxTest {
             fixture.outbox.unfinishedGatewayStatusProbeIds("project-a"),
         )
 
-        val replacement = fixture.outbox.enqueue(
+        val reused = fixture.outbox.enqueue(
             UUID.randomUUID().toString(),
             payload("gateway.update.status"),
             projectId = "project-a",
         )
 
-        assertNull(fixture.outbox.get(first.commandId))
+        assertEquals(first.commandId, reused.commandId)
         assertEquals(
-            listOf(replacement.commandId),
+            listOf(first.commandId),
             fixture.outbox.unfinishedGatewayStatusProbeIds("project-a"),
         )
         assertEquals(other.commandId, fixture.outbox.get(other.commandId)?.commandId)
-        assertEquals(replacement.commandId, fixture.outbox.get(replacement.commandId)?.commandId)
-        assertThrows(ReleasedCommandException::class.java) {
-            fixture.outbox.enqueue(
-                firstKey,
-                payload("gateway.update.status"),
-                projectId = "project-a",
-            )
-        }
+        assertEquals(first.commandId, fixture.outbox.get(first.commandId)?.commandId)
+        assertEquals(first.commandId, fixture.outbox.enqueue(
+            firstKey,
+            payload("gateway.update.status"),
+            projectId = "project-a",
+        ).commandId)
     }
 
     @Test
