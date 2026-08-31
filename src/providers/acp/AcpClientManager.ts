@@ -49,6 +49,16 @@ const STDIN_CLOSE_GRACE_MS = 500
 const SIGTERM_GRACE_MS = 1_500
 const SIGKILL_GRACE_MS = 1_000
 
+export class AcpInitializeTimeoutError extends Error {
+    readonly timeoutMs: number
+
+    constructor(timeoutMs: number) {
+        super(`ACP initialize timed out after ${timeoutMs}ms`)
+        this.name = 'AcpInitializeTimeoutError'
+        this.timeoutMs = timeoutMs
+    }
+}
+
 interface ActivePrompt {
     sessionId: string
     promise: Promise<PromptResponse>
@@ -157,6 +167,10 @@ export class AcpClientManager {
     async init(timeoutMs: number = 30_000): Promise<void> {
         if (this._connected) return
 
+        const startedAt = Date.now()
+        let firstStdoutAt: number | undefined
+        let timeout: ReturnType<typeof setTimeout> | undefined
+
         try {
             const isWindows = process.platform === 'win32'
             const generation = ++this.processGeneration
@@ -202,6 +216,9 @@ export class AcpClientManager {
                 (_agent: Agent) => clientHandler,
                 stream,
             )
+            this.childProcess.stdout?.once('data', () => {
+                firstStdoutAt ??= Date.now()
+            })
 
             const initPromise = this.connection.initialize({
                 protocolVersion: 1,
@@ -214,16 +231,41 @@ export class AcpClientManager {
 
             this.initResponse = await Promise.race([
                 initPromise,
-                new Promise<never>((_, reject) =>
-                    setTimeout(() => reject(new Error(`ACP initialize timed out after ${timeoutMs}ms`)), timeoutMs)
-                ),
+                new Promise<never>((_, reject) => {
+                    timeout = setTimeout(() => {
+                        const elapsedMs = Date.now() - startedAt
+                        const firstStdoutMs = firstStdoutAt === undefined
+                            ? 'none'
+                            : String(firstStdoutAt - startedAt)
+                        console.error(
+                            `[acp-agent] Initialize timeout: pid=${this.childProcess?.pid ?? 'unknown'} `
+                            + `elapsedMs=${elapsedMs} firstStdoutMs=${firstStdoutMs}`,
+                        )
+                        reject(new AcpInitializeTimeoutError(timeoutMs))
+                    }, timeoutMs)
+                }),
             ])
 
             this._connected = true
-            console.error(`[acp-agent] Initialized. Agent: ${this.initResponse.agentInfo?.name ?? 'unknown'} v${this.initResponse.agentInfo?.version ?? '?'}`)
+            console.error(
+                `[acp-agent] Initialized. Agent: ${this.initResponse.agentInfo?.name ?? 'unknown'} `
+                + `v${this.initResponse.agentInfo?.version ?? '?'} pid=${this.childProcess.pid ?? 'unknown'} `
+                + `durationMs=${Date.now() - startedAt} `
+                + `firstStdoutMs=${firstStdoutAt === undefined ? 'none' : firstStdoutAt - startedAt}`,
+            )
         } catch (e) {
-            this.dispose()
+            try {
+                await this.close()
+            } catch (cleanupError) {
+                console.error(
+                    `[acp-agent] Initialize cleanup failed: `
+                    + `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+                )
+                this.dispose()
+            }
             throw e
+        } finally {
+            if (timeout) clearTimeout(timeout)
         }
     }
 

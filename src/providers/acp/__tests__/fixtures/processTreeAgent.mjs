@@ -25,13 +25,14 @@ process.stdin.on('data', chunk => {
     if (!line.trim()) continue
     const request = JSON.parse(line)
     if (request.method !== 'initialize') continue
+    if (process.env.ACP_TEST_HANG_INITIALIZE === '1') continue
     process.stdout.write(`${JSON.stringify({
-      jsonrpc: '2.0',
-      id: request.id,
-      result: {
-        protocolVersion: 1,
-        agentCapabilities: { loadSession: false },
-      },
+        jsonrpc: '2.0',
+        id: request.id,
+        result: {
+            protocolVersion: 1,
+            agentCapabilities: { loadSession: false },
+        },
     })}\n`)
   }
 })

@@ -24,7 +24,12 @@ import type { AgentEvent } from '@/providers/types'
 import type { RichMediaPart, RichUserInput } from '@/runtime/semantic'
 import { normalizeUserInput } from '@/runtime/semantic'
 import { PushableAsyncIterable } from '@/utils/PushableAsyncIterable'
-import { AcpClientManager, type AcpClientManagerConfig, type AcpExtensionHandler } from './AcpClientManager'
+import {
+    AcpClientManager,
+    AcpInitializeTimeoutError,
+    type AcpClientManagerConfig,
+    type AcpExtensionHandler,
+} from './AcpClientManager'
 import { adaptStopReason, mapSessionUpdate, parseRawInput as _parseRawInput, type AcpDebugLog } from './eventAdapter'
 import { unwrapToolOutput } from '@/utils/unwrapToolOutput'
 import type {
@@ -43,6 +48,7 @@ const ACP_TAIL_DRAIN_MAX_MS = 1_000
 const ACP_HISTORY_DRAIN_IDLE_MS = 150
 const ACP_HISTORY_DRAIN_MAX_MS = 3_000
 const DEFAULT_ACP_SESSION_OPEN_TIMEOUT_MS = 30_000
+const ACP_INITIALIZE_MAX_ATTEMPTS = 2
 const MAX_AGENT_ERROR_SUMMARY_LENGTH = 1_500
 
 export class AcpSessionOpenTimeoutError extends Error {
@@ -658,15 +664,40 @@ export class AcpProvider implements AgentProvider {
     }
 
     private async _doInit(): Promise<void> {
-        try {
-            await this.clientManager.init()
-            this.initialized = true
-            console.error(`[acp:${this.name}] Provider initialized`)
-        } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e)
-            console.error(`[acp:${this.name}] Init failed: ${msg}`)
-            this._initError = msg
-            this.initPromise = null // Allow retry
+        for (let attempt = 1; attempt <= ACP_INITIALIZE_MAX_ATTEMPTS; attempt += 1) {
+            try {
+                await this.clientManager.init()
+                this.initialized = true
+                this._initError = null
+                console.error(`[acp:${this.name}] Provider initialized (attempt ${attempt}/${ACP_INITIALIZE_MAX_ATTEMPTS})`)
+                return
+            } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e)
+                const retryInitialize = e instanceof AcpInitializeTimeoutError
+                    && attempt < ACP_INITIALIZE_MAX_ATTEMPTS
+                if (!retryInitialize) {
+                    console.error(`[acp:${this.name}] Init failed: ${msg}`)
+                    this._initError = msg
+                    this.initPromise = null // Allow a later user turn to retry.
+                    return
+                }
+
+                console.error(
+                    `[acp:${this.name}] ${msg}; retrying initialize on a clean ACP process `
+                    + `(attempt ${attempt + 1}/${ACP_INITIALIZE_MAX_ATTEMPTS})`,
+                )
+                const timedOutManager = this.clientManager
+                try {
+                    await timedOutManager.close()
+                } catch (cleanupError) {
+                    console.error(
+                        `[acp:${this.name}] Timed-out initialize cleanup failed: `
+                        + `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+                    )
+                    timedOutManager.dispose()
+                }
+                this.clientManager = this.createClientManager()
+            }
         }
     }
 

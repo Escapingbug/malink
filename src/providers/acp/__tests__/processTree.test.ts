@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { AcpClientManager } from '../AcpClientManager'
+import { AcpClientManager, AcpInitializeTimeoutError } from '../AcpClientManager'
 
 const fixture = join(
     dirname(fileURLToPath(import.meta.url)),
@@ -52,6 +52,25 @@ describe.skipIf(process.platform === 'win32')('ACP process-tree lifecycle', () =
         manager.dispose()
 
         await expect(waitUntilStopped(descendantPid)).resolves.toBe(true)
+    })
+
+    it('waits for the complete adapter process tree to stop after initialize times out', async () => {
+        const manager = new AcpClientManager({
+            command: process.execPath,
+            args: [fixture],
+            env: {
+                ACP_TEST_DESCENDANT_PID_FILE: pidFile,
+                ACP_TEST_HANG_INITIALIZE: '1',
+            },
+        })
+
+        const initializationFailure = expect(manager.init(1_000))
+            .rejects.toBeInstanceOf(AcpInitializeTimeoutError)
+        descendantPid = await readPidFile(pidFile)
+        await initializationFailure
+
+        await expect(waitUntilStopped(descendantPid)).resolves.toBe(true)
+        expect(manager.connected).toBe(false)
     })
 })
 
