@@ -1089,6 +1089,44 @@ describe('MatrixMlp3GatewayRunner', () => {
     })
     await waitFor(() => Promise.resolve(dispatched.some(item => item.text === 'block A')))
 
+    const queuedPrompt: Mlp3Command = {
+      ...base,
+      commandId: 'prompt-queued-a',
+      sessionId: 'session-a',
+      operation: 'prompt.submit',
+      payload: { operation: 'prompt.submit', text: 'cancel before Agent dispatch' },
+    }
+    await send(queuedPrompt, '$prompt-queued-a')
+    await send({
+      ...base,
+      commandId: 'cancel-queued-a',
+      sessionId: 'session-a',
+      operation: 'turn.cancel',
+      payload: { operation: 'turn.cancel', turnId: queuedPrompt.commandId },
+    }, '$cancel-queued-a')
+    await waitFor(async () => {
+      const deliveredEvents = await events(client, activeKey.key, roomId, projectId)
+      return deliveredEvents.some(event =>
+        event.causationCommandId === queuedPrompt.commandId
+        && event.payload.type === 'turn.completed'
+        && event.payload.outcome === 'cancelled'
+      ) && deliveredEvents.some(event =>
+        event.causationCommandId === 'cancel-queued-a'
+        && event.payload.type === 'turn.completed'
+        && event.payload.outcome === 'cancelled'
+      )
+    })
+    expect(dispatched.some(item => item.text === 'cancel before Agent dispatch')).toBe(false)
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'cancel-queued-a'
+      && event.payload.type === 'turn.completed'
+    )?.payload).toMatchObject({
+      type: 'turn.completed',
+      turnId: queuedPrompt.commandId,
+      outcome: 'cancelled',
+      projection: { activity: 'working' },
+    })
+
     await send({
       ...base,
       commandId: 'create-b',

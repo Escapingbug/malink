@@ -393,6 +393,10 @@ import {
   turnTimelineMessages,
 } from "./turnTimeline";
 import {
+  latestPendingPromptCommandId,
+  stopRequestAccepted,
+} from "./stopControl";
+import {
   readSelectedSessionRoute,
   writeSelectedSessionRoute,
 } from "./selectedSessionState";
@@ -2373,6 +2377,15 @@ function MalinkAppRuntime() {
       }),
     [gatewaySelected, messages, observedCommandCompletions, selectedSessionId],
   );
+  const pendingPromptStopTargetId = selectedSessionId
+    ? latestPendingPromptCommandId(
+        activePromptCommandsRef.current,
+        selectedSessionId,
+        receivedPromptCommandIds,
+      )
+    : null;
+  const stopTargetId = pendingPromptStopTargetId ?? selected?.activeTurnId ?? null;
+  const stopTargetsPendingPrompt = pendingPromptStopTargetId !== null;
   useLayoutEffect(() => {
     resizeComposerTextarea(composerTextareaRef.current);
   }, [draft, selectedSessionId]);
@@ -7843,8 +7856,9 @@ function MalinkAppRuntime() {
           completion,
         );
       } else if (
-        completion?.outcome === "succeeded" &&
-        conflict.payload.operation === "cancel"
+        completion &&
+        conflict.payload.operation === "cancel" &&
+        stopRequestAccepted(completion)
       ) {
         setSessionRunning(conflict.payload.sessionId, false);
         setSessionStopping(conflict.payload.sessionId, false);
@@ -10252,19 +10266,83 @@ function MalinkAppRuntime() {
     window.requestAnimationFrame(() => composerTextareaRef.current?.focus());
   }
 
-  async function stopStreaming(sessionId: string, activeTurnId: string) {
+  async function removeStoppedPendingPrompt(
+    sessionId: string,
+    commandId: string,
+  ): Promise<void> {
+    const cacheSessionId = historyCacheSessionId(
+      sessionId,
+      selectedProjectIdRef.current ?? undefined,
+    );
+    const liveSessionIds = new Set([sessionId, cacheSessionId]);
+    const messageIds = new Set<string>();
+    for (const liveSessionId of liveSessionIds) {
+      for (const message of liveMessagesBySessionRef.current.get(liveSessionId) ?? []) {
+        if (message.commandId === commandId) messageIds.add(message.id);
+      }
+    }
+    for (const message of messages) {
+      if (message.commandId === commandId) messageIds.add(message.id);
+    }
+    for (const [messageId, reference] of optimisticMessagesRef.current) {
+      if (reference.commandId !== commandId) continue;
+      messageIds.add(messageId);
+      optimisticMessagesRef.current.delete(messageId);
+    }
+    activePromptCommandsRef.current.delete(commandId);
+    completedCommandResultsRef.current.delete(commandId);
+    for (const messageId of messageIds) {
+      reconciledOptimisticMessageIdsRef.current.delete(messageId);
+      for (const liveSessionId of liveSessionIds) {
+        removeLiveMessage(liveSessionId, messageId);
+      }
+    }
+    if (selectedSessionIdRef.current === sessionId) {
+      setMessages((current) =>
+        current.filter(
+          (message) =>
+            message.commandId !== commandId && !messageIds.has(message.id),
+        ),
+      );
+    }
+    const scope = historyScopeRef.current;
+    if (scope) {
+      await Promise.all(
+        [...messageIds].map((messageId) =>
+          deleteMessageHistory(scope, messageId),
+        ),
+      ).catch((error) => {
+        showUiNotice(
+          "history:update",
+          "history",
+          "warning",
+          `The stopped message could not be removed from local history: ${formatUiError(error)}`,
+        );
+      });
+    }
+    finishLocalPromptCommand(sessionId);
+  }
+
+  async function stopStreaming(
+    sessionId: string,
+    targetCommandId: string,
+    targetsPendingPrompt: boolean,
+  ) {
     if (stoppingSessionIdsRef.current.has(sessionId)) return;
     if (selectedSessionIdRef.current !== sessionId) return;
     setSessionStopping(sessionId, true);
-    setSessionAgentActivity(sessionId, STOPPING_AGENT_ACTIVITY);
+    const activityBeforeStop = agentActivitiesBySession.get(sessionId) ?? null;
+    if (!targetsPendingPrompt) {
+      setSessionAgentActivity(sessionId, STOPPING_AGENT_ACTIVITY);
+    }
     let accepted = false;
     try {
       const sent = await sendRealCommand(
-        createCancelCommandPayload(sessionId, activeTurnId),
+        createCancelCommandPayload(sessionId, targetCommandId),
       );
       if (!sent) return;
       const completion = await sent.completion;
-      accepted = completion.outcome === "succeeded";
+      accepted = stopRequestAccepted(completion);
       if (!accepted) {
         showUiNotice(
           `session:stop:${sessionId}`,
@@ -10272,6 +10350,11 @@ function MalinkAppRuntime() {
           "error",
           completion.error?.message ?? "The Agent did not accept the stop request.",
         );
+      } else {
+        recoverUiNotice(`session:stop:${sessionId}`);
+        if (targetsPendingPrompt) {
+          await removeStoppedPendingPrompt(sessionId, targetCommandId);
+        }
       }
     } catch (error) {
       showUiNotice(
@@ -10281,11 +10364,15 @@ function MalinkAppRuntime() {
         `Malink could not confirm the stop request: ${formatUiError(error)}`,
       );
     } finally {
-      if (!accepted) {
+      if (targetsPendingPrompt || !accepted) {
         setSessionStopping(sessionId, false);
         setSessionAgentActivity(
           sessionId,
-          runningSessionIds.has(sessionId) ? WORKING_AGENT_ACTIVITY : null,
+          targetsPendingPrompt
+            ? activityBeforeStop
+            : runningSessionIds.has(sessionId)
+              ? WORKING_AGENT_ACTIVITY
+              : null,
         );
       }
     }
@@ -12794,24 +12881,34 @@ function MalinkAppRuntime() {
                     type="button"
                     className="send-button stop-button mount-feedback"
                     onClick={() => {
-                      if (selectedSessionId && selected?.activeTurnId) {
-                        void stopStreaming(selectedSessionId, selected.activeTurnId);
+                      if (selectedSessionId && stopTargetId) {
+                        void stopStreaming(
+                          selectedSessionId,
+                          stopTargetId,
+                          stopTargetsPendingPrompt,
+                        );
                       }
                     }}
                     aria-label={
                       isStopping
-                        ? "Stopping agent"
-                        : selected?.activeTurnId
-                          ? "Stop agent"
-                          : "Stop unavailable while the active task syncs"
+                        ? stopTargetsPendingPrompt
+                          ? "Cancelling queued message"
+                          : "Stopping agent"
+                        : stopTargetsPendingPrompt
+                          ? "Cancel queued message"
+                          : stopTargetId
+                            ? "Stop agent"
+                            : "Stop unavailable while the active task syncs"
                     }
                     aria-busy={isStopping}
                     title={
-                      selected?.activeTurnId
-                        ? "Stop agent"
-                        : "Syncing the active task before it can be stopped"
+                      stopTargetsPendingPrompt
+                        ? "Cancel queued message before the Agent starts it"
+                        : stopTargetId
+                          ? "Stop agent"
+                          : "Syncing the active task before it can be stopped"
                     }
-                    disabled={isStopping || !selected?.activeTurnId}
+                    disabled={isStopping || !stopTargetId}
                   >
                     {isStopping ? <span className="button-spinner" /> : "■"}
                   </button>

@@ -111,6 +111,13 @@ type Mlp3CommandOf<TOperation extends Mlp3Command['operation']> = Extract<
   { operation: TOperation }
 >
 
+interface ScheduledPromptCommand {
+  command: Mlp3CommandOf<'prompt.submit'>
+  cancelled: boolean
+  agentDispatchStarted: boolean
+  cancellation?: Promise<void>
+}
+
 export interface MatrixMlp3GatewayDependencies {
   client?: MatrixGatewayClient
   providerFactory?: (
@@ -264,6 +271,7 @@ export class MatrixMlp3GatewayRunner {
   private readonly webPush: GatewayWebPushService
   private readonly projects = new Map<string, V3ProjectRuntime>()
   private readonly sessionChains = new Map<string, Promise<void>>()
+  private readonly scheduledPromptCommands = new Map<string, ScheduledPromptCommand>()
   private readonly activeCommands = new Map<string, Promise<void>>()
   private readonly executionTasks = new Set<Promise<void>>()
   private readonly queuedInboxEvents = new Set<string>()
@@ -692,6 +700,19 @@ export class MatrixMlp3GatewayRunner {
   ): Promise<void> {
     const command = journalRecord.command
     const activeKey = commandKey(command)
+    const scheduledPrompt = command.operation === 'prompt.submit'
+      ? {
+          command,
+          cancelled: false,
+          agentDispatchStarted: false,
+        } satisfies ScheduledPromptCommand
+      : undefined
+    const scheduledPromptKey = scheduledPrompt
+      ? promptScheduleKey(project, scheduledPrompt.command.sessionId, scheduledPrompt.command.commandId)
+      : undefined
+    if (scheduledPrompt && scheduledPromptKey) {
+      this.scheduledPromptCommands.set(scheduledPromptKey, scheduledPrompt)
+    }
     const sessionKey = command.operation === 'project.create'
       ? `${this.config.gatewayId}\0project-create`
       : command.operation === 'gateway.profile.update'
@@ -727,7 +748,9 @@ export class MatrixMlp3GatewayRunner {
         : this.sessionChains.get(sessionKey) ?? Promise.resolve()
     const task = previous.catch(() => undefined).then(async () => {
       try {
+        if (await waitForScheduledPromptCancellation(scheduledPrompt)) return
         await this.journal.markDispatched(command, this.now())
+        if (await waitForScheduledPromptCancellation(scheduledPrompt)) return
         await this.execute(project, journalRecord)
       } catch (error) {
         this.log(`[mlp3/matrix] command ${command.commandId} failed: ${formatError(error)}`)
@@ -738,6 +761,12 @@ export class MatrixMlp3GatewayRunner {
       if (this.activeCommands.get(activeKey) === task) this.activeCommands.delete(activeKey)
       if (!bypassSessionQueue && this.sessionChains.get(sessionKey) === task) {
         this.sessionChains.delete(sessionKey)
+      }
+      if (
+        scheduledPromptKey
+        && this.scheduledPromptCommands.get(scheduledPromptKey) === scheduledPrompt
+      ) {
+        this.scheduledPromptCommands.delete(scheduledPromptKey)
       }
       if (
         command.operation === 'project.delete'
@@ -1425,14 +1454,17 @@ export class MatrixMlp3GatewayRunner {
     const eventCommand = options.childTurnId
       ? { ...command, commandId: options.childTurnId }
       : command
+    if (await this.waitForPromptCancellation(project, eventCommand)) return
     if (runtime.record.scope !== 'scratch') {
       await this.dependencies.assertDirectoryAccess?.({
         cwd: runtime.record.cwd,
         operation: 'prompt.submit',
       })
     }
+    if (await this.waitForPromptCancellation(project, eventCommand)) return
     this.transition(runtime, 'queued')
     await this.persist(project)
+    if (await this.waitForPromptCancellation(project, eventCommand)) return
     await this.emitBestEffort(project, runtime.record, this.eventFor(
       project,
       runtime.record,
@@ -1447,8 +1479,10 @@ export class MatrixMlp3GatewayRunner {
         projection: projection(runtime.record, runtime.activity.phase, this.extensions),
       },
     ))
+    if (await this.waitForPromptCancellation(project, eventCommand)) return
     this.transition(runtime, 'working')
     await this.persist(project)
+    if (await this.waitForPromptCancellation(project, eventCommand)) return
     runtime.port.setCausationCommandId(eventCommand.commandId)
     runtime.activeTurnId = eventCommand.commandId
     let dispatchFailure: { error: unknown } | null = null
@@ -1458,6 +1492,7 @@ export class MatrixMlp3GatewayRunner {
         this.client,
         `${this.config.replayLedgerPath}.v3-attachments`,
       )
+      if (await this.waitForPromptCancellation(project, eventCommand)) return
       await this.emitBestEffort(project, runtime.record, this.eventFor(
         project,
         runtime.record,
@@ -1469,6 +1504,10 @@ export class MatrixMlp3GatewayRunner {
           projection: projection(runtime.record, runtime.activity.phase, this.extensions),
         },
       ))
+      if (!this.beginPromptAgentDispatch(project, eventCommand)) {
+        await this.waitForPromptCancellation(project, eventCommand)
+        return
+      }
       await runtime.session.dispatch({
         kind: 'user_message',
         text: prompt.text,
@@ -1518,6 +1557,17 @@ export class MatrixMlp3GatewayRunner {
     command: Mlp3CommandOf<'turn.cancel'>,
   ): Promise<void> {
     const runtime = this.requireActiveSession(project, command.sessionId)
+    if (await this.cancelScheduledPrompt(project, runtime, command.payload.turnId)) {
+      const completed = this.eventFor(project, runtime.record, command, 'queued-turn-cancelled', {
+        type: 'turn.completed',
+        turnId: command.payload.turnId,
+        outcome: 'cancelled',
+        projection: terminalProjection(runtime.record, runtime.activity.phase, this.extensions),
+      })
+      await this.settleAndDeliver(project, command, completed, 'succeeded')
+      this.log(`[mlp3/matrix] queued turn ${command.payload.turnId} cancelled before dispatch`)
+      return
+    }
     if (runtime.activeTurnId === null) {
       if (runtime.activity.phase !== 'idle') {
         this.transition(runtime, 'idle')
@@ -1551,6 +1601,79 @@ export class MatrixMlp3GatewayRunner {
       projection: terminalProjection(runtime.record, runtime.activity.phase, this.extensions),
     })
     await this.settleAndDeliver(project, command, completed, 'succeeded')
+  }
+
+  private async cancelScheduledPrompt(
+    project: V3ProjectRuntime,
+    runtime: Mlp3SessionRuntime,
+    turnId: string,
+  ): Promise<boolean> {
+    const key = promptScheduleKey(project, runtime.record.id, turnId)
+    const scheduled = this.scheduledPromptCommands.get(key)
+    if (!scheduled || scheduled.agentDispatchStarted) return false
+    if (scheduled.cancelled) {
+      await scheduled.cancellation
+      return true
+    }
+    scheduled.cancelled = true
+    const cancellation = this.settleScheduledPromptCancellation(
+      project,
+      runtime,
+      scheduled.command,
+    )
+    scheduled.cancellation = cancellation
+    await cancellation
+    return true
+  }
+
+  private async settleScheduledPromptCancellation(
+    project: V3ProjectRuntime,
+    runtime: Mlp3SessionRuntime,
+    command: Mlp3CommandOf<'prompt.submit'>,
+  ): Promise<void> {
+    if (runtime.activeTurnId === command.commandId) {
+      runtime.activeTurnId = null
+      this.transition(runtime, 'idle')
+      await this.persist(project)
+    } else if (runtime.activeTurnId === null && runtime.activity.phase !== 'idle') {
+      this.transition(runtime, 'idle')
+      await this.persist(project)
+    }
+    const completed = this.eventFor(project, runtime.record, command, 'cancelled-before-dispatch', {
+      type: 'turn.completed',
+      turnId: command.commandId,
+      outcome: 'cancelled',
+      projection: terminalProjection(runtime.record, runtime.activity.phase, this.extensions),
+    })
+    await this.settleAndDeliver(project, command, completed, 'succeeded')
+  }
+
+  private waitForPromptCancellation(
+    project: V3ProjectRuntime,
+    command: Mlp3Command,
+  ): Promise<boolean> {
+    if (command.operation !== 'prompt.submit' || !command.sessionId) {
+      return Promise.resolve(false)
+    }
+    return waitForScheduledPromptCancellation(
+      this.scheduledPromptCommands.get(
+        promptScheduleKey(project, command.sessionId, command.commandId),
+      ),
+    )
+  }
+
+  private beginPromptAgentDispatch(
+    project: V3ProjectRuntime,
+    command: Mlp3Command,
+  ): boolean {
+    if (command.operation !== 'prompt.submit' || !command.sessionId) return true
+    const scheduled = this.scheduledPromptCommands.get(
+      promptScheduleKey(project, command.sessionId, command.commandId),
+    )
+    if (!scheduled) return true
+    if (scheduled.cancelled) return false
+    scheduled.agentDispatchStarted = true
+    return true
   }
 
   private async answerDecision(
@@ -3203,6 +3326,22 @@ function threadRelation(rootEventId: string): Record<string, unknown> {
     is_falling_back: true,
     'm.in_reply_to': { event_id: rootEventId },
   }
+}
+
+function promptScheduleKey(
+  project: V3ProjectRuntime,
+  sessionId: string,
+  commandId: string,
+): string {
+  return `${project.config.roomId}\0${sessionId}\0${commandId}`
+}
+
+async function waitForScheduledPromptCancellation(
+  scheduled: ScheduledPromptCommand | undefined,
+): Promise<boolean> {
+  if (!scheduled?.cancelled) return false
+  await scheduled.cancellation
+  return true
 }
 
 function logicalEventId(command: Mlp3Command, stage: string): string {

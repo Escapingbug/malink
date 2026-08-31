@@ -234,11 +234,11 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /aria-label="Stop agent"|"Stop agent"/);
   assert.match(
     source,
-    /createCancelCommandPayload\(sessionId, activeTurnId\)/,
+    /createCancelCommandPayload\(sessionId, targetCommandId\)/,
   );
   assert.match(
     source,
-    /disabled=\{isStopping \|\| !selected\?\.activeTurnId\}/,
+    /disabled=\{isStopping \|\| !stopTargetId\}/,
   );
   assert.match(source, /disabled=\{!composerState\.canSend\}/);
   assert.match(source, /id="composer-send-shortcut"/);
