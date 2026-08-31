@@ -78,7 +78,10 @@ import type {
   PrivilegedExecutionInput,
   PrivilegedExecutionResult,
 } from '@/privilege'
-import type { SendFileCommandResult } from '@/runtime/semanticSessionRuntime'
+import type {
+  SemanticTurnResult,
+  SendFileCommandResult,
+} from '@/runtime/semanticSessionRuntime'
 import {
   FileGatewayWebPushService,
   type GatewayWebPushService,
@@ -96,7 +99,17 @@ interface Mlp3SessionRuntime {
   session: TopicSession
   capabilityProvider: AgentProvider | null
   activity: { phase: Mlp3SessionProjection['activity'] }
-  activeTurnId: string | null
+  activeTurn: Mlp3ActiveTurn | null
+}
+
+interface Mlp3ActiveTurn {
+  turnId: string
+  abortController: AbortController
+  cancelRequested: boolean
+  executionStarted: boolean
+  terminalOutcome: 'succeeded' | 'cancelled' | null
+  settled: Promise<void>
+  settle(): void
 }
 
 interface V3ProjectRuntime {
@@ -487,7 +500,7 @@ export class MatrixMlp3GatewayRunner {
     let activeTurns = 0
     for (const project of this.projects.values()) {
       for (const runtime of project.sessions.values()) {
-        if (runtime.activeTurnId !== null) activeTurns += 1
+        if (runtime.activeTurn !== null) activeTurns += 1
       }
     }
     return {
@@ -681,7 +694,12 @@ export class MatrixMlp3GatewayRunner {
       })
     }
     if (record.status === 'terminal') {
-      if (!record.terminalDeliveryEventId) this.scheduleTerminalRedelivery(project, record)
+      if (
+        !record.terminalDeliveryEventId
+        && !this.terminalDeliveriesInFlight.has(commandKey(record.command))
+      ) {
+        this.scheduleTerminalRedelivery(project, record)
+      }
       return
     }
     if (project.deletingCommandId) {
@@ -1132,7 +1150,7 @@ export class MatrixMlp3GatewayRunner {
     let count = 0
     for (const project of this.projects.values()) {
       for (const runtime of project.sessions.values()) {
-        if (runtime.activeTurnId !== null) count += 1
+        if (runtime.activeTurn !== null) count += 1
       }
     }
     return count
@@ -1188,7 +1206,10 @@ export class MatrixMlp3GatewayRunner {
     const cancellations: Promise<unknown>[] = []
     for (const project of this.projects.values()) {
       for (const runtime of project.sessions.values()) {
-        if (runtime.activeTurnId === null) continue
+        if (runtime.activeTurn === null) continue
+        if (runtime.activeTurn.terminalOutcome !== null) continue
+        runtime.activeTurn.cancelRequested = true
+        runtime.activeTurn.abortController.abort()
         cancellations.push(runtime.session.dispatch({
           kind: 'cancel',
           reason: 'replace',
@@ -1511,76 +1532,80 @@ export class MatrixMlp3GatewayRunner {
       },
     ))
     if (await this.waitForPromptCancellation(project, eventCommand)) return
-    this.transition(runtime, 'working')
-    await this.persist(project)
+    const richInput = await materializePromptInput(
+      prompt,
+      this.client,
+      `${this.config.replayLedgerPath}.v3-attachments`,
+    )
     if (await this.waitForPromptCancellation(project, eventCommand)) return
-    runtime.port.setCausationCommandId(eventCommand.commandId)
-    runtime.activeTurnId = eventCommand.commandId
-    let dispatchFailure: { error: unknown } | null = null
-    try {
-      const richInput = await materializePromptInput(
-        prompt,
-        this.client,
-        `${this.config.replayLedgerPath}.v3-attachments`,
-      )
-      if (await this.waitForPromptCancellation(project, eventCommand)) return
-      await this.emitBestEffort(project, runtime.record, this.eventFor(
-        project,
-        runtime.record,
-        eventCommand,
-        'turn-started',
-        {
-          type: 'turn.started',
-          turnId: eventCommand.commandId,
-          projection: projection(runtime.record, runtime.activity.phase, this.extensions),
-        },
-      ))
-      if (!this.beginPromptAgentDispatch(project, eventCommand)) {
-        await this.waitForPromptCancellation(project, eventCommand)
-        return
-      }
-      await runtime.session.dispatch({
-        kind: 'user_message',
-        text: prompt.text,
-        richInput,
-        source: 'channel',
-        user: { id: command.deviceId, username: command.deviceId },
-      })
-    } catch (error) {
-      dispatchFailure = { error }
-    } finally {
-      const causalDelivery = runtime.port.causalDeliveryBarrier(eventCommand.commandId)
-      runtime.port.setCausationCommandId(null)
-      runtime.activeTurnId = null
-      try {
-        // The terminal event is deliberately not staged until the newest
-        // version of every assistant/tool message in this turn is physically
-        // accepted by Matrix. This prevents urgent turn.completed delivery
-        // from overtaking the final answer under account-wide backpressure.
-        await causalDelivery
-      } catch (deliveryError) {
-        if (dispatchFailure) {
-          throw new AggregateError(
-            [dispatchFailure.error, deliveryError],
-            'Agent execution and causal Matrix delivery both failed',
-          )
-        }
-        throw deliveryError
-      }
+    if (!this.beginPromptAgentDispatch(project, eventCommand)) {
+      await this.waitForPromptCancellation(project, eventCommand)
+      return
     }
-    if (dispatchFailure) throw dispatchFailure.error
-    runtime.record.providerSessionId = runtime.session.sessionRecord.conversationId
-    this.transition(runtime, 'idle')
-    await this.persist(project)
-    const completed = this.eventFor(project, runtime.record, eventCommand, 'turn-completed', {
-      type: 'turn.completed',
-      turnId: eventCommand.commandId,
-      outcome: 'succeeded',
-      projection: terminalProjection(runtime.record, runtime.activity.phase, this.extensions),
-    })
-    if (options.settleCommand === false) await this.emitBestEffort(project, runtime.record, completed)
-    else await this.settleAndDeliver(project, command, completed, 'succeeded')
-    this.log(`[mlp3/matrix] turn ${command.commandId} completed`)
+    const activeTurn = createActiveTurn(eventCommand.commandId)
+    runtime.activeTurn = activeTurn
+    runtime.port.setCausationCommandId(eventCommand.commandId)
+    try {
+      let dispatchResult: unknown
+      try {
+        dispatchResult = await runtime.session.dispatch({
+          kind: 'user_message',
+          text: prompt.text,
+          richInput,
+          source: 'channel',
+          user: { id: command.deviceId, username: command.deviceId },
+          cancellationSignal: activeTurn.abortController.signal,
+          onExecutionStarted: async () => {
+            if (activeTurn.executionStarted || activeTurn.cancelRequested) return
+            activeTurn.executionStarted = true
+            this.transition(runtime, 'working')
+            await this.persist(project)
+            await this.emitBestEffort(project, runtime.record, this.eventFor(
+              project,
+              runtime.record,
+              eventCommand,
+              'turn-started',
+              {
+                type: 'turn.started',
+                turnId: eventCommand.commandId,
+                projection: projection(runtime.record, runtime.activity.phase, this.extensions),
+              },
+            ))
+          },
+        })
+      } catch (error) {
+        if (!activeTurn.cancelRequested) throw error
+        dispatchResult = { status: 'cancelled' } satisfies SemanticTurnResult
+      }
+      const result = readSemanticTurnResult(dispatchResult)
+      const cancelled = activeTurn.cancelRequested || result.status === 'cancelled'
+      if (result.status === 'failed' && !cancelled) {
+        throw new Error(result.message ?? 'Agent execution failed')
+      }
+      activeTurn.terminalOutcome = cancelled ? 'cancelled' : 'succeeded'
+      runtime.record.providerSessionId = runtime.session.sessionRecord.conversationId
+      this.transition(runtime, 'idle')
+      await this.persist(project)
+      const completed = this.eventFor(project, runtime.record, eventCommand, 'turn-completed', {
+        type: 'turn.completed',
+        turnId: eventCommand.commandId,
+        outcome: cancelled ? 'cancelled' : 'succeeded',
+        projection: terminalProjection(runtime.record, runtime.activity.phase, this.extensions),
+      })
+      if (options.settleCommand === false) {
+        await this.emitBestEffort(project, runtime.record, completed)
+        if (cancelled) throw new Error('Agent turn was cancelled')
+      } else {
+        await this.settleAndDeliver(project, command, completed, 'succeeded')
+      }
+      this.log(
+        `[mlp3/matrix] turn ${command.commandId} ${cancelled ? 'cancelled' : 'completed'}`,
+      )
+    } finally {
+      runtime.port.setCausationCommandId(null)
+      if (runtime.activeTurn === activeTurn) runtime.activeTurn = null
+      activeTurn.settle()
+    }
   }
 
   private async cancelTurn(
@@ -1599,7 +1624,8 @@ export class MatrixMlp3GatewayRunner {
       this.log(`[mlp3/matrix] queued turn ${command.payload.turnId} cancelled before dispatch`)
       return
     }
-    if (runtime.activeTurnId === null) {
+    const activeTurn = runtime.activeTurn
+    if (activeTurn === null) {
       if (runtime.activity.phase !== 'idle') {
         this.transition(runtime, 'idle')
         await this.persist(project)
@@ -1614,22 +1640,26 @@ export class MatrixMlp3GatewayRunner {
       this.log(`[mlp3/matrix] turn ${command.payload.turnId} was already inactive; converged cancel`)
       return
     }
-    if (runtime.activeTurnId !== command.payload.turnId) {
+    if (activeTurn.turnId !== command.payload.turnId) {
       throw new Error(`Turn ${command.payload.turnId} is not active`)
     }
-    await runtime.session.dispatch({
-      kind: 'cancel',
-      reason: 'user',
-      source: 'channel',
-      user: { id: command.deviceId, username: command.deviceId },
-    })
-    this.transition(runtime, 'idle')
-    await this.persist(project)
+    if (activeTurn.terminalOutcome === null) {
+      activeTurn.cancelRequested = true
+      activeTurn.abortController.abort()
+      await runtime.session.dispatch({
+        kind: 'cancel',
+        reason: 'user',
+        source: 'channel',
+        user: { id: command.deviceId, username: command.deviceId },
+      })
+    }
+    await activeTurn.settled
+    const outcome = activeTurn.terminalOutcome ?? 'cancelled'
     const completed = this.eventFor(project, runtime.record, command, 'turn-cancelled', {
       type: 'turn.completed',
       turnId: command.payload.turnId,
-      outcome: 'cancelled',
-      projection: terminalProjection(runtime.record, runtime.activity.phase, this.extensions),
+      outcome,
+      projection: terminalProjection(runtime.record, 'idle', this.extensions),
     })
     await this.settleAndDeliver(project, command, completed, 'succeeded')
   }
@@ -1662,11 +1692,7 @@ export class MatrixMlp3GatewayRunner {
     runtime: Mlp3SessionRuntime,
     command: Mlp3CommandOf<'prompt.submit'>,
   ): Promise<void> {
-    if (runtime.activeTurnId === command.commandId) {
-      runtime.activeTurnId = null
-      this.transition(runtime, 'idle')
-      await this.persist(project)
-    } else if (runtime.activeTurnId === null && runtime.activity.phase !== 'idle') {
+    if (runtime.activeTurn === null && runtime.activity.phase !== 'idle') {
       this.transition(runtime, 'idle')
       await this.persist(project)
     }
@@ -2119,7 +2145,7 @@ export class MatrixMlp3GatewayRunner {
     if (!this.dependencies.validateProjectDeletion || !this.dependencies.deleteProject) {
       throw new Error('This Gateway host does not support project deletion')
     }
-    if ([...project.sessions.values()].some(runtime => runtime.activeTurnId !== null)) {
+    if ([...project.sessions.values()].some(runtime => runtime.activeTurn !== null)) {
       throw new Error('Wait for active project turns to finish before deleting this project')
     }
     await this.dependencies.validateProjectDeletion({
@@ -2792,7 +2818,7 @@ export class MatrixMlp3GatewayRunner {
       session,
       capabilityProvider,
       activity,
-      activeTurnId: null,
+      activeTurn: null,
     }
     return runtime
   }
@@ -3426,6 +3452,46 @@ function promptScheduleKey(
   commandId: string,
 ): string {
   return `${project.config.roomId}\0${sessionId}\0${commandId}`
+}
+
+function createActiveTurn(turnId: string): Mlp3ActiveTurn {
+  let resolveSettled!: () => void
+  let settled = false
+  const settledPromise = new Promise<void>(resolve => {
+    resolveSettled = resolve
+  })
+  return {
+    turnId,
+    abortController: new AbortController(),
+    cancelRequested: false,
+    executionStarted: false,
+    terminalOutcome: null,
+    settled: settledPromise,
+    settle() {
+      if (settled) return
+      settled = true
+      resolveSettled()
+    },
+  }
+}
+
+function readSemanticTurnResult(value: unknown): SemanticTurnResult {
+  if (value === undefined || value === null) return { status: 'succeeded' }
+  if (typeof value !== 'object') {
+    return { status: 'failed', message: 'Session runtime returned an invalid turn result' }
+  }
+  const result = value as { status?: unknown; message?: unknown }
+  if (
+    result.status !== 'succeeded'
+    && result.status !== 'cancelled'
+    && result.status !== 'failed'
+  ) {
+    return { status: 'failed', message: 'Session runtime returned an invalid turn result' }
+  }
+  return {
+    status: result.status,
+    ...(typeof result.message === 'string' ? { message: result.message } : {}),
+  }
 }
 
 async function waitForScheduledPromptCancellation(

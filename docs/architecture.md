@@ -157,6 +157,16 @@ Gateway-wide “current session”. Archive releases runtime resources while
 retaining metadata; restore recreates them; delete writes an authenticated
 tombstone but does not claim to erase Matrix or provider-retained history.
 
+Turn lifecycle is split at durable ownership boundaries. The Gateway command
+journal owns execution-once and the original prompt terminal;
+`SemanticSessionRuntime` owns the internal `starting -> querying -> canceling ->
+finalizing` transitions and returns one semantic outcome; the Matrix outbox owns
+physical delivery and 429 retry after events have been staged. Provider startup
+and cleanup are bounded locally. A stuck iterator cannot keep a cancelled or
+already-terminal turn active forever, and physical Matrix confirmation is never
+part of the Agent execution critical section. These are local implementation
+states, not new MLP events or a protocol-version boundary.
+
 Sensitive fields—including paths, prompts, Agent output, tool arguments,
 provider session IDs, credentials, and execution grants—remain inside Malink
 application encryption. Matrix-visible room names and message bodies are

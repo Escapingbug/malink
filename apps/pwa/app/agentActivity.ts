@@ -232,12 +232,10 @@ export function reduceAgentActivity(
   if (event.type === "turn.queued") {
     return current?.phase === "working" || current?.phase === "stopping"
       ? current
-      : WAITING_AGENT_ACTIVITY;
+      : STARTING_AGENT_ACTIVITY;
   }
   if (event.type === "turn.started") {
-    return current?.phase === "working" || current?.phase === "stopping"
-      ? current
-      : STARTING_AGENT_ACTIVITY;
+    return current?.phase === "stopping" ? current : WORKING_AGENT_ACTIVITY;
   }
   if (event.type === "turn.completed" || event.type === "turn.failed") {
     return null;
