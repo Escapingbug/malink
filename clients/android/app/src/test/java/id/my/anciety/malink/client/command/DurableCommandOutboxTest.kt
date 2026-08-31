@@ -68,6 +68,71 @@ class DurableCommandOutboxTest {
     }
 
     @Test
+    fun `process restart retires an unfinished read-only Gateway status probe`() {
+        val fixture = fixture()
+        val key = UUID.randomUUID().toString()
+        val body = payload("gateway.update.status")
+        val status = fixture.outbox.enqueue(key, body, projectId = "project-a")
+        fixture.outbox.claimForTransmission(status.commandId)
+
+        val restored = DurableCommandOutbox(fixture.store, fixture.clock, fixture.ids)
+
+        assertNull(restored.get(status.commandId))
+        assertEquals(listOf(status.commandId), restored.retiredGatewayStatusProbeIdsOnOpen)
+        assertThrows(ReleasedCommandException::class.java) {
+            restored.enqueue(key, body, projectId = "project-a")
+        }
+        val fresh = restored.enqueue(
+            UUID.randomUUID().toString(),
+            body,
+            projectId = "project-a",
+        )
+        assertNotEquals(status.commandId, fresh.commandId)
+    }
+
+    @Test
+    fun `process restart retires a published Gateway status probe but preserves mutations`() {
+        val fixture = fixture()
+        val status = fixture.outbox.enqueue(
+            UUID.randomUUID().toString(),
+            payload("gateway.update.status"),
+            projectId = "project-a",
+        )
+        fixture.outbox.claimForTransmission(status.commandId)
+        fixture.outbox.recordPublished(status.commandId, "\$status-event")
+        val mutation = fixture.outbox.enqueue(
+            UUID.randomUUID().toString(),
+            payload("session.create"),
+            projectId = "project-a",
+        )
+        fixture.outbox.claimForTransmission(mutation.commandId)
+
+        val restored = DurableCommandOutbox(fixture.store, fixture.clock, fixture.ids)
+
+        assertNull(restored.get(status.commandId))
+        assertEquals(CommandState.RECOVERY_REQUIRED, restored.get(mutation.commandId)?.state)
+        assertEquals(listOf(status.commandId), restored.retiredGatewayStatusProbeIdsOnOpen)
+    }
+
+    @Test
+    fun `process restart preserves a terminal Gateway status result for consumption`() {
+        val fixture = fixture()
+        val status = fixture.outbox.enqueue(
+            UUID.randomUUID().toString(),
+            payload("gateway.update.status"),
+            projectId = "project-a",
+        )
+        fixture.outbox.recordCompletion(
+            CommandCompletion(status.commandId, outcome = CommandOutcome.SUCCEEDED),
+        )
+
+        val restored = DurableCommandOutbox(fixture.store, fixture.clock, fixture.ids)
+
+        assertEquals(CommandState.SUCCEEDED, restored.get(status.commandId)?.state)
+        assertTrue(restored.retiredGatewayStatusProbeIdsOnOpen.isEmpty())
+    }
+
+    @Test
     fun `independent commands can be in flight and published concurrently`() {
         val fixture = fixture()
         val first = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("prompt", "one"))

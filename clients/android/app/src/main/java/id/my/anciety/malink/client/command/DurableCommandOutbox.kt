@@ -34,23 +34,41 @@ class DurableCommandOutbox internal constructor(
     private val idFactory: CommandIdFactory = CommandIdFactory { UUID.randomUUID().toString() },
 ) {
     private var snapshot: CommandOutboxSnapshot
+    internal val retiredGatewayStatusProbeIdsOnOpen: List<String>
 
     init {
         val loaded = store.load() ?: CommandOutboxSnapshot()
+        val recoveredCommands = loaded.commands.map { command ->
+            if (command.state == CommandState.TRANSMITTING) {
+                command.copy(
+                    state = CommandState.RECOVERY_REQUIRED,
+                    updatedAt = monotonicNow(command.updatedAt),
+                )
+            } else {
+                command
+            }
+        }
+        // Gateway status is a transient, read-only observation. A process
+        // restart has no caller left to consume an unfinished probe, and the
+        // shared signed Gateway projection is the durable status authority.
+        // Retire only these probes instead of surfacing them as user actions;
+        // mutation commands keep their exact recovery identity above.
+        val statusProbes = recoveredCommands.filter { command ->
+            !command.state.isTerminal &&
+                command.payload["operation"] ==
+                JsonPrimitive(CommandOperation.GATEWAY_UPDATE_STATUS.wireName)
+        }.take(MAX_RELEASED_TOMBSTONES - loaded.released.size)
+        val retiredStatusProbeIds = statusProbes.mapTo(mutableSetOf(), PersistedCommand::commandId)
+        val releasedAt = if (statusProbes.isEmpty()) null else nonnegativeNow()
         val recovered = loaded.copy(
-            commands = loaded.commands.map { command ->
-                if (command.state == CommandState.TRANSMITTING) {
-                    command.copy(
-                        state = CommandState.RECOVERY_REQUIRED,
-                        updatedAt = monotonicNow(command.updatedAt),
-                    )
-                } else {
-                    command
-                }
+            commands = recoveredCommands.filterNot { it.commandId in retiredStatusProbeIds },
+            released = loaded.released + statusProbes.map { command ->
+                command.toReleasedTombstone(maxOf(requireNotNull(releasedAt), command.updatedAt))
             },
         )
         if (recovered != loaded) store.save(recovered)
         snapshot = recovered
+        retiredGatewayStatusProbeIdsOnOpen = statusProbes.map(PersistedCommand::commandId)
     }
 
     @Synchronized

@@ -258,14 +258,21 @@ class NativeClientRuntime(
                 "quarantined" to migration.quarantinedCommandCount.toString(),
             ),
         )
-    }.also {
+    }.also { outbox ->
+        outbox.retiredGatewayStatusProbeIdsOnOpen.forEach(matrixMlp3CommandContent::remove)
+        if (outbox.retiredGatewayStatusProbeIdsOnOpen.isNotEmpty()) {
+            diagnostics.record(
+                "command.status_probe.retired_on_startup",
+                mapOf("count" to outbox.retiredGatewayStatusProbeIdsOnOpen.size.toString()),
+            )
+        }
         // The owning codec performs and atomically rewrites supported legacy
         // schemas during construction. Replaying these coordinator steps is
         // harmless because opening the current codec is idempotent.
         stateUpgrade.recoverPreserved(
             "command-outbox",
-            migrate = { _, _ -> it.list() },
-            validate = { it.list() },
+            migrate = { _, _ -> outbox.list() },
+            validate = { outbox.list() },
         )
     }
     private val transfers = AttachmentTransferManager(files.transfers, matrix, cipher, now).also {
