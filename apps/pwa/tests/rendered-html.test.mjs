@@ -186,7 +186,7 @@ test("ships a complete installable offline shell", async () => {
     source,
     /error instanceof CommandCompletionTimeoutError && commandId !== null && probe[\s\S]*?gatewayNodeLivenessAfterProbeTimeout\([\s\S]*?state: liveness\.state === "online" \? "online" : "unreachable"/,
   );
-  assert.match(source, /connection\.recoverCommand\(probe\.commandId\)/);
+  assert.match(source, /connection\.recoverCommand\(commandId\)/);
   assert.match(
     source,
     /error instanceof CommandCompletionTimeoutError[\s\S]*?connection\.recoverCommand\(commandId\)[\s\S]*?observeLateCompletion\(probe\)/,
