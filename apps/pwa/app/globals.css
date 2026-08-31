@@ -9677,6 +9677,10 @@ body {
     white-space: nowrap;
   }
 
+  .gateway-filter-control {
+    margin: 0 12px 10px;
+  }
+
   .gateway-mobile-status .mobile-connection-icon {
     width: 21px;
     height: 21px;
@@ -9737,7 +9741,7 @@ body {
   }
 
   .project-copy small {
-    display: none;
+    display: block;
   }
 
   .session-avatar {

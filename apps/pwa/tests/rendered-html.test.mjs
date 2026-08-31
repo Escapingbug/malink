@@ -510,6 +510,25 @@ test("ships a complete installable offline shell", async () => {
   await assert.rejects(access(new URL("app/_sites-preview", appRoot)));
 });
 
+test("keeps Gateway controls and project ownership readable on Android-sized screens", async () => {
+  const styles = await readFile(new URL("app/globals.css", appRoot), "utf8");
+  const mobileStyles = styles.match(
+    /@media \(max-width: 900px\), \(max-height: 610px\) and \(max-width: 1100px\) \{([\s\S]+?)\n\}\n\n@keyframes mobile-sheet-enter/,
+  )?.[1];
+
+  assert.ok(mobileStyles, "the primary mobile breakpoint should exist");
+  assert.match(
+    mobileStyles,
+    /\.gateway-filter-control\s*\{\s*margin:\s*0 12px 10px;/,
+    "the Gateway filter should remain separated from the Gateway status card",
+  );
+  assert.match(
+    mobileStyles,
+    /\.project-copy small\s*\{\s*display:\s*block;/,
+    "project rows should keep their owning Gateway visible on mobile",
+  );
+});
+
 test("publishes a static authoritative build version", async () => {
   const body = JSON.parse(
     await readFile(new URL("../dist/version.json", import.meta.url), "utf8"),
