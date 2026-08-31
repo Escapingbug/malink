@@ -63,11 +63,11 @@ test("shows node identity, version need, and signed live status before consent",
     onExportDiagnostics() {},
   }));
 
-  assert.match(html, /Review Gateway update/);
+  assert.match(html, /Manage Gateway updates/);
   assert.match(html, /Office Mac · studio\.local/);
   assert.match(html, /Update available/);
   assert.match(html, /Online now/);
-  assert.match(html, /Create update session/);
+  assert.match(html, /Update Gateway/);
   assert.match(html, /Server/);
   assert.match(html, /Up to date/);
   assert.match(html, /Live check timed out/);
@@ -180,15 +180,48 @@ test("presents a signed supervisor repair failure as an actionable error", () =>
   assert.match(html, /Gateway repair required/);
   assert.match(html, /Activation and rollback health checks both failed/);
   assert.match(html, /Repair this Gateway/);
-  assert.match(html, /is answering again/);
-  assert.match(html, /Retry with published release/);
-  assert.doesNotMatch(html, /Repeating the update request will not repair this state/);
-  const retryControl = html.match(
-    /<button[^>]*class="primary-button"[^>]*>Retry with published release<\/button>/,
-  )?.[0];
-  assert.ok(retryControl);
-  assert.doesNotMatch(retryControl, /disabled/);
+  assert.match(html, /Repeating the update request will not repair this state/);
+  assert.doesNotMatch(html, /Retry with published release/);
+  assert.doesNotMatch(html, /class="primary-button"/);
   assert.match(html, /role="alert"/);
+});
+
+test("does not offer a useless retry for an unpublished 404 release", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [nodes[0]!],
+    runtimeByNode: {
+      "node-office": {
+        state: "online",
+        status: {
+          version: 1,
+          phase: "failed",
+          releaseId: release.releaseId,
+          currentBuildId: "gateway-old-arm64",
+          detail: "Gateway Agent update Prompt returned HTTP 404",
+          updatedAt: 1,
+        },
+        commandFailureCode: "gateway_update_release_unavailable",
+        commandFailureRetryable: false,
+      },
+    },
+    activeGatewayNodeId: null,
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  assert.match(html, /Gateway Agent update Prompt returned HTTP 404/);
+  assert.match(html, /Repeating the same release would reproduce this failure/);
+  assert.match(html, /Export client diagnostics/);
+  assert.match(html, /Report update issue/);
+  assert.doesNotMatch(html, /Try update again/);
+  assert.doesNotMatch(html, /class="primary-button"/);
 });
 
 test("does not render the review panel while closed", () => {
@@ -240,7 +273,7 @@ test("keeps the panel dismissible while a Gateway maintenance Agent starts", () 
   assert.match(html, />Close<\/button>/);
 });
 
-test("does not open a legacy maintenance session shared by multiple nodes", () => {
+test("opens a legacy maintenance session through its exact project route", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
     open: true,
     connected: true,
@@ -264,9 +297,9 @@ test("does not open a legacy maintenance session shared by multiple nodes", () =
   }));
 
   assert.match(html, /update session left by an older Malink version/);
-  assert.match(html, /only this Gateway is affected/);
+  assert.match(html, /project-qualified route is preserved/);
   assert.doesNotMatch(html, /maintenance session ID|node-specific session IDs/);
-  assert.doesNotMatch(html, /Open update session/);
+  assert.match(html, /Open update session/);
   assert.match(html, /Archive old update session/);
 });
 
@@ -373,7 +406,7 @@ test("keeps a new release actionable while offering cleanup for an older collisi
 
   assert.match(html, /Archive old update session/);
   assert.match(html, /only this Gateway is affected/);
-  assert.match(html, /Create update session/);
+  assert.match(html, /Update to new release/);
 });
 
 test("offers installation when the maintenance Agent already staged the target", () => {
@@ -406,7 +439,7 @@ test("offers installation when the maintenance Agent already staged the target",
   }));
 
   assert.match(html, /gateway-staged-arm64.*staged locally and ready to install/);
-  assert.match(html, /Install staged update/);
+  assert.match(html, /Continue update/);
 });
 
 test("treats a verified installed build as complete without cleanup warnings", () => {

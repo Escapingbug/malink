@@ -184,6 +184,15 @@ export async function connectMatrixMlp3(
     return secondary && active.includes(secondary) ? secondary : null;
   };
 
+  const projectForProtocol = (
+    target: MatrixMlp3ProtocolClient,
+  ): string | undefined => {
+    if (target === protocol) return projectId ?? undefined;
+    return [...secondaryProtocols.values()].find(
+      value => value.protocol === target,
+    )?.route.projectId;
+  };
+
   const publishProjection = (
     deliveryMode: ProjectionDeliveryMode = "live",
     targetProtocols?: readonly MatrixMlp3ProtocolClient[],
@@ -198,37 +207,53 @@ export async function connectMatrixMlp3(
     const projectionProtocols = targetProtocols
       ? targetProtocols.filter(target => activeProtocols.includes(target))
       : activeProtocols;
-    const catchupBySession = new Map<string, IncomingMalinkMessage[]>();
+    const catchupBySession = new Map<
+      string,
+      { sessionId: string; messages: IncomingMalinkMessage[] }
+    >();
     const unscopedCatchup: IncomingMalinkMessage[] = [];
-    for (const message of projectionProtocols.flatMap(value => [...value.projection.messages.values()])) {
-      const previous = deliveredMessages.get(message.logicalId);
-      if (
-        previous
-        && previous.version === message.version
-        && previous.physicalEventId === message.physicalEventId
-      ) continue;
-      deliveredMessages.set(message.logicalId, {
-        version: message.version,
-        physicalEventId: message.physicalEventId,
-      });
-      if (deliveryMode === "hydrate") continue;
-      const incoming = toIncomingMessage(
-        message,
-        previous?.physicalEventId,
-        deliveryMode,
-      );
-      if (deliveryMode !== "catchup") {
-        handlers.onMessage(incoming);
-      } else if (incoming.sessionId) {
-        const recovered = catchupBySession.get(incoming.sessionId) ?? [];
-        recovered.push(incoming);
-        catchupBySession.set(incoming.sessionId, recovered);
-      } else {
-        unscopedCatchup.push(incoming);
+    for (const target of projectionProtocols) {
+      const messageProjectId = projectForProtocol(target);
+      for (const message of target.projection.messages.values()) {
+        const deliveryKey = messageProjectId
+          ? `${messageProjectId}\0${message.logicalId}`
+          : message.logicalId;
+        const previous = deliveredMessages.get(deliveryKey);
+        if (
+          previous
+          && previous.version === message.version
+          && previous.physicalEventId === message.physicalEventId
+        ) continue;
+        deliveredMessages.set(deliveryKey, {
+          version: message.version,
+          physicalEventId: message.physicalEventId,
+        });
+        if (deliveryMode === "hydrate") continue;
+        const incoming = toIncomingMessage(
+          message,
+          previous?.physicalEventId,
+          deliveryMode,
+          messageProjectId,
+        );
+        if (deliveryMode !== "catchup") {
+          handlers.onMessage(incoming);
+        } else if (incoming.sessionId) {
+          const routeKey = incoming.projectId
+            ? `${incoming.projectId}\0${incoming.sessionId}`
+            : incoming.sessionId;
+          const recovered = catchupBySession.get(routeKey) ?? {
+            sessionId: incoming.sessionId,
+            messages: [],
+          };
+          recovered.messages.push(incoming);
+          catchupBySession.set(routeKey, recovered);
+        } else {
+          unscopedCatchup.push(incoming);
+        }
       }
     }
-    for (const [sessionId, recovered] of catchupBySession) {
-      const bounded = recovered
+    for (const recovered of catchupBySession.values()) {
+      const bounded = recovered.messages
         .sort(
           (left, right) =>
             left.timestamp - right.timestamp ||
@@ -237,7 +262,7 @@ export async function connectMatrixMlp3(
         .slice(-CATCHUP_PRESENTATION_LIMIT_PER_SESSION);
       if (handlers.onHistoryRecovered) {
         handlers.onHistoryRecovered({
-          sessionId,
+          sessionId: recovered.sessionId,
           messages: bounded,
           // Catch-up is intentionally a bounded presentation window. Older
           // transcript content remains available through explicit pagination.
@@ -1032,10 +1057,22 @@ export async function connectMatrixMlp3(
     return paired;
   };
 
-  const protocolForSession = (sessionId: string): {
+  const protocolForSession = (sessionId: string, targetProjectId?: string): {
     protocol: MatrixMlp3ProtocolClient;
     roomId: string;
   } | null => {
+    const exact = protocolForProject(targetProjectId);
+    if (exact?.projection.sessions.has(sessionId)) {
+      return {
+        protocol: exact,
+        roomId: exact === protocol
+          ? config.roomId
+          : [...secondaryProtocols.values()].find(
+              value => value.protocol === exact,
+            )?.route.roomId ?? config.roomId,
+      };
+    }
+    if (targetProjectId) return null;
     const active = activeWorkspaceProtocols();
     if (protocol && active.includes(protocol) && protocol.projection.sessions.has(sessionId)) {
       return { protocol, roomId: config.roomId };
@@ -1048,15 +1085,22 @@ export async function connectMatrixMlp3(
     return null;
   };
 
-  const loadHistory = async (sessionId: string, limit = 30): Promise<MatrixHistoryPage> => {
+  const loadHistory = async (
+    sessionId: string,
+    limit = 30,
+    targetProjectId?: string,
+  ): Promise<MatrixHistoryPage> => {
     await ready;
-    const context = protocolForSession(sessionId);
+    const context = protocolForSession(sessionId, targetProjectId);
     if (!context) throw new Error("The MLP/3 project is not initialized.");
     const active = context.protocol;
     const session = active.projection.sessions.get(sessionId);
     if (!session?.threadRootEventId) return { messages: [], hasMore: false };
     const pageLimit = Math.max(1, Math.min(limit, 100));
-    const from = historyInitialized.has(sessionId) ? historyTokens.get(sessionId) ?? undefined : undefined;
+    const historyKey = targetProjectId ? `${targetProjectId}\0${sessionId}` : sessionId;
+    const from = historyInitialized.has(historyKey)
+      ? historyTokens.get(historyKey) ?? undefined
+      : undefined;
     const path = [
       "/rooms/",
       encodeURIComponent(context.roomId),
@@ -1086,8 +1130,8 @@ export async function connectMatrixMlp3(
         localTimeoutMs: MATRIX_HISTORY_REQUEST_TIMEOUT_MS,
       },
     );
-    historyInitialized.add(sessionId);
-    historyTokens.set(sessionId, page.next_batch ?? null);
+    historyInitialized.add(historyKey);
+    historyTokens.set(historyKey, page.next_batch ?? null);
     const mapEvent = client.getEventMapper();
     for (const event of page.chunk.map(raw => mapEvent(raw))) {
       if (active === protocol) {
@@ -1099,8 +1143,8 @@ export async function connectMatrixMlp3(
         if (secondary) await ingestSecondaryEvent(secondary, event);
       }
     }
-    const delivered = deliveredHistory.get(sessionId) ?? new Set<string>();
-    deliveredHistory.set(sessionId, delivered);
+    const delivered = deliveredHistory.get(historyKey) ?? new Set<string>();
+    deliveredHistory.set(historyKey, delivered);
     const messages = active.projection.sessionMessages(sessionId)
       .filter(message =>
         !delivered.has(message.logicalId) && !delivered.has(message.physicalEventId)
@@ -1109,17 +1153,21 @@ export async function connectMatrixMlp3(
       .map(message => {
         delivered.add(message.logicalId);
         delivered.add(message.physicalEventId);
-        return toIncomingMessage(message, undefined, "history");
+        return toIncomingMessage(message, undefined, "history", targetProjectId);
       });
     return { messages, hasMore: Boolean(page.next_batch) };
   };
 
-  const loadLocalHistory = async (sessionId: string): Promise<MatrixHistoryPage> => {
+  const loadLocalHistory = async (
+    sessionId: string,
+    targetProjectId?: string,
+  ): Promise<MatrixHistoryPage> => {
     await ready;
-    const active = protocolForSession(sessionId)?.protocol;
+    const active = protocolForSession(sessionId, targetProjectId)?.protocol;
     if (!active) throw new Error("The MLP/3 project is not initialized.");
-    const delivered = deliveredHistory.get(sessionId) ?? new Set<string>();
-    deliveredHistory.set(sessionId, delivered);
+    const historyKey = targetProjectId ? `${targetProjectId}\0${sessionId}` : sessionId;
+    const delivered = deliveredHistory.get(historyKey) ?? new Set<string>();
+    deliveredHistory.set(historyKey, delivered);
     const available = active.projection.sessionMessages(sessionId)
       .filter(message =>
         !delivered.has(message.logicalId) && !delivered.has(message.physicalEventId)
@@ -1128,7 +1176,7 @@ export async function connectMatrixMlp3(
       .map(message => {
         delivered.add(message.logicalId);
         delivered.add(message.physicalEventId);
-        return toIncomingMessage(message, undefined, "history");
+        return toIncomingMessage(message, undefined, "history", targetProjectId);
       });
     return {
       messages,
@@ -1266,9 +1314,10 @@ export async function connectMatrixMlp3(
       throw new Error("MLP/3 has no global revision conflict to retry.");
     },
     discardRevisionConflict: async () => undefined,
-    markHistoryLoaded(sessionId, eventIds) {
-      const delivered = deliveredHistory.get(sessionId) ?? new Set<string>();
-      deliveredHistory.set(sessionId, delivered);
+    markHistoryLoaded(sessionId, eventIds, targetProjectId) {
+      const historyKey = targetProjectId ? `${targetProjectId}\0${sessionId}` : sessionId;
+      const delivered = deliveredHistory.get(historyKey) ?? new Set<string>();
+      deliveredHistory.set(historyKey, delivered);
       for (const eventId of eventIds) delivered.add(eventId);
     },
     loadLocalHistory,
@@ -1320,6 +1369,7 @@ export function toIncomingMessage(
   message: import("./matrixMlp3Projection").V3ProjectedMessage,
   replacesEventId?: string,
   deliveryMode: MessageDeliveryMode = "live",
+  projectId?: string,
 ): IncomingMalinkMessage {
   const payload = message.payload;
   const toolGroup = toolGroupFromMlp3Payload(payload, message.timestamp);
@@ -1343,6 +1393,7 @@ export function toIncomingMessage(
             : "agent",
     text: message.body,
     sessionId: message.sessionId,
+    ...(projectId ? { projectId } : {}),
     deliveryMode,
     ...(deliveryMode === "history" ? { historical: true } : {}),
     ...(message.commandId ? { commandId: message.commandId } : {}),

@@ -101,6 +101,8 @@ export type IncomingMalinkMessage = {
   kind: "agent" | "user" | "tool" | "permission" | "notice" | "error";
   text: string;
   sessionId?: string;
+  /** Exact verified project route; available to the browser MLP/3 runtime. */
+  projectId?: string;
   deliveryMode?: MessageDeliveryMode;
   historical?: boolean;
   operationId?: string;
@@ -208,9 +210,17 @@ export type MatrixConnection = {
   downloadAttachment(attachment: MalinkAttachment): Promise<Blob>;
   confirmRevisionRetry(commandId: string): Promise<CommandSendResult>;
   discardRevisionConflict(commandId: string): Promise<void>;
-  markHistoryLoaded(sessionId: string, eventIds: readonly string[]): void;
-  loadLocalHistory(sessionId: string): Promise<MatrixHistoryPage>;
-  loadHistoryPage(sessionId: string, limit?: number): Promise<MatrixHistoryPage>;
+  markHistoryLoaded(
+    sessionId: string,
+    eventIds: readonly string[],
+    projectId?: string,
+  ): void;
+  loadLocalHistory(sessionId: string, projectId?: string): Promise<MatrixHistoryPage>;
+  loadHistoryPage(
+    sessionId: string,
+    limit?: number,
+    projectId?: string,
+  ): Promise<MatrixHistoryPage>;
   observeCommandCompletion(
     commandId: string,
     timeoutMs: number,

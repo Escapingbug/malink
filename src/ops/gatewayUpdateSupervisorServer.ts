@@ -90,7 +90,11 @@ export async function startGatewayUpdateSupervisorServer(input: {
         + `failed: ${mapped.code}`,
       )
       sendJson(response, mapped.status, {
-        error: { code: mapped.code, message: mapped.message },
+        error: {
+          code: mapped.code,
+          message: mapped.message,
+          retryable: mapped.retryable,
+        },
       })
     }
   })
@@ -186,11 +190,15 @@ export class GatewayUpdateSupervisorClient {
           response.on('end', () => {
             try {
               const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
-                error?: { message?: string }
+                error?: { code?: string; message?: string; retryable?: boolean }
               }
               const status = response.statusCode ?? 500
               if (status < 200 || status >= 300) {
-                reject(new Error(parsed.error?.message ?? `Supervisor returned HTTP ${status}`))
+                reject(new GatewayUpdateSupervisorRequestError(
+                  parsed.error?.code ?? 'gateway_update_supervisor_failed',
+                  parsed.error?.message ?? `Supervisor returned HTTP ${status}`,
+                  parsed.error?.retryable === true,
+                ))
               } else {
                 resolve(parsed as T)
               }
@@ -210,8 +218,25 @@ export class GatewayUpdateSupervisorClient {
 }
 
 class SupervisorHttpError extends Error {
-  constructor(readonly status: number, readonly code: string, message = code) {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message = code,
+    readonly retryable = false,
+  ) {
     super(message)
+  }
+}
+
+class GatewayUpdateSupervisorRequestError extends Error {
+  readonly commandCode: string
+
+  constructor(code: string, message: string, readonly retryable: boolean) {
+    super(message)
+    this.name = 'GatewayUpdateSupervisorRequestError'
+    this.commandCode = /^[a-z][a-z0-9_]{0,127}$/u.test(code)
+      ? code
+      : 'gateway_update_supervisor_failed'
   }
 }
 
@@ -321,11 +346,48 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
 
 function mapError(error: unknown): SupervisorHttpError {
   if (error instanceof SupervisorHttpError) return error
+  const failure = classifyGatewayUpdateFailure(error)
   return new SupervisorHttpError(
     500,
-    'update_failed',
+    failure.code,
     error instanceof Error ? error.message : String(error),
+    failure.retryable,
   )
+}
+
+function classifyGatewayUpdateFailure(error: unknown): {
+  code: string
+  retryable: boolean
+} {
+  if (error && typeof error === 'object') {
+    const candidate = error as { commandCode?: unknown; retryable?: unknown }
+    if (
+      typeof candidate.commandCode === 'string'
+      && /^[a-z][a-z0-9_]{0,127}$/u.test(candidate.commandCode)
+    ) {
+      return {
+        code: candidate.commandCode,
+        retryable: candidate.retryable === true,
+      }
+    }
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  if (
+    error instanceof TypeError
+    || /(?:\bHTTP (?:408|425|429|5\d\d)\b|fetch failed|network(?:error| request)?|timed out|timeout|socket hang up|connection (?:reset|refused)|rate.?limit|too many requests|service unavailable)/iu.test(message)
+  ) {
+    return { code: 'gateway_update_transient_failure', retryable: true }
+  }
+  if (/\bHTTP 404\b/u.test(message)) {
+    return { code: 'gateway_update_release_unavailable', retryable: false }
+  }
+  if (/(?:signature|signer|signed .* invalid|untrusted origin|invalid JSON|ID does not match|immutable|changed after|rollback is unsafe|state version|targets .* not|missing file|integrity verification)/iu.test(message)) {
+    return { code: 'gateway_update_invalid_release', retryable: false }
+  }
+  if (/(?:not staged|not prepared|Cannot .* while update is|already draining)/u.test(message)) {
+    return { code: 'gateway_update_state_conflict', retryable: false }
+  }
+  return { code: 'gateway_update_failed', retryable: false }
 }
 
 function setHeaders(response: ServerResponse): void {

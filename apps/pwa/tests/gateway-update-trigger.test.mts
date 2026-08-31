@@ -4,6 +4,7 @@ import type { SignedWorkspaceGatewayDirectory } from "@malink/protocol";
 import {
   collidingGatewayMaintenanceSessionIds,
   gatewayMaintenanceSessionCanBeArchived,
+  gatewayMaintenanceSessionShouldAutoArchive,
   gatewayUpdateCanApplyStaged,
   gatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
@@ -13,6 +14,7 @@ import {
   recoverAmbiguousGatewayUpdateCompletion,
   triggerGatewayUpdate,
 } from "../app/gatewayUpdateTrigger.ts";
+import { gatewayUpdateRecoveryAction } from "../app/gatewayUpdateRecovery.ts";
 
 const release = { releaseId: "2026.08.26.2", buildId: "gateway-next-arm64" };
 
@@ -112,6 +114,53 @@ test("treats a duplicate already-scheduled release as successful", async () => {
 
   assert.equal(result.phase, "scheduled");
   assert.equal(calls, 1);
+});
+
+test("offers retry only after a transient failure exhausted automatic retries", () => {
+  assert.equal(gatewayUpdateRecoveryAction({
+    release,
+    status: {
+      ...status("failed"),
+      detail: "Gateway Agent update Prompt returned HTTP 503",
+    },
+  }).kind, "retry");
+  assert.equal(gatewayUpdateRecoveryAction({
+    release,
+    status: {
+      ...status("failed"),
+      detail: "Gateway Agent update Prompt returned HTTP 404",
+    },
+  }).kind, "report");
+  assert.equal(gatewayUpdateRecoveryAction({
+    release,
+    status: {
+      ...status("failed"),
+      detail: "Gateway Agent update Prompt signature is invalid",
+    },
+  }).kind, "report");
+});
+
+test("continues an old staged checkpoint and never retries repair state", () => {
+  assert.equal(gatewayUpdateRecoveryAction({
+    release,
+    status: status("staged"),
+  }).kind, "continue");
+  assert.equal(gatewayUpdateRecoveryAction({
+    release,
+    status: status("repair_required"),
+  }).kind, "repair");
+});
+
+test("allows a genuinely new signed release after an old deterministic failure", () => {
+  assert.equal(gatewayUpdateRecoveryAction({
+    release,
+    status: {
+      ...status("failed"),
+      releaseId: "2026.08.20.1",
+      targetBuildId: "gateway-older-arm64",
+      detail: "Gateway Agent update Prompt returned HTTP 404",
+    },
+  }).kind, "start");
 });
 
 test("recovers an old Gateway child-turn completion through read-only status checks", async () => {
@@ -288,7 +337,7 @@ test("recognizes phases that need automatic progress checks", () => {
   assert.equal(gatewayUpdateStatusNeedsPolling(status("staged")), false);
 });
 
-test("only archives maintenance sessions after the signed update transaction is terminal", () => {
+test("archives terminal or deterministic failures but preserves useful retry checkpoints", () => {
   const status = (phase: "idle" | "agent_running" | "failed" | "repair_required" | "committed" | "rolled_back") => ({
     version: 1 as const,
     phase,
@@ -296,11 +345,26 @@ test("only archives maintenance sessions after the signed update transaction is 
   });
   assert.equal(gatewayMaintenanceSessionCanBeArchived(undefined), false);
   assert.equal(gatewayMaintenanceSessionCanBeArchived(status("agent_running")), false);
-  assert.equal(gatewayMaintenanceSessionCanBeArchived(status("failed")), false);
+  assert.equal(gatewayMaintenanceSessionCanBeArchived(status("failed")), true);
+  assert.equal(gatewayMaintenanceSessionCanBeArchived({
+    ...status("failed"),
+    detail: "Gateway Agent update Prompt returned HTTP 503",
+  }), false);
   assert.equal(gatewayMaintenanceSessionCanBeArchived(status("repair_required")), false);
   assert.equal(gatewayMaintenanceSessionCanBeArchived(status("idle")), true);
   assert.equal(gatewayMaintenanceSessionCanBeArchived(status("committed")), true);
   assert.equal(gatewayMaintenanceSessionCanBeArchived(status("rolled_back")), true);
+});
+
+test("automatically archives only a successfully committed update", () => {
+  const status = (phase: "committed" | "rolled_back" | "failed") => ({
+    version: 1 as const,
+    phase,
+    updatedAt: 10,
+  });
+  assert.equal(gatewayMaintenanceSessionShouldAutoArchive(status("committed")), true);
+  assert.equal(gatewayMaintenanceSessionShouldAutoArchive(status("rolled_back")), false);
+  assert.equal(gatewayMaintenanceSessionShouldAutoArchive(status("failed")), false);
 });
 
 test("offers activation for any complete staged release identity", () => {
@@ -350,7 +414,14 @@ function gateway(
   };
 }
 
-function status(phase: "agent_running" | "staged" | "scheduled") {
+function status(
+  phase:
+    | "agent_running"
+    | "staged"
+    | "scheduled"
+    | "failed"
+    | "repair_required",
+) {
   return {
     version: 1 as const,
     phase,

@@ -868,7 +868,7 @@ export class MatrixMlp3GatewayRunner {
               + formatError(failureError),
             )
           })
-          throw error
+          throw gatewayUpdateAgentCommandError(error)
         }
         status = await supervisor.status()
         if (status.phase === 'agent_running') {
@@ -1674,10 +1674,17 @@ export class MatrixMlp3GatewayRunner {
         status.releaseId !== undefined
         && this.maintenanceAgentSessionId(status.releaseId) === sessionId
       )
-    if (!ownsSession || ['idle', 'committed', 'rolled_back'].includes(status.phase)) return
+    const failedWithoutUsefulRetry = status.phase === 'failed'
+      && !/(?:\bHTTP (?:408|425|429|5\d\d)\b|fetch failed|network(?:error| request)?|timed out|timeout|socket hang up|connection (?:reset|refused)|temporar(?:y|ily)|rate.?limit|too many requests|service unavailable)/iu
+        .test(status.detail ?? '')
+    if (
+      !ownsSession
+      || ['idle', 'committed', 'rolled_back'].includes(status.phase)
+      || failedWithoutUsefulRetry
+    ) return
     throw new Error(
       `Gateway update session ${sessionId} cannot be archived while the update supervisor `
-      + `reports ${status.phase}. Open the session to review it or retry the signed release.`,
+      + `reports ${status.phase}. Wait for it to finish before archiving the session.`,
     )
   }
 
@@ -3296,4 +3303,17 @@ function commandFailure(error: unknown): { code: string; retryable: boolean } {
     }
   }
   return { code: 'execution_failed', retryable: false }
+}
+
+function gatewayUpdateAgentCommandError(error: unknown): unknown {
+  const message = formatError(error)
+  if (!/(?:fetch failed|network(?:error| request)?|timed out|timeout|socket hang up|connection (?:reset|refused)|temporar(?:y|ily)|rate.?limit|too many requests|service unavailable|\bHTTP (?:408|425|429|5\d\d)\b)/iu.test(message)) {
+    return error
+  }
+  return Object.assign(new Error(message, {
+    ...(error instanceof Error ? { cause: error } : {}),
+  }), {
+    commandCode: 'gateway_update_agent_transient_failure',
+    retryable: true,
+  })
 }

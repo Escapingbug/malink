@@ -64,6 +64,92 @@ describe('GatewayUpdateSupervisor', () => {
     }
   })
 
+  it('classifies an unpublished Prompt as deterministic instead of retryable', async () => {
+    const fixture = await agentUpdateFixture()
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, {
+      fetch: async () => new Response('missing', { status: 404 }),
+    })
+    await supervisor.initialize()
+    const server = await startGatewayUpdateSupervisorServer({
+      socketPath: join(fixture.installRoot, 'supervisor.sock'),
+      supervisor,
+    })
+    try {
+      const client = new GatewayUpdateSupervisorClient(server.socketPath, 5_000)
+      const failure = await client.stage('release-2').catch(error => error as {
+        commandCode?: string
+        retryable?: boolean
+        message?: string
+      })
+      expect(failure).toMatchObject({
+        commandCode: 'gateway_update_release_unavailable',
+        retryable: false,
+        message: 'Gateway Agent update Prompt returned HTTP 404',
+      })
+      await expect(client.status()).resolves.toMatchObject({
+        phase: 'failed',
+        releaseId: 'release-2',
+        detail: 'Gateway Agent update Prompt returned HTTP 404',
+      })
+    } finally {
+      await server.stop()
+      await supervisor.stop()
+    }
+  })
+
+  it('offers a later retry after bounded transient Prompt failures are exhausted', async () => {
+    const fixture = await agentUpdateFixture()
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, {
+      fetch: async () => new Response('temporarily unavailable', { status: 503 }),
+      sleep: async () => undefined,
+    })
+    await supervisor.initialize()
+    const server = await startGatewayUpdateSupervisorServer({
+      socketPath: join(fixture.installRoot, 'supervisor.sock'),
+      supervisor,
+    })
+    try {
+      const client = new GatewayUpdateSupervisorClient(server.socketPath, 5_000)
+      const failure = await client.stage('release-2').catch(error => error as {
+        commandCode?: string
+        retryable?: boolean
+      })
+      expect(failure).toMatchObject({
+        commandCode: 'gateway_update_transient_failure',
+        retryable: true,
+      })
+    } finally {
+      await server.stop()
+      await supervisor.stop()
+    }
+  })
+
+  it('does not expose manual retry after repeated release integrity failures', async () => {
+    const fixture = await agentUpdateFixture()
+    const supervisor = {
+      async stage() {
+        throw new Error('Gateway release file runtime/node failed integrity verification')
+      },
+    } as unknown as GatewayUpdateSupervisor
+    const server = await startGatewayUpdateSupervisorServer({
+      socketPath: join(fixture.installRoot, 'supervisor.sock'),
+      supervisor,
+    })
+    try {
+      const client = new GatewayUpdateSupervisorClient(server.socketPath, 5_000)
+      const failure = await client.stage('release-2').catch(error => error as {
+        commandCode?: string
+        retryable?: boolean
+      })
+      expect(failure).toMatchObject({
+        commandCode: 'gateway_update_invalid_release',
+        retryable: false,
+      })
+    } finally {
+      await server.stop()
+    }
+  })
+
   it('stages signed files and schedules an independently owned activation', async () => {
     const fixture = await releaseFixture()
     const activate = vi.fn(async () => undefined)

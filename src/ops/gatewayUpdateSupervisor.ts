@@ -1210,7 +1210,7 @@ export class GatewayUpdateSupervisor {
             throw fetchStatusError(`Gateway release file ${file.path}`, response.status)
           }
           if (!response.body) {
-            throw new RetryableGatewayUpdateFetchError(
+            throw new ManuallyRetryableGatewayUpdateFetchError(
               `Gateway release file ${file.path} has no response body`,
             )
           }
@@ -1645,10 +1645,15 @@ async function withFetchTimeout<T>(
 
 class RetryableGatewayUpdateFetchError extends Error {}
 
+class ManuallyRetryableGatewayUpdateFetchError extends RetryableGatewayUpdateFetchError {
+  readonly commandCode = 'gateway_update_transient_failure'
+  readonly retryable = true
+}
+
 function fetchStatusError(label: string, status: number): Error {
   const message = `${label} returned HTTP ${status}`
   return status === 408 || status === 425 || status === 429 || status >= 500
-    ? new RetryableGatewayUpdateFetchError(message)
+    ? new ManuallyRetryableGatewayUpdateFetchError(message)
     : new Error(message)
 }
 

@@ -242,7 +242,7 @@ test("keeps async operation context visible until terminal completion", async ()
   assert.match(app, /Restoring conversation history in the background/);
   assert.match(
     app,
-    /persistRecoveredHistoryInBackground\(scope, sessionId, remoteMessages\);[\s\S]*?if \(!isCurrent\(\)\) return;/,
+    /persistRecoveredHistoryInBackground\(\s*scope,\s*historyCacheSessionId\(sessionId, projectId\),\s*remoteMessages,?\s*\);[\s\S]*?if \(!isCurrent\(\)\) return;/,
   );
   const relationsFetch = matrixConnection.slice(
     matrixConnection.indexOf("const loadHistory = async"),

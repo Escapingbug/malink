@@ -2,9 +2,12 @@
 
 import React from "react";
 import type { GatewayUpdateStatus } from "@malink/protocol";
+import type { GatewayUpdateRecoveryAction } from "./gatewayUpdateRecovery";
 
 const GATEWAY_RESTART_COMMAND =
   "for service in com.malink.matrix-gateway io.malink.gateway; do launchctl kickstart -k \"gui/$(id -u)/$service\" 2>/dev/null && break; done";
+const GATEWAY_UPDATE_ISSUE_URL =
+  "https://github.com/Escapingbug/malink/issues/new?labels=bug&title=Gateway%20update%20failure";
 
 export function GatewayNoReplyHelp({
   gatewayLabel,
@@ -61,41 +64,32 @@ export function GatewayNoReplyHelp({
 export function GatewayUpdateFailureHelp({
   gatewayLabel,
   status,
-  retryAvailable,
+  recovery,
   onExportDiagnostics,
   diagnosticExportBusy = false,
 }: {
   gatewayLabel: string;
   status: GatewayUpdateStatus;
-  retryAvailable: boolean;
+  recovery: GatewayUpdateRecoveryAction;
   onExportDiagnostics(): void;
   diagnosticExportBusy?: boolean;
 }) {
   const repairRequired = status.phase === "repair_required";
   return (
     <details className="gateway-no-reply-help gateway-update-failure-help">
-      <summary>{repairRequired ? "Repair this Gateway" : "Review update failure"}</summary>
+      <summary>{repairRequired ? "Repair this Gateway" : "Diagnose update failure"}</summary>
       <div>
         <p>
           {repairRequired
-            ? retryAvailable
-              ? `${gatewayLabel} is answering again. The published signed release can replace the interrupted update state.`
-              : `The update supervisor on ${gatewayLabel} could not prove either activation or rollback healthy.`
+            ? `The update supervisor on ${gatewayLabel} could not prove either activation or rollback healthy.`
             : `The update stopped on ${gatewayLabel}. Its active build was not replaced by an unverified candidate.`}
         </p>
         {repairRequired ? (
           <ol>
-            {retryAvailable ? (
-              <li>
-                Choose <strong>Retry with published release</strong> below. Malink will recheck
-                this exact Gateway and start or resume its node-specific maintenance session.
-              </li>
-            ) : (
-              <li>
-                Restart the Gateway once on that Mac:
-                <code>{GATEWAY_RESTART_COMMAND}</code>
-              </li>
-            )}
+            <li>
+              Restart the Gateway once on that Mac:
+              <code>{GATEWAY_RESTART_COMMAND}</code>
+            </li>
             <li>
               If repair is still required after that, collect
               <code>~/.config/malink/gateway.error.log</code> and
@@ -103,9 +97,12 @@ export function GatewayUpdateFailureHelp({
             </li>
           </ol>
         ) : (
+          <p>{recovery.explanation}</p>
+        )}
+        {repairRequired && (
           <p>
-            Open the maintenance session when available to review the failed build or validation
-            step. Retry only after the reported cause has changed.
+            Repeating the update request will not repair this state. Malink will
+            recognize the installed build automatically after local health is restored.
           </p>
         )}
         <button
@@ -117,6 +114,14 @@ export function GatewayUpdateFailureHelp({
         >
           {diagnosticExportBusy ? "Exporting diagnostics…" : "Export client diagnostics"}
         </button>
+        <a
+          className="secondary-button"
+          href={GATEWAY_UPDATE_ISSUE_URL}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Report update issue
+        </a>
       </div>
     </details>
   );

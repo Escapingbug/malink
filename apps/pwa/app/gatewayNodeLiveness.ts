@@ -1,7 +1,9 @@
 import type { SignedWorkspaceGatewayDirectory } from "@malink/protocol";
 
 export const GATEWAY_ONLINE_PROOF_WINDOW_MS = 90_000;
-export const GATEWAY_AUTOMATIC_RECHECK_AFTER_MS = 2 * 60_000;
+// Recheck before the proof expires so a visible, connected client does not
+// oscillate through a stale state between automatic probes.
+export const GATEWAY_AUTOMATIC_RECHECK_AFTER_MS = 60_000;
 
 export type GatewayNodeLivenessState =
   | "unknown"
@@ -108,7 +110,7 @@ export function gatewayNodeLivenessPresentation(
       return {
         state: "online",
         label: "Online now",
-        detail: "This Gateway returned a recent signed reply.",
+        detail: "This Gateway returned a recent signed reply or activity event.",
         canCheck: true,
       };
     }
@@ -156,6 +158,42 @@ export function shouldAutomaticallyCheckGatewayNode(
   if (value.state === "checking" || value.state === "unavailable") return false;
   return value.checkedAt === undefined ||
     now - value.checkedAt >= GATEWAY_AUTOMATIC_RECHECK_AFTER_MS;
+}
+
+/**
+ * A timed-out status command cannot overrule newer signed activity from the
+ * same Gateway. This prevents an active Agent reply from being followed by an
+ * incorrect offline banner merely because the separate supervisor reply was
+ * delayed in Matrix.
+ */
+export function gatewayNodeLivenessAfterProbeTimeout(input: {
+  current: GatewayNodeLiveness;
+  probeStartedAt: number;
+  checkedAt: number;
+  gatewayLabel: string;
+}): GatewayNodeLiveness {
+  if (
+    input.current.lastVerifiedAt !== undefined &&
+    input.current.lastVerifiedAt >= input.probeStartedAt
+  ) {
+    return {
+      ...input.current,
+      state: "online",
+      consecutiveNoReplies: 0,
+      detail: "Recent signed Gateway activity was received while the status check was pending.",
+    };
+  }
+  const consecutiveNoReplies = (input.current.consecutiveNoReplies ?? 0) + 1;
+  return {
+    ...input.current,
+    state: "unreachable",
+    checkedAt: input.checkedAt,
+    consecutiveNoReplies,
+    detail: gatewayNoReplyPresentation({
+      gatewayLabel: input.gatewayLabel,
+      consecutiveNoReplies,
+    }).detail,
+  };
 }
 
 export function gatewayNodeLivenessSummary(input: {

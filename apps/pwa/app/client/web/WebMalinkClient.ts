@@ -143,14 +143,19 @@ export class WebMalinkClient implements MalinkClient {
     return this.transport.discardRevisionConflict(commandId);
   }
 
-  markHistoryLoaded(sessionId: string, eventIds: readonly string[]): void {
-    this.transport.markHistoryLoaded(sessionId, eventIds);
+  markHistoryLoaded(
+    sessionId: string,
+    eventIds: readonly string[],
+    projectId?: string,
+  ): void {
+    this.transport.markHistoryLoaded(sessionId, eventIds, projectId);
   }
 
   async loadLocalHistory(
     sessionId: string,
+    projectId?: string,
   ): Promise<MalinkHistoryPage> {
-    const page = await this.transport.loadLocalHistory(sessionId);
+    const page = await this.transport.loadLocalHistory(sessionId, projectId);
     return {
       messages: page.messages.map(messageFromWeb),
       hasMore: page.hasMore,
@@ -160,8 +165,9 @@ export class WebMalinkClient implements MalinkClient {
   async loadHistoryPage(
     sessionId: string,
     limit?: number,
+    projectId?: string,
   ): Promise<MalinkHistoryPage> {
-    const page = await this.transport.loadHistoryPage(sessionId, limit);
+    const page = await this.transport.loadHistoryPage(sessionId, limit, projectId);
     return {
       messages: page.messages.map(messageFromWeb),
       hasMore: page.hasMore,
@@ -331,6 +337,7 @@ function messageFromWeb(message: IncomingMalinkMessage): MalinkMessage {
     kind: message.kind,
     text: message.text,
     sessionId: message.sessionId,
+    projectId: message.projectId,
     deliveryMode: message.deliveryMode,
     historical: message.historical,
     operationId: message.operationId,

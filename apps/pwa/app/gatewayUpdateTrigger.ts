@@ -45,6 +45,17 @@ export type GatewayUpdateCommand =
       mode: "when_idle";
     };
 
+export class GatewayUpdateCommandFailure extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = "GatewayUpdateCommandFailure";
+  }
+}
+
 const AMBIGUOUS_STAGE_RECHECK_DELAYS_MS = [0, 500, 1_000, 2_000, 4_000, 8_000] as const;
 const STAGE_IN_PROGRESS_PHASES = new Set<GatewayUpdateStatus["phase"]>([
   "idle",
@@ -157,11 +168,20 @@ export function gatewayUpdateStatusNeedsPolling(
 export function gatewayMaintenanceSessionCanBeArchived(
   status: GatewayUpdateStatus | undefined,
 ): boolean {
-  return status !== undefined && [
+  if (!status) return false;
+  if ([
     "idle",
     "committed",
     "rolled_back",
-  ].includes(status.phase);
+  ].includes(status.phase)) return true;
+  return status.phase === "failed" && !/(?:\bHTTP (?:408|425|429|5\d\d)\b|fetch failed|network(?:error| request)?|timed out|timeout|socket hang up|connection (?:reset|refused)|temporar(?:y|ily)|rate.?limit|too many requests|service unavailable)/iu
+    .test(status.detail ?? "");
+}
+
+export function gatewayMaintenanceSessionShouldAutoArchive(
+  status: GatewayUpdateStatus | undefined,
+): boolean {
+  return status?.phase === "committed";
 }
 
 export function gatewayUpdateCanApplyStaged(input: {

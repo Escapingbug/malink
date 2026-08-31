@@ -4,16 +4,14 @@ import React, { useRef } from "react";
 import type { GatewayUpdateStatus } from "@malink/protocol";
 import type { GatewayReleaseBuild } from "./buildInfo";
 import { useDialogFocus } from "./dialogFocus";
-import {
-  gatewayUpdateCanApplyStaged,
-  type GatewayUpdatePlanNode,
-} from "./gatewayUpdateTrigger";
+import type { GatewayUpdatePlanNode } from "./gatewayUpdateTrigger";
 import {
   GatewayNoReplyHelp,
   GatewayUpdateFailureHelp,
 } from "./GatewayNoReplyHelp";
 import { gatewayNoReplyPresentation } from "./gatewayNodeLiveness";
 import { gatewayProjectOwner } from "./projectCatalog";
+import { gatewayUpdateRecoveryAction } from "./gatewayUpdateRecovery";
 
 export type GatewayUpdateNodeRuntime = {
   state: "unchecked" | "checking" | "unreachable" | "online" | "starting" | "error";
@@ -35,6 +33,8 @@ export type GatewayUpdateNodeRuntime = {
   legacyMaintenanceSessionArchiveBusy?: boolean;
   legacyMaintenanceSessionArchiveChecking?: boolean;
   legacyMaintenanceSessionArchived?: boolean;
+  commandFailureCode?: string;
+  commandFailureRetryable?: boolean;
 };
 
 type Props = {
@@ -47,7 +47,7 @@ type Props = {
   onClose(): void;
   onProbe(node: GatewayUpdatePlanNode): void;
   onStart(node: GatewayUpdatePlanNode): void;
-  onOpenSession(sessionId: string): void;
+  onOpenSession(projectId: string, sessionId: string): void;
   onArchiveSession(node: GatewayUpdatePlanNode, sessionId: string): void;
   onExportDiagnostics(): void;
   diagnosticExportBusy?: boolean;
@@ -105,7 +105,7 @@ function GatewayUpdateDialogContent({
         <header>
           <div>
             <span className="eyebrow">Workspace · Gateway software</span>
-            <h2 id="gateway-update-title">Review Gateway update</h2>
+            <h2 id="gateway-update-title">Manage Gateway updates</h2>
             <p>
               {availableCount === 0
                 ? "Every reachable Gateway is already current or needs manual attention."
@@ -132,10 +132,10 @@ function GatewayUpdateDialogContent({
         </div>
 
         <p className="gateway-update-explanation">
-          Opening this panel checks each capable node with a signed status
-          request. “Online now” means that exact Gateway replied—not merely
-          that Matrix is connected. Starting an update creates a visible local
-          Agent maintenance session, then activates only after current work is idle.
+          Malink keeps each node's signed status current while this page is
+          visible. One update action creates a visible maintenance session,
+          prepares the release, waits for current work to finish, and activates
+          it. Completed maintenance sessions are archived automatically.
         </p>
 
         <div className="gateway-update-node-list">
@@ -151,21 +151,28 @@ function GatewayUpdateDialogContent({
               consecutiveNoReplies: runtime.consecutiveNoReplies,
             });
             const knownUpdateFailure = runtime.status?.phase === "failed" ||
-              runtime.status?.phase === "repair_required";
+              runtime.status?.phase === "repair_required" ||
+              runtime.status?.phase === "rolled_back";
+            const recovery = gatewayUpdateRecoveryAction({
+              status: runtime.status,
+              release,
+              commandFailure: {
+                code: runtime.commandFailureCode,
+                retryable: runtime.commandFailureRetryable,
+              },
+            });
+            const updateActionAvailable = recovery.kind === "start" ||
+              recovery.kind === "continue" || recovery.kind === "retry";
             const runtimeNeedsAttention = runtime.state === "error" ||
               (runtime.state === "unreachable" && noReply.persistent) ||
               knownUpdateFailure;
             const targetInstalled = runtime.status?.currentBuildId === release.buildId;
-            const stagedReady = gatewayUpdateCanApplyStaged({
-              status: runtime.status,
-            });
-            const canReplaceFailedAttempt = knownUpdateFailure;
             const canProbe = connected && node.onlineUpdate && Boolean(node.targetProjectId);
             const canStart =
               node.state === "available" &&
               runtime.state === "online" &&
               Boolean(runtime.status) &&
-              (!runtime.maintenanceSessionId || stagedReady || canReplaceFailedAttempt) &&
+              updateActionAvailable &&
               activeGatewayNodeId === null;
             const active = activeGatewayNodeId === node.gatewayNodeId;
             return (
@@ -222,9 +229,7 @@ function GatewayUpdateDialogContent({
                   <GatewayUpdateFailureHelp
                     gatewayLabel={owner.label}
                     status={runtime.status}
-                    retryAvailable={
-                      node.state === "available" && runtime.state === "online"
-                    }
+                    recovery={recovery}
                     onExportDiagnostics={onExportDiagnostics}
                     diagnosticExportBusy={diagnosticExportBusy}
                   />
@@ -232,13 +237,40 @@ function GatewayUpdateDialogContent({
 
                 <div className="gateway-update-node-actions">
                   {!targetInstalled && runtime.maintenanceSessionId &&
-                    !runtime.maintenanceSessionAmbiguous && (
+                    node.targetProjectId && (
                     <button
                       type="button"
                       className="secondary-button"
-                      onClick={() => onOpenSession(runtime.maintenanceSessionId!)}
+                      onClick={() => onOpenSession(
+                        node.targetProjectId!,
+                        runtime.maintenanceSessionId!,
+                      )}
                     >
                       Open update session
+                    </button>
+                  )}
+                  {!targetInstalled && runtime.maintenanceSessionId &&
+                    !runtime.maintenanceSessionAmbiguous &&
+                    runtime.maintenanceSessionArchiveAvailable && (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={
+                        !connected ||
+                        runtime.state === "checking" ||
+                        runtime.maintenanceSessionArchiveBusy
+                      }
+                      aria-busy={runtime.maintenanceSessionArchiveBusy}
+                      onClick={() => onArchiveSession(
+                        node,
+                        runtime.maintenanceSessionId!,
+                      )}
+                    >
+                      {runtime.maintenanceSessionArchiveChecking
+                        ? "Checking before archive…"
+                        : runtime.maintenanceSessionArchiveBusy
+                          ? "Archiving failed update session…"
+                          : "Archive failed update session"}
                     </button>
                   )}
                   {!targetInstalled && runtime.maintenanceSessionAmbiguous && (
@@ -246,8 +278,8 @@ function GatewayUpdateDialogContent({
                       <p className="gateway-update-session-warning" role="alert">
                         {runtime.maintenanceSessionArchiveAvailable ||
                           runtime.maintenanceSessionArchived
-                          ? "This Gateway has an update session left by an older Malink version. Cleanup is safe; only this Gateway is affected."
-                          : "This session is still owned by the Gateway update supervisor. Open it to review the report or retry the published release; it cannot be archived while the update is active or retryable."}
+                          ? "This Gateway has an update session left by an older Malink version. Its project-qualified route is preserved and cleanup is safe."
+                          : "This older session is still owned by the Gateway update supervisor. Malink now opens it through this Gateway's exact project instead of guessing by session ID."}
                       </p>
                       {runtime.maintenanceSessionArchived ? (
                         <span className="gateway-update-session-warning" role="status">
@@ -280,7 +312,7 @@ function GatewayUpdateDialogContent({
                         {runtime.legacyMaintenanceSessionArchiveAvailable ||
                           runtime.legacyMaintenanceSessionArchived
                           ? "This Gateway also has an update session left by an older Malink version. Cleanup is safe now; only this Gateway is affected."
-                          : "This older update session cannot be archived while the Gateway supervisor still owns a retryable update."}
+                          : "This older update session remains attached to the active update transaction and will be archived after it reaches a safe terminal state."}
                       </p>
                       {runtime.legacyMaintenanceSessionArchived ? (
                         <span className="gateway-update-session-warning" role="status">
@@ -327,8 +359,7 @@ function GatewayUpdateDialogContent({
                           : "Check live status"}
                     </button>
                   )}
-                  {node.state === "available" &&
-                    (!runtime.maintenanceSessionId || stagedReady || canReplaceFailedAttempt) && (
+                  {node.state === "available" && updateActionAvailable && (
                     <button
                       type="button"
                       className="primary-button"
@@ -336,16 +367,8 @@ function GatewayUpdateDialogContent({
                       onClick={() => onStart(node)}
                     >
                       {active
-                        ? stagedReady
-                          ? "Installing staged update…"
-                          : canReplaceFailedAttempt
-                            ? "Starting recovery update…"
-                          : "Creating update session…"
-                        : stagedReady
-                          ? "Install staged update"
-                          : canReplaceFailedAttempt
-                            ? "Retry with published release"
-                          : "Create update session"}
+                        ? recovery.busyLabel
+                        : recovery.label}
                     </button>
                   )}
                 </div>
@@ -409,6 +432,7 @@ function runtimeStateTitle(
   if (runtime.state === "online") {
     if (runtime.status?.phase === "repair_required") return "Gateway repair required";
     if (runtime.status?.phase === "failed") return "Gateway update failed";
+    if (runtime.status?.phase === "rolled_back") return "Gateway update rolled back";
     return "Online now";
   }
   if (node.state === "manual") return "Online update is not installed";
@@ -490,20 +514,25 @@ function runtimeStateDetail(
 
 function gatewayUpdatePhaseText(status: GatewayUpdateStatus): string {
   switch (status.phase) {
-    case "idle": return "Supervisor idle";
-    case "staging": return "Verifying the signed Prompt";
-    case "agent_required": return "Maintenance Agent required";
-    case "agent_running": return "Maintenance Agent running";
-    case "agent_validating": return "Validating the Agent-built release";
-    case "staged": return "Release staged";
-    case "waiting_for_idle": return `Waiting for ${status.activeTurns ?? "active"} turn(s)`;
-    case "scheduled": return "Activation scheduled";
-    case "activating": return "Activating release";
-    case "probation": return "Health-check probation";
-    case "committed": return "Release committed";
-    case "rolled_back": return "Release rolled back";
-    case "failed": return "Last update failed";
-    case "repair_required": return "Local repair required";
+    case "idle": return "Ready to update";
+    case "staging":
+    case "agent_required":
+    case "agent_running":
+    case "agent_validating":
+      return "Preparing the update in its maintenance session";
+    case "staged": return "Update prepared and ready to continue";
+    case "waiting_for_idle":
+      return status.activeTurns
+        ? `Waiting for ${status.activeTurns} active Agent ${status.activeTurns === 1 ? "turn" : "turns"} to finish`
+        : "Waiting for current Agent work to finish";
+    case "scheduled": return "Update prepared; installation is scheduled";
+    case "activating":
+    case "probation":
+      return "Installing and verifying the updated Gateway";
+    case "committed": return "Update complete";
+    case "rolled_back": return "Previous Gateway version restored";
+    case "failed": return "Update stopped safely";
+    case "repair_required": return "Local Gateway repair required";
   }
 }
 

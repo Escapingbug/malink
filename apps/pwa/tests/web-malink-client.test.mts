@@ -136,6 +136,32 @@ test("keeps UI disposal distinct from an explicit web disconnect", async () => {
   assert.equal(disconnectedStops, 1);
 });
 
+test("forwards project-qualified history routes to the browser transport", async () => {
+  const calls: string[] = [];
+  const transport = fakeTransport(() => {});
+  transport.markHistoryLoaded = (sessionId, _eventIds, projectId) => {
+    calls.push(`mark:${projectId}:${sessionId}`);
+  };
+  transport.loadLocalHistory = async (sessionId, projectId) => {
+    calls.push(`local:${projectId}:${sessionId}`);
+    return { messages: [], hasMore: false };
+  };
+  transport.loadHistoryPage = async (sessionId, _limit, projectId) => {
+    calls.push(`remote:${projectId}:${sessionId}`);
+    return { messages: [], hasMore: false };
+  };
+  const client = new WebMalinkClient(transport, config);
+
+  client.markHistoryLoaded("session-1", [], "project-1");
+  await client.loadLocalHistory("session-1", "project-1");
+  await client.loadHistoryPage("session-1", 30, "project-1");
+  assert.deepEqual(calls, [
+    "mark:project-1:session-1",
+    "local:project-1:session-1",
+    "remote:project-1:session-1",
+  ]);
+});
+
 test("forwards the preallocated web session identity before creation completes", async () => {
   const client = new WebMalinkClient(
     fakeTransport(() => {}, () => {}, "session-preallocated-1"),

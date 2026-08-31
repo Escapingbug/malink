@@ -892,16 +892,14 @@ describe('MatrixMlp3GatewayRunner', () => {
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
       .some(event =>
         event.causationCommandId === 'archive-failed-gateway-update'
-        && event.payload.type === 'command.rejected'
+        && event.payload.type === 'session.lifecycle'
       ))
     expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
       event.causationCommandId === 'archive-failed-gateway-update'
-      && event.payload.type === 'command.rejected'
+      && event.payload.type === 'session.lifecycle'
     )?.payload).toMatchObject({
-      type: 'command.rejected',
-      message: expect.stringContaining(
-        'cannot be archived while the update supervisor reports failed',
-      ),
+      type: 'session.lifecycle',
+      state: 'archived',
     })
     gatewayAgentStaged = true
     gatewayAgentShouldSubmit = true
@@ -1420,10 +1418,6 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(recovered.map(event => event.sessionId).sort()).toEqual([
       `gateway-update-node-${createHash('sha256')
         .update('gateway-node-1\0release-2')
-        .digest('hex')
-        .slice(0, 40)}`,
-      `gateway-update-node-${createHash('sha256')
-        .update('gateway-node-1\0release-no-submit')
         .digest('hex')
         .slice(0, 40)}`,
       'session-b',
