@@ -38,6 +38,21 @@ export const STARTING_AGENT_ACTIVITY = agentActivityForPhase("starting");
 export const WORKING_AGENT_ACTIVITY = agentActivityForPhase("working");
 export const STOPPING_AGENT_ACTIVITY = agentActivityForPhase("stopping");
 
+/** Compact elapsed time for the activity indicator's live last-update clock. */
+export function formatAgentActivityAge(
+  updatedAt: number,
+  now: number,
+): string {
+  const elapsed = Math.max(0, now - updatedAt);
+  if (elapsed < 5_000) return "just now";
+  if (elapsed < 60_000) return `${Math.floor(elapsed / 1_000)}s ago`;
+  if (elapsed < 60 * 60_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+  if (elapsed < 24 * 60 * 60_000) {
+    return `${Math.floor(elapsed / (60 * 60_000))}h ago`;
+  }
+  return `${Math.floor(elapsed / (24 * 60 * 60_000))}d ago`;
+}
+
 export type AgentExecutionSignal =
   | "running"
   | "stopping"

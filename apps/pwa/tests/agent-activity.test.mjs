@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { AgentActivityIndicator } from "../app/AgentActivityIndicator.tsx";
 import {
   SENDING_AGENT_ACTIVITY,
   STARTING_AGENT_ACTIVITY,
@@ -8,6 +11,7 @@ import {
   WORKING_AGENT_ACTIVITY,
   agentExecutionSignal,
   agentActivityForPhase,
+  formatAgentActivityAge,
   agentActivityWatermarkForEvent,
   agentActivityWatermarkForSession,
   isAgentActivityEvent,
@@ -16,6 +20,35 @@ import {
   reduceAgentActivity,
   shouldApplyAgentActivity,
 } from "../app/agentActivity.ts";
+
+test("renders the exact and relative Agent activity time without a live-region timer", () => {
+  const updatedAt = Date.now() - 5_000;
+  const active = renderToStaticMarkup(createElement(AgentActivityIndicator, {
+    activity: WORKING_AGENT_ACTIVITY,
+    updatedAt,
+  }));
+  const waiting = renderToStaticMarkup(createElement(AgentActivityIndicator, {
+    activity: WAITING_AGENT_ACTIVITY,
+  }));
+
+  assert.match(active, /Last Agent activity/);
+  assert.match(active, /<time dateTime=/);
+  assert.match(active, /5s ago/);
+  assert.match(waiting, /No Agent activity received yet/);
+  assert.doesNotMatch(active, /activity-last-update[^>]*aria-live/);
+});
+
+test("formats a live, compact age for the last session activity", () => {
+  const updatedAt = 1_000_000;
+  assert.equal(formatAgentActivityAge(updatedAt, updatedAt), "just now");
+  assert.equal(formatAgentActivityAge(updatedAt, updatedAt + 4_999), "just now");
+  assert.equal(formatAgentActivityAge(updatedAt, updatedAt + 5_000), "5s ago");
+  assert.equal(formatAgentActivityAge(updatedAt, updatedAt + 59_999), "59s ago");
+  assert.equal(formatAgentActivityAge(updatedAt, updatedAt + 60_000), "1m ago");
+  assert.equal(formatAgentActivityAge(updatedAt, updatedAt + 3_600_000), "1h ago");
+  assert.equal(formatAgentActivityAge(updatedAt, updatedAt + 86_400_000), "1d ago");
+  assert.equal(formatAgentActivityAge(updatedAt, updatedAt - 1_000), "just now");
+});
 
 test("only semantic Agent events may advance a session activity watermark", () => {
   assert.equal(isAgentActivityEvent({ type: "assistant.message" }), true);
