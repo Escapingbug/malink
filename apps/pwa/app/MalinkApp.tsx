@@ -292,21 +292,20 @@ import {
   EMPTY_SESSION_READ_STATE,
   initializeSessionReadState,
   markSessionRead,
-  pruneSessionReadState,
   readSessionReadState,
-  reconcileSelectedSessionReadState,
   sessionIndicator,
   writeSessionReadState,
   type SessionReadState,
 } from "./sessionIndicators";
 import {
-  compareProjectSessionsForAction,
-  compareSessionsForAction,
+  compareSessionsForDisplay,
   projectSessionSummaryLabel,
+  reconcileSessionDisplayOrder,
   sessionListSignal,
   sessionSignalLabel,
   sessionStatusTone,
   summarizeProjectSessions,
+  type SessionDisplayOrder,
   type SessionListSignal,
 } from "./sessionListOrder";
 import {
@@ -1903,6 +1902,7 @@ function MalinkAppRuntime() {
     scrollHeight: number;
     scrollTop: number;
   } | null>(null);
+  const sessionDisplayOrderRef = useRef<SessionDisplayOrder>(new Map());
 
   const gatewaySelected =
     gatewayState?.sessions.find(
@@ -1917,6 +1917,19 @@ function MalinkAppRuntime() {
     ? optimisticSessionSummary(optimisticSession, gatewayState)
     : null;
   const selected = gatewaySelected ?? optimisticSelectedSummary;
+  const selectedIndicator = gatewaySelected
+    ? sessionIndicator(gatewaySelected, sessionReadState)
+    : null;
+  const selectedUpdateSignal = selectedIndicator?.needsAttention
+    ? "failed"
+    : selectedIndicator?.unread && selectedIndicator.activity === "idle"
+      ? "ready"
+      : null;
+  const selectedUpdateLabel = selectedUpdateSignal === "failed"
+    ? "Task needs attention"
+    : selectedUpdateSignal === "ready"
+      ? "New result ready"
+      : null;
   const selectedLifecycleAction = gatewaySelected
     ? sessionLifecycleBusy.get(
         sessionLifecycleRouteKey(gatewaySelected.projectId, gatewaySelected.id),
@@ -2000,6 +2013,14 @@ function MalinkAppRuntime() {
     () => gatewayState?.sessions ?? [],
     [gatewayState],
   );
+  const sessionDisplayOrder = useMemo(() => {
+    const next = reconcileSessionDisplayOrder(
+      sessionDisplayOrderRef.current,
+      visibleGatewaySessions,
+    );
+    sessionDisplayOrderRef.current = next;
+    return next;
+  }, [visibleGatewaySessions]);
   const fallbackProjectGateway = useMemo(() => {
     const expectedGatewayNodeId = matrixConfig.gatewayNodeId
       ?? trustedGateway?.gatewayNodeId
@@ -2169,15 +2190,13 @@ function MalinkAppRuntime() {
     const projects = [...groups.values()];
     for (const project of projects) {
       project.sessions.sort((left, right) =>
-        compareSessionsForAction(left, right, sessionReadState),
+        compareSessionsForDisplay(left, right, sessionDisplayOrder),
       );
     }
     projects.sort((left, right) =>
-      compareProjectSessionsForAction(
-        left.sessions,
-        right.sessions,
-        sessionReadState,
-      ) || left.projectName.localeCompare(right.projectName),
+      left.projectName.localeCompare(right.projectName) ||
+      left.gatewayLabel.localeCompare(right.gatewayLabel) ||
+      left.projectId.localeCompare(right.projectId),
     );
     return projects;
   }, [
@@ -2187,7 +2206,7 @@ function MalinkAppRuntime() {
     matrixConfig.gatewayId,
     projectGatewaysById,
     search,
-    sessionReadState,
+    sessionDisplayOrder,
   ]);
   const scratchGroups = useMemo(() => {
     const groups = new Map<string, {
@@ -2217,15 +2236,11 @@ function MalinkAppRuntime() {
     const ordered = [...groups.values()];
     for (const group of ordered) {
       group.sessions.sort((left, right) =>
-        compareSessionsForAction(left, right, sessionReadState),
+        compareSessionsForDisplay(left, right, sessionDisplayOrder),
       );
     }
     ordered.sort((left, right) =>
-      compareProjectSessionsForAction(
-        left.sessions,
-        right.sessions,
-        sessionReadState,
-      ) || left.gatewayLabel.localeCompare(right.gatewayLabel),
+      left.gatewayLabel.localeCompare(right.gatewayLabel),
     );
     return ordered;
   }, [
@@ -2233,7 +2248,7 @@ function MalinkAppRuntime() {
     fallbackProjectGateway,
     matrixConfig.gatewayId,
     projectGatewaysById,
-    sessionReadState,
+    sessionDisplayOrder,
   ]);
   const conversationGroups = useMemo(() => [
     ...scratchGroups,
@@ -5848,18 +5863,10 @@ function MalinkAppRuntime() {
               clearPendingSessionCreateUi();
               setMobileChatOpen(true);
             }
-            setSessionReadState((current) => {
-              const initialized = initializeSessionReadState(
-                current,
-                state.gatewayState!.sessions,
-              );
-              const pruned = pruneSessionReadState(initialized, availableIds);
-              return reconcileSelectedSessionReadState(
-                pruned,
-                state.gatewayState!.sessions,
-                nextSessionId,
-              );
-            });
+            setSessionReadState((current) => initializeSessionReadState(
+              current,
+              state.gatewayState!.sessions,
+            ));
             const shouldRevealNextSession =
               (openedSession === nextSessionId ||
                 pendingCreated === nextSessionId) &&
@@ -11821,7 +11828,27 @@ function MalinkAppRuntime() {
               </span>
             </span>
           </div>
-          <div className="header-actions">
+          <div
+            className="header-actions"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {selectedUpdateSignal && selectedUpdateLabel && gatewaySelected && (
+              <button
+                type="button"
+                className={`conversation-update-indicator signal-${selectedUpdateSignal}`}
+                aria-label={`${selectedUpdateLabel}. Mark as reviewed`}
+                title={`${selectedUpdateLabel} · Mark as reviewed`}
+                onClick={() =>
+                  setSessionReadState((current) =>
+                    markSessionRead(current, gatewaySelected),
+                  )
+                }
+              >
+                <SessionSignalIcon signal={selectedUpdateSignal} />
+                <span>{selectedUpdateLabel}</span>
+              </button>
+            )}
             <button
               ref={detailsButtonRef}
               className={`header-button ${detailsOpen ? "pressed" : ""}`}

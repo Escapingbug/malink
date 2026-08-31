@@ -76,17 +76,6 @@ export function markSessionRead(
   };
 }
 
-/** Marks the selected conversation read whenever a fresher snapshot arrives. */
-export function reconcileSelectedSessionReadState(
-  state: SessionReadState,
-  sessions: readonly GatewaySessionSummary[],
-  selectedSessionId: string | null | undefined,
-): SessionReadState {
-  if (!selectedSessionId) return state;
-  const selected = sessions.find((session) => session.id === selectedSessionId);
-  return selected ? markSessionRead(state, selected) : state;
-}
-
 export function sessionIndicator(
   session: GatewaySessionSummary,
   state: SessionReadState,
@@ -125,21 +114,6 @@ export function countSessionIndicators(
     if (indicator.needsAttention) counts.needsAttention += 1;
   }
   return counts;
-}
-
-/** Removes markers for sessions no longer present, keeping persistence bounded. */
-export function pruneSessionReadState(
-  state: SessionReadState,
-  sessionIds: ReadonlySet<string>,
-): SessionReadState {
-  const entries = Object.entries(state.readUpdatedAt).filter(([sessionId]) =>
-    sessionIds.has(sessionId),
-  );
-  if (entries.length === Object.keys(state.readUpdatedAt).length) return state;
-  return {
-    initialized: state.initialized,
-    readUpdatedAt: Object.fromEntries(entries),
-  };
 }
 
 export function readSessionReadState(

@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { GatewaySessionSummary } from "../app/gatewayState.ts";
 import {
-  compareProjectSessionsForAction,
-  compareSessionsForAction,
+  compareSessionsForDisplay,
   projectSessionSummaryLabel,
+  reconcileSessionDisplayOrder,
   sessionListSignal,
   sessionSignalLabel,
   sessionStatusTone,
@@ -84,30 +84,45 @@ test("assigns distinct tones to live session status text", () => {
   }), "stopping");
 });
 
-test("sorts sessions and projects by action before recency", () => {
-  const sessions = [
-    session("idle", "idle", 100),
-    session("working", "running", 30),
-    session("ready", "idle", 11),
-    session("failed", "failed", 20),
+test("keeps session rows stable when activity, recency, or read state changes", () => {
+  const initial = [
+    session("first", "idle", 100),
+    session("second", "idle", 90),
   ];
-  sessions.sort((left, right) =>
-    compareSessionsForAction(left, right, readState),
-  );
-  assert.deepEqual(sessions.map((item) => item.id), [
-    "failed",
-    "ready",
-    "working",
-    "idle",
-  ]);
+  const order = reconcileSessionDisplayOrder(new Map(), initial);
+  const updated = [
+    session("first", "idle", 100),
+    session("second", "running", 110),
+  ];
+  updated.sort((left, right) => compareSessionsForDisplay(left, right, order));
+  assert.deepEqual(updated.map((item) => item.id), ["first", "second"]);
 
-  assert.ok(
-    compareProjectSessionsForAction(
-      [session("idle", "idle", 100)],
-      [session("ready", "idle", 11)],
-      readState,
-    ) > 0,
-  );
+  const read = {
+    initialized: true,
+    readUpdatedAt: { first: 100, second: 110 },
+  } as const;
+  assert.equal(sessionListSignal(updated[1]!, read), "working");
+  updated.sort((left, right) => compareSessionsForDisplay(left, right, order));
+  assert.deepEqual(updated.map((item) => item.id), ["first", "second"]);
+});
+
+test("places genuinely new sessions first without forgetting temporarily absent rows", () => {
+  const initial = [
+    session("first", "idle", 100),
+    session("second", "idle", 90),
+  ];
+  const order = reconcileSessionDisplayOrder(new Map(), initial);
+  const partial = reconcileSessionDisplayOrder(order, [initial[0]!]);
+  assert.equal(partial, order);
+
+  const restored = [
+    session("second", "idle", 200),
+    session("new", "idle", 120),
+    session("first", "idle", 100),
+  ];
+  const next = reconcileSessionDisplayOrder(partial, restored);
+  restored.sort((left, right) => compareSessionsForDisplay(left, right, next));
+  assert.deepEqual(restored.map((item) => item.id), ["new", "first", "second"]);
 });
 
 test("summarizes project urgency into distinct compact signals", () => {

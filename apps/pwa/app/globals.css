@@ -2134,7 +2134,40 @@ select:focus-visible {
 
 .header-actions {
   display: flex;
+  align-items: center;
   gap: 4px;
+}
+
+.conversation-update-indicator {
+  display: inline-flex;
+  height: 34px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.conversation-update-indicator svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.2;
+}
+
+.conversation-update-indicator.signal-ready {
+  background: var(--violet-soft);
+  color: var(--violet-dark);
+}
+
+.conversation-update-indicator.signal-failed {
+  background: #fff1f2;
+  color: #a64751;
 }
 
 .header-button {
@@ -9805,6 +9838,16 @@ body {
 
   .conversation-heading > .conversation-status {
     font-size: 11px;
+  }
+
+  .conversation-update-indicator {
+    width: 36px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .conversation-update-indicator span {
+    display: none;
   }
 
   .conversation-connection-desktop {

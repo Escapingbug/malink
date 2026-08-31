@@ -7,9 +7,7 @@ import {
   countSessionIndicators,
   initializeSessionReadState,
   markSessionRead,
-  pruneSessionReadState,
   readSessionReadState,
-  reconcileSelectedSessionReadState,
   sessionIndicator,
   writeSessionReadState,
 } from "../app/sessionIndicators.ts";
@@ -79,7 +77,7 @@ test("newer stable updatedAt values create unread and failed-attention indicator
   });
 });
 
-test("viewing a session clears unread attention and follows later selected updates", () => {
+test("viewing a session clears current attention but later selected updates stay unread", () => {
   const failed = session("failure", "failed", 30);
   const initial = {
     initialized: true,
@@ -89,19 +87,15 @@ test("viewing a session clears unread attention and follows later selected updat
   assert.equal(sessionIndicator(failed, read).needsAttention, false);
 
   const refreshed = session("failure", "failed", 31);
-  const reconciled = reconcileSelectedSessionReadState(
-    read,
-    [refreshed],
-    "failure",
-  );
-  assert.equal(sessionIndicator(refreshed, reconciled).unread, false);
+  assert.equal(sessionIndicator(refreshed, read).unread, true);
+  assert.equal(sessionIndicator(refreshed, read).needsAttention, true);
   assert.equal(
-    reconcileSelectedSessionReadState(reconciled, [refreshed], "other"),
-    reconciled,
+    sessionIndicator(refreshed, markSessionRead(read, refreshed)).unread,
+    false,
   );
 });
 
-test("read markers persist safely and can be pruned to current sessions", () => {
+test("read markers persist safely across partial reconnect snapshots", () => {
   let stored: string | null = null;
   const storage = {
     getItem(key: string) {
@@ -120,9 +114,9 @@ test("read markers persist safely and can be pruned to current sessions", () => 
 
   assert.equal(writeSessionReadState(storage, state), true);
   assert.deepEqual(readSessionReadState(storage), state);
-  assert.deepEqual(
-    pruneSessionReadState(state, new Set(["current"])),
-    { initialized: true, readUpdatedAt: { current: 4 } },
+  assert.equal(
+    initializeSessionReadState(state, [session("current", "idle", 4)]),
+    state,
   );
 
   stored = '{"version":1,"initialized":true,"read_updated_at":{"x":-1}}';

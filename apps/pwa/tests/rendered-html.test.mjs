@@ -488,6 +488,9 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /session-status-summary session-status-\$\{statusTone\}/);
   assert.match(source, /className=\{`session-signal-mark signal-\$\{visualSignal\}/);
   assert.match(source, /title=\{visualSignalLabel \?\? undefined\}/);
+  assert.match(source, /className=\{`conversation-update-indicator signal-\$\{selectedUpdateSignal\}/);
+  assert.match(source, /\$\{selectedUpdateLabel\}\. Mark as reviewed/);
+  assert.match(source, /className="header-actions"[\s\S]*?aria-live="polite"/);
   assert.doesNotMatch(source, /className="agent-ready"/);
   assert.doesNotMatch(source, /className="agent-failed"/);
   assert.match(styles, /\.project-signal-ready \{[\s\S]*?background: #ece8ff/);
@@ -495,6 +498,8 @@ test("ships a complete installable offline shell", async () => {
   assert.match(styles, /\.session-signal-mark\.signal-ready \{[\s\S]*?background: var\(--violet\)/);
   assert.match(styles, /\.session-signal-mark\.signal-working \{[\s\S]*?background: #e4f5ed/);
   assert.match(styles, /\.session-signal-spinner \{[\s\S]*?animation: session-status-spin/);
+  assert.match(styles, /\.conversation-update-indicator\.signal-ready \{[\s\S]*?color: var\(--violet-dark\)/);
+  assert.match(styles, /\.conversation-update-indicator\.signal-failed \{[\s\S]*?color: #a64751/);
   assert.match(styles, /\.session-status-summary\.session-status-sending \{[\s\S]*?color: #3569b2/);
   assert.match(styles, /\.session-status-summary\.session-status-waiting \{[\s\S]*?color: #8a671d/);
   assert.match(styles, /\.session-status-summary\.session-status-working \{[\s\S]*?color: #267859/);

@@ -40,6 +40,13 @@ export type ProjectSessionSummary = Readonly<{
   total: number;
 }>;
 
+/**
+ * Ephemeral ranks keep rows still while activity and unread signals change.
+ * Missing sessions remain ranked because a reconnect can expose only a
+ * partial project set before the full workspace converges again.
+ */
+export type SessionDisplayOrder = ReadonlyMap<string, number>;
+
 export function sessionListSignal(
   session: GatewaySessionSummary,
   readState: SessionReadState,
@@ -56,29 +63,37 @@ export function sessionListSignal(
   return "idle";
 }
 
-export function compareSessionsForAction(
-  left: GatewaySessionSummary,
-  right: GatewaySessionSummary,
-  readState: SessionReadState,
-): number {
-  const priority =
-    signalPriority(sessionListSignal(right, readState)) -
-    signalPriority(sessionListSignal(left, readState));
-  if (priority !== 0) return priority;
-  if (right.updatedAt !== left.updatedAt) return right.updatedAt - left.updatedAt;
-  return left.title.localeCompare(right.title);
+export function reconcileSessionDisplayOrder(
+  current: SessionDisplayOrder,
+  sessions: readonly GatewaySessionSummary[],
+): SessionDisplayOrder {
+  const unseen = sessions
+    .filter((session) => !current.has(sessionDisplayKey(session)))
+    .sort(compareSessionsByRecency);
+  if (unseen.length === 0) return current;
+
+  const next = new Map(current);
+  const currentFirstRank = Math.min(0, ...current.values());
+  const firstNewRank = currentFirstRank - unseen.length;
+  unseen.forEach((session, index) => {
+    next.set(sessionDisplayKey(session), firstNewRank + index);
+  });
+  return next;
 }
 
-export function compareProjectSessionsForAction(
-  left: readonly GatewaySessionSummary[],
-  right: readonly GatewaySessionSummary[],
-  readState: SessionReadState,
+export function compareSessionsForDisplay(
+  left: GatewaySessionSummary,
+  right: GatewaySessionSummary,
+  order: SessionDisplayOrder,
 ): number {
-  const leftLead = leadingSession(left, readState);
-  const rightLead = leadingSession(right, readState);
-  if (!leftLead) return rightLead ? 1 : 0;
-  if (!rightLead) return -1;
-  return compareSessionsForAction(leftLead, rightLead, readState);
+  const leftRank = order.get(sessionDisplayKey(left));
+  const rightRank = order.get(sessionDisplayKey(right));
+  if (leftRank !== undefined && rightRank !== undefined && leftRank !== rightRank) {
+    return leftRank - rightRank;
+  }
+  if (leftRank !== undefined) return -1;
+  if (rightRank !== undefined) return 1;
+  return compareSessionsByRecency(left, right);
 }
 
 export function summarizeProjectSessions(
@@ -134,28 +149,17 @@ export function sessionSignalLabel(signal: SessionListSignal): string | null {
   }
 }
 
-function leadingSession(
-  sessions: readonly GatewaySessionSummary[],
-  readState: SessionReadState,
-): GatewaySessionSummary | null {
-  let lead: GatewaySessionSummary | null = null;
-  for (const session of sessions) {
-    if (!lead || compareSessionsForAction(session, lead, readState) < 0) {
-      lead = session;
-    }
-  }
-  return lead;
+function compareSessionsByRecency(
+  left: GatewaySessionSummary,
+  right: GatewaySessionSummary,
+): number {
+  if (right.updatedAt !== left.updatedAt) return right.updatedAt - left.updatedAt;
+  const title = left.title.localeCompare(right.title);
+  return title || sessionDisplayKey(left).localeCompare(sessionDisplayKey(right));
 }
 
-function signalPriority(signal: SessionListSignal): number {
-  switch (signal) {
-    case "failed":
-      return 4;
-    case "ready":
-      return 3;
-    case "working":
-      return 2;
-    case "idle":
-      return 1;
-  }
+function sessionDisplayKey(
+  session: Pick<GatewaySessionSummary, "id" | "projectId">,
+): string {
+  return `${session.projectId}\0${session.id}`;
 }
