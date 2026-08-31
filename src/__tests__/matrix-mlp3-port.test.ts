@@ -592,11 +592,8 @@ describe('MatrixMlp3Port', () => {
     expect(oversizedPresentationEnvelope.plaintext.value.event.payload).not.toHaveProperty('ui')
   })
 
-  it('holds the causal barrier for a final tool snapshot', async () => {
-    let releaseConfirmation!: (value: { eventId: string }) => void
-    const confirmation = new Promise<{ eventId: string }>(resolve => {
-      releaseConfirmation = resolve
-    })
+  it('stages a final tool snapshot without waiting for physical Matrix confirmation', async () => {
+    const confirmation = new Promise<{ eventId: string }>(() => {})
     let deliveryPriority: string | undefined
     const contentLayer = {
       enqueueEvent: async (
@@ -633,7 +630,7 @@ describe('MatrixMlp3Port', () => {
     })
     port.setCausationCommandId('prompt-1')
 
-    await port.send({
+    await expect(port.send({
       text: 'Read — completed',
       format: 'plain',
       replyMarkup: { idempotencyKey: 'tool-group-1' },
@@ -643,19 +640,10 @@ describe('MatrixMlp3Port', () => {
         groupId: 'turn-tools',
         tools: [],
       },
-    }, { terminal: true, finalSnapshot: true })
-
-    let barrierSettled = false
-    const barrier = port.causalDeliveryBarrier('prompt-1').then(() => {
-      barrierSettled = true
+    }, { terminal: true, finalSnapshot: true })).resolves.toMatchObject({
+      messageId: 'tool-group-1',
     })
-    await Promise.resolve()
-    expect(barrierSettled).toBe(false)
     expect(deliveryPriority).toBe('normal')
-
-    releaseConfirmation({ eventId: '$final-tool' })
-    await barrier
-    expect(barrierSettled).toBe(true)
   })
 })
 

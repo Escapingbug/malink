@@ -273,6 +273,261 @@ describe('SemanticSessionRuntime', () => {
         await running
     })
 
+    it('stops a turn while the provider is still initializing', async () => {
+        const destroy = vi.fn(async () => {})
+        const provider = {
+            name: 'test-acp',
+            init: vi.fn(() => new Promise<void>(() => {})),
+            startQuery: vi.fn(),
+            isReady: vi.fn(() => false),
+            getInitError: vi.fn(() => null),
+            getAvailableModels: vi.fn(() => []),
+            getAvailablePermissionModes: vi.fn(() => []),
+            destroy,
+        } as AgentProvider & { init(): Promise<void> }
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-starting',
+            cwd: '/repo',
+            provider,
+            providerName: 'test-acp',
+            channelPort: createChannel([], []),
+        })
+
+        const running = runtime.dispatch({ kind: 'user_message', text: 'start slowly', source: 'channel' })
+        await waitUntil(() => runtime.getState() === 'starting')
+
+        await runtime.dispatch({ kind: 'cancel', reason: 'user', source: 'channel' })
+
+        await expect(running).resolves.toMatchObject({ status: 'cancelled' })
+        expect(provider.startQuery).not.toHaveBeenCalled()
+        expect(destroy).toHaveBeenCalledOnce()
+        expect(runtime.getState()).toBe('idle')
+    })
+
+    it('honors cancellation that arrives before the queued runtime turn starts', async () => {
+        const provider = createProvider([{ kind: 'result', status: 'success' }])
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-pre-cancelled',
+            cwd: '/repo',
+            provider,
+            providerName: 'test-acp',
+            channelPort: createChannel([], []),
+        })
+        const cancellation = new AbortController()
+        cancellation.abort()
+
+        await expect(runtime.dispatch({
+            kind: 'user_message',
+            text: 'do not start',
+            source: 'channel',
+            cancellationSignal: cancellation.signal,
+        })).resolves.toMatchObject({ status: 'cancelled' })
+        expect(provider.startQuery).not.toHaveBeenCalled()
+        expect(runtime.getState()).toBe('idle')
+    })
+
+    it('stops while a session extension is still preparing the turn', async () => {
+        const provider: AgentProvider = {
+            ...createProvider([{ kind: 'result', status: 'success' }]),
+            destroy: vi.fn(async () => {}),
+        }
+        const extension: SessionExtensionInstance = {
+            id: 'stuck-prepare',
+            summary: { id: 'stuck-prepare', name: 'Stuck prepare', version: '1' },
+            prepareTurn: vi.fn(() => new Promise<never>(() => {})),
+            presentEvent: vi.fn(async event => [event]),
+            lifecycle: vi.fn(async () => {}),
+        }
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-stuck-extension-prepare',
+            cwd: '/repo',
+            provider,
+            providerName: 'test-acp',
+            channelPort: createChannel([], []),
+            extensions: [extension],
+        })
+        const running = runtime.dispatch({
+            kind: 'user_message',
+            text: 'wait for extension',
+            source: 'channel',
+        })
+        await waitUntil(() => vi.mocked(extension.prepareTurn).mock.calls.length === 1)
+
+        await runtime.dispatch({ kind: 'cancel', reason: 'user', source: 'channel' })
+
+        await expect(running).resolves.toMatchObject({ status: 'cancelled' })
+        expect(provider.startQuery).not.toHaveBeenCalled()
+        expect(provider.destroy).toHaveBeenCalledOnce()
+        expect(runtime.getState()).toBe('idle')
+    })
+
+    it('stops while a session extension is still presenting provider output', async () => {
+        const interrupt = vi.fn(async () => {})
+        const provider: AgentProvider = {
+            ...createProvider([]),
+            startQuery: vi.fn((): AgentQueryHandle => ({
+                events: (async function* () {
+                    yield { kind: 'text', text: 'held by extension' } as AgentEvent
+                    yield { kind: 'result', status: 'success' } as AgentEvent
+                })(),
+                interrupt,
+            })),
+        }
+        const extension: SessionExtensionInstance = {
+            id: 'stuck-present',
+            summary: { id: 'stuck-present', name: 'Stuck present', version: '1' },
+            prepareTurn: vi.fn(async input => ({ kind: 'ready' as const, input })),
+            presentEvent: vi.fn(() => new Promise<never>(() => {})),
+            lifecycle: vi.fn(async () => {}),
+        }
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-stuck-extension-present',
+            cwd: '/repo',
+            provider,
+            providerName: 'test-acp',
+            channelPort: createChannel([], []),
+            extensions: [extension],
+        })
+        const running = runtime.dispatch({
+            kind: 'user_message',
+            text: 'present forever',
+            source: 'channel',
+        })
+        await waitUntil(() => vi.mocked(extension.presentEvent).mock.calls.length === 1)
+
+        await runtime.dispatch({ kind: 'cancel', reason: 'user', source: 'channel' })
+
+        await expect(running).resolves.toMatchObject({ status: 'cancelled' })
+        expect(interrupt).toHaveBeenCalledOnce()
+        expect(runtime.getState()).toBe('idle')
+    })
+
+    it('settles cancellation even when the provider event iterator never returns', async () => {
+        const interrupt = vi.fn(async () => {})
+        const iteratorReturn = vi.fn(async () => ({ done: true as const, value: undefined }))
+        const provider: AgentProvider = {
+            ...createProvider([]),
+            startQuery: vi.fn((): AgentQueryHandle => ({
+                events: {
+                    [Symbol.asyncIterator]() {
+                        return {
+                            next: () => new Promise<IteratorResult<AgentEvent>>(() => {}),
+                            return: iteratorReturn,
+                        }
+                    },
+                },
+                interrupt,
+            })),
+        }
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-stuck-stream',
+            cwd: '/repo',
+            provider,
+            providerName: 'test-acp',
+            channelPort: createChannel([], []),
+        })
+        const onExecutionStarted = vi.fn()
+        const running = runtime.dispatch({
+            kind: 'user_message',
+            text: 'never returns',
+            source: 'channel',
+            onExecutionStarted,
+        })
+        await waitUntil(() => runtime.getState() === 'querying')
+
+        await runtime.dispatch({ kind: 'cancel', reason: 'user', source: 'channel' })
+
+        await expect(running).resolves.toMatchObject({ status: 'cancelled' })
+        expect(interrupt).toHaveBeenCalledOnce()
+        expect(iteratorReturn).toHaveBeenCalledOnce()
+        expect(onExecutionStarted).not.toHaveBeenCalled()
+        expect(runtime.getState()).toBe('idle')
+    })
+
+    it('releases a completed turn when the provider tail stream never closes', async () => {
+        vi.useFakeTimers()
+        try {
+            let nextCalls = 0
+            const iteratorReturn = vi.fn(async () => ({ done: true as const, value: undefined }))
+            const provider: AgentProvider = {
+                ...createProvider([]),
+                startQuery: vi.fn((): AgentQueryHandle => ({
+                    events: {
+                        [Symbol.asyncIterator]() {
+                            return {
+                                next: () => {
+                                    nextCalls += 1
+                                    if (nextCalls === 1) {
+                                        return Promise.resolve({
+                                            done: false as const,
+                                            value: { kind: 'result', status: 'success' } as AgentEvent,
+                                        })
+                                    }
+                                    return new Promise<IteratorResult<AgentEvent>>(() => {})
+                                },
+                                return: iteratorReturn,
+                            }
+                        },
+                    },
+                    interrupt: vi.fn(),
+                })),
+            }
+            const logs: string[] = []
+            const runtime = new SemanticSessionRuntime({
+                sessionId: 'session-stuck-tail',
+                cwd: '/repo',
+                provider,
+                providerName: 'test-acp',
+                channelPort: createChannel([], []),
+                onLog: message => logs.push(message),
+            })
+            const running = runtime.dispatch({
+                kind: 'user_message',
+                text: 'finish but keep streaming',
+                source: 'channel',
+            })
+            await vi.advanceTimersByTimeAsync(2_000)
+
+            await expect(running).resolves.toMatchObject({ status: 'succeeded' })
+            expect(iteratorReturn).toHaveBeenCalledOnce()
+            expect(logs.join('\n')).toContain('provider tail drain exceeded 2000ms')
+            expect(runtime.getState()).toBe('idle')
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('returns to idle when starting the provider query throws synchronously', async () => {
+        const provider: AgentProvider = {
+            ...createProvider([]),
+            startQuery: vi.fn(() => {
+                throw new Error('provider could not open a query')
+            }),
+        }
+        const runtime = new SemanticSessionRuntime({
+            sessionId: 'session-start-failure',
+            cwd: '/repo',
+            provider,
+            providerName: 'test-acp',
+            channelPort: createChannel([], []),
+        })
+
+        await expect(runtime.dispatch({
+            kind: 'user_message',
+            text: 'fail to start',
+            source: 'channel',
+        })).resolves.toMatchObject({
+            status: 'failed',
+            message: 'provider could not open a query',
+        })
+        expect(runtime.getState()).toBe('idle')
+        expect(runtime.journal.list().at(-1)).toMatchObject({
+            kind: 'turn_finished',
+            status: 'error',
+            summary: 'provider could not open a query',
+        })
+    })
+
     it('runs a user message through provider semantics, journal, projector, and outbox', async () => {
         const sent: ChannelMessage[] = []
         const statuses: SessionStatus[] = []

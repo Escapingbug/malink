@@ -9091,6 +9091,19 @@ function MalinkAppRuntime() {
       if (!connection) {
         throw new Error("The secure session command was not accepted.");
       }
+      if (input.initialPrompt) {
+        const queued = await queueMessageForCreatingSession(
+          localRecord,
+          input.initialPrompt,
+          undefined,
+          `queued-initial:${localRecord.localSessionId}`,
+        );
+        if (!queued) {
+          throw new Error(
+            "The first message could not be saved locally, so the session was not created.",
+          );
+        }
+      }
       if (input.setAsProjectDefault) {
         const settingsUpdate = await sendRealCommand({
           operation: "project.settings",
@@ -9108,7 +9121,6 @@ function MalinkAppRuntime() {
         provider: input.provider,
         ...(input.providerSessionId ? { providerSessionId: input.providerSessionId } : {}),
         ...(input.title ? { title: input.title } : {}),
-        ...(input.initialPrompt ? { initialPrompt: input.initialPrompt } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.reasoningEffort
           ? { reasoningEffort: input.reasoningEffort }
@@ -10285,7 +10297,8 @@ function MalinkAppRuntime() {
     record: OptimisticSessionRecord,
     text: string,
     attachments?: MalinkAttachment[],
-  ): Promise<void> {
+    messageId = `queued-${Date.now()}-${crypto.randomUUID()}`,
+  ): Promise<boolean> {
     const scope = historyScopeRef.current;
     if (!scope) {
       showUiNotice(
@@ -10294,10 +10307,10 @@ function MalinkAppRuntime() {
         "error",
         "The local encrypted message store is not ready yet. Your draft was kept.",
       );
-      return;
+      return false;
     }
     const message: ChatMessage = {
-      id: `queued-${Date.now()}-${crypto.randomUUID()}`,
+      id: messageId,
       kind: "user",
       text,
       time: "now",
@@ -10316,17 +10329,20 @@ function MalinkAppRuntime() {
         "error",
         `The message could not be queued safely: ${formatUiError(error)}`,
       );
-      return;
+      return false;
     }
     rememberLiveMessage(record.localSessionId, message);
     if (selectedSessionIdRef.current === record.localSessionId) {
       followLatestRef.current = true;
-      setMessages((current) => [...current, message]);
+      setMessages((current) => current.some(candidate => candidate.id === message.id)
+        ? current.map(candidate => candidate.id === message.id ? message : candidate)
+        : [...current, message]);
       setDraft("");
     }
     setPendingFiles([]);
     setSessionAgentActivity(record.localSessionId, null);
     recoverUiNotice("session:create-queue-storage");
+    return true;
   }
 
   async function flushQueuedSessionMessages(

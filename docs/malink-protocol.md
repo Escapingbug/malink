@@ -186,9 +186,34 @@ validates the rest of the MLP/3 event, normalizes only those known fields for a
 new bounded recovery event, and never re-executes or silently deletes the
 historical command.
 Creating a session with `providerSessionId` adopts that existing provider
-conversation; the first message sent from the preview is carried as the create
-command's initial prompt. A provider session already managed by an active
-Malink session opens that session instead of creating a duplicate.
+conversation. Current clients settle `session.create` first, then submit the
+first locally persisted message as an independent `prompt.submit` command. This
+keeps session creation and Agent execution as two separately recoverable command
+identities. The optional create-command `initialPrompt` remains accepted only as
+a compatibility path for already-installed clients. A provider session already
+managed by an active Malink session opens that session instead of creating a
+duplicate.
+
+## Turn lifecycle and delivery boundary
+
+One turn uses the existing bounded MLP/3 lifecycle:
+
+- `turn.queued` means the signed command is in the session lane and the Gateway
+  may be preparing the provider;
+- `turn.started` is emitted at most once, after the provider emits its first
+  turn event, so clients no longer present provider startup as active work;
+- `turn.completed` or `turn.failed` is the only terminal transition. A stopped
+  turn completes with `outcome: cancelled` under the original prompt command
+  identity, and the separate `turn.cancel` command receives a matching terminal
+  result only after that original turn has settled.
+
+The execution terminal is durable once semantic output and the terminal event
+have been staged in the Gateway's local outboxes and command journal. It does
+not wait for every staged assistant/tool event to receive a physical Matrix
+event ID. Matrix 429 backoff and retry therefore remain delivery state instead
+of keeping the Agent runtime falsely active. Stable logical IDs, outbox
+ordering, and client projection make delayed delivery safe; no status polling,
+heartbeat, or per-provider startup event is added.
 
 Malink has one removal action: archive. It removes a session from the managed
 session projection but retains its metadata tombstone and never invokes a
@@ -362,8 +387,9 @@ Traffic scales with visible business activity:
 - zero extra events for artifact stat display; one confirmed artifact command
   and one higher-version assistant replacement, with media 429 retries kept
   off-timeline;
-- one canonical queued projection and one terminal event for a prompt; there is
-  no separate durable `turn.started` transition;
+- one canonical queued projection, at most one existing `turn.started` event,
+  and one terminal event for a prompt; provider-internal startup phases and
+  delivery retries create no additional timeline events;
 - one bounded tool-group snapshot when current work first becomes visible, at
   most one coalesced progressive replacement per ten-second window while its
   visible state changes, and one terminal snapshot when the group completes;

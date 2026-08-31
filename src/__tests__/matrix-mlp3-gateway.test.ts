@@ -480,6 +480,8 @@ describe('MatrixMlp3GatewayRunner', () => {
     }
     const blocked = deferred<void>()
     const updateDrainBlocked = deferred<void>()
+    const activeCancelBlocked = deferred<void>()
+    let activeCancelRequested = false
     const dispatched: Array<{ sessionId: string; text: string }> = []
     const decisionResults: string[] = []
     const generatedImagePath = join(directory, 'generated-image.png')
@@ -624,9 +626,14 @@ describe('MatrixMlp3GatewayRunner', () => {
           receiveInput: () => undefined,
           async dispatch(input) {
             if (input.kind === 'user_message') {
+              await input.onExecutionStarted?.()
               dispatched.push({ sessionId: session.id, text: input.text })
               if (input.text === 'block A') await blocked.promise
               if (input.text === 'finish before update') await updateDrainBlocked.promise
+              if (input.text === 'cancel active') {
+                await activeCancelBlocked.promise
+                return { status: activeCancelRequested ? 'cancelled' : 'succeeded' }
+              }
               if (input.text === 'needs permission') {
                 const response = await port.requestDecision({
                   type: 'permission',
@@ -651,6 +658,10 @@ describe('MatrixMlp3GatewayRunner', () => {
                     : `reply-${session.id}-${input.text}`,
                 },
               })
+            }
+            if (input.kind === 'cancel') {
+              activeCancelRequested = true
+              activeCancelBlocked.resolve()
             }
             if (input.kind === 'command' && input.name === 'send_file') {
               const request = JSON.parse(input.args ?? '{}') as {
@@ -1460,6 +1471,51 @@ describe('MatrixMlp3GatewayRunner', () => {
       decision: 'allow',
     })
 
+    await send({
+      ...base,
+      commandId: 'prompt-cancel-active',
+      sessionId: 'session-b',
+      operation: 'prompt.submit',
+      payload: { operation: 'prompt.submit', text: 'cancel active' },
+    }, '$prompt-cancel-active')
+    await waitFor(() => Promise.resolve(dispatched.some(item => item.text === 'cancel active')))
+    await send({
+      ...base,
+      commandId: 'cancel-active-b',
+      sessionId: 'session-b',
+      operation: 'turn.cancel',
+      payload: { operation: 'turn.cancel', turnId: 'prompt-cancel-active' },
+    }, '$cancel-active-b')
+    await waitFor(async () => {
+      const deliveredEvents = await events(client, activeKey.key, roomId, projectId)
+      return deliveredEvents.some(event =>
+        event.causationCommandId === 'prompt-cancel-active'
+        && event.payload.type === 'turn.completed'
+        && event.payload.outcome === 'cancelled'
+      ) && deliveredEvents.some(event =>
+        event.causationCommandId === 'cancel-active-b'
+        && event.payload.type === 'turn.completed'
+        && event.payload.outcome === 'cancelled'
+      )
+    })
+    await send({
+      ...base,
+      commandId: 'prompt-cancel-active',
+      sessionId: 'session-b',
+      operation: 'prompt.submit',
+      payload: { operation: 'prompt.submit', text: 'cancel active' },
+    }, '$prompt-cancel-active-reconcile')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === 'prompt-cancel-active'
+      && event.payload.type === 'command.reconciled'
+      && event.payload.state === 'terminal'
+    ))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'prompt-cancel-active'
+      && event.payload.type === 'command.reconciled'
+      && event.payload.state === 'terminal'
+    )?.payload).toMatchObject({ outcome: 'cancelled' })
+
     const causalText = 'causal barrier'
     const causalMessageId = `reply-session-b-${causalText}`
     const causalGate = client.blockTimelineTransaction(
@@ -1473,6 +1529,14 @@ describe('MatrixMlp3GatewayRunner', () => {
       payload: { operation: 'prompt.submit', text: causalText },
     }, '$prompt-causal-barrier')
     await causalGate.started.promise
+    await waitFor(async () => {
+      const health = await runner.healthSnapshot()
+      return health.activeTurns === 0 && health.activeCommands === 0
+    })
+    expect(await runner.healthSnapshot()).toMatchObject({
+      activeTurns: 0,
+      activeCommands: 0,
+    })
     expect((await events(client, activeKey.key, roomId, projectId)).some(event =>
       event.causationCommandId === 'prompt-causal-barrier'
       && event.payload.type === 'turn.completed'
