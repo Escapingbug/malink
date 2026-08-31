@@ -694,11 +694,19 @@ export class MatrixMlp3GatewayRunner {
       })
     }
     if (record.status === 'terminal') {
-      if (
-        !record.terminalDeliveryEventId
-        && !this.terminalDeliveriesInFlight.has(commandKey(record.command))
-      ) {
-        this.scheduleTerminalRedelivery(project, record)
+      if (!record.terminalDeliveryEventId) {
+        // Publishing reconciliation can overlap the original terminal
+        // delivery. Re-read the journal after that await instead of deciding
+        // from the claim-time snapshot, otherwise a just-confirmed delivery
+        // can be queued a second time.
+        const currentRecord = await this.journal.get(record.command) ?? record
+        if (
+          currentRecord.status === 'terminal'
+          && !currentRecord.terminalDeliveryEventId
+          && !this.terminalDeliveriesInFlight.has(commandKey(currentRecord.command))
+        ) {
+          this.scheduleTerminalRedelivery(project, currentRecord)
+        }
       }
       return
     }
