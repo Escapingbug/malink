@@ -10702,6 +10702,13 @@ function MalinkAppRuntime() {
         recoverUiNotice(`session:stop:${sessionId}`);
         if (targetsPendingPrompt) {
           await removeStoppedPendingPrompt(sessionId, targetCommandId);
+        } else {
+          // The signed cancel completion is the authoritative terminal result.
+          // Do not keep the composer locked while waiting for a separate
+          // session-state projection, which may be delayed or coalesced away.
+          setSessionRunning(sessionId, false);
+          setSessionStopping(sessionId, false);
+          setSessionAgentActivity(sessionId, null);
         }
       }
     } catch (error) {
