@@ -71,6 +71,11 @@ import {
   resolveAuthoritativeProjectKeyGrant,
 } from "./projectKeyGrantRecovery";
 import { workspaceRouteNeedsJoin } from "./matrixWorkspaceRoute";
+import {
+  MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_DETAIL,
+  MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_MS,
+  MATRIX_CRYPTO_LOADING_DETAIL,
+} from "./matrixStartup";
 
 const LOCAL_TIMEOUT_MS = 10_000;
 const MATRIX_HISTORY_REQUEST_TIMEOUT_MS = 30_000;
@@ -924,8 +929,12 @@ export async function connectMatrixMlp3(
   const transportReady = (async () => {
     await withMatrixTimeout(syncStore.startup(), LOCAL_TIMEOUT_MS, "The Matrix sync store did not open in time.");
     savedMatrixSyncToken = await syncStore.getSavedSyncToken();
-    handlers.onStatus("connecting", "Opening the Matrix encryption store…");
-    await client.initRustCrypto({ useIndexedDB: true, cryptoDatabasePrefix: cryptoScope });
+    handlers.onStatus("connecting", MATRIX_CRYPTO_LOADING_DETAIL);
+    await withMatrixTimeout(
+      client.initRustCrypto({ useIndexedDB: true, cryptoDatabasePrefix: cryptoScope }),
+      MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_MS,
+      MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_DETAIL,
+    );
     const cryptoApi = client.getCrypto();
     if (!cryptoApi) throw new Error("Matrix encryption did not initialize.");
     const { AllDevicesIsolationMode } = await import("matrix-js-sdk/lib/crypto-api");
@@ -992,7 +1001,9 @@ export async function connectMatrixMlp3(
     // reauthorization performed by this same connection.
     await initialRecovery;
     if (!matrixDeviceKeys) throw new Error("Matrix device keys are unavailable.");
+    handlers.onStatus("securing", "Publishing this device’s encryption keys…");
     await waitForOwnMatrixDeviceKeys(config, matrixDeviceKeys, 30_000);
+    handlers.onStatus("securing", "Verifying the Gateway encryption identity…");
     await verifyAndPinGatewayDevice(client, preview.transport);
     const paired = await completePairing(
       preview,

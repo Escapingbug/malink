@@ -684,6 +684,7 @@ function MatrixSettingsDialog({
           trustedGateway={trustedGateway}
           repairReason={effectiveRepairReason}
           busy={pairingBusy}
+          progressDetail={connectionDetail}
           canConfirm={Boolean(config.accessToken)}
           deviceInvitation={deviceInvitation}
           invitationBusy={invitationBusy}

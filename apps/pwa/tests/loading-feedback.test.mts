@@ -93,6 +93,34 @@ test("shows an explicit busy state while a pairing invitation is verified", () =
   assert.match(continueButton, /disabled/);
 });
 
+test("shows the exact secure pairing stage while finishing a connection", () => {
+  const html = renderToStaticMarkup(createElement(PairingWizard, {
+    preview: {
+      gatewayName: "Studio Gateway",
+      verificationCode: "123 456",
+      expiresAt: Date.now() + 60_000,
+    } as never,
+    trustedGateway: null,
+    repairReason: null,
+    busy: true,
+    progressDetail: "Recovering the approved pairing response…",
+    canConfirm: true,
+    deviceInvitation: null,
+    invitationBusy: false,
+    invitationError: null,
+    invitationReauthRequired: false,
+    onLink() {},
+    onClear() {},
+    onConfirm() {},
+    onCreateInvitation() {},
+    onClearInvitation() {},
+  }));
+
+  assert.match(html, /Connecting this device…/);
+  assert.match(html, /Recovering the approved pairing response…/);
+  assert.doesNotMatch(html, /Finishing the connection…/);
+});
+
 test("identifies only the Gateway row whose approval is in flight", () => {
   const requestedAt = Date.now();
   const pending = [{

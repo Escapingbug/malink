@@ -655,7 +655,10 @@ test("uses one Matrix SDK host around the MLP/3 client core", async () => {
   assert.doesNotMatch(matrix, /export async function connectMatrix\(/);
 
   assert.match(matrixConnection, /new sdk\.IndexedDBStore\(\{/);
-  assert.match(matrixConnection, /await client\.initRustCrypto\(\{/);
+  assert.match(
+    matrixConnection,
+    /await withMatrixTimeout\(\s*client\.initRustCrypto\(\{[\s\S]*?MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_MS[\s\S]*?MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_DETAIL/,
+  );
   assert.match(matrixConnection, /globalBlacklistUnverifiedDevices = true/);
   assert.match(matrixConnection, /if \(!client\.isRoomEncrypted\(config\.roomId\)\)/);
   assert.match(matrixConnection, /new MatrixMlp3ProtocolClient\(/);

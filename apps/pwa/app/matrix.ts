@@ -58,6 +58,8 @@ const DEVICE_KEY = "p256-v1";
 const COMMAND_SEQUENCE_STORE = "command-sequences";
 const TIMELINE_KEY_STORE = "matrix-timeline-keys";
 const ENCRYPTED_SEND_TIMEOUT_MS = 20_000;
+const PAIRING_RESPONSE_RECOVERY_WAIT_MS = 60_000;
+const PAIRING_REQUEST_RETRY_DELAYS_MS = [2_000, 5_000, 10_000] as const;
 
 export type MatrixConnectionConfig = {
   homeserver: string;
@@ -482,6 +484,7 @@ export function createMatrixPairingTransport(
   noticeType: MsgType.Notice,
   roomId: string,
   onProgress?: (detail: string) => void,
+  retryDelayMs: (completedRetries: number) => number = pairingRequestRetryDelayMs,
 ): PairingTransport {
   return {
     async exchange(request, offer, signal) {
@@ -495,7 +498,7 @@ export function createMatrixPairingTransport(
         signal,
         onProgress,
       );
-      try {
+      const sendRequest = async (recovery: boolean) => {
         const content = {
           msgtype: noticeType,
           body: "Malink device pairing request",
@@ -505,7 +508,11 @@ export function createMatrixPairingTransport(
             pairing_request: request,
           },
         };
-        onProgress?.("Sending the encrypted pairing request…");
+        onProgress?.(
+          recovery
+            ? "Recovering the approved pairing response…"
+            : "Sending the encrypted pairing request…",
+        );
         await withMatrixTimeout(
           client.sendMessage(
             roomId,
@@ -513,16 +520,69 @@ export function createMatrixPairingTransport(
             `malink.pair.${request.request.requestId}.${crypto.randomUUID()}`,
           ),
           ENCRYPTED_SEND_TIMEOUT_MS,
-          "The encrypted pairing request could not be sent in time.",
+          recovery
+            ? "The pairing recovery request could not be sent in time."
+            : "The encrypted pairing request could not be sent in time.",
         );
+        if (recovery && response.isSettled()) return;
         onProgress?.("Waiting for the Gateway to approve this device…");
+      };
+      try {
+        await sendRequest(false);
       } catch (error) {
         response.cancel();
         throw error;
       }
-      return response.promise;
+      let stopped = false;
+      const retryWait = { wake: null as (() => void) | null };
+      const retryLoop = (async () => {
+        let completedRetries = 0;
+        while (!stopped && !response.isSettled()) {
+          await new Promise<void>((resolve) => {
+            const timer = globalThis.setTimeout(
+              resolve,
+              retryDelayMs(completedRetries),
+            );
+            retryWait.wake = () => {
+              globalThis.clearTimeout(timer);
+              resolve();
+            };
+          });
+          retryWait.wake = null;
+          if (stopped || response.isSettled() || signal?.aborted) return;
+          try {
+            // Gateway pairing is a durable transaction. Re-sending these exact
+            // signed bytes cannot mint a second authorization; it asks the
+            // Gateway to publish the already persisted response in a fresh
+            // Matrix event when this client missed the first one.
+            await sendRequest(true);
+          } catch {
+            if (response.isSettled() || signal?.aborted) return;
+            onProgress?.(
+              "The approved response has not arrived yet. Malink will keep recovering it safely…",
+            );
+          }
+          completedRetries += 1;
+        }
+      })();
+      try {
+        return await response.promise;
+      } finally {
+        stopped = true;
+        retryWait.wake?.();
+        void retryLoop.catch(() => undefined);
+      }
     },
   };
+}
+
+export function pairingRequestRetryDelayMs(completedRetries: number): number {
+  if (!Number.isSafeInteger(completedRetries) || completedRetries < 0) {
+    throw new RangeError("Pairing retry count must be a non-negative integer.");
+  }
+  return PAIRING_REQUEST_RETRY_DELAYS_MS[
+    Math.min(completedRetries, PAIRING_REQUEST_RETRY_DELAYS_MS.length - 1)
+  ] ?? PAIRING_REQUEST_RETRY_DELAYS_MS.at(-1)!;
 }
 
 function waitForPairingResponse(
@@ -538,19 +598,24 @@ function waitForPairingResponse(
 ): {
   promise: Promise<SignedPairingResponse>;
   cancel(): void;
+  isSettled(): boolean;
 } {
   let cancel = () => {};
+  let isSettled = false;
   const promise = new Promise<SignedPairingResponse>((resolve, reject) => {
-    let settled = false;
+    const responseDeadline = Math.max(
+      request.request.expiresAt,
+      Date.now() + PAIRING_RESPONSE_RECOVERY_WAIT_MS,
+    );
     const finish = (
       outcome:
         | { response: SignedPairingResponse }
         | { error: Error },
     ) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(progressTimer);
-      window.clearTimeout(expiryTimer);
+      if (isSettled) return;
+      isSettled = true;
+      globalThis.clearTimeout(progressTimer);
+      globalThis.clearTimeout(expiryTimer);
       client.off(timelineEvent as never, listener as never);
       signal?.removeEventListener("abort", abort);
       if ("response" in outcome) resolve(outcome.response);
@@ -638,23 +703,23 @@ function waitForPairingResponse(
           finish({ response: parsed });
         },
         (error) => finish({ error: new Error(formatError(error)) }),
-        Math.max(0, request.request.expiresAt - Date.now()),
+        Math.max(0, responseDeadline - Date.now()),
       ).catch((error) => finish({ error: new Error(formatError(error)) }));
     };
-    const progressTimer = window.setTimeout(() =>
+    const progressTimer = globalThis.setTimeout(() =>
       onProgress?.(
         "The Gateway is still preparing this device. Malink will keep waiting safely…",
       ),
       progressDelayMs,
     );
-    const expiryTimer = window.setTimeout(
+    const expiryTimer = globalThis.setTimeout(
       () =>
         finish({
           error: new Error(
             "The pairing request expired before its signed response arrived. Create a new invitation and try again.",
           ),
         }),
-      Math.max(0, request.request.expiresAt - Date.now()),
+      Math.max(0, responseDeadline - Date.now()),
     );
     cancel = () =>
       finish({ error: new DOMException("Pairing was cancelled.", "AbortError") });
@@ -670,7 +735,7 @@ function waitForPairingResponse(
       }
     }
   });
-  return { promise, cancel };
+  return { promise, cancel, isSettled: () => isSettled };
 }
 
 export async function verifyAndPinGatewayDevice(
@@ -780,14 +845,14 @@ export function withMatrixTimeout<T>(
   message: string,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timeout = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    const timeout = globalThis.setTimeout(() => reject(new Error(message)), timeoutMs);
     operation.then(
       (value) => {
-        window.clearTimeout(timeout);
+        globalThis.clearTimeout(timeout);
         resolve(value);
       },
       (error) => {
-        window.clearTimeout(timeout);
+        globalThis.clearTimeout(timeout);
         reject(error);
       },
     );

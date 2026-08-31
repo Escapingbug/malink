@@ -35,6 +35,7 @@ type Props = {
   trustedGateway: MalinkPublicTrust | null;
   repairReason: ConnectionRepairReason | null;
   busy: boolean;
+  progressDetail?: string | null;
   canConfirm: boolean;
   deviceInvitation: GeneratedDeviceInvitation | null;
   invitationBusy: boolean;
@@ -52,6 +53,7 @@ export function PairingWizard({
   trustedGateway,
   repairReason,
   busy,
+  progressDetail,
   canConfirm,
   deviceInvitation,
   invitationBusy,
@@ -330,7 +332,7 @@ export function PairingWizard({
         </button>
         {busy && (
           <p className="pairing-scan-status" role="status">
-            Finishing the connection…
+            {progressDetail?.trim() || "Finishing the connection…"}
           </p>
         )}
       </section>
