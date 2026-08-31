@@ -23,6 +23,46 @@ import org.junit.Test
 
 class GatewayStateSyncPolicyTest {
     @Test
+    fun `authoritative session lifecycle safely resolves matching mutations`() {
+        assertEquals(
+            true,
+            projectedSessionLifecycleSatisfies(CommandOperation.SESSION_ARCHIVE, "archived"),
+        )
+        assertEquals(
+            true,
+            projectedSessionLifecycleSatisfies(CommandOperation.SESSION_DELETE, "deleted"),
+        )
+        assertEquals(
+            true,
+            projectedSessionLifecycleSatisfies(CommandOperation.SESSION_RESTORE, "active"),
+        )
+        assertEquals(
+            false,
+            projectedSessionLifecycleSatisfies(CommandOperation.SESSION_RESTORE, "archived"),
+        )
+        assertEquals(
+            false,
+            projectedSessionLifecycleSatisfies(CommandOperation.PROMPT, "active"),
+        )
+    }
+
+    @Test
+    fun `only permanent command delivery failures may retire an unaccepted command`() {
+        assertEquals(
+            true,
+            commandDeliveryFailureIsPermanentlyUnsendable(IllegalArgumentException("invalid")),
+        )
+        assertEquals(
+            false,
+            commandDeliveryFailureIsPermanentlyUnsendable(java.io.IOException("offline")),
+        )
+        assertEquals(
+            false,
+            commandDeliveryFailureIsPermanentlyUnsendable(IllegalStateException("rejected")),
+        )
+    }
+
+    @Test
     fun `pairing waits for the native Matrix transport instead of losing an early confirmation`() = runBlocking {
         val ready = CompletableDeferred<String>()
         val waiting = async {
@@ -327,6 +367,17 @@ class GatewayStateSyncPolicyTest {
         )
 
         assertEquals(listOf("earlier", "later"), queuedCommandIds(commands))
+    }
+
+    @Test
+    fun `published commands resume journal recovery without a WebView`() {
+        val commands = listOf(
+            command("later", 4, CommandState.RUNNING),
+            command("ignored", 2, CommandState.RECOVERY_REQUIRED),
+            command("earlier", 3, CommandState.PUBLISHED),
+        )
+
+        assertEquals(listOf("earlier", "later"), publishedRecoveryCommandIds(commands))
     }
 
     private fun command(id: String, sequence: Long, state: CommandState): CommandView {

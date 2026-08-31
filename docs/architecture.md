@@ -426,6 +426,27 @@ it returns. Local orphan retirement remains a diagnostic escape hatch that
 creates an idempotency tombstone; it is not a normal product recovery path and
 must not be presented as the action that resolves a no-reply notice.
 
+Native command recovery continues without an attached WebView. On startup it
+resumes queued sends, same-identity uncertain sends, and Gateway-journal
+reconciliation for already-published commands. Every nonterminal record must
+therefore converge to one of three states: a verified signed terminal, an
+explicitly retryable external prerequisite, or safe retirement with an
+idempotency tombstone. Safe retirement is limited to evidence that cannot hide
+an accepted mutation: a deterministic local envelope failure, an
+authoritatively removed project route, or an already-authoritative matching
+session lifecycle. Retirement does not manufacture a successful terminal or
+claim that the retired command caused the projected state.
+
+Read-only `gateway.update.status` commands are observations rather than
+mutations. An unfinished probe may be shared briefly by overlapping callers,
+but after two minutes it is tombstoned and a fresh observation identity is
+created; process restart retires all unfinished probes. Recovery presentation
+stays silent while this automatic classification is running. The PWA surfaces
+only a classified actionable failure, tracks background recovery by stable
+command ID rather than mutable retry timestamps, and re-reads the native
+outbox after a bounded wait so a record retired behind the WebView disappears
+from the current page as well as the next startup snapshot.
+
 ## Gateway online-update boundary
 
 The Gateway process does not update itself. An independently launched,

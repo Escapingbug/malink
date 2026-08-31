@@ -255,6 +255,7 @@ import {
   type DurableCommandRecoveryCheckResult,
 } from "./durableCommandRecoveryPresentation";
 import {
+  hasBackgroundCommandRecovery,
   readBackgroundCommandRecoveries,
   readDismissedCommandRecoveries,
   writeBackgroundCommandRecoveries,
@@ -1736,10 +1737,6 @@ function MalinkAppRuntime() {
     useState<Set<string>>(() => readDismissedCommandRecoveries(
       typeof window === "undefined" ? null : window.localStorage,
     ));
-  const [backgroundRecoveredCommandVersions, setBackgroundRecoveredCommandVersions] =
-    useState<Set<string>>(() => readBackgroundCommandRecoveries(
-      typeof window === "undefined" ? null : window.localStorage,
-    ));
   const [sessionLifecycleBusy, setSessionLifecycleBusy] = useState<
     Map<string, SessionLifecycleAction>
   >(() => new Map());
@@ -2305,9 +2302,6 @@ function MalinkAppRuntime() {
       !recoveredNativeCommandIsOwned(command.commandId) &&
       durableCommandRecoveryNeedsAttention(
         recoveredNativeCommandChecks[command.commandId],
-        backgroundRecoveredCommandVersions.has(
-          recoveredCommandNoticeVersion(command),
-        ),
       ),
   );
   const visibleRecoveredNativeCommand = recoveredNativeCommandNotices.find(
@@ -2909,14 +2903,10 @@ function MalinkAppRuntime() {
   function backgroundRecoveredNativeCommandNotice(commandId: string): void {
     const command = recoveredNativeCommandsRef.current.get(commandId);
     if (!command || recoveredNativeCommandIsOwned(commandId)) return;
-    const noticeVersion = recoveredCommandNoticeVersion(command);
-    setBackgroundRecoveredCommandVersions((current) => {
-      if (current.has(noticeVersion)) return current;
-      const next = new Set(current);
-      next.add(noticeVersion);
-      writeBackgroundCommandRecoveries(window.localStorage, next);
-      return next;
-    });
+    const current = readBackgroundCommandRecoveries(window.localStorage);
+    if (hasBackgroundCommandRecovery(current, commandId)) return;
+    current.add(commandId);
+    writeBackgroundCommandRecoveries(window.localStorage, current);
   }
 
   function selectGatewayFilter(gatewayNodeId: string): void {
@@ -5928,6 +5918,12 @@ function MalinkAppRuntime() {
         },
         onDurableCommandRecovered(command) {
           if (!isCurrentStartup()) return;
+          recoveredNativeCommandsRef.current.set(command.commandId, command);
+          syncRecoveredNativeCommands();
+        },
+        onDurableCommandChanged(command) {
+          if (!isCurrentStartup()) return;
+          if (!recoveredNativeCommandsRef.current.has(command.commandId)) return;
           recoveredNativeCommandsRef.current.set(command.commandId, command);
           syncRecoveredNativeCommands();
         },
@@ -9291,6 +9287,23 @@ function MalinkAppRuntime() {
             forgetRecoveredNativeCommand(commandId, currentCommandId);
             return;
           }
+          if (error instanceof CommandCompletionTimeoutError) {
+            try {
+              await connection.observeCommandCompletion(currentCommandId, 1);
+              await connection.releaseCommand(currentCommandId);
+              completedCommandResultsRef.current.delete(commandId);
+              completedCommandResultsRef.current.delete(currentCommandId);
+              forgetRecoveredNativeCommand(commandId, currentCommandId);
+              recoverUiNotice("command:startup-recovery");
+              return;
+            } catch (observationError) {
+              if (isMissingSessionCreateRecoveryCommand(observationError)) {
+                forgetRecoveredNativeCommand(commandId, currentCommandId);
+                recoverUiNotice("command:startup-recovery");
+                return;
+              }
+            }
+          }
           retryDelayMs = error instanceof CommandCompletionTimeoutError
             ? RECOVERED_COMMAND_RETRY_DELAY_MS
             : RECOVERED_COMMAND_FAILURE_RETRY_DELAY_MS;
@@ -9298,8 +9311,9 @@ function MalinkAppRuntime() {
           const currentNoticeCommand =
             recoveredNativeCommandsRef.current.get(currentCommandId);
           const alreadyRecoveringInBackground = currentNoticeCommand
-            ? readBackgroundCommandRecoveries(window.localStorage).has(
-                recoveredCommandNoticeVersion(currentNoticeCommand),
+            ? hasBackgroundCommandRecovery(
+                readBackgroundCommandRecoveries(window.localStorage),
+                currentNoticeCommand.commandId,
               )
             : false;
           setRecoveredNativeCommandChecks((current) => ({

@@ -308,6 +308,38 @@ class DurableCommandOutboxTest {
     }
 
     @Test
+    fun `expired Gateway status probe becomes a tombstone and a fresh observation`() {
+        val fixture = fixture()
+        val firstKey = UUID.randomUUID().toString()
+        val first = fixture.outbox.enqueue(
+            firstKey,
+            payload("gateway.update.status"),
+            projectId = "project-a",
+        )
+        fixture.clock.advanceBy(GATEWAY_STATUS_PROBE_REUSE_WINDOW_MS + 1)
+
+        val fresh = fixture.outbox.enqueue(
+            UUID.randomUUID().toString(),
+            payload("gateway.update.status"),
+            projectId = "project-a",
+        )
+
+        assertNotEquals(first.commandId, fresh.commandId)
+        assertNull(fixture.outbox.get(first.commandId))
+        assertEquals(
+            listOf(fresh.commandId),
+            fixture.outbox.unfinishedGatewayStatusProbeIds("project-a"),
+        )
+        assertThrows(ReleasedCommandException::class.java) {
+            fixture.outbox.enqueue(
+                firstKey,
+                payload("gateway.update.status"),
+                projectId = "project-a",
+            )
+        }
+    }
+
+    @Test
     fun `duplicate Gateway status idempotency keeps its original command`() {
         val fixture = fixture()
         val key = UUID.randomUUID().toString()
@@ -430,6 +462,9 @@ class DurableCommandOutboxTest {
     private class MutableClock : CommandClock {
         private var time = 1_000L
         override fun now(): Long = time++
+        fun advanceBy(milliseconds: Long) {
+            time += milliseconds
+        }
     }
 
     private class QueueIds : CommandIdFactory {

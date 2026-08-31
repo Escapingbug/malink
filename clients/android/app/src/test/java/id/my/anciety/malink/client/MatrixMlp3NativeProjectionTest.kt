@@ -140,6 +140,7 @@ class MatrixMlp3NativeProjectionTest {
         var sessions = projection.snapshot()!!.getValue("sessions").jsonArray
         assertEquals(listOf("Newest A", "Session B"), sessions.map { sessionTitle(it.jsonObject) })
         assertEquals("\$root-a", projection.threadRootEventId("session-a"))
+        assertEquals("active", projection.sessionLifecycle("session-a"))
 
         projection.applyGatewayEvent(
             sessionLifecycle("session-a", stateVersion = 6, lifecycle = "deleted"),
@@ -149,6 +150,7 @@ class MatrixMlp3NativeProjectionTest {
         sessions = projection.snapshot()!!.getValue("sessions").jsonArray
         assertEquals(listOf("Session B"), sessions.map { sessionTitle(it.jsonObject) })
         assertNull(projection.threadRootEventId("session-a"))
+        assertEquals("deleted", projection.sessionLifecycle("session-a"))
         assertEquals("\$root-b", projection.threadRootEventId("session-b"))
     }
 

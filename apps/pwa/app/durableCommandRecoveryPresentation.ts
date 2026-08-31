@@ -22,10 +22,8 @@ export type DurableCommandRecoveryCheckResult = {
 
 export function durableCommandRecoveryNeedsAttention(
   lastCheck?: DurableCommandRecoveryCheckResult | null,
-  backgrounded = false,
 ): boolean {
-  if (lastCheck?.status === "no-response") return false;
-  return !backgrounded || lastCheck?.status === "failed";
+  return lastCheck?.status === "failed";
 }
 
 /**

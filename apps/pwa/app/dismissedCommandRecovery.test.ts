@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  hasBackgroundCommandRecovery,
   readBackgroundCommandRecoveries,
   readDismissedCommandRecoveries,
   writeBackgroundCommandRecoveries,
@@ -41,5 +42,14 @@ describe("dismissed command recovery storage", () => {
 
     expect(readBackgroundCommandRecoveries(storage)).toEqual(background);
     expect(readDismissedCommandRecoveries(storage)).toEqual(new Set());
+  });
+
+  it("keeps background recovery attached to one command across state changes", () => {
+    const current = new Set(["command-2"]);
+    const legacy = new Set(["command-2\u0000running\u0000200"]);
+
+    expect(hasBackgroundCommandRecovery(current, "command-2")).toBe(true);
+    expect(hasBackgroundCommandRecovery(legacy, "command-2")).toBe(true);
+    expect(hasBackgroundCommandRecovery(legacy, "command-3")).toBe(false);
   });
 });

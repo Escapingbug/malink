@@ -6,7 +6,7 @@ import {
 
 describe("durableCommandRecoveryPresentation", () => {
   it("stops treating an unanswered check as user attention", () => {
-    expect(durableCommandRecoveryNeedsAttention()).toBe(true);
+    expect(durableCommandRecoveryNeedsAttention()).toBe(false);
     expect(durableCommandRecoveryNeedsAttention({
       status: "failed",
       checkedAt: 1,
@@ -15,11 +15,7 @@ describe("durableCommandRecoveryPresentation", () => {
       status: "no-response",
       checkedAt: 1,
     })).toBe(false);
-    expect(durableCommandRecoveryNeedsAttention(undefined, true)).toBe(false);
-    expect(durableCommandRecoveryNeedsAttention({
-      status: "failed",
-      checkedAt: 1,
-    }, true)).toBe(true);
+    expect(durableCommandRecoveryNeedsAttention(undefined)).toBe(false);
   });
 
   it("explains an accepted command as journal reconciliation, not resubmission", () => {

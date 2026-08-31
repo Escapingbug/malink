@@ -35,6 +35,7 @@ import type {
   MalinkCommandSendResult,
   MalinkHistoryPage,
   MalinkPublicTrust,
+  MalinkRecoveredDurableCommand,
 } from "../MalinkClient";
 import { CommandReviewRequiredError } from "../MalinkClient";
 import { NativeRpcBridge } from "./NativeRpcBridge";
@@ -893,6 +894,7 @@ export class NativeBridgeClient implements MalinkClient {
   #recordCommand(command: CommandView): void {
     if (command.commandId) {
       this.#rememberCommandOperation(command.commandId, command.operationId);
+      this.handlers.onDurableCommandChanged?.(recoveredDurableCommand(command));
     }
     if (command.commandId && command.state === "needs_review") {
       const review: MalinkCommandReview = { commandId: command.commandId };
@@ -1122,6 +1124,19 @@ export class NativeBridgeClient implements MalinkClient {
       hasMore: page.hasMore,
     };
   }
+}
+
+function recoveredDurableCommand(command: CommandView): MalinkRecoveredDurableCommand {
+  if (!command.commandId) {
+    throw new Error("Native durable command identity is missing.");
+  }
+  return {
+    commandId: command.commandId,
+    state: command.state,
+    submittedAt: command.submittedAt,
+    updatedAt: command.updatedAt,
+    ...(command.sessionId === undefined ? {} : { sessionId: command.sessionId }),
+  };
 }
 
 /**

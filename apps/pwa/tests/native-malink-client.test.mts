@@ -22,6 +22,7 @@ import {
 import {
   CommandReviewRequiredError,
   type MalinkCommandReview,
+  type MalinkRecoveredDurableCommand,
 } from "../app/client/MalinkClient.ts";
 import { gatewayStateExtension } from "../app/gatewayState.ts";
 import { gatewayProjectOwners } from "../app/projectCatalog.ts";
@@ -655,6 +656,35 @@ test("keeps the durable receipt identity while Gateway progress arrives", async 
   client.dispose();
 });
 
+test("projects durable command state changes into the active PWA", async () => {
+  const changes: MalinkRecoveredDurableCommand[] = [];
+  const port = new RuntimePort();
+  const client = await createTestClient(port, () => {}, (command) => {
+    changes.push(command);
+  });
+
+  deliverCommand(port, {
+    operationId: "operation-recovery-state-1",
+    commandId: "command-recovery-state-1",
+    idempotencyKey: "00000000-0000-4000-8000-000000000013",
+    state: "recovery_required",
+    submittedAt: 10,
+    updatedAt: 20,
+    sessionId: "session-recovery-state-1",
+    sequence: 1,
+  }, "cursor-recovery-state");
+  await nextTurn();
+
+  assert.deepEqual(changes, [{
+    commandId: "command-recovery-state-1",
+    state: "recovery_required",
+    submittedAt: 10,
+    updatedAt: 20,
+    sessionId: "session-recovery-state-1",
+  }]);
+  client.dispose();
+});
+
 test("rebinds a retried command completion even when the event precedes its receipt", async () => {
   const port = new RuntimePort((request) =>
     request.method === "malink.command.send" ? NO_RESPONSE : responseFor(request)
@@ -1128,6 +1158,7 @@ test("opens the Android diagnostic share surface when negotiated", async () => {
 async function createTestClient(
   port: RuntimePort,
   onReview: (review: MalinkCommandReview | null) => void = () => {},
+  onCommandChanged: (command: MalinkRecoveredDurableCommand) => void = () => {},
 ): Promise<NativeBridgeClient> {
   const bridge = await acquireNativeRpcBridge(port);
   const hello = await bridge.hello({
@@ -1145,6 +1176,7 @@ async function createTestClient(
     onMessage() {},
     onStatus() {},
     onCommandReviewRequired: onReview,
+    onDurableCommandChanged: onCommandChanged,
   });
   await client.ready;
   return client;

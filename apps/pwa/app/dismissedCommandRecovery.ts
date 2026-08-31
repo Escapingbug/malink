@@ -29,6 +29,20 @@ export function writeBackgroundCommandRecoveries(
   writeRecoveryVersions(storage, BACKGROUND_STORAGE_KEY, values);
 }
 
+/**
+ * Background recovery follows the durable command identity, not its mutable
+ * journal state. The prefix check migrates entries written by older clients,
+ * which included state and updatedAt in the storage key.
+ */
+export function hasBackgroundCommandRecovery(
+  values: ReadonlySet<string>,
+  commandId: string,
+): boolean {
+  if (values.has(commandId)) return true;
+  const legacyPrefix = `${commandId}\0`;
+  return [...values].some(value => value.startsWith(legacyPrefix));
+}
+
 function readRecoveryVersions(
   storage: Pick<Storage, "getItem"> | null,
   key: string,

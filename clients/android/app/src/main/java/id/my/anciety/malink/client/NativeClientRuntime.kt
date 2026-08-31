@@ -940,7 +940,7 @@ class NativeClientRuntime(
                 validatedPayload,
                 activeTrust.certificate.allowedOperations,
             )
-            val reusableStatusProbeIds = if (
+            val existingStatusProbeIds = if (
                 validatedPayload.operation == CommandOperation.GATEWAY_UPDATE_STATUS
             ) {
                 outbox.unfinishedGatewayStatusProbeIds(projectId)
@@ -953,8 +953,23 @@ class NativeClientRuntime(
                 payload.string("sessionId"),
                 projectId,
             )
-            if (receipt.commandId in reusableStatusProbeIds) {
+            val retiredStatusProbeIds = existingStatusProbeIds -
+                outbox.unfinishedGatewayStatusProbeIds(projectId).toSet()
+            if (receipt.commandId in existingStatusProbeIds) {
                 diagnostics.record("command.status_probe.reused")
+            }
+            if (retiredStatusProbeIds.isNotEmpty()) {
+                retiredStatusProbeIds.forEach { expiredCommandId ->
+                    cancelCommandTransmission(expiredCommandId)
+                    cancelScheduledCommandRecovery(expiredCommandId)
+                    cancelPublishedCommandResultRecovery(expiredCommandId)
+                    matrixMlp3CommandContent.remove(expiredCommandId)
+                }
+                refreshSnapshot(publishLifecycle = false)
+                diagnostics.record(
+                    "command.status_probe.expired",
+                    mapOf("count" to retiredStatusProbeIds.size.toString()),
+                )
             }
             val current = outbox.get(receipt.commandId) ?: error("Durable command disappeared.")
             when (current.state) {
@@ -983,6 +998,11 @@ class NativeClientRuntime(
     suspend fun recoverCommand(commandId: String): DurableReceipt {
         val current = outbox.resolveCurrent(commandId)
             ?: throw UnknownCommandException("Command was not found.")
+        if (retireProjectionSatisfiedCommand(current.commandId, cancelScheduledRecovery = true)) {
+            throw UnknownCommandException(
+                "The command's requested session state is already authoritative.",
+            )
+        }
         val targetProjectId = outbox.projectId(current.commandId)
         val targetStillAuthorized = targetProjectId?.let {
             matrixMlp3Projection.workspaceHasProject(it)
@@ -1370,12 +1390,18 @@ class NativeClientRuntime(
     }
 
     private fun schedulePendingCommandRecoveries(immediate: Boolean) {
+        outbox.list().forEach { command ->
+            retireProjectionSatisfiedCommand(command.commandId, cancelScheduledRecovery = true)
+        }
         val commands = outbox.list()
         queuedCommandIds(commands).forEach { commandId ->
             launchCommandTransmission(commandId, recovery = false)
         }
         recoverableCommandIds(commands).forEach { commandId ->
             scheduleCommandRecovery(commandId, immediate)
+        }
+        publishedRecoveryCommandIds(commands).forEach { commandId ->
+            outbox.get(commandId)?.let(::startPublishedCommandResultRecovery)
         }
     }
 
@@ -1426,6 +1452,10 @@ class NativeClientRuntime(
                             }
                             return@withLock false
                         }
+                        if (retireProjectionSatisfiedCommand(
+                            commandId,
+                            cancelScheduledRecovery = false,
+                        )) return@withLock false
                         if (!commandProjectRouteReady(commandId)) {
                             commandRecoveryAttempts[commandId] = completedAttempts + 1
                             retryAfterFailure = true
@@ -1452,7 +1482,7 @@ class NativeClientRuntime(
                         } catch (error: CancellationException) {
                             throw error
                         } catch (error: Exception) {
-                            if (isDeterministicCommandEnvelopeFailure(error)) {
+                            if (commandDeliveryFailureIsPermanentlyUnsendable(error)) {
                                 val operation = outbox.operation(commandId)
                                 val retirement = runCatching {
                                     mutex.withLock {
@@ -1523,87 +1553,126 @@ class NativeClientRuntime(
         return matrix.publicSession()?.roomBindings?.any { it.roomId == roomId } == true
     }
 
+    private fun retireProjectionSatisfiedCommand(
+        commandId: String,
+        cancelScheduledRecovery: Boolean,
+    ): Boolean {
+        if (!gatewayStateSynchronized) return false
+        val command = outbox.get(commandId) ?: return false
+        if (command.state.isTerminal) return false
+        val sessionId = command.sessionId ?: return false
+        val lifecycle = matrixMlp3Projection.sessionLifecycle(sessionId) ?: return false
+        val operation = outbox.operation(commandId) ?: return false
+        if (!projectedSessionLifecycleSatisfies(operation, lifecycle)) return false
+        cancelCommandTransmission(commandId)
+        if (cancelScheduledRecovery) cancelScheduledCommandRecovery(commandId)
+        cancelPublishedCommandResultRecovery(commandId)
+        if (!outbox.retireUnverifiedCommand(commandId)) return false
+        matrixMlp3CommandContent.remove(commandId)
+        refreshSnapshot(publishLifecycle = false)
+        diagnostics.record(
+            "command.projected_outcome_retired",
+            mapOf(
+                "action" to operation.wireName,
+                "stage" to command.state.wireName,
+            ),
+        )
+        return true
+    }
+
     private fun startPublishedCommandResultRecovery(command: DurableView) {
         synchronized(publishedCommandRecoveryJobs) {
             if (publishedCommandRecoveryJobs[command.commandId]?.isActive == true) return
             val job = scope.launch(start = CoroutineStart.LAZY) {
                 try {
-                    val projectId = outbox.projectId(command.commandId)
-                        ?: throw IllegalStateException("The published command project is unavailable.")
-                    val keys = matrixMlp3ProjectKeys.value(projectId)
-                        ?: throw IllegalStateException("The published command project key is unavailable.")
-                    val roomId = try {
-                        keys.roomId
-                    } finally {
-                        keys.wipe()
-                    }
-                    recoverPublishedCommandDelivery(
-                        isTerminal = {
-                            outbox.get(command.commandId)?.state?.isTerminal == true
-                        },
-                        submitReconciliation = {
-                            sendPublishedCommandReconciliation(command, roomId)
-                        },
-                        awaitReconciliation = {
-                            val terminal = awaitPublishedCommandReconciliation(isTerminal = {
+                    while (outbox.get(command.commandId)?.state in setOf(
+                            DurableState.PUBLISHED,
+                            DurableState.RUNNING,
+                        )
+                    ) {
+                        val projectId = outbox.projectId(command.commandId)
+                            ?: throw IllegalStateException("The published command project is unavailable.")
+                        val keys = matrixMlp3ProjectKeys.value(projectId)
+                            ?: throw IllegalStateException("The published command project key is unavailable.")
+                        val roomId = try {
+                            keys.roomId
+                        } finally {
+                            keys.wipe()
+                        }
+                        recoverPublishedCommandDelivery(
+                            isTerminal = {
                                 outbox.get(command.commandId)?.state?.isTerminal == true
-                            })
-                            diagnostics.record(
-                                "command.reconciliation.await_completed",
-                                mapOf(
-                                    "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
-                                    "terminal" to terminal.toString(),
-                                ),
-                            )
-                        },
-                        scanTimeline = legacyTimeline@{
-                            val acquired = legacyTimelineRecoveryGate.runIfIdle {
-                                val scannedPages = matrix.recoverApplicationTimeline(
-                                    roomId,
-                                ) {
+                            },
+                            submitReconciliation = {
+                                sendPublishedCommandReconciliation(command, roomId)
+                            },
+                            awaitReconciliation = {
+                                val terminal = awaitPublishedCommandReconciliation(isTerminal = {
                                     outbox.get(command.commandId)?.state?.isTerminal == true
+                                })
+                                diagnostics.record(
+                                    "command.reconciliation.await_completed",
+                                    mapOf(
+                                        "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                                        "terminal" to terminal.toString(),
+                                    ),
+                                )
+                            },
+                            scanTimeline = legacyTimeline@{
+                                val acquired = legacyTimelineRecoveryGate.runIfIdle {
+                                    val scannedPages = matrix.recoverApplicationTimeline(
+                                        roomId,
+                                    ) {
+                                        outbox.get(command.commandId)?.state?.isTerminal == true
+                                    }
+                                    diagnostics.record(
+                                        "command.timeline_recovery.completed",
+                                        mapOf(
+                                            "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                                            "pages" to scannedPages.toString(),
+                                            "terminal" to (outbox.get(command.commandId)?.state?.isTerminal == true).toString(),
+                                        ),
+                                    )
                                 }
+                                if (!acquired) {
+                                    diagnostics.record(
+                                        "command.timeline_recovery.skipped_busy",
+                                        mapOf(
+                                            "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                                        ),
+                                    )
+                                    return@legacyTimeline
+                                }
+                            },
+                            onReconciliationFailure = { error ->
                                 diagnostics.record(
-                                    "command.timeline_recovery.completed",
+                                    "command.reconciliation.failed",
                                     mapOf(
                                         "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
-                                        "pages" to scannedPages.toString(),
-                                        "terminal" to (outbox.get(command.commandId)?.state?.isTerminal == true).toString(),
-                                    ),
+                                    ) + diagnosticCommandDeliveryError(error),
                                 )
-                            }
-                            if (!acquired) {
+                            },
+                            onTimelineFailure = { error ->
                                 diagnostics.record(
-                                    "command.timeline_recovery.skipped_busy",
+                                    if (error is TimeoutCancellationException) {
+                                        "command.timeline_recovery.timed_out"
+                                    } else {
+                                        "command.timeline_recovery.failed"
+                                    },
                                     mapOf(
                                         "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                                        "error" to diagnosticErrorName(error),
                                     ),
                                 )
-                                return@legacyTimeline
-                            }
-                        },
-                        onReconciliationFailure = { error ->
-                            diagnostics.record(
-                                "command.reconciliation.failed",
-                                mapOf(
-                                    "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
-                                ) + diagnosticCommandDeliveryError(error),
+                            },
+                        )
+                        if (outbox.get(command.commandId)?.state !in setOf(
+                                DurableState.PUBLISHED,
+                                DurableState.RUNNING,
                             )
-                        },
-                        onTimelineFailure = { error ->
-                            diagnostics.record(
-                                if (error is TimeoutCancellationException) {
-                                    "command.timeline_recovery.timed_out"
-                                } else {
-                                    "command.timeline_recovery.failed"
-                                },
-                                mapOf(
-                                    "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
-                                    "error" to diagnosticErrorName(error),
-                                ),
-                            )
-                        },
-                    )
+                        ) break
+                        delay(PUBLISHED_COMMAND_RECOVERY_RETRY_MS)
+                    }
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
@@ -2036,9 +2105,6 @@ class NativeClientRuntime(
             else -> "unexpected"
         },
     )
-
-    private fun isDeterministicCommandEnvelopeFailure(error: Throwable): Boolean =
-        error is IllegalArgumentException
 
     /**
      * The content is already signed and encrypted to the paired Gateway by
@@ -3191,6 +3257,20 @@ internal fun requiresGatewayConvergence(
     return currentRevision == null || currentRevision < expectedRevision
 }
 
+internal fun commandDeliveryFailureIsPermanentlyUnsendable(error: Throwable): Boolean =
+    error is IllegalArgumentException
+
+internal fun projectedSessionLifecycleSatisfies(
+    operation: CommandOperation,
+    lifecycle: String,
+): Boolean = when (operation) {
+    CommandOperation.SESSION_ARCHIVE,
+    CommandOperation.SESSION_DELETE,
+    -> lifecycle == "archived" || lifecycle == "deleted"
+    CommandOperation.SESSION_RESTORE -> lifecycle == "active"
+    else -> false
+}
+
 
 internal fun commandRecoveryDelayMs(completedAttempts: Int): Long {
     require(completedAttempts >= 0)
@@ -3360,6 +3440,7 @@ private const val PAIRING_TRANSPORT_READY_TIMEOUT_MS = 60_000L
 private const val MAX_PAIRING_EXPIRY_SLEEP_MS = 24L * 60 * 60_000
 private const val MAX_AUTHORITATIVE_STATE_REFRESH_ATTEMPTS = 6
 private const val COMMAND_RECONCILIATION_DELIVERY_GRACE_MS = 12_000L
+private const val PUBLISHED_COMMAND_RECOVERY_RETRY_MS = 60_000L
 
 internal fun recoverableCommandIds(commands: List<DurableView>): List<String> =
     commands
@@ -3373,6 +3454,16 @@ internal fun queuedCommandIds(commands: List<DurableView>): List<String> =
     commands
         .asSequence()
         .filter { it.state == DurableState.QUEUED }
+        .sortedBy(DurableView::submittedAt)
+        .map(DurableView::commandId)
+        .toList()
+
+internal fun publishedRecoveryCommandIds(commands: List<DurableView>): List<String> =
+    commands
+        .asSequence()
+        .filter { command ->
+            command.state == DurableState.PUBLISHED || command.state == DurableState.RUNNING
+        }
         .sortedBy(DurableView::submittedAt)
         .map(DurableView::commandId)
         .toList()

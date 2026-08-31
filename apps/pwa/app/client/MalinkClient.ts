@@ -95,6 +95,7 @@ export type MalinkClientHandlers = {
   onCommandResult?(result: CommandCompletion): void;
   onSessionCreateRecovered?(recovery: MalinkRecoveredSessionCreate): void;
   onDurableCommandRecovered?(command: MalinkRecoveredDurableCommand): void;
+  onDurableCommandChanged?(command: MalinkRecoveredDurableCommand): void;
   onCommandReviewRequired?(review: MalinkCommandReview | null): void;
   onHistoryRecovered?(page: MalinkHistoryRecovery): void;
   onConvergenceRequired?(): void;

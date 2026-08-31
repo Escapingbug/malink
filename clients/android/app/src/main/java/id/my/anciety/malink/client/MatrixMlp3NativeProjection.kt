@@ -664,6 +664,9 @@ internal class MatrixMlp3NativeProjection(
         ?.takeIf { it.isNotBlank() }
 
     @Synchronized
+    fun sessionLifecycle(sessionId: String): String? = sessions[sessionId]?.lifecycle
+
+    @Synchronized
     fun workspaceGatewayDirectoryRevision(): Long = workspaceGatewayDirectory
         ?.requiredObject("directory")
         ?.requiredLong("revision")

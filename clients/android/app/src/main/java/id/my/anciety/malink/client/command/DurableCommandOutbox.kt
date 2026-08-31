@@ -105,23 +105,48 @@ class DurableCommandOutbox internal constructor(
                 "Command ${released.commandId} was already completed and released; it will not be executed again.",
             )
         }
+        val now = nonnegativeNow()
+        var expiredStatusProbes = emptyList<PersistedCommand>()
         if (validatedPayload.operation == CommandOperation.GATEWAY_UPDATE_STATUS) {
-            snapshot.commands.firstOrNull { candidate ->
+            val statusProbes = snapshot.commands.filter { candidate ->
                 !candidate.state.isTerminal &&
                     candidate.projectId == projectId &&
                     CommandPayloadValidator.validate(candidate.payload).operation ==
                     CommandOperation.GATEWAY_UPDATE_STATUS
-            }?.let { existing ->
+            }
+            val reusable = statusProbes
+                .filter { gatewayStatusProbeCanBeReused(it.submittedAt, now) }
+                .maxByOrNull(PersistedCommand::submittedAt)
+            if (reusable != null) {
                 // A liveness check is read-only. Reuse its stable command identity so
                 // WebView reloads and overlapping foreground/background checks wait
-                // for the same Gateway result instead of orphaning one another.
-                return existing.toView().toReceipt()
+                // for the same Gateway result instead of orphaning one another. Retire
+                // duplicate probes left by older clients while keeping their tombstones.
+                expiredStatusProbes = statusProbes - reusable
+                require(snapshot.released.size + expiredStatusProbes.size <= MAX_RELEASED_TOMBSTONES) {
+                    "The released-command safety ledger is full; revoke this native account before clearing it."
+                }
+                if (expiredStatusProbes.isNotEmpty()) {
+                    commit(snapshot.copy(
+                        commands = snapshot.commands - expiredStatusProbes.toSet(),
+                        released = snapshot.released + expiredStatusProbes.map { candidate ->
+                            candidate.toReleasedTombstone(now)
+                        },
+                    ))
+                }
+                return reusable.toView().toReceipt()
             }
+            // A read-only probe is an observation, not a business mutation.
+            // After the bounded result window, preserve its duplicate-safety
+            // tombstone and create a fresh observation identity.
+            expiredStatusProbes = statusProbes
         }
-        require(snapshot.commands.size < MAX_ACTIVE_COMMANDS) {
+        require(snapshot.released.size + expiredStatusProbes.size <= MAX_RELEASED_TOMBSTONES) {
+            "The released-command safety ledger is full; revoke this native account before clearing it."
+        }
+        require(snapshot.commands.size - expiredStatusProbes.size < MAX_ACTIVE_COMMANDS) {
             "Release completed commands before adding another command."
         }
-        val now = nonnegativeNow()
         val operationId = newUniqueId("operationId")
         val command = PersistedCommand(
             operationId = operationId,
@@ -140,7 +165,12 @@ class DurableCommandOutbox internal constructor(
             completion = null,
             payload = payload,
         )
-        commit(snapshot.copy(commands = snapshot.commands + command))
+        commit(snapshot.copy(
+            commands = snapshot.commands - expiredStatusProbes.toSet() + command,
+            released = snapshot.released + expiredStatusProbes.map { candidate ->
+                candidate.toReleasedTombstone(now)
+            },
+        ))
         return command.toView().toReceipt()
     }
 
@@ -391,6 +421,14 @@ class DurableCommandOutbox internal constructor(
         )
     }
 }
+
+internal fun gatewayStatusProbeCanBeReused(submittedAt: Long, now: Long): Boolean {
+    requireNonnegativeJsonInteger(submittedAt, "Gateway status probe submitted timestamp")
+    requireNonnegativeJsonInteger(now, "Gateway status probe current timestamp")
+    return now < submittedAt || now - submittedAt <= GATEWAY_STATUS_PROBE_REUSE_WINDOW_MS
+}
+
+internal const val GATEWAY_STATUS_PROBE_REUSE_WINDOW_MS = 2 * 60_000L
 
 private fun replace(
     commands: List<PersistedCommand>,

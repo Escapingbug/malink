@@ -110,6 +110,22 @@ timeline-recovery fallback. Native hosts advertise the optional
 `commands.journal-reconciliation` bridge capability so a newer PWA does not
 claim this recovery path when hosted by an older APK.
 
+The native outbox owns this recovery even when no WebView is attached. It
+resumes published/running journal probes after process restart instead of
+waiting for the PWA to request recovery. A missing terminal remains
+nonterminal; clients MUST NOT synthesize success. They MAY retire a record only
+with a duplicate-execution tombstone and evidence that cannot conceal Matrix
+acceptance: deterministic local envelope failure, an authoritatively removed
+project route, or a matching authoritative session lifecycle that already satisfies the
+idempotent lifecycle request. The latter is state convergence, not proof that
+the retired command caused the state.
+
+`gateway.update.status` is a read-only observation. Clients may reuse one
+unfinished same-project probe for at most two minutes to coalesce overlapping
+checks. After that window, or after a native process restart, the old identity
+is tombstoned and a new check uses a fresh identity. This bounded observation
+rule MUST NOT be applied to business mutations.
+
 The Gateway commits each accepted `command_id` to a durable command journal
 before execution. Exact re-delivery returns the recorded state through
 `command.reconciled` and never runs the operation twice. Independent append
