@@ -419,6 +419,7 @@ import {
 } from "./turnTimeline";
 import {
   latestPendingPromptCommandId,
+  selectStopControlTarget,
   stopRequestAccepted,
 } from "./stopControl";
 import {
@@ -1859,6 +1860,7 @@ function MalinkAppRuntime() {
   );
   const reconciledOptimisticMessageIdsRef = useRef(new Set<string>());
   const pendingPromptSessionIdsRef = useRef(new Set<string>());
+  const locallyCancelledPromptSessionIdsRef = useRef(new Set<string>());
   const queuedSessionFlushIdsRef = useRef(new Set<string>());
   const queuedSessionFlushInFlightRef = useRef(new Set<string>());
   const optimisticPromotionInFlightRef = useRef<string | null>(null);
@@ -2425,6 +2427,9 @@ function MalinkAppRuntime() {
   const isStopping = Boolean(
     selectedSessionId && stoppingSessionIds.has(selectedSessionId),
   );
+  const isPromptSubmitting = Boolean(
+    selectedSessionId && submittingPromptSessionIds.has(selectedSessionId),
+  );
   const agentActivity = selectedSessionId
     ? agentActivitiesBySession.get(selectedSessionId) ?? null
     : null;
@@ -2448,15 +2453,20 @@ function MalinkAppRuntime() {
         receivedPromptCommandIds,
       )
     : null;
-  const stopTargetId = pendingPromptStopTargetId ?? selected?.activeTurnId ?? null;
-  const stopTargetsPendingPrompt = pendingPromptStopTargetId !== null;
+  const stopControlTarget = selectStopControlTarget({
+    promptSubmitting: isPromptSubmitting,
+    pendingPromptCommandId: pendingPromptStopTargetId,
+    activeTurnId: selected?.activeTurnId ?? null,
+  });
+  const stopTargetId = "commandId" in stopControlTarget
+    ? stopControlTarget.commandId
+    : null;
+  const stopTargetsPendingPrompt = stopControlTarget.kind === "queued-prompt";
+  const stopTargetsLocalSubmission = stopControlTarget.kind === "local-submission";
   useLayoutEffect(() => {
     resizeComposerTextarea(composerTextareaRef.current);
   }, [draft, selectedSessionId]);
 
-  const isPromptSubmitting = Boolean(
-    selectedSessionId && submittingPromptSessionIds.has(selectedSessionId),
-  );
   const sessionReady = Boolean(
     gatewayAvailable &&
       gatewayState &&
@@ -5834,6 +5844,7 @@ function MalinkAppRuntime() {
       optimisticMessagesRef.current.clear();
       reconciledOptimisticMessageIdsRef.current.clear();
       pendingPromptSessionIdsRef.current.clear();
+      locallyCancelledPromptSessionIdsRef.current.clear();
       setSubmittingPromptSessionIds(new Set());
       revisionConflictRef.current = null;
       nativeCommandReviewRef.current = null;
@@ -6362,6 +6373,7 @@ function MalinkAppRuntime() {
     optimisticMessagesRef.current.clear();
     reconciledOptimisticMessageIdsRef.current.clear();
     pendingPromptSessionIdsRef.current.clear();
+    locallyCancelledPromptSessionIdsRef.current.clear();
     setSubmittingPromptSessionIds(new Set());
     revisionConflictRef.current = null;
     nativeCommandReviewRef.current = null;
@@ -10123,6 +10135,12 @@ function MalinkAppRuntime() {
       })
       : Promise.resolve();
     setSessionPromptSubmitting(sessionId, true);
+    locallyCancelledPromptSessionIdsRef.current.delete(sessionId);
+    setSessionRunning(sessionId, true);
+    if (!queueBehindActiveTurn) {
+      resetSessionActivityUpdatedAt(sessionId);
+      setSessionAgentActivity(sessionId, SENDING_AGENT_ACTIVITY);
+    }
     let result: MalinkCommandSendResult | null;
     let acknowledgementTimeout: CommandAcknowledgementTimeoutError | null = null;
     try {
@@ -10130,6 +10148,30 @@ function MalinkAppRuntime() {
       // optimistic message, an immediate reload/background transition must be
       // able to restore it without waiting for Matrix history pagination.
       await optimisticHistoryPersisted;
+      if (locallyCancelledPromptSessionIdsRef.current.delete(sessionId)) {
+        if (submissionHistoryScope) {
+          await deleteMessageHistory(submissionHistoryScope, optimisticId).catch((error) => {
+            showUiNotice(
+              "history:update",
+              "history",
+              "warning",
+              `The cancelled message could not be removed from local history: ${formatUiError(error)}`,
+            );
+          });
+        }
+        if (selectedSessionIdRef.current === sessionId) setDraft("");
+        setPendingFiles([]);
+        setSessionPromptSubmitting(sessionId, false);
+        setSessionStopping(sessionId, false);
+        if (hasActivePromptCommand(sessionId)) {
+          setSessionRunning(sessionId, true);
+          setSessionAgentActivity(sessionId, activityBeforeSubmission);
+        } else {
+          setSessionRunning(sessionId, false);
+          setSessionAgentActivity(sessionId, null);
+        }
+        return;
+      }
       optimisticMessagesRef.current.set(optimisticId, {
         id: optimisticId,
         text: value,
@@ -10141,11 +10183,6 @@ function MalinkAppRuntime() {
         setMessages((current) => [...current, optimisticMessage]);
         setDraft("");
       }
-      setSessionRunning(sessionId, true);
-      if (!queueBehindActiveTurn) {
-        resetSessionActivityUpdatedAt(sessionId);
-        setSessionAgentActivity(sessionId, SENDING_AGENT_ACTIVITY);
-      }
       result = await sendRealCommand(
         createPromptCommandPayload({
           sessionId,
@@ -10154,7 +10191,13 @@ function MalinkAppRuntime() {
         }),
       );
     } catch (error) {
-      if (!(error instanceof CommandAcknowledgementTimeoutError)) throw error;
+      if (!(error instanceof CommandAcknowledgementTimeoutError)) {
+        locallyCancelledPromptSessionIdsRef.current.delete(sessionId);
+        setSessionStopping(sessionId, false);
+        setSessionRunning(sessionId, queueBehindActiveTurn);
+        setSessionAgentActivity(sessionId, activityBeforeSubmission);
+        throw error;
+      }
       acknowledgementTimeout = error;
       result = null;
     } finally {
@@ -10193,9 +10236,18 @@ function MalinkAppRuntime() {
           ? "Your computer's Malink Gateway is offline. This message is saved for reconciliation and has not been submitted again."
           : "Your computer did not acknowledge this message. It is saved for reconciliation; do not send it again while Malink determines whether it ran.",
       );
+      if (locallyCancelledPromptSessionIdsRef.current.delete(sessionId)) {
+        await stopStreaming(
+          sessionId,
+          acknowledgementTimeout.commandId,
+          true,
+          true,
+        );
+      }
       return;
     }
     if (!result) {
+      locallyCancelledPromptSessionIdsRef.current.delete(sessionId);
       finishLocalPromptCommand(sessionId);
       if (revisionConflictRef.current) {
         const conflict = revisionConflictRef.current;
@@ -10363,6 +10415,9 @@ function MalinkAppRuntime() {
         });
       }
       recoverUiNotice("composer:send");
+      if (locallyCancelledPromptSessionIdsRef.current.delete(sessionId)) {
+        await stopStreaming(sessionId, result.commandId, true, true);
+      }
     }
   }
 
@@ -10675,8 +10730,9 @@ function MalinkAppRuntime() {
     sessionId: string,
     targetCommandId: string,
     targetsPendingPrompt: boolean,
+    stopAlreadyRequested = false,
   ) {
-    if (stoppingSessionIdsRef.current.has(sessionId)) return;
+    if (stoppingSessionIdsRef.current.has(sessionId) && !stopAlreadyRequested) return;
     if (selectedSessionIdRef.current !== sessionId) return;
     setSessionStopping(sessionId, true);
     const activityBeforeStop = agentActivitiesBySession.get(sessionId) ?? null;
@@ -10731,6 +10787,13 @@ function MalinkAppRuntime() {
         );
       }
     }
+  }
+
+  function stopLocalPromptSubmission(sessionId: string): void {
+    if (!pendingPromptSessionIdsRef.current.has(sessionId)) return;
+    locallyCancelledPromptSessionIdsRef.current.add(sessionId);
+    setSessionStopping(sessionId, true);
+    setSessionAgentActivity(sessionId, STOPPING_AGENT_ACTIVITY);
   }
 
   async function materializeArtifact(
@@ -13301,7 +13364,9 @@ function MalinkAppRuntime() {
                     type="button"
                     className="send-button stop-button mount-feedback"
                     onClick={() => {
-                      if (selectedSessionId && stopTargetId) {
+                      if (selectedSessionId && stopTargetsLocalSubmission) {
+                        stopLocalPromptSubmission(selectedSessionId);
+                      } else if (selectedSessionId && stopTargetId) {
                         void stopStreaming(
                           selectedSessionId,
                           stopTargetId,
@@ -13311,10 +13376,14 @@ function MalinkAppRuntime() {
                     }}
                     aria-label={
                       isStopping
-                        ? stopTargetsPendingPrompt
+                        ? stopTargetsLocalSubmission
+                          ? "Cancelling message submission"
+                          : stopTargetsPendingPrompt
                           ? "Cancelling queued message"
                           : "Stopping agent"
-                        : stopTargetsPendingPrompt
+                        : stopTargetsLocalSubmission
+                          ? "Cancel message submission"
+                          : stopTargetsPendingPrompt
                           ? "Cancel queued message"
                           : stopTargetId
                             ? "Stop agent"
@@ -13322,13 +13391,15 @@ function MalinkAppRuntime() {
                     }
                     aria-busy={isStopping}
                     title={
-                      stopTargetsPendingPrompt
+                      stopTargetsLocalSubmission
+                        ? "Cancel this message before it reaches the Agent"
+                        : stopTargetsPendingPrompt
                         ? "Cancel queued message before the Agent starts it"
                         : stopTargetId
                           ? "Stop agent"
                           : "Syncing the active task before it can be stopped"
                     }
-                    disabled={isStopping || !stopTargetId}
+                    disabled={isStopping || (!stopTargetId && !stopTargetsLocalSubmission)}
                   >
                     {isStopping ? <span className="button-spinner" /> : "■"}
                   </button>
