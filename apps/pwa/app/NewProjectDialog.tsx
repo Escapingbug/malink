@@ -2,6 +2,7 @@
 
 import { FormEvent, useRef, useState } from "react";
 import { useDialogFocus } from "./dialogFocus";
+import { BusyActionLabel } from "./OperationProgress";
 import { gatewayProjectOwner } from "./projectCatalog";
 
 export type ProjectCreationGateway = {
@@ -186,7 +187,7 @@ function NewProjectDialogContent({ open, busy, gateways, onClose, onCreate }: Pr
               className="primary-button"
               disabled={busy || !selected || !name.trim() || !cwd.trim()}
             >
-              {busy ? "Creating…" : "Create project"}
+              {busy ? <BusyActionLabel>Creating…</BusyActionLabel> : "Create project"}
             </button>
           </footer>
         </form>

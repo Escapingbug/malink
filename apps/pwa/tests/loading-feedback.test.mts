@@ -3,6 +3,9 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { GatewayEnrollmentPanel } from "../app/GatewayEnrollmentPanel.tsx";
+import { NewProjectDialog } from "../app/NewProjectDialog.tsx";
+import { NotificationCenter } from "../app/NotificationCenter.tsx";
+import { UiNoticeList } from "../app/UiNoticeList.tsx";
 import {
   HistoryOperationTimeoutError,
   shouldAutoLoadEarlierMessages,
@@ -85,6 +88,7 @@ test("shows an explicit busy state while a pairing invitation is verified", () =
 
   assert.match(html, /Checking invitation…/);
   assert.match(html, /Verifying the invitation…/);
+  assert.match(html, /operation-progress/);
   const continueButton = html.match(
     /<button(?=[^>]*class="continue-link-button")[^>]*>/,
   )?.[0];
@@ -117,6 +121,7 @@ test("shows the exact secure pairing stage while finishing a connection", () => 
 
   assert.match(html, /Connecting this device…/);
   assert.match(html, /Recovering the approved pairing response…/);
+  assert.match(html, /operation-progress/);
   assert.doesNotMatch(html, /Finishing the connection…/);
 });
 
@@ -149,7 +154,79 @@ test("identifies only the Gateway row whose approval is in flight", () => {
   }));
 
   assert.equal(html.match(/Sending approval…/g)?.length, 1);
+  assert.equal(html.match(/operation-progress/g)?.length, 1);
   assert.equal(html.match(/>Approve Gateway</g)?.length, 1);
   assert.match(html, /2\. Approve Office Gateway/);
   assert.match(html, /2\. Approve NAS Gateway/);
+});
+
+test("keeps long-running notices visibly active until their terminal state", () => {
+  const activeNotice = {
+    key: "provider:history-background",
+    scope: "background" as const,
+    severity: "info" as const,
+    message: "Provider sessions are loading in the background.",
+    createdAt: 1_000,
+    expiresAt: null,
+    active: true,
+    hidden: false,
+  };
+  const activeHtml = renderToStaticMarkup(createElement(UiNoticeList, {
+    notices: [activeNotice],
+    onDismiss() {},
+  }));
+  assert.match(activeHtml, /ui-notice-active/);
+  assert.match(activeHtml, /operation-progress/);
+  assert.match(activeHtml, /aria-live="polite"/);
+
+  const completedHtml = renderToStaticMarkup(createElement(UiNoticeList, {
+    notices: [{
+      ...activeNotice,
+      severity: "success" as const,
+      message: "Provider sessions finished loading.",
+      active: false,
+    }],
+    onDismiss() {},
+  }));
+  assert.doesNotMatch(completedHtml, /operation-progress/);
+  assert.match(completedHtml, />✓</);
+});
+
+test("shows motion for active notification-center operations", () => {
+  const html = renderToStaticMarkup(createElement(NotificationCenter, {
+    open: true,
+    items: [{
+      key: "gateway-update",
+      severity: "info",
+      title: "Gateway is preparing its update",
+      detail: "The maintenance Agent continues in the background.",
+      active: true,
+    }],
+    onClose() {},
+  }));
+
+  assert.match(html, /notification-center-item-active/);
+  assert.match(html, /operation-progress/);
+  assert.match(html, /aria-live="polite"/);
+  assert.match(html, /Closing this panel never cancels/);
+});
+
+test("shows motion while project creation is still running", () => {
+  const html = renderToStaticMarkup(createElement(NewProjectDialog, {
+    open: true,
+    busy: true,
+    gateways: [{
+      gatewayNodeId: "gateway-1",
+      gatewayName: "Studio Gateway",
+      targetProjectId: "project-1",
+      providers: [{ id: "codex", name: "Codex" }],
+      defaultProvider: "codex",
+    }],
+    onClose() {},
+    onCreate() {},
+  }));
+
+  assert.match(html, /aria-busy="true"/);
+  assert.match(html, /Creating…/);
+  assert.match(html, /operation-progress/);
 });

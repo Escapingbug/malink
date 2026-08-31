@@ -3,6 +3,7 @@
 import { useRef } from "react";
 import type { GatewaySessionSummary } from "./gatewayState";
 import { useDialogFocus } from "./dialogFocus";
+import { BusyActionLabel } from "./OperationProgress";
 
 type Props = {
   session: GatewaySessionSummary | null;
@@ -80,7 +81,7 @@ export function SessionDeleteDialog({
             aria-busy={busy}
             onClick={onConfirm}
           >
-            {busy ? "Deleting…" : "Delete session"}
+            {busy ? <BusyActionLabel>Deleting…</BusyActionLabel> : "Delete session"}
           </button>
         </footer>
       </section>

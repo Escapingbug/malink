@@ -3,6 +3,7 @@
 import { FormEvent, useMemo, useRef, useState } from "react";
 import type { GatewayModelCapability, GatewayWorkspaceState } from "./gatewayState";
 import { useDialogFocus } from "./dialogFocus";
+import { BusyActionLabel } from "./OperationProgress";
 
 export type ProjectSettingsInput = {
   name: string;
@@ -121,7 +122,7 @@ function ProjectSettingsDialogContent({
               aria-busy={busy}
               onClick={onDelete}
             >
-              {busy ? "Deleting…" : "Delete project"}
+              {busy ? <BusyActionLabel>Deleting…</BusyActionLabel> : "Delete project"}
             </button>
           </footer>
         </section>
@@ -212,7 +213,7 @@ function ProjectSettingsDialogContent({
                 className="primary-button"
                 disabled={busy || !changed || !name.trim()}
               >
-                {busy ? "Saving…" : "Save changes"}
+                {busy ? <BusyActionLabel>Saving…</BusyActionLabel> : "Save changes"}
               </button>
             </footer>
           </form>

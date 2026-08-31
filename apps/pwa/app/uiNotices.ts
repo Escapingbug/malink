@@ -19,6 +19,8 @@ export type UiNotice = {
   message: string;
   createdAt: number;
   expiresAt: number | null;
+  /** The operation is still running and should retain visible motion. */
+  active: boolean;
   /** Hidden inline but retained until resolved or cleared from the notice center. */
   hidden: boolean;
 };
@@ -34,6 +36,7 @@ export type UiNoticeEvent =
       message: string;
       now: number;
       autoDismissMs?: number | null;
+      active?: boolean;
     }
   | { type: "dismiss"; key: string }
   | { type: "clear"; key: string }
@@ -67,6 +70,7 @@ export function reduceUiNotices(
           message: event.message.trim(),
           createdAt: event.now,
           expiresAt: duration === null ? null : event.now + Math.max(0, duration),
+          active: event.active ?? false,
           hidden: false,
         },
       };

@@ -7,6 +7,7 @@ import type {
   SessionExtensionDescriptor,
 } from "@malink/protocol";
 import { useDialogFocus } from "./dialogFocus";
+import { BusyActionLabel } from "./OperationProgress";
 import {
   type GatewayModelCapability,
   type GatewayWorkspaceState,
@@ -516,7 +517,7 @@ function NewSessionDialogContent({
                 !extensionConfigValid
               }
             >
-              {busy ? "Creating…" : "Create session"}
+              {busy ? <BusyActionLabel>Creating…</BusyActionLabel> : "Create session"}
             </button>
           </footer>
         </form>

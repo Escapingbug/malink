@@ -327,10 +327,10 @@ import {
   globalUiNotices,
   noticesForScope,
   reduceUiNotices,
-  type UiNotice,
   type UiNoticeScope,
   type UiNoticeSeverity,
 } from "./uiNotices";
+import { UiNoticeList } from "./UiNoticeList";
 import {
   NotificationCenter,
   type NotificationCenterItem,
@@ -1081,45 +1081,6 @@ function AttachmentCard({
       </div>
       {error && <small className="attachment-error">{error}</small>}
     </section>
-  );
-}
-
-function UiNoticeList({
-  notices,
-  className,
-  onDismiss,
-}: {
-  notices: UiNotice[];
-  className?: string;
-  onDismiss(key: string): void;
-}) {
-  if (notices.length === 0) return null;
-  return (
-    <div className={`ui-notice-list ${className ?? ""}`}>
-      {notices.map((notice) => (
-        <div
-          key={notice.key}
-          className={`ui-notice ui-notice-${notice.severity}`}
-          role={notice.severity === "error" ? "alert" : "status"}
-        >
-          <span aria-hidden="true">
-            {notice.severity === "error"
-              ? "!"
-              : notice.severity === "success"
-                ? "✓"
-                : "i"}
-          </span>
-          <p>{notice.message}</p>
-          <button
-            type="button"
-            aria-label="Dismiss message"
-            onClick={() => onDismiss(notice.key)}
-          >
-            ×
-          </button>
-        </div>
-      ))}
-    </div>
   );
 }
 
@@ -2844,6 +2805,7 @@ function MalinkAppRuntime() {
     severity: UiNoticeSeverity,
     message: string,
     autoDismissMs?: number | null,
+    active = false,
   ) {
     dispatchUiNotice({
       type: "show",
@@ -2853,6 +2815,7 @@ function MalinkAppRuntime() {
       message,
       now: Date.now(),
       ...(autoDismissMs === undefined ? {} : { autoDismissMs }),
+      ...(active ? { active: true } : {}),
     });
   }
 
@@ -3021,6 +2984,7 @@ function MalinkAppRuntime() {
       "info",
       "Checking for a newer Malink version in the background…",
       null,
+      true,
     );
     try {
       await updater.checkNow();
@@ -3065,6 +3029,7 @@ function MalinkAppRuntime() {
         ? "Provider session history is loading in the background. You can keep working."
         : "Provider sessions are loading in the background. You can keep working.",
       null,
+      true,
     );
   }
 
@@ -10674,6 +10639,7 @@ function MalinkAppRuntime() {
       severity: notice.severity,
       title: uiNoticeTitle(notice.scope),
       detail: notice.message,
+      active: notice.active,
       meta: `${notice.hidden ? "Hidden" : "Visible"} · ${formatRecoveryTimestamp(notice.createdAt)}`,
       actions: [{
         label: "Clear",
@@ -10705,6 +10671,8 @@ function MalinkAppRuntime() {
       severity: command.state === "failed" ? "error" : "warning",
       title: presentation.title,
       detail: presentation.detail,
+      active: recoveredNativeCommandFlightIds.has(command.commandId) ||
+        recoveryActionBusy(presentation.primaryAction),
       meta: `Command ${command.commandId} · saved ${formatRecoveryTimestamp(command.submittedAt)} · last changed ${formatRecoveryTimestamp(command.updatedAt)}`,
       actions: [
         ...(primaryAction && presentation.primaryLabel
@@ -10895,6 +10863,7 @@ function MalinkAppRuntime() {
       detail: runtime.detail ?? (runtime.state === "starting"
         ? "The local maintenance Agent continues in the background."
         : "Open Gateway software for the latest signed status."),
+      active: runtime.state === "starting" || runtime.state === "checking",
       actions: [{
         label: "Open Gateway software",
         primary: true,
@@ -10973,6 +10942,8 @@ function MalinkAppRuntime() {
           : "info",
       title: "Android app update",
       detail: nativeUpdateStatusText(nativeUpdateState),
+      active: nativeUpdateState.phase === "downloading" ||
+        nativeUpdateState.phase === "installing",
       actions: [{
         label: "Open settings",
         primary: true,
@@ -10994,6 +10965,8 @@ function MalinkAppRuntime() {
         : pwaUpdateState.phase === "unavailable"
           ? "The current version remains active. You can retry from settings."
           : `Preparing build ${pwaUpdateState.latestVersion}.`,
+      active: pwaUpdateState.phase === "updating" ||
+        pwaUpdateState.phase === "waiting",
       actions: pwaUpdateState.phase === "unavailable"
         ? [{
             label: "Open settings",

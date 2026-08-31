@@ -51,6 +51,7 @@ test("dialog-owned operations remain globally visible at every severity", () => 
     message: "Provider History is loading in the background.",
     now: 20,
     autoDismissMs: null,
+    active: true,
   });
   state = reduceUiNotices(state, {
     type: "show",
@@ -77,6 +78,39 @@ test("dialog-owned operations remain globally visible at every severity", () => 
       "update:pwa-check",
     ],
   );
+  assert.equal(state["provider:history-background"].active, true);
+});
+
+test("active operations keep their motion state until a terminal notice replaces them", () => {
+  const active = reduceUiNotices(EMPTY_UI_NOTICE_STATE, {
+    type: "show",
+    key: "update:pwa-check",
+    scope: "update",
+    severity: "info",
+    message: "Checking for updates…",
+    now: 1_000,
+    autoDismissMs: null,
+    active: true,
+  });
+
+  assert.equal(active["update:pwa-check"].active, true);
+  assert.equal(active["update:pwa-check"].expiresAt, null);
+  assert.equal(
+    reduceUiNotices(active, { type: "tick", now: 600_000 })[
+      "update:pwa-check"
+    ].active,
+    true,
+  );
+
+  const completed = reduceUiNotices(active, {
+    type: "show",
+    key: "update:pwa-check",
+    scope: "update",
+    severity: "success",
+    message: "Malink is up to date.",
+    now: 600_001,
+  });
+  assert.equal(completed["update:pwa-check"].active, false);
 });
 
 test("info and success leave inline UI but remain in the notice center", () => {
