@@ -379,6 +379,18 @@ describe("native bridge JSON-RPC conformance", () => {
         commandId: "command-1",
       })),
     ).toThrow(/idempotencyKey/);
+
+    const retired = parseMethodRpcResponse(
+      "malink.command.retire",
+      response({ commandId: "command-2", retired: true }),
+    );
+    expect("result" in retired && retired.result.retired).toBe(true);
+    expect(() =>
+      parseRpcRequest(request("malink.command.retire", {
+        context,
+        commandId: "command-2",
+      })),
+    ).toThrow(/idempotencyKey/);
   });
 
   it("uses a native-safe history message DTO without raw Matrix events", () => {

@@ -31,6 +31,7 @@ export function durableCommandRecoveryPresentation(input: {
   connectionStatus: MatrixConnectionStatus;
   gatewayAvailable: boolean;
   journalReconciliationAvailable?: boolean;
+  orphanCommandRetirementAvailable?: boolean;
   manualAndroidUpdateRequired?: boolean;
   gatewayUpdateAvailableCount?: number;
   lastCheck?: DurableCommandRecoveryCheckResult | null;
@@ -88,6 +89,15 @@ export function durableCommandRecoveryPresentation(input: {
 
   if (accepted && input.lastCheck?.status === "no-response") {
     const updateCount = input.gatewayUpdateAvailableCount ?? 0;
+    if (input.orphanCommandRetirementAvailable === false) {
+      return {
+        title: "Update Android to clear this old action",
+        detail:
+          "No signed journal reply arrived during the last check. This installed Android version can keep retrying the saved identity, but it cannot safely stop tracking an action whose old Gateway route is gone. Update Android to add that recovery option; updating does not submit the action again.",
+        stateLabel,
+        ...androidUpdateAction(input.manualAndroidUpdateRequired === true),
+      };
+    }
     if (updateCount > 0) {
       return {
         title: "The Gateway did not answer this check",
@@ -103,7 +113,7 @@ export function durableCommandRecoveryPresentation(input: {
     return {
       title: "The Gateway did not answer this check",
       detail:
-        "No signed journal reply arrived during the last check. The target Gateway may be offline, may not support journal replies, or may no longer own this command route. Bring that Gateway online and ensure it is current; Malink will retry this saved command automatically. You can hide this notice while recovery continues. Export diagnostics if the target Gateway is already online.",
+        "No signed journal reply arrived during the last check. The target Gateway may be offline or may no longer own this old command route. If the action's result is already visible—or you no longer need to verify it—choose Stop tracking. Malink will preserve its identity so it cannot be submitted twice. Otherwise, bring the target Gateway online and keep recovery running.",
       stateLabel,
       primaryAction: "review-gateway-updates",
       primaryLabel: "Review Gateway software",

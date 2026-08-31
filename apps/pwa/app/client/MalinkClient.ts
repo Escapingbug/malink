@@ -29,6 +29,8 @@ export type MalinkNativeRuntimeInfo = HelloResult["native"] & {
   pwaSource?: MalinkPwaSourceInfo;
   /** Additive capability; absent on APKs that only scan Matrix history. */
   commandJournalReconciliation?: boolean;
+  /** Additive capability for permanently retiring an unverified local command. */
+  orphanCommandRetirement?: boolean;
 };
 export type MalinkMessage = ClientMessage;
 export type MalinkPairingPreview = PairingPreview;
@@ -144,6 +146,7 @@ export interface MalinkClient {
     timeoutMs: number,
   ): Promise<CommandCompletion>;
   releaseCommand(commandId: string): Promise<void>;
+  retireUnverifiedCommand?(commandId: string): Promise<void>;
   nativeUpdateStatus?(): Promise<NativeUpdateStatus>;
   checkNativeUpdate?(): Promise<NativeUpdateStatus>;
   installNativeUpdate?(): Promise<NativeUpdateStatus>;

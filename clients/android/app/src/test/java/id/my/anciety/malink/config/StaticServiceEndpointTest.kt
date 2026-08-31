@@ -5,15 +5,30 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeFalse
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 class StaticServiceEndpointTest {
     @Test
     fun `GitHub Pages is the production Official static service`() {
+        assumeFalse(BuildConfig.ALLOW_INSECURE_E2E_LOOPBACK)
         assertEquals(
             "https://escapingbug.github.io/malink/",
             StaticServiceEndpoint.parse(BuildConfig.APP_ORIGIN).baseUrl,
         )
+    }
+
+    @Test
+    fun `the e2e build uses only its explicit loopback static service`() {
+        assumeTrue(BuildConfig.ALLOW_INSECURE_E2E_LOOPBACK)
+        val endpoint = StaticServiceEndpoint.parse(
+            BuildConfig.APP_ORIGIN,
+            allowLoopbackHttp = true,
+        )
+
+        assertEquals("http", endpoint.origin.substringBefore(":"))
+        assertTrue(endpoint.origin.startsWith("http://127.0.0.1:"))
     }
 
     @Test

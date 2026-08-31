@@ -186,6 +186,22 @@ class DurableCommandOutboxTest {
     }
 
     @Test
+    fun `retiring an unverified command preserves its duplicate-execution tombstone`() {
+        val fixture = fixture()
+        val key = UUID.randomUUID().toString()
+        val body = payload("session.create")
+        val receipt = fixture.outbox.enqueue(key, body, projectId = "project-a")
+        fixture.outbox.claimForTransmission(receipt.commandId)
+        fixture.outbox.recordPublished(receipt.commandId, "\$published-event")
+
+        assertTrue(fixture.outbox.retireUnverifiedCommand(receipt.commandId))
+        assertNull(fixture.outbox.get(receipt.commandId))
+        assertThrows(ReleasedCommandException::class.java) {
+            fixture.outbox.enqueue(key, body, projectId = "project-a")
+        }
+    }
+
+    @Test
     fun `new Gateway status probe retires older probes only on the same project`() {
         val fixture = fixture()
         val firstKey = UUID.randomUUID().toString()

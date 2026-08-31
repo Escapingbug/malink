@@ -406,10 +406,14 @@ presentation evidence only; it neither authorizes execution nor prevents a
 durable command from waiting for its owning Gateway to return.
 If a bounded journal check receives no signed reply, the client records the
 check time and presents that outcome separately from the command's unchanged
-durable timestamp. Gateway software is always the recovery action: a known
-release opens its per-node review, while missing release or directory state
-opens the owning settings layer and refreshes discovery. The client continues
-automatic same-identity recovery without offering another immediate no-op check.
+durable timestamp. A known Gateway release opens its per-node review. When an
+old route or journal can no longer produce a terminal result, Android may let
+the user stop tracking that command locally. This retires the outbox record
+into an idempotency tombstone: it does not cancel an already accepted action,
+but it permanently prevents the client from submitting that identity again.
+Older APKs offer the Android update path instead of an ineffective Gateway
+check. Ordinary hiding is persisted across WebView reloads while same-identity
+recovery continues in the background.
 
 ## Gateway online-update boundary
 

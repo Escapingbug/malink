@@ -85,6 +85,7 @@ class BridgeProtocolTest {
                           {"name":"trust.native","versions":[1]},
                           {"name":"commands.durable","versions":[1,2,3,4]},
                           {"name":"commands.journal-reconciliation","versions":[1]},
+                          {"name":"commands.orphan-retirement","versions":[1]},
                           {"name":"history.page","versions":[1,2]},
                           {"name":"client.diagnostics","versions":[1]}
                         ]
@@ -100,6 +101,7 @@ class BridgeProtocolTest {
                 "trust.native",
                 "commands.durable",
                 "commands.journal-reconciliation",
+                "commands.orphan-retirement",
                 "history.page",
                 "client.diagnostics",
             ),
@@ -151,6 +153,30 @@ class BridgeProtocolTest {
             response.getValue("filename").jsonPrimitive.content,
         )
         assertEquals(1, runtime.diagnosticExports)
+    }
+
+    @Test
+    fun `orphaned command retirement requires its additive capability`() {
+        val dispatcher = BridgeDispatcher(FakeRuntime(), BRIDGE_SESSION_ID)
+        dispatch(dispatcher, helloRequest())
+
+        val response = failure(dispatch(dispatcher, """
+            {
+              "jsonrpc":"2.0",
+              "id":"retire-1",
+              "method":"malink.command.retire",
+              "params":{
+                "context":{"bridgeSessionId":"$BRIDGE_SESSION_ID"},
+                "idempotencyKey":"00000000-0000-4000-8000-000000000091",
+                "commandId":"command-orphaned-1"
+              }
+            }
+        """.trimIndent()))
+
+        assertEquals(
+            "CAPABILITY_UNAVAILABLE",
+            response.getValue("data").jsonObject.getValue("errorCode").jsonPrimitive.content,
+        )
     }
 
     @Test

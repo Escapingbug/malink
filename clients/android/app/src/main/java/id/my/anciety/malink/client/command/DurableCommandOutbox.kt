@@ -312,6 +312,22 @@ class DurableCommandOutbox internal constructor(
         return true
     }
 
+    /**
+     * Stops local recovery of an unresolved command at the user's request.
+     * The tombstone retains the original idempotency identity, so retiring
+     * recovery can never make the action executable a second time.
+     */
+    @Synchronized
+    fun retireUnverifiedCommand(commandId: String): Boolean {
+        val command = findCurrent(commandId) ?: return false
+        require(snapshot.released.size < MAX_RELEASED_TOMBSTONES) {
+            "The released-command safety ledger is full; revoke this native account before clearing it."
+        }
+        val tombstone = command.toReleasedTombstone(nonnegativeNow())
+        commit(snapshot.copy(commands = snapshot.commands - command, released = snapshot.released + tombstone))
+        return true
+    }
+
     @Synchronized
     fun clear() {
         store.clear()

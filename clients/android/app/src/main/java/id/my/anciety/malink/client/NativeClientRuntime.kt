@@ -1078,6 +1078,27 @@ class NativeClientRuntime(
         return released
     }
 
+    fun retireUnverifiedCommand(commandId: String): Boolean {
+        val current = outbox.get(commandId) ?: return false
+        val operation = outbox.operation(commandId)
+        cancelCommandTransmission(commandId)
+        cancelScheduledCommandRecovery(commandId)
+        cancelPublishedCommandResultRecovery(commandId)
+        val retired = outbox.retireUnverifiedCommand(commandId)
+        if (retired) {
+            matrixMlp3CommandContent.remove(commandId)
+            refreshSnapshot(publishLifecycle = false)
+            diagnostics.record(
+                "command.unverified_retired",
+                mapOf(
+                    "action" to (operation?.wireName ?: "unknown"),
+                    "stage" to current.state.wireName,
+                ),
+            )
+        }
+        return retired
+    }
+
     suspend fun resolveConflict(commandId: String, action: RevisionConflictAction): DurableReceipt =
         throw IllegalStateException(
             "MLP/3 command $commandId has no global revision conflict to ${action.name.lowercase()}.",

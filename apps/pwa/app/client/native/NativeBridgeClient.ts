@@ -55,6 +55,7 @@ export const REQUIRED_NATIVE_CAPABILITIES = [
 
 export const OPTIONAL_NATIVE_CAPABILITIES = [
   "commands.journal-reconciliation",
+  "commands.orphan-retirement",
   "matrix.login-token",
   "client.update",
   "client.pwa-source",
@@ -558,6 +559,20 @@ export class NativeBridgeClient implements MalinkClient {
       idempotencyKey: crypto.randomUUID(),
       commandId,
     });
+    this.#forgetReleasedCommand(commandId);
+  }
+
+  async retireUnverifiedCommand(commandId: string): Promise<void> {
+    await this.ready;
+    await this.bridge.request("malink.command.retire", {
+      context: this.bridge.context(),
+      idempotencyKey: crypto.randomUUID(),
+      commandId,
+    });
+    this.#forgetReleasedCommand(commandId);
+  }
+
+  #forgetReleasedCommand(commandId: string): void {
     const operationId = this.#commandOperations.get(commandId);
     if (operationId) {
       const aliases: string[] = [];

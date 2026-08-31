@@ -70,6 +70,7 @@ describe("durableCommandRecoveryPresentation", () => {
       connectionStatus: "connected",
       gatewayAvailable: false,
       journalReconciliationAvailable: true,
+      orphanCommandRetirementAvailable: true,
     });
 
     expect(presentation.primaryAction).toBeNull();
@@ -129,6 +130,7 @@ describe("durableCommandRecoveryPresentation", () => {
       connectionStatus: "connected",
       gatewayAvailable: true,
       journalReconciliationAvailable: true,
+      orphanCommandRetirementAvailable: true,
       gatewayUpdateAvailableCount: 0,
       lastCheck: {
         status: "no-response",
@@ -139,7 +141,27 @@ describe("durableCommandRecoveryPresentation", () => {
     expect(presentation.primaryAction).toBe("review-gateway-updates");
     expect(presentation.primaryLabel).toBe("Review Gateway software");
     expect(presentation.detail).toContain("may be offline");
-    expect(presentation.detail).toContain("Export diagnostics");
-    expect(presentation.detail).toContain("hide this notice");
+    expect(presentation.detail).toContain("Stop tracking");
+    expect(presentation.detail).toContain("cannot be submitted twice");
+  });
+
+  it("offers an Android update when the old APK cannot retire an orphaned action", () => {
+    const presentation = durableCommandRecoveryPresentation({
+      state: "accepted",
+      connectionStatus: "connected",
+      gatewayAvailable: true,
+      journalReconciliationAvailable: true,
+      orphanCommandRetirementAvailable: false,
+      gatewayUpdateAvailableCount: 0,
+      lastCheck: {
+        status: "no-response",
+        checkedAt: 1_788_000_000_000,
+      },
+    });
+
+    expect(presentation.primaryAction).toBe("update-native-app");
+    expect(presentation.primaryLabel).toBe("Update Android app");
+    expect(presentation.detail).toContain("cannot safely stop tracking");
+    expect(presentation.detail).toContain("does not submit the action again");
   });
 });

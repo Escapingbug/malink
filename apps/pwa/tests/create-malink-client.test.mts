@@ -140,6 +140,16 @@ test("reports journal reconciliation only when the native host negotiated it", (
     }).commandJournalReconciliation,
     true,
   );
+  assert.equal(nativeRuntimeInfo(base).orphanCommandRetirement, undefined);
+  assert.equal(
+    nativeRuntimeInfo({
+      ...base,
+      capabilities: {
+        "commands.orphan-retirement": { version: 1 },
+      },
+    }).orphanCommandRetirement,
+    true,
+  );
 });
 
 test("falls back explicitly when the native host is only a Matrix scaffold", async () => {

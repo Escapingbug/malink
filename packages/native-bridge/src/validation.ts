@@ -466,6 +466,9 @@ function parseMethodResult<M extends RequestMethod>(
     case "malink.command.release":
       result = parseLiteralResult(input, "released", "commandId");
       break;
+    case "malink.command.retire":
+      result = parseLiteralResult(input, "retired", "commandId");
+      break;
     case "malink.history.page":
       result = parseHistoryPageResult(input);
       break;
@@ -1354,7 +1357,7 @@ function parseDiagnosticsExportResult(input: unknown): DiagnosticsExportResult {
 
 function parseLiteralResult(
   input: unknown,
-  flag: "unsubscribed" | "released" | "aborted" | "closed" | "cancelled",
+  flag: "unsubscribed" | "released" | "retired" | "aborted" | "closed" | "cancelled",
   idName: "subscriptionId" | "commandId" | "transferId" | "pairingId",
 ): Record<string, string | true> {
   const value = strictObject(input, [idName, flag], `${flag} result`);
@@ -1569,6 +1572,11 @@ function parseMethodParams(method: RequestMethod, input: unknown): JsonObject {
       return params;
     }
     case "malink.command.release": {
+      const params = mutationParams(input, ["commandId"]);
+      opaqueId(params.commandId, "commandId");
+      return params;
+    }
+    case "malink.command.retire": {
       const params = mutationParams(input, ["commandId"]);
       opaqueId(params.commandId, "commandId");
       return params;

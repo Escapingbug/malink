@@ -151,6 +151,7 @@ object BridgeProtocol {
         "malink.command.recover",
         "malink.command.get",
         "malink.command.release",
+        "malink.command.retire",
         "malink.command.resolveConflict",
         "malink.history.page",
         "malink.attachment.upload.open",
@@ -615,6 +616,17 @@ class BridgeDispatcher(
                     val commandId = requiredString(request.params, "commandId", 512)
                     if (!runtime.client().releaseCommand(commandId)) operationNotFound("Command was not found.")
                     buildJsonObject { put("commandId", commandId); put("released", true) }
+                }
+            }
+            "malink.command.retire" -> {
+                requireCommandOrphanRetirementCapability()
+                requireContext(request.params, true, requiredExtra = setOf("commandId"))
+                mutationResult(request) {
+                    val commandId = requiredString(request.params, "commandId", 512)
+                    if (!runtime.client().retireUnverifiedCommand(commandId)) {
+                        operationNotFound("Command was not found.")
+                    }
+                    buildJsonObject { put("commandId", commandId); put("retired", true) }
                 }
             }
             "malink.command.resolveConflict" -> {
@@ -1415,6 +1427,16 @@ class BridgeDispatcher(
         }
     }
 
+    private fun requireCommandOrphanRetirementCapability() {
+        if (COMMAND_ORPHAN_RETIREMENT_CAPABILITY !in negotiatedCapabilities) {
+            throw BridgeDispatchException(
+                BridgeError.CAPABILITY_UNAVAILABLE,
+                "Unverified command retirement was not negotiated.",
+                userAction = "update_native",
+            )
+        }
+    }
+
     private fun nativeUpdateStatusToJson(status: NativeUpdateStatus): JsonObject = buildJsonObject {
         put("phase", status.phase.wireName)
         put("currentVersionCode", status.currentVersionCode)
@@ -1437,6 +1459,7 @@ class BridgeDispatcher(
     private companion object {
         const val FOREGROUND_SERVICE_CAPABILITY = "background.foreground-service"
         const val COMMAND_JOURNAL_RECONCILIATION_CAPABILITY = "commands.journal-reconciliation"
+        const val COMMAND_ORPHAN_RETIREMENT_CAPABILITY = "commands.orphan-retirement"
         const val MATRIX_BOOTSTRAP_CAPABILITY = "matrix.session-bootstrap"
         const val MATRIX_LOGIN_TOKEN_CAPABILITY = "matrix.login-token"
         const val NATIVE_UPDATE_CAPABILITY = "client.update"
@@ -1448,6 +1471,7 @@ class BridgeDispatcher(
             "state.snapshot",
             "commands.durable",
             COMMAND_JOURNAL_RECONCILIATION_CAPABILITY,
+            COMMAND_ORPHAN_RETIREMENT_CAPABILITY,
             "history.page",
             "attachments.chunked",
             "pairing.native",

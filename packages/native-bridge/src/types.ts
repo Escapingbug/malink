@@ -105,6 +105,7 @@ export type CapabilityName =
   | "state.snapshot"
   | "commands.durable"
   | "commands.journal-reconciliation"
+  | "commands.orphan-retirement"
   | "history.page"
   | "attachments.chunked"
   | "pairing.native"
@@ -516,6 +517,11 @@ export type CommandReleaseResult = {
   released: true;
 };
 
+export type CommandRetireResult = {
+  commandId: string;
+  retired: true;
+};
+
 export type NativeUpdateStatus = {
   phase:
     | "current"
@@ -563,6 +569,7 @@ export const REQUEST_METHODS = [
   "malink.command.recover",
   "malink.command.get",
   "malink.command.release",
+  "malink.command.retire",
   "malink.command.resolveConflict",
   "malink.history.page",
   "malink.attachment.upload.open",
@@ -591,6 +598,7 @@ export const MUTATION_METHODS = [
   "malink.command.cancel",
   "malink.command.recover",
   "malink.command.release",
+  "malink.command.retire",
   "malink.command.resolveConflict",
   "malink.attachment.upload.open",
   "malink.attachment.upload.finish",
@@ -666,6 +674,7 @@ export type BridgeMethodParams = {
   "malink.command.recover": IdempotentMutationParams & { commandId: string };
   "malink.command.get": ContextParams & { commandId: string };
   "malink.command.release": IdempotentMutationParams & { commandId: string };
+  "malink.command.retire": IdempotentMutationParams & { commandId: string };
   "malink.command.resolveConflict": IdempotentMutationParams & {
     commandId: string;
     action: "retry" | "discard";
@@ -733,6 +742,7 @@ export type BridgeMethodResults = {
   "malink.command.recover": CommandReceipt;
   "malink.command.get": CommandView;
   "malink.command.release": CommandReleaseResult;
+  "malink.command.retire": CommandRetireResult;
   "malink.command.resolveConflict": CommandReceipt;
   "malink.history.page": HistoryPageResult;
   "malink.attachment.upload.open": AttachmentUploadOpenResult;

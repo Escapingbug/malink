@@ -203,6 +203,17 @@ test("returns a durable native receipt immediately and acknowledges event cursor
   );
   assert.equal(JSON.stringify(tokenRequest).includes("accessToken"), false);
 
+  await client.retireUnverifiedCommand("command-orphaned-1");
+  const retirementRequest = port.requests.find(
+    (request) => request.method === "malink.command.retire",
+  );
+  assert.ok(retirementRequest);
+  assert.equal(
+    (retirementRequest.params as BridgeMethodParams["malink.command.retire"])
+      .commandId,
+    "command-orphaned-1",
+  );
+
   client.dispose();
   assert.equal(port.onmessage, null);
   assert.ok(
@@ -1219,6 +1230,10 @@ function responseFor(request: Request): unknown {
         status: "share_opened",
         filename: "malink-native-diagnostics.txt",
       };
+    case "malink.command.retire": {
+      const params = request.params as BridgeMethodParams["malink.command.retire"];
+      return { commandId: params.commandId, retired: true };
+    }
     default:
       throw new Error(`Unexpected native method in test: ${request.method}`);
   }
