@@ -398,6 +398,7 @@ import {
 } from "./stopControl";
 import {
   readSelectedSessionRoute,
+  resolveSessionSelection,
   writeSelectedSessionRoute,
 } from "./selectedSessionState";
 import {
@@ -5834,44 +5835,32 @@ function MalinkAppRuntime() {
               state.gatewayState.sessions,
               pendingSessionLifecycleIds(sessionLifecycleBusyRef.current),
             );
-            const availableIds = new Set(
-              selectableSessions.map((session) => session.id),
-            );
-            const openedSession = pendingOpenedSessionIdRef.current;
-            const activeSessions = selectableSessions.filter(
-              (session) => session.status !== "archived",
-            );
-            const activeIds = new Set(
-              activeSessions.map((session) => session.id),
-            );
+            const openedSessionId = pendingOpenedSessionIdRef.current;
             const pendingCreated = pendingCreatedSessionIdRef.current;
             const localDraftId = optimisticSessionRef.current?.localSessionId;
-            const localDraftSelected = Boolean(
-              localDraftId && selectedSessionIdRef.current === localDraftId,
-            );
-            const nextSessionId =
-              openedSession && availableIds.has(openedSession)
-                ? openedSession
-                : localDraftSelected
-                  ? localDraftId!
-                : !localDraftId &&
-                    pendingCreated &&
-                    availableIds.has(pendingCreated)
-                  ? pendingCreated
-                : selectedSessionIdRef.current &&
-                    availableIds.has(selectedSessionIdRef.current)
-                  ? selectedSessionIdRef.current
-                : state.gatewayState.currentSessionId &&
-                      activeIds.has(state.gatewayState.currentSessionId)
-                    ? state.gatewayState.currentSessionId
-                    : activeSessions[0]?.id ??
-                      selectableSessions[0]?.id ??
-                      null;
-            if (openedSession) {
+            const selectedRoute = selectedSessionIdRef.current
+              ? {
+                  sessionId: selectedSessionIdRef.current,
+                  ...(selectedProjectIdRef.current
+                    ? { projectId: selectedProjectIdRef.current }
+                    : {}),
+                }
+              : null;
+            const selection = resolveSessionSelection({
+              sessions: selectableSessions,
+              selectedRoute,
+              requestedSessionId: openedSessionId,
+              pendingCreatedSessionId: localDraftId ? null : pendingCreated,
+              localDraftSessionId: localDraftId,
+              currentSessionId: state.gatewayState.currentSessionId,
+            });
+            const explicitlyOpened = selection.source === "requested";
+            const createdSelected = selection.source === "pending-created";
+            if (explicitlyOpened) {
               pendingOpenedSessionIdRef.current = null;
-              if (openedSession === nextSessionId) setMobileChatOpen(true);
+              setMobileChatOpen(true);
             }
-            if (pendingCreated === nextSessionId) {
+            if (createdSelected) {
               pendingCreatedSessionIdRef.current = null;
               clearPendingSessionCreateUi();
               setMobileChatOpen(true);
@@ -5880,16 +5869,22 @@ function MalinkAppRuntime() {
               current,
               state.gatewayState!.sessions,
             ));
-            const shouldRevealNextSession =
-              (openedSession === nextSessionId ||
-                pendingCreated === nextSessionId) &&
-              nextSessionId !== selectedSessionIdRef.current;
-            activateLocalSession(
-              nextSessionId,
-              malinkClientRef.current,
-              shouldRevealNextSession,
-              pendingCreated === nextSessionId,
-            );
+            if (selection.shouldActivate) {
+              const nextSession = selection.session;
+              const shouldRevealNextSession = Boolean(
+                nextSession &&
+                (explicitlyOpened || createdSelected) &&
+                (nextSession.id !== selectedSessionIdRef.current ||
+                  nextSession.projectId !== selectedProjectIdRef.current),
+              );
+              activateLocalSession(
+                nextSession?.id ?? null,
+                malinkClientRef.current,
+                shouldRevealNextSession,
+                createdSelected,
+                nextSession?.projectId,
+              );
+            }
           }
         },
         onCommandReviewRequired(review) {

@@ -8,6 +8,21 @@ export type SelectedSessionRoute = {
   projectId?: string;
 };
 
+export type SessionSelectionSource =
+  | "requested"
+  | "local-draft"
+  | "pending-created"
+  | "selected"
+  | "current"
+  | "fallback"
+  | "none";
+
+export type ResolvedSessionSelection<T> = {
+  session: T | null;
+  source: SessionSelectionSource;
+  shouldActivate: boolean;
+};
+
 type SelectionStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 export function selectedSessionStorageKey(scope: string): string {
@@ -123,4 +138,118 @@ export function writeSelectedSessionRoute(
   } catch {
     return false;
   }
+}
+
+/**
+ * Resolves a project-qualified selection from one authoritative snapshot.
+ * Keeping an existing exact route is intentionally a no-op: status refreshes
+ * must not reactivate the conversation, mark it read, or rewrite its route.
+ */
+export function resolveSessionSelection<
+  T extends { id: string; projectId: string; status?: string },
+>({
+  sessions,
+  selectedRoute,
+  requestedSessionId,
+  pendingCreatedSessionId,
+  localDraftSessionId,
+  currentSessionId,
+}: {
+  sessions: readonly T[];
+  selectedRoute: SelectedSessionRoute | null;
+  requestedSessionId?: string | null;
+  pendingCreatedSessionId?: string | null;
+  localDraftSessionId?: string | null;
+  currentSessionId?: string | null;
+}): ResolvedSessionSelection<T> {
+  const requested = requestedSessionId
+    ? uniqueSessionById(sessions, requestedSessionId)
+    : null;
+  if (requested) {
+    return resolvedSelection(requested, "requested", selectedRoute, true);
+  }
+
+  if (
+    localDraftSessionId &&
+    selectedRoute?.sessionId === localDraftSessionId
+  ) {
+    return { session: null, source: "local-draft", shouldActivate: false };
+  }
+
+  const pendingCreated = pendingCreatedSessionId
+    ? uniqueSessionById(sessions, pendingCreatedSessionId)
+    : null;
+  if (pendingCreated) {
+    return resolvedSelection(
+      pendingCreated,
+      "pending-created",
+      selectedRoute,
+      true,
+    );
+  }
+
+  const selected = selectedRoute
+    ? sessionByRoute(sessions, selectedRoute)
+    : null;
+  if (selected) {
+    return resolvedSelection(selected, "selected", selectedRoute, false);
+  }
+
+  const activeSessions = sessions.filter(
+    (session) => session.status !== "archived",
+  );
+  const current = currentSessionId
+    ? uniqueSessionById(activeSessions, currentSessionId)
+    : null;
+  if (current) {
+    return resolvedSelection(current, "current", selectedRoute, false);
+  }
+
+  const fallback = activeSessions[0] ?? sessions[0] ?? null;
+  if (fallback) {
+    return resolvedSelection(fallback, "fallback", selectedRoute, false);
+  }
+  return {
+    session: null,
+    source: "none",
+    shouldActivate: selectedRoute !== null,
+  };
+}
+
+function resolvedSelection<T extends { id: string; projectId: string }>(
+  session: T,
+  source: SessionSelectionSource,
+  selectedRoute: SelectedSessionRoute | null,
+  forceActivation: boolean,
+): ResolvedSessionSelection<T> {
+  const sameRoute =
+    selectedRoute?.sessionId === session.id &&
+    selectedRoute.projectId === session.projectId;
+  return {
+    session,
+    source,
+    shouldActivate: forceActivation || !sameRoute,
+  };
+}
+
+function sessionByRoute<T extends { id: string; projectId: string }>(
+  sessions: readonly T[],
+  route: SelectedSessionRoute,
+): T | null {
+  if (route.projectId) {
+    return sessions.find(
+      (session) =>
+        session.id === route.sessionId &&
+        session.projectId === route.projectId,
+    ) ?? null;
+  }
+  return uniqueSessionById(sessions, route.sessionId);
+}
+
+function uniqueSessionById<T extends { id: string }>(
+  sessions: readonly T[],
+  sessionId: string,
+): T | null {
+  const matches = sessions.filter((session) => session.id === sessionId);
+  return matches.length === 1 ? matches[0]! : null;
 }

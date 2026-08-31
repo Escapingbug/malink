@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   readSelectedSession,
   readSelectedSessionRoute,
+  resolveSessionSelection,
   selectedSessionStorageKey,
   writeSelectedSession,
   writeSelectedSessionRoute,
@@ -104,4 +105,92 @@ test("upgrades a legacy scalar selection without rewriting it", () => {
   assert.deepEqual(readSelectedSessionRoute(storage, "scope"), {
     sessionId: "legacy-session",
   });
+});
+
+const sessions = [
+  { id: "selected", projectId: "project-a", status: "idle" },
+  { id: "fallback", projectId: "project-b", status: "idle" },
+] as const;
+
+test("keeps an exact selected route without reactivating it on status refresh", () => {
+  const refreshed = [
+    { ...sessions[0], status: "running" },
+    sessions[1],
+  ] as const;
+  const result = resolveSessionSelection({
+    sessions: refreshed,
+    selectedRoute: { sessionId: "selected", projectId: "project-a" },
+  });
+
+  assert.equal(result.session, refreshed[0]);
+  assert.equal(result.source, "selected");
+  assert.equal(result.shouldActivate, false);
+});
+
+test("canonicalizes a legacy id-only route with its authoritative project", () => {
+  const result = resolveSessionSelection({
+    sessions,
+    selectedRoute: { sessionId: "selected" },
+  });
+
+  assert.equal(result.session, sessions[0]);
+  assert.equal(result.source, "selected");
+  assert.equal(result.shouldActivate, true);
+});
+
+test("falls back with an exact route only after the selected route disappears", () => {
+  const result = resolveSessionSelection({
+    sessions: [sessions[1]],
+    selectedRoute: { sessionId: "selected", projectId: "project-a" },
+  });
+
+  assert.equal(result.session, sessions[1]);
+  assert.equal(result.source, "fallback");
+  assert.equal(result.shouldActivate, true);
+});
+
+test("preserves a selected optimistic draft while it is absent from snapshots", () => {
+  assert.deepEqual(
+    resolveSessionSelection({
+      sessions,
+      selectedRoute: { sessionId: "local-draft", projectId: "project-a" },
+      localDraftSessionId: "local-draft",
+    }),
+    { session: null, source: "local-draft", shouldActivate: false },
+  );
+});
+
+test("explicit and newly created selections still activate their exact route", () => {
+  const requested = resolveSessionSelection({
+    sessions,
+    selectedRoute: { sessionId: "fallback", projectId: "project-b" },
+    requestedSessionId: "selected",
+  });
+  assert.equal(requested.session, sessions[0]);
+  assert.equal(requested.source, "requested");
+  assert.equal(requested.shouldActivate, true);
+
+  const created = resolveSessionSelection({
+    sessions,
+    selectedRoute: { sessionId: "fallback", projectId: "project-b" },
+    pendingCreatedSessionId: "selected",
+  });
+  assert.equal(created.session, sessions[0]);
+  assert.equal(created.source, "pending-created");
+  assert.equal(created.shouldActivate, true);
+});
+
+test("does not treat an ambiguous id-only route as the exact selection", () => {
+  const duplicated = [
+    { id: "shared", projectId: "project-a", status: "idle" },
+    { id: "shared", projectId: "project-b", status: "idle" },
+  ] as const;
+  const result = resolveSessionSelection({
+    sessions: duplicated,
+    selectedRoute: { sessionId: "shared" },
+  });
+
+  assert.equal(result.source, "fallback");
+  assert.equal(result.session, duplicated[0]);
+  assert.equal(result.shouldActivate, true);
 });
