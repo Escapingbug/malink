@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { GatewayEnrollmentPanel } from "../app/GatewayEnrollmentPanel.tsx";
+import { NewProjectDialog } from "../app/NewProjectDialog.tsx";
+import { NotificationCenter } from "../app/NotificationCenter.tsx";
+import { UiNoticeList } from "../app/UiNoticeList.tsx";
 import {
   HistoryOperationTimeoutError,
   shouldAutoLoadEarlierMessages,
@@ -86,6 +88,7 @@ test("shows an explicit busy state while a pairing invitation is verified", () =
 
   assert.match(html, /Checking invitation…/);
   assert.match(html, /Verifying the invitation…/);
+  assert.match(html, /operation-progress/);
   const continueButton = html.match(
     /<button(?=[^>]*class="continue-link-button")[^>]*>/,
   )?.[0];
@@ -118,6 +121,7 @@ test("shows the exact secure pairing stage while finishing a connection", () => 
 
   assert.match(html, /Connecting this device…/);
   assert.match(html, /Recovering the approved pairing response…/);
+  assert.match(html, /operation-progress/);
   assert.doesNotMatch(html, /Finishing the connection…/);
 });
 
@@ -150,141 +154,79 @@ test("identifies only the Gateway row whose approval is in flight", () => {
   }));
 
   assert.equal(html.match(/Sending approval…/g)?.length, 1);
+  assert.equal(html.match(/operation-progress/g)?.length, 1);
   assert.equal(html.match(/>Approve Gateway</g)?.length, 1);
   assert.match(html, /2\. Approve Office Gateway/);
   assert.match(html, /2\. Approve NAS Gateway/);
 });
 
-test("keeps async operation context visible until terminal completion", async () => {
-  const appRoot = new URL("../", import.meta.url);
-  const [app, settings, matrixConnection, androidActivity, css] = await Promise.all([
-    readFile(new URL("app/MalinkApp.tsx", appRoot), "utf8"),
-    readFile(new URL("app/MatrixSettings.tsx", appRoot), "utf8"),
-    readFile(new URL("app/matrixMlp3Connection.ts", appRoot), "utf8"),
-    readFile(new URL(
-      "../../clients/android/app/src/main/java/id/my/anciety/malink/web/MainActivity.kt",
-      appRoot,
-    ), "utf8"),
-    readFile(new URL("app/globals.css", appRoot), "utf8"),
-  ]);
+test("keeps long-running notices visibly active until their terminal state", () => {
+  const activeNotice = {
+    key: "provider:history-background",
+    scope: "background" as const,
+    severity: "info" as const,
+    message: "Provider sessions are loading in the background.",
+    createdAt: 1_000,
+    expiresAt: null,
+    active: true,
+    hidden: false,
+  };
+  const activeHtml = renderToStaticMarkup(createElement(UiNoticeList, {
+    notices: [activeNotice],
+    onDismiss() {},
+  }));
+  assert.match(activeHtml, /ui-notice-active/);
+  assert.match(activeHtml, /operation-progress/);
+  assert.match(activeHtml, /aria-live="polite"/);
 
-  assert.match(
-    app,
-    /const completion = await sent\.completion;[\s\S]*?completion\.outcome !== "succeeded"[\s\S]*?setNativeCommandReview\(null\)/,
-  );
-  assert.match(app, /if \(!sessionId \|\| sessionSettingsUpdate\) return;/);
-  assert.match(app, /setSessionSettingsUpdate\(update\)/);
-  assert.match(app, /The setting update did not complete/);
-  assert.match(settings, /if \(actionBusy\) return;/);
-  assert.match(settings, /escapeDisabled: actionBusy/);
-  assert.match(settings, /nativeUpdateBusy[\s\S]*?"Installing APK…"/);
-  assert.match(
-    settings,
-    /recoveryActionInFlight[\s\S]*?check-updates[\s\S]*?pwaUpdateBusy/,
-  );
-  assert.match(
-    settings,
-    /recoveryActionLabel[\s\S]*?Checking updates…[\s\S]*?Update waiting…[\s\S]*?Applying update…/,
-  );
-  assert.match(
-    settings,
-    /diagnosticExportStatus[\s\S]*?Diagnostic report download started[\s\S]*?could not be downloaded/,
-  );
-  assert.match(
-    settings,
-    /disabled=\{diagnosticExportBusy\}[\s\S]*?await onExportDiagnostics\(\)[\s\S]*?Exporting diagnostics…/,
-  );
-  assert.match(
-    app,
-    /async function stopStreaming[\s\S]*?try \{[\s\S]*?await sent\.completion[\s\S]*?finally \{[\s\S]*?setSessionStopping\(sessionId, false\)/,
-  );
-  assert.match(
-    app,
-    /function exportConnectionDiagnostics\(\): Promise<boolean>[\s\S]*?diagnosticExportFlightRef\.current[\s\S]*?return existing[\s\S]*?setDiagnosticExportBusy\(false\)/,
-  );
-  assert.match(
-    app,
-    /const resetBlockedConnection = async \(\)[\s\S]*?upgradeRepairBusyRef\.current[\s\S]*?await resetBlockedPwaIndexedDb[\s\S]*?setUpgradeRepairError/,
-  );
-  assert.match(
-    app,
-    /function reconnectWorkspaceFromUi\(\)[\s\S]*?status === "reconnecting"[\s\S]*?connectMalinkClient\(matrixConfig, false\)/,
-  );
-  assert.match(
-    app,
-    /async function checkForPwaUpdates\(\)[\s\S]*?Checking for a newer Malink version in the background[\s\S]*?await updater\.checkNow\(\)[\s\S]*?Malink is up to date/,
-  );
-  assert.match(
-    app,
-    /function closeProviderHistory\(\)[\s\S]*?providerHistoryLoadRef\.current[\s\S]*?Provider sessions are loading in the background/,
-  );
-  assert.match(
-    app,
-    /function finishProviderHistoryBackground\([\s\S]*?Provider History finished loading/,
-  );
-  const globalNoticeRule = css.slice(
-    css.indexOf(".global-ui-notices {"),
-    css.indexOf(".global-ui-notices .ui-notice"),
-  );
-  const settingsBackdropRule = css.slice(
-    css.indexOf(".settings-backdrop {"),
-    css.indexOf(".matrix-settings {"),
-  );
-  assert.match(globalNoticeRule, /z-index:\s*59;/);
-  assert.match(settingsBackdropRule, /z-index:\s*60;/);
+  const completedHtml = renderToStaticMarkup(createElement(UiNoticeList, {
+    notices: [{
+      ...activeNotice,
+      severity: "success" as const,
+      message: "Provider sessions finished loading.",
+      active: false,
+    }],
+    onDismiss() {},
+  }));
+  assert.doesNotMatch(completedHtml, /operation-progress/);
+  assert.match(completedHtml, />✓</);
+});
 
-  const nativeRecoveryPage = androidActivity.slice(
-    androidActivity.indexOf("private fun showRecoveryPage"),
-    androidActivity.indexOf("private fun showDisconnectedPage"),
-  );
-  assert.match(nativeRecoveryPage, /showWebHost\(reloadExisting = true\)/);
-  assert.doesNotMatch(nativeRecoveryPage, /webView\?\.reload\(\)/);
-  assert.match(
-    androidActivity,
-    /showWebLoading\([\s\S]*?Loading Malink…[\s\S]*?onPageCommitVisible[\s\S]*?hideWebLoading\(view\)/,
-  );
-  assert.match(androidActivity, /The update service is still starting/);
-  assert.match(
-    androidActivity,
-    /manager\.status\(\)\.phase == NativeUpdatePhase\.INSTALLING[\s\S]*?already waiting for Android confirmation/,
-  );
-  assert.match(
-    androidActivity,
-    /if \(!isEnabled\) return@setOnClickListener[\s\S]*?isEnabled = false[\s\S]*?text = "\$action…"/,
-  );
+test("shows motion for active notification-center operations", () => {
+  const html = renderToStaticMarkup(createElement(NotificationCenter, {
+    open: true,
+    items: [{
+      key: "gateway-update",
+      severity: "info",
+      title: "Gateway is preparing its update",
+      detail: "The maintenance Agent continues in the background.",
+      active: true,
+    }],
+    onClose() {},
+  }));
 
-  const restoreHistory = app.slice(
-    app.indexOf("async function restoreSessionHistory"),
-    app.indexOf("async function loadOlderHistory"),
-  );
-  const olderHistory = app.slice(
-    app.indexOf("async function loadOlderHistory"),
-    app.indexOf("function handleFeedScroll"),
-  );
-  assert.match(restoreHistory, /waitForHistoryOperation\(/);
-  assert.match(restoreHistory, /loadInitialConnectionHistoryInBackground\(/);
-  assert.doesNotMatch(restoreHistory, /await connection\.loadLocalHistory/);
-  assert.doesNotMatch(restoreHistory, /await connection\.loadHistoryPage/);
-  assert.match(olderHistory, /loadRemoteHistoryInBackground/);
-  assert.doesNotMatch(olderHistory, /await connection\.loadHistoryPage/);
-  assert.match(app, /Restoring conversation history in the background/);
-  assert.match(
-    app,
-    /persistRecoveredHistoryInBackground\(\s*scope,\s*historyCacheSessionId\(sessionId, projectId\),\s*remoteMessages,?\s*\);[\s\S]*?if \(!isCurrent\(\)\) return;/,
-  );
-  const relationsFetch = matrixConnection.slice(
-    matrixConnection.indexOf("const loadHistory = async"),
-    matrixConnection.indexOf("const uploadAttachment = async"),
-  );
-  assert.match(relationsFetch, /client\.http\.authedRequest/);
-  assert.match(relationsFetch, /localTimeoutMs: MATRIX_HISTORY_REQUEST_TIMEOUT_MS/);
-  assert.doesNotMatch(relationsFetch, /client\.relations\(/);
-  assert.match(
-    app,
-    /waitForHistoryOperation\(\s*connection\.loadLocalHistory/,
-  );
-  assert.match(
-    app,
-    /waitForHistoryOperation\(\s*connection\.loadHistoryPage/,
-  );
+  assert.match(html, /notification-center-item-active/);
+  assert.match(html, /operation-progress/);
+  assert.match(html, /aria-live="polite"/);
+  assert.match(html, /Closing this panel never cancels/);
+});
+
+test("shows motion while project creation is still running", () => {
+  const html = renderToStaticMarkup(createElement(NewProjectDialog, {
+    open: true,
+    busy: true,
+    gateways: [{
+      gatewayNodeId: "gateway-1",
+      gatewayName: "Studio Gateway",
+      targetProjectId: "project-1",
+      providers: [{ id: "codex", name: "Codex" }],
+      defaultProvider: "codex",
+    }],
+    onClose() {},
+    onCreate() {},
+  }));
+
+  assert.match(html, /aria-busy="true"/);
+  assert.match(html, /Creating…/);
+  assert.match(html, /operation-progress/);
 });

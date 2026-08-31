@@ -7,6 +7,7 @@ import type {
 } from "@malink/protocol";
 import { MarkdownContent } from "./MarkdownContent";
 import { useDialogFocus } from "./dialogFocus";
+import { OperationProgress } from "./OperationProgress";
 import {
   groupProviderHistorySessions,
   providerHistorySessionKind,
@@ -173,7 +174,8 @@ function ProviderHistoryDialogContent({
               </select>
             </label>
           </div>
-          <small>
+          <small className={loading === "sessions" ? "provider-history-loading" : undefined}>
+            {loading === "sessions" && <OperationProgress />}
             {loading === "sessions"
               ? sessions.length === 0
                 ? "Loading provider sessions in the background…"
@@ -225,7 +227,10 @@ function ProviderHistoryDialogContent({
               </section>
             ))}
             {loading === "sessions" && sessions.length === 0 && (
-              <p className="provider-history-empty">Loading provider sessions…</p>
+              <p className="provider-history-empty provider-history-loading">
+                <OperationProgress />
+                Loading provider sessions…
+              </p>
             )}
             {loading === null && sessions.length === 0 && (
               <p className="provider-history-empty">No sessions were reported for this project.</p>
@@ -251,7 +256,12 @@ function ProviderHistoryDialogContent({
                 )}
               </div>
             )}
-            {loading === "session" && <p className="provider-history-empty">Loading session history…</p>}
+            {loading === "session" && (
+              <p className="provider-history-empty provider-history-loading">
+                <OperationProgress />
+                Loading session history…
+              </p>
+            )}
             {loading !== "session" && selected && (
               <>
                 <header>

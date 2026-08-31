@@ -2,6 +2,7 @@
 
 import { FormEvent, useRef, useState } from "react";
 import { useDialogFocus } from "./dialogFocus";
+import { BusyActionLabel } from "./OperationProgress";
 import {
   NATIVE_BACK_PRIORITY,
   useNativeBackHandler,
@@ -112,7 +113,9 @@ export function PrivilegeTotpDialog({
               className="approve-button"
               disabled={busy || !setupKey.trim()}
             >
-              {busy ? "Waiting for device unlock…" : "Protect and approve"}
+              {busy
+                ? <BusyActionLabel>Waiting for device unlock…</BusyActionLabel>
+                : "Protect and approve"}
             </button>
           </footer>
         </form>

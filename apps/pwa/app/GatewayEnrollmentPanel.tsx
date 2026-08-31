@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { GatewayEnrollmentPending } from "@malink/protocol";
 import { writeClipboardTextWithTimeout } from "./uiClipboard";
+import { BusyActionLabel } from "./OperationProgress";
 
 export type GeneratedGatewayEnrollment = {
   link: string;
@@ -58,7 +59,9 @@ export function GatewayEnrollmentPanel({
             existing Gateway credential needs to be copied.
           </p>
           <button type="button" className="connect-button" disabled={operationBusy} onClick={onCreate}>
-            {busy?.kind === "create" ? "Creating setup link…" : "Create Gateway setup link"}
+            {busy?.kind === "create"
+              ? <BusyActionLabel>Creating setup link…</BusyActionLabel>
+              : "Create Gateway setup link"}
           </button>
         </div>
       )}
@@ -90,10 +93,12 @@ export function GatewayEnrollmentPanel({
                   .finally(() => setCopyBusy(false));
               }}
             >
-              {copyBusy ? "Copying…" : "Copy setup command"}
+              {copyBusy ? <BusyActionLabel>Copying…</BusyActionLabel> : "Copy setup command"}
             </button>
             <button type="button" disabled={operationBusy || copyBusy} onClick={onCreate}>
-              {busy?.kind === "create" ? "Creating new link…" : "Create a new link"}
+              {busy?.kind === "create"
+                ? <BusyActionLabel>Creating new link…</BusyActionLabel>
+                : "Create a new link"}
             </button>
           </div>
           <small>Expires {formatExpiry(invitation.expiresAt)}</small>
@@ -128,7 +133,7 @@ export function GatewayEnrollmentPanel({
               onClick={() => onApprove(request.enrollmentId, request.approverProjectId)}
             >
               {approvingThisRequest
-                ? "Sending approval…"
+                ? <BusyActionLabel>Sending approval…</BusyActionLabel>
                 : approved
                   ? "Send approval again"
                   : "Approve Gateway"}

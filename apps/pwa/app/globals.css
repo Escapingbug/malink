@@ -3090,6 +3090,53 @@ select:focus-visible {
   animation-delay: 240ms;
 }
 
+.operation-progress {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: currentColor;
+}
+
+.operation-progress > i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.3;
+  animation: activity-dot 900ms ease-in-out infinite;
+}
+
+.operation-progress > i:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+.operation-progress > i:nth-child(3) {
+  animation-delay: 240ms;
+}
+
+.busy-action-label,
+.provider-history-loading,
+.pairing-scan-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.busy-action-label .operation-progress {
+  width: 18px;
+  height: 16px;
+}
+
+.busy-action-label .operation-progress > i {
+  width: 3px;
+  height: 3px;
+}
+
 .agent-activity > span:last-child {
   display: flex;
   min-width: 0;
@@ -4786,6 +4833,16 @@ select:focus-visible {
   color: #5e4dcc;
   font-size: 10px;
   font-weight: 800;
+}
+
+.ui-notice > .operation-progress {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.ui-notice-active {
+  border-color: #d6d0f3;
+  background: #f8f6ff;
 }
 
 .ui-notice p {
@@ -6911,8 +6968,11 @@ select:focus-visible {
 }
 
 .invitation-qr-loading {
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   color: #858c9b;
   font-size: 9px;
 }
@@ -7416,6 +7476,16 @@ select:focus-visible {
   color: #6454c6;
   font-size: 11px;
   font-weight: 850;
+}
+
+.notification-center-item-icon.operation-progress {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.notification-center-item-active {
+  border-color: #d8d1f4;
+  background: #faf9ff;
 }
 
 .notification-center-item-warning {

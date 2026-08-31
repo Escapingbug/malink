@@ -18,6 +18,7 @@ import {
   useNativeBackHandler,
 } from "./nativeBackNavigation";
 import { useDialogFocus } from "./dialogFocus";
+import { BusyActionLabel, OperationProgress } from "./OperationProgress";
 import type { ConnectionRepairReason } from "./connectionPresentation";
 import {
   downloadAuthorizationTransfer,
@@ -138,7 +139,9 @@ export function PairingWizard({
               disabled={invitationBusy}
               onClick={() => onCreateInvitation()}
             >
-              {invitationBusy ? "Creating invitation…" : "Add another device"}
+              {invitationBusy
+                ? <BusyActionLabel>Creating invitation…</BusyActionLabel>
+                : "Add another device"}
             </button>
             {invitationError && (
               <p className="pairing-inline-error" role="status">
@@ -170,7 +173,7 @@ export function PairingWizard({
               onClick={() => onCreateInvitation(reauthPassword)}
             >
               {invitationBusy
-                ? "Authorizing…"
+                ? <BusyActionLabel>Authorizing…</BusyActionLabel>
                 : "Create secure invitation"}
             </button>
             {invitationError && (
@@ -207,7 +210,10 @@ export function PairingWizard({
                 This self-contained invitation is too large for one QR code. Copy or share the link instead.
               </div>
             ) : (
-              <div className="invitation-qr-loading">Generating QR code…</div>
+              <div className="invitation-qr-loading">
+                <OperationProgress />
+                Generating QR code…
+              </div>
             )}
             <label>
               <span>One-time invitation link</span>
@@ -236,7 +242,9 @@ export function PairingWizard({
                     .finally(() => setShareBusy(null));
                 }}
               >
-                {shareBusy === "copy" ? "Copying…" : "Copy link"}
+                {shareBusy === "copy"
+                  ? <BusyActionLabel>Copying…</BusyActionLabel>
+                  : "Copy link"}
               </button>
               {typeof navigator.share === "function" && (
                 <button
@@ -256,7 +264,9 @@ export function PairingWizard({
                       .finally(() => setShareBusy(null));
                   }}
                 >
-                  {shareBusy === "share" ? "Sharing…" : "Share"}
+                  {shareBusy === "share"
+                    ? <BusyActionLabel>Sharing…</BusyActionLabel>
+                    : "Share"}
                 </button>
               )}
               <button
@@ -325,13 +335,14 @@ export function PairingWizard({
           disabled={busy || !canConfirm}
         >
           {busy
-            ? "Connecting this device…"
+            ? <BusyActionLabel>Connecting this device…</BusyActionLabel>
             : !canConfirm
               ? "Sign in below to continue"
             : `Connect to ${preview.gatewayName}`}
         </button>
         {busy && (
           <p className="pairing-scan-status" role="status">
+            <OperationProgress />
             {progressDetail?.trim() || "Finishing the connection…"}
           </p>
         )}
@@ -443,7 +454,9 @@ export function PairingWizard({
           disabled={busy || pasteBusy || imageScanBusy}
           type="button"
         >
-          {pasteBusy ? "Pasting…" : "Paste from clipboard"}
+          {pasteBusy
+            ? <BusyActionLabel>Pasting…</BusyActionLabel>
+            : "Paste from clipboard"}
         </button>
         <button
           className="paste-button"
@@ -451,7 +464,9 @@ export function PairingWizard({
           disabled={busy || pasteBusy || imageScanBusy || authorizationFileBusy}
           type="button"
         >
-          {authorizationFileBusy ? "Importing…" : "Import authorization file"}
+          {authorizationFileBusy
+            ? <BusyActionLabel>Importing…</BusyActionLabel>
+            : "Import authorization file"}
         </button>
         <button
           className="continue-link-button"
@@ -459,7 +474,9 @@ export function PairingWizard({
           disabled={!link.trim() || busy || pasteBusy || imageScanBusy}
           type="button"
         >
-          {busy ? "Checking invitation…" : "Continue"}
+          {busy
+            ? <BusyActionLabel>Checking invitation…</BusyActionLabel>
+            : "Continue"}
         </button>
       </div>
       {clipboardError && (
@@ -505,6 +522,7 @@ export function PairingWizard({
       )}
       {busy && (
         <p className="pairing-scan-status" role="status">
+          <OperationProgress />
           Verifying the invitation…
         </p>
       )}
@@ -566,6 +584,7 @@ export function PairingWizard({
       />
       {imageScanBusy && (
         <p className="pairing-scan-status" role="status">
+          <OperationProgress />
           Reading QR code from image…
         </p>
       )}

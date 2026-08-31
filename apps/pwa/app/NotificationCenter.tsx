@@ -2,6 +2,7 @@
 
 import { useRef } from "react";
 import { useDialogFocus } from "./dialogFocus";
+import { OperationProgress } from "./OperationProgress";
 import type { UiNoticeSeverity } from "./uiNotices";
 
 export type NotificationCenterAction = {
@@ -16,6 +17,7 @@ export type NotificationCenterItem = {
   severity: UiNoticeSeverity;
   title: string;
   detail: string;
+  active?: boolean;
   meta?: string;
   actions?: NotificationCenterAction[];
 };
@@ -84,18 +86,24 @@ function NotificationCenterContent({ open, items, onClose }: Props) {
           ) : items.map((item) => (
             <article
               key={item.key}
-              className={`notification-center-item notification-center-item-${item.severity}`}
+              className={`notification-center-item notification-center-item-${item.severity}${item.active ? " notification-center-item-active" : ""}`}
               role={item.severity === "error" ? "alert" : "status"}
+              aria-live={item.active ? "polite" : undefined}
+              aria-atomic={item.active ? "true" : undefined}
             >
-              <span className="notification-center-item-icon" aria-hidden="true">
-                {item.severity === "error"
-                  ? "!"
-                  : item.severity === "success"
-                    ? "✓"
-                    : item.severity === "warning"
-                      ? "!"
-                      : "i"}
-              </span>
+              {item.active ? (
+                <OperationProgress className="notification-center-item-icon" />
+              ) : (
+                <span className="notification-center-item-icon" aria-hidden="true">
+                  {item.severity === "error"
+                    ? "!"
+                    : item.severity === "success"
+                      ? "✓"
+                      : item.severity === "warning"
+                        ? "!"
+                        : "i"}
+                </span>
+              )}
               <div>
                 <strong>{item.title}</strong>
                 <p>{item.detail}</p>
