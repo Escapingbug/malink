@@ -113,6 +113,14 @@ export interface AgentProvider {
 
     getAvailableModels(): ModelEntry[]
     /**
+     * Observe completion of a background model-catalog refresh.
+     *
+     * Capability readers stay synchronous, so providers use this hook to tell
+     * the Gateway that a previously returned cached catalog should be
+     * published again.
+     */
+    onAvailableModelsRefreshed?(listener: () => void): () => void
+    /**
      * Validate or normalize a model selected for this provider.
      *
      * The runtime treats model ids as provider-owned opaque strings. Providers

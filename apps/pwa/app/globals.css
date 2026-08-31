@@ -7182,6 +7182,12 @@ select:focus-visible {
   opacity: 1;
 }
 
+.new-session-model-catalog-note {
+  color: #818a9d;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .new-session-grid {
   display: grid;
   gap: 11px;

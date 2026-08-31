@@ -113,12 +113,16 @@ describe('CodexProvider', () => {
                     },
                     { slug: 'gpt-hidden', display_name: 'Hidden', visibility: 'hidden' },
                 ],
-            }))
+        }))
         const provider = new CodexProvider({ modelsReader })
+        const refreshed = vi.fn()
+        const unsubscribe = provider.onAvailableModelsRefreshed(refreshed)
 
         // Snapshot reads never synchronously wait for the external Codex CLI.
         expect(provider.getAvailableModels()).toEqual([])
         await provider.refreshAvailableModels()
+        expect(refreshed).toHaveBeenCalledTimes(1)
+        unsubscribe()
         expect(provider.getAvailableModels()).toEqual([
             {
                 id: 'gpt-5.5',

@@ -172,9 +172,13 @@ describe('provider profiles', () => {
             env: { OPENCODE_CONFIG: 'C:\\opencode-fast.json' },
             modelsReader,
         })
+        const refreshed = vi.fn()
+        const unsubscribe = provider.onAvailableModelsRefreshed(refreshed)
 
         expect(provider.getAvailableModels()).toEqual([])
         await provider.refreshAvailableModels()
+        expect(refreshed).toHaveBeenCalledTimes(1)
+        unsubscribe()
         expect(provider.getAvailableModels()).toEqual([
             { id: 'anthropic/claude-sonnet', name: 'claude-sonnet', provider: 'anthropic' },
         ])

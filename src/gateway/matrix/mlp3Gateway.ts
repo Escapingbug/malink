@@ -291,6 +291,10 @@ export class MatrixMlp3GatewayRunner {
   private gatewayNodeStatusFingerprint: string | null = null
   private gatewayNodeStatusLastPublishedAt = 0
   private gatewayNodeStatusControlRoomId: string | null | undefined
+  private readonly modelCatalogUnsubscribers: Array<() => void> = []
+  private modelCapabilityPublicationPending = false
+  private modelCapabilityPublicationScheduled = false
+  private modelCapabilityPublicationEnabled = false
 
   constructor(
     private readonly config: MatrixGatewayConfig,
@@ -415,6 +419,7 @@ export class MatrixMlp3GatewayRunner {
       await this.client.start()
       await this.client.waitUntilReady(this.config.connection.initialSyncTimeoutMs)
       await this.client.pinTrustedDevices?.(this.config.trustedDevices)
+      this.subscribeModelCatalogRefreshes()
       for (const project of this.projects.values()) {
         await this.client.assertRoomEncrypted(project.config.roomId)
         await this.content.provisionProject(project.config, this.client)
@@ -431,6 +436,8 @@ export class MatrixMlp3GatewayRunner {
       await this.recoverJournal()
       await this.drainInbox()
       await this.eventChain
+      this.modelCapabilityPublicationEnabled = true
+      this.scheduleModelCapabilityPublication()
     } catch (error) {
       await this.cleanup()
       this.state = 'stopped'
@@ -3104,6 +3111,47 @@ export class MatrixMlp3GatewayRunner {
     })
   }
 
+  private subscribeModelCatalogRefreshes(): void {
+    for (const providerName of listProviders()) {
+      const provider = getProvider(providerName)
+      if (!provider?.onAvailableModelsRefreshed) continue
+      try {
+        this.modelCatalogUnsubscribers.push(provider.onAvailableModelsRefreshed(() => {
+          this.modelCapabilityPublicationPending = true
+          this.scheduleModelCapabilityPublication()
+        }))
+      } catch (error) {
+        this.log(
+          `[mlp3/matrix] model catalog subscription failed for ${providerName}: `
+          + formatError(error),
+        )
+      }
+    }
+  }
+
+  private scheduleModelCapabilityPublication(): void {
+    if (
+      !this.modelCapabilityPublicationPending
+      || !this.modelCapabilityPublicationEnabled
+      || this.modelCapabilityPublicationScheduled
+      || this.state !== 'running'
+    ) return
+    this.modelCapabilityPublicationScheduled = true
+    const operation = this.eventChain.then(async () => {
+      if (this.state !== 'running') return
+      this.modelCapabilityPublicationPending = false
+      for (const project of this.projects.values()) {
+        await this.publishWorkspaceSnapshot(project)
+      }
+    }).catch(error => {
+      this.log(`[mlp3/matrix] refreshed model capabilities could not be published: ${formatError(error)}`)
+    }).finally(() => {
+      this.modelCapabilityPublicationScheduled = false
+      this.scheduleModelCapabilityPublication()
+    })
+    this.eventChain = operation.then(() => undefined, () => undefined)
+  }
+
   private async prepareSessionThreads(project: V3ProjectRuntime): Promise<void> {
     if (!this.client.prepareRoomThread) return
     for (const record of project.project.sessions) {
@@ -3175,6 +3223,15 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private async cleanup(): Promise<void> {
+    this.modelCapabilityPublicationEnabled = false
+    this.modelCapabilityPublicationPending = false
+    for (const unsubscribeModelCatalog of this.modelCatalogUnsubscribers.splice(0)) {
+      try {
+        unsubscribeModelCatalog()
+      } catch (error) {
+        this.log(`[mlp3/matrix] model catalog unsubscribe failed: ${formatError(error)}`)
+      }
+    }
     if (this.gatewayNodeStatusTimer !== null) {
       clearTimeout(this.gatewayNodeStatusTimer)
       this.gatewayNodeStatusTimer = null

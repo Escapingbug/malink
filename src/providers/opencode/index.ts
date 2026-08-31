@@ -86,6 +86,7 @@ export class OpencodeProvider extends AcpProvider {
     private modelCatalog: ModelEntry[] = []
     private modelRefreshPromise?: Promise<ModelEntry[]>
     private nextModelRefreshAt = 0
+    private readonly modelCatalogListeners = new Set<() => void>()
 
     constructor(options: OpencodeProviderOptions = {}) {
         const command = options.command ?? OPENCODE_ACP_COMMAND
@@ -170,6 +171,11 @@ export class OpencodeProvider extends AcpProvider {
         return this.modelCatalog.map(model => ({ ...model }))
     }
 
+    onAvailableModelsRefreshed(listener: () => void): () => void {
+        this.modelCatalogListeners.add(listener)
+        return () => { this.modelCatalogListeners.delete(listener) }
+    }
+
     async refreshAvailableModels(): Promise<ModelEntry[]> {
         if (this.modelRefreshPromise) return this.modelRefreshPromise
         this.nextModelRefreshAt = Date.now() + OPENCODE_MODELS_RETRY_MS
@@ -180,6 +186,7 @@ export class OpencodeProvider extends AcpProvider {
         }).then(output => {
             this.modelCatalog = parseOpencodeModels(output, this.modelProviders)
             this.nextModelRefreshAt = Date.now() + OPENCODE_MODELS_REFRESH_MS
+            this.notifyModelCatalogListeners()
             return this.modelCatalog.map(model => ({ ...model }))
         }).catch(error => {
             const message = error instanceof Error ? error.message : String(error)
@@ -190,6 +197,17 @@ export class OpencodeProvider extends AcpProvider {
         })
         this.modelRefreshPromise = refresh
         return refresh
+    }
+
+    private notifyModelCatalogListeners(): void {
+        for (const listener of [...this.modelCatalogListeners]) {
+            try {
+                listener()
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                console.error(`[opencode] Model catalog listener failed: ${message}`)
+            }
+        }
     }
 
     resolveModel(model: string): string | undefined {

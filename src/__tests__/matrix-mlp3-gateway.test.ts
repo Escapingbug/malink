@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -47,7 +47,7 @@ import { gatewayProjectIdentity } from '@/gateway/matrix/project'
 import type { GatewayWebPushService } from '@/gateway/matrix/webPush'
 import { createTopicSessionRecord } from '@/bridge/topicSession'
 import type { TopicSession } from '@/bridge/channelPort'
-import { registerProvider } from '@/providers/registry'
+import { clearProviderRegistryForTesting, registerProvider } from '@/providers/registry'
 import {
   normalizeDeclarativeExtensionConfig,
   SessionExtensionRegistry,
@@ -291,6 +291,113 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(client.delivered).toHaveLength(firstTimelineWrites)
     expect(stateWrites).toBe(firstStateWrites)
     await restarted.stop()
+  })
+
+  it('republishes every project after a background model catalog refresh', async () => {
+    clearProviderRegistryForTesting()
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-model-refresh-'))
+    const gatewayKeys = await generateDeviceKeyPair()
+    const phoneKeys = await generateDeviceKeyPair()
+    const client = new TestMatrixClient()
+    const firstRoomId = '!model-refresh-first:example.org'
+    const secondRoomId = '!model-refresh-second:example.org'
+    let models: Array<{ id: string; name: string }> = []
+    let refreshQueued = false
+    const listeners = new Set<() => void>()
+    registerProvider({
+      name: 'background-models',
+      startQuery() { throw new Error('The catalog provider must not execute a query') },
+      isReady: () => true,
+      getInitError: () => null,
+      getAvailableModels() {
+        if (!refreshQueued) {
+          refreshQueued = true
+          queueMicrotask(() => {
+            models = [{ id: 'model-ready', name: 'Ready model' }]
+            for (const listener of [...listeners]) listener()
+          })
+        }
+        return models.map(model => ({ ...model }))
+      },
+      onAvailableModelsRefreshed(listener) {
+        listeners.add(listener)
+        return () => { listeners.delete(listener) }
+      },
+      getAvailablePermissionModes: () => ['default'],
+    })
+    const config: MatrixGatewayConfig = {
+      gatewayId: 'workspace-model-refresh',
+      gatewayNodeId: 'gateway-node-model-refresh',
+      connection: {
+        baseUrl: 'https://matrix.example.org',
+        accessToken: 'gateway-token',
+        userId: '@gateway:example.org',
+        deviceId: 'GATEWAY',
+      },
+      crypto: {
+        backend: 'memory',
+        databasePrefix: 'model-refresh-test',
+        allowInMemoryForTesting: true,
+      },
+      rooms: [{
+        roomId: firstRoomId,
+        conversationId: firstRoomId,
+        projectName: 'First project',
+        cwd: '/first-project',
+        providerName: 'background-models',
+      }, {
+        roomId: secondRoomId,
+        conversationId: secondRoomId,
+        projectName: 'Second project',
+        cwd: '/second-project',
+        providerName: 'background-models',
+      }],
+      trustedDevices: [{
+        deviceId: 'phone-1',
+        publicKey: phoneKeys.publicJwk,
+        allowedRoomIds: [firstRoomId, secondRoomId],
+        allowedOperations: ['prompt'],
+        matrixUserId: '@phone:example.org',
+        matrixDeviceId: 'PHONE',
+        matrixDeviceKeys: ['matrix-phone-key'],
+        certificateExpiresAt: Date.now() + 60_000,
+        sequenceEpoch: 'certificate-1',
+      }],
+      replayLedgerPath: join(directory, 'replay'),
+      applicationSecurity: {
+        gatewayDeviceId: 'workspace-model-refresh',
+        gatewayKeyPair: await exportDeviceKeyPair(gatewayKeys),
+        envelopeReplayLedgerPath: join(directory, 'security'),
+      },
+    }
+    const runner = new MatrixMlp3GatewayRunner(config, { client })
+    try {
+      await runner.start()
+      let projects: Array<{
+        name: string
+        capabilitySnapshotVersion: number
+        capabilities: { models: Array<{ id: string }> }
+      }> = []
+      await waitFor(async () => {
+        const state = JSON.parse(await readFile(
+          `${config.replayLedgerPath}.v3-runtime-state.json`,
+          'utf8',
+        )) as { projects: Record<string, typeof projects[number]> }
+        projects = Object.values(state.projects)
+        return projects.length === 2
+          && projects.every(project => project.capabilities.models[0]?.id === 'model-ready')
+      })
+      expect(projects.map(project => ({
+        name: project.name,
+        capabilitySnapshotVersion: project.capabilitySnapshotVersion,
+      }))).toEqual([
+        { name: 'First project', capabilitySnapshotVersion: 2 },
+        { name: 'Second project', capabilitySnapshotVersion: 1 },
+      ])
+    } finally {
+      await runner.stop()
+      clearProviderRegistryForTesting()
+    }
   })
 
   it('runs session threads independently and deduplicates by logical command identity', async () => {

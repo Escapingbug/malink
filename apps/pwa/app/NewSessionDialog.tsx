@@ -373,6 +373,9 @@ function NewSessionDialogContent({
                 value={model}
                 onChange={(event) => chooseModel(event.target.value)}
                 disabled={busy || providerModels.length === 0}
+                aria-describedby={providerModels.length === 0
+                  ? "new-session-model-catalog-note"
+                  : undefined}
               >
                 {!model && <option value="">Computer default</option>}
                 {providerModels.map((entry) => (
@@ -381,6 +384,15 @@ function NewSessionDialogContent({
                   </option>
                 ))}
               </select>
+              {providerModels.length === 0 && (
+                <small
+                  id="new-session-model-catalog-note"
+                  className="new-session-model-catalog-note"
+                >
+                  The model list is still syncing or is not exposed by this provider.
+                  This session will use the computer default.
+                </small>
+              )}
             </label>
             <label>
               <span>Reasoning effort</span>
