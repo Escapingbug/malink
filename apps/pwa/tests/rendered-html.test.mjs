@@ -174,7 +174,11 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /uncertainSessionRecovery\.primaryLabel/);
   assert.match(source, /uncertainSessionRecovery\.primaryAction === "check"/);
   assert.match(source, /last checked \{formatRecoveryTimestamp\(lastCheck\.checkedAt\)\}/);
-  assert.match(source, /onReviewGatewayUpdates=\{reviewGatewayUpdatesForRecoveredNativeCommand\}/);
+  assert.match(source, /backgroundRecoveredNativeCommandNotice\(currentCommandId\)/);
+  assert.match(source, /durableCommandRecoveryNeedsAttention\(/);
+  assert.match(source, /readBackgroundCommandRecoveries\(window\.localStorage\)/);
+  assert.doesNotMatch(source, /stopTrackingRecoveredNativeCommand/);
+  assert.doesNotMatch(source, /reviewGatewayUpdatesForRecoveredNativeCommand/);
   assert.match(
     source,
     /error instanceof CommandCompletionTimeoutError && commandId !== null && probe[\s\S]*?state: "unreachable"/,
@@ -187,10 +191,6 @@ test("ships a complete installable offline shell", async () => {
   assert.doesNotMatch(source, /releaseProbe\(commandId, false\)/);
   assert.match(source, /gatewayUpdateProbe\.consume\(result\)/);
   assert.doesNotMatch(source, /state: "pending"[\s\S]*?Recovering the signed reply/);
-  assert.match(
-    source,
-    /if \(!gatewayRelease \|\| gatewayUpdatePlan\.length === 0\)[\s\S]*?setSettingsOpen\(true\);[\s\S]*?refreshGatewayUpdateDiscovery\(\)/,
-  );
   assert.match(source, /Stop waiting/);
   assert.match(source, /discardFailedOptimisticSession/);
   assert.match(
@@ -347,7 +347,6 @@ test("ships a complete installable offline shell", async () => {
   );
   assert.match(source, /className="gateway-mobile-status-copy"/);
   assert.match(source, /aria-label="Hide previous action recovery"/);
-  assert.match(source, /onDismiss\?\.\(\);\s*onReviewGatewayUpdates\(\);/);
   assert.match(
     source,
     /dismissedRecoveredCommandVersions\.has\(recoveredCommandNoticeVersion\(command\)\)/,

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  readBackgroundCommandRecoveries,
   readDismissedCommandRecoveries,
+  writeBackgroundCommandRecoveries,
   writeDismissedCommandRecoveries,
 } from "./dismissedCommandRecovery";
 
@@ -25,5 +27,19 @@ describe("dismissed command recovery storage", () => {
     expect(() => writeDismissedCommandRecoveries({ setItem: () => {
       throw new Error("blocked");
     } }, new Set(["command-1"]))).not.toThrow();
+  });
+
+  it("persists automatic background recovery separately from manual hiding", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    };
+    const background = new Set(["command-2\u0000running\u0000200"]);
+
+    writeBackgroundCommandRecoveries(storage, background);
+
+    expect(readBackgroundCommandRecoveries(storage)).toEqual(background);
+    expect(readDismissedCommandRecoveries(storage)).toEqual(new Set());
   });
 });

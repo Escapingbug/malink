@@ -405,15 +405,15 @@ and sparse rather than a continuous Matrix-command heartbeat. Liveness remains
 presentation evidence only; it neither authorizes execution nor prevents a
 durable command from waiting for its owning Gateway to return.
 If a bounded journal check receives no signed reply, the client records the
-check time and presents that outcome separately from the command's unchanged
-durable timestamp. A known Gateway release opens its per-node review. When an
-old route or journal can no longer produce a terminal result, Android may let
-the user stop tracking that command locally. This retires the outbox record
-into an idempotency tombstone: it does not cancel an already accepted action,
-but it permanently prevents the client from submitting that identity again.
-Older APKs offer the Android update path instead of an ineffective Gateway
-check. Ordinary hiding is persisted across WebView reloads while same-identity
-recovery continues in the background.
+check time separately from the command's unchanged durable timestamp, moves
+the notice out of the foreground automatically, and keeps same-identity
+recovery running in the background. A no-reply timeout is not a durable command
+failure and must not require a user cleanup action. It also cannot authorize
+automatic retirement: MLP/3 commands deliberately have no clock-expiry gate,
+so a temporarily offline Gateway may still execute the accepted identity when
+it returns. Local orphan retirement remains a diagnostic escape hatch that
+creates an idempotency tombstone; it is not a normal product recovery path and
+must not be presented as the action that resolves a no-reply notice.
 
 ## Gateway online-update boundary
 

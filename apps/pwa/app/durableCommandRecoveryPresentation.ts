@@ -8,7 +8,6 @@ export type DurableCommandRecoveryPresentation = {
   primaryAction:
     | "check"
     | "reconnect"
-    | "review-gateway-updates"
     | "update-native-app"
     | "open-apk-releases"
     | null;
@@ -21,6 +20,14 @@ export type DurableCommandRecoveryCheckResult = {
   detail?: string;
 };
 
+export function durableCommandRecoveryNeedsAttention(
+  lastCheck?: DurableCommandRecoveryCheckResult | null,
+  backgrounded = false,
+): boolean {
+  if (lastCheck?.status === "no-response") return false;
+  return !backgrounded || lastCheck?.status === "failed";
+}
+
 /**
  * Explains a native durable command using product concepts. The exact command
  * remains in the Android outbox; this presentation never implies that the UI
@@ -31,9 +38,7 @@ export function durableCommandRecoveryPresentation(input: {
   connectionStatus: MatrixConnectionStatus;
   gatewayAvailable: boolean;
   journalReconciliationAvailable?: boolean;
-  orphanCommandRetirementAvailable?: boolean;
   manualAndroidUpdateRequired?: boolean;
-  gatewayUpdateAvailableCount?: number;
   lastCheck?: DurableCommandRecoveryCheckResult | null;
 }): DurableCommandRecoveryPresentation {
   const stateLabel = commandStateLabel(input.state);
@@ -88,35 +93,12 @@ export function durableCommandRecoveryPresentation(input: {
   }
 
   if (accepted && input.lastCheck?.status === "no-response") {
-    const updateCount = input.gatewayUpdateAvailableCount ?? 0;
-    if (input.orphanCommandRetirementAvailable === false) {
-      return {
-        title: "Update Android to clear this old action",
-        detail:
-          "No signed journal reply arrived during the last check. This installed Android version can keep retrying the saved identity, but it cannot safely stop tracking an action whose old Gateway route is gone. Update Android to add that recovery option; updating does not submit the action again.",
-        stateLabel,
-        ...androidUpdateAction(input.manualAndroidUpdateRequired === true),
-      };
-    }
-    if (updateCount > 0) {
-      return {
-        title: "The Gateway did not answer this check",
-        detail:
-          `No signed journal reply arrived during the last check. ${updateCount} ` +
-          `${updateCount === 1 ? "Gateway has" : "Gateways have"} a software update available. ` +
-          "Open Gateway software to update a responding Gateway. If this saved action belongs to a different, unavailable Gateway, updating the responding Gateway will not clear it; that action will recover when its Gateway returns. You can hide this notice while Malink continues automatic recovery.",
-        stateLabel,
-        primaryAction: "review-gateway-updates",
-        primaryLabel: "Open Gateway software",
-      };
-    }
     return {
-      title: "The Gateway did not answer this check",
+      title: "Recovery continues in the background",
       detail:
-        "No signed journal reply arrived during the last check. The target Gateway may be offline or may no longer own this old command route. If the action's result is already visible—or you no longer need to verify it—choose Stop tracking. Malink will preserve its identity so it cannot be submitted twice. Otherwise, bring the target Gateway online and keep recovery running.",
+        "The target Gateway did not return a signed result during the last check. No action is required: Malink has moved this notice out of the way and will keep checking the same saved command identity in the background, so it cannot submit the action twice.",
       stateLabel,
-      primaryAction: "review-gateway-updates",
-      primaryLabel: "Review Gateway software",
+      primaryAction: null,
     };
   }
 

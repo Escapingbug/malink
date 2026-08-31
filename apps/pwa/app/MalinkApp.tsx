@@ -244,11 +244,14 @@ import {
   type MobileConnectionSignal,
 } from "./connectionPresentation";
 import {
+  durableCommandRecoveryNeedsAttention,
   durableCommandRecoveryPresentation,
   type DurableCommandRecoveryCheckResult,
 } from "./durableCommandRecoveryPresentation";
 import {
+  readBackgroundCommandRecoveries,
   readDismissedCommandRecoveries,
+  writeBackgroundCommandRecoveries,
   writeDismissedCommandRecoveries,
 } from "./dismissedCommandRecovery";
 import { connectionFailureCode } from "./connectionFailure";
@@ -1092,15 +1095,12 @@ function DurableCommandRecoveryNotice({
   gatewayAvailable,
   journalReconciliationAvailable,
   manualAndroidUpdateRequired,
-  gatewayUpdateAvailableCount,
   busy,
   lastCheck,
   onCheck,
   onReconnect,
-  onReviewGatewayUpdates,
   onUpdateAndroid,
   onOpenAndroidReleases,
-  onStopTracking,
   onExportDiagnostics,
   onDismiss,
 }: {
@@ -1109,15 +1109,12 @@ function DurableCommandRecoveryNotice({
   gatewayAvailable: boolean;
   journalReconciliationAvailable: boolean;
   manualAndroidUpdateRequired: boolean;
-  gatewayUpdateAvailableCount: number;
   busy: boolean;
   lastCheck?: DurableCommandRecoveryCheckResult;
   onCheck(): void;
   onReconnect(): void;
-  onReviewGatewayUpdates(): void;
   onUpdateAndroid(): void;
   onOpenAndroidReleases(): void;
-  onStopTracking?: () => void;
   onExportDiagnostics(): void;
   onDismiss?: () => void;
 }) {
@@ -1126,9 +1123,7 @@ function DurableCommandRecoveryNotice({
     connectionStatus,
     gatewayAvailable,
     journalReconciliationAvailable,
-    orphanCommandRetirementAvailable: onStopTracking !== undefined,
     manualAndroidUpdateRequired,
-    gatewayUpdateAvailableCount,
     lastCheck,
   });
   const commandLabel = command.commandId.length > 16
@@ -1171,12 +1166,7 @@ function DurableCommandRecoveryNotice({
                 ? onCheck
                 : presentation.primaryAction === "reconnect"
                   ? onReconnect
-                  : presentation.primaryAction === "review-gateway-updates"
-                    ? () => {
-                        onDismiss?.();
-                        onReviewGatewayUpdates();
-                      }
-                    : presentation.primaryAction === "update-native-app"
+                  : presentation.primaryAction === "update-native-app"
                       ? onUpdateAndroid
                       : onOpenAndroidReleases
             }
@@ -1193,11 +1183,6 @@ function DurableCommandRecoveryNotice({
         <button type="button" onClick={onExportDiagnostics}>
           Export diagnostics
         </button>
-        {onStopTracking && lastCheck?.status === "no-response" && (
-          <button type="button" disabled={busy} onClick={onStopTracking}>
-            Stop tracking
-          </button>
-        )}
         {onDismiss && (
           <button type="button" onClick={onDismiss}>
             Hide
@@ -1667,6 +1652,10 @@ function MalinkAppRuntime() {
     useState<Record<string, DurableCommandRecoveryCheckResult>>({});
   const [dismissedRecoveredCommandVersions, setDismissedRecoveredCommandVersions] =
     useState<Set<string>>(() => readDismissedCommandRecoveries(
+      typeof window === "undefined" ? null : window.localStorage,
+    ));
+  const [backgroundRecoveredCommandVersions, setBackgroundRecoveredCommandVersions] =
+    useState<Set<string>>(() => readBackgroundCommandRecoveries(
       typeof window === "undefined" ? null : window.localStorage,
     ));
   const [sessionLifecycleBusy, setSessionLifecycleBusy] = useState<
@@ -2181,7 +2170,13 @@ function MalinkAppRuntime() {
   const recoveredNativeCommandNotices = recoveredNativeCommands.filter(
     command =>
       command.state !== "needs_review" &&
-      !recoveredNativeCommandIsOwned(command.commandId),
+      !recoveredNativeCommandIsOwned(command.commandId) &&
+      durableCommandRecoveryNeedsAttention(
+        recoveredNativeCommandChecks[command.commandId],
+        backgroundRecoveredCommandVersions.has(
+          recoveredCommandNoticeVersion(command),
+        ),
+      ),
   );
   const visibleRecoveredNativeCommand = recoveredNativeCommandNotices.find(
     command =>
@@ -2731,6 +2726,19 @@ function MalinkAppRuntime() {
       for (const noticeVersion of noticeVersions) next.add(noticeVersion);
       if (next.size === current.size) return current;
       writeDismissedCommandRecoveries(window.localStorage, next);
+      return next;
+    });
+  }
+
+  function backgroundRecoveredNativeCommandNotice(commandId: string): void {
+    const command = recoveredNativeCommandsRef.current.get(commandId);
+    if (!command || recoveredNativeCommandIsOwned(commandId)) return;
+    const noticeVersion = recoveredCommandNoticeVersion(command);
+    setBackgroundRecoveredCommandVersions((current) => {
+      if (current.has(noticeVersion)) return current;
+      const next = new Set(current);
+      next.add(noticeVersion);
+      writeBackgroundCommandRecoveries(window.localStorage, next);
       return next;
     });
   }
@@ -8843,19 +8851,40 @@ function MalinkAppRuntime() {
           retryDelayMs = error instanceof CommandCompletionTimeoutError
             ? RECOVERED_COMMAND_RETRY_DELAY_MS
             : RECOVERED_COMMAND_FAILURE_RETRY_DELAY_MS;
+          const checkedAt = Date.now();
+          const currentNoticeCommand =
+            recoveredNativeCommandsRef.current.get(currentCommandId);
+          const alreadyRecoveringInBackground = currentNoticeCommand
+            ? readBackgroundCommandRecoveries(window.localStorage).has(
+                recoveredCommandNoticeVersion(currentNoticeCommand),
+              )
+            : false;
           setRecoveredNativeCommandChecks((current) => ({
             ...current,
             [currentCommandId]: error instanceof CommandCompletionTimeoutError
               ? {
                   status: "no-response",
-                  checkedAt: Date.now(),
+                  checkedAt,
                 }
               : {
                   status: "failed",
-                  checkedAt: Date.now(),
+                  checkedAt,
                   detail: formatUiError(error),
                 },
           }));
+          if (
+            error instanceof CommandCompletionTimeoutError &&
+            !alreadyRecoveringInBackground
+          ) {
+            backgroundRecoveredNativeCommandNotice(currentCommandId);
+            showUiNotice(
+              `command:background-recovery:${currentCommandId}`,
+              "background",
+              "info",
+              "The Gateway did not return a signed result yet. Malink will keep recovering this action in the background; you can continue using the app.",
+              7_000,
+            );
+          }
         } finally {
           recoveredNativeCommandFlightsRef.current.delete(commandId);
           recoveredNativeCommandFlightsRef.current.delete(currentCommandId);
@@ -8888,45 +8917,6 @@ function MalinkAppRuntime() {
     reconcileRecoveredNativeCommands(connection);
   }
 
-  function stopTrackingRecoveredNativeCommand(
-    command: MalinkRecoveredDurableCommand,
-  ): void {
-    const connection = malinkClientRef.current;
-    const retireCommand = connection?.retireUnverifiedCommand?.bind(connection);
-    if (!retireCommand || !orphanCommandRetirementAvailable) {
-      updateAndroidForRecoveredNativeCommand();
-      return;
-    }
-    if (!window.confirm(
-      "Stop tracking this old action? This does not cancel anything already accepted by the Gateway. Malink will permanently preserve the command identity so it cannot run twice, but this device will no longer wait for its signed result.",
-    )) return;
-    recoveredNativeCommandFlightsRef.current.add(command.commandId);
-    syncRecoveredNativeCommandFlights();
-    void (async () => {
-      try {
-        await retireCommand(command.commandId);
-        forgetRecoveredNativeCommand(command.commandId);
-        showUiNotice(
-          `command:retired:${command.commandId}`,
-          "background",
-          "success",
-          "Stopped tracking the old action. Its identity remains blocked from duplicate execution.",
-          7_000,
-        );
-      } catch (error) {
-        showUiNotice(
-          `command:retire:${command.commandId}`,
-          "background",
-          "error",
-          `The old action could not be cleared from this device: ${formatUiError(error)}`,
-        );
-      } finally {
-        recoveredNativeCommandFlightsRef.current.delete(command.commandId);
-        syncRecoveredNativeCommandFlights();
-      }
-    })();
-  }
-
   function reconnectForRecoveredNativeCommand(): void {
     setSettingsOpen(true);
     void connectMalinkClient(matrixConfig, false);
@@ -8935,17 +8925,6 @@ function MalinkAppRuntime() {
   function updateAndroidForRecoveredNativeCommand(): void {
     setSettingsOpen(true);
     void recoverNativeAppUpdate(true);
-  }
-
-  function reviewGatewayUpdatesForRecoveredNativeCommand(): void {
-    if (!gatewayRelease || gatewayUpdatePlan.length === 0) {
-      setGatewayUpdateDialogOpen(false);
-      setSettingsOpen(true);
-      void refreshGatewayUpdateDiscovery();
-      return;
-    }
-    setSettingsOpen(false);
-    setGatewayUpdateDialogOpen(true);
   }
 
   function openOfficialAndroidReleases(): void {
@@ -10079,8 +10058,6 @@ function MalinkAppRuntime() {
   const settingsUpdateBusy = sessionSettingsUpdate !== null;
   const journalReconciliationAvailable = nativeRuntime === null ||
     nativeRuntime.commandJournalReconciliation === true;
-  const orphanCommandRetirementAvailable =
-    nativeRuntime?.orphanCommandRetirement === true;
   const manualAndroidUpdateRequired =
     nativeUpdateState?.detailCode === "manual_check_unavailable";
   const uncertainSessionRecovery = optimisticSession?.phase === "uncertain"
@@ -10126,16 +10103,13 @@ function MalinkAppRuntime() {
       connectionStatus,
       gatewayAvailable,
       journalReconciliationAvailable,
-      orphanCommandRetirementAvailable,
       manualAndroidUpdateRequired,
-      gatewayUpdateAvailableCount,
       lastCheck: recoveredNativeCommandChecks[command.commandId],
     });
     const primaryAction = (() => {
       switch (presentation.primaryAction) {
         case "check": return checkRecoveredNativeCommandsNow;
         case "reconnect": return reconnectForRecoveredNativeCommand;
-        case "review-gateway-updates": return reviewGatewayUpdatesForRecoveredNativeCommand;
         case "update-native-app": return updateAndroidForRecoveredNativeCommand;
         case "open-apk-releases": return openOfficialAndroidReleases;
         case null: return null;
@@ -10154,15 +10128,6 @@ function MalinkAppRuntime() {
               primary: true,
               disabled: recoveredNativeCommandFlightIds.has(command.commandId),
               onClick: closeNotificationsThen(primaryAction),
-            }]
-          : []),
-        ...(orphanCommandRetirementAvailable &&
-            recoveredNativeCommandChecks[command.commandId]?.status === "no-response"
-          ? [{
-              label: "Stop tracking",
-              disabled: recoveredNativeCommandFlightIds.has(command.commandId),
-              onClick: closeNotificationsThen(() =>
-                stopTrackingRecoveredNativeCommand(command)),
             }]
           : []),
         {
@@ -10466,7 +10431,6 @@ function MalinkAppRuntime() {
               gatewayAvailable={gatewayAvailable}
               journalReconciliationAvailable={journalReconciliationAvailable}
               manualAndroidUpdateRequired={manualAndroidUpdateRequired}
-              gatewayUpdateAvailableCount={gatewayUpdateAvailableCount}
               busy={recoveredNativeCommandFlightIds.has(
                 visibleRecoveredNativeCommand.commandId,
               )}
@@ -10475,14 +10439,8 @@ function MalinkAppRuntime() {
               ]}
               onCheck={checkRecoveredNativeCommandsNow}
               onReconnect={reconnectForRecoveredNativeCommand}
-              onReviewGatewayUpdates={reviewGatewayUpdatesForRecoveredNativeCommand}
               onUpdateAndroid={updateAndroidForRecoveredNativeCommand}
               onOpenAndroidReleases={openOfficialAndroidReleases}
-              onStopTracking={orphanCommandRetirementAvailable
-                ? () => stopTrackingRecoveredNativeCommand(
-                    visibleRecoveredNativeCommand,
-                  )
-                : undefined}
               onExportDiagnostics={exportConnectionDiagnostics}
               onDismiss={dismissRecoveredNativeCommandNotices}
             />

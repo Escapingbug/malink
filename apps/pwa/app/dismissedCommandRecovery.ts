@@ -1,13 +1,41 @@
 const STORAGE_KEY = "malink.dismissed-command-recovery.v1";
+const BACKGROUND_STORAGE_KEY = "malink.background-command-recovery.v1";
 const MAX_ENTRIES = 128;
 const MAX_ENTRY_LENGTH = 1_024;
 
 export function readDismissedCommandRecoveries(
   storage: Pick<Storage, "getItem"> | null,
 ): Set<string> {
+  return readRecoveryVersions(storage, STORAGE_KEY);
+}
+
+export function writeDismissedCommandRecoveries(
+  storage: Pick<Storage, "setItem"> | null,
+  values: ReadonlySet<string>,
+): void {
+  writeRecoveryVersions(storage, STORAGE_KEY, values);
+}
+
+export function readBackgroundCommandRecoveries(
+  storage: Pick<Storage, "getItem"> | null,
+): Set<string> {
+  return readRecoveryVersions(storage, BACKGROUND_STORAGE_KEY);
+}
+
+export function writeBackgroundCommandRecoveries(
+  storage: Pick<Storage, "setItem"> | null,
+  values: ReadonlySet<string>,
+): void {
+  writeRecoveryVersions(storage, BACKGROUND_STORAGE_KEY, values);
+}
+
+function readRecoveryVersions(
+  storage: Pick<Storage, "getItem"> | null,
+  key: string,
+): Set<string> {
   if (!storage) return new Set();
   try {
-    const parsed: unknown = JSON.parse(storage.getItem(STORAGE_KEY) ?? "[]");
+    const parsed: unknown = JSON.parse(storage.getItem(key) ?? "[]");
     if (!Array.isArray(parsed)) return new Set();
     return new Set(parsed.filter(
       (value): value is string =>
@@ -18,17 +46,15 @@ export function readDismissedCommandRecoveries(
   }
 }
 
-export function writeDismissedCommandRecoveries(
+function writeRecoveryVersions(
   storage: Pick<Storage, "setItem"> | null,
+  key: string,
   values: ReadonlySet<string>,
 ): void {
   if (!storage) return;
   try {
-    storage.setItem(
-      STORAGE_KEY,
-      JSON.stringify([...values].slice(-MAX_ENTRIES)),
-    );
+    storage.setItem(key, JSON.stringify([...values].slice(-MAX_ENTRIES)));
   } catch {
-    // Hiding a notice must keep working when storage is unavailable.
+    // Presentation persistence must not interfere with durable recovery.
   }
 }

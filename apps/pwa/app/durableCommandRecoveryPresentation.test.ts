@@ -1,7 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { durableCommandRecoveryPresentation } from "./durableCommandRecoveryPresentation";
+import {
+  durableCommandRecoveryNeedsAttention,
+  durableCommandRecoveryPresentation,
+} from "./durableCommandRecoveryPresentation";
 
 describe("durableCommandRecoveryPresentation", () => {
+  it("stops treating an unanswered check as user attention", () => {
+    expect(durableCommandRecoveryNeedsAttention()).toBe(true);
+    expect(durableCommandRecoveryNeedsAttention({
+      status: "failed",
+      checkedAt: 1,
+    })).toBe(true);
+    expect(durableCommandRecoveryNeedsAttention({
+      status: "no-response",
+      checkedAt: 1,
+    })).toBe(false);
+    expect(durableCommandRecoveryNeedsAttention(undefined, true)).toBe(false);
+    expect(durableCommandRecoveryNeedsAttention({
+      status: "failed",
+      checkedAt: 1,
+    }, true)).toBe(true);
+  });
+
   it("explains an accepted command as journal reconciliation, not resubmission", () => {
     const presentation = durableCommandRecoveryPresentation({
       state: "accepted",
@@ -70,7 +90,6 @@ describe("durableCommandRecoveryPresentation", () => {
       connectionStatus: "connected",
       gatewayAvailable: false,
       journalReconciliationAvailable: true,
-      orphanCommandRetirementAvailable: true,
     });
 
     expect(presentation.primaryAction).toBeNull();
@@ -103,65 +122,23 @@ describe("durableCommandRecoveryPresentation", () => {
     expect(presentation.primaryLabel).toBe("Open APK releases");
   });
 
-  it("routes a journal check with no response to available Gateway updates", () => {
+  it("moves an unanswered journal check into automatic background recovery", () => {
     const presentation = durableCommandRecoveryPresentation({
       state: "accepted",
       connectionStatus: "connected",
       gatewayAvailable: true,
       journalReconciliationAvailable: true,
-      gatewayUpdateAvailableCount: 2,
       lastCheck: {
         status: "no-response",
         checkedAt: 1_788_000_000_000,
       },
     });
 
-    expect(presentation.primaryAction).toBe("review-gateway-updates");
-    expect(presentation.primaryLabel).toBe("Open Gateway software");
-    expect(presentation.detail).toContain("2 Gateways have a software update");
-    expect(presentation.detail).toContain("different, unavailable Gateway");
-    expect(presentation.detail).toContain("will not clear it");
-    expect(presentation.detail).toContain("hide this notice");
-  });
-
-  it("opens Gateway software instead of another no-op check when no update is known", () => {
-    const presentation = durableCommandRecoveryPresentation({
-      state: "running",
-      connectionStatus: "connected",
-      gatewayAvailable: true,
-      journalReconciliationAvailable: true,
-      orphanCommandRetirementAvailable: true,
-      gatewayUpdateAvailableCount: 0,
-      lastCheck: {
-        status: "no-response",
-        checkedAt: 1_788_000_000_000,
-      },
-    });
-
-    expect(presentation.primaryAction).toBe("review-gateway-updates");
-    expect(presentation.primaryLabel).toBe("Review Gateway software");
-    expect(presentation.detail).toContain("may be offline");
-    expect(presentation.detail).toContain("Stop tracking");
-    expect(presentation.detail).toContain("cannot be submitted twice");
-  });
-
-  it("offers an Android update when the old APK cannot retire an orphaned action", () => {
-    const presentation = durableCommandRecoveryPresentation({
-      state: "accepted",
-      connectionStatus: "connected",
-      gatewayAvailable: true,
-      journalReconciliationAvailable: true,
-      orphanCommandRetirementAvailable: false,
-      gatewayUpdateAvailableCount: 0,
-      lastCheck: {
-        status: "no-response",
-        checkedAt: 1_788_000_000_000,
-      },
-    });
-
-    expect(presentation.primaryAction).toBe("update-native-app");
-    expect(presentation.primaryLabel).toBe("Update Android app");
-    expect(presentation.detail).toContain("cannot safely stop tracking");
-    expect(presentation.detail).toContain("does not submit the action again");
+    expect(presentation.title).toBe("Recovery continues in the background");
+    expect(presentation.primaryAction).toBeNull();
+    expect(presentation.primaryLabel).toBeUndefined();
+    expect(presentation.detail).toContain("No action is required");
+    expect(presentation.detail).toContain("same saved command identity");
+    expect(presentation.detail).toContain("cannot submit the action twice");
   });
 });
