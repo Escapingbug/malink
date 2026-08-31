@@ -59,6 +59,7 @@ import {
   type AgentActivity,
   type AgentActivityWatermark,
 } from "./agentActivity";
+import { AgentActivityIndicator } from "./AgentActivityIndicator";
 import {
   MatrixSettings,
   nativeUpdateStatusText,
@@ -1566,6 +1567,15 @@ function MalinkAppRuntime() {
   const [agentActivitiesBySession, setAgentActivitiesBySession] = useState<
     Map<string, AgentActivity>
   >(() => new Map());
+  const [sessionActivityUpdatedAt, setSessionActivityUpdatedAt] = useState<
+    Map<string, number>
+  >(() => new Map(
+    initialGatewayUi.gatewayState?.sessions
+      .filter((session) =>
+        session.status === "running" || session.status === "stopping"
+      )
+      .map((session) => [session.id, session.updatedAt] as const),
+  ));
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [composerOptionsOpen, setComposerOptionsOpen] = useState(false);
   const [providerCommandsOpen, setProviderCommandsOpen] = useState(false);
@@ -2379,6 +2389,9 @@ function MalinkAppRuntime() {
   const agentActivity = selectedSessionId
     ? agentActivitiesBySession.get(selectedSessionId) ?? null
     : null;
+  const agentActivityUpdatedAt = selectedSessionId
+    ? sessionActivityUpdatedAt.get(selectedSessionId)
+    : undefined;
   const receivedPromptCommandIds = useMemo(
     () =>
       agentReceivedCommandIds({
@@ -3140,6 +3153,56 @@ function MalinkAppRuntime() {
       mergeAgentActivityWatermark(current, incoming),
     );
     return true;
+  }
+
+  function observeSessionActivityUpdatedAt(
+    sessionId: string,
+    updatedAt: number,
+  ): void {
+    if (!Number.isSafeInteger(updatedAt) || updatedAt < 0) return;
+    setSessionActivityUpdatedAt((current) => {
+      const previous = current.get(sessionId);
+      if (previous !== undefined && previous >= updatedAt) return current;
+      const next = new Map(current);
+      next.set(sessionId, updatedAt);
+      return next;
+    });
+  }
+
+  function reconcileSessionActivityUpdatedAt(
+    sessions: readonly GatewaySessionSummary[],
+  ): void {
+    setSessionActivityUpdatedAt((current) => {
+      const next = new Map<string, number>();
+      let changed = false;
+      for (const session of sessions) {
+        const previous = current.get(session.id);
+        const active =
+          session.status === "running" ||
+          session.status === "stopping" ||
+          session.activityPhase === "starting" ||
+          session.activityPhase === "working" ||
+          session.activityPhase === "stopping";
+        if (!active && previous === undefined) continue;
+        const updatedAt = Math.max(
+          previous ?? 0,
+          active ? session.updatedAt : 0,
+        );
+        next.set(session.id, updatedAt);
+        if (previous !== updatedAt) changed = true;
+      }
+      if (current.size !== next.size) changed = true;
+      return changed ? next : current;
+    });
+  }
+
+  function resetSessionActivityUpdatedAt(sessionId: string): void {
+    setSessionActivityUpdatedAt((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Map(current);
+      next.delete(sessionId);
+      return next;
+    });
   }
 
   function hasActivePromptCommand(sessionId: string): boolean {
@@ -4131,16 +4194,20 @@ function MalinkAppRuntime() {
     const liveSessionKey = sessionId
       ? historyCacheSessionId(sessionId, incoming.projectId)
       : undefined;
+    const incomingIsAgentActivity = isAgentActivityEvent(incoming.raw);
     if (
       sessionId &&
       isLiveMessageDelivery(incoming) &&
-      (incoming.kind === "user" || isAgentActivityEvent(incoming.raw))
+      (incoming.kind === "user" || incomingIsAgentActivity)
     ) {
       const activityIsCurrent = observeAgentActivityWatermark(
         sessionId,
         agentActivityWatermarkForEvent(incoming),
       );
       if (activityIsCurrent) {
+        if (incomingIsAgentActivity) {
+          observeSessionActivityUpdatedAt(sessionId, incoming.timestamp);
+        }
         setSessionAgentActivity(sessionId, (current) => {
           if (incoming.kind === "user") {
             return current?.phase === "starting" ||
@@ -5596,6 +5663,7 @@ function MalinkAppRuntime() {
       stoppingSessionIdsRef.current = new Set();
       setStoppingSessionIds(new Set());
       setAgentActivitiesBySession(new Map());
+      setSessionActivityUpdatedAt(new Map());
       agentActivityWatermarksRef.current.clear();
       pendingCreatedSessionIdRef.current = null;
       updateSessionLifecycleBusy(new Map());
@@ -5814,6 +5882,7 @@ function MalinkAppRuntime() {
               );
             }
             setGatewayState(state.gatewayState);
+            reconcileSessionActivityUpdatedAt(state.gatewayState.sessions);
             for (const session of state.gatewayState.sessions) {
               observeAgentActivityWatermark(
                 session.id,
@@ -6140,6 +6209,7 @@ function MalinkAppRuntime() {
     setRunningSessionIds(new Set());
     setStoppingSessionIds(new Set());
     setAgentActivitiesBySession(new Map());
+    setSessionActivityUpdatedAt(new Map());
     agentActivityWatermarksRef.current.clear();
     setSelectedSessionId(null);
     setSelectedProjectId(null);
@@ -9863,6 +9933,7 @@ function MalinkAppRuntime() {
       }
       setSessionRunning(sessionId, true);
       if (!queueBehindActiveTurn) {
+        resetSessionActivityUpdatedAt(sessionId);
         setSessionAgentActivity(sessionId, SENDING_AGENT_ACTIVITY);
       }
       result = await sendRealCommand(
@@ -10194,6 +10265,7 @@ function MalinkAppRuntime() {
     await saveMessageHistory(scope, sessionId, [sendingMessage]);
     setSessionPromptSubmitting(sessionId, true);
     setSessionRunning(sessionId, true);
+    resetSessionActivityUpdatedAt(sessionId);
     setSessionAgentActivity(sessionId, SENDING_AGENT_ACTIVITY);
     let result: MalinkCommandSendResult | null = null;
     try {
@@ -12445,25 +12517,11 @@ function MalinkAppRuntime() {
             );
           })}
             {agentActivity && (
-            <div
-              className={`agent-activity activity-${agentActivity.phase}`}
-              key={`${agentActivity.phase}:${agentActivity.label}:${agentActivity.detail ?? ""}`}
-              role="status"
-              aria-label={`${agentActivity.label}${agentActivity.detail ? `. ${agentActivity.detail}` : ""}`}
-              aria-live="polite"
-              aria-atomic="true"
-              title={`${agentActivity.label}${agentActivity.detail ? ` · ${agentActivity.detail}` : ""}`}
-            >
-              <span className="activity-dots" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-              </span>
-              <span className="activity-copy">
-                <strong>{agentActivity.label}</strong>
-                {agentActivity.detail && <small>{agentActivity.detail}</small>}
-              </span>
-            </div>
+              <AgentActivityIndicator
+                activity={agentActivity}
+                updatedAt={agentActivityUpdatedAt}
+                key={`${selectedSessionId}:${agentActivity.phase}:${agentActivity.label}:${agentActivity.detail ?? ""}`}
+              />
             )}
           </div>
           {toolFocus?.toolMessage.toolGroup && (

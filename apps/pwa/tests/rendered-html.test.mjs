@@ -36,6 +36,7 @@ test("ships a complete installable offline shell", async () => {
     providerHistory,
     history,
     messageDelivery,
+    agentActivityIndicator,
     styles,
   ] = await Promise.all([
     readFile(new URL("public/manifest.webmanifest", appRoot), "utf8"),
@@ -46,6 +47,7 @@ test("ships a complete installable offline shell", async () => {
     readFile(new URL("app/ProviderHistoryDialog.tsx", appRoot), "utf8"),
     readFile(new URL("app/messageHistory.ts", appRoot), "utf8"),
     readFile(new URL("app/messageDelivery.ts", appRoot), "utf8"),
+    readFile(new URL("app/AgentActivityIndicator.tsx", appRoot), "utf8"),
     readFile(new URL("app/globals.css", appRoot), "utf8"),
   ]);
   const manifest = JSON.parse(manifestText);
@@ -455,8 +457,11 @@ test("ships a complete installable offline shell", async () => {
   assert.match(source, /<TurnResultState outcome={result\.outcome} \/>/);
   assert.match(source, /className=\{`message-row user-row turn-prompt/);
   assert.match(source, /turnPresentationClass/);
-  assert.match(source, /className="activity-copy"/);
-  assert.doesNotMatch(source, /className="activity-copy visually-hidden"/);
+  assert.match(agentActivityIndicator, /className="activity-copy"/);
+  assert.doesNotMatch(agentActivityIndicator, /className="activity-copy visually-hidden"/);
+  assert.match(agentActivityIndicator, /Last Agent activity/);
+  assert.match(agentActivityIndicator, /No Agent activity received yet/);
+  assert.match(agentActivityIndicator, /className="activity-last-update"/);
   assert.doesNotMatch(
     styles,
     /\.agent-activity \.activity-copy\s*\{[^}]*position:\s*absolute/,

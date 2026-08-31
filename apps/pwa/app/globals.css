@@ -3097,6 +3097,13 @@ select:focus-visible {
   gap: 1px;
 }
 
+.activity-state {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
 .agent-activity strong {
   color: #626b7e;
   font-size: 12px;
@@ -3111,6 +3118,11 @@ select:focus-visible {
   font-weight: 520;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agent-activity .activity-last-update {
+  color: #81899a;
+  font-variant-numeric: tabular-nums;
 }
 
 .agent-bubble {
