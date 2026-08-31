@@ -111,7 +111,10 @@ interface MatrixRequestOptions {
     timeoutMs?: number
     retryRateLimit?: boolean
     retryTransient?: boolean
+    paceRoomWrite?: boolean
 }
+
+const INITIAL_ROOM_SEND_INTERVAL_MS = 250
 
 class MatrixHttpError extends Error {
     constructor(
@@ -148,8 +151,9 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
     private lastSyncProgressAt = 0
     private cryptoChain: Promise<void> = Promise.resolve()
     private roomSendChain: Promise<void> = Promise.resolve()
-    private roomSendPacingMs = 0
     private roomSendNotBefore = 0
+    private roomSendIntervalMs = INITIAL_ROOM_SEND_INTERVAL_MS
+    private roomLastSuccessfulWriteAt = 0
 
     constructor(
         private readonly connection: MatrixGatewayConnectionConfig,
@@ -410,7 +414,7 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             const response = await this.matrixRequest<{ event_id: string }>(
                 'PUT',
                 matrixStatePath(request.roomId, request.eventType, request.stateKey),
-                { body: request.content, retryRateLimit: true },
+                { body: request.content, retryRateLimit: true, paceRoomWrite: true },
             )
             return { eventId: requireEventId(response) }
         })
@@ -837,7 +841,7 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             const response = await this.matrixRequest<{ event_id: string }>(
                 'PUT',
                 `/_matrix/client/v3/rooms/${encodeURIComponent(request.roomId)}/send/${encodeURIComponent(request.eventType)}/${encodeURIComponent(request.transactionId)}`,
-                { body: request.content, retryRateLimit: true },
+                { body: request.content, retryRateLimit: true, paceRoomWrite: true },
             )
             return { eventId: requireEventId(response) }
         })
@@ -894,20 +898,14 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             }
             const text = await response.text()
             const body = text ? safeJson(text) : {}
-            if (response.ok) return body as T
+            if (response.ok) {
+                if (options.paceRoomWrite) this.roomLastSuccessfulWriteAt = Date.now()
+                return body as T
+            }
             const record = asRecord(body)
             const retryAfterMs = retryDelay(response, record)
             if (response.status === 429 && options.retryRateLimit) {
-                // Learn the account's effective message cadence. The retry
-                // consumes the next available token, so the following queued
-                // room write must wait another interval instead of
-                // immediately causing a second 429.
-                if (isMatrixRoomWritePath(path)) {
-                    this.roomSendPacingMs = Math.max(
-                        this.roomSendPacingMs,
-                        Math.min(300_000, retryAfterMs + 250),
-                    )
-                }
+                if (options.paceRoomWrite) this.observeRoomSendRateLimit(retryAfterMs)
                 this.onLog?.(
                     `[matrix-node] ${method} ${path} rate limited; `
                     + `retrying in ${retryAfterMs}ms`,
@@ -943,13 +941,35 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             try {
                 return await operation()
             } finally {
-                if (this.roomSendPacingMs > 0) {
-                    this.roomSendNotBefore = Date.now() + this.roomSendPacingMs
-                }
+                this.roomSendNotBefore = Math.max(
+                    this.roomSendNotBefore,
+                    Date.now() + this.roomSendIntervalMs,
+                )
             }
         })
         this.roomSendChain = run.then(() => undefined, () => undefined)
         return run
+    }
+
+    private observeRoomSendRateLimit(retryAfterMs: number): void {
+        const rawElapsedSinceSuccess = this.roomLastSuccessfulWriteAt > 0
+            ? Math.max(0, Date.now() - this.roomLastSuccessfulWriteAt)
+            : 0
+        // retry_after is the remaining refill time. Add the elapsed portion
+        // only when this 429 plausibly follows our preceding successful write;
+        // a much older success says nothing about traffic from another node.
+        const elapsedSinceSuccess = rawElapsedSinceSuccess <= retryAfterMs * 2
+            ? rawElapsedSinceSuccess
+            : 0
+        const learnedIntervalMs = Math.min(
+            300_000,
+            retryAfterMs + elapsedSinceSuccess,
+        )
+        this.roomSendIntervalMs = Math.max(this.roomSendIntervalMs, learnedIntervalMs)
+        this.roomSendNotBefore = Math.max(
+            this.roomSendNotBefore,
+            Date.now() + retryAfterMs,
+        )
     }
 
     private requireMachine(): OlmMachineType {
@@ -1074,11 +1094,6 @@ function retryDelay(response: Response, body: Record<string, unknown> | null): n
         return Math.min(300_000, Math.max(250, Math.ceil(headerSeconds * 1_000)))
     }
     return 1_000
-}
-
-function isMatrixRoomWritePath(path: string): boolean {
-    return path.startsWith('/_matrix/client/v3/rooms/')
-        && (path.includes('/send/') || path.includes('/state/'))
 }
 
 function transientRetryDelay(attempt: number): number {

@@ -94,11 +94,16 @@ interface CompletionWaiter {
   reject(error: Error): void;
 }
 
+const COMMAND_RECONCILIATION_MIN_INTERVAL_MS = 60_000;
+const COMMAND_RECONCILIATION_FAILURE_INTERVAL_MS = 15_000;
+
 /** Browser/native-web shared MLP/3 command, inbox and projection core. */
 export class MatrixMlp3ProtocolClient {
   readonly projection = new MatrixMlp3Projection();
   private keyGrant: Mlp3ProjectKeyGrantPlaintext | null = null;
   private readonly waiters = new Map<string, Set<CompletionWaiter>>();
+  private readonly reconciliationFlights = new Map<string, Promise<string>>();
+  private readonly reconciliationNotBefore = new Map<string, number>();
   private drainChain: Promise<void> = Promise.resolve();
   private projectionSaveChain: Promise<void> = Promise.resolve();
   private initialization: Promise<void> | null = null;
@@ -423,12 +428,34 @@ export class MatrixMlp3ProtocolClient {
     // This is not a second business command. The exact signed/encrypted MLP/3
     // content is delivered under a fresh Matrix transaction so the Gateway
     // can consult its execution-once journal and publish current durable state.
-    const result = await this.transport.sendMessage({
+    const commandId = record.command.commandId;
+    const current = this.reconciliationFlights.get(commandId);
+    if (current) return current;
+    const now = Date.now();
+    if (now < (this.reconciliationNotBefore.get(commandId) ?? 0)) {
+      return record.matrixEventId ?? record.transactionId;
+    }
+    this.reconciliationNotBefore.set(
+      commandId,
+      now + COMMAND_RECONCILIATION_MIN_INTERVAL_MS,
+    );
+    const operation = this.transport.sendMessage({
       roomId: this.config.roomId,
       content: record.content,
-      transactionId: reconciliationTransactionId(record.command.commandId),
+      transactionId: reconciliationTransactionId(commandId),
+    }).then(result => result.eventId).catch(error => {
+      this.reconciliationNotBefore.set(
+        commandId,
+        Date.now() + COMMAND_RECONCILIATION_FAILURE_INTERVAL_MS,
+      );
+      throw error;
+    }).finally(() => {
+      if (this.reconciliationFlights.get(commandId) === operation) {
+        this.reconciliationFlights.delete(commandId);
+      }
     });
-    return result.eventId;
+    this.reconciliationFlights.set(commandId, operation);
+    return operation;
   }
 
   private async projectRaw(
@@ -532,6 +559,8 @@ export class MatrixMlp3ProtocolClient {
     if (!event.causationCommandId) return;
     const completion = this.projection.completions.get(event.causationCommandId);
     if (!completion) return;
+    this.reconciliationFlights.delete(event.causationCommandId);
+    this.reconciliationNotBefore.delete(event.causationCommandId);
     const record = await this.store.getOutbox(event.causationCommandId);
     if (record) {
       await this.store.putOutbox({ ...record, status: "completed", completion });

@@ -274,6 +274,7 @@ export class MatrixMlp3GatewayRunner {
   private readonly scheduledPromptCommands = new Map<string, ScheduledPromptCommand>()
   private readonly activeCommands = new Map<string, Promise<void>>()
   private readonly executionTasks = new Set<Promise<void>>()
+  private readonly terminalDeliveriesInFlight = new Set<string>()
   private readonly queuedInboxEvents = new Set<string>()
   private eventChain: Promise<void> = Promise.resolve()
   private unsubscribe: (() => void) | null = null
@@ -642,7 +643,7 @@ export class MatrixMlp3GatewayRunner {
     this.observeRelationHint(project, authorized.command, event)
     const record = authorized.claim.record
     if (authorized.claim.kind === 'duplicate') {
-      await this.publishCommandReconciliation(project, record, event.eventId).catch(error => {
+      await this.publishCommandReconciliation(project, record).catch(error => {
         this.log(
           `[mlp3/matrix] command ${record.command.commandId} reconciliation failed: `
           + formatError(error),
@@ -2311,6 +2312,7 @@ export class MatrixMlp3GatewayRunner {
     result?: JsonValue,
     options: { publishProjectPointer?: boolean; waitForConfirmation?: boolean } = {},
   ): Promise<void> {
+    const terminalKey = commandKey(command)
     await this.journal.settle(command, {
       outcome,
       eventId: event.eventId,
@@ -2318,8 +2320,9 @@ export class MatrixMlp3GatewayRunner {
       ...(command.sessionId ? { sessionId: command.sessionId } : {}),
       ...(result === undefined ? {} : { result }),
     }, this.now())
-    await this.enqueueTerminalNotification(project, event)
+    this.terminalDeliveriesInFlight.add(terminalKey)
     try {
+      await this.enqueueTerminalNotification(project, event)
       const queued = await this.enqueueEventDelivery(
         project,
         command.sessionId
@@ -2335,10 +2338,13 @@ export class MatrixMlp3GatewayRunner {
         options,
       )).catch(error => {
         this.log(`[mlp3/matrix] terminal delivery queued: ${formatError(error)}`)
+      }).finally(() => {
+        this.terminalDeliveriesInFlight.delete(terminalKey)
       })
       if (options.waitForConfirmation) await completion
       else void completion
     } catch (error) {
+      this.terminalDeliveriesInFlight.delete(terminalKey)
       // The semantic terminal is already fsynced in the command journal and
       // the content layer stages before attempting Matrix delivery. Never
       // reinterpret a transport failure as an execution failure.
@@ -2476,6 +2482,9 @@ export class MatrixMlp3GatewayRunner {
   ): void {
     const originalEvent = record.terminal?.event
     if (!originalEvent) return
+    const terminalKey = commandKey(record.command)
+    if (this.terminalDeliveriesInFlight.has(terminalKey)) return
+    this.terminalDeliveriesInFlight.add(terminalKey)
     const boundedPayload = boundedProviderHistoryEventPayload(record.command, originalEvent.payload)
     const terminalEvent: Mlp3Event = canonicalJson(boundedPayload) === canonicalJson(
       originalEvent.payload,
@@ -2501,7 +2510,10 @@ export class MatrixMlp3GatewayRunner {
       { publishProjectPointer: terminalEvent.payload.type === 'project.snapshot' },
     )).catch(error => {
       this.log(`[mlp3/matrix] terminal redelivery failed: ${formatError(error)}`)
-    }).finally(() => this.executionTasks.delete(task))
+    }).finally(() => {
+      this.executionTasks.delete(task)
+      this.terminalDeliveriesInFlight.delete(terminalKey)
+    })
     this.executionTasks.add(task)
   }
 
@@ -2515,20 +2527,20 @@ export class MatrixMlp3GatewayRunner {
   private async publishCommandReconciliation(
     project: V3ProjectRuntime,
     record: Mlp3CommandJournalRecord,
-    recoveryMatrixEventId: string,
   ): Promise<void> {
     const terminal = record.terminal
     const sessionId = terminal?.sessionId ?? record.command.sessionId
+    const payload = commandReconciliationPayload(record)
     const event: Mlp3Event = {
       kind: 'malink.event',
       version: 3,
-      eventId: logicalCommandReconciliationEventId(record.command, recoveryMatrixEventId),
+      eventId: logicalCommandReconciliationEventId(record.command, payload),
       workspaceId: this.config.gatewayId,
       projectId: project.project.projectId,
       ...(sessionId ? { sessionId } : {}),
       occurredAt: this.now(),
       causationCommandId: record.command.commandId,
-      payload: commandReconciliationPayload(record),
+      payload,
     }
     const session = event.sessionId
       ? project.project.sessions.find(candidate => candidate.id === event.sessionId)
@@ -3397,12 +3409,12 @@ function logicalSessionRecoveryEventId(
 
 function logicalCommandReconciliationEventId(
   command: Mlp3Command,
-  recoveryMatrixEventId: string,
+  payload: Extract<Mlp3EventPayload, { type: 'command.reconciled' }>,
 ): string {
   return createHash('sha256')
     .update(
       `malink-v3-command-reconciliation\0${command.deviceId}\0${command.certificateId}`
-      + `\0${command.commandId}\0${recoveryMatrixEventId}`,
+      + `\0${command.commandId}\0${canonicalJson(payload)}`,
     )
     .digest('base64url')
 }

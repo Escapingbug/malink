@@ -224,6 +224,11 @@ command gains this exception: unfinished session, Prompt, cancel, update-stage,
 and update-apply commands remain durable until an authenticated terminal result
 or an existing authoritative retirement rule applies.
 
+If a manual status command lacks a signed result, the UI keeps that exact
+command identity and reconciles it with exponential backoff starting at 60
+seconds, capped at five minutes. Repeated foreground actions do not emit a
+second reconciliation while that command is already in flight or cooling down.
+
 When a signed reply does arrive with `failed`, `rolled_back`, or
 `repair_required`, the panel
 shows that as an update error instead of the generic `Online now` state, retains

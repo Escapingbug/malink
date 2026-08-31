@@ -912,6 +912,15 @@ function eventDeliveryMetadata(event: Mlp3Event): MatrixMlp3DeliveryMetadata {
   if (payload.type === 'turn.queued' || payload.type === 'turn.started') {
     return { priority: 'control' }
   }
+  if (payload.type === 'command.reconciled') {
+    return {
+      priority: 'urgent',
+      supersession: {
+        key: `command:${payload.commandId}`,
+        version: payload.state === 'terminal' ? 3 : payload.state === 'running' ? 2 : 1,
+      },
+    }
+  }
   // Command results, failures and decision requests are directly actionable.
   // They must be able to overtake replay/history traffic under homeserver
   // backpressure so the client can leave an obsolete working state promptly.

@@ -292,6 +292,7 @@ class NativeClientRuntime(
     private val commandTransmissionJobs = ConcurrentHashMap<String, Job>()
     private val commandRecoveryJobs = ConcurrentHashMap<String, Job>()
     private val publishedCommandRecoveryJobs = ConcurrentHashMap<String, Job>()
+    private val publishedCommandRecoveryNotBefore = ConcurrentHashMap<String, Long>()
     private val legacyTimelineRecoveryGate = LegacyTimelineRecoveryGate()
     private val commandRecoveryAttempts = ConcurrentHashMap<String, Int>()
     private val json = Json { isLenient = false; allowSpecialFloatingPointValues = false }
@@ -1583,6 +1584,10 @@ class NativeClientRuntime(
     private fun startPublishedCommandResultRecovery(command: DurableView) {
         synchronized(publishedCommandRecoveryJobs) {
             if (publishedCommandRecoveryJobs[command.commandId]?.isActive == true) return
+            val recoveryNow = now()
+            if (recoveryNow < (publishedCommandRecoveryNotBefore[command.commandId] ?: 0L)) return
+            publishedCommandRecoveryNotBefore[command.commandId] =
+                recoveryNow + PUBLISHED_COMMAND_RECONCILIATION_MIN_INTERVAL_MS
             val job = scope.launch(start = CoroutineStart.LAZY) {
                 try {
                     while (outbox.get(command.commandId)?.state in setOf(
@@ -1725,11 +1730,13 @@ class NativeClientRuntime(
 
     private fun cancelPublishedCommandResultRecovery(commandId: String) {
         publishedCommandRecoveryJobs.remove(commandId)?.cancel()
+        publishedCommandRecoveryNotBefore.remove(commandId)
     }
 
     private fun cancelAllPublishedCommandResultRecoveries() {
         publishedCommandRecoveryJobs.values.forEach(Job::cancel)
         publishedCommandRecoveryJobs.clear()
+        publishedCommandRecoveryNotBefore.clear()
     }
 
     private fun signedCommandContent(transmission: CommandTransmission): JsonObject {
@@ -3441,6 +3448,7 @@ private const val MAX_PAIRING_EXPIRY_SLEEP_MS = 24L * 60 * 60_000
 private const val MAX_AUTHORITATIVE_STATE_REFRESH_ATTEMPTS = 6
 private const val COMMAND_RECONCILIATION_DELIVERY_GRACE_MS = 12_000L
 private const val PUBLISHED_COMMAND_RECOVERY_RETRY_MS = 60_000L
+private const val PUBLISHED_COMMAND_RECONCILIATION_MIN_INTERVAL_MS = 60_000L
 
 internal fun recoverableCommandIds(commands: List<DurableView>): List<String> =
     commands

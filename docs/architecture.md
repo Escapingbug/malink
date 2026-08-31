@@ -205,9 +205,12 @@ unverified commands produce no application event.
    published. The client must not create, resign, or re-encrypt a replacement
    command.
 8. The Gateway journals a command before execution. Redelivery of the same
-   exact command ID emits a signed `command.reconciled` view of its recorded
-   accepted, running, or terminal state and cannot execute twice. A terminal
-   reconciliation carries the durable outcome and structured result or error.
+   exact command ID emits an idempotent signed `command.reconciled` view of its
+   recorded accepted, running, or terminal state and cannot execute twice.
+   Equivalent probes for the same recorded state share one logical event and
+   Matrix transaction; a newer journal state supersedes an older pending view.
+   A terminal reconciliation carries the durable outcome and structured result
+   or error.
 9. Current project state is an ordinary signed snapshot referenced by
    `io.malink.project.current.v3`. It is a recovery accelerator, not a separate
    mutable authority or a manual checkpoint.
@@ -393,8 +396,10 @@ No layer substitutes for another. In particular, increasing an in-memory event
 window or publishing a manual checkpoint is not a recovery strategy. An
 already-published command may only be sent again as an explicit reconciliation
 probe: exact signed/encrypted content, the same logical command ID, and a fresh
-Matrix transport transaction ID. The Gateway command journal—not Matrix send
-success—then answers with signed `command.reconciled` state. This additive
+Matrix transport transaction ID. Clients keep one probe in flight and back off
+subsequent attempts. The Gateway command journal—not Matrix send success—then
+answers with one idempotent signed `command.reconciled` event for the current
+recorded state. This additive
 event remains MLP/3 because older peers safely ignore it and current peers keep
 their existing terminal-event fallback; protocol versions are compatibility
 boundaries rather than semantic revision counters.

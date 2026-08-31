@@ -7,6 +7,8 @@ export const GATEWAY_ONLINE_PROOF_WINDOW_MS = 150_000;
 // asynchronous. Keep the UI deadline above the native HTTP send timeout so a
 // healthy but delayed round trip is not reported as a Gateway fault.
 export const GATEWAY_LIVE_STATUS_TIMEOUT_MS = 30_000;
+export const GATEWAY_PROBE_RECOVERY_MIN_BACKOFF_MS = 60_000;
+export const GATEWAY_PROBE_RECOVERY_MAX_BACKOFF_MS = 5 * 60_000;
 
 export type GatewayNodeLivenessState =
   | "unknown"
@@ -187,6 +189,20 @@ export function gatewayNodeLivenessAfterProbeTimeout(input: {
       consecutiveNoReplies,
     }).detail,
   };
+}
+
+/**
+ * A Matrix-accepted status command remains authoritative while its signed
+ * result is delayed. Recovery republishes the exact command, so repeated
+ * foreground polling must back off instead of creating a reconciliation
+ * event on every UI timer tick.
+ */
+export function gatewayProbeRecoveryBackoffMs(completedAttempts: number): number {
+  const attempts = Math.max(0, Math.floor(completedAttempts));
+  return Math.min(
+    GATEWAY_PROBE_RECOVERY_MAX_BACKOFF_MS,
+    GATEWAY_PROBE_RECOVERY_MIN_BACKOFF_MS * (2 ** Math.min(attempts, 3)),
+  );
 }
 
 export function gatewayNodeLivenessSummary(input: {

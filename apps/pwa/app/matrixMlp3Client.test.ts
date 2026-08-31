@@ -111,6 +111,8 @@ describe("MatrixMlp3ProtocolClient", () => {
       new RegExp(`^malink\\.v3\\.reconcile\\.${sent.commandId}\\.`),
     );
     expect(attempts[2]?.transactionId).not.toBe(attempts[1]?.transactionId);
+    const coalescedRecovery = await client.recover(sent.commandId);
+    expect(attempts).toHaveLength(3);
 
     await client.ingest({
       roomId: config.roomId,
@@ -206,6 +208,10 @@ describe("MatrixMlp3ProtocolClient", () => {
       outcome: "succeeded",
     });
     await expect(recovered.completion).resolves.toMatchObject({
+      commandId: sent.commandId,
+      outcome: "succeeded",
+    });
+    await expect(coalescedRecovery.completion).resolves.toMatchObject({
       commandId: sent.commandId,
       outcome: "succeeded",
     });

@@ -1176,6 +1176,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         && event.payload.type === 'command.reconciled'
         && event.payload.state === 'running'
       ))
+    await send(promptA, '$prompt-a-retry-same-running-state')
     blocked.resolve()
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
       .some(event =>
@@ -1189,6 +1190,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         && event.payload.type === 'command.reconciled'
         && event.payload.state === 'terminal'
       ))
+    await send(promptA, '$prompt-a-retry-same-terminal-state')
     expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
       event.causationCommandId === 'prompt-a'
       && event.payload.type === 'command.reconciled'
@@ -1245,6 +1247,19 @@ describe('MatrixMlp3GatewayRunner', () => {
       ))
     await waitFor(() => Promise.resolve(decisionResults.length === 1))
     expect(decisionResults).toEqual(['allow'])
+    const promptAReconciliations = (await events(client, activeKey.key, roomId, projectId))
+      .filter(event =>
+        event.causationCommandId === 'prompt-a'
+        && event.payload.type === 'command.reconciled'
+      )
+    expect(promptAReconciliations.filter(event =>
+      event.payload.type === 'command.reconciled'
+      && event.payload.state === 'running'
+    )).toHaveLength(1)
+    expect(promptAReconciliations.filter(event =>
+      event.payload.type === 'command.reconciled'
+      && event.payload.state === 'terminal'
+    )).toHaveLength(1)
     expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
       event.causationCommandId === 'decision-allow-b'
     )?.payload).toMatchObject({

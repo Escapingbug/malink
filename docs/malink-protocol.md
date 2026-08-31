@@ -93,15 +93,18 @@ Once Matrix returns the physical event ID, the client records the command as
 published and stops ordinary transport retransmission. Signed Gateway progress
 may follow, and only a signed terminal event completes the command.
 
-If a published command still has no signed terminal, a client may immediately
-send the exact saved Matrix content under a fresh transaction ID prefixed
+If a published command still has no signed terminal, a client may send the
+exact saved Matrix content under a fresh transaction ID prefixed
 `malink.v3.reconcile.<command_id>.` while bounded Matrix timeline recovery
 continues as a compatibility fallback. Timeline pagination MUST NOT gate this
 journal probe: an old or slow timeline cannot be allowed to strand an accepted
 command. This is a journal reconciliation probe, not a new command: the client
 MUST NOT change the signed command, ciphertext, logical ID, or application
-payload. The Gateway deduplicates it before dispatch and emits a new signed
-`command.reconciled` event. Its state is `accepted`, `running`, or `terminal`;
+payload. Only one reconciliation may be in flight for one command, and another
+probe MUST use bounded exponential backoff. The Gateway deduplicates it before
+dispatch and emits one idempotent signed `command.reconciled` event per recorded
+journal state, regardless of how many equivalent physical probes arrive. Its
+state is `accepted`, `running`, or `terminal`;
 a terminal event includes the journal's durable outcome and structured result
 or error. Clients complete the original outbox record from that event. This
 additive event does not change the MLP version because old clients never send
@@ -384,9 +387,9 @@ Identical signed snapshot pointers and root-signed
 Workspace control documents are durably recognized across process restart; an
 unchanged Gateway restart performs zero semantic snapshot rewrites and then
 publishes one shared node heartbeat. Gateway and client outboxes honor Matrix
-`retry_after` and stable transaction IDs; the Gateway sender also carries the
-learned `retry_after` cadence forward to the next queued room write, so
-homeserver rate limits affect latency rather than correctness.
+`retry_after` and stable transaction IDs. The Gateway also carries the observed
+account refill interval forward to pace later room writes, so homeserver rate
+limits affect latency rather than forming a repeated-429 feedback loop.
 
 ## Cutover invariants
 

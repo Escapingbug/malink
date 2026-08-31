@@ -389,7 +389,7 @@ describe('MatrixNodeSdkGatewayClient', () => {
             maxActive = Math.max(maxActive, active)
             await Promise.resolve()
             active -= 1
-            if (call === 1) {
+            if (call === 2) {
                 return new Response(JSON.stringify({
                     errcode: 'M_LIMIT_EXCEEDED',
                     retry_after_ms: 1,
@@ -432,12 +432,18 @@ describe('MatrixNodeSdkGatewayClient', () => {
             },
         })
 
-        await expect(Promise.all([state('session-1'), state('session-2')]))
-            .resolves.toHaveLength(2)
+        await expect(Promise.all([
+            state('session-1'),
+            state('session-2'),
+            state('session-3'),
+        ])).resolves.toHaveLength(3)
 
-        expect(calls).toBe(3)
+        expect(calls).toBe(4)
         expect(maxActive).toBe(1)
-        expect(callTimes[2]! - callTimes[1]!).toBeGreaterThanOrEqual(450)
+        // The 429 arrived after one successful write. Learn the complete
+        // refill period (elapsed time plus retry_after), then pace the next
+        // queued write instead of immediately consuming another empty bucket.
+        expect(callTimes[3]! - callTimes[2]!).toBeGreaterThanOrEqual(450)
         expect(logs.some(message =>
             message.startsWith('[matrix-node] PUT /_matrix/client/v3/rooms/')
             && message.endsWith('rate limited; retrying in 250ms'))).toBe(true)

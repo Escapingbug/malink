@@ -274,6 +274,7 @@ import {
   gatewayNodeLivenessPresentation,
   gatewayNodeLivenessSummary,
   gatewayNodeLivenessTargets,
+  gatewayProbeRecoveryBackoffMs,
   type GatewayNodeLiveness,
   type GatewayNodeLivenessTarget,
 } from "./gatewayNodeLiveness";
@@ -630,6 +631,8 @@ type GatewayUpdateProbeRecord = {
   commandId: string;
   completion: Promise<CommandCompletion>;
   completed: boolean;
+  recoveryAttempts: number;
+  nextRecoveryAt: number;
   status: GatewayUpdateStatus | null;
   consume(completion: CommandCompletion): GatewayUpdateStatus | null;
 };
@@ -6787,6 +6790,7 @@ function MalinkAppRuntime() {
       detail: undefined,
     }));
     let probe = gatewayUpdateProbeCommandsRef.current.get(gatewayNodeId) ?? null;
+    const hadProbe = probe !== null;
     let commandId = probe?.commandId ?? null;
     const applyCompletion = (completion: CommandCompletion): GatewayUpdateStatus | null => {
       const checkedAt = Date.now();
@@ -6863,19 +6867,26 @@ function MalinkAppRuntime() {
         // Retry will recover the same identity on older native hosts.
       });
     };
+    const recoverProbeIfDue = async (): Promise<void> => {
+      if (!probe || commandId === null) return;
+      const recoveryNow = Date.now();
+      if (recoveryNow < probe.nextRecoveryAt) return;
+      const connection = malinkClientRef.current;
+      if (!connection) throw new Error("The connected client is unavailable.");
+      probe.nextRecoveryAt = recoveryNow
+        + gatewayProbeRecoveryBackoffMs(probe.recoveryAttempts);
+      probe.recoveryAttempts += 1;
+      const recovered = await connection.recoverCommand(commandId);
+      if (recovered.commandId !== probe.commandId) {
+        gatewayUpdateProbeCommandsRef.current.delete(gatewayNodeId);
+        probe.commandId = recovered.commandId;
+      }
+      commandId = recovered.commandId;
+      probe.completion = recovered.completion;
+      gatewayUpdateProbeCommandsRef.current.set(gatewayNodeId, probe);
+    };
     try {
-      if (probe) {
-        const connection = malinkClientRef.current;
-        if (!connection) throw new Error("The connected client is unavailable.");
-        const recovered = await connection.recoverCommand(probe.commandId);
-        if (recovered.commandId !== probe.commandId) {
-          gatewayUpdateProbeCommandsRef.current.delete(gatewayNodeId);
-          probe.commandId = recovered.commandId;
-          commandId = recovered.commandId;
-        }
-        probe.completion = recovered.completion;
-        gatewayUpdateProbeCommandsRef.current.set(gatewayNodeId, probe);
-      } else {
+      if (!probe) {
         const sent = await sendRealCommand({
           operation: "gateway.update.status",
         }, target.targetProjectId, {
@@ -6890,6 +6901,8 @@ function MalinkAppRuntime() {
           commandId,
           completion: sent.completion,
           completed: false,
+          recoveryAttempts: 0,
+          nextRecoveryAt: 0,
           status: null,
           consume(completion) {
             if (created.completed) return created.status;
@@ -6915,6 +6928,7 @@ function MalinkAppRuntime() {
         probe = created;
         gatewayUpdateProbeCommandsRef.current.set(gatewayNodeId, created);
       }
+      if (hadProbe) await recoverProbeIfDue();
       const completion = await waitForCommandCompletion(
         probe.completion,
         GATEWAY_LIVE_STATUS_TIMEOUT_MS,
@@ -6944,15 +6958,7 @@ function MalinkAppRuntime() {
         // journal and bounded Matrix history. Releasing here would discard the
         // command identity immediately before the recovery path can use it.
         try {
-          const connection = malinkClientRef.current;
-          if (!connection) throw new Error("The connected client is unavailable.");
-          const recovered = await connection.recoverCommand(commandId);
-          if (recovered.commandId !== probe.commandId) {
-            gatewayUpdateProbeCommandsRef.current.delete(gatewayNodeId);
-            probe.commandId = recovered.commandId;
-          }
-          probe.completion = recovered.completion;
-          gatewayUpdateProbeCommandsRef.current.set(gatewayNodeId, probe);
+          await recoverProbeIfDue();
         } catch (recoveryError) {
           console.warn(
             `[gateway-update/probe-recovery] ${formatUiError(recoveryError)}`,
