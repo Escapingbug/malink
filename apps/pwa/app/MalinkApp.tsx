@@ -9569,7 +9569,9 @@ function MalinkAppRuntime() {
           `session:${action}`,
           "session",
           "error",
-          `The session could not be ${lifecyclePastTense(action)}.`,
+          completion.error?.message?.trim()
+            ? `The session could not be ${lifecyclePastTense(action)}: ${completion.error.message.trim()}`
+            : `The session could not be ${lifecyclePastTense(action)}.`,
         );
       } else {
         await onSucceeded?.();

@@ -14,6 +14,12 @@ Update this Malink Gateway from the exact signed Git commit supplied above.
    tests, type checks, and production bundle build. Fix only reproducible local
    build/runtime issues required to build this exact commit. If a test or build
    cannot pass, stop without submitting the candidate.
+   The Agent process inherits metadata from the active Gateway service. Remove
+   `MALINK_GATEWAY_RELEASE_ID` and `MALINK_GATEWAY_BUILD_ID` from the environment
+   of repository test and build commands so the installed Gateway identity
+   cannot be mistaken for static PWA release configuration. For example, prefix
+   those commands with
+   `env -u MALINK_GATEWAY_RELEASE_ID -u MALINK_GATEWAY_BUILD_ID`.
 4. The supplied candidate is an independent copy of the active release. Replace
    its Gateway and update-supervisor bundles with the target commit's production
    bundles, including `ops/matrix-local-gateway.js`,

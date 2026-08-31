@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
+import { gatewayReleaseFromBuildEnvironment } from "./build/gatewayReleaseEnvironment";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -29,21 +30,7 @@ function resolveBuildVersion(): string {
 }
 
 function resolveGatewayRelease(): { releaseId: string; buildId: string } | null {
-  const releaseId = process.env.MALINK_GATEWAY_RELEASE_ID?.trim();
-  const buildId = process.env.MALINK_GATEWAY_BUILD_ID?.trim();
-  if (!releaseId && !buildId) return null;
-  if (!releaseId || !buildId) {
-    throw new Error(
-      "MALINK_GATEWAY_RELEASE_ID and MALINK_GATEWAY_BUILD_ID must be set together.",
-    );
-  }
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(releaseId)) {
-    throw new Error("MALINK_GATEWAY_RELEASE_ID is invalid.");
-  }
-  if (buildId.length > 256) {
-    throw new Error("MALINK_GATEWAY_BUILD_ID is too long.");
-  }
-  return { releaseId, buildId };
+  return gatewayReleaseFromBuildEnvironment(process.env);
 }
 
 function resolveBasePath(): string {
