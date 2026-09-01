@@ -1,7 +1,12 @@
 export type ComposerEnterAction = "send" | "newline" | "ignore";
 
-export function isDesktopBrowserUserAgent(userAgent: string): boolean {
-  return !/Android|iPhone|iPad|iPod|Mobile/i.test(userAgent);
+export function isDesktopBrowserUserAgent(
+  userAgent: string,
+  maxTouchPoints = 0,
+): boolean {
+  const mobileOperatingSystem = /Android|iPhone|iPad|iPod/i.test(userAgent);
+  const desktopModeIpad = /Macintosh/i.test(userAgent) && maxTouchPoints > 1;
+  return !mobileOperatingSystem && !desktopModeIpad;
 }
 
 export function composerEnterAction(input: {

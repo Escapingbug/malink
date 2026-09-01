@@ -1559,16 +1559,19 @@ function MalinkAppRuntime() {
   ));
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [composerOptionsOpen, setComposerOptionsOpen] = useState(false);
-  const [desktopEnterSends, setDesktopEnterSends] = useState(false);
+  const desktopEnterSends = useMemo(
+    () => typeof navigator !== "undefined" && isDesktopBrowserUserAgent(
+      navigator.userAgent,
+      navigator.maxTouchPoints,
+    ),
+    [],
+  );
   const [providerCommandsOpen, setProviderCommandsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
   const [hiddenAttentionKeys, setHiddenAttentionKeys] = useState<Set<string>>(
     () => new Set(),
   );
-  useEffect(() => {
-    setDesktopEnterSends(isDesktopBrowserUserAgent(navigator.userAgent));
-  }, []);
   const [matrixConfig, setMatrixConfig] = useState<MatrixConnectionConfig>(
     initialGatewayUi.config,
   );
@@ -13132,6 +13135,7 @@ function MalinkAppRuntime() {
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={onComposerKeyDown}
+              aria-describedby="composer-send-shortcut"
               aria-keyshortcuts={desktopEnterSends
                 ? "Enter"
                 : "Control+Enter Meta+Enter"}
@@ -13158,6 +13162,11 @@ function MalinkAppRuntime() {
               )}
               <kbd>Enter</kbd>
               <span>to send</span>
+              <span className="visually-hidden">
+                {desktopEnterSends
+                  ? ". Shift, Control, Command, or Option plus Enter inserts a new line."
+                  : ". Enter inserts a new line."}
+              </span>
             </span>
             <div className="composer-actions">
               <input

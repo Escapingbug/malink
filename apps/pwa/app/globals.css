@@ -13,6 +13,11 @@
   --violet: #6957e5;
   --violet-dark: #5642d1;
   --violet-soft: #efedff;
+  --attention: #8a4b08;
+  --attention-strong: #c76d08;
+  --attention-soft: #fff4d6;
+  --attention-soft-strong: #ffe8ad;
+  --attention-border: #e9bd67;
   --green: #28af77;
   --shadow: 0 12px 42px rgb(33 43 74 / 9%);
   --motion-fast: 140ms;
@@ -965,12 +970,12 @@ select:focus-visible {
 }
 
 .project-session-group.project-needs-reply .project-session-toggle {
-  background: #f8f6ff;
-  box-shadow: inset 3px 0 0 #7564e3;
+  background: #fffaf0;
+  box-shadow: inset 3px 0 0 var(--attention-strong);
 }
 
 .project-session-group.project-needs-reply .project-session-toggle:hover {
-  background: #f2efff;
+  background: var(--attention-soft);
 }
 
 .project-session-group.project-needs-error .project-session-toggle {
@@ -1163,8 +1168,8 @@ select:focus-visible {
 }
 
 .project-signal-ready {
-  background: #ece8ff;
-  color: #5c49d2;
+  background: var(--attention-soft-strong);
+  color: var(--attention);
 }
 
 .project-signal-failed {
@@ -1268,12 +1273,12 @@ select:focus-visible {
 }
 
 .session-row.needs-reply:not(.selected) {
-  background: #f7f5ff;
-  box-shadow: inset 0 0 0 1px rgb(105 87 229 / 19%);
+  background: #fffbf2;
+  box-shadow: inset 0 0 0 1px var(--attention-border);
 }
 
 .session-row.needs-reply:not(.selected):hover {
-  background: #f2efff;
+  background: var(--attention-soft);
 }
 
 .session-row.needs-attention:not(.selected) {
@@ -1293,7 +1298,7 @@ select:focus-visible {
   left: 0;
   width: 3px;
   border-radius: 0 3px 3px 0;
-  background: #7564e3;
+  background: var(--attention-strong);
   content: "";
 }
 
@@ -1574,8 +1579,8 @@ select:focus-visible {
 }
 
 .session-signal-mark.signal-ready {
-  background: var(--violet);
-  box-shadow: 0 3px 9px rgb(105 87 229 / 24%);
+  background: var(--attention-strong);
+  box-shadow: 0 3px 9px rgb(199 109 8 / 24%);
   color: white;
   animation: state-confirm var(--motion-panel) var(--motion-ease-out);
 }
@@ -1635,8 +1640,8 @@ select:focus-visible {
   width: fit-content;
   padding: 3px 7px;
   border-radius: 999px;
-  background: #e9e4ff;
-  color: #6256bd;
+  background: var(--attention-soft-strong);
+  color: var(--attention);
   font-weight: 750;
 }
 
@@ -2213,8 +2218,9 @@ select:focus-visible {
 }
 
 .conversation-update-indicator.signal-ready {
-  background: var(--violet-soft);
-  color: var(--violet-dark);
+  border: 1px solid var(--attention-border);
+  background: var(--attention-soft);
+  color: var(--attention);
 }
 
 .conversation-update-indicator.signal-failed {
