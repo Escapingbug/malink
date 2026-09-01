@@ -56,7 +56,8 @@ describe('MLP/3 artifact references', () => {
     ])
     expect(prepared.message.text).not.toContain('(preview.png)')
     expect(prepared.message.text.match(/malink-artifact:/gu)).toHaveLength(3)
-    expect(prepared.message.text).toContain('[outside](../outside.txt)')
+    expect(prepared.message.text).toContain('outside *(local file reference unavailable)*')
+    expect(prepared.message.text).not.toContain('(../outside.txt)')
     expect(prepared.message.text).toContain('`[inline example](notes.txt)`')
     expect(prepared.message.text).toContain('[fenced example](notes.txt)')
     expect(prepared.message.attachments).toMatchObject([
@@ -94,6 +95,39 @@ describe('MLP/3 artifact references', () => {
       messageVersion: 3,
     })
     expect(transport.media.size).toBe(2)
+  })
+
+  it('counts unique files and removes raw local links after the reference limit', async () => {
+    const root = await temporaryDirectory()
+    const cwd = join(root, 'project')
+    await mkdir(cwd)
+    await Promise.all(
+      Array.from({ length: 11 }, (_, index) =>
+        writeFile(join(cwd, `file-${index}.txt`), `file ${index}`)),
+    )
+    const store = new FileMlp3ArtifactStore(join(root, 'artifacts.json'), 'workspace-1')
+    await store.initialize()
+
+    const links = [
+      ...Array.from({ length: 9 }, (_, index) => `[file ${index}](file-${index}.txt)`),
+      '[file 0 again](file-0.txt)',
+      '[file 9](file-9.txt)',
+      '[file 10](file-10.txt)',
+      '[file 9 again](file-9.txt)',
+      '[remote](https://example.test/source)',
+    ]
+    const prepared = await store.prepare(context(cwd), 'message-bounded', {
+      format: 'markdown',
+      text: links.join('\n'),
+    })
+
+    expect(prepared.references).toHaveLength(10)
+    expect(new Set(prepared.references.map(reference => reference.relativePath)).size).toBe(10)
+    expect(prepared.message.text.match(/malink-artifact:/gu)).toHaveLength(12)
+    expect(prepared.message.text).not.toContain('(file-9.txt)')
+    expect(prepared.message.text).not.toContain('(file-10.txt)')
+    expect(prepared.message.text).toContain('file 10 *(local file reference unavailable)*')
+    expect(prepared.message.text).toContain('[remote](https://example.test/source)')
   })
 
   it('returns updated stat metadata without uploading when the source changed', async () => {

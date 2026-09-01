@@ -100,7 +100,9 @@ export function MarkdownContent({
         remarkPlugins={[remarkGfm]}
         skipHtml
         urlTransform={(url) =>
-          url.startsWith(ARTIFACT_SCHEME) ? url : defaultUrlTransform(url)
+          url.startsWith(ARTIFACT_SCHEME) || isPotentialLocalFileDestination(url)
+            ? url
+            : defaultUrlTransform(url)
         }
         components={{
           pre({ children }) {
@@ -109,6 +111,12 @@ export function MarkdownContent({
           a({ children, href, ...props }) {
             const referenceId = artifactReferenceId(href);
             if (referenceId) return artifactControl(referenceId, children, false);
+            if (isPotentialLocalFileDestination(href)) {
+              return <UnavailableLocalReference>{children}</UnavailableLocalReference>;
+            }
+            if (!href) {
+              return <span className="markdown-link-unavailable">{children}</span>;
+            }
             return (
               <a
                 {...props}
@@ -125,6 +133,9 @@ export function MarkdownContent({
             if (referenceId) {
               return artifactControl(referenceId, alt || "Referenced image", true);
             }
+            if (isPotentialLocalFileDestination(src)) {
+              return <UnavailableLocalReference image>{alt || "Referenced image"}</UnavailableLocalReference>;
+            }
             // Remote Markdown images stay in the browser pipeline. Application
             // attachments always use verified, short-lived blob URLs below.
             return <img alt={alt ?? ""} src={src} />;
@@ -134,6 +145,23 @@ export function MarkdownContent({
         {content}
       </ReactMarkdown>
     </div>
+  );
+}
+
+function UnavailableLocalReference({
+  image = false,
+  children,
+}: {
+  image?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <span
+      className="artifact-reference-unavailable"
+      title="This local file link was not verified by the Gateway."
+    >
+      {image ? "▧" : "▤"} {children}
+    </span>
   );
 }
 
@@ -321,6 +349,21 @@ function artifactReferenceId(value: string | undefined): string | null {
   if (!value?.startsWith(ARTIFACT_SCHEME)) return null;
   const id = value.slice(ARTIFACT_SCHEME.length);
   return id && /^[A-Za-z0-9_-]+$/u.test(id) ? id : null;
+}
+
+function isPotentialLocalFileDestination(value: string | undefined): boolean {
+  if (!value || value.startsWith(ARTIFACT_SCHEME)) return false;
+  let destination: string;
+  try {
+    destination = decodeURIComponent(value);
+  } catch {
+    destination = value;
+  }
+  if (!destination || destination.startsWith("#") || destination.startsWith("?")) return false;
+  if (destination.startsWith("//")) return false;
+  if (/^[a-z]:[\\/]/iu.test(destination)) return true;
+  const scheme = /^([a-z][a-z0-9+.-]*):/iu.exec(destination)?.[1]?.toLowerCase();
+  return !scheme || scheme === "file";
 }
 
 function isTextPreview(mimeType: string): boolean {

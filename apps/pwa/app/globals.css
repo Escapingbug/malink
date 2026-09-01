@@ -2800,6 +2800,22 @@ select:focus-visible {
   background: #e7e5f8;
 }
 
+.artifact-reference-unavailable {
+  display: inline;
+  padding: 1px 4px;
+  border-radius: 5px;
+  background: #f4f1f1;
+  color: #7c6265;
+  font-weight: 620;
+  overflow-wrap: anywhere;
+}
+
+.markdown-link-unavailable {
+  color: #7c6265;
+  text-decoration: line-through;
+  text-decoration-color: rgb(124 98 101 / 45%);
+}
+
 .artifact-reference-details {
   display: grid;
   width: min(360px, 72vw);
