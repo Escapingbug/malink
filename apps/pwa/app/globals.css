@@ -4023,50 +4023,71 @@ select:focus-visible {
   white-space: pre-wrap;
 }
 
-.command-invocation {
-  background: #262a35;
-  color: #d8deec;
+.syntax-highlight {
   tab-size: 2;
 }
 
-.command-token.token-command {
-  color: #aebfff;
-  font-weight: 720;
+.syntax-highlight code {
+  color: inherit;
+  font: inherit;
+  text-shadow: none;
 }
 
-.command-token.token-keyword {
-  color: #cbb0ff;
-  font-weight: 700;
-}
-
-.command-token.token-option {
-  color: #8fd3ff;
-}
-
-.command-token.token-string {
-  color: #a9d99d;
-}
-
-.command-token.token-variable {
-  color: #efb7ff;
-}
-
-.command-token.token-operator {
-  color: #f2b47e;
-  font-weight: 690;
-}
-
-.command-token.token-comment {
-  color: #8791a6;
+.syntax-highlight .token.comment,
+.syntax-highlight .token.prolog,
+.syntax-highlight .token.doctype,
+.syntax-highlight .token.cdata {
+  color: #79808f;
   font-style: italic;
 }
 
-.command-token.token-assignment {
-  color: #72d5c3;
+.syntax-highlight .token.punctuation {
+  color: #626a7a;
 }
 
-.command-token.token-path {
-  color: #f0cd82;
+.syntax-highlight .token.property,
+.syntax-highlight .token.tag,
+.syntax-highlight .token.boolean,
+.syntax-highlight .token.number,
+.syntax-highlight .token.constant,
+.syntax-highlight .token.symbol,
+.syntax-highlight .token.deleted {
+  color: #a33c67;
+}
+
+.syntax-highlight .token.selector,
+.syntax-highlight .token.attr-name,
+.syntax-highlight .token.string,
+.syntax-highlight .token.char,
+.syntax-highlight .token.builtin,
+.syntax-highlight .token.inserted {
+  color: #3d7b36;
+}
+
+.syntax-highlight .token.operator,
+.syntax-highlight .token.entity,
+.syntax-highlight .token.url,
+.syntax-highlight .language-css .token.string,
+.syntax-highlight .style .token.string,
+.syntax-highlight .token.variable {
+  color: #956819;
+}
+
+.syntax-highlight .token.atrule,
+.syntax-highlight .token.attr-value,
+.syntax-highlight .token.function,
+.syntax-highlight .token.class-name {
+  color: #a23f4d;
+}
+
+.syntax-highlight .token.keyword {
+  color: #315cba;
+  font-weight: 650;
+}
+
+.syntax-highlight .token.regex,
+.syntax-highlight .token.important {
+  color: #9b5b16;
 }
 
 .tool-result-view {
@@ -4306,11 +4327,6 @@ select:focus-visible {
   line-height: 1.62;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-}
-
-.tool-focus-invocation.command-invocation {
-  background: #262a35;
-  color: #d8deec;
 }
 
 .tool-focus-content .tool-result-view {

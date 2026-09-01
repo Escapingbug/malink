@@ -1,13 +1,12 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ToolInvocation, tokenizeCommandLine } from "./ToolInvocation";
+import { ToolInvocation } from "./ToolInvocation";
 import type { ToolPresentationItem } from "./presentation";
 
 describe("ToolInvocation", () => {
   it("highlights a Bash command without changing its text", () => {
     const invocation = 'MODE=test pnpm exec vitest --filter "$PKG" | tee ./out.log # verify';
-    const tokens = tokenizeCommandLine(invocation);
     const html = renderToStaticMarkup(
       createElement(ToolInvocation, {
         className: "tool-call-invocation",
@@ -15,19 +14,21 @@ describe("ToolInvocation", () => {
       }),
     );
 
-    expect(tokens.map((token) => token.text).join("")).toBe(invocation);
     expect(html).toContain('data-language="bash"');
-    expect(html).toContain("token-assignment");
-    expect(html).toContain("token-command");
-    expect(html).toContain("token-option");
-    expect(html).toContain("token-string");
-    expect(html).toContain("token-variable");
-    expect(html).toContain("token-operator");
-    expect(html).toContain("token-path");
-    expect(html).toContain("token-comment");
+    expect(html).toContain("syntax-highlight language-bash");
+    expect(html).toContain('class="token function"');
+    expect(html).toContain('class="token parameter variable"');
+    expect(html).toContain('class="token string"');
+    expect(html).toContain('class="token operator"');
+    expect(html).toContain('class="token comment"');
+    expect(html).toContain("MODE");
+    expect(html).toContain("$PKG");
+    expect(html).toContain("./out.log");
+    expect(html).toContain("# verify");
+    expect(renderedText(html)).toBe(invocation);
   });
 
-  it("uses conservative command highlighting for a non-Bash executor", () => {
+  it("does not apply Bash grammar to a non-Bash executor", () => {
     const html = renderToStaticMarkup(
       createElement(ToolInvocation, {
         className: "tool-focus-invocation",
@@ -35,10 +36,23 @@ describe("ToolInvocation", () => {
       }),
     );
 
-    expect(html).toContain('data-language="command"');
-    expect(html).toContain("token-command");
-    expect(html).toContain("token-option");
+    expect(html).not.toContain("syntax-highlight");
+    expect(html).not.toContain("class=\"token");
     expect(html).not.toContain('data-language="bash"');
+    expect(html).toContain("python -m pytest");
+  });
+
+  it("uses the Bash grammar for an explicitly labelled shell", () => {
+    const html = renderToStaticMarkup(
+      createElement(ToolInvocation, {
+        className: "tool-focus-invocation",
+        tool: tool("Shell", "execute", "if test -f app.ts; then echo ready; fi"),
+      }),
+    );
+
+    expect(html).toContain('data-language="bash"');
+    expect(html).toContain('class="token keyword"');
+    expect(html).toContain('class="token builtin class-name"');
   });
 
   it("keeps non-execution details as plain text", () => {
@@ -71,4 +85,14 @@ function tool(
     startedAt: 1,
     updatedAt: 2,
   };
+}
+
+function renderedText(html: string): string {
+  return html
+    .replace(/<[^>]+>/gu, "")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#x27;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
 }
