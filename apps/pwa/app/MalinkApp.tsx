@@ -36,6 +36,10 @@ import {
   type CommandCompletion,
 } from "./commandLifecycle";
 import {
+  composerEnterAction,
+  isDesktopBrowserUserAgent,
+} from "./composerKeyboard";
+import {
   DeviceInvitationLifecycle,
   InvitationRequestCancelledError,
 } from "./deviceInvitationLifecycle";
@@ -1556,12 +1560,16 @@ function MalinkAppRuntime() {
   ));
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [composerOptionsOpen, setComposerOptionsOpen] = useState(false);
+  const [desktopEnterSends, setDesktopEnterSends] = useState(false);
   const [providerCommandsOpen, setProviderCommandsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
   const [hiddenAttentionKeys, setHiddenAttentionKeys] = useState<Set<string>>(
     () => new Set(),
   );
+  useEffect(() => {
+    setDesktopEnterSends(isDesktopBrowserUserAgent(navigator.userAgent));
+  }, []);
   const [matrixConfig, setMatrixConfig] = useState<MatrixConnectionConfig>(
     initialGatewayUi.config,
   );
@@ -10615,11 +10623,16 @@ function MalinkAppRuntime() {
       setComposerOptionsOpen(false);
       return;
     }
-    if (
-      event.key === "Enter" &&
-      (event.ctrlKey || event.metaKey) &&
-      !event.nativeEvent.isComposing
-    ) {
+    const enterAction = composerEnterAction({
+      key: event.key,
+      shiftKey: event.shiftKey,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      altKey: event.altKey,
+      composing: event.nativeEvent.isComposing,
+      desktopBrowser: desktopEnterSends,
+    });
+    if (enterAction === "send") {
       event.preventDefault();
       void sendMessage();
     }
@@ -13162,7 +13175,9 @@ function MalinkAppRuntime() {
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={onComposerKeyDown}
-              aria-keyshortcuts="Control+Enter Meta+Enter"
+              aria-keyshortcuts={desktopEnterSends
+                ? "Enter"
+                : "Control+Enter Meta+Enter"}
               placeholder={
                 gatewayAvailable
                   ? `Message ${activeProvider}…`
@@ -13178,8 +13193,12 @@ function MalinkAppRuntime() {
               id="composer-send-shortcut"
               className="composer-send-shortcut"
             >
-              <kbd>Ctrl/⌘</kbd>
-              <span>+</span>
+              {!desktopEnterSends && (
+                <>
+                  <kbd>Ctrl/⌘</kbd>
+                  <span>+</span>
+                </>
+              )}
               <kbd>Enter</kbd>
               <span>to send</span>
             </span>
