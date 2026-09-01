@@ -6483,7 +6483,11 @@ select:focus-visible {
   padding-left: 36px;
 }
 
-.connection-recovery-actions button {
+.connection-recovery-actions button,
+.connection-recovery-disabled-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 38px;
   padding: 0 13px;
   border: 1px solid #dfc8cc;
@@ -6502,6 +6506,11 @@ select:focus-visible {
 
 .connection-recovery-actions button:disabled {
   cursor: wait;
+  opacity: 0.6;
+}
+
+.connection-recovery-disabled-action {
+  cursor: not-allowed;
   opacity: 0.6;
 }
 
@@ -10406,7 +10415,8 @@ body {
     padding-left: 0;
   }
 
-  .connection-recovery-actions button {
+  .connection-recovery-actions button,
+  .connection-recovery-disabled-action {
     min-height: 44px;
     flex: 1 1 150px;
   }

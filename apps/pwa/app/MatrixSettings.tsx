@@ -684,9 +684,9 @@ function MatrixSettingsDialog({
               </span>
             </div>
             <div className="connection-recovery-actions">
-              <button type="button" disabled>
+              <span className="connection-recovery-disabled-action">
                 Upgrade after migration review
-              </button>
+              </span>
               <button type="button" onClick={onClose}>Later</button>
             </div>
           </section>
