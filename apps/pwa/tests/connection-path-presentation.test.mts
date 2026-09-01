@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { ConnectionPathIndicator } from "../app/ConnectionPathIndicator.tsx";
 import { deriveConnectionPathPresentation } from "../app/connectionPathPresentation.ts";
 
 const now = 1_000_000;
 
-test("shows Matrix and Gateway as separate healthy links", () => {
+test("shows Matrix and Gateway as separate healthy statuses", () => {
   const presentation = deriveConnectionPathPresentation({
     trusted: true,
     matrixStatus: "connected",
@@ -102,4 +105,49 @@ test("keeps an unverified Gateway neutral when durable workspace data exists", (
   assert.equal(presentation.deviceToMatrix.tone, "ready");
   assert.equal(presentation.matrixToGateway.tone, "unknown");
   assert.equal(presentation.matrixToGateway.label, "Gateway not verified");
+});
+
+test("renders two named status units without a device-cloud-computer diagram", () => {
+  const presentation = deriveConnectionPathPresentation({
+    trusted: true,
+    matrixStatus: "connected",
+    gatewayLabel: "Office Mac",
+    gatewaySnapshotAvailable: true,
+    gatewayLiveness: {
+      state: "online",
+      lastVerifiedAt: now - 10_000,
+    },
+    now,
+  });
+  const html = renderToStaticMarkup(createElement(ConnectionPathIndicator, {
+    gatewayLabel: "Office Mac",
+    presentation,
+  }));
+
+  assert.match(html, />Matrix</);
+  assert.match(html, />Synced</);
+  assert.match(html, />Gateway · Office Mac</);
+  assert.match(html, />Available</);
+  assert.doesNotMatch(html, /connection-path-(?:node|route|segment)/);
+});
+
+test("compact status names the affected service and uses one short value", () => {
+  const presentation = deriveConnectionPathPresentation({
+    trusted: true,
+    matrixStatus: "reconnecting",
+    gatewayLabel: "Office Mac",
+    gatewaySnapshotAvailable: true,
+    now,
+  });
+  const html = renderToStaticMarkup(createElement(ConnectionPathIndicator, {
+    gatewayLabel: "Office Mac",
+    presentation,
+    variant: "compact",
+  }));
+
+  assert.match(html, />Matrix</);
+  assert.match(html, />Syncing</);
+  assert.match(html, />Gateway</);
+  assert.match(html, />Unknown</);
+  assert.doesNotMatch(html, />Office Mac</);
 });
