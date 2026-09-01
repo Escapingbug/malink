@@ -281,12 +281,13 @@ import {
   connectionRecoveryDisposition,
 } from "./connectionRecovery";
 import { deriveGatewayLiveness } from "./gatewayLiveness";
+import { ConnectionPathIndicator } from "./ConnectionPathIndicator";
+import { deriveConnectionPathPresentation } from "./connectionPathPresentation";
 import {
   GATEWAY_LIVE_STATUS_TIMEOUT_MS,
   GATEWAY_ONLINE_PROOF_WINDOW_MS,
   gatewayNodeLivenessAfterProbeTimeout,
   gatewayNodeLivenessPresentation,
-  gatewayNodeLivenessSummary,
   gatewayNodeLivenessTargets,
   gatewayProbeRecoveryBackoffMs,
   type GatewayNodeLiveness,
@@ -2882,13 +2883,25 @@ function MalinkAppRuntime() {
         .sort()
         .join("\0")}`
     : null;
-  const gatewayNodeSummary = useMemo(
-    () => gatewayNodeLivenessSummary({
-      gatewayNodeIds: gatewayNodeProbeTargets.map((target) => target.gatewayNodeId),
-      values: gatewayNodeLivenessById,
+  const connectionPathPresentation = useMemo(
+    () => deriveConnectionPathPresentation({
+      trusted: trustedGateway !== null,
+      matrixStatus: connectionStatus,
+      gatewayLabel: activeProjectGateway.label,
+      gatewayLiveness:
+        gatewayNodeLivenessById[activeProjectGateway.gatewayNodeId],
+      gatewaySnapshotAvailable: gatewayState?.updatedAt !== undefined,
       now: gatewayLivenessNow,
     }),
-    [gatewayLivenessNow, gatewayNodeLivenessById, gatewayNodeProbeTargets],
+    [
+      activeProjectGateway.gatewayNodeId,
+      activeProjectGateway.label,
+      connectionStatus,
+      gatewayLivenessNow,
+      gatewayNodeLivenessById,
+      gatewayState?.updatedAt,
+      trustedGateway,
+    ],
   );
   const providerHistorySources = useMemo<ProviderHistorySource[]>(() => {
     if (!gatewayState) return [];
@@ -11701,51 +11714,16 @@ function MalinkAppRuntime() {
         )}
 
         <button
-          className={`gateway-card gateway-card-button connection-state-${displayedConnectionStatus} ${
-            displayedConnectionStatus === "offline" || displayedConnectionStatus === "error"
-              ? "offline"
-              : ""
-          }`}
-          aria-label={`Open connection settings, ${mobileConnectionSignal.label}${
-            gatewayNodeProbeTargets.length > 0 ? `; Gateways: ${gatewayNodeSummary}` : ""
-          }`}
-          title={`Connection: ${mobileConnectionSignal.label}${
-            gatewayNodeProbeTargets.length > 0 ? `; Gateways: ${gatewayNodeSummary}` : ""
-          }`}
+          className="gateway-card gateway-card-button"
+          aria-label={`Open connection settings. ${connectionPathPresentation.accessibleLabel}`}
+          title={connectionPathPresentation.accessibleLabel}
           onClick={() => setSettingsOpen(true)}
         >
-          <span className="gateway-icon">G</span>
-          <div>
-            <strong>
-              {workspaceGatewayTitle}
-            </strong>
-            <span className="gateway-status-copy">
-              <span
-                className={`mobile-connection-icon mobile-connection-${mobileConnectionSignal.state}`}
-                aria-hidden="true"
-              >
-                <MobileConnectionIcon state={mobileConnectionSignal.state} />
-              </span>
-              <span>
-                {gatewayNodeProbeTargets.length > 0
-                  ? gatewayNodeSummary
-                  : mobileConnectionSignal.label}
-              </span>
-            </span>
-            <span className="gateway-mobile-status" aria-hidden="true">
-              <span
-                className={`mobile-connection-icon mobile-connection-${mobileConnectionSignal.state}`}
-              >
-                <MobileConnectionIcon state={mobileConnectionSignal.state} />
-              </span>
-              <span className="gateway-mobile-status-copy">
-                {gatewayNodeProbeTargets.length > 0
-                  ? `${mobileConnectionSignal.label} · ${gatewayNodeSummary}`
-                  : mobileConnectionSignal.label}
-              </span>
-            </span>
-          </div>
-          <span className="gateway-more" aria-hidden="true">•••</span>
+          <ConnectionPathIndicator
+            gatewayLabel={activeProjectGateway.label}
+            presentation={connectionPathPresentation}
+          />
+          <span className="gateway-more" aria-hidden="true">›</span>
         </button>
 
         {gatewayFilterOptions.length > 1 && (
@@ -12386,43 +12364,22 @@ function MalinkAppRuntime() {
           <div className="conversation-heading">
             <h2>{conversationTitle}</h2>
             <span className="conversation-status">
-              {gatewayAvailable && gatewayState && (
-                <i
-                  className={`connection-dot connection-state-${displayedConnectionStatus}`}
-                  aria-hidden="true"
-                />
-              )}
-              <span className="conversation-status-copy">
-                {gatewayAvailable && gatewayState ? (
-                  `${activeWorkspace?.projectName || "Project"} · ${activeProvider}`
-                ) : (
-                  <>
-                    <span
-                      className="conversation-connection-desktop"
-                      title={mobileConnectionSignal.label}
-                    >
-                      <span
-                        className={`mobile-connection-icon mobile-connection-${mobileConnectionSignal.state}`}
-                        aria-hidden="true"
-                      >
-                        <MobileConnectionIcon state={mobileConnectionSignal.state} />
-                      </span>
-                      <span className="visually-hidden">
-                        {mobileConnectionSignal.label}
-                      </span>
-                    </span>
-                    <span className="conversation-connection-mobile">
-                      <span
-                        className={`mobile-connection-icon mobile-connection-${mobileConnectionSignal.state}`}
-                        aria-hidden="true"
-                      >
-                        <MobileConnectionIcon state={mobileConnectionSignal.state} />
-                      </span>
-                      {mobileConnectionSignal.label}
-                    </span>
-                  </>
-                )}
+              <span className="conversation-project-copy">
+                {activeWorkspace?.projectName || "Project"} · {activeProvider}
               </span>
+              <button
+                type="button"
+                className="conversation-connection-path"
+                aria-label={`Open connection settings. ${connectionPathPresentation.accessibleLabel}`}
+                title={connectionPathPresentation.accessibleLabel}
+                onClick={() => setSettingsOpen(true)}
+              >
+                <ConnectionPathIndicator
+                  gatewayLabel={activeProjectGateway.label}
+                  presentation={connectionPathPresentation}
+                  variant="compact"
+                />
+              </button>
             </span>
           </div>
           <div

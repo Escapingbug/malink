@@ -10740,6 +10740,306 @@ body {
   }
 }
 
+.connection-path-indicator {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.connection-path-route {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns:
+    minmax(48px, auto) minmax(30px, 1fr) 42px
+    minmax(30px, 1fr) minmax(58px, auto);
+  align-items: start;
+}
+
+.connection-path-node-wrap {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.connection-path-node {
+  position: relative;
+  display: grid;
+  width: 29px;
+  height: 29px;
+  place-items: center;
+  border: 1px solid #dfe3ea;
+  border-radius: 9px;
+  background: #fff;
+  color: #566176;
+}
+
+.connection-path-node svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.75;
+}
+
+.connection-path-node > i {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 7px;
+  height: 7px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #25a272;
+  box-shadow: none;
+}
+
+.connection-path-node-caption {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  color: #6e7789;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 650;
+  line-height: 1.2;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-path-segment-wrap {
+  position: relative;
+  display: block;
+  min-width: 0;
+  height: 44px;
+}
+
+.connection-path-segment {
+  position: absolute;
+  top: 14px;
+  right: 4px;
+  left: 4px;
+  height: 0;
+  border-top: 2px solid #25a272;
+  color: #25a272;
+}
+
+.connection-path-segment::after {
+  position: absolute;
+  top: -4px;
+  right: -1px;
+  width: 5px;
+  height: 5px;
+  border-top: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  content: "";
+  transform: rotate(45deg);
+}
+
+.connection-path-segment.connection-path-tone-progress,
+.connection-path-segment.connection-path-tone-delayed,
+.connection-path-segment.connection-path-tone-setup {
+  border-top-color: #ca8a25;
+  border-top-style: dashed;
+  color: #ca8a25;
+}
+
+.connection-path-segment.connection-path-tone-offline,
+.connection-path-segment.connection-path-tone-unknown {
+  border-top-color: #9ba3b0;
+  border-top-style: dotted;
+  color: #9ba3b0;
+}
+
+.connection-path-segment.connection-path-tone-attention {
+  border-top-color: #c94f59;
+  border-top-style: dashed;
+  color: #c94f59;
+}
+
+.connection-path-full-label.connection-path-tone-attention,
+.connection-path-compact-label.connection-path-tone-attention {
+  color: #b63f4a;
+}
+
+.connection-path-node.connection-path-tone-progress > i,
+.connection-path-node.connection-path-tone-delayed > i,
+.connection-path-node.connection-path-tone-setup > i {
+  background: #ca8a25;
+}
+
+.connection-path-node.connection-path-tone-offline > i,
+.connection-path-node.connection-path-tone-unknown > i {
+  background: #9ba3b0;
+}
+
+.connection-path-node.connection-path-tone-attention > i {
+  background: #c94f59;
+}
+
+.connection-path-full {
+  width: 100%;
+  align-items: stretch;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.connection-path-full-label {
+  overflow: hidden;
+  color: #a46c13;
+  font-size: 9px;
+  font-weight: 720;
+  line-height: 1.15;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-path-full-label.connection-path-tone-offline,
+.connection-path-full-label.connection-path-tone-unknown {
+  color: #737d8c;
+}
+
+.gateway-card > .connection-path-indicator {
+  flex: 1;
+}
+
+.gateway-card .gateway-more {
+  align-self: center;
+  color: #8d95a5;
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+.connection-path-compact {
+  width: auto;
+  gap: 5px;
+}
+
+.connection-path-compact .connection-path-route {
+  width: 78px;
+  grid-template-columns: 20px 9px 20px 9px 20px;
+  align-items: center;
+}
+
+.connection-path-compact .connection-path-node {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+}
+
+.connection-path-compact .connection-path-node svg {
+  width: 12px;
+  height: 12px;
+}
+
+.connection-path-compact .connection-path-node > i {
+  right: -1px;
+  bottom: -1px;
+  width: 5px;
+  height: 5px;
+  border-width: 1px;
+}
+
+.connection-path-compact .connection-path-node-caption {
+  display: none;
+}
+
+.connection-path-compact .connection-path-segment-wrap {
+  height: 20px;
+}
+
+.connection-path-compact .connection-path-segment {
+  top: 9px;
+  right: 1px;
+  left: 1px;
+}
+
+.connection-path-compact-label {
+  max-width: 130px;
+  overflow: hidden;
+  color: #a46c13;
+  font-size: 9px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-project-copy {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-connection-path {
+  display: inline-flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.conversation-connection-path:hover .connection-path-node {
+  border-color: #cfc9ef;
+  background: #f8f7fd;
+}
+
+.conversation-connection-path:focus-visible {
+  border-radius: 7px;
+  outline: 2px solid rgb(105 87 229 / 28%);
+  outline-offset: 2px;
+}
+
+@media (max-width: 900px), (max-height: 610px) and (max-width: 1100px) {
+  .gateway-card {
+    min-height: 58px;
+    padding: 7px 9px 5px;
+  }
+
+  .gateway-card .connection-path-route {
+    grid-template-columns:
+      minmax(45px, auto) minmax(24px, 1fr) 40px
+      minmax(24px, 1fr) minmax(54px, auto);
+  }
+
+  .gateway-card .connection-path-node {
+    width: 27px;
+    height: 27px;
+  }
+
+  .gateway-card .connection-path-segment {
+    top: 13px;
+  }
+
+  .conversation-project-copy {
+    display: none;
+  }
+
+  .conversation-heading > .conversation-status {
+    overflow: visible;
+  }
+
+  .conversation-connection-path {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .connection-path-compact-label {
+    max-width: 96px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
