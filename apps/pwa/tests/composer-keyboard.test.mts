@@ -34,6 +34,11 @@ test("composition never submits and mobile keeps the existing shortcut", () => {
 test("classifies desktop and mobile browser user agents", () => {
   assert.equal(isDesktopBrowserUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X)"), true);
   assert.equal(isDesktopBrowserUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"), true);
+  assert.equal(isDesktopBrowserUserAgent("Malink Desktop Mobile Shell"), true);
   assert.equal(isDesktopBrowserUserAgent("Mozilla/5.0 (Linux; Android 16; Mobile)"), false);
   assert.equal(isDesktopBrowserUserAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 20_0)"), false);
+  assert.equal(
+    isDesktopBrowserUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X)", 5),
+    false,
+  );
 });
