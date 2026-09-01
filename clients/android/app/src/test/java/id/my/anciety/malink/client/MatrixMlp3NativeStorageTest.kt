@@ -12,6 +12,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -126,6 +127,72 @@ class MatrixMlp3NativeStorageTest {
 
         assertEquals(listOf("\$dependent", "\$grant", "\$dependent"), attempts)
         assertTrue(store.pending().isEmpty())
+    }
+
+    @Test
+    fun `task notification outbox retries once and deduplicates across restart`() {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val value = MatrixMlp3TaskNotification(
+            eventId = "terminal-event-1",
+            commandId = "remote-command-1",
+            outcome = "succeeded",
+            sessionId = "session-1",
+        )
+        var attempts = 0
+        val firstStore = AtomicEncryptedMatrixMlp3TaskNotificationStore(
+            blob,
+            JvmAesGcmCipher(),
+            "account-a",
+        )
+        MatrixMlp3TaskNotificationCoordinator(firstStore) {
+            attempts += 1
+            throw IllegalStateException("simulated Android notification failure")
+        }.accept(value)
+
+        assertEquals(1, attempts)
+        assertEquals(listOf(value), firstStore.pending())
+        assertFalse(blob.bytes!!.toString(Charsets.UTF_8).contains("remote-command-1"))
+
+        val restoredStore = AtomicEncryptedMatrixMlp3TaskNotificationStore(
+            blob,
+            JvmAesGcmCipher(),
+            "account-a",
+        )
+        val delivered = mutableListOf<MatrixMlp3TaskNotification>()
+        val restored = MatrixMlp3TaskNotificationCoordinator(restoredStore) { delivered += it }
+        restored.drain()
+        restored.accept(value)
+
+        assertEquals(listOf(value), delivered)
+        assertTrue(restoredStore.pending().isEmpty())
+        AtomicEncryptedMatrixMlp3TaskNotificationStore(
+            blob,
+            JvmAesGcmCipher(),
+            "account-a",
+        ).validateStoredState()
+    }
+
+    @Test
+    fun `task notification delivery remains pending when its durable commit fails`() {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val store = AtomicEncryptedMatrixMlp3TaskNotificationStore(
+            blob,
+            JvmAesGcmCipher(),
+            "account-a",
+        )
+        val value = MatrixMlp3TaskNotification(
+            eventId = "terminal-event-1",
+            commandId = "remote-command-1",
+            outcome = "failed",
+            sessionId = "session-1",
+        )
+        assertTrue(store.enqueue(value))
+        blob.failWrites = true
+
+        assertThrows(IllegalStateException::class.java) {
+            store.delivered(value.eventId)
+        }
+        assertEquals(listOf(value), store.pending())
     }
 
     @Test

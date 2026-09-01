@@ -39,6 +39,7 @@ class NativeRuntimeFiles(context: Context, deviceScope: String) {
     val timelineKeys = File(root, "matrix-timeline-keys.enc")
     val matrixMlp3ProjectKeys = File(root, "matrix-v3-project-keys.enc")
     val matrixMlp3Inbox = File(root, "matrix-v3-inbox.enc")
+    val matrixMlp3TaskNotifications = File(root, "matrix-v3-task-notifications.enc")
     val matrixMlp3Projection = File(root, "matrix-v3-projection.enc")
     val pairing = File(root, "pairing-transaction.enc")
     val stateManifest = File(root, "state-manifest.json")
@@ -73,6 +74,7 @@ class NativeRuntimeFiles(context: Context, deviceScope: String) {
             timelineKeys,
             matrixMlp3ProjectKeys,
             matrixMlp3Inbox,
+            matrixMlp3TaskNotifications,
             matrixMlp3Projection,
             pairing,
             stateManifest,

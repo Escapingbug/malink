@@ -140,7 +140,7 @@ class NativeClientRuntime(
     private val identity: MalinkPrivateIdentity = AndroidKeystoreP256Identity(),
     private val cipher: SecretCipher = AndroidKeystoreSecretCipher(),
     private val foregroundState: () -> Pair<Boolean, Boolean>,
-    private val onCommandCompletion: (CommandOperation, DurableCompletion) -> Unit = { _, _ -> },
+    private val onTaskCompletion: (String, DurableCompletion) -> Unit = { _, _ -> },
     private val now: () -> Long = System::currentTimeMillis,
 ) : NativeMatrixObserver {
     internal fun injectNetworkAvailabilityForE2e(available: Boolean) {
@@ -223,6 +223,29 @@ class NativeClientRuntime(
         deviceId,
     ).also {
         stateUpgrade.recoverPreserved("matrix-v3-raw-inbox", validate = it::validateStoredState)
+    }
+    private val matrixMlp3TaskNotifications = AtomicEncryptedMatrixMlp3TaskNotificationStore(
+        files.matrixMlp3TaskNotifications,
+        cipher,
+        deviceId,
+    ).also {
+        stateUpgrade.recoverPreserved(
+            "matrix-v3-task-notifications",
+            validate = it::validateStoredState,
+        )
+    }
+    private val taskNotificationCoordinator = MatrixMlp3TaskNotificationCoordinator(
+        matrixMlp3TaskNotifications,
+        diagnostics,
+    ) { value ->
+        onTaskCompletion(
+            value.eventId,
+            DurableCompletion(
+                commandId = value.commandId,
+                outcome = DurableOutcome.fromWireName(value.outcome),
+                sessionId = value.sessionId,
+            ),
+        )
     }
     private val matrixMlp3ProjectionStore = AtomicEncryptedMatrixMlp3ProjectionStore(
         files.matrixMlp3Projection,
@@ -380,6 +403,7 @@ class NativeClientRuntime(
     }
 
     fun start(): ClientSnapshot {
+        taskNotificationCoordinator.drain()
         matrix.start()
         refreshSnapshot(publishLifecycle = true)
         return snapshot()
@@ -1169,6 +1193,7 @@ class NativeClientRuntime(
             timelineKeys.clear()
             matrixMlp3ProjectKeys.clear()
             matrixMlp3Inbox.clear()
+            matrixMlp3TaskNotifications.clear()
             matrixMlp3Projection.clear()
             matrixMlp3ProjectionStore.clear()
             matrixMlp3CommandContent.clear()
@@ -2339,6 +2364,7 @@ class NativeClientRuntime(
             }
         }
         result.terminal?.let(::recordMatrixMlp3Terminal)
+        result.taskNotification?.let(taskNotificationCoordinator::accept)
         commitMatrixMlp3Projection("gateway_event")
         return true
     }
@@ -2587,6 +2613,10 @@ class NativeClientRuntime(
                 outbox.recordProgress(commandId, protocolEvent.string("sessionId"))
             }
             projected.terminal?.let(::recordMatrixMlp3Terminal)
+            // Explicit user-requested history pagination may rebuild messages
+            // and local command state, but it must never alert for old turns.
+            // Only the persisted raw-inbox/live event path accepts
+            // projected.taskNotification.
             return projected.messages.singleOrNull()?.copy(historical = true)
         }
         return null
@@ -2742,7 +2772,6 @@ class NativeClientRuntime(
                         completedOperation,
                     )
                 }
-                onCommandCompletion(completedOperation, completion)
             }
         }.onFailure { error ->
             diagnostics.record(

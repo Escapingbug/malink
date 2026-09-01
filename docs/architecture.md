@@ -297,6 +297,14 @@ backgrounded. It owns:
 - notification emission when an Agent task reaches a user-relevant result;
 - versioned store migrations before connection starts.
 
+Task notification eligibility is derived from authenticated `turn.completed`
+and `turn.failed` events, never from membership in the Android device's local
+command outbox. This keeps cross-device completion visible in the background.
+An encrypted device-local notification outbox persists pending terminals and
+delivered logical event IDs so Matrix replay, recovery, and process restart do
+not intentionally alert twice. Explicit history pagination updates projection
+only and does not emit notifications.
+
 Native application releases are discovered from a bounded static Alpha channel
 manifest under the user-selected UI service. The immutable APK may be stored
 beside that manifest or as an exact fixed-version asset under the official

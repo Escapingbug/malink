@@ -66,6 +66,11 @@ internal val NATIVE_STATE_CATALOG = listOf(
         1,
     ),
     NativeStateCatalogEntry(
+        "matrix-v3-task-notifications",
+        NativePersistedStateClass.DURABLE_COMMAND,
+        1,
+    ),
+    NativeStateCatalogEntry(
         "matrix-v3-command-content",
         NativePersistedStateClass.DURABLE_COMMAND,
         1,

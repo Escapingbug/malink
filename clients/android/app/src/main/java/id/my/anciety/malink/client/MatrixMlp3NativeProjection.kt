@@ -36,6 +36,7 @@ internal data class MatrixMlp3NativeProjectionResult(
     val messages: List<ClientMessage> = emptyList(),
     val progressedCommandId: String? = null,
     val terminal: MatrixMlp3NativeTerminal? = null,
+    val taskNotification: MatrixMlp3TaskNotification? = null,
     val changed: Boolean = false,
 )
 
@@ -533,6 +534,7 @@ internal class MatrixMlp3NativeProjection(
                 else -> null
             },
             terminal = terminal(type, event, payload, causation, sessionId),
+            taskNotification = taskNotification(type, eventId, payload, causation, sessionId),
             changed = sessionId != null || messages.isNotEmpty(),
         )
     }
@@ -1481,6 +1483,35 @@ internal class MatrixMlp3NativeProjection(
                         result = status,
                     )
                 }
+            else -> null
+        }
+    }
+
+    private fun taskNotification(
+        type: String,
+        eventId: String,
+        payload: JsonObject,
+        commandId: String?,
+        sessionId: String?,
+    ): MatrixMlp3TaskNotification? {
+        commandId ?: return null
+        return when (type) {
+            "turn.completed" -> MatrixMlp3TaskNotification(
+                eventId = eventId,
+                commandId = commandId,
+                outcome = if (payload.requiredString("outcome", 32) == "cancelled") {
+                    "cancelled"
+                } else {
+                    "succeeded"
+                },
+                sessionId = sessionId,
+            )
+            "turn.failed" -> MatrixMlp3TaskNotification(
+                eventId = eventId,
+                commandId = commandId,
+                outcome = "failed",
+                sessionId = sessionId,
+            )
             else -> null
         }
     }

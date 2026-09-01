@@ -13,7 +13,6 @@ import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import id.my.anciety.malink.R
-import id.my.anciety.malink.client.command.CommandCompletion
 import id.my.anciety.malink.web.MainActivity
 
 class AgentTaskNotifier(private val context: Context) {
@@ -44,12 +43,16 @@ class AgentTaskNotifier(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun show(kind: TaskNotificationKind, completion: CommandCompletion): TaskNotificationChannelState {
-        val notificationId = notificationId(completion.sessionId ?: completion.commandId)
+    fun show(
+        kind: TaskNotificationKind,
+        eventId: String,
+        sessionId: String?,
+    ): TaskNotificationChannelState {
+        val notificationId = notificationId(eventId)
         val openSession = Intent(context, MainActivity::class.java)
             .setAction(MainActivity.ACTION_OPEN_SESSION)
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        completion.sessionId?.let { openSession.putExtra(MainActivity.EXTRA_SESSION_ID, it) }
+        sessionId?.let { openSession.putExtra(MainActivity.EXTRA_SESSION_ID, it) }
         val contentIntent = PendingIntent.getActivity(
             context,
             notificationId,

@@ -100,7 +100,9 @@ Android APK. Cross-device steps use two independently paired Matrix devices.
 6. **Background Android behavior**
    - The foreground service notification remains present while another app is
      foregrounded.
-   - Agent completion produces one notification.
+   - Agent completion produces one notification even when another trusted
+     Malink device submitted the prompt; Matrix replay and Android process
+     restart do not intentionally duplicate it.
    - Returning to Malink shows current state without a long reconnect.
 7. **Background browser Web Push**
    - From the shipped settings UI, a browser grants notification permission and

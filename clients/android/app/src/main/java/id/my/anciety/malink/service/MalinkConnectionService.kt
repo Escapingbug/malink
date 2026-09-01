@@ -19,7 +19,6 @@ import id.my.anciety.malink.BuildConfig
 import id.my.anciety.malink.R
 import id.my.anciety.malink.client.NativeClientRuntime
 import id.my.anciety.malink.client.command.CommandCompletion
-import id.my.anciety.malink.client.command.CommandOperation
 import id.my.anciety.malink.client.events.ClientSnapshot
 import id.my.anciety.malink.client.events.PublicTrustState
 import id.my.anciety.malink.diagnostics.NativeDiagnosticLog
@@ -134,7 +133,7 @@ class MalinkConnectionService : Service() {
                 val created = NativeClientRuntime(
                     context = this@MalinkConnectionService,
                     foregroundState = { foregroundStarted to foregroundStarted },
-                    onCommandCompletion = ::onCommandCompletion,
+                    onTaskCompletion = ::onTaskCompletion,
                 )
                 if (!currentCoroutineContext().isActive) {
                     withContext(NonCancellable) { created.close() }
@@ -212,38 +211,38 @@ class MalinkConnectionService : Service() {
         }
     }
 
-    private fun onCommandCompletion(operation: CommandOperation, completion: CommandCompletion) {
-        val kind = TaskNotificationPolicy.decide(uiForeground, operation, completion.outcome)
+    private fun onTaskCompletion(eventId: String, completion: CommandCompletion) {
+        val kind = TaskNotificationPolicy.decide(uiForeground, completion.outcome)
         diagnostics.record(
             "notification.task_evaluated",
             mapOf(
                 "running" to uiForeground.toString(),
-                "action" to operation.wireName,
+                "action" to "prompt",
                 "stage" to completion.outcome.wireName,
                 "reason" to (kind?.name?.lowercase() ?: "none"),
             ),
         )
         if (kind == null) return
-        runCatching { taskNotifier.show(kind, completion) }
-            .onSuccess { channelState ->
-                diagnostics.record(
-                    "notification.task_posted",
-                    mapOf(
-                        "available" to (
-                            channelState.appNotificationsEnabled && channelState.channelExists
-                        ).toString(),
-                        "importance" to channelState.importance.toString(),
-                        "reason" to channelState.health.wireName,
-                        "stage" to completion.outcome.wireName,
-                    ),
-                )
-            }
-            .onFailure { error ->
-                diagnostics.record(
-                    "notification.task_failed",
-                    mapOf("error" to error.javaClass.simpleName.take(160)),
-                )
-            }
+        val channelState = try {
+            taskNotifier.show(kind, eventId, completion.sessionId)
+        } catch (error: Exception) {
+            diagnostics.record(
+                "notification.task_failed",
+                mapOf("error" to error.javaClass.simpleName.take(160)),
+            )
+            throw error
+        }
+        diagnostics.record(
+            "notification.task_posted",
+            mapOf(
+                "available" to (
+                    channelState.appNotificationsEnabled && channelState.channelExists
+                ).toString(),
+                "importance" to channelState.importance.toString(),
+                "reason" to channelState.health.wireName,
+                "stage" to completion.outcome.wireName,
+            ),
+        )
     }
 
     private fun recordTaskNotificationChannel(state: TaskNotificationChannelState) {

@@ -32,6 +32,13 @@ internal data class MatrixMlp3InboxRecord(
     val errorCode: String? = null,
 )
 
+internal data class MatrixMlp3TaskNotification(
+    val eventId: String,
+    val commandId: String,
+    val outcome: String,
+    val sessionId: String?,
+)
+
 internal enum class MatrixMlp3InboxProjectionStep {
     ADVANCED,
     DEFERRED,
@@ -251,6 +258,181 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
         const val MAX_PENDING_EVENTS = 10_000
         const val MAX_QUARANTINED_EVENTS = 100
         const val MAX_STORE_BYTES = 32 * 1024 * 1024
+    }
+}
+
+/**
+ * Durable local-notification outbox for authenticated task terminal events.
+ *
+ * Matrix may replay a timeline event after reconnect or process death. Pending
+ * records retry a notification callback that failed before Android accepted
+ * it, while delivered event IDs prevent the same logical terminal from
+ * alerting again.
+ */
+internal class AtomicEncryptedMatrixMlp3TaskNotificationStore internal constructor(
+    private val blob: MatrixMlp3BlobStore,
+    private val cipher: SecretCipher,
+    scope: String,
+) {
+    constructor(file: File, cipher: SecretCipher, scope: String) :
+        this(AtomicFileMatrixMlp3BlobStore(file), cipher, scope)
+
+    private data class State(
+        val pending: List<MatrixMlp3TaskNotification>,
+        val deliveredEventIds: List<String>,
+    )
+
+    private val associatedData = "malink.matrix-v3-task-notifications.v1\u0000$scope".toByteArray()
+    private var state = load()
+
+    @Synchronized
+    fun enqueue(value: MatrixMlp3TaskNotification): Boolean {
+        validate(value)
+        if (
+            state.pending.any { it.eventId == value.eventId } ||
+            value.eventId in state.deliveredEventIds
+        ) return false
+        require(state.pending.size < MAX_PENDING) {
+            "The MLP/3 task notification outbox is full."
+        }
+        replaceState(state.copy(pending = state.pending + value))
+        return true
+    }
+
+    @Synchronized
+    fun pending(): List<MatrixMlp3TaskNotification> = state.pending
+
+    @Synchronized
+    fun delivered(eventId: String) {
+        val pending = state.pending.filterNot { it.eventId == eventId }
+        if (pending.size == state.pending.size) return
+        val delivered = (state.deliveredEventIds + eventId).takeLast(MAX_DELIVERED)
+        replaceState(State(pending, delivered))
+    }
+
+    @Synchronized
+    fun validateStoredState() {
+        load()
+    }
+
+    @Synchronized
+    fun clear() {
+        state = State(emptyList(), emptyList())
+        blob.delete()
+    }
+
+    private fun load(): State {
+        val encrypted = blob.read() ?: return State(emptyList(), emptyList())
+        val plaintext = try {
+            val envelope = SecretEnvelope.decode(encrypted)
+            try {
+                cipher.decrypt(envelope, associatedData)
+            } finally {
+                envelope.iv.fill(0)
+                envelope.ciphertext.fill(0)
+            }
+        } finally {
+            encrypted.fill(0)
+        }
+        return try {
+            require(plaintext.size <= MAX_STORE_BYTES)
+            val root = Json.parseToJsonElement(plaintext.toString(Charsets.UTF_8)).jsonObject
+            require(root.keys == setOf("schemaVersion", "pending", "deliveredEventIds"))
+            require(root.requiredLong("schemaVersion") == 1L)
+            val pending = (root["pending"] as? JsonArray)?.map { item ->
+                val value = item as? JsonObject
+                    ?: throw IllegalArgumentException("The task notification record is invalid.")
+                require(value.keys == setOf(
+                    "eventId", "commandId", "outcome", "sessionId",
+                ))
+                MatrixMlp3TaskNotification(
+                    eventId = value.requiredString("eventId", 256),
+                    commandId = value.requiredString("commandId", 256),
+                    outcome = value.requiredString("outcome", 32),
+                    sessionId = value.optionalString("sessionId", 256),
+                ).also(::validate)
+            } ?: throw IllegalArgumentException("The task notification outbox is invalid.")
+            val delivered = (root["deliveredEventIds"] as? JsonArray)?.map { item ->
+                item.jsonPrimitive.content.also {
+                    require(it.isNotBlank() && it.length <= 256) {
+                        "The delivered task notification ID is invalid."
+                    }
+                }
+            } ?: throw IllegalArgumentException("The task notification ledger is invalid.")
+            require(pending.size <= MAX_PENDING)
+            require(delivered.size <= MAX_DELIVERED)
+            require(pending.map { it.eventId }.distinct().size == pending.size)
+            require(delivered.distinct().size == delivered.size)
+            require(pending.none { it.eventId in delivered })
+            State(pending, delivered)
+        } finally {
+            plaintext.fill(0)
+        }
+    }
+
+    private fun save() {
+        if (state.pending.isEmpty() && state.deliveredEventIds.isEmpty()) {
+            blob.delete()
+            return
+        }
+        val plaintext = CanonicalJson.bytes(buildJsonObject {
+            put("schemaVersion", 1)
+            put("pending", buildJsonArray {
+                state.pending.forEach { value ->
+                    add(buildJsonObject {
+                        put("eventId", value.eventId)
+                        put("commandId", value.commandId)
+                        put("outcome", value.outcome)
+                        if (value.sessionId == null) put("sessionId", kotlinx.serialization.json.JsonNull)
+                        else put("sessionId", value.sessionId)
+                    })
+                }
+            })
+            put("deliveredEventIds", buildJsonArray {
+                state.deliveredEventIds.forEach { add(JsonPrimitive(it)) }
+            })
+        })
+        require(plaintext.size <= MAX_STORE_BYTES)
+        val encrypted = try {
+            val envelope = cipher.encrypt(plaintext, associatedData)
+            try {
+                SecretEnvelope.encode(envelope)
+            } finally {
+                envelope.iv.fill(0)
+                envelope.ciphertext.fill(0)
+            }
+        } finally {
+            plaintext.fill(0)
+        }
+        try {
+            blob.write(encrypted)
+        } finally {
+            encrypted.fill(0)
+        }
+    }
+
+    private fun replaceState(next: State) {
+        val previous = state
+        state = next
+        try {
+            save()
+        } catch (error: Exception) {
+            state = previous
+            throw error
+        }
+    }
+
+    private fun validate(value: MatrixMlp3TaskNotification) {
+        require(value.eventId.isNotBlank() && value.eventId.length <= 256)
+        require(value.commandId.isNotBlank() && value.commandId.length <= 256)
+        require(value.outcome in setOf("succeeded", "failed", "cancelled"))
+        require(value.sessionId == null || value.sessionId.isNotBlank() && value.sessionId.length <= 256)
+    }
+
+    private companion object {
+        const val MAX_PENDING = 10_000
+        const val MAX_DELIVERED = 10_000
+        const val MAX_STORE_BYTES = 4 * 1024 * 1024
     }
 }
 

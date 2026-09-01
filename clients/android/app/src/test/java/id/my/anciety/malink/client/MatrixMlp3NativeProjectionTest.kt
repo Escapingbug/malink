@@ -301,6 +301,7 @@ class MatrixMlp3NativeProjectionTest {
             "materialized",
             result.terminal?.result?.jsonObject?.get("status")?.jsonPrimitive?.content,
         )
+        assertNull(result.taskNotification)
     }
 
     @Test
@@ -564,6 +565,50 @@ class MatrixMlp3NativeProjectionTest {
         val completed = restored.snapshot()!!.getValue("sessions").jsonArray.single().jsonObject
         assertFalse("active_turn_id" in completed)
         assertEquals(3L, completed.getValue("state_version").jsonPrimitive.content.toLong())
+    }
+
+    @Test
+    fun `every authenticated turn terminal exposes one device independent notification`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$root-a",
+            "\$root-a",
+        )
+        val event = turn("completed", 2, "idle")
+
+        val first = projection.applyGatewayEvent(event, "\$completed-a", "\$root-a")
+        val duplicate = projection.applyGatewayEvent(event, "\$completed-a-replay", "\$root-a")
+
+        assertEquals("turn-completed-2", first.taskNotification?.eventId)
+        assertEquals("turn-1", first.taskNotification?.commandId)
+        assertEquals("succeeded", first.taskNotification?.outcome)
+        assertEquals("session-a", first.taskNotification?.sessionId)
+        assertNull(duplicate.taskNotification)
+    }
+
+    @Test
+    fun `failed turn exposes a failed task notification`() {
+        val result = projection().applyGatewayEvent(
+            event(
+                eventId = "turn-failed-1",
+                projectId = "project-1",
+                sessionId = "session-a",
+                causationCommandId = "remote-command-1",
+                payload = buildJsonObject {
+                    put("type", "turn.failed")
+                    put("turnId", "turn-1")
+                    put("code", "provider_failed")
+                    put("message", "The provider failed.")
+                },
+            ),
+            "\$failed-a",
+            "\$root-a",
+        )
+
+        assertEquals("failed", result.taskNotification?.outcome)
+        assertEquals("remote-command-1", result.taskNotification?.commandId)
     }
 
     @Test

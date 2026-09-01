@@ -32,6 +32,10 @@ one identity from being driven by both transports.
   connection, its retry policy, room subscriptions, and encrypted timelines.
 - Activity backgrounding pauses the WebView and its timers; the native service
   remains the only owner of background Matrix delivery and task notifications.
+  Every newly projected, authenticated `turn.completed` or `turn.failed` event
+  is eligible regardless of which trusted Malink device submitted the prompt.
+  A separate encrypted notification outbox retries failed delivery and dedupes
+  logical event IDs across Matrix replay and Android process restart.
 - A visible ongoing `remoteMessaging` notification is mandatory. There is no
   battery-saving or connection-mode selector. Refusing notification permission
   blocks native connection startup with a visible explanation.
@@ -270,8 +274,8 @@ after explicit approval.
 - Make attachment transfer metadata process-durable. Current temporary chunks
   are encrypted, but an interrupted process discards orphan transfer state and
   the UI must restart that transfer.
-- Add session-specific notification deep links and product message
-  notifications; the current ongoing notification opens the main Activity.
+- Add product message notifications beyond the current generic task-terminal
+  alerts. Task-terminal notifications already open their owning session.
 - Complete stable Android application-signing key custody and the one-time
   transition from existing debug-signed development installs. Static channel
   releases use the installed application's APK signature acceptance boundary;
