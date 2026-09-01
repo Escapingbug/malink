@@ -1338,7 +1338,13 @@ export async function connectMatrixMlp3(
       if (!target) throw new Error("The MLP/3 project is not initialized.");
       return toLegacyCompletion(await target.observeCompletion(commandId, timeoutMs));
     },
-    releaseCommand: async () => undefined,
+    async releaseCommand(commandId) {
+      await ready;
+      const target = commandProjects.get(commandId);
+      if (!target) return;
+      await target.release(commandId);
+      commandProjects.delete(commandId);
+    },
     stop() {
       if (stopped) return;
       stopped = true;

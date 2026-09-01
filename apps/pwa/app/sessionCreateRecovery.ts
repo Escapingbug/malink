@@ -173,6 +173,15 @@ export function isSessionCreateRecoveryUncertain(
   return now - recovery.createdAt >= thresholdMs;
 }
 
+/** Remaining time before foreground creation must stop blocking the UI. */
+export function sessionCreateRecoveryRemainingMs(
+  recovery: Pick<PendingSessionCreateRecovery, "createdAt">,
+  now = Date.now(),
+  thresholdMs = SESSION_CREATE_UNCERTAIN_AFTER_MS,
+): number {
+  return Math.max(0, recovery.createdAt + thresholdMs - now);
+}
+
 function parsePendingSessionCreateRecovery(
   value: unknown,
 ): PendingSessionCreateRecovery | null {

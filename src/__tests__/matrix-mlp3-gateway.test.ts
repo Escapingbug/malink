@@ -280,6 +280,7 @@ describe('MatrixMlp3GatewayRunner', () => {
 
     const first = new MatrixMlp3GatewayRunner(config, { client })
     await first.start()
+    await waitFor(() => Promise.resolve(client.delivered.length === 2 && stateWrites === 3))
     await first.stop()
     const firstTimelineWrites = client.delivered.length
     const firstStateWrites = stateWrites
@@ -292,6 +293,138 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(stateWrites).toBe(firstStateWrites)
     await restarted.stop()
   })
+
+  it('settles and releases a session creation whose filesystem preflight never returns', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-command-timeout-'))
+    const gatewayKeys = await generateDeviceKeyPair()
+    const phoneKeys = await generateDeviceKeyPair()
+    const client = new TestMatrixClient()
+    const roomId = '!timeout-project:example.org'
+    const projectId = gatewayProjectIdentity('/timeout-repo').id
+    const accessGate = deferred<void>()
+    const config: MatrixGatewayConfig = {
+      gatewayId: 'workspace-timeout',
+      gatewayNodeId: 'gateway-node-timeout',
+      connection: {
+        baseUrl: 'https://matrix.example.org',
+        accessToken: 'gateway-token',
+        userId: '@gateway:example.org',
+        deviceId: 'GATEWAY',
+      },
+      crypto: {
+        backend: 'memory',
+        databasePrefix: 'command-timeout-test',
+        allowInMemoryForTesting: true,
+      },
+      rooms: [{
+        roomId,
+        conversationId: roomId,
+        cwd: '/timeout-repo',
+        providerName: 'test',
+      }],
+      trustedDevices: [{
+        deviceId: 'phone-1',
+        publicKey: phoneKeys.publicJwk,
+        allowedRoomIds: [roomId],
+        allowedOperations: ['session.create'],
+        matrixUserId: '@phone:example.org',
+        matrixDeviceId: 'PHONE',
+        matrixDeviceKeys: ['matrix-phone-key'],
+        certificateExpiresAt: Date.now() + 60_000,
+        sequenceEpoch: 'certificate-timeout',
+      }],
+      replayLedgerPath: join(directory, 'replay'),
+      commandExecutionTimeoutMs: 1_000,
+      applicationSecurity: {
+        gatewayDeviceId: 'workspace-timeout',
+        gatewayKeyPair: await exportDeviceKeyPair(gatewayKeys),
+        envelopeReplayLedgerPath: join(directory, 'security'),
+      },
+    }
+    const runner = new MatrixMlp3GatewayRunner(config, {
+      client,
+      assertDirectoryAccess: async () => accessGate.promise,
+      sessionFactory: () => { throw new Error('timed-out creation must not build a runtime') },
+    })
+    await runner.start()
+    const grantState = [...client.state.values()].find(state =>
+      state.eventType === MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE
+      && state.content.deviceId === 'phone-1'
+    )
+    const grant = mlp3ProjectKeyGrantStateSchema.parse(grantState?.content)
+    const keyGrant = await openMlp3ProjectKeyGrant(grant.sealedGrant, {
+      expected: {
+        grantId: grant.grantId,
+        workspaceId: grant.workspaceId,
+        projectId: grant.projectId,
+        roomId: grant.roomId,
+        deviceId: grant.deviceId,
+        certificateId: grant.certificateId,
+        senderKeyId: grant.sealedGrant.envelope.senderKeyId,
+        recipientKeyId: grant.sealedGrant.envelope.recipientKeyId,
+      },
+      recipientPrivateKey: phoneKeys.privateKey,
+      senderPublicKey: gatewayKeys.publicKey,
+    })
+    const activeKey = keyGrant.keys.find(key => key.keyId === keyGrant.activeKeyId)!
+    const command: Mlp3Command = {
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'create-timeout',
+      workspaceId: 'workspace-timeout',
+      projectId,
+      sessionId: 'session-timeout',
+      deviceId: 'phone-1',
+      certificateId: 'certificate-timeout',
+      createdAt: Date.now(),
+      operation: 'session.create',
+      payload: { operation: 'session.create', title: 'Must not get stuck' },
+    }
+    const signed = await signMlp3Command(command, phoneKeys.privateKey, phoneKeys.keyId)
+    const envelope = await sealMlp3Envelope({
+      plaintext: { kind: 'signed_command', value: signed },
+      projectKey: base64UrlDecode(activeKey.key),
+      roomId,
+      projectId,
+      keyId: activeKey.keyId,
+      logicalEventId: command.commandId,
+    })
+    client.emit({
+      roomId,
+      eventId: '$create-timeout',
+      eventType: 'm.room.message',
+      sender: '@phone:example.org',
+      encrypted: false,
+      content: {
+        msgtype: 'm.notice',
+        body: 'Encrypted Malink command',
+        [MALINK_MATRIX_EXTENSION]: { version: 3, envelope },
+      },
+    })
+
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === command.commandId), 2_500)
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === command.commandId
+    )?.payload).toMatchObject({
+      type: 'command.rejected',
+      code: 'gateway_execution_timeout',
+      retryable: true,
+    })
+    expect(await runner.healthSnapshot()).toMatchObject({
+      activeCommands: 0,
+      unfinishedCommands: 0,
+      expiredCommandExecutions: 1,
+    })
+
+    accessGate.resolve()
+    await waitFor(async () => (await runner.healthSnapshot()).expiredCommandExecutions === 0)
+    expect((await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === command.commandId
+      && event.payload.type === 'session.ready'
+    )).toBe(false)
+    await runner.stop()
+  }, 5_000)
 
   it('republishes every project after a background model catalog refresh', async () => {
     clearProviderRegistryForTesting()
@@ -838,6 +971,8 @@ describe('MatrixMlp3GatewayRunner', () => {
       senderPublicKey: gatewayKeys.publicKey,
     })
     const activeKey = keyGrant.keys.find(key => key.keyId === keyGrant.activeKeyId)!
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.payload.type === 'workspace.snapshot'))
     const startupEvents = await events(client, activeKey.key, roomId, projectId)
     expect(startupEvents).toContainEqual(expect.objectContaining({
       payload: expect.objectContaining({
@@ -848,6 +983,9 @@ describe('MatrixMlp3GatewayRunner', () => {
         }),
       }),
     }))
+    await waitFor(() => Promise.resolve([...client.state.values()].some(state =>
+      state.eventType === MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
+    )))
     const workspacePointerState = [...client.state.values()].find(state =>
       state.eventType === MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
     )
@@ -1366,9 +1504,9 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(dispatched.some(item => item.text === 'must not reach provider')).toBe(false)
     blockFilesystemAccess = false
     expect(filesystemAccessChecks).toEqual(expect.arrayContaining([
-      { cwd: '/repo', operation: 'provider.history' },
-      { cwd: '/repo', operation: 'session.create' },
-      { cwd: '/repo', operation: 'prompt.submit' },
+      expect.objectContaining({ cwd: '/repo', operation: 'provider.history' }),
+      expect.objectContaining({ cwd: '/repo', operation: 'session.create' }),
+      expect.objectContaining({ cwd: '/repo', operation: 'prompt.submit' }),
     ]))
 
     // An exact retry arrives as a different physical Matrix event. It remains

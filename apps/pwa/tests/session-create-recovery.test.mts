@@ -12,6 +12,7 @@ import {
   sessionCreateCompletionMatchesRecovery,
   sessionCreateFailureMessage,
   sessionCreateRecoveryMatches,
+  sessionCreateRecoveryRemainingMs,
   writePendingSessionCreateRecovery,
   type PendingSessionCreateRecovery,
 } from "../app/sessionCreateRecovery.ts";
@@ -315,4 +316,10 @@ test("marks a durable create as uncertain only after its bounded recovery window
     isSessionCreateRecoveryUncertain(recovery, recovery.createdAt + 60_000),
     true,
   );
+});
+
+test("bounds the independent session creation watchdog delay", () => {
+  assert.equal(sessionCreateRecoveryRemainingMs(recovery, recovery.createdAt), 60_000);
+  assert.equal(sessionCreateRecoveryRemainingMs(recovery, recovery.createdAt + 59_999), 1);
+  assert.equal(sessionCreateRecoveryRemainingMs(recovery, recovery.createdAt + 90_000), 0);
 });

@@ -60,6 +60,12 @@ export interface GatewayAdminServerOptions {
     runtimeEpoch: string
     activeTurns: number
     activeCommands: number
+    expiredCommandExecutions?: number
+    unfinishedCommands?: number
+    oldestUnfinishedCommandAgeMs?: number | null
+    pendingOutboxDeliveries?: number
+    oldestPendingOutboxDeliveryAgeMs?: number | null
+    outboxWalBytes?: number
     pendingInboxEvents: number
     quarantinedInboxEvents: number
     matrixReady: boolean | null

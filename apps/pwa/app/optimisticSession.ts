@@ -5,6 +5,13 @@ const OPTIMISTIC_SESSION_STORAGE_KEY = "malink:optimistic-session:v1";
 type SessionStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 export type OptimisticSessionPhase = "creating" | "uncertain" | "failed";
+export type OptimisticSessionProgress =
+  | "saving"
+  | "saved"
+  | "transmitting"
+  | "matrix_accepted"
+  | "gateway_running"
+  | "checking";
 
 export type OptimisticSessionRecord = {
   version: 1;
@@ -14,6 +21,7 @@ export type OptimisticSessionRecord = {
   remoteSessionId?: string;
   commandId?: string;
   phase: OptimisticSessionPhase;
+  progress?: OptimisticSessionProgress;
   error?: string;
   createdAt: number;
   updatedAt: number;
@@ -32,6 +40,7 @@ export function createOptimisticSessionRecord(
     conversationId: binding.conversationId,
     localSessionId,
     phase: "creating",
+    progress: "saving",
     createdAt: now,
     updatedAt: now,
     input,
@@ -49,6 +58,7 @@ export function bindOptimisticSession(
     commandId,
     remoteSessionId,
     phase: "creating",
+    progress: "saved",
     updatedAt: now,
   };
 }
@@ -77,6 +87,7 @@ export function markOptimisticSessionUncertain(
   return {
     ...record,
     phase: "uncertain",
+    progress: "checking",
     error,
     updatedAt: now,
   };
@@ -89,12 +100,38 @@ export function retryOptimisticSession(
   const next = {
     ...record,
     phase: "creating" as const,
+    progress: "saving" as const,
     updatedAt: now,
   };
   delete next.commandId;
   delete next.remoteSessionId;
   delete next.error;
   return next;
+}
+
+export function updateOptimisticSessionProgress(
+  record: OptimisticSessionRecord,
+  progress: OptimisticSessionProgress,
+  now = Date.now(),
+): OptimisticSessionRecord {
+  if (
+    record.phase !== "creating" || record.progress === progress ||
+    progressRank(progress) < progressRank(record.progress)
+  ) return record;
+  return { ...record, progress, updatedAt: now };
+}
+
+export function optimisticSessionProgressLabel(
+  progress: OptimisticSessionProgress | undefined,
+): string {
+  switch (progress) {
+    case "saving": return "Saving the secure command locally";
+    case "transmitting": return "Sending the secure command to Matrix";
+    case "matrix_accepted": return "Matrix accepted the command";
+    case "gateway_running": return "Gateway is creating the conversation";
+    case "checking": return "Checking the original command result";
+    default: return "Secure command saved; waiting for delivery";
+  }
 }
 
 export function readOptimisticSession(
@@ -157,6 +194,7 @@ function parseOptimisticSession(value: unknown): OptimisticSessionRecord | null 
       record.phase === "failed"
     ) ||
     !isOptionalString(record.error) ||
+    !isOptionalProgress(record.progress) ||
     !isFiniteNumber(record.createdAt) ||
     !isFiniteNumber(record.updatedAt) ||
     !isNonEmptyString(sessionInput.cwd) ||
@@ -181,4 +219,22 @@ function isOptionalString(value: unknown): value is string | undefined {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isOptionalProgress(value: unknown): value is OptimisticSessionProgress | undefined {
+  return value === undefined || value === "saving" || value === "saved" ||
+    value === "transmitting" || value === "matrix_accepted" ||
+    value === "gateway_running" || value === "checking";
+}
+
+function progressRank(progress: OptimisticSessionProgress | undefined): number {
+  switch (progress) {
+    case "saving": return 0;
+    case "saved": return 1;
+    case "transmitting": return 2;
+    case "matrix_accepted": return 3;
+    case "gateway_running": return 4;
+    case "checking": return 5;
+    default: return -1;
+  }
 }

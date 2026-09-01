@@ -293,6 +293,7 @@ class NativeClientRuntime(
     private val commandRecoveryJobs = ConcurrentHashMap<String, Job>()
     private val publishedCommandRecoveryJobs = ConcurrentHashMap<String, Job>()
     private val publishedCommandRecoveryNotBefore = ConcurrentHashMap<String, Long>()
+    private val publishedCommandDiagnosticStates = ConcurrentHashMap<String, DurableState>()
     private val legacyTimelineRecoveryGate = LegacyTimelineRecoveryGate()
     private val commandRecoveryAttempts = ConcurrentHashMap<String, Int>()
     private val json = Json { isLenient = false; allowSpecialFloatingPointValues = false }
@@ -1095,7 +1096,10 @@ class NativeClientRuntime(
         cancelScheduledCommandRecovery(commandId)
         cancelPublishedCommandResultRecovery(commandId)
         val released = outbox.release(commandId)
-        if (released) matrixMlp3CommandContent.remove(commandId)
+        if (released) {
+            matrixMlp3CommandContent.remove(commandId)
+            publishedCommandDiagnosticStates.remove(commandId)
+        }
         if (released) refreshSnapshot(publishLifecycle = false)
         return released
     }
@@ -3125,6 +3129,16 @@ class NativeClientRuntime(
     }
 
     private fun publishCommand(command: DurableView) {
+        val previous = publishedCommandDiagnosticStates.put(command.commandId, command.state)
+        if (previous != command.state) {
+            diagnostics.record(
+                "command.lifecycle",
+                mapOf(
+                    "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                    "stage" to command.state.wireName,
+                ),
+            )
+        }
         val public = publicCommand(command)
         eventHub.publish(
             ClientEventType.COMMAND_CHANGED,

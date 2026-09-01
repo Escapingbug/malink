@@ -448,6 +448,47 @@ describe('MatrixNodeSdkGatewayClient', () => {
             message.startsWith('[matrix-node] PUT /_matrix/client/v3/rooms/')
             && message.endsWith('rate limited; retrying in 250ms'))).toBe(true)
     })
+
+    it('releases the room write lane when a 429 exceeds the request retry budget', async () => {
+        let calls = 0
+        const fetchMock = vi.fn(async () => {
+            calls += 1
+            if (calls === 1) {
+                return new Response(JSON.stringify({
+                    errcode: 'M_LIMIT_EXCEEDED',
+                    retry_after_ms: 10_000,
+                }), { status: 429, headers: { 'content-type': 'application/json' } })
+            }
+            return jsonResponse({ event_id: '$recovered' })
+        }) as unknown as typeof fetch
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test',
+            accessToken: 'token',
+            userId: '@gateway:example.test',
+            deviceId: 'STABLE_DEVICE',
+            requestRetryBudgetMs: 1_000,
+        }, 1_000, undefined, fetchMock)
+        const state = (stateKey: string) => client.setApplicationRoomState({
+            roomId: '!room:example.test',
+            eventType: MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
+            stateKey,
+            content: {
+                version: 2,
+                kind: 'state_envelope',
+                state_envelope: {
+                    envelope: {
+                        eventType: MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
+                        stateKey,
+                    },
+                    signature: {},
+                },
+            },
+        })
+
+        await expect(state('first')).rejects.toThrow('exhausted its 1000ms retry budget')
+        await expect(state('second')).resolves.toMatchObject({ eventId: '$recovered' })
+        expect(calls).toBe(2)
+    })
 })
 
 async function temporaryDirectory(): Promise<string> {

@@ -45,6 +45,7 @@ import {
   type MatrixMlp3DeliveryPriority,
   type MatrixMlp3DeliveryMetadata,
   type MatrixMlp3EventDelivery,
+  type MatrixMlp3OutboxHealth,
 } from './fileMatrixMlp3Outbox'
 import { gatewayProjectIdentity } from './project'
 
@@ -134,6 +135,10 @@ export class GatewayMlp3ContentLayer {
     this.retryAttempts.clear()
   }
 
+  outboxHealth(now = Date.now()): MatrixMlp3OutboxHealth {
+    return this.outbox.health(now)
+  }
+
   projectId(room: MatrixGatewayRoomConfig): string {
     return room.projectId ?? gatewayProjectIdentity(room.cwd, room.projectName).id
   }
@@ -145,6 +150,7 @@ export class GatewayMlp3ContentLayer {
   async provisionProject(
     room: MatrixGatewayRoomConfig,
     transport: MatrixTransport,
+    waitForDelivery = true,
   ): Promise<void> {
     this.transports.set(room.roomId, transport)
     const devices = await this.activeDevices(room.roomId)
@@ -155,7 +161,7 @@ export class GatewayMlp3ContentLayer {
     )
     await this.classifyPendingEvents(room, ring)
     await Promise.all(devices.map(device =>
-      this.publishKeyGrant(room, ring, device, transport)
+      this.publishKeyGrant(room, ring, device, transport, waitForDelivery)
     ))
     // Recovery traffic must not hold Gateway startup behind a homeserver
     // token bucket. The durable outbox continues in the background while new
@@ -590,6 +596,7 @@ export class GatewayMlp3ContentLayer {
     ring: TimelineKeyRing,
     device: MatrixGatewayTrustedDevice,
     transport: MatrixTransport,
+    waitForDelivery = true,
   ): Promise<void> {
     const projectId = this.projectId(room)
     const certificateId = certificateIdFor(device)
@@ -652,7 +659,14 @@ export class GatewayMlp3ContentLayer {
       createdAt: Date.now(),
     })
     this.rejectSupersededConfirmations(await this.outbox.stage(delivery))
-    await this.deliver(this.outbox.delivery(delivery.deliveryId) ?? delivery, transport)
+    const attempt = this.deliver(this.outbox.delivery(delivery.deliveryId) ?? delivery, transport)
+    if (waitForDelivery) {
+      await attempt
+    } else {
+      void attempt.catch(error => {
+        this.onLog?.(`[mlp3/matrix] project key grant delivery deferred: ${formatError(error)}`)
+      })
+    }
   }
 
   private deliver(

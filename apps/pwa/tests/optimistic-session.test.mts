@@ -6,8 +6,10 @@ import {
   createOptimisticSessionRecord,
   failOptimisticSession,
   markOptimisticSessionUncertain,
+  optimisticSessionProgressLabel,
   readOptimisticSession,
   retryOptimisticSession,
+  updateOptimisticSessionProgress,
   writeOptimisticSession,
 } from "../app/optimisticSession";
 
@@ -77,6 +79,18 @@ test("keeps the local identity and queued UI across bind, failure, and retry", (
   );
   assert.equal(bound.localSessionId, created.localSessionId);
   assert.equal(bound.remoteSessionId, "remote-session-1");
+  assert.equal(bound.progress, "saved");
+
+  const running = updateOptimisticSessionProgress(bound, "gateway_running", 115);
+  assert.equal(running.progress, "gateway_running");
+  assert.equal(
+    optimisticSessionProgressLabel(running.progress),
+    "Gateway is creating the conversation",
+  );
+  assert.equal(
+    updateOptimisticSessionProgress(running, "matrix_accepted", 116),
+    running,
+  );
 
   const failed = failOptimisticSession(bound, "Provider unavailable", 120);
   assert.equal(failed.phase, "failed");
@@ -112,6 +126,7 @@ test("keeps the durable command identity while its final result is uncertain", (
   assert.equal(uncertain.commandId, "command-1");
   assert.equal(uncertain.remoteSessionId, "remote-session-1");
   assert.equal(uncertain.error, "Result not confirmed");
+  assert.equal(uncertain.progress, "checking");
 
   const storage = new MemoryStorage();
   writeOptimisticSession(storage, uncertain);

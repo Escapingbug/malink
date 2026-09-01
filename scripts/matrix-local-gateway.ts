@@ -170,12 +170,17 @@ const login = await loadOrLoginMatrixGateway({
     onLog: message => process.stderr.write(`[matrix-login] ${message}\n`),
 })
 const matrixInitialSyncTimeoutMs = 120_000
+const matrixRequestRetryBudgetMs = positiveDurationFromEnvironment(
+    'MALINK_MATRIX_REQUEST_RETRY_BUDGET_MS',
+    60_000,
+)
 const client = new MatrixNodeSdkGatewayClient({
     baseUrl: fixture.homeserver,
     accessToken: login.access_token,
     userId: login.user_id,
     deviceId: login.device_id,
     initialSyncTimeoutMs: matrixInitialSyncTimeoutMs,
+    requestRetryBudgetMs: matrixRequestRetryBudgetMs,
 }, matrixInitialSyncTimeoutMs, message => {
     process.stderr.write(`${message}\n`)
 })
@@ -556,6 +561,7 @@ const config: MatrixGatewayConfig = {
         userId: login.user_id,
         deviceId: login.device_id,
         initialSyncTimeoutMs: 30_000,
+        requestRetryBudgetMs: matrixRequestRetryBudgetMs,
     },
     crypto: cryptoConfig,
     rooms: configuredRooms,
@@ -566,6 +572,10 @@ const config: MatrixGatewayConfig = {
         gatewayKeyPair: identity.serialized,
         envelopeReplayLedgerPath: join(dataDirectory, 'envelope-replay.json'),
     },
+    commandExecutionTimeoutMs: positiveDurationFromEnvironment(
+        'MALINK_GATEWAY_COMMAND_EXECUTION_TIMEOUT_MS',
+        60_000,
+    ),
     gatewayHeartbeatIntervalMs: positiveDurationFromEnvironment(
         'MALINK_MATRIX_GATEWAY_HEARTBEAT_INTERVAL_MS',
         60_000,
@@ -841,7 +851,9 @@ runner = new MatrixMlp3GatewayRunner(config, {
 })
 
 await runner.start()
-await synchronizeWorkspaceControl()
+void synchronizeWorkspaceControl().catch(error => {
+    process.stderr.write(`[workspace-control] initial synchronization deferred: ${formatError(error)}\n`)
+})
 const workspaceControlTimer = setInterval(() => {
     void synchronizeWorkspaceControl(publishLocalWorkspaceDirectory).catch(error => {
         process.stderr.write(`[workspace-control] synchronization failed: ${formatError(error)}\n`)

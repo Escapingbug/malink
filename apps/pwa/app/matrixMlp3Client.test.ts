@@ -121,6 +121,7 @@ describe("MatrixMlp3ProtocolClient", () => {
 
     const sent = await client.send({ operation: "session.create" });
     expect(store.outbox.get(sent.commandId)?.status).toBe("pending");
+    await expect(client.release(sent.commandId)).rejects.toThrow("has not completed");
     expect(attempts).toHaveLength(1);
     fail = false;
     await client.retryPending();
@@ -356,5 +357,7 @@ describe("MatrixMlp3ProtocolClient", () => {
     expect(await repaired.requiresThreadDirectoryRecovery("sync-1")).toBe(true);
     expect(warning).toHaveBeenCalledTimes(1);
     warning.mockRestore();
+    await repaired.release(sent.commandId);
+    expect(failingStore.outbox.has(sent.commandId)).toBe(false);
   });
 });

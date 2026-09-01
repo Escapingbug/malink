@@ -177,6 +177,7 @@ export interface MatrixMlp3GatewayDependencies {
   assertDirectoryAccess?: (input: {
     cwd: string
     operation: 'session.create' | 'prompt.submit' | 'provider.history'
+    signal?: AbortSignal
   }) => Promise<void>
   createProject?: (input: {
     sourceRoom: MatrixGatewayRoomConfig
@@ -287,6 +288,7 @@ export class MatrixMlp3GatewayRunner {
   private readonly scheduledPromptCommands = new Map<string, ScheduledPromptCommand>()
   private readonly activeCommands = new Map<string, Promise<void>>()
   private readonly executionTasks = new Set<Promise<void>>()
+  private readonly expiredCommandExecutions = new Set<string>()
   private readonly terminalDeliveriesInFlight = new Set<string>()
   private readonly queuedInboxEvents = new Set<string>()
   private eventChain: Promise<void> = Promise.resolve()
@@ -435,12 +437,14 @@ export class MatrixMlp3GatewayRunner {
       this.subscribeModelCatalogRefreshes()
       for (const project of this.projects.values()) {
         await this.client.assertRoomEncrypted(project.config.roomId)
-        await this.content.provisionProject(project.config, this.client)
+        await this.content.provisionProject(project.config, this.client, false)
         if (project.deletingCommandId) continue
-        await this.prepareSessionThreads(project)
+        void this.prepareSessionThreads(project).catch(error => {
+          this.log(`[mlp3/matrix] session thread convergence deferred: ${formatError(error)}`)
+        })
         await this.publishSessionRecovery(project)
-        await this.publishWorkspaceSnapshot(project)
-        await this.publishProjectSnapshot(project)
+        await this.publishWorkspaceSnapshot(project, false)
+        await this.publishProjectSnapshot(project, false)
       }
       this.state = 'running'
       this.scheduleGatewayNodeStatusObservation(
@@ -490,12 +494,20 @@ export class MatrixMlp3GatewayRunner {
     runtimeEpoch: string
     activeTurns: number
     activeCommands: number
+    expiredCommandExecutions: number
+    unfinishedCommands: number
+    oldestUnfinishedCommandAgeMs: number | null
+    pendingOutboxDeliveries: number
+    oldestPendingOutboxDeliveryAgeMs: number | null
+    outboxWalBytes: number
     pendingInboxEvents: number
     quarantinedInboxEvents: number
     matrixReady: boolean | null
     lastMatrixSyncAt: number | null
   }> {
     const inbox = await this.inbox.counts()
+    const unfinished = await this.journal.unfinished()
+    const outbox = this.content.outboxHealth(this.now())
     const matrix = this.client.getSyncHealth?.()
     let activeTurns = 0
     for (const project of this.projects.values()) {
@@ -507,6 +519,14 @@ export class MatrixMlp3GatewayRunner {
       runtimeEpoch: this.runtimeEpoch,
       activeTurns,
       activeCommands: this.activeCommands.size,
+      expiredCommandExecutions: this.expiredCommandExecutions.size,
+      unfinishedCommands: unfinished.length,
+      oldestUnfinishedCommandAgeMs: unfinished.length === 0
+        ? null
+        : Math.max(0, this.now() - Math.min(...unfinished.map(record => record.acceptedAt))),
+      pendingOutboxDeliveries: outbox.pending,
+      oldestPendingOutboxDeliveryAgeMs: outbox.oldestPendingAgeMs,
+      outboxWalBytes: outbox.walBytes,
       pendingInboxEvents: inbox.pending,
       quarantinedInboxEvents: inbox.quarantined,
       matrixReady: matrix?.ready ?? null,
@@ -808,10 +828,12 @@ export class MatrixMlp3GatewayRunner {
         if (await waitForScheduledPromptCancellation(scheduledPrompt)) return
         await this.journal.markDispatched(command, this.now())
         if (await waitForScheduledPromptCancellation(scheduledPrompt)) return
-        await this.execute(project, journalRecord)
+        await this.executeWithDeadline(project, journalRecord)
       } catch (error) {
         this.log(`[mlp3/matrix] command ${command.commandId} failed: ${formatError(error)}`)
-        await this.failCommand(project, command, error)
+        await this.failCommand(project, command, error, {
+          allowExpiredExecution: error instanceof GatewayCommandExecutionTimeoutError,
+        })
       }
     }).finally(() => {
       this.executionTasks.delete(task)
@@ -841,17 +863,51 @@ export class MatrixMlp3GatewayRunner {
     return task
   }
 
-  private async execute(
+  private async executeWithDeadline(
     project: V3ProjectRuntime,
     journalRecord: Mlp3CommandJournalRecord,
   ): Promise<void> {
     const command = journalRecord.command
+    const activeKey = commandKey(command)
+    const abortController = new AbortController()
+    const execution = this.execute(project, journalRecord, abortController.signal)
+    const timeoutMs = command.operation === 'prompt.submit'
+      || command.operation === 'gateway.update.stage'
+      || (command.operation === 'session.create' && command.payload.initialPrompt !== undefined)
+      ? (project.config.timeoutSeconds ?? 180) * 1_000
+      : this.config.commandExecutionTimeoutMs ?? 60_000
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        const error = new GatewayCommandExecutionTimeoutError(command.operation, timeoutMs)
+        this.expiredCommandExecutions.add(activeKey)
+        abortController.abort(error)
+        reject(error)
+      }, timeoutMs)
+    })
+    void execution.then(
+      () => this.expiredCommandExecutions.delete(activeKey),
+      () => this.expiredCommandExecutions.delete(activeKey),
+    )
+    try {
+      await Promise.race([execution, deadline])
+    } finally {
+      if (timeout) clearTimeout(timeout)
+    }
+  }
+
+  private async execute(
+    project: V3ProjectRuntime,
+    journalRecord: Mlp3CommandJournalRecord,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const command = journalRecord.command
     switch (command.operation) {
       case 'session.create':
-        await this.createSession(project, command, journalRecord.matrixEventId)
+        await this.createSession(project, command, journalRecord.matrixEventId, signal)
         return
       case 'prompt.submit':
-        await this.executePrompt(project, command)
+        await this.executePrompt(project, command, signal)
         return
       case 'turn.cancel':
         await this.cancelTurn(project, command)
@@ -902,7 +958,7 @@ export class MatrixMlp3GatewayRunner {
         await this.unsubscribeNotifications(project, command)
         return
       case 'gateway.update.stage':
-        await this.stageGatewayUpdate(project, command, journalRecord.matrixEventId)
+        await this.stageGatewayUpdate(project, command, journalRecord.matrixEventId, signal)
         return
       case 'gateway.update.apply':
         await this.applyGatewayUpdate(project, command)
@@ -917,6 +973,7 @@ export class MatrixMlp3GatewayRunner {
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'gateway.update.stage'>,
     rootEventId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (!rootEventId) throw new Error('Gateway update command lost its Matrix thread root')
     const supervisor = this.requireGatewayUpdateSupervisor()
@@ -948,6 +1005,7 @@ export class MatrixMlp3GatewayRunner {
                 command.commandId,
                 instruction.releaseId,
               ),
+              signal,
             },
           )
         } catch (error) {
@@ -1373,7 +1431,9 @@ export class MatrixMlp3GatewayRunner {
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'session.create'>,
     rootEventId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
+    assertCommandExecutionActive(signal)
     if (!command.sessionId) throw new Error('Session create command is missing its session ID')
     if (!rootEventId) throw new Error('Session create command lost its Matrix thread root')
     const existing = project.project.sessions.find(session => session.id === command.sessionId)
@@ -1418,9 +1478,11 @@ export class MatrixMlp3GatewayRunner {
       await this.dependencies.assertDirectoryAccess?.({
         cwd,
         operation: 'session.create',
+        signal,
       })
     }
     if (scope === 'scratch') await mkdir(cwd, { recursive: true, mode: 0o700 })
+    assertCommandExecutionActive(signal)
     const record: PersistedMlp3Session = {
       id: command.sessionId,
       scope,
@@ -1450,15 +1512,27 @@ export class MatrixMlp3GatewayRunner {
     }
     project.project.sessions.push(record)
     let runtime: Mlp3SessionRuntime | null = null
+    let persisted = false
+    const rollback = async (): Promise<void> => {
+      project.sessions.delete(record.id)
+      project.project.sessions = project.project.sessions.filter(candidate => candidate !== record)
+      if (runtime) await this.destroySessionRuntime(runtime, 'delete').catch(() => undefined)
+      runtime = null
+      if (scope === 'scratch') await this.removeScratchSessionDirectory(record).catch(() => undefined)
+      if (persisted) {
+        await this.persist(project).catch(persistError => {
+          this.log(`[mlp3/matrix] session rollback persistence failed: ${formatError(persistError)}`)
+        })
+      }
+    }
     try {
       runtime = this.createSessionRuntime(project, record)
       project.sessions.set(record.id, runtime)
       await this.persist(project)
+      persisted = true
+      assertCommandExecutionActive(signal)
     } catch (error) {
-      project.sessions.delete(record.id)
-      project.project.sessions = project.project.sessions.filter(candidate => candidate !== record)
-      if (runtime) await this.destroySessionRuntime(runtime, 'delete').catch(() => undefined)
-      if (scope === 'scratch') await this.removeScratchSessionDirectory(record).catch(() => undefined)
+      await rollback()
       throw error
     }
     const ready = this.eventFor(project, record, command, 'session-ready', {
@@ -1476,16 +1550,28 @@ export class MatrixMlp3GatewayRunner {
       extensionBindings: record.extensions,
     })
     if (!command.payload.initialPrompt) {
-      await this.settleAndDeliver(project, command, ready, 'succeeded')
+      let terminalClaimed: boolean
+      try {
+        terminalClaimed = await this.settleAndDeliver(project, command, ready, 'succeeded')
+      } catch (error) {
+        await rollback()
+        throw error
+      }
+      if (!terminalClaimed) {
+        await rollback()
+        assertCommandExecutionActive(signal)
+        throw new Error('Session creation lost its execution lease before terminal settlement')
+      }
       return
     }
     await this.emitBestEffort(project, record, ready)
-    await this.runPrompt(project, runtime, command, command.payload.initialPrompt)
+    await this.runPrompt(project, runtime, command, command.payload.initialPrompt, { signal })
   }
 
   private async executePrompt(
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'prompt.submit'>,
+    signal?: AbortSignal,
   ): Promise<void> {
     const runtime = this.requireActiveSession(project, command.sessionId)
     if (runtime.record.title === 'New session') {
@@ -1493,7 +1579,7 @@ export class MatrixMlp3GatewayRunner {
         || command.payload.attachments?.[0]?.name
         || 'New session'
     }
-    await this.runPrompt(project, runtime, command, command.payload)
+    await this.runPrompt(project, runtime, command, command.payload, { signal })
   }
 
   private async runPrompt(
@@ -1501,8 +1587,9 @@ export class MatrixMlp3GatewayRunner {
     runtime: Mlp3SessionRuntime,
     command: Mlp3Command,
     prompt: { text: string; attachments?: import('@malink/protocol').MalinkAttachment[] },
-    options: { settleCommand?: boolean; childTurnId?: string } = {},
+    options: { settleCommand?: boolean; childTurnId?: string; signal?: AbortSignal } = {},
   ): Promise<void> {
+    assertCommandExecutionActive(options.signal)
     if (options.childTurnId && options.settleCommand !== false) {
       throw new Error('A child Agent turn cannot settle its parent command')
     }
@@ -1519,8 +1606,10 @@ export class MatrixMlp3GatewayRunner {
       await this.dependencies.assertDirectoryAccess?.({
         cwd: runtime.record.cwd,
         operation: 'prompt.submit',
+        signal: options.signal,
       })
     }
+    assertCommandExecutionActive(options.signal)
     if (await this.waitForPromptCancellation(project, eventCommand)) return
     this.transition(runtime, 'queued')
     await this.persist(project)
@@ -1545,12 +1634,16 @@ export class MatrixMlp3GatewayRunner {
       this.client,
       `${this.config.replayLedgerPath}.v3-attachments`,
     )
+    assertCommandExecutionActive(options.signal)
     if (await this.waitForPromptCancellation(project, eventCommand)) return
     if (!this.beginPromptAgentDispatch(project, eventCommand)) {
       await this.waitForPromptCancellation(project, eventCommand)
       return
     }
     const activeTurn = createActiveTurn(eventCommand.commandId)
+    const abortActiveTurn = (): void => activeTurn.abortController.abort(options.signal?.reason)
+    if (options.signal?.aborted) abortActiveTurn()
+    else options.signal?.addEventListener('abort', abortActiveTurn, { once: true })
     runtime.activeTurn = activeTurn
     runtime.port.setCausationCommandId(eventCommand.commandId)
     try {
@@ -1610,6 +1703,7 @@ export class MatrixMlp3GatewayRunner {
         `[mlp3/matrix] turn ${command.commandId} ${cancelled ? 'cancelled' : 'completed'}`,
       )
     } finally {
+      options.signal?.removeEventListener('abort', abortActiveTurn)
       runtime.port.setCausationCommandId(null)
       if (runtime.activeTurn === activeTurn) runtime.activeTurn = null
       activeTurn.settle()
@@ -2317,15 +2411,18 @@ export class MatrixMlp3GatewayRunner {
     project: V3ProjectRuntime,
     command: Mlp3Command,
     error: unknown,
+    options: { allowExpiredExecution?: boolean } = {},
   ): Promise<void> {
     const runtime = command.sessionId ? project.sessions.get(command.sessionId) : undefined
     const failure = commandFailure(error)
     let payload: Mlp3EventPayload
     if (command.operation === 'prompt.submit' && runtime) {
       this.transition(runtime, 'failed')
-      await this.persist(project).catch(persistError => {
+      const persistFailureProjection = this.persist(project).catch(persistError => {
         this.log(`[mlp3/matrix] failed projection persistence failed: ${formatError(persistError)}`)
       })
+      if (options.allowExpiredExecution) void persistFailureProjection
+      else await persistFailureProjection
       payload = {
         type: 'turn.failed',
         turnId: command.commandId,
@@ -2343,7 +2440,7 @@ export class MatrixMlp3GatewayRunner {
       }
     }
     const event = this.eventFor(project, runtime?.record, command, 'command-failed', payload)
-    await this.settleAndDeliver(project, command, event, 'failed').catch(deliveryError => {
+    await this.settleAndDeliver(project, command, event, 'failed', undefined, options).catch(deliveryError => {
       this.log(`[mlp3/matrix] failed command result delivery failed: ${formatError(deliveryError)}`)
     })
   }
@@ -2374,9 +2471,17 @@ export class MatrixMlp3GatewayRunner {
     event: Mlp3Event,
     outcome: Mlp3CommandTerminal['outcome'],
     result?: JsonValue,
-    options: { publishProjectPointer?: boolean; waitForConfirmation?: boolean } = {},
-  ): Promise<void> {
+    options: {
+      publishProjectPointer?: boolean
+      waitForConfirmation?: boolean
+      allowExpiredExecution?: boolean
+    } = {},
+  ): Promise<boolean> {
     const terminalKey = commandKey(command)
+    if (this.expiredCommandExecutions.has(terminalKey) && !options.allowExpiredExecution) {
+      this.log(`[mlp3/matrix] ignored late terminal for expired command ${command.commandId}`)
+      return false
+    }
     await this.journal.settle(command, {
       outcome,
       eventId: event.eventId,
@@ -2414,6 +2519,7 @@ export class MatrixMlp3GatewayRunner {
       // reinterpret a transport failure as an execution failure.
       this.log(`[mlp3/matrix] terminal delivery queued: ${formatError(error)}`)
     }
+    return true
   }
 
   private async completeTerminalDelivery(
@@ -2928,7 +3034,10 @@ export class MatrixMlp3GatewayRunner {
     await rm(expected, { recursive: true, force: true })
   }
 
-  private async publishProjectSnapshot(project: V3ProjectRuntime): Promise<void> {
+  private async publishProjectSnapshot(
+    project: V3ProjectRuntime,
+    waitForDelivery = true,
+  ): Promise<void> {
     // A brand-new Gateway must be able to reach the pairing-ready state before
     // any recipient exists. Pairing's onProvisioned hook calls
     // provisionCurrentState() after the first certificate is committed, which
@@ -2947,8 +3056,20 @@ export class MatrixMlp3GatewayRunner {
         ...this.projectSnapshot(project),
       },
     }
-    const result = await this.content.sendEvent(project.config, event, this.client)
-    await this.content.publishProjectPointer(project.config, event, result.eventId, this.client)
+    if (waitForDelivery) {
+      const result = await this.content.sendEvent(project.config, event, this.client)
+      await this.content.publishProjectPointer(project.config, event, result.eventId, this.client)
+      return
+    }
+    const queued = await this.content.enqueueEvent(project.config, event, this.client)
+    void queued.confirmation.then(result => this.content.publishProjectPointer(
+      project.config,
+      event,
+      result.eventId,
+      this.client,
+    )).catch(error => {
+      this.log(`[mlp3/matrix] project snapshot delivery deferred: ${formatError(error)}`)
+    })
   }
 
   private projectSnapshot(project: V3ProjectRuntime) {
@@ -3000,7 +3121,10 @@ export class MatrixMlp3GatewayRunner {
     }
   }
 
-  private async publishWorkspaceSnapshot(project: V3ProjectRuntime): Promise<void> {
+  private async publishWorkspaceSnapshot(
+    project: V3ProjectRuntime,
+    waitForDelivery = true,
+  ): Promise<void> {
     if (!await this.content.hasActiveDevices(project.config.roomId)) return
     const capabilities = this.discoverCapabilities(project)
     const pendingGatewayEnrollments = [
@@ -3054,13 +3178,25 @@ export class MatrixMlp3GatewayRunner {
         snapshotVersion: project.project.capabilitySnapshotVersion,
       },
     }
-    const result = await this.content.sendEvent(project.config, event, this.client)
-    await this.content.publishWorkspacePointer(
+    if (waitForDelivery) {
+      const result = await this.content.sendEvent(project.config, event, this.client)
+      await this.content.publishWorkspacePointer(
+        project.config,
+        event,
+        result.eventId,
+        this.client,
+      )
+      return
+    }
+    const queued = await this.content.enqueueEvent(project.config, event, this.client)
+    void queued.confirmation.then(result => this.content.publishWorkspacePointer(
       project.config,
       event,
       result.eventId,
       this.client,
-    )
+    )).catch(error => {
+      this.log(`[mlp3/matrix] workspace snapshot delivery deferred: ${formatError(error)}`)
+    })
   }
 
   private discoverCapabilities(project: V3ProjectRuntime): MatrixGatewayCapabilities {
@@ -3189,7 +3325,7 @@ export class MatrixMlp3GatewayRunner {
   private async prepareSessionThreads(project: V3ProjectRuntime): Promise<void> {
     if (!this.client.prepareRoomThread) return
     for (const record of project.project.sessions) {
-      if (record.lifecycle === 'deleted') continue
+      if (record.lifecycle !== 'active') continue
       await this.client.prepareRoomThread(project.config.roomId, record.threadRootEventId)
     }
   }
@@ -3705,6 +3841,23 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+class GatewayCommandExecutionTimeoutError extends Error {
+  readonly commandCode = 'gateway_execution_timeout'
+  readonly retryable = true
+
+  constructor(operation: string, timeoutMs: number) {
+    super(`Gateway ${operation} execution timed out after ${timeoutMs}ms`)
+    this.name = 'GatewayCommandExecutionTimeoutError'
+  }
+}
+
+function assertCommandExecutionActive(signal?: AbortSignal): void {
+  if (!signal?.aborted) return
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error('Gateway command execution was aborted')
 }
 
 function commandFailure(error: unknown): { code: string; retryable: boolean } {

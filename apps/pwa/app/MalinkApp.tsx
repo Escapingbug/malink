@@ -185,6 +185,7 @@ import {
   sessionCreateCompletionMatchesRecovery,
   sessionCreateFailureMessage,
   sessionCreateRecoveryMatches,
+  sessionCreateRecoveryRemainingMs,
   writePendingSessionCreateRecovery,
   type PendingSessionCreateRecovery,
 } from "./sessionCreateRecovery";
@@ -194,8 +195,10 @@ import {
   createOptimisticSessionRecord,
   failOptimisticSession,
   markOptimisticSessionUncertain,
+  optimisticSessionProgressLabel,
   readOptimisticSession,
   retryOptimisticSession,
+  updateOptimisticSessionProgress,
   writeOptimisticSession,
   type OptimisticSessionRecord,
 } from "./optimisticSession";
@@ -1818,6 +1821,7 @@ function MalinkAppRuntime() {
     connection: MalinkClient;
   } | null>(null);
   const sessionCreateRecoveryTimerRef = useRef<number | null>(null);
+  const sessionCreateWatchdogTimerRef = useRef<number | null>(null);
   const sessionLifecycleRecoveriesRef = useRef(
     new Map<string, PendingSessionLifecycleRecovery>(),
   );
@@ -3532,7 +3536,12 @@ function MalinkAppRuntime() {
         // The in-memory failed draft remains usable for this page lifetime.
       }
     }
-    if (recovery) pendingSessionCreateRecoveryRef.current = recovery;
+    if (recovery) {
+      pendingSessionCreateRecoveryRef.current = recovery;
+      if (optimistic?.phase === "creating") {
+        armPendingSessionCreateWatchdog(recovery);
+      }
+    }
     if (optimistic) optimisticSessionRef.current = optimistic;
     let active = true;
     queueMicrotask(() => {
@@ -3886,6 +3895,9 @@ function MalinkAppRuntime() {
     () => () => {
       if (sessionCreateRecoveryTimerRef.current !== null) {
         window.clearTimeout(sessionCreateRecoveryTimerRef.current);
+      }
+      if (sessionCreateWatchdogTimerRef.current !== null) {
+        window.clearTimeout(sessionCreateWatchdogTimerRef.current);
       }
       if (connectionRecoveryTimerRef.current !== null) {
         window.clearTimeout(connectionRecoveryTimerRef.current);
@@ -5479,6 +5491,7 @@ function MalinkAppRuntime() {
       input,
     };
     pendingSessionCreateRecoveryRef.current = recovery;
+    armPendingSessionCreateWatchdog(recovery);
     setPendingSessionCreate(input);
     setNewSessionBusy(true);
     try {
@@ -5508,6 +5521,10 @@ function MalinkAppRuntime() {
       window.clearTimeout(sessionCreateRecoveryTimerRef.current);
       sessionCreateRecoveryTimerRef.current = null;
     }
+    if (sessionCreateWatchdogTimerRef.current !== null) {
+      window.clearTimeout(sessionCreateWatchdogTimerRef.current);
+      sessionCreateWatchdogTimerRef.current = null;
+    }
     try {
       clearPendingSessionCreateRecovery(window.localStorage, commandId);
     } catch (error) {
@@ -5518,6 +5535,59 @@ function MalinkAppRuntime() {
         `The completed session recovery marker could not be cleared: ${formatUiError(error)}`,
       );
     }
+  }
+
+  function armPendingSessionCreateWatchdog(
+    recovery: PendingSessionCreateRecovery,
+  ): void {
+    if (sessionCreateWatchdogTimerRef.current !== null) {
+      window.clearTimeout(sessionCreateWatchdogTimerRef.current);
+    }
+    sessionCreateWatchdogTimerRef.current = window.setTimeout(() => {
+      sessionCreateWatchdogTimerRef.current = null;
+      const current = pendingSessionCreateRecoveryRef.current;
+      if (!current || current.commandId !== recovery.commandId) return;
+      const draft = optimisticSessionRef.current;
+      if (!draft || draft.phase !== "creating") return;
+      commitOptimisticSession(
+        markOptimisticSessionUncertain(
+          draft,
+          "Your computer accepted the secure command. Malink is still checking its final result in the background; checking it again cannot create a duplicate.",
+        ),
+      );
+      clearPendingSessionCreateUi();
+      showUiNotice(
+        "session:create",
+        "session",
+        "warning",
+        "Session creation has not reached a confirmed result yet. Malink will keep checking the same saved command and will not submit it twice.",
+      );
+    }, sessionCreateRecoveryRemainingMs(recovery));
+  }
+
+  function applySessionCreateCommandProgress(
+    command: MalinkRecoveredDurableCommand,
+  ): void {
+    const recovery = pendingSessionCreateRecoveryRef.current;
+    const draft = optimisticSessionRef.current;
+    if (
+      !recovery || recovery.commandId !== command.commandId ||
+      !draft || draft.phase !== "creating"
+    ) return;
+    const progress = command.state === "transmitting"
+      ? "transmitting"
+      : command.state === "accepted"
+        ? "matrix_accepted"
+        : command.state === "running"
+          ? "gateway_running"
+          : command.state === "needs_review" || command.state === "recovery_required"
+            ? "checking"
+            : command.state === "queued"
+              ? "saved"
+              : null;
+    if (!progress) return;
+    const next = updateOptimisticSessionProgress(draft, progress);
+    if (next !== draft) commitOptimisticSession(next);
   }
 
   function schedulePendingSessionCreateRecovery(
@@ -5583,6 +5653,7 @@ function MalinkAppRuntime() {
           }
           activeCommandId = rebound.commandId;
           pendingSessionCreateRecoveryRef.current = rebound;
+          armPendingSessionCreateWatchdog(rebound);
           sessionCreateRecoveryInFlightRef.current = {
             commandId: activeCommandId,
             connection,
@@ -6159,11 +6230,13 @@ function MalinkAppRuntime() {
         },
         onDurableCommandRecovered(command) {
           if (!isCurrentStartup()) return;
+          applySessionCreateCommandProgress(command);
           recoveredNativeCommandsRef.current.set(command.commandId, command);
           syncRecoveredNativeCommands();
         },
         onDurableCommandChanged(command) {
           if (!isCurrentStartup()) return;
+          applySessionCreateCommandProgress(command);
           if (!recoveredNativeCommandsRef.current.has(command.commandId)) return;
           recoveredNativeCommandsRef.current.set(command.commandId, command);
           syncRecoveredNativeCommands();
@@ -11697,7 +11770,7 @@ function MalinkAppRuntime() {
                       ? "Creation failed · Open to retry"
                       : optimisticSession.phase === "uncertain"
                         ? "Result not confirmed · Open to resolve"
-                        : "Creating · Ready for messages"}
+                        : optimisticSessionProgressLabel(optimisticSession.progress)}
                   </span>
                 </span>
               </span>
@@ -12891,7 +12964,7 @@ function MalinkAppRuntime() {
                 </strong>
                 <p>
                   {optimisticSession.phase === "creating"
-                    ? "You can start now. Messages are saved here and will be sent in order as soon as creation succeeds."
+                    ? `${optimisticSessionProgressLabel(optimisticSession.progress)}. You can start now; messages are saved and will be sent in order after creation succeeds.`
                     : optimisticSession.phase === "uncertain"
                       ? uncertainSessionRecovery?.detail ??
                         "Malink is still verifying the original creation command."

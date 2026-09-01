@@ -112,6 +112,7 @@ interface MatrixRequestOptions {
     retryRateLimit?: boolean
     retryTransient?: boolean
     paceRoomWrite?: boolean
+    retryBudgetMs?: number
 }
 
 const INITIAL_ROOM_SEND_INTERVAL_MS = 250
@@ -124,6 +125,15 @@ class MatrixHttpError extends Error {
         readonly retryAfterMs?: number,
     ) {
         super(message)
+    }
+}
+
+class MatrixRetryBudgetExceededError extends Error {
+    constructor(method: string, path: string, retryBudgetMs: number, cause: unknown) {
+        super(`Matrix ${method} ${path} exhausted its ${retryBudgetMs}ms retry budget`, {
+            cause,
+        })
+        this.name = 'MatrixRetryBudgetExceededError'
     }
 }
 
@@ -853,6 +863,10 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
         options: MatrixRequestOptions = {},
     ): Promise<T> {
         let transientAttempts = 0
+        const retryStartedAt = Date.now()
+        const retryBudgetMs = options.retryBudgetMs
+            ?? this.connection.requestRetryBudgetMs
+            ?? 60_000
         while (true) {
             const url = new URL(path, normalizedBaseUrl(this.connection.baseUrl))
             for (const [key, value] of Object.entries(options.query ?? {})) {
@@ -885,6 +899,14 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                 ) {
                     const retryAfterMs = transientRetryDelay(transientAttempts)
                     transientAttempts += 1
+                    if (Date.now() - retryStartedAt + retryAfterMs > retryBudgetMs) {
+                        throw new MatrixRetryBudgetExceededError(
+                            method,
+                            path,
+                            retryBudgetMs,
+                            error,
+                        )
+                    }
                     this.onLog?.(
                         `[matrix-node] ${method} ${path} failed transiently; `
                         + `retrying in ${retryAfterMs}ms: ${formatError(error)}`,
@@ -905,6 +927,14 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             const record = asRecord(body)
             const retryAfterMs = retryDelay(response, record)
             if (response.status === 429 && options.retryRateLimit) {
+                if (Date.now() - retryStartedAt + retryAfterMs > retryBudgetMs) {
+                    throw new MatrixHttpError(
+                        `Matrix ${method} ${path} exhausted its ${retryBudgetMs}ms retry budget`,
+                        response.status,
+                        typeof record?.errcode === 'string' ? record.errcode : undefined,
+                        retryAfterMs,
+                    )
+                }
                 if (options.paceRoomWrite) this.observeRoomSendRateLimit(retryAfterMs)
                 this.onLog?.(
                     `[matrix-node] ${method} ${path} rate limited; `

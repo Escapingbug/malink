@@ -29,6 +29,8 @@ export interface MatrixGatewayConnectionConfig {
     userId: string
     deviceId: string
     initialSyncTimeoutMs?: number
+    /** Total retry budget for one Matrix request before durable callers take over. */
+    requestRetryBudgetMs?: number
 }
 
 export interface MatrixGatewayRoomConfig {
@@ -90,6 +92,8 @@ export interface MatrixGatewayConfig {
     replayLedgerPath: string
     applicationSecurity: MatrixGatewayApplicationSecurityConfig
     startupEventQueueLimit?: number
+    /** Deadline for control commands; Agent turns use each room's timeoutSeconds. */
+    commandExecutionTimeoutMs?: number
     /** Publishes one shared signed node heartbeat; defaults to 60 seconds. */
     gatewayHeartbeatIntervalMs?: number
     webPush?: {
@@ -107,6 +111,16 @@ export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
     requireText(config.connection.accessToken, 'connection.accessToken')
     requireText(config.connection.userId, 'connection.userId')
     requireText(config.connection.deviceId, 'connection.deviceId')
+    if (
+        config.connection.requestRetryBudgetMs !== undefined
+        && (
+            !Number.isFinite(config.connection.requestRetryBudgetMs)
+            || config.connection.requestRetryBudgetMs < 1_000
+            || config.connection.requestRetryBudgetMs > 10 * 60_000
+        )
+    ) {
+        throw new Error('connection.requestRetryBudgetMs must be between 1000 and 600000')
+    }
     if (config.crypto.backend === 'node-sqlite') {
         requireText(config.crypto.storagePath, 'crypto.storagePath')
         requireText(config.crypto.syncTokenPath, 'crypto.syncTokenPath')
@@ -163,6 +177,16 @@ export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
         if (room.projectName !== undefined) requireText(room.projectName, 'room.projectName')
         requireText(room.cwd, 'room.cwd')
         requireText(room.providerName, 'room.providerName')
+        if (
+            room.timeoutSeconds !== undefined
+            && (
+                !Number.isFinite(room.timeoutSeconds)
+                || room.timeoutSeconds < 1
+                || room.timeoutSeconds > 24 * 60 * 60
+            )
+        ) {
+            throw new Error('room.timeoutSeconds must be between 1 and 86400')
+        }
     }
     for (const device of config.trustedDevices) {
         requireText(device.deviceId, 'trustedDevice.deviceId')
@@ -192,6 +216,16 @@ export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
 
     if (config.startupEventQueueLimit !== undefined && config.startupEventQueueLimit < 1) {
         throw new Error('startupEventQueueLimit must be at least 1')
+    }
+    if (
+        config.commandExecutionTimeoutMs !== undefined
+        && (
+            !Number.isFinite(config.commandExecutionTimeoutMs)
+            || config.commandExecutionTimeoutMs < 1_000
+            || config.commandExecutionTimeoutMs > 60 * 60_000
+        )
+    ) {
+        throw new Error('commandExecutionTimeoutMs must be between 1000 and 3600000')
     }
     if (
         config.gatewayHeartbeatIntervalMs !== undefined
