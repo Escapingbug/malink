@@ -919,6 +919,46 @@ select:focus-visible {
   margin-bottom: 8px;
 }
 
+.workspace-project-recovery {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 1px 13px 9px;
+  padding: 9px 10px;
+  border: 1px solid rgb(107 89 211 / 16%);
+  border-radius: 10px;
+  background: var(--violet-soft);
+  color: #554a99;
+}
+
+.workspace-project-recovery > span:last-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workspace-project-recovery strong {
+  font-size: 10px;
+  font-weight: 760;
+}
+
+.workspace-project-recovery small {
+  color: #6f688f;
+  font-size: 8px;
+  line-height: 1.35;
+}
+
+.workspace-project-recovery-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 2px solid rgb(107 89 211 / 22%);
+  border-top-color: #6b59d3;
+  border-radius: 50%;
+  animation: session-create-spin 700ms linear infinite;
+}
+
 .project-session-heading {
   display: flex;
   align-items: center;

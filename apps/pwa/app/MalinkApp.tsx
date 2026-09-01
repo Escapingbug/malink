@@ -343,6 +343,11 @@ import {
   gatewayProjectOwners,
 } from "./projectCatalog";
 import {
+  preserveProjectsDuringRecovery,
+  workspaceProjectRecovery,
+  type WorkspaceProjectRecovery,
+} from "./workspaceProjectRecovery";
+import {
   ALL_GATEWAYS_FILTER,
   normalizeGatewayFilter,
   projectMatchesGatewayFilter,
@@ -1620,6 +1625,14 @@ function MalinkAppRuntime() {
   );
   const [gatewayState, setGatewayState] =
     useState<GatewayStateSnapshot | null>(initialGatewayUi.gatewayState);
+  const gatewayStateRef = useRef<GatewayStateSnapshot | null>(gatewayState);
+  gatewayStateRef.current = gatewayState;
+  const [workspaceProjectRecoveryState, setWorkspaceProjectRecoveryState] =
+    useState<WorkspaceProjectRecovery | null>(() =>
+      initialGatewayUi.gatewayState
+        ? workspaceProjectRecovery(initialGatewayUi.gatewayState)
+        : null
+    );
   const [, setGatewayRevision] = useState<number | null>(null);
   const [revisionConflict, setRevisionConflict] =
     useState<RevisionConflictNotice | null>(null);
@@ -5865,7 +5878,9 @@ function MalinkAppRuntime() {
     if (!automaticRecovery && !preserveGatewayProjection) {
       knownGatewaySessionIdsRef.current.clear();
       liveMessagesBySessionRef.current.clear();
+      gatewayStateRef.current = null;
       setGatewayState(null);
+      setWorkspaceProjectRecoveryState(null);
       setGatewayRevision(null);
       selectedSessionIdRef.current = null;
       selectedProjectIdRef.current = null;
@@ -6033,13 +6048,21 @@ function MalinkAppRuntime() {
             );
           }
           if (state.gatewayState) {
+            const incomingGatewayState = state.gatewayState;
+            const projectRecovery = workspaceProjectRecovery(incomingGatewayState);
+            const nextGatewayState = preserveProjectsDuringRecovery(
+              gatewayStateRef.current,
+              incomingGatewayState,
+            );
+            gatewayStateRef.current = nextGatewayState;
+            setWorkspaceProjectRecoveryState(projectRecovery);
             writeGatewayUiCache(
               window.localStorage,
               normalized,
-              state.gatewayState,
+              nextGatewayState,
             );
             const nextSessionIds = new Set(
-              state.gatewayState.sessions.map((session) => session.id),
+              nextGatewayState.sessions.map((session) => session.id),
             );
             for (const previousSessionId of knownGatewaySessionIdsRef.current) {
               if (nextSessionIds.has(previousSessionId)) continue;
@@ -6069,16 +6092,16 @@ function MalinkAppRuntime() {
                 malinkClientRef.current,
               );
             }
-            setGatewayState(state.gatewayState);
-            reconcileSessionActivityUpdatedAt(state.gatewayState.sessions);
-            for (const session of state.gatewayState.sessions) {
+            setGatewayState(nextGatewayState);
+            reconcileSessionActivityUpdatedAt(nextGatewayState.sessions);
+            for (const session of nextGatewayState.sessions) {
               observeAgentActivityWatermark(
                 session.id,
                 agentActivityWatermarkForSession(session),
               );
             }
             const runningIds = new Set(
-              state.gatewayState.sessions
+              nextGatewayState.sessions
                 .filter(
                   (session) =>
                     session.status === "running" ||
@@ -6087,7 +6110,7 @@ function MalinkAppRuntime() {
                 .map((session) => session.id),
             );
             const stoppingIds = new Set(
-              state.gatewayState.sessions
+              nextGatewayState.sessions
                 .filter((session) => session.status === "stopping")
                 .map((session) => session.id),
             );
@@ -6095,7 +6118,7 @@ function MalinkAppRuntime() {
             setStoppingSessionIds(stoppingIds);
             setAgentActivitiesBySession((current) => {
               const next = new Map<string, AgentActivity>();
-              for (const session of state.gatewayState!.sessions) {
+              for (const session of nextGatewayState.sessions) {
                 if (session.activityPhase === "starting") {
                   next.set(session.id, STARTING_AGENT_ACTIVITY);
                 } else if (
@@ -6126,7 +6149,7 @@ function MalinkAppRuntime() {
               return next;
             });
             const selectableSessions = sessionsAvailableForAutomaticSelection(
-              state.gatewayState.sessions,
+              nextGatewayState.sessions,
               pendingSessionLifecycleIds(sessionLifecycleBusyRef.current),
             );
             const openedSessionId = pendingOpenedSessionIdRef.current;
@@ -6146,7 +6169,7 @@ function MalinkAppRuntime() {
               requestedSessionId: openedSessionId,
               pendingCreatedSessionId: localDraftId ? null : pendingCreated,
               localDraftSessionId: localDraftId,
-              currentSessionId: state.gatewayState.currentSessionId,
+              currentSessionId: nextGatewayState.currentSessionId,
             });
             const explicitlyOpened = selection.source === "requested";
             const createdSelected = selection.source === "pending-created";
@@ -6161,7 +6184,7 @@ function MalinkAppRuntime() {
             }
             setSessionReadState((current) => initializeSessionReadState(
               current,
-              state.gatewayState!.sessions,
+              nextGatewayState.sessions,
             ));
             if (selection.shouldActivate) {
               const nextSession = selection.session;
@@ -6404,7 +6427,9 @@ function MalinkAppRuntime() {
     agentActivityWatermarksRef.current.clear();
     setSelectedSessionId(null);
     setSelectedProjectId(null);
+    gatewayStateRef.current = null;
     setGatewayState(null);
+    setWorkspaceProjectRecoveryState(null);
     setGatewayRevision(null);
     selectedSessionIdRef.current = null;
     selectedProjectIdRef.current = null;
@@ -6483,7 +6508,9 @@ function MalinkAppRuntime() {
     );
     setActiveDeviceCount(null);
     setGatewayRevision(null);
+    gatewayStateRef.current = null;
     setGatewayState(null);
+    setWorkspaceProjectRecoveryState(null);
     selectedSessionIdRef.current = null;
     selectedProjectIdRef.current = null;
     setSelectedSessionId(null);
@@ -11714,6 +11741,22 @@ function MalinkAppRuntime() {
         />
 
         <div className="session-list">
+          {workspaceProjectRecoveryState && (
+            <section
+              className="workspace-project-recovery"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <span className="workspace-project-recovery-spinner" aria-hidden="true" />
+              <span>
+                <strong>Refreshing Workspace projects</strong>
+                <small>
+                  {`${workspaceProjectRecoveryState.loaded} of ${workspaceProjectRecoveryState.total} refreshed · restoring remaining project rooms`}
+                </small>
+              </span>
+            </section>
+          )}
           {optimisticSession && projectMatchesGatewayFilter(
             activeGatewayFilter,
             optimisticSession.input.projectId ?? gatewayState?.workspace.projectId ?? "",
