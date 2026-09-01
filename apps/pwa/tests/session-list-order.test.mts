@@ -5,9 +5,8 @@ import {
   compareSessionsForDisplay,
   projectSessionSummaryLabel,
   reconcileSessionDisplayOrder,
-  rebuildSessionDisplayOrder,
   sessionDisplayKey,
-  sessionDisplayOrderWouldChange,
+  sessionDisplayPriority,
   sessionMeaningfulActivityAt,
   sessionListSignal,
   sessionSignalLabel,
@@ -50,6 +49,8 @@ test("derives quiet visual signals from lifecycle and read state", () => {
   assert.equal(sessionListSignal(session("working", "running", 30), readState), "working");
   assert.equal(sessionListSignal(session("idle", "idle", 40), readState), "idle");
   assert.equal(sessionSignalLabel("idle"), null);
+  assert.equal(sessionSignalLabel("ready"), "Reply needed");
+  assert.equal(sessionSignalLabel("failed"), "Review agent error");
 });
 
 test("assigns distinct tones to live session status text", () => {
@@ -88,7 +89,7 @@ test("assigns distinct tones to live session status text", () => {
   }), "stopping");
 });
 
-test("keeps session rows stable when activity, recency, or read state changes", () => {
+test("moves actionable activity ahead of quiet conversations", () => {
   const initial = [
     session("first", "idle", 100),
     session("second", "idle", 90),
@@ -98,19 +99,18 @@ test("keeps session rows stable when activity, recency, or read state changes", 
     session("first", "idle", 100),
     session("second", "running", 110),
   ];
-  updated.sort((left, right) => compareSessionsForDisplay(left, right, order));
-  assert.deepEqual(updated.map((item) => item.id), ["first", "second"]);
-
   const read = {
     initialized: true,
     readUpdatedAt: { first: 100, second: 110 },
   } as const;
   assert.equal(sessionListSignal(updated[1]!, read), "working");
-  updated.sort((left, right) => compareSessionsForDisplay(left, right, order));
-  assert.deepEqual(updated.map((item) => item.id), ["first", "second"]);
+  updated.sort((left, right) =>
+    compareSessionsForDisplay(left, right, order, read)
+  );
+  assert.deepEqual(updated.map((item) => item.id), ["second", "first"]);
 });
 
-test("batches meaningful recency changes until the user refreshes the order", () => {
+test("keeps rows stable within an attention lane", () => {
   const initial = [
     session("first", "idle", 100),
     session("second", "idle", 90),
@@ -120,32 +120,56 @@ test("batches meaningful recency changes until the user refreshes the order", ()
     [sessionDisplayKey(initial[0]!)]: 100,
     [sessionDisplayKey(initial[1]!)]: 120,
   };
+  const unread = {
+    initialized: true,
+    readUpdatedAt: { first: 0, second: 0 },
+  } as const;
 
   const stable = [...initial].sort((left, right) =>
-    compareSessionsForDisplay(left, right, order),
+    compareSessionsForDisplay(left, right, order, unread),
   );
   assert.deepEqual(stable.map((item) => item.id), ["first", "second"]);
-  assert.equal(
-    sessionDisplayOrderWouldChange(order, initial, meaningfulActivity),
-    true,
-  );
   assert.equal(
     sessionMeaningfulActivityAt(initial[1]!, meaningfulActivity),
     120,
   );
+});
 
-  const refreshedOrder = rebuildSessionDisplayOrder(initial, meaningfulActivity);
-  const refreshed = [...initial].sort((left, right) =>
-    compareSessionsForDisplay(left, right, refreshedOrder),
+test("orders error review, replies, work, then quiet rows", () => {
+  const sessions = [
+    session("idle", "idle", 40),
+    session("working", "running", 30),
+    session("ready", "idle", 11),
+    session("failed", "failed", 20),
+  ];
+  const attentionState = {
+    initialized: true,
+    readUpdatedAt: { idle: 40, working: 30, ready: 10, failed: 19 },
+  } as const;
+  const order = reconcileSessionDisplayOrder(new Map(), sessions);
+
+  sessions.sort((left, right) =>
+    compareSessionsForDisplay(left, right, order, attentionState)
   );
-  assert.deepEqual(refreshed.map((item) => item.id), ["second", "first"]);
-  assert.equal(
-    sessionDisplayOrderWouldChange(
-      refreshedOrder,
-      initial,
-      meaningfulActivity,
-    ),
-    false,
+
+  assert.deepEqual(
+    sessions.map((item) => item.id),
+    ["failed", "ready", "working", "idle"],
+  );
+  assert.deepEqual(
+    sessions.map((item) => sessionDisplayPriority(item, attentionState)),
+    [0, 1, 2, 3],
+  );
+});
+
+test("reviewed failures keep their status without occupying attention", () => {
+  const failed = session("failed", "failed", 20);
+
+  assert.equal(sessionListSignal(failed, readState), "failed");
+  assert.equal(sessionDisplayPriority(failed, readState), 3);
+  assert.deepEqual(
+    summarizeProjectSessions([failed], readState),
+    { failed: 0, ready: 0, working: 0, total: 1 },
   );
 });
 
@@ -164,11 +188,21 @@ test("places genuinely new sessions first without forgetting temporarily absent 
     session("first", "idle", 100),
   ];
   const next = reconcileSessionDisplayOrder(partial, restored);
-  restored.sort((left, right) => compareSessionsForDisplay(left, right, next));
+  const unread = {
+    initialized: true,
+    readUpdatedAt: { second: 0, new: 0, first: 0 },
+  } as const;
+  restored.sort((left, right) =>
+    compareSessionsForDisplay(left, right, next, unread)
+  );
   assert.deepEqual(restored.map((item) => item.id), ["new", "first", "second"]);
 });
 
 test("summarizes project urgency into distinct compact signals", () => {
+  const attentionState = {
+    initialized: true,
+    readUpdatedAt: { failed: 19, ready: 10, working: 30, idle: 40 },
+  } as const;
   const summary = summarizeProjectSessions(
     [
       session("failed", "failed", 20),
@@ -176,11 +210,11 @@ test("summarizes project urgency into distinct compact signals", () => {
       session("working", "stopping", 30),
       session("idle", "idle", 40),
     ],
-    readState,
+    attentionState,
   );
   assert.deepEqual(summary, { failed: 1, ready: 1, working: 1, total: 4 });
   assert.equal(
     projectSessionSummaryLabel("Project A", summary),
-    "Project A, 1 conversation failed, 1 new result, 1 conversation is working, 4 conversations",
+    "Project A, 1 error to review, 1 reply needed, 1 conversation working, 4 conversations",
   );
 });

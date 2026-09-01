@@ -89,7 +89,11 @@ export function compareSessionsForDisplay(
   left: GatewaySessionSummary,
   right: GatewaySessionSummary,
   order: SessionDisplayOrder,
+  readState: SessionReadState,
 ): number {
+  const priority = sessionDisplayPriority(left, readState) -
+    sessionDisplayPriority(right, readState);
+  if (priority !== 0) return priority;
   const leftRank = order.get(sessionDisplayKey(left));
   const rightRank = order.get(sessionDisplayKey(right));
   if (leftRank !== undefined && rightRank !== undefined && leftRank !== rightRank) {
@@ -100,18 +104,25 @@ export function compareSessionsForDisplay(
   return compareSessionsByRecency(left, right, {});
 }
 
-/** Rebuilds every rank after the user explicitly asks to show latest activity. */
-export function rebuildSessionDisplayOrder(
-  sessions: readonly GatewaySessionSummary[],
-  meaningfulActivity: SessionMeaningfulActivityState,
-): SessionDisplayOrder {
-  return new Map(
-    [...sessions]
-      .sort((left, right) =>
-        compareSessionsByRecency(left, right, meaningfulActivity),
-      )
-      .map((session, rank) => [sessionDisplayKey(session), rank]),
-  );
+/**
+ * Attention lanes move only when the user has something materially different
+ * to do. Rows stay stable within a lane, so streaming activity cannot shuffle
+ * a long conversation list.
+ */
+export function sessionDisplayPriority(
+  session: GatewaySessionSummary,
+  readState: SessionReadState,
+): number {
+  const indicator = sessionIndicator(session, readState);
+  if (indicator.needsAttention) return 0;
+  if (indicator.activity === "idle" && indicator.unread) return 1;
+  if (
+    indicator.activity === "running" ||
+    indicator.activity === "stopping"
+  ) {
+    return 2;
+  }
+  return 3;
 }
 
 export function sessionMeaningfulActivityAt(
@@ -128,23 +139,6 @@ export function sessionHasKnownMeaningfulActivity(
   return meaningfulActivity[sessionDisplayKey(session)] !== undefined;
 }
 
-export function sessionDisplayOrderWouldChange(
-  current: SessionDisplayOrder,
-  sessions: readonly GatewaySessionSummary[],
-  meaningfulActivity: SessionMeaningfulActivityState,
-): boolean {
-  const displayed = [...sessions].sort((left, right) =>
-    compareSessionsForDisplay(left, right, current),
-  );
-  const refreshed = [...sessions].sort((left, right) =>
-    compareSessionsByRecency(left, right, meaningfulActivity),
-  );
-  return displayed.some(
-    (session, index) =>
-      sessionDisplayKey(session) !== sessionDisplayKey(refreshed[index]!),
-  );
-}
-
 export function summarizeProjectSessions(
   sessions: readonly GatewaySessionSummary[],
   readState: SessionReadState,
@@ -153,10 +147,15 @@ export function summarizeProjectSessions(
   let ready = 0;
   let working = 0;
   for (const session of sessions) {
-    const signal = sessionListSignal(session, readState);
-    if (signal === "failed") failed += 1;
-    if (signal === "ready") ready += 1;
-    if (signal === "working") working += 1;
+    const indicator = sessionIndicator(session, readState);
+    if (indicator.needsAttention) failed += 1;
+    if (indicator.activity === "idle" && indicator.unread) ready += 1;
+    if (
+      indicator.activity === "running" ||
+      indicator.activity === "stopping"
+    ) {
+      working += 1;
+    }
   }
   return { failed, ready, working, total: sessions.length };
 }
@@ -168,17 +167,17 @@ export function projectSessionSummaryLabel(
   const parts = [projectName];
   if (summary.failed > 0) {
     parts.push(
-      `${summary.failed} ${summary.failed === 1 ? "conversation failed" : "conversations failed"}`,
+      `${summary.failed} ${summary.failed === 1 ? "error to review" : "errors to review"}`,
     );
   }
   if (summary.ready > 0) {
     parts.push(
-      `${summary.ready} new ${summary.ready === 1 ? "result" : "results"}`,
+      `${summary.ready} ${summary.ready === 1 ? "reply needed" : "replies needed"}`,
     );
   }
   if (summary.working > 0) {
     parts.push(
-      `${summary.working} ${summary.working === 1 ? "conversation is" : "conversations are"} working`,
+      `${summary.working} ${summary.working === 1 ? "conversation working" : "conversations working"}`,
     );
   }
   parts.push(`${summary.total} ${summary.total === 1 ? "conversation" : "conversations"}`);
@@ -188,9 +187,9 @@ export function projectSessionSummaryLabel(
 export function sessionSignalLabel(signal: SessionListSignal): string | null {
   switch (signal) {
     case "failed":
-      return "The agent stopped with an error";
+      return "Review agent error";
     case "ready":
-      return "New result ready to review";
+      return "Reply needed";
     case "working":
       return "Agent is working";
     case "idle":
