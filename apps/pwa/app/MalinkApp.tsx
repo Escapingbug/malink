@@ -285,8 +285,10 @@ import { deriveGatewayLiveness } from "./gatewayLiveness";
 import { ConnectionPathIndicator } from "./ConnectionPathIndicator";
 import { deriveConnectionPathPresentation } from "./connectionPathPresentation";
 import {
+  GATEWAY_FOREGROUND_PROBE_INTERVAL_MS,
   GATEWAY_LIVE_STATUS_TIMEOUT_MS,
   GATEWAY_ONLINE_PROOF_WINDOW_MS,
+  gatewayForegroundProbeDue,
   gatewayNodeLivenessAfterProbeTimeout,
   gatewayNodeLivenessPresentation,
   gatewayNodeLivenessTargets,
@@ -3664,10 +3666,88 @@ function MalinkAppRuntime() {
 
   useEffect(() => {
     if (gatewayNodeProbeTargets.length === 0) return;
+    let timer: number | null = null;
     const refreshClock = () => setGatewayLivenessNow(Date.now());
-    const timer = window.setInterval(refreshClock, 30_000);
-    return () => window.clearInterval(timer);
+    const reconcile = () => {
+      if (timer !== null) {
+        window.clearInterval(timer);
+        timer = null;
+      }
+      if (document.visibilityState !== "visible") return;
+      refreshClock();
+      timer = window.setInterval(refreshClock, 30_000);
+    };
+    reconcile();
+    document.addEventListener("visibilitychange", reconcile);
+    return () => {
+      if (timer !== null) window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", reconcile);
+    };
   }, [gatewayNodeProbeTargets.length]);
+
+  useEffect(() => {
+    connectionStatusRef.current = connectionStatus;
+  }, [connectionStatus]);
+
+  useEffect(() => {
+    const probeTargets = gatewayNodeProbeTargets.filter((target) =>
+      target.canProbe && target.targetProjectId
+    );
+    if (probeTargets.length === 0) return;
+    let timer: number | null = null;
+    const clearTimer = () => {
+      if (timer === null) return;
+      window.clearInterval(timer);
+      timer = null;
+    };
+    const tick = () => {
+      const visible = document.visibilityState === "visible";
+      const networkOnline = navigator.onLine;
+      const matrixConnected = connectionStatus === "connected";
+      if (!visible || !networkOnline || !matrixConnected) {
+        clearTimer();
+        return;
+      }
+      const now = Date.now();
+      for (const target of probeTargets) {
+        const current = gatewayNodeLivenessRef.current[target.gatewayNodeId];
+        if (!gatewayForegroundProbeDue({
+          visible,
+          networkOnline,
+          matrixConnected,
+          inFlight: gatewayNodeProbeFlightsRef.current.has(target.gatewayNodeId),
+          now,
+          ...(current?.lastVerifiedAt === undefined
+            ? {}
+            : { lastVerifiedAt: current.lastVerifiedAt }),
+        })) continue;
+        void probeGatewayNodeLiveness(target);
+      }
+    };
+    const reconcile = () => {
+      clearTimer();
+      if (
+        document.visibilityState !== "visible" ||
+        !navigator.onLine ||
+        connectionStatus !== "connected"
+      ) return;
+      tick();
+      timer = window.setInterval(tick, GATEWAY_FOREGROUND_PROBE_INTERVAL_MS);
+    };
+    reconcile();
+    document.addEventListener("visibilitychange", reconcile);
+    window.addEventListener("online", reconcile);
+    window.addEventListener("offline", reconcile);
+    return () => {
+      clearTimer();
+      document.removeEventListener("visibilitychange", reconcile);
+      window.removeEventListener("online", reconcile);
+      window.removeEventListener("offline", reconcile);
+    };
+    // The probe function intentionally reads the current client and command
+    // refs. Restart only when routes or Matrix connectivity change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionStatus, gatewayNodeProbeTargets]);
 
   useEffect(() => {
     const knownNodeIds = new Set(
@@ -3705,7 +3785,7 @@ function MalinkAppRuntime() {
           checkedAt: verifiedAt,
           lastVerifiedAt: verifiedAt,
           consecutiveNoReplies: 0,
-          detail: "A shared signed Gateway heartbeat was received.",
+          detail: "A signed Gateway status transition was received.",
         };
       });
       setGatewayUpdateNodeRuntime(gatewayNodeId, current => {
@@ -3901,10 +3981,6 @@ function MalinkAppRuntime() {
       setWebPushBusy(false);
     }
   }
-
-  useEffect(() => {
-    connectionStatusRef.current = connectionStatus;
-  }, [connectionStatus]);
 
   useEffect(() => {
     if (isNativeManagedMatrixConfig(matrixConfig)) return;

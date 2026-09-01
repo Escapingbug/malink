@@ -74,6 +74,18 @@ describe('Matrix gateway configuration', () => {
         expect(() => validateMatrixGatewayConfig(valid)).not.toThrow()
     })
 
+    it('requires a positive Workspace control repair cadence', () => {
+        const invalid = fixture()
+        invalid.workspaceControlIntervalMs = 0
+        expect(() => validateMatrixGatewayConfig(invalid)).toThrow(
+            'workspaceControlIntervalMs must be positive',
+        )
+
+        const valid = fixture()
+        valid.workspaceControlIntervalMs = 60_000
+        expect(() => validateMatrixGatewayConfig(valid)).not.toThrow()
+    })
+
     it('bounds the Matrix request retry budget', () => {
         const invalid = fixture()
         invalid.connection.requestRetryBudgetMs = 999

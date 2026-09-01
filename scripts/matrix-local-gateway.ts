@@ -614,9 +614,10 @@ const config: MatrixGatewayConfig = {
         'MALINK_GATEWAY_UPDATE_EXECUTION_TIMEOUT_MS',
         2 * 60 * 60_000,
     ),
-    gatewayHeartbeatIntervalMs: positiveDurationFromEnvironment(
-        'MALINK_MATRIX_GATEWAY_HEARTBEAT_INTERVAL_MS',
+    workspaceControlIntervalMs: positiveDurationFromEnvironment(
+        'MALINK_MATRIX_WORKSPACE_CONTROL_INTERVAL_MS',
         60_000,
+        'MALINK_MATRIX_GATEWAY_HEARTBEAT_INTERVAL_MS',
     ),
 }
 runner = new MatrixMlp3GatewayRunner(config, {
@@ -907,7 +908,7 @@ const workspaceControlTimer = setInterval(() => {
     void synchronizeWorkspaceControl(publishLocalWorkspaceDirectory).catch(error => {
         process.stderr.write(`[workspace-control] synchronization failed: ${formatError(error)}\n`)
     })
-}, config.gatewayHeartbeatIntervalMs ?? 60_000)
+}, config.workspaceControlIntervalMs ?? 60_000)
 const adminServer = await startGatewayAdminServer({
     socketPath: adminSocketPath,
     gatewayId: identity.gatewayId,
@@ -1166,12 +1167,19 @@ function deduplicateTrustedDevices(
     return [...result.values()]
 }
 
-function positiveDurationFromEnvironment(name: string, fallbackMs: number): number {
-    const raw = process.env[name]
+function positiveDurationFromEnvironment(
+    name: string,
+    fallbackMs: number,
+    legacyName?: string,
+): number {
+    const sourceName = process.env[name] === undefined && legacyName && process.env[legacyName] !== undefined
+        ? legacyName
+        : name
+    const raw = process.env[sourceName]
     if (raw === undefined) return fallbackMs
     const value = Number(raw)
     if (!Number.isFinite(value) || value <= 0) {
-        throw new Error(`${name} must be a positive duration in milliseconds`)
+        throw new Error(`${sourceName} must be a positive duration in milliseconds`)
     }
     return value
 }

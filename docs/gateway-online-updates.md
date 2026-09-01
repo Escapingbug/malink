@@ -201,15 +201,13 @@ authorizes only requests—the local pinned signer remains the release authority
 
 Release discovery never starts an update. The PWA presents a node-level update
 notice, and its management panel identifies the exact Gateway name, stable short
-node ID, current build, target build, and update capability. Each Gateway
-publishes one signed, encrypted `gateway.update.status` observation without a
-`causationCommandId` when its supervisor phase changes and at a sparse heartbeat
-interval. Reusing the established event shape keeps older MLP/3 clients able to
-parse the event; the missing causation ID distinguishes shared observation from
-a command reply. Opening the panel only reads that shared projection and sends
-no Matrix command. A recent node observation or newer signed node activity is
-shown as `Online now`. A connected Matrix client or an old cached snapshot is
-not Gateway liveness. The user then confirms one exact node once. The client
+node ID, current build, target build, and update capability. A Gateway publishes
+one signed, encrypted uncaused `gateway.update.status` observation only when its
+supervisor phase changes. Current liveness is checked with the existing signed
+status command while the client is visible and connected; hiding the client or
+losing the network cancels the schedule. Any newer signed node activity defers
+the next check. A connected Matrix client or an old cached snapshot is not
+Gateway liveness. The user then confirms one exact node once. The client
 sends `stage`, creates the visible maintenance Agent session, and sends `apply`
 as soon as the signed staged checkpoint is ready. These remain separate
 compatible wire commands, but they are one user transaction. Multiple nodes are
@@ -222,9 +220,10 @@ updates without a current-client intent are never activated automatically. An
 unused intent expires after 24 hours so old consent cannot activate a later,
 coincidentally matching checkpoint.
 
-The explicit compatibility check has a bounded foreground wait and is used
-only when the user chooses `Check live status` or a legacy Gateway has not yet
-published a node observation. If no signed reply arrives within 30 seconds,
+The liveness check has a bounded foreground wait. It runs immediately when a
+visible client becomes connected and at most once per minute while visible;
+background, offline, and already-recent signed activity suppress it. The user
+may also choose `Check live status`. If no signed reply arrives within 30 seconds,
 the first miss is presented as `Gateway reply delayed`: it is a
 warning that may still be caused by wake-up or Matrix latency, not proof of a
 Gateway fault. A second consecutive miss becomes `Gateway needs attention`,
@@ -240,10 +239,11 @@ command gains this exception: unfinished session, Prompt, cancel, update-stage,
 and update-apply commands remain durable until an authenticated terminal result
 or an existing authoritative retirement rule applies.
 
-If a manual status command lacks a signed result, the UI keeps that exact
-command identity and reconciles it with exponential backoff starting at 60
-seconds, capped at five minutes. Repeated foreground actions do not emit a
-second reconciliation while that command is already in flight or cooling down.
+If a foreground status command lacks a signed result, the UI keeps that exact
+command identity and may reconcile it with exponential backoff starting at 60
+seconds, capped at five minutes. Hiding the client or losing the network stops
+those attempts. Repeated foreground actions do not emit a second reconciliation
+while that command is already in flight or cooling down.
 
 When a signed reply does arrive with `failed`, `rolled_back`, or
 `repair_required`, the panel

@@ -116,15 +116,15 @@ timeline-recovery fallback. Native hosts advertise the optional
 `commands.journal-reconciliation` bridge capability so a newer PWA does not
 claim this recovery path when hosted by an older APK.
 
-The native outbox owns this recovery even when no WebView is attached. It
-resumes published/running journal probes after process restart instead of
-waiting for the PWA to request recovery. A missing terminal remains
-nonterminal; clients MUST NOT synthesize success. They MAY retire a record only
-with a duplicate-execution tombstone and evidence that cannot conceal Matrix
-acceptance: deterministic local envelope failure, an authoritatively removed
-project route, or a matching authoritative session lifecycle that already satisfies the
-idempotent lifecycle request. The latter is state convergence, not proof that
-the retired command caused the state.
+The native outbox resumes queued sends and transport-uncertain sends without a
+WebView. Published/running commands rely on the Matrix SDK timeline unless a
+foreground caller explicitly requests one bounded journal reconciliation; the
+native service MUST NOT loop that probe or scan history on an idle background
+timer. A missing terminal remains nonterminal, and clients MUST NOT synthesize
+success. They MAY retire a record only with a duplicate-execution tombstone and
+evidence that cannot conceal Matrix acceptance: deterministic local envelope
+failure, an authoritatively removed project route, or a matching authoritative
+session lifecycle that already satisfies the idempotent lifecycle request.
 
 `gateway.update.status` is a read-only observation. Clients may reuse one
 unfinished same-project probe for at most two minutes to coalesce overlapping
@@ -282,12 +282,11 @@ Gateway release control uses three workspace commands:
 All three require the `gateway.update` pairing grant. This grant is not an
 arbitrary code-install capability: the remote command contains no URL or key,
 and the local supervisor accepts only manifests signed by its pinned release
-signer. Results use `gateway.update.status` and are also carried in subsequent
-uncaused `gateway.update.status` events so every authorized client converges
-from one shared node publication after the Gateway restart. Reusing the existing
-event type is wire-compatible; the absence of `causationCommandId` identifies
-the shared observation. It is emitted on supervisor phase changes and as a
-sparse heartbeat; clients do not poll it in the background.
+signer. Results use `gateway.update.status`. Supervisor phase changes may also
+produce one uncaused `gateway.update.status` event so active clients converge on
+the semantic update state. An unchanged Gateway emits no heartbeat. Visible,
+network-connected clients use the causation-bearing command reply for current
+liveness and stop probing immediately when hidden or disconnected.
 
 ## Current state and recovery
 
@@ -314,11 +313,11 @@ cursor and closes that gap in a coalesced background worker. The current
 pointer and fully paginated thread directory provide a cache-cold baseline;
 thread relations do not poll for recent state. Process death resumes the
 durable inbox, gap queue, and outbox and never manufactures a replacement
-command. A published command first performs bounded timeline recovery; only if
-no terminal result is found does it issue the exact-content reconciliation
-probe described above. The UI exposes the saved command ID and stage, explains
-whether Matrix or the Gateway is unavailable, and offers explicit check,
-reconnect, and diagnostic actions.
+command. Published commands remain attached to SDK timeline delivery. Only an
+explicit foreground recovery action may issue the exact-content reconciliation
+probe described above and read one bounded compatibility page. The UI exposes
+the saved command ID and stage, explains whether Matrix or the Gateway is
+unavailable, and offers explicit check, reconnect, and diagnostic actions.
 
 Offline clients show their last verified encrypted local projection and
 history. They do not report Connected or release new commands until the Matrix
@@ -438,16 +437,14 @@ Traffic scales with visible business activity:
   Gateway bootstrap control route when that semantic document changes, rather
   than one copy per project room.
 
-There is no per-device fan-out for ordinary conversation output, heartbeat
-state, focus refresh, reconnect RPC, session-directory page rewrite, or manual
-checkpoint publication. One node heartbeat is shared by all clients and uses
-outbox supersession so an undelivered older heartbeat is replaced rather than
-queued behind its successor. Gateway invitation reconciliation reuses membership
+There is no per-device fan-out for ordinary conversation output, background
+liveness, focus refresh, reconnect RPC, session-directory page rewrite, or
+manual checkpoint publication. Gateway invitation reconciliation reuses membership
 from `/sync`; it does not poll every device in every project on a timer.
 Identical signed snapshot pointers and root-signed
 Workspace control documents are durably recognized across process restart; an
-unchanged Gateway restart performs zero semantic snapshot rewrites and then
-publishes one shared node heartbeat. Gateway and client outboxes honor Matrix
+unchanged Gateway restart performs zero semantic snapshot or liveness writes.
+Gateway and client outboxes honor Matrix
 `retry_after` and stable transaction IDs. The Gateway also carries the observed
 account refill interval forward to pace later room writes, so homeserver rate
 limits affect latency rather than forming a repeated-429 feedback loop.

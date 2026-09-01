@@ -319,7 +319,6 @@ export class MatrixMlp3GatewayRunner {
   private publishedClientReleases: NativeClientRelease[] = []
   private readonly runtimeEpoch = randomUUID()
   private readonly providerHistorySnapshots: FileProviderHistorySnapshotStore
-  private gatewayNodeStatusTimer: ReturnType<typeof setTimeout> | null = null
   private gatewayNodeStatusFingerprint: string | null = null
   private gatewayNodeStatusLastPublishedAt = 0
   private gatewayNodeStatusControlRoomId: string | null | undefined
@@ -475,9 +474,6 @@ export class MatrixMlp3GatewayRunner {
         await this.provisionProviderHistoryRooms(project)
       }
       this.state = 'running'
-      this.scheduleGatewayNodeStatusObservation(
-        Math.min(1_000, this.gatewayNodeStatusHeartbeatIntervalMs()),
-      )
       await this.recoverJournal()
       await this.drainInbox()
       await this.eventChain
@@ -1455,41 +1451,17 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private async publishGatewayUpdateStatus(): Promise<void> {
-    await this.publishGatewayNodeStatus(true).catch(error => {
+    await this.publishGatewayNodeStatus().catch(error => {
       this.log(`[mlp3/matrix] Gateway node status publication failed: ${formatError(error)}`)
     })
   }
 
   /**
-   * Observe the local supervisor frequently but publish to Matrix only when
-   * its semantic status changes or one shared heartbeat becomes due. Client
-   * count and project count therefore do not multiply status traffic.
+   * Publish only a semantic supervisor transition. Gateway liveness is checked
+   * by visible clients through the existing signed gateway.update.status
+   * command; an idle Gateway never creates periodic Matrix traffic.
    */
-  private scheduleGatewayNodeStatusObservation(delayMs: number): void {
-    if (this.gatewayNodeStatusTimer !== null) clearTimeout(this.gatewayNodeStatusTimer)
-    if (this.state !== 'running') return
-    this.gatewayNodeStatusTimer = setTimeout(() => {
-      this.gatewayNodeStatusTimer = null
-      const observe = this.eventChain.then(() => this.publishGatewayNodeStatus(false))
-      this.eventChain = observe.then(() => undefined, error => {
-        this.log(`[mlp3/matrix] Gateway node status observation failed: ${formatError(error)}`)
-      })
-      void observe.catch(() => undefined).finally(() => {
-        this.scheduleGatewayNodeStatusObservation(this.gatewayNodeStatusObservationIntervalMs())
-      })
-    }, delayMs)
-    this.gatewayNodeStatusTimer.unref?.()
-  }
-
-  private gatewayNodeStatusHeartbeatIntervalMs(): number {
-    return this.config.gatewayHeartbeatIntervalMs ?? 60_000
-  }
-
-  private gatewayNodeStatusObservationIntervalMs(): number {
-    return Math.min(2_000, Math.max(250, this.gatewayNodeStatusHeartbeatIntervalMs() / 4))
-  }
-
-  private async publishGatewayNodeStatus(force: boolean): Promise<void> {
+  private async publishGatewayNodeStatus(): Promise<void> {
     if (this.state !== 'running') return
     const update = await this.dependencies.gatewayUpdateSupervisor?.status().catch(error => {
       this.log(`[mlp3/matrix] Gateway update status unavailable: ${formatError(error)}`)
@@ -1497,12 +1469,8 @@ export class MatrixMlp3GatewayRunner {
     })
     if (!update) return
     const fingerprint = canonicalJson(update as JsonValue)
+    if (fingerprint === this.gatewayNodeStatusFingerprint) return
     const now = this.now()
-    if (
-      !force
-      && fingerprint === this.gatewayNodeStatusFingerprint
-      && now - this.gatewayNodeStatusLastPublishedAt < this.gatewayNodeStatusHeartbeatIntervalMs()
-    ) return
     const project = await this.gatewayNodeStatusProject()
     if (!project) return
     const observedAt = Math.max(now, this.gatewayNodeStatusLastPublishedAt + 1)
@@ -1518,9 +1486,8 @@ export class MatrixMlp3GatewayRunner {
       projectId: project.project.projectId,
       occurredAt: observedAt,
       payload: {
-        // Reuse the existing compatible event shape. The absence of a
-        // causationCommandId distinguishes this shared observation from a
-        // manual gateway.update.status command result.
+        // The absence of a causationCommandId distinguishes this shared
+        // semantic transition from an on-demand liveness reply.
         type: 'gateway.update.status',
         status: update,
       },
@@ -3866,10 +3833,6 @@ export class MatrixMlp3GatewayRunner {
       } catch (error) {
         this.log(`[mlp3/matrix] model catalog unsubscribe failed: ${formatError(error)}`)
       }
-    }
-    if (this.gatewayNodeStatusTimer !== null) {
-      clearTimeout(this.gatewayNodeStatusTimer)
-      this.gatewayNodeStatusTimer = null
     }
     this.content.stopRetries()
     this.webPush.stop()

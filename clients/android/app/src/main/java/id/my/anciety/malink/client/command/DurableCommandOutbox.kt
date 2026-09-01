@@ -49,8 +49,8 @@ class DurableCommandOutbox internal constructor(
             }
         }
         // Gateway status is a transient, read-only observation. A process
-        // restart has no caller left to consume an unfinished probe, and the
-        // shared signed Gateway projection is the durable status authority.
+        // restart has no caller left to consume an unfinished probe, and a
+        // new visible client will request a fresh observation if needed.
         // Retire only these probes instead of surfacing them as user actions;
         // mutation commands keep their exact recovery identity above.
         val statusProbes = recoveredCommands.filter { command ->

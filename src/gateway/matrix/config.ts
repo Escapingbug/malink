@@ -99,8 +99,8 @@ export interface MatrixGatewayConfig {
     commandExecutionTimeoutMs?: number
     /** Independent deadline for one Agent-driven Gateway update; defaults to two hours. */
     gatewayUpdateExecutionTimeoutMs?: number
-    /** Publishes one shared signed node heartbeat; defaults to 60 seconds. */
-    gatewayHeartbeatIntervalMs?: number
+    /** Periodic repair cadence for root-signed Workspace control state. */
+    workspaceControlIntervalMs?: number
     webPush?: {
         /** Contact URI included in VAPID JWTs. Defaults to Malink's notification address. */
         subject?: string
@@ -246,13 +246,13 @@ export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
         throw new Error('gatewayUpdateExecutionTimeoutMs must be between 1000 and 86400000')
     }
     if (
-        config.gatewayHeartbeatIntervalMs !== undefined
+        config.workspaceControlIntervalMs !== undefined
         && (
-            !Number.isFinite(config.gatewayHeartbeatIntervalMs)
-            || config.gatewayHeartbeatIntervalMs <= 0
+            !Number.isFinite(config.workspaceControlIntervalMs)
+            || config.workspaceControlIntervalMs <= 0
         )
     ) {
-        throw new Error('gatewayHeartbeatIntervalMs must be positive')
+        throw new Error('workspaceControlIntervalMs must be positive')
     }
     if (config.webPush?.statePath !== undefined) {
         requireText(config.webPush.statePath, 'webPush.statePath')

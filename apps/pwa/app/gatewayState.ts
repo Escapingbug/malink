@@ -112,7 +112,7 @@ export type GatewayStateSnapshot = {
   revisionEpoch: string;
   revisionEpochGeneration: number;
   activeDeviceCount: number;
-  /** Signed Gateway heartbeat time. Missing only in a legacy local cache. */
+  /** Latest signed Gateway projection time. Missing only in a legacy local cache. */
   updatedAt?: number;
   currentSessionId: string | null;
   sessions: GatewaySessionSummary[];
@@ -124,7 +124,7 @@ export type GatewayStateSnapshot = {
   nativeClientReleases?: NativeClientRelease[];
   gatewayDirectory?: import('@malink/protocol').SignedWorkspaceGatewayDirectory;
   pendingGatewayEnrollments?: import('@malink/protocol').GatewayEnrollmentPending[];
-  /** Latest shared signed heartbeat/update observation for each Gateway node. */
+  /** Latest shared signed semantic update observation for each Gateway node. */
   gatewayNodeStatuses?: Record<string, GatewayNodeStatusObservation>;
   gatewayUpdate?: GatewayUpdateStatus;
 };

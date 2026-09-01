@@ -1184,15 +1184,12 @@ describe('MatrixMlp3GatewayRunner', () => {
         projectId,
         roomId,
     })
-    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
-      .some(event => event.payload.type === 'gateway.update.status'
-        && event.causationCommandId === undefined))
-    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 1_100))
+    const idleEvents = await events(client, activeKey.key, roomId, projectId)
+    expect(idleEvents.some(event =>
       event.payload.type === 'gateway.update.status'
-        && event.causationCommandId === undefined
-    )?.payload).toMatchObject({
-      status: { currentBuildId: 'build-1' },
-    })
+      && event.causationCommandId === undefined
+    )).toBe(false)
 
     await expect(runner.publishNativeClientRelease(nativeRelease(42))).resolves.toMatchObject({
       changed: true,
@@ -1393,6 +1390,10 @@ describe('MatrixMlp3GatewayRunner', () => {
       && event.sessionId?.startsWith('gateway-update-')
     )).toBe(true)
     expect(gatewayUpdateCalls).toContain('stage:release-2')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === undefined
+        && event.payload.type === 'gateway.update.status'
+        && event.payload.status.phase === 'staged'))
     expect(gatewayUpdateCalls).toContain('instruction:release-2')
     expect(gatewayUpdateCalls).toContain(
       `begin:release-2:${gatewayMaintenanceSessionId('gateway-node-1', 'release-2')}`,
