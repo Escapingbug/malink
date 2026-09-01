@@ -75,7 +75,9 @@ export function nativeCapabilityVersions(
   // APK can return an actionable update requirement instead of failing hello.
   if (name === "commands.durable") return [4, 3, 2, 1];
   if (name === "history.page") return [2, 1];
-  if (name === "matrix.session-bootstrap") return [2, 1];
+  // v3 removes arbitrary Matrix password bootstrap. Old native versions remain
+  // usable because the new PWA only sends the token form they already support.
+  if (name === "matrix.session-bootstrap") return [3, 2, 1];
   return [1];
 }
 
@@ -131,10 +133,10 @@ export function hasCurrentNativeCapability(
   name: (typeof REQUIRED_NATIVE_CAPABILITIES)[number],
 ): boolean {
   if (name === "matrix.session-bootstrap") {
-    // v2 adds origin-independent session discovery. v1 remains sufficient for
-    // an already configured Web origin during a staged PWA/APK rollout.
+    // v2 adds origin-independent session discovery; v3 makes bootstrap
+    // one-time-token-only. v1/v2 remain client-side rollout fallbacks.
     const version = hello.capabilities[name]?.version;
-    return version === 1 || version === 2;
+    return version === 1 || version === 2 || version === 3;
   }
   return hello.capabilities[name]?.version ===
     (name === "commands.durable"

@@ -68,6 +68,7 @@ import {
   MatrixSettings,
   nativeUpdateStatusText,
   OFFICIAL_ANDROID_RELEASES_URL,
+  type ClientMatrixAccountUpgradeNotice,
 } from "./MatrixSettings";
 import { ConnectionOnboarding } from "./ConnectionOnboarding";
 import { MalinkMark } from "./MalinkMark";
@@ -465,7 +466,6 @@ import {
   type PairingPreview,
 } from "./pairing";
 import {
-  loginWithMatrixPassword,
   loginWithMatrixToken,
 } from "./matrixAuth";
 import {
@@ -1627,6 +1627,24 @@ function MalinkAppRuntime() {
     useState<GatewayStateSnapshot | null>(initialGatewayUi.gatewayState);
   const gatewayStateRef = useRef<GatewayStateSnapshot | null>(gatewayState);
   gatewayStateRef.current = gatewayState;
+  const clientMatrixAccountUpgrade = useMemo<ClientMatrixAccountUpgradeNotice | null>(() => {
+    const targetUserId =
+      gatewayState?.gatewayDirectory?.directory.clientMatrixUserId?.trim() ?? "";
+    const currentUserId = matrixConfig.userId.trim();
+    if (!targetUserId || !currentUserId || targetUserId === currentUserId) return null;
+    return { currentUserId, targetUserId, mode: "notice-only" };
+  }, [gatewayState?.gatewayDirectory, matrixConfig.userId]);
+  const promptedClientMatrixUpgradeRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!clientMatrixAccountUpgrade) return;
+    const key = [
+      clientMatrixAccountUpgrade.currentUserId,
+      clientMatrixAccountUpgrade.targetUserId,
+    ].join("\u0000");
+    if (promptedClientMatrixUpgradeRef.current === key) return;
+    promptedClientMatrixUpgradeRef.current = key;
+    setSettingsOpen(true);
+  }, [clientMatrixAccountUpgrade]);
   const [workspaceProjectRecoveryState, setWorkspaceProjectRecoveryState] =
     useState<WorkspaceProjectRecovery | null>(() =>
       initialGatewayUi.gatewayState
@@ -6601,7 +6619,7 @@ function MalinkAppRuntime() {
       if (!matrixLogin) return;
       if (matrixLogin.expiresAt <= Date.now()) {
         setConnectionError(
-          "The one-time sign-in expired. Sign in below; the invitation may still be valid.",
+          "The one-time sign-in expired. Request a new device invitation.",
         );
         return;
       }
@@ -6637,56 +6655,12 @@ function MalinkAppRuntime() {
       } catch (error) {
         settleNativeBootstrapTransfer("error");
         setConnectionError(
-          `The one-time sign-in could not be used: ${formatUiError(error)} Sign in below to continue.`,
+          `The one-time sign-in could not be used: ${formatUiError(error)} Request a new device invitation.`,
         );
       }
     } catch (error) {
       setConnectionError(formatUiError(error));
       setSettingsOpen(true);
-    }
-  }
-
-  async function signInForPairing(userId: string, password: string) {
-    if (pairingBusy) return;
-    setPairingBusy(true);
-    setPairingError(null);
-    try {
-      detachClientForNativeBootstrap();
-      const preview = pairingPreview;
-      const nativeBootstrap = preview
-        ? await bootstrapNativeMatrixSessionIfAvailable({
-            homeserver: matrixConfig.homeserver,
-            password,
-            expectedUserId: userId,
-            deviceName: browserDeviceName(),
-            roomBinding: nativeMatrixRoomBindingFromPairingPreview(preview),
-          })
-        : null;
-      const credentials = nativeBootstrap
-        ? {
-            homeserver: nativeBootstrap.session.homeserver,
-            userId: nativeBootstrap.session.userId,
-            matrixDeviceId: nativeBootstrap.session.matrixDeviceId,
-            accessToken: NATIVE_MANAGED_ACCESS_TOKEN,
-          }
-        : await loginWithMatrixPassword(
-            matrixConfig.homeserver,
-            userId,
-            password,
-            browserDeviceName(),
-          );
-      const next = { ...matrixConfig, ...credentials };
-      setMatrixConfig(next);
-      saveMatrixConfig(next);
-      // Native bootstrap is opportunistic. A regular browser deliberately
-      // falls back to the Web Matrix client, so the temporary transfer state
-      // must be settled for both outcomes before pairing can be confirmed.
-      settleNativeBootstrapTransfer("offline");
-    } catch (error) {
-      settleNativeBootstrapTransfer("error");
-      setConnectionError(formatUiError(error));
-    } finally {
-      setPairingBusy(false);
     }
   }
 
@@ -6804,19 +6778,20 @@ function MalinkAppRuntime() {
             setInvitationReauthRequired(true);
             throw new InvitationReauthenticationRequiredError();
           }
+          if (tokenResult.status !== "ready") {
+            throw new Error(
+              "This Matrix server could not create the required one-time device sign-in. No incomplete invitation was shared.",
+            );
+          }
           const fullInvitation = createDeviceInvitationLink({
             pairingLink: gatewayInvitation.pairingLink,
             appUrl: window.location.href,
-            ...(tokenResult.status === "ready"
-              ? {
-                  matrixLogin: {
-                    homeserver: matrixConfig.homeserver,
-                    userId: matrixConfig.userId,
-                    loginToken: tokenResult.loginToken,
-                    expiresAt: tokenResult.expiresAt,
-                  },
-                }
-              : {}),
+            matrixLogin: {
+              homeserver: matrixConfig.homeserver,
+              userId: matrixConfig.userId,
+              loginToken: tokenResult.loginToken,
+              expiresAt: tokenResult.expiresAt,
+            },
           });
           if (fullInvitation.expiresAt <= Date.now() + 15_000) {
             await connection.releaseCommand(gatewayInvitation.commandId);
@@ -13653,6 +13628,7 @@ function MalinkAppRuntime() {
         trustedGateway={trustedGateway}
         savedGateways={savedGateways}
         gatewayDirectory={gatewayState?.gatewayDirectory ?? null}
+        clientMatrixAccountUpgrade={clientMatrixAccountUpgrade}
         pairingBusy={pairingBusy}
         deviceInvitation={deviceInvitation}
         invitationBusy={invitationBusy}
@@ -13693,9 +13669,6 @@ function MalinkAppRuntime() {
         onClose={() => setSettingsOpen(false)}
         onDisconnect={() => disconnectClient()}
         onForget={() => setForgetDialogOpen(true)}
-        onPasswordLogin={(userId, password) =>
-          void signInForPairing(userId, password)
-        }
         onCreateInvitation={(password) =>
           void createDeviceInvitation(password)
         }

@@ -187,7 +187,7 @@ describe("native bridge JSON-RPC conformance", () => {
     ).toThrow(/does not match/);
   });
 
-  it("bootstraps a public Matrix session with exactly one memory-only credential", () => {
+  it("bootstraps a public Matrix session only with a one-time login token", () => {
     const roomBinding = {
       roomId: "!room:matrix.example",
       gatewayId: "gateway-1",
@@ -258,28 +258,17 @@ describe("native bridge JSON-RPC conformance", () => {
       })),
     ).toThrow(/Matrix room id/);
 
-    const passwordFallback = parseRpcRequest(request("malink.client.bootstrap", {
-      context,
-      idempotencyKey: "550e8400-e29b-41d4-a716-446655440002",
-      homeserver: "https://matrix.example",
-      password: "memory-only-password",
-      expectedUserId: "@device:matrix.example",
-      deviceName: "Pixel 10",
-      roomBinding,
-    }));
-    expect(passwordFallback.method).toBe("malink.client.bootstrap");
     expect(() =>
       parseRpcRequest(request("malink.client.bootstrap", {
         context,
-        idempotencyKey: "550e8400-e29b-41d4-a716-446655440003",
+        idempotencyKey: "550e8400-e29b-41d4-a716-446655440002",
         homeserver: "https://matrix.example",
-        oneTimeLoginToken: "one-time-login-token",
-        password: "must-not-be-accepted-together",
+        password: "must-not-be-accepted",
         expectedUserId: "@device:matrix.example",
         deviceName: "Pixel 10",
         roomBinding,
       })),
-    ).toThrow(/exactly one Matrix bootstrap credential/);
+    ).toThrow(/unknown field: password/);
   });
 
   it("issues a bounded one-time Matrix token for a completed invitation", () => {

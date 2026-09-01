@@ -92,10 +92,13 @@ The original `invite-gateway` bearer command remains an offline recovery tool.
 Its output contains the Workspace private identity and must never be posted to
 Matrix, a public URL, logs, or chat.
 
-Gateway nodes currently use the same Workspace-owned Matrix user account with
-distinct Matrix device IDs. This lets a newly joined node publish the signed
-directory into existing private project rooms immediately; client Matrix users
-remain separate and are invited from their portable Workspace grants.
+Gateway nodes use one Workspace-owned Gateway Matrix user with distinct Matrix
+device IDs. All PWA and Android client devices use a second, fixed
+Workspace-owned client Matrix user, again with one Matrix device ID per physical
+client. Gateway and client users must be distinct. This lets read receipts and
+future account-data state converge naturally across the owner's client devices
+without making Matrix an RPC database; Malink authorization still comes only
+from signed application certificates and grants.
 On first startup or `invite-gateway`, active certificates created before
 portable grants existed are migrated in place with identical operations and
 expiry, so existing clients do not need to pair again.

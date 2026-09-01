@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import {
   MatrixRateLimitError,
-  loginWithMatrixPassword,
   loginWithMatrixToken,
   requestMatrixLoginToken,
 } from "../app/matrixAuth.ts";
@@ -60,7 +59,7 @@ test("reauthenticates the current session before creating a one-time login token
   });
 });
 
-test("reports unsupported get_token so the PWA can offer normal Matrix login", async () => {
+test("reports unsupported get_token so the PWA can require a new invitation", async () => {
   globalThis.fetch = async () =>
     jsonResponse({ errcode: "M_UNRECOGNIZED" }, 404);
 
@@ -96,7 +95,7 @@ test("preserves the Matrix retry delay instead of exposing a raw 429 message", a
   assert.equal(error.message, "Matrix is temporarily limiting new-device sign-ins.");
 });
 
-test("creates independent Matrix device sessions from token or password login", async () => {
+test("creates an independent Matrix device session from a one-time token", async () => {
   const bodies: Array<Record<string, unknown>> = [];
   globalThis.fetch = async (_input, init) => {
     bodies.push(JSON.parse(String(init?.body)));
@@ -113,22 +112,14 @@ test("creates independent Matrix device sessions from token or password login", 
     "@alice:example",
     "Malink phone",
   );
-  const passwordLogin = await loginWithMatrixPassword(
-    "https://matrix.example",
-    "@alice:example",
-    "matrix-password",
-    "Malink laptop",
-  );
-
   assert.equal(bodies[0]?.type, "m.login.token");
-  assert.equal(bodies[1]?.type, "m.login.password");
   assert.deepEqual(tokenLogin, {
     homeserver: "https://matrix.example",
     userId: "@alice:example",
     accessToken: "device-access-token-1",
     matrixDeviceId: "PWA_1",
   });
-  assert.equal(passwordLogin.matrixDeviceId, "PWA_2");
+  assert.equal(bodies.length, 1);
 });
 
 function jsonResponse(body: unknown, status = 200): Response {

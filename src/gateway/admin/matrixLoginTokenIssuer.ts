@@ -23,25 +23,18 @@ export class FileMatrixLoginTokenIssuer implements MatrixLoginTokenIssuer {
     this.fetchImpl = options.fetch ?? globalThis.fetch
   }
 
+  /** Returns the fixed Matrix user without exposing its access token. */
+  async userId(): Promise<string | undefined> {
+    return (await this.readCredentials())?.userId
+  }
+
   async issue(input: {
     homeserver: string
     offerExpiresAt: number
   }): Promise<MatrixLoginTokenIssueResult> {
-    let parsed: MatrixLoginFile
-    try {
-      parsed = JSON.parse(
-        await readFile(this.options.credentialsPath, 'utf8'),
-      ) as MatrixLoginFile
-    } catch (error) {
-      if (isNodeError(error, 'ENOENT')) return { status: 'unavailable' }
-      throw new Error('Could not read the Matrix login credential file', {
-        cause: error,
-      })
-    }
-    const accessToken =
-      typeof parsed.access_token === 'string' ? parsed.access_token.trim() : ''
-    const userId = typeof parsed.user_id === 'string' ? parsed.user_id.trim() : ''
-    if (!accessToken || !userId) return { status: 'unavailable' }
+    const credentials = await this.readCredentials()
+    if (!credentials) return { status: 'unavailable' }
+    const { accessToken, userId } = credentials
 
     const homeserver = new URL(input.homeserver).origin
     let response = await this.fetchImpl(
@@ -115,6 +108,28 @@ export class FileMatrixLoginTokenIssuer implements MatrixLoginTokenIssuer {
     const detail =
       typeof body?.error === 'string' ? `: ${body.error}` : ''
     throw new Error(`Matrix could not create a one-time login token${detail}`)
+  }
+
+  private async readCredentials(): Promise<{
+    accessToken: string
+    userId: string
+  } | undefined> {
+    let parsed: MatrixLoginFile
+    try {
+      parsed = JSON.parse(
+        await readFile(this.options.credentialsPath, 'utf8'),
+      ) as MatrixLoginFile
+    } catch (error) {
+      if (isNodeError(error, 'ENOENT')) return undefined
+      throw new Error('Could not read the Matrix login credential file', {
+        cause: error,
+      })
+    }
+    const accessToken =
+      typeof parsed.access_token === 'string' ? parsed.access_token.trim() : ''
+    const userId = typeof parsed.user_id === 'string' ? parsed.user_id.trim() : ''
+    if (!accessToken || !userId) return undefined
+    return { accessToken, userId }
   }
 }
 

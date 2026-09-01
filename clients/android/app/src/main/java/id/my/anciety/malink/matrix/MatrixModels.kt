@@ -18,11 +18,10 @@ data class MatrixRoomBinding(
 /** The login token is intentionally memory-only and must never be logged or persisted. */
 class MatrixBootstrap(
     val homeserver: String,
-    val oneTimeLoginToken: String? = null,
+    val oneTimeLoginToken: String,
     val expectedUserId: String,
     val deviceName: String,
     val roomBinding: MatrixRoomBinding,
-    val password: String? = null,
 ) {
     override fun toString(): String =
         "MatrixBootstrap(homeserver=$homeserver, credential=<redacted>, " +
@@ -194,14 +193,8 @@ object MatrixIdentifiers {
 
     fun validateBootstrap(input: MatrixBootstrap): MatrixBootstrap = input.also {
         normalizeHomeserver(it.homeserver)
-        require((it.oneTimeLoginToken == null) xor (it.password == null)) {
-            "Exactly one Matrix bootstrap credential is required."
-        }
-        require(it.oneTimeLoginToken == null || it.oneTimeLoginToken.length in 1..4_096) {
+        require(it.oneTimeLoginToken.length in 1..4_096) {
             "oneTimeLoginToken is invalid."
-        }
-        require(it.password == null || it.password.length in 1..4_096) {
-            "password is invalid."
         }
         requireUserId(it.expectedUserId, "expectedUserId")
         require(it.deviceName.length in 1..256) { "deviceName is invalid." }

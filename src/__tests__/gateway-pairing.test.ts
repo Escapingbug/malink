@@ -119,6 +119,41 @@ describe('Gateway pairing', () => {
     ).resolves.toMatchObject({ requestId: request.signedRequest.request.requestId })
   })
 
+  it('rejects a newly paired device on any Matrix account except the Workspace client account', async () => {
+    const fixture = await pairingFixture({
+      clientMatrixUserId: '@workspace-client:localhost',
+    })
+    const { signedOffer } = await fixture.service.createOffer({
+      gatewayName: 'Development Gateway',
+      gatewayTransport: gatewayTransport(),
+      now,
+    })
+    const request = await createSignedPairingRequest({
+      signedOffer,
+      deviceId: 'legacy-phone',
+      deviceName: 'Legacy phone',
+      deviceKeys: await generateDeviceKeyPair(),
+      deviceTransport: deviceTransport(),
+      now: now + 1_000,
+    })
+
+    const error = await fixture.service.receiveRequest(
+      request.signedRequest,
+      now + 2_000,
+    ).catch(reason => reason)
+    expect(error).toMatchObject({
+      message: 'New Malink devices must use the Workspace client Matrix account',
+    })
+    await expect(fixture.registry.listActive(now + 2_000)).resolves.toEqual([])
+    await expect(fixture.service.createRejectionForVerifiedRequest(
+      request.signedRequest,
+      error,
+      now + 2_001,
+    )).resolves.toMatchObject({
+      rejection: { code: 'gateway_rejected', retryable: false },
+    })
+  })
+
   it('migrates a legacy certificate to the same portable Workspace authority', async () => {
     const fixture = await pairingFixture()
     const { signedOffer } = await fixture.service.createOffer({
@@ -527,7 +562,7 @@ describe('Gateway pairing', () => {
   })
 })
 
-async function pairingFixture() {
+async function pairingFixture(options: { clientMatrixUserId?: string } = {}) {
   const directory = await temporaryDirectory()
   const identity = await new FileGatewayIdentityStore(
     join(directory, 'identity.json'),
@@ -538,6 +573,7 @@ async function pairingFixture() {
     identity,
     registry,
     new PairingOfferGuard(new FileReplayStore(join(directory, 'offers-replay.json'))),
+    options,
   )
   return { directory, identity, registry, registryPath, service }
 }

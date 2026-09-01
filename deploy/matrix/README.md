@@ -9,6 +9,8 @@ a short-lived COSE/CWT token signed by a Gateway-pinned Malink control root.
 chmod +x bootstrap.sh
 sudo ./bootstrap.sh
 docker compose -f compose.server.yml up -d
+chmod +x provision-workspace-accounts.sh
+sudo ./provision-workspace-accounts.sh
 ```
 
 Place `Caddyfile.fragment` inside the existing HTTPS site block before its
@@ -22,14 +24,19 @@ chmod +x install-caddy-route.sh
 sudo ./install-caddy-route.sh
 ```
 
-Create initial accounts from the server only:
+The provisioning step creates two intentionally distinct accounts:
 
-```sh
-docker compose -f compose.server.yml exec synapse \
-  register_new_matrix_user --exists-ok --no-admin -u malink \
-  --password-file /run/secrets/malink_account_password \
-  -c /data/homeserver.yaml http://localhost:8008
-```
+- `malink_gateway` is shared only by Gateway nodes, with one Matrix device per
+  Gateway.
+- `malink_client` is shared by all PWA and Android clients, with one Matrix
+  device per physical client.
+
+It also writes the owner-only `secrets/client-login.json` session used solely
+to request short-lived login tokens for authorized device invitations. The
+script prints the exact Gateway environment variables; no client password or
+long-lived access token belongs in the PWA, Android app, invitation link, or QR.
+Rerunning the script preserves the existing issuer session unless
+`MALINK_MATRIX_FORCE_CLIENT_SESSION=1` is explicitly set.
 
 ## One-time device login
 
@@ -48,9 +55,10 @@ docker compose -f compose.server.yml up -d synapse
 ```
 
 An authenticated `GET /_matrix/client/v3/capabilities` response should then
-report `m.get_login_token.enabled: true`. If a different homeserver cannot
-provide this capability, Malink still creates a Gateway pairing invitation
-and asks the receiving device to sign in to Matrix with its account password.
+report `m.get_login_token.enabled: true`. This capability is required for new
+Malink client devices. Malink no longer falls back to an arbitrary Matrix
+username/password login; if token issuance is unavailable, invitation creation
+fails without changing the receiving device.
 
 Public registration remains disabled. Back up `data/`, `secrets/`, and the
 PostgreSQL volume. Never commit generated secrets.

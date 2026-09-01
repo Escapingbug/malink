@@ -708,6 +708,13 @@ async function handleGatewayCommand(
         console.log(`Gateway node ID: ${status.gatewayNodeId}`)
         console.log(`PID: ${status.pid}`)
         console.log(`Active devices: ${status.activeDeviceCount}`)
+        if (status.clientMatrixUserId) {
+            console.log(`Client Matrix account: ${status.clientMatrixUserId}`)
+            console.log(
+                `Legacy client devices: ${status.legacyClientDeviceCount ?? 0} `
+                + `(${status.clientMatrixIdentityStatus ?? 'unknown'})`,
+            )
+        }
         console.log(`Open invitations: ${status.openInvitationCount}`)
         console.log(`Admin socket: ${socketPath}`)
         return
@@ -889,7 +896,7 @@ function parsePermissionMode(
 function parseMatrixLoginMode(
     value: unknown,
 ): 'required' | 'preferred' | 'disabled' {
-    const mode = stringOption(value) ?? 'preferred'
+    const mode = stringOption(value) ?? 'required'
     if (mode !== 'required' && mode !== 'preferred' && mode !== 'disabled') {
         throw new Error('--matrix-login must be required, preferred, or disabled')
     }

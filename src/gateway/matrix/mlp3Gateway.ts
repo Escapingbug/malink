@@ -2101,6 +2101,15 @@ export class MatrixMlp3GatewayRunner {
     if (trustedDevices && !requestingDevice) {
       throw new Error(`Device ${command.deviceId} is no longer authorized`)
     }
+    if (
+      this.config.clientMatrixUserId
+      && requestingDevice
+      && requestingDevice.matrixUserId !== this.config.clientMatrixUserId
+    ) {
+      throw new Error(
+        'This legacy Matrix account cannot invite new devices; use a device on the Workspace client account',
+      )
+    }
     const invitation = await this.dependencies.createDeviceInvitation({
       requestedByDeviceId: command.deviceId,
       commandId: command.commandId,
