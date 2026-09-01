@@ -86,6 +86,8 @@ export interface MatrixGatewayConfig {
     gatewayId: string
     /** Stable identity of this exact Gateway computer inside the Workspace. */
     gatewayNodeId: string
+    /** Fixed Workspace-owned Matrix user for every client device. */
+    clientMatrixUserId?: string
     connection: MatrixGatewayConnectionConfig
     crypto: MatrixGatewayCryptoConfig
     rooms: MatrixGatewayRoomConfig[]
@@ -110,6 +112,9 @@ export interface MatrixGatewayConfig {
 export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
     requireText(config.gatewayId, 'gatewayId')
     requireText(config.gatewayNodeId, 'gatewayNodeId')
+    if (config.clientMatrixUserId !== undefined) {
+        requireMatrixUserId(config.clientMatrixUserId, 'clientMatrixUserId')
+    }
     requireText(config.connection.baseUrl, 'connection.baseUrl')
     requireText(config.connection.accessToken, 'connection.accessToken')
     requireText(config.connection.userId, 'connection.userId')
@@ -263,6 +268,13 @@ export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
 function requireText(value: unknown, name: string): asserts value is string {
     if (typeof value !== 'string' || !value.trim()) {
         throw new Error(`${name} must not be empty`)
+    }
+}
+
+function requireMatrixUserId(value: string, name: string): void {
+    requireText(value, name)
+    if (!/^@[^:\s]+:[^\s]+$/u.test(value)) {
+        throw new Error(`${name} must be a full Matrix user ID`)
     }
 }
 

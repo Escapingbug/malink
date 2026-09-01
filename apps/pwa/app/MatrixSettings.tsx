@@ -51,6 +51,12 @@ import { GatewayNoReplyHelp } from "./GatewayNoReplyHelp";
 export const OFFICIAL_ANDROID_RELEASES_URL =
   "https://github.com/Escapingbug/malink/releases";
 
+export type ClientMatrixAccountUpgradeNotice = {
+  currentUserId: string;
+  targetUserId: string;
+  mode: "notice-only";
+};
+
 type Props = {
   open: boolean;
   config: MatrixConnectionConfig;
@@ -62,6 +68,7 @@ type Props = {
   trustedGateway: MalinkPublicTrust | null;
   savedGateways: MalinkPublicTrust[];
   gatewayDirectory: SignedWorkspaceGatewayDirectory | null;
+  clientMatrixAccountUpgrade: ClientMatrixAccountUpgradeNotice | null;
   pairingBusy: boolean;
   deviceInvitation: GeneratedDeviceInvitation | null;
   invitationBusy: boolean;
@@ -97,7 +104,6 @@ type Props = {
   onClose(): void;
   onDisconnect(): void;
   onForget(): void;
-  onPasswordLogin(userId: string, password: string): void;
   onCreateInvitation(password?: string): void;
   onClearInvitation(): void;
   onCreateGatewayEnrollment(): void;
@@ -138,6 +144,7 @@ function MatrixSettingsDialog({
   trustedGateway,
   savedGateways,
   gatewayDirectory,
+  clientMatrixAccountUpgrade,
   repairReason,
   pairingBusy,
   deviceInvitation,
@@ -174,7 +181,6 @@ function MatrixSettingsDialog({
   onClose,
   onDisconnect,
   onForget,
-  onPasswordLogin,
   onCreateInvitation,
   onClearInvitation,
   onCreateGatewayEnrollment,
@@ -199,7 +205,6 @@ function MatrixSettingsDialog({
     useState<ConnectionRepairReason | null>(null);
   const effectiveRepairReason = repairReason ?? manualRepairReason;
   const repairRequired = effectiveRepairReason !== null;
-  const [loginPassword, setLoginPassword] = useState("");
   const [addingGateway, setAddingGateway] = useState(false);
   const [editingGatewayNodeId, setEditingGatewayNodeId] = useState<string | null>(null);
   const [gatewayNameDraft, setGatewayNameDraft] = useState("");
@@ -300,7 +305,6 @@ function MatrixSettingsDialog({
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const requestClose = () => {
     if (actionBusy) return;
-    setLoginPassword("");
     onClose();
   };
 
@@ -663,6 +667,31 @@ function MatrixSettingsDialog({
           </section>
         )}
 
+        {clientMatrixAccountUpgrade && (
+          <section className="connection-recovery-panel" role="alert">
+            <div>
+              <span className="connection-recovery-mark" aria-hidden="true">!</span>
+              <span>
+                <strong>Matrix account upgrade available</strong>
+                <p>
+                  This device still uses the legacy account {clientMatrixAccountUpgrade.currentUserId}.
+                  It can continue working while Malink prepares a safe move to the Workspace account.
+                </p>
+                <small>
+                  Target account: {clientMatrixAccountUpgrade.targetUserId}. No account,
+                  authorization, queued command, or local history has been changed.
+                </small>
+              </span>
+            </div>
+            <div className="connection-recovery-actions">
+              <button type="button" disabled>
+                Upgrade after migration review
+              </button>
+              <button type="button" onClick={onClose}>Later</button>
+            </div>
+          </section>
+        )}
+
         {addingGateway && (
           <GatewayEnrollmentPanel
             invitation={gatewayEnrollmentInvitation}
@@ -741,72 +770,16 @@ function MatrixSettingsDialog({
                 />
               </label>
               {needsAccount && !config.accessToken && (
-                <>
-                  <label className="wide-field">
-                    <span>Account ID</span>
-                    <input
-                      value={config.userId}
-                      placeholder="@you:example.org"
-                      autoComplete="username"
-                      spellCheck={false}
-                      onChange={(event) =>
-                        onChange({ ...config, userId: event.target.value })
-                      }
-                    />
-                  </label>
-                  <label className="wide-field">
-                    <span>Account password</span>
-                    <input
-                      type="password"
-                      value={loginPassword}
-                      placeholder="Your account password"
-                      autoComplete="current-password"
-                      onChange={(event) => setLoginPassword(event.target.value)}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="matrix-password-login-button wide-field"
-                    disabled={
-                      busy || !config.userId.trim() || !loginPassword
-                    }
-                    onClick={() => {
-                      onPasswordLogin(config.userId, loginPassword);
-                      setLoginPassword("");
-                    }}
-                  >
-                    {pairingBusy ? "Signing in…" : "Sign in"}
-                  </button>
-                  <p className="matrix-session-hint wide-field">
-                    This signs in only this Malink device. You will never be
-                    asked to copy a private access token.
-                  </p>
-                </>
+                <p className="matrix-session-hint wide-field" role="alert">
+                  This invitation does not contain a valid one-time device sign-in.
+                  Request a new invitation from an approved Malink device or Gateway.
+                </p>
               )}
               {config.accessToken && (
                 <p className="matrix-session-hint wide-field">
                   Signed in as {config.userId || "your account"} on this device.
                 </p>
               )}
-              <details className="advanced-token-field wide-field">
-                <summary>Advanced: use an access token</summary>
-                <label>
-                  <span>Access token</span>
-                  <input
-                    type="password"
-                    value={config.accessToken}
-                    placeholder="syt_••••••••••••"
-                    autoComplete="off"
-                    spellCheck={false}
-                    onChange={(event) =>
-                      onChange({
-                        ...config,
-                        accessToken: event.target.value,
-                      })
-                    }
-                  />
-                </label>
-              </details>
               <label>
                 <span>Conversation channel</span>
                 <input value={config.roomId} readOnly placeholder="From QR code" />

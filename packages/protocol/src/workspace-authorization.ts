@@ -7,6 +7,7 @@ import {
 } from './pairing.js'
 
 const opaqueId = z.string().min(1).max(512)
+const matrixUserId = z.string().min(4).max(512).regex(/^@[^:\s]+:[^\s]+$/u)
 const timestamp = z.number().int().nonnegative()
 
 export const workspaceDeviceGrantSchema = z.object({
@@ -70,6 +71,8 @@ export const workspaceGatewayDirectorySchema = z.object({
   version: z.literal(1),
   directoryId: opaqueId,
   workspaceId: opaqueId,
+  /** One Workspace-owned Matrix user shared by every client device. */
+  clientMatrixUserId: matrixUserId.optional(),
   revision: z.number().int().nonnegative(),
   gateways: z.array(workspaceGatewayDescriptorSchema).max(256),
   removedGatewayNodeIds: z.array(opaqueId).max(256).optional(),

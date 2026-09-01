@@ -145,6 +145,79 @@ describe('MatrixMlp3GatewayRunner', () => {
     await runner.stop()
   })
 
+  it('keeps legacy devices authorized but prevents them from inviting more legacy devices', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-legacy-invite-'))
+    const gatewayKeys = await generateDeviceKeyPair()
+    const phoneKeys = await generateDeviceKeyPair()
+    const roomId = '!legacy-invite:example.org'
+    const legacyDevice: MatrixGatewayTrustedDevice = {
+      deviceId: 'legacy-phone',
+      publicKey: phoneKeys.publicJwk,
+      allowedRoomIds: [roomId],
+      allowedOperations: ['device.invite'],
+      matrixUserId: '@legacy-client:example.org',
+      matrixDeviceId: 'LEGACY',
+      matrixDeviceKeys: ['legacy-matrix-key'],
+      certificateExpiresAt: Date.now() + 60_000,
+      sequenceEpoch: 'legacy-certificate',
+    }
+    let invitationsCreated = 0
+    const runner = new MatrixMlp3GatewayRunner({
+      gatewayId: 'workspace-legacy-invite',
+      gatewayNodeId: 'gateway-node-legacy-invite',
+      clientMatrixUserId: '@workspace-client:example.org',
+      connection: {
+        baseUrl: 'https://matrix.example.org',
+        accessToken: 'gateway-token',
+        userId: '@gateway:example.org',
+        deviceId: 'GATEWAY',
+      },
+      crypto: {
+        backend: 'memory',
+        databasePrefix: 'legacy-invite-test',
+        allowInMemoryForTesting: true,
+      },
+      rooms: [{
+        roomId,
+        conversationId: roomId,
+        cwd: '/legacy-invite-repo',
+        providerName: 'test',
+      }],
+      trustedDevices: [legacyDevice],
+      replayLedgerPath: join(directory, 'replay'),
+      applicationSecurity: {
+        gatewayDeviceId: 'workspace-legacy-invite',
+        gatewayKeyPair: await exportDeviceKeyPair(gatewayKeys),
+        envelopeReplayLedgerPath: join(directory, 'security'),
+      },
+    }, {
+      client: new TestMatrixClient(),
+      listTrustedDevices: async () => [legacyDevice],
+      createDeviceInvitation: async () => {
+        invitationsCreated += 1
+        return { pairingLink: 'malink-pair:v1:unused', expiresAt: Date.now() + 60_000 }
+      },
+    })
+    const command = {
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'legacy-invite-command',
+      workspaceId: 'workspace-legacy-invite',
+      deviceId: legacyDevice.deviceId,
+      certificateId: legacyDevice.sequenceEpoch,
+      createdAt: Date.now(),
+      operation: 'device.invitation.create',
+      payload: { operation: 'device.invitation.create' },
+    } satisfies Mlp3Command
+    const invitationRunner = runner as unknown as {
+      createInvitation(project: unknown, command: Mlp3Command): Promise<void>
+    }
+
+    await expect(invitationRunner.createInvitation({}, command))
+      .rejects.toThrow(/legacy Matrix account cannot invite new devices/)
+    expect(invitationsCreated).toBe(0)
+  })
+
   it('establishes authoritative pointers for the first device before using the pairing fast path', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-v3-first-pair-'))
     const gatewayKeys = await generateDeviceKeyPair()
@@ -512,10 +585,20 @@ describe('MatrixMlp3GatewayRunner', () => {
         capabilities: { models: Array<{ id: string }> }
       }> = []
       await waitFor(async () => {
-        const state = JSON.parse(await readFile(
-          `${config.replayLedgerPath}.v3-runtime-state.json`,
-          'utf8',
-        )) as { projects: Record<string, typeof projects[number]> }
+        let state: { projects: Record<string, typeof projects[number]> }
+        try {
+          state = JSON.parse(await readFile(
+            `${config.replayLedgerPath}.v3-runtime-state.json`,
+            'utf8',
+          )) as typeof state
+        } catch (error) {
+          if (
+            error instanceof Error
+            && 'code' in error
+            && (error as NodeJS.ErrnoException).code === 'ENOENT'
+          ) return false
+          throw error
+        }
         projects = Object.values(state.projects)
         return projects.length === 2
           && projects.every(project => project.capabilities.models[0]?.id === 'model-ready')

@@ -24,6 +24,33 @@ const transport = {
 }
 
 describe('Workspace Gateway join', () => {
+  it('establishes one immutable client Matrix identity in the signed directory', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-workspace-client-account-'))
+    const identity = await new FileGatewayIdentityStore(join(directory, 'identity.json'))
+      .loadOrCreate('workspace-1', 1_800_000_000_000)
+    const firstDirectory = new FileWorkspaceGatewayDirectory(
+      join(directory, 'first-directory.json'), identity,
+    )
+
+    await firstDirectory.setClientMatrixUserId('@workspace-client:example.org')
+    await firstDirectory.setClientMatrixUserId('@workspace-client:example.org')
+    const signed = await firstDirectory.publishLocal(
+      'Gateway A', transport, 1_800_000_000_001,
+    )
+
+    expect(signed.directory.clientMatrixUserId)
+      .toBe('@workspace-client:example.org')
+    await expect(firstDirectory.setClientMatrixUserId('@other:example.org'))
+      .rejects.toThrow(/already/)
+
+    const secondDirectory = new FileWorkspaceGatewayDirectory(
+      join(directory, 'second-directory.json'), identity,
+    )
+    const merged = await secondDirectory.merge(signed)
+    expect(merged.directory.clientMatrixUserId)
+      .toBe('@workspace-client:example.org')
+  })
+
   it('shares one Workspace authority while assigning a distinct node identity', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-workspace-join-'))
     const first = await new FileGatewayIdentityStore(join(directory, 'first.json'))

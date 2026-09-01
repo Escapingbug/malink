@@ -212,18 +212,8 @@ class MatrixTokenLoginClient(
         val homeserver = MatrixIdentifiers.normalizeHomeserver(bootstrap.homeserver)
         val endpoint = URI("$homeserver/_matrix/client/v3/login")
         val requestBytes = buildJsonObject {
-            val token = bootstrap.oneTimeLoginToken
-            if (token != null) {
-                put("type", "m.login.token")
-                put("token", token)
-            } else {
-                put("type", "m.login.password")
-                put("identifier", buildJsonObject {
-                    put("type", "m.id.user")
-                    put("user", bootstrap.expectedUserId)
-                })
-                put("password", requireNotNull(bootstrap.password))
-            }
+            put("type", "m.login.token")
+            put("token", bootstrap.oneTimeLoginToken)
             put("initial_device_display_name", bootstrap.deviceName)
         }.toString().toByteArray(Charsets.UTF_8)
         val response = try {

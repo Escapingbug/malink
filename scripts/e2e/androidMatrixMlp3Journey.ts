@@ -35,8 +35,6 @@ export type AndroidMatrixMlp3JourneyOptions = {
     matrixPort: number
     pairingLink: string
     gatewayName: string
-    matrixUserId: string
-    matrixPassword: string
     browserPage: Page
     existingSessionId: string
     providerResponse: string
@@ -321,21 +319,7 @@ export async function runAndroidMatrixMlp3Journey(
             const state = await android!.state()
             assertHealthy(state)
             return state.bodyText.includes(`Connect to ${options.gatewayName}`)
-                || await android!.hasInput('@you:example.org')
         }, 'native pairing preview', CONNECT_TIMEOUT_MS)
-        const preview = await android.state()
-        if (!preview.bodyText.includes(`Connect to ${options.gatewayName}`)) {
-            await android.fillInput('@you:example.org', options.matrixUserId)
-            await android.fillInput('Your account password', options.matrixPassword)
-            await android.clickButton('Sign in')
-            await waitFor(
-                async () => (await android!.state()).bodyText.includes(
-                    `Connect to ${options.gatewayName}`,
-                ),
-                'native Matrix sign-in before pairing',
-                CONNECT_TIMEOUT_MS,
-            )
-        }
         await android.clickButton(`Connect to ${options.gatewayName}`)
         await tapNativePairingConfirmation(options.serial, options.gatewayName)
         await waitFor(async () => {

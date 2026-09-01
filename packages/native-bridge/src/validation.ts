@@ -1478,23 +1478,12 @@ function parseMethodParams(method: RequestMethod, input: unknown): JsonObject {
       const params = mutationParams(input, [
         "homeserver",
         "oneTimeLoginToken",
-        "password",
         "expectedUserId",
         "deviceName",
         "roomBinding",
       ]);
       httpsHomeserver(params.homeserver, "homeserver");
-      const hasToken = params.oneTimeLoginToken !== undefined;
-      const hasPassword = params.password !== undefined;
-      if (hasToken === hasPassword) {
-        invalidParams("exactly one Matrix bootstrap credential is required");
-      }
-      if (hasToken) {
-        requiredString(params.oneTimeLoginToken, "oneTimeLoginToken", 4_096);
-      }
-      if (hasPassword) {
-        requiredString(params.password, "password", 4_096);
-      }
+      requiredString(params.oneTimeLoginToken, "oneTimeLoginToken", 4_096);
       matrixUserId(params.expectedUserId, "expectedUserId");
       requiredString(params.deviceName, "deviceName", 256);
       parseMatrixRoomBinding(params.roomBinding, "roomBinding");

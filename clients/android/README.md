@@ -126,8 +126,9 @@ Bridge protocol version 1 currently implements:
 - `attachments.chunked`
 - `pairing.native`
 - `trust.native`
-- `matrix.session-bootstrap` v2 (v2 adds credential-free discovery of an
-  existing native-owned Matrix session for a newly loaded Web origin)
+- `matrix.session-bootstrap` v3 (v2 added credential-free discovery of an
+  existing native-owned Matrix session; v3 removes arbitrary password
+  bootstrap and accepts only a one-time login token from a device invitation)
 - `client.update` v1 (`status`/`install`, plus the additive idempotent
   `check` operation; Web clients fall back when a pre-extension v1 APK returns
   `METHOD_NOT_FOUND`)

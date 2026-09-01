@@ -148,6 +148,9 @@ The local Matrix host recognizes:
 - `MALINK_GATEWAY_ADMIN_SOCKET` to override the socket path;
 - `MALINK_PWA_LOGIN_FILE` to locate owner-only PWA Matrix credentials used
   solely for `get_login_token`;
+- `MALINK_MATRIX_CLIENT_PASSWORD` or `MALINK_MATRIX_CLIENT_PASSWORD_FILE` for
+  local UIAA reauthentication of that same fixed client account when the
+  homeserver requires it;
 - `MALINK_PWA_URL` as the CLI default invitation destination.
 
 For example:
@@ -155,7 +158,7 @@ For example:
 ```sh
 malink gateway invite \
   --app-url https://pwa.example/ \
-  --matrix-login preferred \
+  --matrix-login required \
   --qr png \
   --output malink-invitation.png
 ```

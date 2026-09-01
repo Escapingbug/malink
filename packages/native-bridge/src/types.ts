@@ -630,21 +630,12 @@ export type BridgeMethodParams = {
   "malink.client.session": ContextParams;
   "malink.client.bootstrap": IdempotentMutationParams & {
     homeserver: string;
+    /** Single-use secret: never log it or persist it in an idempotency record. */
+    oneTimeLoginToken: string;
     expectedUserId: string;
     deviceName: string;
     roomBinding: MatrixRoomBinding;
-  } & (
-    | {
-        /** Single-use secret: never log it or persist it in an idempotency record. */
-        oneTimeLoginToken: string;
-        password?: never;
-      }
-    | {
-        /** Fallback login secret: memory-only and never included in diagnostics. */
-        password: string;
-        oneTimeLoginToken?: never;
-      }
-  );
+  };
   "malink.matrix.loginToken": IdempotentMutationParams & {
     /** Successful device.invite command whose lifetime bounds this token. */
     invitationId: string;

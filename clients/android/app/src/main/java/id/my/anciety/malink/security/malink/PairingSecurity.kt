@@ -2,6 +2,7 @@ package id.my.anciety.malink.security.malink
 
 import java.security.interfaces.ECPublicKey
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -147,6 +148,25 @@ object PairingSecurity {
         )
         assertWindow(response.issuedAt, response.expiresAt, now, maxFutureSkewMs, RESPONSE_LIFETIME_MS)
         verifyCertificate(response.certificate, offer, request, pinnedGatewayKey, now, maxFutureSkewMs)
+        response.gatewayDirectory?.let { signedDirectory ->
+            val directory = MatrixMlp3Protocol.verifyWorkspaceGatewayDirectory(
+                signedDirectory,
+                pinnedGatewayKey,
+                response.gatewayId,
+            )
+            val clientMatrixUserId = (directory["clientMatrixUserId"] as? JsonPrimitive)
+                ?.takeIf(JsonPrimitive::isString)
+                ?.content
+            if (
+                clientMatrixUserId != null &&
+                clientMatrixUserId != response.certificate.certificate.deviceTransport.userId
+            ) {
+                fail(
+                    SecurityErrorCode.BINDING_MISMATCH,
+                    "Pairing certificate does not use the Workspace client Matrix account.",
+                )
+            }
+        }
         return response
     }
 

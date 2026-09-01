@@ -100,6 +100,14 @@ export interface PairingGrantPolicy {
   certificateLifetimeMs?: number
 }
 
+export interface GatewayPairingServiceOptions {
+  /**
+   * The one Workspace-owned Matrix user permitted for newly paired clients.
+   * Existing certificates are intentionally left active for rolling migration.
+   */
+  clientMatrixUserId?: string
+}
+
 export class GatewayPairingService {
   private workspaceDirectoryProvider?: () => Promise<SignedWorkspaceGatewayDirectory | undefined>
 
@@ -107,7 +115,12 @@ export class GatewayPairingService {
     private readonly identity: GatewayPairingIdentity,
     private readonly registry: FileTrustedDeviceRegistry,
     private readonly offerGuard: PairingOfferGuard,
-  ) {}
+    private readonly options: GatewayPairingServiceOptions = {},
+  ) {
+    if (options.clientMatrixUserId !== undefined) {
+      requireMatrixUserId(options.clientMatrixUserId, 'clientMatrixUserId')
+    }
+  }
 
   setWorkspaceDirectoryProvider(
     provider: () => Promise<SignedWorkspaceGatewayDirectory | undefined>,
@@ -238,6 +251,14 @@ export class GatewayPairingService {
       throw new Error('Pairing request is not awaiting approval')
     }
     const request = pending.request
+    if (
+      this.options.clientMatrixUserId !== undefined
+      && request.request.deviceTransport.userId !== this.options.clientMatrixUserId
+    ) {
+      throw new Error(
+        'New Malink devices must use the Workspace client Matrix account',
+      )
+    }
     const offer = await this.registry.getOfferForAudit(request.request.offerId)
     if (!offer) throw new Error('Pairing offer record is missing')
     const allowedOperations = constrainedOperations(
@@ -450,7 +471,9 @@ function pairingRejectionDetails(error: unknown): {
       retryable: false,
     }
   }
-  if (/denied|rejected|no longer active/iu.test(message)) {
+  if (
+    /denied|rejected|no longer active|Workspace client Matrix account/iu.test(message)
+  ) {
     return {
       code: 'gateway_rejected',
       message: 'The Gateway rejected this pairing request. Scan a new invitation.',
@@ -536,4 +559,12 @@ function unique<T extends string>(values: T[]): T[] {
 function requireText(value: string, label: string, max = 256): string {
   if (!value.trim() || value.length > max) throw new TypeError(`${label} is invalid`)
   return value
+}
+
+function requireMatrixUserId(value: string, label: string): string {
+  const normalized = requireText(value, label, 512)
+  if (!/^@[^:\s]+:[^\s]+$/u.test(normalized)) {
+    throw new TypeError(`${label} is not a valid Matrix user ID`)
+  }
+  return normalized
 }

@@ -108,25 +108,6 @@ export async function loginWithMatrixToken(
   );
 }
 
-export async function loginWithMatrixPassword(
-  homeserverInput: string,
-  userId: string,
-  password: string,
-  deviceName: string,
-): Promise<MatrixLoginCredentials> {
-  const normalizedUserId = requireText(userId, "Matrix ID");
-  return login(
-    homeserverInput,
-    {
-      type: PASSWORD_LOGIN_TYPE,
-      identifier: { type: "m.id.user", user: normalizedUserId },
-      password: requireText(password, "Matrix password"),
-      initial_device_display_name: requireText(deviceName, "Device name"),
-    },
-    normalizedUserId,
-  );
-}
-
 async function login(
   homeserverInput: string,
   body: Record<string, unknown>,

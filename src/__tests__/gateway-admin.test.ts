@@ -154,6 +154,7 @@ describe('Gateway local admin', () => {
       socketPath,
       gatewayId: fixture.identity.gatewayId,
       gatewayNodeId: fixture.identity.gatewayNodeId,
+      clientMatrixUserId: '@workspace-client:example',
       getGatewayName: () => gatewayName,
       renameGateway,
       coordinator,
@@ -179,6 +180,9 @@ describe('Gateway local admin', () => {
       gatewayName: 'Mac Gateway',
       state: 'running',
       activeDeviceCount: 0,
+      clientMatrixUserId: '@workspace-client:example',
+      legacyClientDeviceCount: 0,
+      clientMatrixIdentityStatus: 'converged',
       openInvitationCount: 0,
     })
     await expect(client.preflightFilesystem({
@@ -395,6 +399,7 @@ describe('Gateway local admin', () => {
       socketPath,
       gatewayId: fixture.identity.gatewayId,
       gatewayNodeId: fixture.identity.gatewayNodeId,
+      clientMatrixUserId: '@workspace-client:example',
       getGatewayName: () => 'Mac Gateway',
       coordinator: new DeviceInvitationCoordinator(
         fixture.service,
@@ -413,6 +418,13 @@ describe('Gateway local admin', () => {
     })
     servers.push(server)
     const client = new GatewayAdminClient({ socketPath })
+
+    await expect(client.status()).resolves.toMatchObject({
+      activeDeviceCount: 1,
+      clientMatrixUserId: '@workspace-client:example',
+      legacyClientDeviceCount: 1,
+      clientMatrixIdentityStatus: 'migration-required',
+    })
 
     await expect(client.revokeDevice('phone-one', {
       reason: 'lost device',
@@ -502,6 +514,8 @@ describe('Gateway local admin', () => {
       fetch,
       now: () => now,
     })
+
+    await expect(issuer.userId()).resolves.toBe('@pwa:example')
 
     await expect(issuer.issue({
       homeserver: 'https://matrix.example/path',

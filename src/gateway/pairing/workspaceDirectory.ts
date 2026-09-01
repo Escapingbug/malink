@@ -19,6 +19,7 @@ import type { GatewayPairingIdentity } from './identityStore.js'
 interface WorkspaceDirectoryState {
   version: 1
   workspaceId: string
+  clientMatrixUserId?: string
   revision: number
   gateways: Record<string, WorkspaceGatewayDescriptor>
   removedGatewayNodeIds?: string[]
@@ -34,6 +35,32 @@ export class FileWorkspaceGatewayDirectory {
     options: FileStoreOptions = {},
   ) {
     this.file = new AtomicJsonFile(path, options)
+  }
+
+  /**
+   * Establishes the client Matrix identity once. Changing it is a migration,
+   * never an incidental consequence of replacing a local credential file.
+   */
+  async setClientMatrixUserId(userId: string): Promise<void> {
+    const normalized = requireMatrixUserId(userId)
+    await this.file.transaction(
+      () => initialState(this.identity.workspaceId),
+      state => {
+        validateState(state, this.identity.workspaceId)
+        if (state.clientMatrixUserId === normalized) {
+          return { result: undefined, changed: false }
+        }
+        if (state.clientMatrixUserId) {
+          throw new Error(
+            `Workspace client Matrix identity is already ${state.clientMatrixUserId}`,
+          )
+        }
+        state.clientMatrixUserId = normalized
+        state.revision += 1
+        state.signed = undefined
+        return { result: undefined, changed: true }
+      },
+    )
   }
 
   async publishLocal(
@@ -100,6 +127,14 @@ export class FileWorkspaceGatewayDirectory {
         if (signed.directory.revision < state.revision) {
           throw new Error('Workspace Gateway directory revision rolled back')
         }
+        if (
+          state.clientMatrixUserId
+          && signed.directory.clientMatrixUserId !== state.clientMatrixUserId
+        ) {
+          throw new Error('Workspace client Matrix identity cannot change or be removed')
+        }
+        const clientMatrixUserId =
+          state.clientMatrixUserId ?? signed.directory.clientMatrixUserId
         const removed = new Set([
           ...(state.removedGatewayNodeIds ?? []),
           ...(signed.directory.removedGatewayNodeIds ?? []),
@@ -127,11 +162,13 @@ export class FileWorkspaceGatewayDirectory {
           a.gatewayNodeId.localeCompare(b.gatewayNodeId))
         const incomingMatchesCurrent =
           canonicalJson(currentGateways) === canonicalJson(incomingGateways) &&
+          state.clientMatrixUserId === signed.directory.clientMatrixUserId &&
           JSON.stringify([...(state.removedGatewayNodeIds ?? [])].sort()) === JSON.stringify(
             [...(signed.directory.removedGatewayNodeIds ?? [])].sort(),
           )
         const incomingContainsUnion =
           canonicalJson(mergedGateways) === canonicalJson(incomingGateways) &&
+          clientMatrixUserId === signed.directory.clientMatrixUserId &&
           JSON.stringify([...removed].sort()) === JSON.stringify(
             [...(signed.directory.removedGatewayNodeIds ?? [])].sort(),
           )
@@ -154,6 +191,7 @@ export class FileWorkspaceGatewayDirectory {
           return { result: undefined, changed: true }
         }
         state.gateways = merged
+        state.clientMatrixUserId = clientMatrixUserId
         state.removedGatewayNodeIds = [...removed].sort()
         if (incomingContainsUnion && signed.directory.revision > state.revision) {
           state.revision = signed.directory.revision
@@ -234,6 +272,7 @@ export class FileWorkspaceGatewayDirectory {
           return {
             result: {
               revision: state.revision,
+              clientMatrixUserId: state.clientMatrixUserId,
               gateways: Object.values(state.gateways).sort((a, b) =>
                 a.gatewayNodeId.localeCompare(b.gatewayNodeId)),
               removedGatewayNodeIds: [...(state.removedGatewayNodeIds ?? [])].sort(),
@@ -251,6 +290,9 @@ export class FileWorkspaceGatewayDirectory {
         version: 1,
         directoryId: randomUUID(),
         workspaceId: this.identity.workspaceId,
+        ...(draft.clientMatrixUserId
+          ? { clientMatrixUserId: draft.clientMatrixUserId }
+          : {}),
         revision: draft.revision,
         gateways: draft.gateways,
         ...(draft.removedGatewayNodeIds.length > 0
@@ -306,6 +348,8 @@ function preferredGatewayDescriptor(
 function validateState(state: WorkspaceDirectoryState, workspaceId: string): void {
   if (
     state.version !== 1 || state.workspaceId !== workspaceId ||
+    (state.clientMatrixUserId !== undefined
+      && requireMatrixUserId(state.clientMatrixUserId) !== state.clientMatrixUserId) ||
     !Number.isSafeInteger(state.revision) || state.revision < 0 ||
     !state.gateways || typeof state.gateways !== 'object' ||
     Object.keys(state.gateways).length > 256 ||
@@ -326,6 +370,7 @@ function validateState(state: WorkspaceDirectoryState, workspaceId: string): voi
     const signed = signedWorkspaceGatewayDirectorySchema.parse(state.signed)
     if (
       signed.directory.workspaceId !== workspaceId ||
+      signed.directory.clientMatrixUserId !== state.clientMatrixUserId ||
       signed.directory.revision > state.revision
     ) throw new TypeError('Workspace Gateway signed directory state is invalid')
     if (signed.directory.revision === state.revision) {
@@ -341,4 +386,14 @@ function validateState(state: WorkspaceDirectoryState, workspaceId: string): voi
       ) throw new TypeError('Workspace Gateway signed directory content is inconsistent')
     }
   }
+}
+
+function requireMatrixUserId(value: string): string {
+  const normalized = value.trim()
+  if (
+    normalized !== value
+    || value.length > 512
+    || !/^@[^:\s]+:[^\s]+$/u.test(value)
+  ) throw new TypeError('Workspace client Matrix user ID is invalid')
+  return normalized
 }
