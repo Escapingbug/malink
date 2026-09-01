@@ -561,14 +561,27 @@ function uniqueStrings(values: Array<string | undefined>): string[] {
 }
 
 export function compareChatMessages(
-  left: Pick<ChatMessage, "timestamp" | "id">,
-  right: Pick<ChatMessage, "timestamp" | "id">,
+  left: Pick<ChatMessage, "timestamp" | "id" | "raw">,
+  right: Pick<ChatMessage, "timestamp" | "id" | "raw">,
 ): number {
+  const leftProviderHistoryOrder = providerHistoryOrder(left.raw);
+  const rightProviderHistoryOrder = providerHistoryOrder(right.raw);
+  if (leftProviderHistoryOrder !== undefined || rightProviderHistoryOrder !== undefined) {
+    if (leftProviderHistoryOrder === undefined) return 1;
+    if (rightProviderHistoryOrder === undefined) return -1;
+    const providerOrder = leftProviderHistoryOrder - rightProviderHistoryOrder;
+    if (providerOrder !== 0) return providerOrder;
+  }
   return (
     (left.timestamp ?? Number.MAX_SAFE_INTEGER) -
       (right.timestamp ?? Number.MAX_SAFE_INTEGER) ||
     left.id.localeCompare(right.id)
   );
+}
+
+function providerHistoryOrder(raw: Record<string, unknown> | undefined): number | undefined {
+  const value = raw?.providerHistoryOrder;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function replaceAndReorder(

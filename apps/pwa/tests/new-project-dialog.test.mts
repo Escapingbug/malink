@@ -133,6 +133,7 @@ test("manages project metadata and defaults in one settings surface", () => {
     gatewayLabel: "Office Gateway · alice-macbook",
     fallbackModels: [],
     canDelete: true,
+    hasSessions: false,
     onClose() {},
     onSave() {},
     onDelete() {},

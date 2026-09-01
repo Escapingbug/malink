@@ -452,26 +452,41 @@ internal class AtomicEncryptedMatrixMlp3ProjectKeyStore internal constructor(
     fun value(): MatrixMlp3ProjectKeyGrant? = grants.values.singleOrNull()?.deepCopy()
 
     @Synchronized
-    fun value(projectId: String): MatrixMlp3ProjectKeyGrant? = grants[projectId]?.deepCopy()
+    fun valueForRoom(roomId: String): MatrixMlp3ProjectKeyGrant? = grants[roomId]?.deepCopy()
+
+    @Synchronized
+    fun valueForProject(
+        projectId: String,
+        excludedRoomIds: Set<String> = emptySet(),
+    ): MatrixMlp3ProjectKeyGrant? {
+        val matching = grants.values.filter {
+            it.projectId == projectId && it.roomId !in excludedRoomIds
+        }
+        require(matching.size <= 1) { "The MLP/3 project has more than one primary room key." }
+        return matching.singleOrNull()?.deepCopy()
+    }
 
     @Synchronized
     fun values(): List<MatrixMlp3ProjectKeyGrant> = grants.values.map { it.deepCopy() }
+
+    @Synchronized
+    fun singleProjectId(): String? = grants.values.map { it.projectId }.distinct().singleOrNull()
 
     @Synchronized
     fun isNotEmpty(): Boolean = grants.isNotEmpty()
 
     @Synchronized
     fun save(value: MatrixMlp3ProjectKeyGrant) {
-        grants.remove(value.projectId)?.wipe()
-        grants[value.projectId] = value.deepCopy()
+        grants.remove(value.roomId)?.wipe()
+        grants[value.roomId] = value.deepCopy()
         persist()
     }
 
     @Synchronized
     fun retain(projectIds: Set<String>) {
-        val removed = grants.keys.filter { it !in projectIds }
+        val removed = grants.filterValues { it.projectId !in projectIds }.keys
         if (removed.isEmpty()) return
-        removed.forEach { projectId -> grants.remove(projectId)?.wipe() }
+        removed.forEach { roomId -> grants.remove(roomId)?.wipe() }
         persist()
     }
 
@@ -505,15 +520,15 @@ internal class AtomicEncryptedMatrixMlp3ProjectKeyStore internal constructor(
             val root = Json.parseToJsonElement(plaintext.toString(Charsets.UTF_8)).jsonObject
             if (root["schemaVersion"]?.jsonPrimitive?.longOrNull == 1L) {
                 val grant = decodeGrant(root)
-                mapOf(grant.projectId to grant)
+                mapOf(grant.roomId to grant)
             } else {
                 require(root.keys == setOf("schemaVersion", "grants"))
-                require(root.requiredLong("schemaVersion") == 2L)
+                require(root.requiredLong("schemaVersion") in 2L..3L)
                 val decoded = (root["grants"] as? JsonArray).orEmpty().map { item ->
                     decodeGrant(item.jsonObject)
                 }
-                require(decoded.size <= 256 && decoded.map { it.projectId }.distinct().size == decoded.size)
-                decoded.associateBy(MatrixMlp3ProjectKeyGrant::projectId)
+                require(decoded.size <= 512 && decoded.map { it.roomId }.distinct().size == decoded.size)
+                decoded.associateBy(MatrixMlp3ProjectKeyGrant::roomId)
             }
         } finally {
             plaintext.fill(0)
@@ -523,9 +538,9 @@ internal class AtomicEncryptedMatrixMlp3ProjectKeyStore internal constructor(
     private fun persist() {
         if (grants.isEmpty()) return blob.delete()
         val plaintext = CanonicalJson.bytes(buildJsonObject {
-            put("schemaVersion", 2)
+            put("schemaVersion", 3)
             put("grants", buildJsonArray {
-                grants.values.sortedBy(MatrixMlp3ProjectKeyGrant::projectId)
+                grants.values.sortedBy(MatrixMlp3ProjectKeyGrant::roomId)
                     .forEach { add(encodeGrant(it)) }
             })
         })

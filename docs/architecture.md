@@ -130,7 +130,8 @@ by a currently certified device and accepted by the Gateway journal can do so.
 ```text
 Gateway workspace
   └─ project room <-> projectId <-> fixed Gateway working directory
-       └─ session root <-> m.thread <-> TopicSession
+       └─ active session root <-> m.thread <-> TopicSession
+            └─ optional recovered-history room (non-execution, reverse append)
 ```
 
 Project display names need not be unique, but project IDs and room bindings are.
@@ -153,9 +154,32 @@ their existing cwd-only identity.
 Every active session owns its own `TopicSession`, `SemanticSessionRuntime`, and
 provider instance. Sessions may execute concurrently. Selecting a conversation
 is client-local view state and never suspends another session or mutates a
-Gateway-wide “current session”. Archive releases runtime resources while
-retaining metadata; restore recreates them; delete writes an authenticated
-tombstone but does not claim to erase Matrix or provider-retained history.
+Gateway-wide “current session”. Archive is the destructive Malink-session
+boundary: it releases runtime resources, redacts the project-room thread,
+retires any recovered-history room, and removes the persisted session record.
+It never deletes the fixed project working directory or the provider-owned
+conversation. A later continuation is a new Malink session restored through
+Provider History. During upgrade, non-active records written by the old
+tombstone model are cleanup checkpoints: startup performs the same Matrix
+cleanup and then removes those records. Existing active sessions are unchanged.
+
+Restoring a provider conversation snapshots its transcript once on the Gateway
+and provisions one application-encrypted auxiliary history room for that new
+Malink session. The snapshot itself stays local; it is not fully copied to
+Matrix. When the user asks for older history that is not already present, the
+client sends `provider.history.materialize` through the normal project room.
+The Gateway appends one bounded page to the auxiliary room in reverse source
+order, followed by a signed page-commit event. Stable page/frontier identities
+make retries idempotent, so revisiting an existing page reads Matrix/local cache
+and does not call the provider again. New prompts and Agent output continue in
+the ordinary project-room thread, preserving its normal chronological order.
+
+A project may be deleted only after no Malink-managed session records remain.
+Deletion retires the project room from ordinary clients (membership/aliases,
+leave and forget) and removes the Gateway route, while preserving the working
+directory and provider-owned conversations. Standard Matrix APIs redact room
+content but do not guarantee homeserver database purging; deployments that
+require physical purge must apply their homeserver's administrator policy.
 
 Turn lifecycle is split at durable ownership boundaries. The Gateway command
 journal owns execution-once and the original prompt terminal;

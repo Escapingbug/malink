@@ -16,7 +16,7 @@ export function canonicalSessionCommandResult(
   const matchingState =
     (payload.operation === "session.create" && event.state === "active") ||
     (payload.operation === "session.settings" && event.state !== "deleted") ||
-    (payload.operation === "session.archive" && event.state === "archived") ||
+    (payload.operation === "session.archive" && (event.state === "archived" || event.state === "deleted")) ||
     (payload.operation === "session.restore" && event.state === "active") ||
     (payload.operation === "session.delete" && event.state === "deleted");
   if (!matchingState) return null;
@@ -26,7 +26,10 @@ export function canonicalSessionCommandResult(
   ) return null;
   if (
     projectedLifecycleState !== undefined &&
-    projectedLifecycleState !== event.state
+    !(
+      projectedLifecycleState === event.state ||
+      (event.state === "deleted" && projectedLifecycleState === null)
+    )
   ) return null;
   return event.session_id;
 }

@@ -150,8 +150,107 @@ class MatrixMlp3NativeProjectionTest {
         sessions = projection.snapshot()!!.getValue("sessions").jsonArray
         assertEquals(listOf("Session B"), sessions.map { sessionTitle(it.jsonObject) })
         assertNull(projection.threadRootEventId("session-a"))
-        assertEquals("deleted", projection.sessionLifecycle("session-a"))
+        assertNull(projection.sessionLifecycle("session-a"))
         assertEquals("\$root-b", projection.threadRootEventId("session-b"))
+    }
+
+    @Test
+    fun `provider history room pages retain speaker order and durable frontier`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        val binding = buildJsonObject {
+            put("roomId", "!history:example.org")
+            put("snapshotId", "snapshot-1")
+            put("ordering", "reverse_append_v1")
+        }
+        projection.applyGatewayEvent(
+            sessionReady(
+                "session-a",
+                stateVersion = 1,
+                title = "Recovered",
+                updatedAt = 100,
+                providerHistory = binding,
+            ),
+            "\$root-a",
+            "\$root-a",
+        )
+
+        val committed = projection.applyGatewayEvent(
+            event(
+                eventId = "history-page-0",
+                projectId = "project-1",
+                sessionId = "session-a",
+                payload = buildJsonObject {
+                    put("type", "provider.history.page.committed")
+                    put("snapshotId", "snapshot-1")
+                    put("pageIndex", 0)
+                    put("previousFrontier", 0)
+                    put("frontier", 1)
+                    put("messageCount", 1)
+                    put("hasMore", false)
+                    put("digest", "A".repeat(43))
+                },
+            ),
+            "\$history-page-0",
+            null,
+        )
+        assertTrue(committed.messages.isEmpty())
+        assertEquals(setOf("!history:example.org"), projection.providerHistoryRoomIds())
+        assertFalse(projection.providerHistoryHasMore("session-a"))
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        val secondPart = restored.applyGatewayEvent(
+            event(
+                eventId = "history-message-2-part-1",
+                projectId = "project-1",
+                sessionId = "session-a",
+                payload = buildJsonObject {
+                    put("type", "provider.history.message")
+                    put("snapshotId", "snapshot-1")
+                    put("sourceMessageId", "provider-message-2")
+                    put("sourceOrdinal", 2)
+                    put("role", "assistant")
+                    put("body", "answer")
+                    put("pageIndex", 0)
+                    put("partIndex", 1)
+                    put("partCount", 2)
+                },
+            ),
+            "\$history-message-2-part-1",
+            null,
+        )
+        assertTrue(secondPart.messages.isEmpty())
+
+        val historical = restored.applyGatewayEvent(
+            event(
+                eventId = "history-message-2-part-0",
+                projectId = "project-1",
+                sessionId = "session-a",
+                payload = buildJsonObject {
+                    put("type", "provider.history.message")
+                    put("snapshotId", "snapshot-1")
+                    put("sourceMessageId", "provider-message-2")
+                    put("sourceOrdinal", 2)
+                    put("role", "assistant")
+                    put("body", "Earlier ")
+                    put("pageIndex", 0)
+                    put("partIndex", 0)
+                    put("partCount", 2)
+                },
+            ),
+            "\$history-message-2-part-0",
+            null,
+        ).messages.single()
+        assertEquals("Earlier answer", historical.text)
+        assertEquals(true, historical.historical)
+        assertEquals(ClientMessageKind.AGENT, historical.kind)
+        assertEquals("5", historical.semantic?.get("providerHistoryOrder")?.jsonPrimitive?.content)
+        assertEquals(binding, restored.providerHistory("session-a"))
+        assertFalse(restored.providerHistoryHasMore("session-a"))
     }
 
     @Test
@@ -1122,6 +1221,7 @@ class MatrixMlp3NativeProjectionTest {
         scope: String = "project",
         cwd: String = "/workspace/project",
         projectId: String = "project-1",
+        providerHistory: JsonObject? = null,
     ) = event(
         eventId = "ready-$sessionId-$stateVersion",
         projectId = projectId,
@@ -1135,6 +1235,8 @@ class MatrixMlp3NativeProjectionTest {
                 JsonObject(it + mapOf(
                     "scope" to kotlinx.serialization.json.JsonPrimitive(scope),
                     "cwd" to kotlinx.serialization.json.JsonPrimitive(cwd),
+                ) + if (providerHistory == null) emptyMap() else mapOf(
+                    "providerHistory" to providerHistory,
                 ))
             })
         },
@@ -1202,6 +1304,7 @@ class MatrixMlp3NativeProjectionTest {
         causationCommandId = "delete-$sessionId",
         payload = buildJsonObject {
             put("type", "session.lifecycle")
+            put("state", lifecycle)
             put("projection", sessionProjection(stateVersion, "Newest A", lifecycle, "idle", 600))
         },
     )

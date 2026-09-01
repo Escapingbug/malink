@@ -17,6 +17,11 @@ describe("canonical session command completion", () => {
       "archived",
     )).toBe("session-new");
     expect(canonicalSessionCommandResult(
+      { operation: "session.archive", sessionId: "session-new" },
+      sessionState("deleted"),
+      null,
+    )).toBe("session-new");
+    expect(canonicalSessionCommandResult(
       { operation: "session.restore", sessionId: "session-new" },
       sessionState("active"),
       "active",

@@ -352,6 +352,14 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('provider.history.materialize'),
+      sessionId: opaqueId,
+      expectedFrontier: z.number().int().nonnegative(),
+      limit: z.number().int().min(1).max(100).optional(),
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('session.archive'),
       sessionId: opaqueId,
     })

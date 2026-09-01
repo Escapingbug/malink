@@ -83,10 +83,10 @@ class BridgeProtocolTest {
                         [
                           {"name":"background.foreground-service","versions":[1]},
                           {"name":"trust.native","versions":[1]},
-                          {"name":"commands.durable","versions":[1,2,3,4]},
+                          {"name":"commands.durable","versions":[1,2,3,4,5]},
                           {"name":"commands.journal-reconciliation","versions":[1]},
                           {"name":"commands.orphan-retirement","versions":[1]},
-                          {"name":"history.page","versions":[1,2]},
+                          {"name":"history.page","versions":[1,2,3]},
                           {"name":"client.diagnostics","versions":[1]}
                         ]
                     """.trimIndent(),
@@ -113,12 +113,12 @@ class BridgeProtocolTest {
                 .getValue("version").jsonPrimitive.int,
         )
         assertEquals(
-            4,
+            5,
             capabilities.getValue("commands.durable").jsonObject
                 .getValue("version").jsonPrimitive.int,
         )
         assertEquals(
-            2,
+            3,
             capabilities.getValue("history.page").jsonObject
                 .getValue("version").jsonPrimitive.int,
         )

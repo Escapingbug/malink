@@ -22,7 +22,10 @@ import {
   CommandCompletionTimeoutError,
   type CommandCompletion,
 } from "../../commandLifecycle";
-import { parseGatewayStateExtension } from "../../gatewayState";
+import {
+  parseGatewayStateExtension,
+  type GatewayStateSnapshot,
+} from "../../gatewayState";
 import { parseToolGroupPresentation } from "../../presentation";
 import {
   MatrixRateLimitError,
@@ -71,10 +74,12 @@ export function nativeCapabilityVersions(
   // pagination. commands.durable v2 adds project settings and provider-history
   // operations; v3 adds explicit project routing for simultaneous multi-Gateway
   // management; v4 adds atomic project metadata/default updates and deletion.
+  // v5 adds Provider History materialization; history.page v3 joins its
+  // data-only room and pages reverse-appended provider messages.
   // Request older versions as negotiation fallbacks only so an old
   // APK can return an actionable update requirement instead of failing hello.
-  if (name === "commands.durable") return [4, 3, 2, 1];
-  if (name === "history.page") return [2, 1];
+  if (name === "commands.durable") return [5, 4, 3, 2, 1];
+  if (name === "history.page") return [3, 2, 1];
   if (name === "matrix.session-bootstrap") return [2, 1];
   return [1];
 }
@@ -138,9 +143,9 @@ export function hasCurrentNativeCapability(
   }
   return hello.capabilities[name]?.version ===
     (name === "commands.durable"
-      ? 4
+      ? 5
       : name === "history.page"
-        ? 2
+        ? 3
         : 1);
 }
 
@@ -193,6 +198,8 @@ export class NativeBridgeClient implements MalinkClient {
   readonly #completions = new Map<string, CommandCompletion>();
   readonly #completionWaiters = new Map<string, Set<CompletionWaiter>>();
   readonly #loadedHistoryEventIds = new Map<string, Set<string>>();
+  readonly #providerHistoryFlights = new Map<string, Promise<void>>();
+  #gatewayState: GatewayStateSnapshot | null = null;
   #networkCatchupActive = false;
   #networkCatchupConnected = false;
   #networkCatchupSettleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -534,12 +541,23 @@ export class NativeBridgeClient implements MalinkClient {
     sessionId: string,
     limit = 30,
   ): Promise<MalinkHistoryPage> {
-    return this.#loadHistory(
+    let page = await this.#loadHistory(
       sessionId,
       limit,
       this.#historyBefore.get(sessionId),
       "matrix",
     );
+    if (page.messages.length > 0) return page;
+    const session = this.#gatewayState?.sessions.find(candidate => candidate.id === sessionId);
+    if (!session?.providerHistory?.hasMore) return page;
+    await this.#materializeProviderHistory(sessionId, session.projectId);
+    page = await this.#loadHistory(
+      sessionId,
+      limit,
+      this.#historyBefore.get(sessionId),
+      "matrix",
+    );
+    return page;
   }
 
   async observeCommandCompletion(
@@ -892,6 +910,7 @@ export class NativeBridgeClient implements MalinkClient {
   #applyGatewayState(input: unknown): void {
     const gatewayState = parseGatewayStateExtension(input);
     if (!gatewayState) return;
+    this.#gatewayState = gatewayState;
     this.handlers.onCollaborationState?.({
       activeDeviceCount: gatewayState.activeDeviceCount,
       revision: gatewayState.revision,
@@ -1133,6 +1152,34 @@ export class NativeBridgeClient implements MalinkClient {
       })),
       hasMore: page.hasMore,
     };
+  }
+
+  async #materializeProviderHistory(sessionId: string, projectId: string): Promise<void> {
+    const current = this.#providerHistoryFlights.get(sessionId);
+    if (current) return current;
+    const operation = (async () => {
+      const session = this.#gatewayState?.sessions.find(candidate => candidate.id === sessionId);
+      const history = session?.providerHistory;
+      if (!history?.hasMore) return;
+      const sent = await this.send({
+        operation: "provider.history.materialize",
+        sessionId,
+        expectedFrontier: history.frontier,
+        limit: 30,
+      }, projectId);
+      try {
+        const completion = await sent.completion;
+        if (completion.outcome !== "succeeded") {
+          throw new Error(completion.error?.message ?? "Provider History could not be loaded.");
+        }
+      } finally {
+        await this.releaseCommand(sent.commandId).catch(() => undefined);
+      }
+    })().finally(() => {
+      this.#providerHistoryFlights.delete(sessionId);
+    });
+    this.#providerHistoryFlights.set(sessionId, operation);
+    return operation;
   }
 }
 

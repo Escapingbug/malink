@@ -18,6 +18,7 @@ type Props = {
   gatewayLabel: string;
   fallbackModels: GatewayModelCapability[];
   canDelete: boolean;
+  hasSessions: boolean;
   onClose(): void;
   onSave(input: ProjectSettingsInput): void;
   onDelete(): void;
@@ -35,6 +36,7 @@ function ProjectSettingsDialogContent({
   gatewayLabel,
   fallbackModels,
   canDelete,
+  hasSessions,
   onClose,
   onSave,
   onDelete,
@@ -65,9 +67,11 @@ function ProjectSettingsDialogContent({
 
   const deletionDescription = useMemo(() => (
     canDelete
-      ? "This removes the project and all of its Malink conversations from every connected device."
-      : "A Gateway must retain its bootstrap control project and at least one project route."
-  ), [canDelete]);
+      ? "This removes the project and retires its Matrix room from every connected device."
+      : hasSessions
+        ? "Archive every Malink session in this project before deleting it."
+        : "A Gateway must retain its bootstrap control project and at least one project route."
+  ), [canDelete, hasSessions]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -103,8 +107,8 @@ function ProjectSettingsDialogContent({
           <h2 id="project-delete-title">Delete “{project.projectName}”?</h2>
           <p id="project-delete-description">{deletionDescription}</p>
           <div id="project-delete-boundary" className="delete-boundary-note">
-            The working directory, provider-side conversation copies, and retained Matrix
-            room history are not erased. The Gateway stops accepting new commands for this project.
+            The working directory and provider-side conversation copies are not erased. The
+            Matrix room is removed from its members, then the Gateway leaves and forgets it.
           </div>
           <footer>
             <button
