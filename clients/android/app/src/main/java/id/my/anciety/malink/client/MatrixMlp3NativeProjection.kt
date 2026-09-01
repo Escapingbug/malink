@@ -2210,6 +2210,20 @@ internal class MatrixMlp3NativeProjection(
     }
 }
 
+/**
+ * Validates the semantic projection shape before NativeClientRuntime consumes
+ * the rebuildable cache. The encrypted blob store can only validate that the
+ * payload is JSON; format-level incompatibilities must be handled while the
+ * state upgrade coordinator can still discard and rebuild this cache.
+ */
+internal fun validateMatrixMlp3ProjectionState(value: JsonObject) {
+    MatrixMlp3NativeProjection(
+        gatewayId = { "validation-gateway" },
+        activeDeviceCount = { 1 },
+        initialState = value,
+    )
+}
+
 private fun decodeMlp3ToolGroup(payload: JsonObject): ToolGroupPresentation? {
     val ui = payload["ui"] ?: return null
     return runCatching { PublicClientJson.decodeToolGroup(ui) }.getOrNull()

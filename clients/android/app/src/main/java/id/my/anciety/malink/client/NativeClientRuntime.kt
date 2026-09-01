@@ -256,7 +256,9 @@ class NativeClientRuntime(
     ).also {
         stateUpgrade.recoverRebuildable(
             "matrix-v3-projection",
-            validate = it::validateStoredState,
+            validate = {
+                it.load()?.let(::validateMatrixMlp3ProjectionState)
+            },
             reset = it::clear,
         )
     }

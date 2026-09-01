@@ -38,7 +38,7 @@ class NativeStateUpgradeCoordinatorTest {
             "matrix-v3-raw-inbox" to (NativePersistedStateClass.DURABLE_COMMAND to 1),
             "matrix-v3-task-notifications" to (NativePersistedStateClass.DURABLE_COMMAND to 1),
             "matrix-v3-command-content" to (NativePersistedStateClass.DURABLE_COMMAND to 1),
-            "matrix-v3-projection" to (NativePersistedStateClass.REBUILDABLE_PROJECTION to 4),
+            "matrix-v3-projection" to (NativePersistedStateClass.REBUILDABLE_PROJECTION to 5),
         )
 
         expected.forEach { (id, expectedState) ->

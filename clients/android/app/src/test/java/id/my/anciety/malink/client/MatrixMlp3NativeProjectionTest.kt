@@ -14,10 +14,22 @@ import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MatrixMlp3NativeProjectionTest {
+    @Test
+    fun `semantic validation rejects a structurally valid but incompatible cache`() {
+        val incompatible = buildJsonObject {
+            put("schemaVersion", 14)
+        }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            validateMatrixMlp3ProjectionState(incompatible)
+        }
+    }
+
     @Test
     fun `authoritative Workspace Directory distinguishes active and removed projects`() {
         val projection = projection()

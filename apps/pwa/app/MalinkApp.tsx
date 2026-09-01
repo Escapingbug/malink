@@ -4238,7 +4238,16 @@ function MalinkAppRuntime() {
       // a stored native session at the same time would attach a second Web
       // client before the one-time Matrix bootstrap can acquire the port.
       if (deferStoredStartupForPairing) return;
-      const nativeSession = await resumeNativeMatrixSessionIfAvailable();
+      let nativeSession: Awaited<ReturnType<typeof resumeNativeMatrixSessionIfAvailable>>;
+      try {
+        nativeSession = await resumeNativeMatrixSessionIfAvailable();
+      } catch (error) {
+        setConnectionError(
+          `Android local runtime could not start: ${formatUiError(error)}. ` +
+            "Keep the app data intact, then export native diagnostics from Android app settings.",
+        );
+        return;
+      }
       if (nativeSession) {
         const nativeConfig = nativeMatrixSessionConfig(nativeSession);
         clearPendingPairing();
@@ -4319,7 +4328,7 @@ function MalinkAppRuntime() {
       setSettingsOpen(true);
       await pairingRecoveryRef.current(preview, recoveryConfig);
     })().catch((error) => {
-      setConnectionError(`Saved trust could not be verified: ${formatUiError(error)}`);
+      setConnectionError(`Connection startup failed: ${formatUiError(error)}`);
     });
     // URL fragments and persisted pairing recovery are consumed once at boot.
     // eslint-disable-next-line react-hooks/exhaustive-deps
