@@ -21,6 +21,9 @@ export type Mlp3CommandTerminal = {
   code?: string
   error?: string
   result?: JsonValue
+  /** Reconciliation data retained after the exact Matrix event is delivered and compacted. */
+  reconciledOutcome?: 'cancelled'
+  retryable?: boolean
 }
 
 export type Mlp3CommandJournalRecord = {
@@ -34,6 +37,7 @@ export type Mlp3CommandJournalRecord = {
   terminalAt?: number
   terminal?: Mlp3CommandTerminal
   terminalDeliveryEventId?: string
+  terminalDeliveredAt?: number
 }
 
 type HeaderEntry = {
@@ -90,11 +94,35 @@ export type Mlp3CommandClaim =
   | { kind: 'accepted'; record: Mlp3CommandJournalRecord }
   | { kind: 'duplicate'; record: Mlp3CommandJournalRecord }
 
+export interface Mlp3CommandJournal {
+  initialize(): Promise<void>
+  close(): Promise<void>
+  getGeneration(): string
+  claim(
+    commandInput: Mlp3Command,
+    now?: number,
+    context?: { roomId: string; matrixEventId: string },
+  ): Promise<Mlp3CommandClaim>
+  markDispatched(command: Mlp3Command, now?: number): Promise<void>
+  settle(command: Mlp3Command, terminal: Mlp3CommandTerminal, now?: number): Promise<void>
+  get(command: Mlp3Command): Promise<Mlp3CommandJournalRecord | undefined>
+  unfinished(): Promise<Mlp3CommandJournalRecord[]>
+  pendingTerminalDeliveries(): Promise<Mlp3CommandJournalRecord[]>
+  terminalProjectDeletions(): Promise<Array<Mlp3CommandJournalRecord & {
+    command: Extract<Mlp3Command, { operation: 'project.delete' }>
+  }>>
+  markTerminalDelivered(
+    command: Mlp3Command,
+    matrixEventId: string,
+    now?: number,
+  ): Promise<void>
+}
+
 /**
  * The MLP/3 execution-once boundary. Commands are independent durable objects;
  * there is deliberately no per-device sequence or workspace revision.
  */
-export class FileMlp3CommandJournal {
+export class FileMlp3CommandJournal implements Mlp3CommandJournal {
   private readonly records = new Map<string, Mlp3CommandJournalRecord>()
   private initialized = false
   private generation: string | null = null
@@ -107,6 +135,8 @@ export class FileMlp3CommandJournal {
       if (!this.initialized) await this.load()
     })
   }
+
+  async close(): Promise<void> {}
 
   getGeneration(): string {
     if (!this.initialized || !this.generation) {
@@ -239,17 +269,15 @@ export class FileMlp3CommandJournal {
     })
   }
 
-  terminalByOperation<TOperation extends Mlp3Command['operation']>(
-    operation: TOperation,
-  ): Promise<Array<Mlp3CommandJournalRecord & {
-    command: Extract<Mlp3Command, { operation: TOperation }>
+  terminalProjectDeletions(): Promise<Array<Mlp3CommandJournalRecord & {
+    command: Extract<Mlp3Command, { operation: 'project.delete' }>
   }>> {
     return this.serial(async () => {
       if (!this.initialized) await this.load()
       return [...this.records.values()]
         .filter((record): record is Mlp3CommandJournalRecord & {
-          command: Extract<Mlp3Command, { operation: TOperation }>
-        } => record.status === 'terminal' && record.command.operation === operation)
+          command: Extract<Mlp3Command, { operation: 'project.delete' }>
+        } => record.status === 'terminal' && record.command.operation === 'project.delete')
         .map(record => structuredClone(record))
     })
   }
@@ -280,6 +308,7 @@ export class FileMlp3CommandJournal {
         deliveredAt: now,
       })
       record.terminalDeliveryEventId = matrixEventId
+      record.terminalDeliveredAt = now
     })
   }
 
@@ -314,69 +343,9 @@ export class FileMlp3CommandJournal {
       this.initialized = true
       return
     }
-    let headerCount = 0
-    for (const [index, line] of text.split(/\r?\n/u).entries()) {
-      if (!line.trim()) continue
-      let value: unknown
-      try {
-        value = JSON.parse(line)
-      } catch {
-        throw new Error(`Corrupt MLP/3 command journal at line ${index + 1}`)
-      }
-      const entry = parseMlp3CommandJournalEntry(value, index + 1)
-      if (entry.kind === 'journal') {
-        headerCount += 1
-        if (headerCount > 1) throw new Error('Duplicate MLP/3 command journal header')
-        this.generation = entry.generation
-        continue
-      }
-      if (entry.kind === 'accepted') {
-        if (this.records.has(entry.key)) {
-          throw new Error(`Duplicate MLP/3 command acceptance at line ${index + 1}`)
-        }
-        if (
-          entry.key !== mlp3CommandKey(entry.command)
-          || entry.fingerprint !== mlp3CommandFingerprint(entry.command)
-        ) {
-          throw new Error(`Invalid MLP/3 command acceptance binding at line ${index + 1}`)
-        }
-        this.records.set(entry.key, {
-          command: entry.command,
-          fingerprint: entry.fingerprint,
-          ...(entry.roomId ? { roomId: entry.roomId } : {}),
-          ...(entry.matrixEventId ? { matrixEventId: entry.matrixEventId } : {}),
-          status: 'accepted',
-          acceptedAt: entry.acceptedAt,
-        })
-        continue
-      }
-      const record = this.records.get(entry.key)
-      if (!record || record.fingerprint !== entry.fingerprint) {
-        throw new Error(`Orphaned MLP/3 command transition at line ${index + 1}`)
-      }
-      if (entry.kind === 'dispatched') {
-        if (record.status !== 'accepted') {
-          throw new Error(`Invalid MLP/3 dispatched transition at line ${index + 1}`)
-        }
-        record.status = 'dispatched'
-        record.dispatchedAt = entry.dispatchedAt
-      } else if (entry.kind === 'terminal') {
-        if (record.status === 'terminal') {
-          throw new Error(`Duplicate MLP/3 terminal transition at line ${index + 1}`)
-        }
-        record.status = 'terminal'
-        record.terminalAt = entry.terminalAt
-        record.terminal = structuredClone(entry.terminal)
-      } else {
-        if (record.status !== 'terminal' || record.terminalDeliveryEventId) {
-          throw new Error(`Invalid MLP/3 terminal delivery at line ${index + 1}`)
-        }
-        record.terminalDeliveryEventId = entry.matrixEventId
-      }
-    }
-    if (!this.generation) {
-      throw new Error('MLP/3 command journal is missing its generation header')
-    }
+    const parsed = parseMlp3CommandJournal(text)
+    this.generation = parsed.generation
+    for (const [key, record] of parsed.records) this.records.set(key, record)
     this.initialized = true
   }
 
@@ -390,6 +359,79 @@ export class FileMlp3CommandJournal {
       await handle.close()
     }
   }
+}
+
+export function parseMlp3CommandJournal(text: string): {
+  generation: string
+  records: Map<string, Mlp3CommandJournalRecord>
+} {
+  const records = new Map<string, Mlp3CommandJournalRecord>()
+  let generation: string | null = null
+  let headerCount = 0
+  for (const [index, line] of text.split(/\r?\n/u).entries()) {
+    if (!line.trim()) continue
+    let value: unknown
+    try {
+      value = JSON.parse(line)
+    } catch {
+      throw new Error(`Corrupt MLP/3 command journal at line ${index + 1}`)
+    }
+    const entry = parseMlp3CommandJournalEntry(value, index + 1)
+    if (entry.kind === 'journal') {
+      headerCount += 1
+      if (headerCount > 1) throw new Error('Duplicate MLP/3 command journal header')
+      generation = entry.generation
+      continue
+    }
+    if (entry.kind === 'accepted') {
+      if (records.has(entry.key)) {
+        throw new Error(`Duplicate MLP/3 command acceptance at line ${index + 1}`)
+      }
+      if (
+        entry.key !== mlp3CommandKey(entry.command)
+        || entry.fingerprint !== mlp3CommandFingerprint(entry.command)
+      ) {
+        throw new Error(`Invalid MLP/3 command acceptance binding at line ${index + 1}`)
+      }
+      records.set(entry.key, {
+        command: entry.command,
+        fingerprint: entry.fingerprint,
+        ...(entry.roomId ? { roomId: entry.roomId } : {}),
+        ...(entry.matrixEventId ? { matrixEventId: entry.matrixEventId } : {}),
+        status: 'accepted',
+        acceptedAt: entry.acceptedAt,
+      })
+      continue
+    }
+    const record = records.get(entry.key)
+    if (!record || record.fingerprint !== entry.fingerprint) {
+      throw new Error(`Orphaned MLP/3 command transition at line ${index + 1}`)
+    }
+    if (entry.kind === 'dispatched') {
+      if (record.status !== 'accepted') {
+        throw new Error(`Invalid MLP/3 dispatched transition at line ${index + 1}`)
+      }
+      record.status = 'dispatched'
+      record.dispatchedAt = entry.dispatchedAt
+    } else if (entry.kind === 'terminal') {
+      if (record.status === 'terminal') {
+        throw new Error(`Duplicate MLP/3 terminal transition at line ${index + 1}`)
+      }
+      record.status = 'terminal'
+      record.terminalAt = entry.terminalAt
+      record.terminal = structuredClone(entry.terminal)
+    } else {
+      if (record.status !== 'terminal' || record.terminalDeliveryEventId) {
+        throw new Error(`Invalid MLP/3 terminal delivery at line ${index + 1}`)
+      }
+      record.terminalDeliveryEventId = entry.matrixEventId
+      record.terminalDeliveredAt = entry.deliveredAt
+    }
+  }
+  if (!generation) {
+    throw new Error('MLP/3 command journal is missing its generation header')
+  }
+  return { generation, records }
 }
 
 export function mlp3CommandKey(command: Mlp3Command): string {
@@ -457,7 +499,7 @@ export function parseMlp3CommandJournalEntry(
     return entry as DispatchedEntry
   }
   if (entry.kind === 'terminal') {
-    if (!Number.isSafeInteger(entry.terminalAt) || !isTerminal(entry.terminal)) {
+    if (!Number.isSafeInteger(entry.terminalAt) || !isMlp3CommandTerminal(entry.terminal)) {
       throw new Error(`Invalid MLP/3 command terminal entry at line ${line}`)
     }
     return entry as TerminalEntry
@@ -475,12 +517,17 @@ export function parseMlp3CommandJournalEntry(
   throw new Error(`Unknown MLP/3 command journal entry at line ${line}`)
 }
 
-function isTerminal(value: unknown): value is Mlp3CommandTerminal {
+export function isMlp3CommandTerminal(value: unknown): value is Mlp3CommandTerminal {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const terminal = value as Record<string, unknown>
   return ['succeeded', 'failed', 'rejected', 'interrupted'].includes(String(terminal.outcome))
     && typeof terminal.eventId === 'string'
     && terminal.eventId.length > 0
+    && (terminal.sessionId === undefined || typeof terminal.sessionId === 'string')
+    && (terminal.code === undefined || typeof terminal.code === 'string')
+    && (terminal.error === undefined || typeof terminal.error === 'string')
+    && (terminal.reconciledOutcome === undefined || terminal.reconciledOutcome === 'cancelled')
+    && (terminal.retryable === undefined || typeof terminal.retryable === 'boolean')
     && (
       terminal.event === undefined
       || mlp3EventSchema.safeParse(terminal.event).success

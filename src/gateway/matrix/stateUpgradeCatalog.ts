@@ -38,6 +38,16 @@ export const GATEWAY_STATE_CATALOG: readonly GatewayStateCatalogEntry[] = Object
         migrationFromVersions: new Set<number>(),
     },
     {
+        // Active MLP/3 execution-once authority. Schema 2 transactionally
+        // imports the immutable JSONL v1 source into SQLite. Adding protected
+        // state deliberately makes this a maintenance rollout for old agents:
+        // they must not automatically roll back and resume appending JSONL.
+        id: 'matrix-mlp3-command-journal',
+        stateClass: 'durable-command',
+        schemaVersion: 2,
+        migrationFromVersions: new Set([1]),
+    },
+    {
         id: 'timeline-key-ring',
         stateClass: 'security-critical',
         schemaVersion: 1,

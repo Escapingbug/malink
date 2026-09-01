@@ -291,9 +291,10 @@ stale lock only after the recorded owner PID is no longer alive.
 
 ## Duplicate-terminal journal recovery
 
-If an older release has already allowed two processes to append terminal
-results for one command, use the repair CLI from the matching release or exact
-source checkout. `diagnose` is read-only. `recover` performs one bounded
+This procedure applies only before the JSONL-to-SQLite migration. If an older
+release has already allowed two processes to append terminal results for one
+command, use the repair CLI from the matching release or exact source checkout.
+`diagnose` is read-only. `recover` performs one bounded
 operation: it stops the named
 LaunchAgent, rechecks the journal, acquires the data-directory lock, writes a
 byte-for-byte backup, removes only later terminal/delivery pairs whose first
@@ -321,6 +322,13 @@ The repair refuses to choose between different terminal results when the first
 result was not already delivered. That ambiguity requires manual incident
 review; it is never resolved by deleting the newest line or resetting the whole
 journal.
+
+After SQLite migration, `diagnose` reports `migrated` with the database and
+legacy-source metadata. `recover` refuses to edit JSONL: the file is immutable,
+hash-bound migration evidence and no longer active state. SQLite constraints
+prevent duplicate terminal transitions in normal operation; database damage
+is a separate fail-closed incident and must not be “repaired” by rewriting the
+historical JSONL.
 
 Workspace membership and the signed Gateway Directory are inventory, not
 presence. The main Gateway card, computer filter, and Settings therefore keep a

@@ -6,8 +6,8 @@ import type {
 import { verifyMlp3Command } from '@malink/security'
 import type { MatrixGatewayTrustedDevice } from './config'
 import {
-  FileMlp3CommandJournal,
   type Mlp3CommandClaim,
+  type Mlp3CommandJournal,
 } from './fileMlp3CommandJournal'
 
 export type Mlp3CommandAuthorizationRejection = {
@@ -67,7 +67,7 @@ void ALL_WORKSPACE_MEMBER_OPERATIONS_ARE_LISTED
 export class MatrixMlp3CommandAuthorizer {
   constructor(
     private readonly workspaceId: string,
-    private readonly journal: FileMlp3CommandJournal,
+    private readonly journal: Mlp3CommandJournal,
   ) {}
 
   async authorize(

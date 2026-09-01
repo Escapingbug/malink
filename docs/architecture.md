@@ -112,7 +112,7 @@ PWA or Android native service
   -> durable signed/encrypted MLP/3 command event
   -> Matrix project-room timeline
   -> MatrixMlp3GatewayRunner
-  -> durable command journal / authorization
+  -> local SQLite command journal / authorization
   -> TopicSession -> SemanticSessionRuntime -> AgentProvider
   -> ConversationEvent
   -> signed/encrypted MLP/3 Gateway event
@@ -383,7 +383,7 @@ same signed attachment model.
 
 ## Delivery and recovery ownership
 
-- Gateway command journal: deduplication and execution outcome.
+- Gateway SQLite command journal: local deduplication and execution outcome.
 - Gateway raw Matrix inbox: cursor-commit barrier before authorization and execution.
 - Gateway Matrix outbox: exact content, ordering, retry-after, transaction ID.
 - Client durable command outbox: intent and Matrix-send reconciliation.
@@ -426,6 +426,18 @@ recorded state. This additive
 event remains MLP/3 because older peers safely ignore it and current peers keep
 their existing terminal-event fallback; protocol versions are compatibility
 boundaries rather than semantic revision counters.
+
+The command journal is local Gateway state; it is not uploaded or synchronized
+as a database. On the first SQLite-capable startup, the previous JSONL journal
+is validated and imported in one transaction. Its path and SHA-256 digest are
+then recorded in SQLite, and the JSONL remains byte-for-byte immutable as
+historical authority. Later startups query indexed SQLite rows rather than
+replaying the JSONL or scanning completed history; recovery cost follows the
+number of unfinished and undelivered commands. Exact terminal events remain
+stored until Matrix confirms delivery; delivered records retain only
+reconciliation metadata (and the project-deletion authority needed at
+startup). This changes neither MLP/3 wire content nor Matrix/client
+synchronization.
 
 Recovery presentation follows the same ownership boundary. A primary UI action
 is rendered only when it can change the blocking state at its owning layer. An

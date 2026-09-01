@@ -11,12 +11,18 @@ import {
   repairMlp3CommandJournal,
   type Mlp3CommandJournalRepairResult,
 } from '../gateway/matrix/mlp3CommandJournalRepair.js'
+import {
+  inspectSqliteMlp3CommandJournal,
+  type SqliteMlp3CommandJournalMigration,
+} from '../gateway/matrix/sqliteMlp3CommandJournal.js'
 
 export type GatewayJournalDiagnosis = {
   journalPath: string
-  state: 'clean' | 'repairable'
+  state: 'clean' | 'repairable' | 'migrated'
   duplicateTerminals: ReturnType<typeof planMlp3CommandJournalRepair>['duplicateTerminals']
   removedLines: number[]
+  sqlitePath?: string
+  migration?: SqliteMlp3CommandJournalMigration
 }
 
 export type GatewayJournalRecoveryResult = {
@@ -42,6 +48,25 @@ export async function runGatewayJournalRepairCli(
   const [command, ...arguments_] = normalizedArgv
   const dataDirectory = resolve(requiredArgument(arguments_, 'data-dir'))
   const journalPath = join(dataDirectory, 'gateway-replay.jsonl.v3-commands.jsonl')
+  const sqlitePath = join(dataDirectory, 'gateway-replay.jsonl.v3-commands.sqlite')
+  const migration = await inspectSqliteMlp3CommandJournal(sqlitePath)
+  if (migration) {
+    const diagnosis: GatewayJournalDiagnosis = {
+      journalPath,
+      sqlitePath,
+      migration,
+      state: 'migrated',
+      duplicateTerminals: [],
+      removedLines: [],
+    }
+    if (command === 'diagnose') return diagnosis
+    if (command === 'recover') {
+      throw new Error(
+        'The JSONL command journal is immutable after SQLite migration and cannot be repaired',
+      )
+    }
+    throw new Error(`Unsupported Gateway journal repair command: ${command ?? '(missing)'}`)
+  }
   const plan = planMlp3CommandJournalRepair(await readFile(journalPath, 'utf8'))
   const diagnosis: GatewayJournalDiagnosis = {
     journalPath,

@@ -4,6 +4,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import {
     MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
     MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
@@ -587,32 +588,25 @@ async function waitForSessionActive(page: Page, sessionId: string): Promise<void
 }
 
 async function waitForDispatchedPromptSessions(sessionIds: string[]): Promise<void> {
-    const journalPath = join(gatewayDataDirectory, 'gateway-replay.jsonl.v3-commands.jsonl')
+    const journalPath = join(gatewayDataDirectory, 'gateway-replay.jsonl.v3-commands.sqlite')
     await waitFor(async () => {
-        const entries = (await readFile(journalPath, 'utf8'))
-            .split(/\r?\n/u)
-            .filter(Boolean)
-            .map(line => JSON.parse(line) as {
-                kind: string
-                key?: string
-                command?: { operation?: string; sessionId?: string }
-            })
-        const promptSessions = new Map<string, string>()
-        const dispatched = new Set<string>()
-        const terminal = new Set<string>()
-        for (const entry of entries) {
-            if (
-                entry.kind === 'accepted'
-                && entry.key
-                && entry.command?.operation === 'prompt.submit'
-                && entry.command.sessionId
-            ) promptSessions.set(entry.key, entry.command.sessionId)
-            if (entry.kind === 'dispatched' && entry.key) dispatched.add(entry.key)
-            if (entry.kind === 'terminal' && entry.key) terminal.add(entry.key)
+        let database: DatabaseSync | undefined
+        try {
+            database = new DatabaseSync(journalPath, { readOnly: true })
+            const rows = database.prepare(`
+                SELECT command_json FROM commands
+                WHERE operation = 'prompt.submit' AND status = 'dispatched'
+            `).all() as Array<{ command_json: string }>
+            const dispatchedSessions = new Set(rows.map(row => {
+                const command = JSON.parse(row.command_json) as { sessionId?: string }
+                return command.sessionId
+            }).filter((value): value is string => Boolean(value)))
+            return sessionIds.every(sessionId => dispatchedSessions.has(sessionId))
+        } catch {
+            return false
+        } finally {
+            database?.close()
         }
-        return sessionIds.every(sessionId => [...promptSessions].some(([key, candidate]) =>
-            candidate === sessionId && dispatched.has(key) && !terminal.has(key)
-        ))
     }, {
         description: 'both prompt commands to cross the durable dispatch boundary',
         timeoutMs: CONVERGENCE_TIMEOUT_MS,

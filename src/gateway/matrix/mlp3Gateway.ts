@@ -46,10 +46,11 @@ import {
   type MatrixGatewayClient,
 } from './client'
 import {
-  FileMlp3CommandJournal,
+  type Mlp3CommandJournal,
   type Mlp3CommandJournalRecord,
   type Mlp3CommandTerminal,
 } from './fileMlp3CommandJournal'
+import { SqliteMlp3CommandJournal } from './sqliteMlp3CommandJournal'
 import {
   FileMatrixEventInbox,
   matrixEventInboxKey,
@@ -278,7 +279,7 @@ export interface PublishNativeClientReleaseResult {
 export class MatrixMlp3GatewayRunner {
   private readonly client: MatrixGatewayClient
   private readonly inbox: FileMatrixEventInbox
-  private readonly journal: FileMlp3CommandJournal
+  private readonly journal: Mlp3CommandJournal
   private readonly runtimeState: FileMlp3RuntimeStateStore
   private readonly nativeClientReleases: FileNativeClientReleaseStore
   private readonly artifacts: FileMlp3ArtifactStore
@@ -325,7 +326,10 @@ export class MatrixMlp3GatewayRunner {
       `${config.replayLedgerPath}.v3-matrix-inbox.json`,
       config.startupEventQueueLimit ?? 10_000,
     )
-    this.journal = new FileMlp3CommandJournal(`${config.replayLedgerPath}.v3-commands.jsonl`)
+    this.journal = new SqliteMlp3CommandJournal(
+      `${config.replayLedgerPath}.v3-commands.sqlite`,
+      `${config.replayLedgerPath}.v3-commands.jsonl`,
+    )
     this.runtimeState = new FileMlp3RuntimeStateStore(
       `${config.replayLedgerPath}.v3-runtime-state.json`,
       config.gatewayId,
@@ -426,7 +430,7 @@ export class MatrixMlp3GatewayRunner {
       this.publishedClientReleases = await this.nativeClientReleases.releases()
       await this.content.initialize()
       await this.createProjectRuntimes()
-      for (const record of await this.journal.terminalByOperation('project.delete')) {
+      for (const record of await this.journal.terminalProjectDeletions()) {
         if (record.terminal?.outcome !== 'succeeded') continue
         const project = this.projectForRecord(record)
         if (project) project.deletingCommandId = record.command.commandId
@@ -2651,7 +2655,7 @@ export class MatrixMlp3GatewayRunner {
         })
       }
     }
-    for (const record of await this.journal.terminalByOperation('project.delete')) {
+    for (const record of await this.journal.terminalProjectDeletions()) {
       if (
         record.terminal?.outcome !== 'succeeded'
         || record.terminalDeliveryEventId === undefined
@@ -3440,6 +3444,9 @@ export class MatrixMlp3GatewayRunner {
         })
       }
     }
+    await this.journal.close().catch(error => {
+      this.log(`[mlp3/matrix] command journal close failed: ${formatError(error)}`)
+    })
   }
 
   private now(): number {
@@ -3773,10 +3780,11 @@ function providerHistoryRecoveryEventId(command: Mlp3Command): string {
 function reconciledCommandOutcome(
   terminal: Mlp3CommandTerminal,
 ): 'succeeded' | 'failed' | 'cancelled' | 'rejected' | 'interrupted' {
-  return terminal.event?.payload.type === 'turn.completed'
+  return terminal.reconciledOutcome
+    ?? (terminal.event?.payload.type === 'turn.completed'
       && terminal.event.payload.outcome === 'cancelled'
-    ? 'cancelled'
-    : terminal.outcome
+      ? 'cancelled'
+      : terminal.outcome)
 }
 
 function reconciledCommandError(
@@ -3797,7 +3805,7 @@ function reconciledCommandError(
       ?? (outcome === 'interrupted'
         ? 'The Gateway restarted after dispatch. The command was not executed again.'
         : 'The Gateway recorded this command as failed.'),
-    retryable: outcome === 'interrupted',
+    retryable: terminal.retryable ?? outcome === 'interrupted',
   }
 }
 
