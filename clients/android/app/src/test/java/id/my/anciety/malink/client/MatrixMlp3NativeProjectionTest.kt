@@ -820,6 +820,13 @@ class MatrixMlp3NativeProjectionTest {
                 .getValue("native_client_releases").jsonArray.single().jsonObject
                 .getValue("versionCode").jsonPrimitive.content.toLong(),
         )
+        assertEquals(
+            "true",
+            projection.snapshot()!!
+                .getValue("capabilities").jsonObject
+                .getValue("providers").jsonArray.single().jsonObject
+                .getValue("can_materialize_history").jsonPrimitive.content,
+        )
 
         val restored = MatrixMlp3NativeProjection(
             gatewayId = { "gateway-1" },
@@ -1270,6 +1277,21 @@ class MatrixMlp3NativeProjectionTest {
                         put("supported_reasoning_levels", buildJsonArray {
                             add(buildJsonObject { put("effort", "high") })
                         })
+                    })
+                })
+                put("providers", buildJsonArray {
+                    add(buildJsonObject {
+                        put("id", "codex")
+                        put("name", "Codex")
+                        put("models", buildJsonArray {
+                            add(buildJsonObject {
+                                put("id", model)
+                                put("name", model)
+                            })
+                        })
+                        put("can_list_sessions", true)
+                        put("can_inspect_sessions", true)
+                        put("can_materialize_history", true)
                     })
                 })
                 put("permission_modes", buildJsonArray {
