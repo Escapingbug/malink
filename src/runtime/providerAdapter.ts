@@ -286,7 +286,9 @@ function stableEventId(event: AgentEvent, context: ProviderAdapterContext, seq: 
 }
 
 function isMissingToolName(toolName: string | undefined): boolean {
-    return !toolName || toolName === 'tool' || toolName === 'tool_call'
+    if (!toolName || toolName === 'tool' || toolName === 'tool_call') return true
+    const normalized = toolName.toLowerCase()
+    return normalized === 'execute' || normalized === 'search' || normalized === 'fetch'
 }
 
 function normalizeToolInput(
@@ -299,7 +301,7 @@ function normalizeToolInput(
     const record = asRecord(source)
     const normalizedName = toolName?.toLowerCase()
 
-    if (normalizedName === 'bash' || normalizedName === 'terminal' || normalizedName === 'shell') {
+    if (['bash', 'terminal', 'shell', 'command', 'execute'].includes(normalizedName ?? '')) {
         const command = pickInputString(record, ['command', 'cmd', 'script'])
             ?? (typeof source === 'string' ? source : undefined)
         return command ? { ...(record ?? {}), command } : source
@@ -312,7 +314,7 @@ function normalizeToolInput(
         return filePath ? { ...(record ?? {}), file_path: filePath } : source
     }
 
-    if (normalizedName === 'grep' || normalizedName === 'glob') {
+    if (normalizedName === 'grep' || normalizedName === 'glob' || normalizedName === 'search') {
         const pattern = pickInputString(record, ['pattern', 'query', 'regex', 'glob'])
             ?? (typeof source === 'string' ? source : undefined)
         return pattern ? { ...(record ?? {}), pattern } : source
@@ -352,13 +354,15 @@ function categorizeTool(toolName?: string, toolKind?: string): ToolCategory {
     if (normalizedKind === 'read' || normalizedKind === 'edit' || normalizedKind === 'write' || normalizedKind === 'execute' || normalizedKind === 'search') {
         return normalizedKind
     }
+    if (normalizedKind === 'delete' || normalizedKind === 'move') return 'edit'
+    if (normalizedKind === 'fetch') return 'search'
 
     const normalizedName = toolName?.toLowerCase() ?? ''
     if (['read', 'glob'].includes(normalizedName)) return 'read'
     if (['edit'].includes(normalizedName)) return 'edit'
     if (['write'].includes(normalizedName)) return 'write'
-    if (['bash', 'shell', 'terminal'].includes(normalizedName)) return 'execute'
-    if (['grep', 'websearch', 'webfetch'].includes(normalizedName)) return 'search'
+    if (['bash', 'shell', 'terminal', 'command', 'execute'].includes(normalizedName)) return 'execute'
+    if (['grep', 'search', 'websearch', 'webfetch', 'fetch'].includes(normalizedName)) return 'search'
     if (['agent', 'task'].includes(normalizedName)) return 'agent'
     return 'unknown'
 }

@@ -4010,6 +4010,52 @@ select:focus-visible {
   white-space: pre-wrap;
 }
 
+.command-invocation {
+  background: #262a35;
+  color: #d8deec;
+  tab-size: 2;
+}
+
+.command-token.token-command {
+  color: #aebfff;
+  font-weight: 720;
+}
+
+.command-token.token-keyword {
+  color: #cbb0ff;
+  font-weight: 700;
+}
+
+.command-token.token-option {
+  color: #8fd3ff;
+}
+
+.command-token.token-string {
+  color: #a9d99d;
+}
+
+.command-token.token-variable {
+  color: #efb7ff;
+}
+
+.command-token.token-operator {
+  color: #f2b47e;
+  font-weight: 690;
+}
+
+.command-token.token-comment {
+  color: #8791a6;
+  font-style: italic;
+}
+
+.command-token.token-assignment {
+  color: #72d5c3;
+}
+
+.command-token.token-path {
+  color: #f0cd82;
+}
+
 .tool-result-view {
   display: block;
   max-height: min(42vh, 380px);
@@ -4247,6 +4293,11 @@ select:focus-visible {
   line-height: 1.62;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.tool-focus-invocation.command-invocation {
+  background: #262a35;
+  color: #d8deec;
 }
 
 .tool-focus-content .tool-result-view {

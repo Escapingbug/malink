@@ -7,6 +7,7 @@ export interface AgentTextEvent {
 
 export interface AgentToolUseEvent {
     kind: 'tool_use'
+    /** Provider-reported or normalized display label. Not a verified executable identity. */
     toolName: string
     toolUseId?: string
     input: unknown

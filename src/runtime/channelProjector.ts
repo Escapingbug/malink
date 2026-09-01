@@ -383,12 +383,20 @@ export class ChannelProjector {
     private mergeToolState(event: Extract<ConversationEvent, { kind: 'tool' }>): ProjectedToolState {
         const existing = this.toolStates.get(event.toolCallId)
 
-        // Patch merge: preserve canonical toolName from initial event
-        // Only use event.toolName if it's a known canonical name, otherwise keep existing
+        // Patch merge: preserve a specific provider label when a later update
+        // only carries a broad kind-derived fallback.
         let toolName: string
-        if (existing?.toolName && !isGenericToolName(existing.toolName)) {
+        if (
+            existing?.toolName
+            && !isGenericToolName(existing.toolName)
+            && !isBroadFallbackToolName(existing.toolName)
+        ) {
             toolName = existing.toolName
-        } else if (event.toolName && !isGenericToolName(event.toolName)) {
+        } else if (
+            event.toolName
+            && !isGenericToolName(event.toolName)
+            && !isBroadFallbackToolName(event.toolName)
+        ) {
             toolName = event.toolName
         } else {
             toolName = existing?.toolName || event.toolName || 'tool_call'
@@ -485,7 +493,7 @@ function toolPresentationItem(
     toolCallId: string,
     state: ProjectedToolState,
 ): ChannelToolPresentationItem {
-    const name = isGenericToolName(state.toolName) && state.displayTitle
+    const name = (isGenericToolName(state.toolName) || isBroadFallbackToolName(state.toolName)) && state.displayTitle
         ? state.displayTitle
         : state.toolName
     const detail = toolPresentationDetail(state)
@@ -504,7 +512,8 @@ function toolPresentationItem(
 
 function toolPresentationDetail(state: ProjectedToolState): string | undefined {
     const input = asRecord(state.input) ?? undefined
-    const value = state.displayTitle
+    const providerTitleIsName = isBroadFallbackToolName(state.toolName) && Boolean(state.displayTitle)
+    const value = (providerTitleIsName ? undefined : state.displayTitle)
         ?? pickInputText(input, detailKeysForTool(state.toolName, state.category))
         ?? (typeof state.input === 'string' ? state.input : undefined)
     const detail = value?.trim()
@@ -692,6 +701,11 @@ function textLines(value: string | undefined): string[] {
 
 function isGenericToolName(toolName: string | undefined): boolean {
     return !toolName || toolName === 'tool' || toolName === 'tool_call'
+}
+
+function isBroadFallbackToolName(toolName: string | undefined): boolean {
+    const normalized = toolName?.toLowerCase()
+    return normalized === 'execute' || normalized === 'search' || normalized === 'fetch'
 }
 
 function withMergedToolContent(

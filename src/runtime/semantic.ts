@@ -119,6 +119,7 @@ export type ConversationEvent =
         meta: SemanticMeta
         phase: 'started' | 'updated' | 'completed' | 'failed'
         toolCallId: string
+        /** Display label only; authorization must never treat it as executable identity. */
         toolName: string
         category?: 'read' | 'edit' | 'write' | 'execute' | 'search' | 'agent' | 'unknown'
         input?: unknown

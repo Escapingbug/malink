@@ -8,6 +8,7 @@ import type {
   ToolPresentationItem,
 } from "./presentation";
 import { ToolOutput } from "./ToolFocusPanel";
+import { ToolInvocation } from "./ToolInvocation";
 import { writeClipboardTextWithTimeout } from "./uiClipboard";
 
 type ToolStageKind = "explore" | "change" | "execute" | "delegate" | "other";
@@ -253,9 +254,11 @@ function ToolCallDetail({ tool }: { tool: ToolPresentationItem }) {
       {outputOpen && tool.result ? (
         <ToolOutput tool={tool} />
       ) : (
-        <pre className="tool-call-invocation" key={tool.id}>
-          {tool.detail || tool.title}
-        </pre>
+        <ToolInvocation
+          className="tool-call-invocation"
+          key={tool.id}
+          tool={tool}
+        />
       )}
     </div>
   );
