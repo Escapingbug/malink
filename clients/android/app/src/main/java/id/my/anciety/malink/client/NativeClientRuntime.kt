@@ -142,7 +142,7 @@ class NativeClientRuntime(
     private val cipher: SecretCipher = AndroidKeystoreSecretCipher(),
     private val foregroundState: () -> Pair<Boolean, Boolean>,
     private val uiForegroundState: () -> Boolean = { true },
-    private val onTaskCompletion: (String, DurableCompletion) -> Unit = { _, _ -> },
+    private val onTaskCompletion: (String, DurableCompletion, String?) -> Unit = { _, _, _ -> },
     private val now: () -> Long = System::currentTimeMillis,
 ) : NativeMatrixObserver {
     internal fun injectNetworkAvailabilityForE2e(available: Boolean) {
@@ -255,6 +255,7 @@ class NativeClientRuntime(
         ).also {
             stateUpgrade.recoverPreserved(
                 "matrix-v3-task-notifications",
+                migrate = { _, _ -> it.migrateStoredState() },
                 validate = it::validateStoredState,
             )
         }
@@ -270,6 +271,7 @@ class NativeClientRuntime(
                 outcome = DurableOutcome.fromWireName(value.outcome),
                 sessionId = value.sessionId,
             ),
+            value.body,
         )
     }
     private val matrixMlp3ProjectionStore = AtomicEncryptedMatrixMlp3ProjectionStore(

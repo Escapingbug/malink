@@ -212,7 +212,11 @@ class MalinkConnectionService : Service() {
         }
     }
 
-    private fun onTaskCompletion(eventId: String, completion: CommandCompletion) {
+    private fun onTaskCompletion(
+        eventId: String,
+        completion: CommandCompletion,
+        body: String?,
+    ) {
         val kind = TaskNotificationPolicy.decide(uiForeground, completion.outcome)
         diagnostics.record(
             "notification.task_evaluated",
@@ -225,7 +229,7 @@ class MalinkConnectionService : Service() {
         )
         if (kind == null) return
         val channelState = try {
-            taskNotifier.show(kind, eventId, completion.sessionId)
+            taskNotifier.show(kind, eventId, completion.sessionId, body)
         } catch (error: Exception) {
             diagnostics.record(
                 "notification.task_failed",

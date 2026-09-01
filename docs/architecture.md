@@ -324,6 +324,12 @@ backgrounded. It owns:
 Task notification eligibility is derived from authenticated `turn.completed`
 and `turn.failed` events, never from membership in the Android device's local
 command outbox. This keeps cross-device completion visible in the background.
+For successful turns, the native projection retains a bounded preview of the
+latest authenticated, final, non-tool `assistant.message` under the same turn
+identity and attaches it to the terminal notification. Failed turns use their
+authenticated error message. The preview remains in encrypted device-local
+state; Android's private notification carries a generic public lock-screen
+version.
 An encrypted device-local notification outbox persists pending terminals and
 delivered logical event IDs so Matrix replay, recovery, and process restart do
 not intentionally alert twice. Explicit history pagination updates projection

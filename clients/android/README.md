@@ -275,8 +275,9 @@ after explicit approval.
 - Make attachment transfer metadata process-durable. Current temporary chunks
   are encrypted, but an interrupted process discards orphan transfer state and
   the UI must restart that transfer.
-- Add product message notifications beyond the current generic task-terminal
-  alerts. Task-terminal notifications already open their owning session.
+- Add product notifications beyond task terminals. Successful task alerts now
+  show a bounded preview of the verified final Agent message, failed alerts
+  show the verified error, and every alert opens its owning session.
 - Complete stable Android application-signing key custody and the one-time
   transition from existing debug-signed development installs. Static channel
   releases use the installed application's APK signature acceptance boundary;

@@ -749,6 +749,17 @@ class MatrixMlp3NativeProjectionTest {
             "\$root-a",
             "\$root-a",
         )
+        projection.applyGatewayEvent(
+            assistant(
+                "assistant-final-1",
+                "message-final-1",
+                "Implemented the requested fix.",
+                commandId = "turn-1",
+                final = true,
+            ),
+            "\$assistant-final-1",
+            "\$root-a",
+        )
         val event = turn("completed", 2, "idle")
 
         val first = projection.applyGatewayEvent(event, "\$completed-a", "\$root-a")
@@ -758,7 +769,67 @@ class MatrixMlp3NativeProjectionTest {
         assertEquals("turn-1", first.taskNotification?.commandId)
         assertEquals("succeeded", first.taskNotification?.outcome)
         assertEquals("session-a", first.taskNotification?.sessionId)
+        assertEquals("Implemented the requested fix.", first.taskNotification?.body)
         assertNull(duplicate.taskNotification)
+    }
+
+    @Test
+    fun `final message notification preview survives durable projection restore`() {
+        val original = projection()
+        original.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        original.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$root-a",
+            "\$root-a",
+        )
+        original.applyGatewayEvent(
+            assistant(
+                "assistant-final-restart",
+                "message-final-restart",
+                "Restart-safe final response.",
+                commandId = "turn-1",
+                final = true,
+            ),
+            "\$assistant-final-restart",
+            "\$root-a",
+        )
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = original.durableState(),
+        )
+        val terminal = restored.applyGatewayEvent(
+            turn("completed", 2, "idle"),
+            "\$completed-after-restart",
+            "\$root-a",
+        )
+
+        assertEquals("Restart-safe final response.", terminal.taskNotification?.body)
+    }
+
+    @Test
+    fun `tool summaries never become the completed task notification body`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$root-a",
+            "\$root-a",
+        )
+        projection.applyGatewayEvent(
+            assistantWithToolGroup(commandId = "turn-1", final = true),
+            "\$tool-summary",
+            "\$root-a",
+        )
+
+        val terminal = projection.applyGatewayEvent(
+            turn("completed", 2, "idle"),
+            "\$completed-after-tool",
+            "\$root-a",
+        )
+
+        assertNull(terminal.taskNotification?.body)
     }
 
     @Test
@@ -782,6 +853,7 @@ class MatrixMlp3NativeProjectionTest {
 
         assertEquals("failed", result.taskNotification?.outcome)
         assertEquals("remote-command-1", result.taskNotification?.commandId)
+        assertEquals("The provider failed.", result.taskNotification?.body)
     }
 
     @Test
@@ -1410,10 +1482,13 @@ class MatrixMlp3NativeProjectionTest {
         messageId: String,
         body: String,
         version: Int = 1,
+        commandId: String? = null,
+        final: Boolean = false,
     ) = event(
         eventId = eventId,
         projectId = "project-1",
         sessionId = "session-a",
+        causationCommandId = commandId,
         payload = buildJsonObject {
             put("type", "assistant.message")
             put("messageId", messageId)
@@ -1421,13 +1496,18 @@ class MatrixMlp3NativeProjectionTest {
             put("partIndex", 0)
             put("format", "markdown")
             put("body", body)
+            put("final", final)
         },
     )
 
-    private fun assistantWithToolGroup() = event(
+    private fun assistantWithToolGroup(
+        commandId: String? = null,
+        final: Boolean = false,
+    ) = event(
         eventId = "tool-message-event-1",
         projectId = "project-1",
         sessionId = "session-a",
+        causationCommandId = commandId,
         payload = buildJsonObject {
             put("type", "assistant.message")
             put("messageId", "tool-message-1")
@@ -1435,6 +1515,7 @@ class MatrixMlp3NativeProjectionTest {
             put("partIndex", 0)
             put("format", "plain")
             put("body", "Read file")
+            put("final", final)
             put("ui", buildJsonObject {
                 put("kind", "tool_group")
                 put("version", 1)

@@ -37,6 +37,7 @@ internal data class MatrixMlp3TaskNotification(
     val commandId: String,
     val outcome: String,
     val sessionId: String?,
+    val body: String? = null,
 )
 
 internal enum class MatrixMlp3InboxProjectionStep {
@@ -316,6 +317,11 @@ internal class AtomicEncryptedMatrixMlp3TaskNotificationStore internal construct
     }
 
     @Synchronized
+    fun migrateStoredState() {
+        save()
+    }
+
+    @Synchronized
     fun clear() {
         state = State(emptyList(), emptyList())
         blob.delete()
@@ -338,18 +344,26 @@ internal class AtomicEncryptedMatrixMlp3TaskNotificationStore internal construct
             require(plaintext.size <= MAX_STORE_BYTES)
             val root = Json.parseToJsonElement(plaintext.toString(Charsets.UTF_8)).jsonObject
             require(root.keys == setOf("schemaVersion", "pending", "deliveredEventIds"))
-            require(root.requiredLong("schemaVersion") == 1L)
+            val schemaVersion = root.requiredLong("schemaVersion")
+            require(schemaVersion == 1L || schemaVersion == 2L)
             val pending = (root["pending"] as? JsonArray)?.map { item ->
                 val value = item as? JsonObject
                     ?: throw IllegalArgumentException("The task notification record is invalid.")
-                require(value.keys == setOf(
+                val expectedKeys = mutableSetOf(
                     "eventId", "commandId", "outcome", "sessionId",
-                ))
+                )
+                if (schemaVersion >= 2L) expectedKeys += "body"
+                require(value.keys == expectedKeys)
                 MatrixMlp3TaskNotification(
                     eventId = value.requiredString("eventId", 256),
                     commandId = value.requiredString("commandId", 256),
                     outcome = value.requiredString("outcome", 32),
                     sessionId = value.optionalString("sessionId", 256),
+                    body = if (schemaVersion >= 2L) {
+                        value.optionalString("body", MAX_NOTIFICATION_BODY_BYTES)
+                    } else {
+                        null
+                    },
                 ).also(::validate)
             } ?: throw IllegalArgumentException("The task notification outbox is invalid.")
             val delivered = (root["deliveredEventIds"] as? JsonArray)?.map { item ->
@@ -376,7 +390,7 @@ internal class AtomicEncryptedMatrixMlp3TaskNotificationStore internal construct
             return
         }
         val plaintext = CanonicalJson.bytes(buildJsonObject {
-            put("schemaVersion", 1)
+            put("schemaVersion", 2)
             put("pending", buildJsonArray {
                 state.pending.forEach { value ->
                     add(buildJsonObject {
@@ -385,6 +399,8 @@ internal class AtomicEncryptedMatrixMlp3TaskNotificationStore internal construct
                         put("outcome", value.outcome)
                         if (value.sessionId == null) put("sessionId", kotlinx.serialization.json.JsonNull)
                         else put("sessionId", value.sessionId)
+                        if (value.body == null) put("body", kotlinx.serialization.json.JsonNull)
+                        else put("body", value.body)
                     })
                 }
             })
@@ -427,12 +443,20 @@ internal class AtomicEncryptedMatrixMlp3TaskNotificationStore internal construct
         require(value.commandId.isNotBlank() && value.commandId.length <= 256)
         require(value.outcome in setOf("succeeded", "failed", "cancelled"))
         require(value.sessionId == null || value.sessionId.isNotBlank() && value.sessionId.length <= 256)
+        require(
+            value.body == null ||
+                value.body.isNotBlank() &&
+                value.body.length <= MAX_NOTIFICATION_BODY_CHARS &&
+                value.body.toByteArray().size <= MAX_NOTIFICATION_BODY_BYTES
+        )
     }
 
     private companion object {
         const val MAX_PENDING = 10_000
         const val MAX_DELIVERED = 10_000
         const val MAX_STORE_BYTES = 4 * 1024 * 1024
+        const val MAX_NOTIFICATION_BODY_CHARS = 2_048
+        const val MAX_NOTIFICATION_BODY_BYTES = MAX_NOTIFICATION_BODY_CHARS * 4
     }
 }
 

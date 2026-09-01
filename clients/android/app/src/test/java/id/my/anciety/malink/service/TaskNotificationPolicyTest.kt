@@ -28,4 +28,19 @@ class TaskNotificationPolicyTest {
             TaskNotificationPolicy.decide(true, CommandOutcome.SUCCEEDED),
         )
     }
+
+    @Test
+    fun `verified final message replaces the generic notification body`() {
+        assertEquals(
+            "Implemented the fix and all tests pass.",
+            taskNotificationBody(
+                "  Implemented the fix and all tests pass.  ",
+                "Tap to view the result.",
+            ),
+        )
+        assertEquals(
+            "Tap to view the result.",
+            taskNotificationBody("   ", "Tap to view the result."),
+        )
+    }
 }

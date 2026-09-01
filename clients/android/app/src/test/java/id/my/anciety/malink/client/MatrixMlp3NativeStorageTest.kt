@@ -141,6 +141,7 @@ class MatrixMlp3NativeStorageTest {
             commandId = "remote-command-1",
             outcome = "succeeded",
             sessionId = "session-1",
+            body = "Implemented the requested fix.",
         )
         var attempts = 0
         val firstStore = AtomicEncryptedMatrixMlp3TaskNotificationStore(
@@ -156,6 +157,7 @@ class MatrixMlp3NativeStorageTest {
         assertEquals(1, attempts)
         assertEquals(listOf(value), firstStore.pending())
         assertFalse(blob.bytes!!.toString(Charsets.UTF_8).contains("remote-command-1"))
+        assertFalse(blob.bytes!!.toString(Charsets.UTF_8).contains("Implemented the requested fix."))
 
         val restoredStore = AtomicEncryptedMatrixMlp3TaskNotificationStore(
             blob,
@@ -174,6 +176,38 @@ class MatrixMlp3NativeStorageTest {
             JvmAesGcmCipher(),
             "account-a",
         ).validateStoredState()
+    }
+
+    @Test
+    fun `task notification store migrates legacy records without losing delivery`() {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val cipher = JvmAesGcmCipher()
+        val associatedData = "malink.matrix-v3-task-notifications.v1\u0000account-a".toByteArray()
+        val plaintext = CanonicalJson.bytes(buildJsonObject {
+            put("schemaVersion", 1)
+            put("pending", buildJsonArray {
+                add(buildJsonObject {
+                    put("eventId", "legacy-terminal-1")
+                    put("commandId", "legacy-command-1")
+                    put("outcome", "succeeded")
+                    put("sessionId", "session-1")
+                })
+            })
+            put("deliveredEventIds", buildJsonArray {})
+        })
+        val envelope = cipher.encrypt(plaintext, associatedData)
+        blob.write(SecretEnvelope.encode(envelope))
+        envelope.iv.fill(0)
+        envelope.ciphertext.fill(0)
+        plaintext.fill(0)
+
+        val store = AtomicEncryptedMatrixMlp3TaskNotificationStore(blob, cipher, "account-a")
+        assertEquals(null, store.pending().single().body)
+        store.migrateStoredState()
+
+        val restored = AtomicEncryptedMatrixMlp3TaskNotificationStore(blob, cipher, "account-a")
+        assertEquals("legacy-terminal-1", restored.pending().single().eventId)
+        assertEquals(null, restored.pending().single().body)
     }
 
     @Test

@@ -14,6 +14,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -77,6 +78,15 @@ internal class MatrixMlp3NativeProjection(
         val sessionId: String,
         val messageId: String,
         val partIndex: Int,
+    )
+
+    private data class TaskNotificationPreview(
+        val sessionId: String,
+        val commandId: String,
+        val messageId: String,
+        val messageVersion: Long,
+        val occurredAt: Long,
+        val body: String,
     )
 
     private data class Project(
@@ -176,6 +186,7 @@ internal class MatrixMlp3NativeProjection(
     private val seenEvents = mutableSetOf<String>()
     private val seenCommands = mutableSetOf<String>()
     private val assistantMessageVersions = linkedMapOf<AssistantMessageKey, Long>()
+    private val taskNotificationPreviews = linkedMapOf<String, TaskNotificationPreview>()
     private val providerHistoryPageStates = linkedMapOf<String, ProviderHistoryPageState>()
     private val providerHistoryMessageParts = linkedMapOf<String, ProviderHistoryMessagePart>()
     private val providerHistoryPageCommits = linkedMapOf<String, ProviderHistoryPageCommit>()
@@ -362,6 +373,7 @@ internal class MatrixMlp3NativeProjection(
                 .toSet()
             sessions.keys.removeAll(deletedSessionIds)
             assistantMessageVersions.keys.removeAll { it.sessionId in deletedSessionIds }
+            taskNotificationPreviews.entries.removeAll { it.value.sessionId in deletedSessionIds }
             return MatrixMlp3NativeProjectionResult(
                 terminal = terminal(type, event, payload, causation, sessionId),
                 changed = true,
@@ -508,6 +520,7 @@ internal class MatrixMlp3NativeProjection(
         ) {
             sessions.remove(sessionId)
             assistantMessageVersions.keys.removeAll { it.sessionId == sessionId }
+            taskNotificationPreviews.entries.removeAll { it.value.sessionId == sessionId }
             providerHistoryPageStates.remove(sessionId)
             providerHistoryMessageParts.entries.removeAll { it.value.sessionId == sessionId }
             providerHistoryPageCommits.entries.removeAll { it.value.sessionId == sessionId }
@@ -573,6 +586,15 @@ internal class MatrixMlp3NativeProjection(
                         assistantMessageVersions.remove(assistantMessageVersions.keys.first())
                     }
                     val toolGroup = decodeMlp3ToolGroup(payload)
+                    rememberTaskNotificationPreview(
+                        payload = payload,
+                        sessionId = sessionId,
+                        commandId = causation,
+                        messageId = messageId,
+                        messageVersion = version,
+                        occurredAt = occurredAt,
+                        eligible = toolGroup == null,
+                    )
                     val attachments = (payload["attachments"] as? JsonArray)?.mapNotNull { item ->
                         runCatching { PublicClientJson.decodeAttachment(item) }.getOrNull()
                     }
@@ -1059,6 +1081,8 @@ internal class MatrixMlp3NativeProjection(
         workspacePendingGatewayEnrollmentsByProject.keys.retainAll(projectIds + "__legacy__")
         gatewayUpdateObservationsByProject.keys.retainAll(projectIds)
         sessions.entries.removeAll { it.value.projectId !in projectIds }
+        val retainedSessionIds = sessions.keys
+        taskNotificationPreviews.entries.removeAll { it.value.sessionId !in retainedSessionIds }
     }
 
     @Synchronized
@@ -1074,6 +1098,7 @@ internal class MatrixMlp3NativeProjection(
         seenEvents.clear()
         seenCommands.clear()
         assistantMessageVersions.clear()
+        taskNotificationPreviews.clear()
     }
 
     @Synchronized
@@ -1125,8 +1150,12 @@ internal class MatrixMlp3NativeProjection(
         val retainedAssistantVersions = assistantMessageVersions.entries
             .toList()
             .takeLast(policy.assistantVersionLimit)
+        val retainedSessionIds = retainedSessions.mapTo(mutableSetOf(), Session::id)
+        val retainedTaskNotificationPreviews = taskNotificationPreviews.values
+            .filter { it.sessionId in retainedSessionIds }
+            .takeLast(MAX_TASK_NOTIFICATION_PREVIEWS)
         val value = buildJsonObject {
-            put("schemaVersion", 16)
+            put("schemaVersion", 17)
             put("projectCapabilities", buildJsonArray {
                 projectCapabilities.entries.sortedBy { it.key }.forEach { (projectId, capabilities) ->
                     add(buildJsonObject {
@@ -1224,6 +1253,18 @@ internal class MatrixMlp3NativeProjection(
                     })
                 }
             })
+            put("taskNotificationPreviews", buildJsonArray {
+                retainedTaskNotificationPreviews.forEach { preview ->
+                    add(buildJsonObject {
+                        put("sessionId", preview.sessionId)
+                        put("commandId", preview.commandId)
+                        put("messageId", preview.messageId)
+                        put("messageVersion", preview.messageVersion)
+                        put("occurredAt", preview.occurredAt)
+                        put("body", preview.body)
+                    })
+                }
+            })
             put("providerHistoryPageStates", buildJsonObject {
                 providerHistoryPageStates.entries.sortedBy { it.key }
                     .forEach { (sessionId, state) ->
@@ -1234,7 +1275,6 @@ internal class MatrixMlp3NativeProjection(
                         })
                     }
             })
-            val retainedSessionIds = retainedSessions.mapTo(mutableSetOf(), Session::id)
             put("providerHistoryMessageParts", buildJsonArray {
                 providerHistoryMessageParts.values
                     .filter { it.sessionId in retainedSessionIds }
@@ -1304,7 +1344,7 @@ internal class MatrixMlp3NativeProjection(
 
     private fun restore(value: JsonObject) {
         val schemaVersion = value.requiredLong("schemaVersion")
-        require(schemaVersion in 1L..16L)
+        require(schemaVersion in 1L..17L)
         val legacyWorkspaceCapabilities = if (schemaVersion == 1L || schemaVersion >= 9L) {
             null
         } else {
@@ -1663,12 +1703,48 @@ internal class MatrixMlp3NativeProjection(
                     assistantMessageVersions[key] = entry.requiredPositiveLong("version")
                 }
         }
+        if (schemaVersion >= 17L) {
+            value.requiredArray(
+                "taskNotificationPreviews",
+                MAX_TASK_NOTIFICATION_PREVIEWS,
+            ).forEach { element ->
+                val item = element as? JsonObject
+                    ?: throw IllegalArgumentException("A task notification preview is invalid.")
+                item.requireKeys(
+                    setOf(
+                        "sessionId",
+                        "commandId",
+                        "messageId",
+                        "messageVersion",
+                        "occurredAt",
+                        "body",
+                    ),
+                    emptySet(),
+                    "Task notification preview",
+                )
+                val preview = TaskNotificationPreview(
+                    sessionId = item.requiredString("sessionId", 256),
+                    commandId = item.requiredString("commandId", 256),
+                    messageId = item.requiredString("messageId", 256),
+                    messageVersion = item.requiredPositiveLong("messageVersion"),
+                    occurredAt = item.requiredLong("occurredAt").also { require(it >= 0) },
+                    body = item.requiredString("body", MAX_NOTIFICATION_BODY_CHARS),
+                )
+                require(preview.sessionId in sessions)
+                require(taskNotificationPreviews.put(
+                    taskNotificationPreviewKey(preview.sessionId, preview.commandId),
+                    preview,
+                ) == null) { "A task notification preview is duplicated." }
+            }
+        }
     }
 
     private companion object {
         const val MAX_SEEN_IDS = 10_000
         const val MAX_DURABLE_SESSIONS = 4_000
         const val MAX_SESSION_TAIL_RECOVERY_TARGETS = 128
+        const val MAX_TASK_NOTIFICATION_PREVIEWS = 128
+        const val MAX_NOTIFICATION_BODY_CHARS = 2_048
         const val DEFAULT_DURABLE_TARGET_BYTES = 6 * 1024 * 1024
         const val MIN_DURABLE_TARGET_BYTES = 256 * 1024
         const val MAX_DURABLE_TARGET_BYTES = 8 * 1024 * 1024
@@ -2007,24 +2083,96 @@ internal class MatrixMlp3NativeProjection(
         sessionId: String?,
     ): MatrixMlp3TaskNotification? {
         commandId ?: return null
+        val previewKey = sessionId?.let { taskNotificationPreviewKey(it, commandId) }
+        val finalPreview = if (type == "turn.completed" || type == "turn.failed") {
+            previewKey?.let(taskNotificationPreviews::remove)
+        } else {
+            null
+        }
         return when (type) {
-            "turn.completed" -> MatrixMlp3TaskNotification(
-                eventId = eventId,
-                commandId = commandId,
-                outcome = if (payload.requiredString("outcome", 32) == "cancelled") {
+            "turn.completed" -> {
+                val outcome = if (payload.requiredString("outcome", 32) == "cancelled") {
                     "cancelled"
                 } else {
                     "succeeded"
-                },
-                sessionId = sessionId,
-            )
+                }
+                MatrixMlp3TaskNotification(
+                    eventId = eventId,
+                    commandId = commandId,
+                    outcome = outcome,
+                    sessionId = sessionId,
+                    body = finalPreview?.body?.takeUnless { outcome == "cancelled" },
+                )
+            }
             "turn.failed" -> MatrixMlp3TaskNotification(
                 eventId = eventId,
                 commandId = commandId,
                 outcome = "failed",
                 sessionId = sessionId,
+                body = compactTaskNotificationBody(payload.requiredString("message", 8_192)),
             )
             else -> null
+        }
+    }
+
+    private fun rememberTaskNotificationPreview(
+        payload: JsonObject,
+        sessionId: String,
+        commandId: String?,
+        messageId: String,
+        messageVersion: Long,
+        occurredAt: Long,
+        eligible: Boolean,
+    ) {
+        commandId ?: return
+        if (!eligible || payload["ui"] != null) return
+        if (payload["final"]?.jsonPrimitive?.booleanOrNull != true) return
+        if ((payload.optionalInt("partIndex") ?: 0) != 0) return
+        val body = compactTaskNotificationBody(
+            payload.optionalString("body", Int.MAX_VALUE).orEmpty(),
+        ) ?: return
+        val preview = TaskNotificationPreview(
+            sessionId = sessionId,
+            commandId = commandId,
+            messageId = messageId,
+            messageVersion = messageVersion,
+            occurredAt = occurredAt,
+            body = body,
+        )
+        val key = taskNotificationPreviewKey(sessionId, commandId)
+        val current = taskNotificationPreviews[key]
+        val newer = current == null || compareValuesBy(
+            preview,
+            current,
+            TaskNotificationPreview::occurredAt,
+            TaskNotificationPreview::messageId,
+            TaskNotificationPreview::messageVersion,
+        ) > 0
+        if (!newer) return
+        taskNotificationPreviews.remove(key)
+        taskNotificationPreviews[key] = preview
+        while (taskNotificationPreviews.size > MAX_TASK_NOTIFICATION_PREVIEWS) {
+            taskNotificationPreviews.remove(taskNotificationPreviews.keys.first())
+        }
+    }
+
+    private fun taskNotificationPreviewKey(sessionId: String, commandId: String): String =
+        "$sessionId\u0000$commandId"
+
+    private fun compactTaskNotificationBody(value: String): String? {
+        val normalized = value.replace("\r\n", "\n").replace('\r', '\n').trim()
+        if (normalized.isEmpty()) return null
+        return if (normalized.length > MAX_NOTIFICATION_BODY_CHARS) {
+            var endExclusive = MAX_NOTIFICATION_BODY_CHARS - 1
+            if (
+                Character.isHighSurrogate(normalized[endExclusive - 1]) &&
+                Character.isLowSurrogate(normalized[endExclusive])
+            ) {
+                endExclusive -= 1
+            }
+            "${normalized.take(endExclusive).trimEnd()}…"
+        } else {
+            normalized
         }
     }
 

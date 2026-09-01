@@ -69,7 +69,9 @@ internal val NATIVE_STATE_CATALOG = listOf(
     NativeStateCatalogEntry(
         "matrix-v3-task-notifications",
         NativePersistedStateClass.DURABLE_COMMAND,
-        1,
+        2,
+        legacySchemaVersion = 1,
+        migrationFromVersions = setOf(1),
     ),
     NativeStateCatalogEntry(
         "matrix-v3-command-content",
@@ -89,7 +91,7 @@ internal val NATIVE_STATE_CATALOG = listOf(
     NativeStateCatalogEntry(
         "matrix-v3-projection",
         NativePersistedStateClass.REBUILDABLE_PROJECTION,
-        5,
+        6,
     ),
     NativeStateCatalogEntry(
         "native-update-cache",
