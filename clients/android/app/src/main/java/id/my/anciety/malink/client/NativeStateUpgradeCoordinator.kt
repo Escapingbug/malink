@@ -51,7 +51,8 @@ internal val NATIVE_STATE_CATALOG = listOf(
     NativeStateCatalogEntry(
         "matrix-v3-project-keys",
         NativePersistedStateClass.SECURITY_CRITICAL,
-        1,
+        2,
+        migrationFromVersions = setOf(1),
     ),
     NativeStateCatalogEntry(
         "command-outbox",

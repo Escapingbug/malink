@@ -212,29 +212,41 @@ class NativeClientRuntime(
     ).also {
         stateUpgrade.recoverPreserved("timeline-key-ring", validate = it::validateStoredState)
     }
-    private val matrixMlp3ProjectKeys = AtomicEncryptedMatrixMlp3ProjectKeyStore(
-        files.matrixMlp3ProjectKeys,
-        cipher,
-        deviceId,
-    ).also {
-        stateUpgrade.recoverPreserved("matrix-v3-project-keys", validate = it::validateStoredState)
+    private val matrixMlp3ProjectKeys = openNativeStateStore("matrix-v3-project-keys") {
+        AtomicEncryptedMatrixMlp3ProjectKeyStore(
+            files.matrixMlp3ProjectKeys,
+            cipher,
+            deviceId,
+        ).also {
+            stateUpgrade.recoverPreserved(
+                "matrix-v3-project-keys",
+                migrate = { _, _ -> it.migrateStoredState() },
+                validate = it::validateStoredState,
+            )
+        }
     }
-    private val matrixMlp3Inbox = AtomicEncryptedMatrixMlp3InboxStore(
-        files.matrixMlp3Inbox,
-        cipher,
-        deviceId,
-    ).also {
-        stateUpgrade.recoverPreserved("matrix-v3-raw-inbox", validate = it::validateStoredState)
+    private val matrixMlp3Inbox = openNativeStateStore("matrix-v3-raw-inbox") {
+        AtomicEncryptedMatrixMlp3InboxStore(
+            files.matrixMlp3Inbox,
+            cipher,
+            deviceId,
+        ).also {
+            stateUpgrade.recoverPreserved("matrix-v3-raw-inbox", validate = it::validateStoredState)
+        }
     }
-    private val matrixMlp3TaskNotifications = AtomicEncryptedMatrixMlp3TaskNotificationStore(
-        files.matrixMlp3TaskNotifications,
-        cipher,
-        deviceId,
-    ).also {
-        stateUpgrade.recoverPreserved(
-            "matrix-v3-task-notifications",
-            validate = it::validateStoredState,
-        )
+    private val matrixMlp3TaskNotifications = openNativeStateStore(
+        "matrix-v3-task-notifications",
+    ) {
+        AtomicEncryptedMatrixMlp3TaskNotificationStore(
+            files.matrixMlp3TaskNotifications,
+            cipher,
+            deviceId,
+        ).also {
+            stateUpgrade.recoverPreserved(
+                "matrix-v3-task-notifications",
+                validate = it::validateStoredState,
+            )
+        }
     }
     private val taskNotificationCoordinator = MatrixMlp3TaskNotificationCoordinator(
         matrixMlp3TaskNotifications,
@@ -423,6 +435,24 @@ class NativeClientRuntime(
         }
 
     fun snapshot(): ClientSnapshot = eventHub.snapshot()
+
+    private fun <T> openNativeStateStore(storeId: String, create: () -> T): T {
+        diagnostics.record("state.store.open_started", mapOf("kind" to storeId))
+        return try {
+            create().also {
+                diagnostics.record("state.store.open_completed", mapOf("kind" to storeId))
+            }
+        } catch (error: Exception) {
+            diagnostics.record(
+                "state.store.open_failed",
+                mapOf(
+                    "kind" to storeId,
+                    "error" to error.javaClass.simpleName.take(160),
+                ),
+            )
+            throw error
+        }
+    }
 
     fun publicMatrixSession(): PublicMatrixSession? = matrix.publicSession()
 
@@ -2368,7 +2398,10 @@ class NativeClientRuntime(
                     roomId,
                 )
             }
-            val keys = matrixMlp3ProjectKeys.valueForRoom(roomId)
+            val keys = matrixMlp3ProjectKeys.valueForRoom(
+                roomId,
+                pointer.string("projectId"),
+            )
                 ?: throw MatrixMlp3EventDeferredException("project_key_grant_pending")
             try {
                 require(pointer.string("projectId") == keys.projectId) {
@@ -2396,10 +2429,12 @@ class NativeClientRuntime(
             }
             return true
         }
-        val keys = matrixMlp3ProjectKeys.valueForRoom(roomId)
-            ?: throw MatrixMlp3EventDeferredException("project_key_grant_pending")
         val extension = content["io.malink"] as? JsonObject
             ?: throw IllegalArgumentException("The MLP/3 extension is missing.")
+        val keys = matrixMlp3ProjectKeys.valueForRoom(
+            roomId,
+            extension.objectValue("envelope").string("projectId"),
+        ) ?: throw MatrixMlp3EventDeferredException("project_key_grant_pending")
         val opened = try {
             MatrixMlp3Protocol.openContent(extension, roomId, keys.projectId, keys)
         } finally {
@@ -2574,10 +2609,14 @@ class NativeClientRuntime(
     ) {
         val activeTrust = trust ?: return
         if (matrix.publicSession()?.roomBindings?.none { it.roomId == roomId } != false) return
-        val keys = matrixMlp3ProjectKeys.valueForRoom(roomId) ?: return
+        val extension = content.objectValue("io.malink")
+        val keys = matrixMlp3ProjectKeys.valueForRoom(
+            roomId,
+            extension.objectValue("envelope").string("projectId"),
+        ) ?: return
         val opened = try {
             MatrixMlp3Protocol.openContent(
-                content.objectValue("io.malink"),
+                extension,
                 roomId,
                 keys.projectId,
                 keys,
@@ -2689,7 +2728,10 @@ class NativeClientRuntime(
         if (extension.long("version") == 3L) {
             val activeTrust = trust ?: return null
             if (event.sender != binding.gatewayUserId) return null
-            val keys = matrixMlp3ProjectKeys.valueForRoom(event.roomId)
+            val keys = matrixMlp3ProjectKeys.valueForRoom(
+                event.roomId,
+                extension.objectValue("envelope").string("projectId"),
+            )
                 ?: return null
             val opened = try {
                 MatrixMlp3Protocol.openContent(extension, event.roomId, keys.projectId, keys)

@@ -34,7 +34,7 @@ class NativeStateUpgradeCoordinatorTest {
     @Test
     fun `MLP3 durable and rebuildable stores are all migration catalogued`() {
         val expected = mapOf(
-            "matrix-v3-project-keys" to (NativePersistedStateClass.SECURITY_CRITICAL to 1),
+            "matrix-v3-project-keys" to (NativePersistedStateClass.SECURITY_CRITICAL to 2),
             "matrix-v3-raw-inbox" to (NativePersistedStateClass.DURABLE_COMMAND to 1),
             "matrix-v3-task-notifications" to (NativePersistedStateClass.DURABLE_COMMAND to 1),
             "matrix-v3-command-content" to (NativePersistedStateClass.DURABLE_COMMAND to 1),
