@@ -162,10 +162,15 @@ journal owns execution-once and the original prompt terminal;
 `SemanticSessionRuntime` owns the internal `starting -> querying -> canceling ->
 finalizing` transitions and returns one semantic outcome; the Matrix outbox owns
 physical delivery and 429 retry after events have been staged. Provider startup
-and cleanup are bounded locally. A stuck iterator cannot keep a cancelled or
-already-terminal turn active forever, and physical Matrix confirmation is never
-part of the Agent execution critical section. These are local implementation
-states, not new MLP events or a protocol-version boundary.
+and cleanup are bounded locally. An ordinary Agent turn has no arbitrary total
+wall-clock deadline: it ends when the provider returns or an authenticated
+`turn.cancel` is processed. This prevents a healthy, progressing coding task
+from being misclassified as stuck after a fixed number of minutes. A stuck
+iterator cannot keep a cancelled or already-terminal turn active forever, and
+physical Matrix confirmation is never part of the Agent execution critical
+section. Agent-driven Gateway maintenance retains a separate two-hour safety
+deadline. These are local implementation states, not new MLP events or a
+protocol-version boundary.
 
 Sensitive fields—including paths, prompts, Agent output, tool arguments,
 provider session IDs, credentials, and execution grants—remain inside Malink

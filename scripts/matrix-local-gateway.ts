@@ -576,6 +576,10 @@ const config: MatrixGatewayConfig = {
         'MALINK_GATEWAY_COMMAND_EXECUTION_TIMEOUT_MS',
         60_000,
     ),
+    gatewayUpdateExecutionTimeoutMs: positiveDurationFromEnvironment(
+        'MALINK_GATEWAY_UPDATE_EXECUTION_TIMEOUT_MS',
+        2 * 60 * 60_000,
+    ),
     gatewayHeartbeatIntervalMs: positiveDurationFromEnvironment(
         'MALINK_MATRIX_GATEWAY_HEARTBEAT_INTERVAL_MS',
         60_000,

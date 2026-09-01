@@ -62,6 +62,18 @@ describe('Matrix gateway configuration', () => {
         expect(() => validateMatrixGatewayConfig(valid)).not.toThrow()
     })
 
+    it('bounds Agent-driven Gateway update execution timeouts independently', () => {
+        const tooShort = fixture()
+        tooShort.gatewayUpdateExecutionTimeoutMs = 999
+        expect(() => validateMatrixGatewayConfig(tooShort)).toThrow(
+            'gatewayUpdateExecutionTimeoutMs must be between 1000 and 86400000',
+        )
+
+        const valid = fixture()
+        valid.gatewayUpdateExecutionTimeoutMs = 2 * 60 * 60_000
+        expect(() => validateMatrixGatewayConfig(valid)).not.toThrow()
+    })
+
     it('bounds the Matrix request retry budget', () => {
         const invalid = fixture()
         invalid.connection.requestRetryBudgetMs = 999
@@ -70,7 +82,7 @@ describe('Matrix gateway configuration', () => {
         )
     })
 
-    it('bounds Agent turn timeouts', () => {
+    it('bounds the compatible provider timeout setting', () => {
         const invalid = fixture()
         invalid.rooms[0]!.timeoutSeconds = 0
         expect(() => validateMatrixGatewayConfig(invalid)).toThrow(

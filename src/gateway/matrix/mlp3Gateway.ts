@@ -131,6 +131,9 @@ interface ScheduledPromptCommand {
   cancellation?: Promise<void>
 }
 
+const DEFAULT_CONTROL_COMMAND_EXECUTION_TIMEOUT_MS = 60_000
+const DEFAULT_GATEWAY_UPDATE_EXECUTION_TIMEOUT_MS = 2 * 60 * 60_000
+
 export interface MatrixMlp3GatewayDependencies {
   client?: MatrixGatewayClient
   providerFactory?: (
@@ -872,10 +875,22 @@ export class MatrixMlp3GatewayRunner {
     const abortController = new AbortController()
     const execution = this.execute(project, journalRecord, abortController.signal)
     const timeoutMs = command.operation === 'prompt.submit'
-      || command.operation === 'gateway.update.stage'
       || (command.operation === 'session.create' && command.payload.initialPrompt !== undefined)
-      ? (project.config.timeoutSeconds ?? 180) * 1_000
-      : this.config.commandExecutionTimeoutMs ?? 60_000
+      ? null
+      : command.operation === 'gateway.update.stage'
+        ? this.config.gatewayUpdateExecutionTimeoutMs
+          ?? DEFAULT_GATEWAY_UPDATE_EXECUTION_TIMEOUT_MS
+        : this.config.commandExecutionTimeoutMs
+          ?? DEFAULT_CONTROL_COMMAND_EXECUTION_TIMEOUT_MS
+    // An Agent turn has no useful wall-clock upper bound: a healthy coding
+    // task can keep producing progress for hours. Its provider result or an
+    // authenticated turn.cancel owns the terminal transition. Provider
+    // startup, cancellation, cleanup and delivery retain their own bounded
+    // waits, while non-Agent controls and maintenance updates remain guarded.
+    if (timeoutMs === null) {
+      await execution
+      return
+    }
     let timeout: ReturnType<typeof setTimeout> | undefined
     const deadline = new Promise<never>((_resolve, reject) => {
       timeout = setTimeout(() => {

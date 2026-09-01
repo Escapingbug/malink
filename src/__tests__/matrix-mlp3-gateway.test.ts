@@ -567,6 +567,7 @@ describe('MatrixMlp3GatewayRunner', () => {
           conversationId: 'unused-v3',
           cwd: '/repo',
           providerName: 'test',
+          timeoutSeconds: 1,
         },
       ],
       trustedDevices: [{
@@ -612,6 +613,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       },
     }
     const blocked = deferred<void>()
+    const initialPromptBlocked = deferred<void>()
     const updateDrainBlocked = deferred<void>()
     const activeCancelBlocked = deferred<void>()
     let activeCancelRequested = false
@@ -762,6 +764,7 @@ describe('MatrixMlp3GatewayRunner', () => {
               await input.onExecutionStarted?.()
               dispatched.push({ sessionId: session.id, text: input.text })
               if (input.text === 'block A') await blocked.promise
+              if (input.text === 'block initial prompt') await initialPromptBlocked.promise
               if (input.text === 'finish before update') await updateDrainBlocked.promise
               if (input.text === 'cancel active') {
                 await activeCancelBlocked.promise
@@ -1418,6 +1421,21 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(scratchCwd).not.toBe('/repo')
     await expect(stat(scratchCwd!)).resolves.toMatchObject({})
 
+    await send({
+      ...base,
+      commandId: 'create-with-long-initial-prompt',
+      sessionId: 'session-long-initial-prompt',
+      operation: 'session.create',
+      payload: {
+        operation: 'session.create',
+        title: 'Long initial prompt',
+        initialPrompt: { text: 'block initial prompt' },
+      },
+    }, '$root-long-initial-prompt')
+    await waitFor(() => Promise.resolve(
+      dispatched.some(item => item.text === 'block initial prompt'),
+    ))
+
     const promptA: Mlp3Command = {
       ...base,
       commandId: 'prompt-a',
@@ -1430,6 +1448,29 @@ describe('MatrixMlp3GatewayRunner', () => {
       event_id: '$homeserver-rewrote-this-relation',
     })
     await waitFor(() => Promise.resolve(dispatched.some(item => item.text === 'block A')))
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 1_100))
+    const longRunningEvents = await events(client, activeKey.key, roomId, projectId)
+    expect(longRunningEvents.some(event =>
+      ['create-with-long-initial-prompt', 'prompt-a'].includes(event.causationCommandId ?? '')
+      && event.payload.type === 'turn.failed'
+      && event.payload.code === 'gateway_execution_timeout'
+    )).toBe(false)
+    expect(await runner.healthSnapshot()).toMatchObject({
+      activeTurns: 2,
+      activeCommands: 2,
+      expiredCommandExecutions: 0,
+    })
+    initialPromptBlocked.resolve()
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'create-with-long-initial-prompt'
+        && event.payload.type === 'turn.completed'
+      ))
+    expect(await runner.healthSnapshot()).toMatchObject({
+      activeTurns: 1,
+      activeCommands: 1,
+      expiredCommandExecutions: 0,
+    })
 
     const queuedPrompt: Mlp3Command = {
       ...base,
@@ -1878,6 +1919,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         .digest('hex')
         .slice(0, 40)}`,
       'session-b',
+      'session-long-initial-prompt',
       'session-scratch',
     ].sort())
     expect(recovered.every(event =>

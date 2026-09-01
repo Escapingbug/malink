@@ -207,6 +207,13 @@ One turn uses the existing bounded MLP/3 lifecycle:
   identity, and the separate `turn.cancel` command receives a matching terminal
   result only after that original turn has settled.
 
+An ordinary Agent turn is not failed merely because a fixed wall-clock duration
+has elapsed. The provider result or an authenticated `turn.cancel` owns its
+terminal transition; bounded provider startup, interrupt and cleanup waits are
+local runtime safeguards. Agent-driven Gateway maintenance uses an independent,
+configurable safety deadline. This execution-policy change does not alter MLP/3
+wire schemas or require a protocol-version change.
+
 The execution terminal is durable once semantic output and the terminal event
 have been staged in the Gateway's local outboxes and command journal. It does
 not wait for every staged assistant/tool event to receive a physical Matrix

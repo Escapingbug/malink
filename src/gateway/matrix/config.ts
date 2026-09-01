@@ -45,6 +45,7 @@ export interface MatrixGatewayRoomConfig {
     providerName: string
     model?: string
     verboseLevel?: 0 | 1 | 2
+    /** Provider/runtime setting retained for compatibility; not an MLP command deadline. */
     timeoutSeconds?: number
     providerSettings?: Record<string, unknown>
 }
@@ -92,8 +93,10 @@ export interface MatrixGatewayConfig {
     replayLedgerPath: string
     applicationSecurity: MatrixGatewayApplicationSecurityConfig
     startupEventQueueLimit?: number
-    /** Deadline for control commands; Agent turns use each room's timeoutSeconds. */
+    /** Deadline for bounded control commands. Agent turns end only by result or cancellation. */
     commandExecutionTimeoutMs?: number
+    /** Independent deadline for one Agent-driven Gateway update; defaults to two hours. */
+    gatewayUpdateExecutionTimeoutMs?: number
     /** Publishes one shared signed node heartbeat; defaults to 60 seconds. */
     gatewayHeartbeatIntervalMs?: number
     webPush?: {
@@ -226,6 +229,16 @@ export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
         )
     ) {
         throw new Error('commandExecutionTimeoutMs must be between 1000 and 3600000')
+    }
+    if (
+        config.gatewayUpdateExecutionTimeoutMs !== undefined
+        && (
+            !Number.isFinite(config.gatewayUpdateExecutionTimeoutMs)
+            || config.gatewayUpdateExecutionTimeoutMs < 1_000
+            || config.gatewayUpdateExecutionTimeoutMs > 24 * 60 * 60_000
+        )
+    ) {
+        throw new Error('gatewayUpdateExecutionTimeoutMs must be between 1000 and 86400000')
     }
     if (
         config.gatewayHeartbeatIntervalMs !== undefined
