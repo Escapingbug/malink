@@ -10863,9 +10863,9 @@ body {
 .connection-path-indicator {
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: center;
-  gap: 0;
+  gap: 6px;
 }
 
 .gateway-card > .connection-path-indicator {
@@ -10985,12 +10985,6 @@ body {
   line-height: 1.25;
 }
 
-.connection-status-divider {
-  width: 1px;
-  height: 30px;
-  background: #e2e5eb;
-}
-
 .connection-status-item.connection-path-tone-progress,
 .connection-status-item.connection-path-tone-delayed {
   background: #fff8e9;
@@ -11037,9 +11031,9 @@ body {
 
 .connection-path-compact {
   width: auto;
-  grid-template-columns: max-content 1px max-content;
+  grid-template-columns: repeat(2, max-content);
   align-items: center;
-  gap: 5px;
+  gap: 8px;
 }
 
 .connection-path-compact .connection-status-item {
@@ -11078,10 +11072,6 @@ body {
 .connection-path-compact .connection-status-value {
   color: inherit;
   font-weight: 740;
-}
-
-.connection-path-compact .connection-status-divider {
-  height: 13px;
 }
 
 .conversation-connection-path:hover .connection-status-item {

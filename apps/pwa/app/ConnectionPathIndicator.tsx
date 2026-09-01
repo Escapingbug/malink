@@ -140,7 +140,6 @@ export function ConnectionPathIndicator({
         segment={presentation.deviceToMatrix}
         variant={variant}
       />
-      <i className="connection-status-divider" aria-hidden="true" />
       <StatusItem
         fullName={
           gatewayLabel === "Gateway" ? "Gateway" : "Gateway · " + gatewayLabel

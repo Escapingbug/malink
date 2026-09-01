@@ -129,6 +129,7 @@ test("renders two named status units without a device-cloud-computer diagram", (
   assert.match(html, />Gateway · Office Mac</);
   assert.match(html, />Available</);
   assert.doesNotMatch(html, /connection-path-(?:node|route|segment)/);
+  assert.doesNotMatch(html, /connection-status-divider/);
 });
 
 test("compact status names the affected service and uses one short value", () => {
