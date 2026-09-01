@@ -290,7 +290,6 @@ import {
   GATEWAY_ONLINE_PROOF_WINDOW_MS,
   gatewayForegroundProbeDue,
   gatewayNodeLivenessAfterProbeTimeout,
-  gatewayNodeLivenessPresentation,
   gatewayNodeLivenessTargets,
   gatewayProbeRecoveryBackoffMs,
   type GatewayNodeLiveness,
@@ -11790,10 +11789,16 @@ function MalinkAppRuntime() {
               <option value={ALL_GATEWAYS_FILTER}>All computers</option>
               {gatewayFilterOptions.map(gateway => (
                 <option key={gateway.gatewayNodeId} value={gateway.gatewayNodeId}>
-                  {gateway.label} · {gatewayNodeLivenessPresentation(
-                    gatewayNodeLivenessById[gateway.gatewayNodeId],
-                    gatewayLivenessNow,
-                  ).label}
+                  {gateway.label} · {deriveConnectionPathPresentation({
+                    trusted: trustedGateway !== null,
+                    matrixStatus: connectionStatus,
+                    gatewayLabel: gateway.label,
+                    gatewayLiveness:
+                      gatewayNodeLivenessById[gateway.gatewayNodeId],
+                    gatewaySnapshotAvailable:
+                      gatewayState?.updatedAt !== undefined,
+                    now: gatewayLivenessNow,
+                  }).matrixToGateway.label}
                 </option>
               ))}
             </select>

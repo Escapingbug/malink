@@ -63,27 +63,27 @@ function deviceMatrixSegment(
   if (status === "connected") {
     return {
       tone: "ready",
-      label: "Synced",
-      detail: "receiving Matrix updates",
+      label: "Connected",
+      detail: "connected to Matrix and receiving updates",
     };
   }
   if (status === "offline") {
     return {
       tone: "offline",
-      label: "Matrix offline",
+      label: "Not connected",
       detail: "not connected to Matrix",
     };
   }
   if (status === "error") {
     return {
       tone: "attention",
-      label: "Matrix needs attention",
-      detail: "the Matrix connection needs attention",
+      label: "Not connected",
+      detail: "the Matrix connection needs attention before it can reconnect",
     };
   }
   return {
     tone: "progress",
-    label: status === "reconnecting" ? "Reconnecting" : "Syncing",
+    label: status === "reconnecting" ? "Reconnecting" : "Connecting",
     detail: status === "reconnecting"
       ? "reconnecting to Matrix"
       : "establishing the Matrix connection",
@@ -100,15 +100,15 @@ function gatewaySegment(input: {
   if (!input.trusted) {
     return {
       tone: "unknown",
-      label: "Gateway unknown",
-      detail: "not available until this device is connected",
+      label: "Unable to verify",
+      detail: "Gateway availability cannot be verified until this device is connected",
     };
   }
   if (input.matrixStatus !== "connected") {
     return {
       tone: "unknown",
-      label: "Gateway unknown",
-      detail: "cannot be verified until Matrix sync resumes",
+      label: "Unable to verify",
+      detail: "Gateway availability cannot be verified until Matrix reconnects",
     };
   }
 
@@ -122,44 +122,60 @@ function gatewaySegment(input: {
     };
   }
   if (presentation.state === "checking") {
+    if (raw?.lastVerifiedAt !== undefined) {
+      return {
+        tone: "ready",
+        label: "Available",
+        detail: "last known available; Malink is checking again automatically",
+      };
+    }
     return {
-      tone: "progress",
-      label: "Checking Gateway",
-      detail: "waiting for a signed Gateway reply",
+      tone: "unknown",
+      label: "Unable to verify",
+      detail: "Malink is checking Gateway availability automatically",
     };
   }
   if (presentation.state === "stale") {
     return {
-      tone: "delayed",
-      label: "Gateway check delayed",
-      detail: "the last signed activity is no longer recent",
+      tone: "ready",
+      label: "Available",
+      detail: "last known available; Malink is checking again automatically",
     };
   }
   if (presentation.state === "unreachable") {
     const confirmed = (raw?.consecutiveNoReplies ?? 1) >= 2;
+    if (!confirmed) {
+      return raw?.lastVerifiedAt !== undefined
+        ? {
+            tone: "ready",
+            label: "Available",
+            detail: "last known available; Malink is retrying automatically",
+          }
+        : {
+            tone: "unknown",
+            label: "Unable to verify",
+            detail: "Gateway availability is not confirmed yet; Malink is retrying automatically",
+          };
+    }
     return {
-      tone: confirmed ? "attention" : "delayed",
-      label: confirmed ? "Gateway not responding" : "Gateway reply delayed",
-      detail: confirmed
-        ? "multiple signed checks received no reply"
-        : "one signed check received no reply yet",
+      tone: "attention",
+      label: "Not responding",
+      detail: "Gateway did not answer repeated checks; check the Gateway computer",
     };
   }
   if (presentation.state === "unavailable") {
     return {
       tone: "unknown",
-      label: "Live check unavailable",
-      detail: "this Gateway does not expose a compatible signed live check",
+      label: "Unable to verify",
+      detail: "this Gateway cannot report its current availability to this device",
     };
   }
   return {
     tone: "unknown",
-    label: input.gatewaySnapshotAvailable
-      ? "Gateway not verified"
-      : "Waiting for Gateway",
+    label: "Unable to verify",
     detail: input.gatewaySnapshotAvailable
-      ? "workspace data is available, but current Gateway activity is not verified"
-      : "no verified Gateway state has arrived yet",
+      ? "current Gateway availability has not been confirmed"
+      : "waiting for the first confirmed Gateway status",
   };
 }
 

@@ -41,11 +41,11 @@ test("does not describe Gateway as offline when the client loses Matrix", () => 
   assert.equal(presentation.deviceToMatrix.tone, "progress");
   assert.equal(presentation.deviceToMatrix.label, "Reconnecting");
   assert.equal(presentation.matrixToGateway.tone, "unknown");
-  assert.equal(presentation.matrixToGateway.label, "Gateway unknown");
+  assert.equal(presentation.matrixToGateway.label, "Unable to verify");
   assert.equal(presentation.summary, "Reconnecting");
 });
 
-test("uses delayed styling for stale proof and the first missed reply", () => {
+test("keeps background rechecks out of the user-facing status", () => {
   const stale = deriveConnectionPathPresentation({
     trusted: true,
     matrixStatus: "connected",
@@ -65,14 +65,60 @@ test("uses delayed styling for stale proof and the first missed reply", () => {
     gatewayLiveness: {
       state: "unreachable",
       consecutiveNoReplies: 1,
+      lastVerifiedAt: now - 151_000,
     },
     now,
   });
 
-  assert.equal(stale.matrixToGateway.tone, "delayed");
-  assert.equal(stale.matrixToGateway.label, "Gateway check delayed");
-  assert.equal(firstMiss.matrixToGateway.tone, "delayed");
-  assert.equal(firstMiss.matrixToGateway.label, "Gateway reply delayed");
+  assert.equal(stale.matrixToGateway.tone, "ready");
+  assert.equal(stale.matrixToGateway.label, "Available");
+  assert.equal(firstMiss.matrixToGateway.tone, "ready");
+  assert.equal(firstMiss.matrixToGateway.label, "Available");
+});
+
+test("keeps a previous available result while an automatic check is running", () => {
+  const presentation = deriveConnectionPathPresentation({
+    trusted: true,
+    matrixStatus: "connected",
+    gatewayLabel: "Office Mac",
+    gatewaySnapshotAvailable: true,
+    gatewayLiveness: {
+      state: "checking",
+      lastVerifiedAt: now - 151_000,
+    },
+    now,
+  });
+
+  assert.equal(presentation.matrixToGateway.tone, "ready");
+  assert.equal(presentation.matrixToGateway.label, "Available");
+  assert.equal(presentation.summary, "Connected");
+});
+
+test("stays neutral until the first Gateway check has a result", () => {
+  const checking = deriveConnectionPathPresentation({
+    trusted: true,
+    matrixStatus: "connected",
+    gatewayLabel: "Office Mac",
+    gatewaySnapshotAvailable: true,
+    gatewayLiveness: { state: "checking" },
+    now,
+  });
+  const firstMiss = deriveConnectionPathPresentation({
+    trusted: true,
+    matrixStatus: "connected",
+    gatewayLabel: "Office Mac",
+    gatewaySnapshotAvailable: true,
+    gatewayLiveness: {
+      state: "unreachable",
+      consecutiveNoReplies: 1,
+    },
+    now,
+  });
+
+  assert.equal(checking.matrixToGateway.tone, "unknown");
+  assert.equal(checking.matrixToGateway.label, "Unable to verify");
+  assert.equal(firstMiss.matrixToGateway.tone, "unknown");
+  assert.equal(firstMiss.matrixToGateway.label, "Unable to verify");
 });
 
 test("reserves attention styling for repeated signed-check failures", () => {
@@ -90,7 +136,8 @@ test("reserves attention styling for repeated signed-check failures", () => {
 
   assert.equal(presentation.deviceToMatrix.tone, "ready");
   assert.equal(presentation.matrixToGateway.tone, "attention");
-  assert.equal(presentation.summary, "Gateway not responding");
+  assert.equal(presentation.matrixToGateway.label, "Not responding");
+  assert.equal(presentation.summary, "Not responding");
 });
 
 test("keeps an unverified Gateway neutral when durable workspace data exists", () => {
@@ -104,7 +151,7 @@ test("keeps an unverified Gateway neutral when durable workspace data exists", (
 
   assert.equal(presentation.deviceToMatrix.tone, "ready");
   assert.equal(presentation.matrixToGateway.tone, "unknown");
-  assert.equal(presentation.matrixToGateway.label, "Gateway not verified");
+  assert.equal(presentation.matrixToGateway.label, "Unable to verify");
 });
 
 test("renders two named status units without a device-cloud-computer diagram", () => {
@@ -125,7 +172,7 @@ test("renders two named status units without a device-cloud-computer diagram", (
   }));
 
   assert.match(html, />Matrix</);
-  assert.match(html, />Synced</);
+  assert.match(html, />Connected</);
   assert.match(html, />Gateway · Office Mac</);
   assert.match(html, />Available</);
   assert.doesNotMatch(html, /connection-path-(?:node|route|segment)/);
@@ -149,6 +196,6 @@ test("compact status names the affected service and uses one short value", () =>
   assert.match(html, />Matrix</);
   assert.match(html, />Syncing</);
   assert.match(html, />Gateway</);
-  assert.match(html, />Unknown</);
+  assert.match(html, />Can&#x27;t verify</);
   assert.doesNotMatch(html, />Office Mac</);
 });

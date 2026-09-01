@@ -83,7 +83,7 @@ function compactValue(
     return kind === "matrix" ? "Error" : "No response";
   }
   if (segment.tone === "setup") return "Connect";
-  return "Unknown";
+  return kind === "matrix" ? "Unknown" : "Can't verify";
 }
 
 function StatusItem({
