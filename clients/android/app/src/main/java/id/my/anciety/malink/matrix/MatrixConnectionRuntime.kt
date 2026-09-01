@@ -45,6 +45,7 @@ class MatrixConnectionRuntime(
         MatrixApplicationTimelineClient(),
     private val threadHistoryClient: MatrixThreadHistoryClient = MatrixThreadHistoryClient(),
     private val roomMembershipClient: MatrixRoomMembershipClient = MatrixRoomMembershipClient(),
+    private val providerHistoryClient: MatrixProviderHistoryClient = MatrixProviderHistoryClient(),
     private val networkMonitor: NetworkMonitor = AndroidNetworkMonitor(context),
     private val accountStorage: MatrixAccountStorage = MatrixAccountStorage(
         context,
@@ -414,6 +415,21 @@ class MatrixConnectionRuntime(
                 mapOf("type" to error::class.java.simpleName),
             )
             throw error
+        }
+    }
+
+    suspend fun loadProviderHistory(
+        roomId: String,
+        from: String?,
+        limit: Int,
+    ): MatrixThreadHistoryBatch {
+        val session = mutex.withLock {
+            check(started.get()) { "The native Matrix runtime is stopped." }
+            if (!networkAvailable) throw MatrixOfflineException()
+            secrets?.session ?: throw MatrixOfflineException("The Matrix session is unavailable.")
+        }
+        return withTimeout(HISTORY_OPERATION_TIMEOUT_MS) {
+            providerHistoryClient.page(session, roomId, from, limit)
         }
     }
 

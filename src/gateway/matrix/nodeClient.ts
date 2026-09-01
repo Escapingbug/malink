@@ -26,6 +26,7 @@ import {
     MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
     MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
     MLP3_MATRIX_PROJECT_PROVISIONING_EVENT_TYPE,
+    MLP3_MATRIX_PROVIDER_HISTORY_PROVISIONING_EVENT_TYPE,
     MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
     MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
     MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
@@ -36,6 +37,7 @@ import {
     mlp3CurrentPointerSchema,
     mlp3ProjectKeyGrantStateSchema,
     mlp3ProjectProvisioningStateSchema,
+    mlp3ProviderHistoryProvisioningStateSchema,
     mlp3TimelineContentSchema,
     signedWorkspaceDeviceGrantSchema,
     signedWorkspaceDeviceRevocationSchema,
@@ -44,6 +46,7 @@ import {
     gatewayEnrollmentResponseSchema,
     canonicalJson,
     type Mlp3ProjectProvisioningState,
+    type Mlp3ProviderHistoryProvisioningState,
 } from '@malink/protocol'
 import { toArrayBuffer } from '@malink/security'
 import type {
@@ -67,6 +70,7 @@ import type {
 import type {
     MatrixGatewayClient,
     MatrixGatewayEventListener,
+    MatrixProviderHistoryRoomRequest,
     MatrixProjectRoomRequest,
     MatrixProjectRoomResult,
     MatrixSyncWatchdogOptions,
@@ -94,6 +98,15 @@ interface MatrixRawEvent {
     origin_server_ts?: unknown
     state_key?: unknown
     content?: unknown
+}
+
+interface MatrixRelationsResponse {
+    chunk?: MatrixRawEvent[]
+    next_batch?: unknown
+}
+
+interface MatrixMembersResponse {
+    chunk?: MatrixRawEvent[]
 }
 
 interface MatrixRoomCryptoState {
@@ -286,6 +299,132 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
         this.rememberRoomMember(roomId, userId)
     }
 
+    async deleteRoomThread(roomId: string, threadRootEventId: string): Promise<void> {
+        const eventIds: string[] = []
+        const seenTokens = new Set<string>()
+        let from: string | undefined
+        while (true) {
+            const page = await this.matrixRequest<MatrixRelationsResponse>(
+                'GET',
+                `/_matrix/client/v1/rooms/${encodeURIComponent(roomId)}/relations/${encodeURIComponent(threadRootEventId)}`,
+                {
+                    query: {
+                        dir: 'b',
+                        limit: 100,
+                        recurse: true,
+                        ...(from ? { from } : {}),
+                    },
+                },
+            ).catch(error => {
+                if (isMissingMatrixEntity(error)) return {} as MatrixRelationsResponse
+                throw error
+            })
+            for (const event of page.chunk ?? []) {
+                if (typeof event.event_id === 'string' && event.event_id) {
+                    eventIds.push(event.event_id)
+                }
+            }
+            const next = typeof page.next_batch === 'string' && page.next_batch
+                ? page.next_batch
+                : undefined
+            if (!next) break
+            if (seenTokens.has(next)) throw new Error('Matrix thread pagination repeated a token')
+            seenTokens.add(next)
+            from = next
+        }
+        for (const eventId of [...new Set(eventIds), threadRootEventId]) {
+            await this.withRoomSendLock(() => this.matrixRequest(
+                'PUT',
+                `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/redact/${encodeURIComponent(eventId)}/${encodeURIComponent(matrixRetirementTransactionId('thread', roomId, eventId))}`,
+                {
+                    body: { reason: 'Malink session archived' },
+                    retryRateLimit: true,
+                    retryTransient: true,
+                    paceRoomWrite: true,
+                },
+            )).catch(error => {
+                if (!isMissingMatrixEntity(error)) throw error
+            })
+        }
+    }
+
+    async retireRoom(roomId: string): Promise<void> {
+        const members = await this.matrixRequest<MatrixMembersResponse>(
+            'GET',
+            `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/members`,
+        ).catch(error => {
+            if (isRetiredMatrixRoom(error)) return null
+            throw error
+        })
+        if (!members) {
+            await this.matrixRequest(
+                'POST',
+                `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/forget`,
+                { body: {}, retryTransient: true },
+            ).catch(error => {
+                if (!isRetiredMatrixRoom(error)) throw error
+            })
+            this.knownRoomMembers.delete(roomId)
+            this.roomCrypto.delete(roomId)
+            return
+        }
+        for (const event of members.chunk ?? []) {
+            const content = asRecord(event.content)
+            const membership = content?.membership
+            const userId = typeof event.state_key === 'string' ? event.state_key : undefined
+            if (
+                !userId
+                || userId === this.connection.userId
+                || (membership !== 'join' && membership !== 'invite')
+            ) continue
+            await this.withRoomSendLock(() => this.matrixRequest(
+                'POST',
+                `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/kick`,
+                {
+                    body: { user_id: userId, reason: 'Malink room deleted' },
+                    retryRateLimit: true,
+                    retryTransient: true,
+                    paceRoomWrite: true,
+                },
+            ))
+        }
+        const aliases = await this.matrixRequest<{ aliases?: unknown }>(
+            'GET',
+            `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/aliases`,
+        )
+        if (Array.isArray(aliases.aliases)) {
+            for (const alias of aliases.aliases) {
+                if (typeof alias !== 'string' || !alias) continue
+                await this.withRoomSendLock(() => this.matrixRequest(
+                    'DELETE',
+                    `/_matrix/client/v3/directory/room/${encodeURIComponent(alias)}`,
+                    {
+                        retryRateLimit: true,
+                        retryTransient: true,
+                        paceRoomWrite: true,
+                    },
+                ))
+            }
+        }
+        await this.withRoomSendLock(() => this.matrixRequest(
+            'POST',
+            `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/leave`,
+            {
+                body: {},
+                retryRateLimit: true,
+                retryTransient: true,
+                paceRoomWrite: true,
+            },
+        ))
+        await this.matrixRequest(
+            'POST',
+            `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/forget`,
+            { body: {}, retryTransient: true },
+        )
+        this.knownRoomMembers.delete(roomId)
+        this.roomCrypto.delete(roomId)
+    }
+
     async ensureProjectRoom(request: MatrixProjectRoomRequest): Promise<MatrixProjectRoomResult> {
         mlp3ProjectProvisioningStateSchema.parse(request.marker)
         const alias = matrixRoomAlias(request.aliasLocalpart, this.connection.userId)
@@ -335,6 +474,58 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                 matrixStatePath(roomId, MLP3_MATRIX_PROJECT_PROVISIONING_EVENT_TYPE, ''),
             )
             assertProjectRoomMarker(marker, request.marker)
+        }
+        await this.ensureRoomCryptoState(roomId, true)
+        return { roomId, alreadyExisted }
+    }
+
+    async ensureProviderHistoryRoom(
+        request: MatrixProviderHistoryRoomRequest,
+    ): Promise<MatrixProjectRoomResult> {
+        mlp3ProviderHistoryProvisioningStateSchema.parse(request.marker)
+        const alias = matrixRoomAlias(request.aliasLocalpart, this.connection.userId)
+        let roomId: string
+        let alreadyExisted = false
+        try {
+            const created = await this.matrixRequest<{ room_id?: unknown }>(
+                'POST',
+                '/_matrix/client/v3/createRoom',
+                {
+                    body: {
+                        room_alias_name: request.aliasLocalpart,
+                        visibility: 'private',
+                        preset: 'private_chat',
+                        name: 'Malink provider history',
+                        invite: [...new Set(request.inviteUserIds)],
+                        initial_state: providerHistoryInitialState(
+                            this.connection.userId,
+                            request.marker,
+                        ),
+                    },
+                    retryRateLimit: true,
+                },
+            )
+            roomId = requireRoomId(created)
+            for (const userId of request.inviteUserIds) {
+                this.rememberRoomMember(roomId, userId)
+            }
+        } catch (error) {
+            if (!(error instanceof MatrixHttpError && error.errcode === 'M_ROOM_IN_USE')) throw error
+            alreadyExisted = true
+            const resolved = await this.matrixRequest<{ room_id?: unknown }>(
+                'GET',
+                `/_matrix/client/v3/directory/room/${encodeURIComponent(alias)}`,
+            )
+            roomId = requireRoomId(resolved)
+            const marker = await this.matrixRequest(
+                'GET',
+                matrixStatePath(
+                    roomId,
+                    MLP3_MATRIX_PROVIDER_HISTORY_PROVISIONING_EVENT_TYPE,
+                    '',
+                ),
+            )
+            assertProviderHistoryRoomMarker(marker, request.marker)
         }
         await this.ensureRoomCryptoState(roomId, true)
         return { roomId, alreadyExisted }
@@ -1104,6 +1295,53 @@ function matrixRoomAlias(localpart: string, userId: string): string {
     return `#${localpart}:${userId.slice(separator + 1)}`
 }
 
+function matrixRetirementTransactionId(kind: string, roomId: string, eventId: string): string {
+    return `malink.retire.${createHash('sha256')
+        .update(kind)
+        .update('\0')
+        .update(roomId)
+        .update('\0')
+        .update(eventId)
+        .digest('base64url')}`
+}
+
+function providerHistoryInitialState(
+    gatewayUserId: string,
+    marker: Mlp3ProviderHistoryProvisioningState,
+): Array<{ type: string; state_key: string; content: Record<string, unknown> }> {
+    return [
+        {
+            type: 'm.room.encryption',
+            state_key: '',
+            content: { algorithm: 'm.megolm.v1.aes-sha2' },
+        },
+        {
+            type: 'm.room.history_visibility',
+            state_key: '',
+            content: { history_visibility: 'shared' },
+        },
+        {
+            type: 'm.room.power_levels',
+            state_key: '',
+            content: {
+                users: { [gatewayUserId]: 100 },
+                users_default: 0,
+                events_default: 100,
+                state_default: 100,
+                invite: 100,
+                kick: 100,
+                ban: 100,
+                redact: 100,
+            },
+        },
+        {
+            type: MLP3_MATRIX_PROVIDER_HISTORY_PROVISIONING_EVENT_TYPE,
+            state_key: '',
+            content: marker,
+        },
+    ]
+}
+
 function assertProjectRoomMarker(
     value: unknown,
     expected: Mlp3ProjectProvisioningState,
@@ -1111,6 +1349,16 @@ function assertProjectRoomMarker(
     const marker = mlp3ProjectProvisioningStateSchema.parse(value)
     if (canonicalJson(marker) !== canonicalJson(expected)) {
         throw new Error('Existing Matrix room alias belongs to another Malink project')
+    }
+}
+
+function assertProviderHistoryRoomMarker(
+    value: unknown,
+    expected: Mlp3ProviderHistoryProvisioningState,
+): void {
+    const marker = mlp3ProviderHistoryProvisioningStateSchema.parse(value)
+    if (canonicalJson(marker) !== canonicalJson(expected)) {
+        throw new Error('Existing Matrix room alias belongs to another Provider History snapshot')
     }
 }
 
@@ -1193,6 +1441,21 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function isMissingFile(error: unknown): boolean {
     return !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
+}
+
+function isMissingMatrixEntity(error: unknown): boolean {
+    return error instanceof MatrixHttpError
+        && (error.status === 404 || error.errcode === 'M_NOT_FOUND')
+}
+
+function isRetiredMatrixRoom(error: unknown): boolean {
+    return error instanceof MatrixHttpError
+        && (
+            error.status === 403
+            || error.status === 404
+            || error.errcode === 'M_FORBIDDEN'
+            || error.errcode === 'M_NOT_FOUND'
+        )
 }
 
 function isAbortError(error: unknown): boolean {

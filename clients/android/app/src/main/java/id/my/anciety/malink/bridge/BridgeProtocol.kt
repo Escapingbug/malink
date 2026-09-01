@@ -1477,8 +1477,8 @@ class BridgeDispatcher(
             NATIVE_DIAGNOSTICS_CAPABILITY,
         )
         fun supportedCapabilityVersions(name: String): Set<Int> = when {
-            name == "history.page" -> setOf(1, 2)
-            name == "commands.durable" -> setOf(1, 2, 3, 4)
+            name == "history.page" -> setOf(1, 2, 3)
+            name == "commands.durable" -> setOf(1, 2, 3, 4, 5)
             name == MATRIX_BOOTSTRAP_CAPABILITY -> setOf(3)
             name in SUPPORTED_CAPABILITIES -> setOf(1)
             else -> emptySet()

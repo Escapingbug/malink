@@ -237,6 +237,46 @@ class MatrixMlp3NativeStorageTest {
     }
 
     @Test
+    fun `project key store retains a primary and recovered history room for one project`() {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val primary = MatrixMlp3ProjectKeyGrant(
+            workspaceId = "workspace-1",
+            projectId = "project-1",
+            roomId = "!project:example.org",
+            deviceId = "device-1",
+            certificateId = "certificate-1",
+            activeKeyId = "key-project",
+            keys = listOf(MatrixMlp3ProjectKey("key-project", ByteArray(32) { 1 }, 1)),
+        )
+        val history = MatrixMlp3ProjectKeyGrant(
+            workspaceId = "workspace-1",
+            projectId = "project-1",
+            roomId = "!history:example.org",
+            deviceId = "device-1",
+            certificateId = "certificate-1",
+            activeKeyId = "key-history",
+            keys = listOf(MatrixMlp3ProjectKey("key-history", ByteArray(32) { 2 }, 2)),
+        )
+        AtomicEncryptedMatrixMlp3ProjectKeyStore(blob, JvmAesGcmCipher(), "account-a").apply {
+            save(primary)
+            save(history)
+        }
+
+        val restored = AtomicEncryptedMatrixMlp3ProjectKeyStore(
+            blob,
+            JvmAesGcmCipher(),
+            "account-a",
+        )
+        assertEquals(2, restored.values().size)
+        assertEquals("key-history", restored.valueForRoom(history.roomId)?.activeKeyId)
+        assertEquals(
+            "key-project",
+            restored.valueForProject("project-1", setOf(history.roomId))?.activeKeyId,
+        )
+        assertNull(restored.value())
+    }
+
+    @Test
     fun `projection cache write failure does not escape into event processing`() {
         val blob = MemoryMatrixMlp3BlobStore().apply { failWrites = true }
         val recorder = RecordingDiagnostics()

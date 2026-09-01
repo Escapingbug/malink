@@ -108,6 +108,15 @@ export class FileTimelineKeyStore {
         })
     }
 
+    deleteRoom(roomId: string): Promise<void> {
+        return this.serial(async () => {
+            this.assertInitialized()
+            if (!this.state.rooms[roomId]) return
+            delete this.state.rooms[roomId]
+            await this.writeAtomic()
+        })
+    }
+
     private serial<T>(operation: () => Promise<T>): Promise<T> {
         const result = this.chain.then(operation)
         this.chain = result.then(() => undefined, () => undefined)

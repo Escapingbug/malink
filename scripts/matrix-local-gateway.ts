@@ -400,6 +400,7 @@ if (active.length === 0) {
 }
 
 const localRoomIds = configuredRooms.map(room => room.roomId)
+const providerHistoryRoomIds = new Set<string>()
 const portableTrustedDevices = async () =>
     (await workspaceAuthorization.activeGrants()).map(grant =>
         trustedDeviceFromWorkspaceGrant(grant, localRoomIds))
@@ -642,6 +643,15 @@ runner = new MatrixMlp3GatewayRunner(config, {
                 trustedDeviceFromRecord(record, localRoomIds)),
             ...await portableTrustedDevices(),
         ]),
+    onProviderHistoryRoomAvailable: roomId => {
+        providerHistoryRoomIds.add(roomId)
+        if (!localRoomIds.includes(roomId)) localRoomIds.push(roomId)
+    },
+    onProviderHistoryRoomDeleted: roomId => {
+        providerHistoryRoomIds.delete(roomId)
+        const index = localRoomIds.indexOf(roomId)
+        if (index >= 0) localRoomIds.splice(index, 1)
+    },
     isTrustedDeviceActive: async deviceId => {
         const local = await registry.get(deviceId)
         if (local?.workspaceGrant) return workspaceAuthorization.isActive(deviceId)
@@ -823,9 +833,10 @@ runner = new MatrixMlp3GatewayRunner(config, {
             cwd: projectCwd,
             providerName: selectedProvider,
         })
-        localRoomIds.splice(0, localRoomIds.length, ...(
-            await projectCatalog.list()
-        ).map(project => project.roomId))
+        localRoomIds.splice(0, localRoomIds.length, ...new Set([
+            ...(await projectCatalog.list()).map(project => project.roomId),
+            ...providerHistoryRoomIds,
+        ]))
         process.stdout.write(
             `Device ${input.requestedByDeviceId} created project ${projectName} on this Gateway.\n`,
         )
@@ -867,9 +878,10 @@ runner = new MatrixMlp3GatewayRunner(config, {
     },
     deleteProject: async input => {
         await projectCatalog.remove(input.projectId)
-        localRoomIds.splice(0, localRoomIds.length, ...(
-            await projectCatalog.list()
-        ).map(project => project.roomId))
+        localRoomIds.splice(0, localRoomIds.length, ...new Set([
+            ...(await projectCatalog.list()).map(project => project.roomId),
+            ...providerHistoryRoomIds,
+        ]))
         process.stdout.write(
             `Device ${input.requestedByDeviceId} deleted project ${input.projectId}.\n`,
         )

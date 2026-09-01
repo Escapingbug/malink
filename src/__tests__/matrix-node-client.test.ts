@@ -145,6 +145,57 @@ describe('MatrixNodeSdkGatewayClient', () => {
         expect(post?.[1]?.body).toBe(JSON.stringify({ user_id: '@new:example.test' }))
     })
 
+    it('redacts recursively paged thread relations and retires the room', async () => {
+        const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+            const url = new URL(String(input))
+            const path = decodeURIComponent(url.pathname)
+            if (path.includes('/relations/')) {
+                return jsonResponse(url.searchParams.get('from')
+                    ? { chunk: [{ event_id: '$reply-1' }] }
+                    : { chunk: [{ event_id: '$reply-2' }], next_batch: 'next' })
+            }
+            if (path.endsWith('/members')) {
+                return jsonResponse({
+                    chunk: [
+                        {
+                            state_key: '@gateway:example.test',
+                            content: { membership: 'join' },
+                        },
+                        {
+                            state_key: '@phone:example.test',
+                            content: { membership: 'join' },
+                        },
+                    ],
+                })
+            }
+            if (path.endsWith('/aliases')) {
+                return jsonResponse({ aliases: ['#history:example.test'] })
+            }
+            return jsonResponse({})
+        })
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test',
+            accessToken: 'token',
+            userId: '@gateway:example.test',
+            deviceId: 'STABLE_DEVICE',
+        }, 1_000, undefined, fetchMock as unknown as typeof fetch)
+
+        await client.deleteRoomThread('!room:example.test', '$root')
+        await client.retireRoom('!room:example.test')
+
+        const calls = fetchMock.mock.calls.map(([input, init]) => ({
+            method: init?.method,
+            path: decodeURIComponent(new URL(String(input)).pathname),
+        }))
+        expect(calls.filter(call => call.path.includes('/redact/'))).toHaveLength(3)
+        expect(calls).toEqual(expect.arrayContaining([
+            expect.objectContaining({ method: 'POST', path: expect.stringContaining('/kick') }),
+            expect.objectContaining({ method: 'DELETE', path: '/_matrix/client/v3/directory/room/#history:example.test' }),
+            expect.objectContaining({ method: 'POST', path: expect.stringContaining('/leave') }),
+            expect.objectContaining({ method: 'POST', path: expect.stringContaining('/forget') }),
+        ]))
+    })
+
     it('reopens the same Olm identity for a persisted Matrix device', async () => {
         const directory = await temporaryDirectory()
         const fetchMock = vi.fn(async () => new Response(JSON.stringify({

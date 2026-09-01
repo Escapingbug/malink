@@ -68,6 +68,7 @@ import id.my.anciety.malink.security.malink.MLP3_MATRIX_KEY_GRANT_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE
+import id.my.anciety.malink.security.malink.MatrixMlp3ProjectKeyGrant
 import id.my.anciety.malink.security.malink.MatrixMlp3Protocol
 import id.my.anciety.malink.security.malink.PairingCodec
 import id.my.anciety.malink.security.malink.PairingOperation
@@ -363,6 +364,8 @@ class NativeClientRuntime(
     private val preTrustEvents = ArrayDeque<MatrixDecryptedEvent>()
     private val initializedHistoryRelations = mutableSetOf<String>()
     private val historyRelationTokens = mutableMapOf<String, String>()
+    private val initializedProviderHistoryRooms = mutableSetOf<String>()
+    private val providerHistoryTokens = mutableMapOf<String, String>()
     @Volatile private var lastLifecycle: Pair<LifecyclePhase, String?>? = null
     private val matrixMlp3Projection = MatrixMlp3NativeProjection(
         gatewayId = { trust?.gatewayId ?: "gateway" },
@@ -452,8 +455,14 @@ class NativeClientRuntime(
                     diagnostics.record("history.page.requested")
                 val online = matrix.status.phase == MatrixRuntimePhase.SYNCING
                 val initialized = sessionId in initializedHistoryRelations
+                val providerHistoryAvailable = matrixMlp3Projection.providerHistory(sessionId) != null
+                val providerHistoryHasMore = matrixMlp3Projection.providerHistoryHasMore(sessionId)
                 val externalHasMore = allowRemote && online && (
-                    !initialized || historyRelationTokens.containsKey(sessionId)
+                    !initialized
+                        || historyRelationTokens.containsKey(sessionId)
+                        || (providerHistoryAvailable && sessionId !in initializedProviderHistoryRooms)
+                        || providerHistoryTokens.containsKey(sessionId)
+                        || providerHistoryHasMore
                 )
                 var local = eventHub.historyPage(
                     sessionId,
@@ -475,12 +484,16 @@ class NativeClientRuntime(
                     // empty history, not a restoration failure.
                     initializedHistoryRelations += sessionId
                     historyRelationTokens.remove(sessionId)
-                    local = eventHub.historyPage(
-                        sessionId,
-                        before,
-                        limit,
-                        externalHasMore = false,
-                    )
+                    local = if (matrixMlp3Projection.providerHistory(sessionId) != null) {
+                        loadProviderHistoryIntoPage(sessionId, before, limit)
+                    } else {
+                        eventHub.historyPage(
+                            sessionId,
+                            before,
+                            limit,
+                            externalHasMore = false,
+                        )
+                    }
                     diagnostics.record(
                         "history.page.completed",
                         mapOf("received" to "0"),
@@ -489,7 +502,7 @@ class NativeClientRuntime(
                 }
                 val projectId = matrixMlp3Projection.projectId(sessionId)
                     ?: throw IllegalStateException("The session has no project route.")
-                val projectKeys = matrixMlp3ProjectKeys.value(projectId)
+                val projectKeys = primaryProjectKeys(projectId)
                     ?: throw IllegalStateException("The session project key is unavailable.")
                 val roomId = try {
                     projectKeys.roomId
@@ -531,14 +544,30 @@ class NativeClientRuntime(
                         sessionId,
                         before,
                         limit,
-                        externalHasMore = online && historyRelationTokens.containsKey(sessionId),
+                        externalHasMore = online && (
+                            historyRelationTokens.containsKey(sessionId)
+                                || providerHistoryTokens.containsKey(sessionId)
+                                || matrixMlp3Projection.providerHistoryHasMore(sessionId)
+                        ),
                     )
-                    if (local.messages.isNotEmpty() || remote.nextBatch == null) {
+                    if (local.messages.isNotEmpty()) {
                         diagnostics.record(
                             "history.page.completed",
                             mapOf("received" to imported.toString()),
                         )
                         return@withLock local
+                    }
+                    if (remote.nextBatch == null) {
+                        val providerPage = if (matrixMlp3Projection.providerHistory(sessionId) != null) {
+                            loadProviderHistoryIntoPage(sessionId, before, limit)
+                        } else {
+                            local
+                        }
+                        diagnostics.record(
+                            "history.page.completed",
+                            mapOf("received" to (imported + providerPage.messages.size).toString()),
+                        )
+                        return@withLock providerPage
                     }
                     from = remote.nextBatch
                 }
@@ -567,6 +596,36 @@ class NativeClientRuntime(
             )
             throw error
         }
+    }
+
+    private suspend fun loadProviderHistoryIntoPage(
+        sessionId: String,
+        before: String?,
+        limit: Int,
+    ): HistoryPage {
+        val binding = matrixMlp3Projection.providerHistory(sessionId)
+            ?: return eventHub.historyPage(sessionId, before, limit, externalHasMore = false)
+        val roomId = binding.string("roomId")
+            ?.takeIf { it.isNotBlank() && it.length <= 512 }
+            ?: throw IllegalStateException("The Provider History room binding is invalid.")
+        check(matrix.publicSession()?.roomBindings?.any { it.roomId == roomId } == true) {
+            "The Provider History room is still joining."
+        }
+        val from = providerHistoryTokens[sessionId]
+        val remote = matrix.loadProviderHistory(roomId, from, maxOf(64, limit * 4))
+        mutex.withLock {
+            remote.events.forEach { processMatrixEvent(it) }
+        }
+        initializedProviderHistoryRooms += sessionId
+        if (remote.nextBatch == null) providerHistoryTokens.remove(sessionId)
+        else providerHistoryTokens[sessionId] = remote.nextBatch
+        return eventHub.historyPage(
+            sessionId,
+            before,
+            limit,
+            externalHasMore = remote.nextBatch != null
+                || matrixMlp3Projection.providerHistoryHasMore(sessionId),
+        )
     }
 
     suspend fun inspectPairing(link: String): NativePairingPreview = mutex.withLock {
@@ -894,6 +953,7 @@ class NativeClientRuntime(
     ): List<id.my.anciety.malink.matrix.MatrixRoomBinding> {
         val output = linkedMapOf<String, id.my.anciety.malink.matrix.MatrixRoomBinding>()
         val projectIds = mutableSetOf<String>()
+        val projectBindings = linkedMapOf<String, id.my.anciety.malink.matrix.MatrixRoomBinding>()
         val directory = signedDirectory.requiredObject("directory")
         require(directory.requiredOpaqueId("workspaceId") == workspaceId) {
             "Gateway Directory belongs to another Workspace."
@@ -913,7 +973,7 @@ class NativeClientRuntime(
                 require(projectIds.add(projectId)) { "Workspace project route is duplicated." }
                 val roomId = project.requiredOpaqueId("roomId")
                 require(roomId !in output) { "Workspace project room is duplicated." }
-                output[roomId] = id.my.anciety.malink.matrix.MatrixRoomBinding(
+                val binding = id.my.anciety.malink.matrix.MatrixRoomBinding(
                     roomId = roomId,
                     gatewayId = workspaceId,
                     conversationId = project.requiredOpaqueId("conversationId"),
@@ -921,7 +981,17 @@ class NativeClientRuntime(
                     gatewayDeviceId = transport.deviceId,
                     gatewayDeviceEd25519 = transport.ed25519,
                 )
+                output[roomId] = binding
+                projectBindings[projectId] = binding
             }
+        }
+        matrixMlp3Projection.providerHistoryRoomBindings().forEach {
+                (sessionId, projectId, roomId) ->
+            val source = projectBindings[projectId] ?: return@forEach
+            require(roomId !in output || output[roomId]?.conversationId == sessionId) {
+                "Provider History room binding is duplicated."
+            }
+            output[roomId] = source.copy(roomId = roomId, conversationId = sessionId)
         }
         require(output.isNotEmpty()) { "Workspace Gateway Directory contains no project rooms." }
         return output.values.toList()
@@ -1572,11 +1642,17 @@ class NativeClientRuntime(
         commandRecoveryAttempts.clear()
     }
 
+    private fun primaryProjectKeys(projectId: String): MatrixMlp3ProjectKeyGrant? =
+        matrixMlp3ProjectKeys.valueForProject(
+            projectId,
+            matrixMlp3Projection.providerHistoryRoomIds(),
+        )
+
     private fun commandProjectRouteReady(commandId: String): Boolean {
         val targetProjectId = outbox.projectId(commandId)
-            ?: matrixMlp3ProjectKeys.values().singleOrNull()?.projectId
+            ?: matrixMlp3ProjectKeys.singleProjectId()
             ?: return false
-        val keys = matrixMlp3ProjectKeys.value(targetProjectId) ?: return false
+        val keys = primaryProjectKeys(targetProjectId) ?: return false
         val roomId = try {
             keys.roomId
         } finally {
@@ -1628,7 +1704,7 @@ class NativeClientRuntime(
                     ) {
                         val projectId = outbox.projectId(command.commandId)
                             ?: throw IllegalStateException("The published command project is unavailable.")
-                        val keys = matrixMlp3ProjectKeys.value(projectId)
+                        val keys = primaryProjectKeys(projectId)
                             ?: throw IllegalStateException("The published command project key is unavailable.")
                         val roomId = try {
                             keys.roomId
@@ -1774,9 +1850,9 @@ class NativeClientRuntime(
         matrixMlp3CommandContent.get(transmission.commandId)?.let { return it }
         val activeTrust = trust ?: throw NativeTrustRequiredException("Pair the Gateway before sending commands.")
         val targetProjectId = transmission.projectId
-            ?: matrixMlp3ProjectKeys.values().singleOrNull()?.projectId
+            ?: matrixMlp3ProjectKeys.singleProjectId()
             ?: throw IllegalStateException("A target project is required for this command.")
-        val keys = matrixMlp3ProjectKeys.value(targetProjectId)
+        val keys = primaryProjectKeys(targetProjectId)
             ?: throw IllegalStateException("The MLP/3 project key grant is unavailable.")
         val roomId = keys.roomId
         require(matrix.publicSession()?.roomBindings?.any { it.roomId == roomId } == true) {
@@ -1920,6 +1996,20 @@ class NativeClientRuntime(
                     put("providerSessionId", raw.string("providerSessionId")!!)
                 }
             }
+            "provider.history.materialize" -> {
+                v3Operation = "provider.history.materialize"
+                v3SessionId = sessionId
+                    ?: throw IllegalArgumentException("Provider History session is missing.")
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    put(
+                        "expectedFrontier",
+                        raw.long("expectedFrontier")
+                            ?: throw IllegalArgumentException("Provider History frontier is missing."),
+                    )
+                    raw.long("limit")?.let { put("limit", it) }
+                }
+            }
             "session.archive", "session.restore", "session.delete" -> {
                 v3Operation = "session.set_lifecycle"
                 v3SessionId = sessionId ?: throw IllegalArgumentException("Session lifecycle target is missing.")
@@ -2061,9 +2151,9 @@ class NativeClientRuntime(
 
     private fun commandRoomId(transmission: CommandTransmission): String {
         val targetProjectId = transmission.projectId
-            ?: matrixMlp3ProjectKeys.values().singleOrNull()?.projectId
+            ?: matrixMlp3ProjectKeys.singleProjectId()
             ?: throw IllegalStateException("A target project is required for this command.")
-        val keys = matrixMlp3ProjectKeys.value(targetProjectId)
+        val keys = primaryProjectKeys(targetProjectId)
             ?: throw IllegalStateException("The MLP/3 project key grant is unavailable.")
         return try {
             keys.roomId
@@ -2286,7 +2376,7 @@ class NativeClientRuntime(
                     roomId,
                 )
             }
-            val keys = matrixMlp3ProjectKeys.values().firstOrNull { it.roomId == roomId }
+            val keys = matrixMlp3ProjectKeys.valueForRoom(roomId)
                 ?: throw MatrixMlp3EventDeferredException("project_key_grant_pending")
             try {
                 require(pointer.string("projectId") == keys.projectId) {
@@ -2314,7 +2404,7 @@ class NativeClientRuntime(
             }
             return true
         }
-        val keys = matrixMlp3ProjectKeys.values().firstOrNull { it.roomId == roomId }
+        val keys = matrixMlp3ProjectKeys.valueForRoom(roomId)
             ?: throw MatrixMlp3EventDeferredException("project_key_grant_pending")
         val extension = content["io.malink"] as? JsonObject
             ?: throw IllegalArgumentException("The MLP/3 extension is missing.")
@@ -2353,6 +2443,20 @@ class NativeClientRuntime(
             event.eventId,
             threadRootHint,
         )
+        if (protocolPayload.string("type") in setOf("session.ready", "session.lifecycle")) {
+            scheduleWorkspaceDirectoryConvergence()
+        }
+        if (
+            protocolPayload.string("type") == "session.lifecycle"
+            && protocolPayload.string("state") == "deleted"
+        ) {
+            protocolEvent.string("sessionId")?.let { deletedSessionId ->
+                initializedHistoryRelations.remove(deletedSessionId)
+                historyRelationTokens.remove(deletedSessionId)
+                initializedProviderHistoryRooms.remove(deletedSessionId)
+                providerHistoryTokens.remove(deletedSessionId)
+            }
+        }
         result.messages.forEach { message ->
             val sessionId = message.sessionId ?: return@forEach
             eventHub.upsertMessage(sessionId, message, refreshedSnapshot())
@@ -2467,7 +2571,7 @@ class NativeClientRuntime(
     ) {
         val activeTrust = trust ?: return
         if (matrix.publicSession()?.roomBindings?.none { it.roomId == roomId } != false) return
-        val keys = matrixMlp3ProjectKeys.values().firstOrNull { it.roomId == roomId } ?: return
+        val keys = matrixMlp3ProjectKeys.valueForRoom(roomId) ?: return
         val opened = try {
             MatrixMlp3Protocol.openContent(
                 content.objectValue("io.malink"),
@@ -2582,7 +2686,7 @@ class NativeClientRuntime(
         if (extension.long("version") == 3L) {
             val activeTrust = trust ?: return null
             if (event.sender != binding.gatewayUserId) return null
-            val keys = matrixMlp3ProjectKeys.values().firstOrNull { it.roomId == event.roomId }
+            val keys = matrixMlp3ProjectKeys.valueForRoom(event.roomId)
                 ?: return null
             val opened = try {
                 MatrixMlp3Protocol.openContent(extension, event.roomId, keys.projectId, keys)

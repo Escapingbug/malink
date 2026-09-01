@@ -11,6 +11,15 @@ import { gatewayProjectIdentity } from './project'
 export type Mlp3SessionLifecycle = 'active' | 'archived' | 'deleted'
 export type Mlp3SessionScope = 'project' | 'scratch'
 
+export interface PersistedProviderHistoryRoom {
+  roomId: string
+  historyId: string
+  snapshotId: string
+  materializedFrontier: number
+  nextPageIndex: number
+  totalMessages: number
+}
+
 export interface PersistedMlp3Session {
   id: string
   scope: Mlp3SessionScope
@@ -27,6 +36,7 @@ export interface PersistedMlp3Session {
   reasoningEffort: string | null
   permissionMode: string
   providerSessionId: string | null
+  providerHistory: PersistedProviderHistoryRoom | null
   extensions: SessionExtensionBinding[]
   extensionRevision: number
   inheritedFromProjectExtensionRevision: number | null
@@ -121,6 +131,10 @@ export class FileMlp3RuntimeStateStore {
               }
               if (!Array.isArray(session.availableCommands)) {
                 session.availableCommands = []
+                changed = true
+              }
+              if (session.providerHistory === undefined) {
+                session.providerHistory = null
                 changed = true
               }
             }
@@ -291,6 +305,7 @@ function validateProject(project: PersistedMlp3Project, roomId: string): void {
       || !Number.isSafeInteger(session.extensionRevision)
       || session.extensionRevision < 1
       || !Array.isArray(session.availableCommands)
+      || !validProviderHistoryRoom(session.providerHistory)
       || (
         session.inheritedFromProjectExtensionRevision !== null
         && (
@@ -303,4 +318,19 @@ function validateProject(project: PersistedMlp3Project, roomId: string): void {
     }
     ids.add(session.id)
   }
+}
+
+function validProviderHistoryRoom(value: PersistedProviderHistoryRoom | null): boolean {
+  return value === null || (
+    Boolean(value.roomId)
+    && Boolean(value.historyId)
+    && Boolean(value.snapshotId)
+    && Number.isSafeInteger(value.materializedFrontier)
+    && value.materializedFrontier >= 0
+    && Number.isSafeInteger(value.nextPageIndex)
+    && value.nextPageIndex >= 0
+    && Number.isSafeInteger(value.totalMessages)
+    && value.totalMessages >= 0
+    && value.materializedFrontier <= value.totalMessages
+  )
 }

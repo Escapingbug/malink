@@ -65,6 +65,7 @@ export const DEFAULT_PAIRING_OPERATIONS: PairingOperation[] = [
   'project.settings',
   'provider.sessions.list',
   'provider.session.inspect',
+  'provider.history.materialize',
   'artifact.materialize',
   'session.archive',
   'session.restore',

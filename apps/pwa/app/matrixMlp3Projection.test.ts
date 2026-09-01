@@ -144,6 +144,121 @@ describe("MatrixMlp3Projection", () => {
     expect(restored.applyEvent(messageEvent(1), "$duplicate")).toBe(false);
   });
 
+  it("shows only committed reverse Provider History pages in chronological order", () => {
+    const projection = new MatrixMlp3Projection();
+    const historyEvent = (
+      eventId: string,
+      sourceOrdinal: number,
+      body: string,
+      pageIndex = 0,
+    ): Mlp3Event => ({
+      kind: "malink.event",
+      version: 3,
+      eventId,
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      sessionId: "session-a",
+      occurredAt: 10,
+      payload: {
+        type: "provider.history.message",
+        snapshotId: "snapshot-1",
+        sourceMessageId: `source-${sourceOrdinal}`,
+        sourceOrdinal,
+        role: sourceOrdinal % 2 === 0 ? "user" : "assistant",
+        body,
+        pageIndex,
+      },
+    });
+    projection.applyEvent(historyEvent("history-newest", 2, "newest"), "$history-newest");
+    projection.applyEvent(historyEvent("history-older", 1, "older"), "$history-older");
+    expect(projection.sessionProviderHistoryMessages("session-a", "snapshot-1")).toEqual([]);
+
+    projection.applyEvent({
+      kind: "malink.event",
+      version: 3,
+      eventId: "history-page-0",
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      sessionId: "session-a",
+      occurredAt: 11,
+      payload: {
+        type: "provider.history.page.committed",
+        snapshotId: "snapshot-1",
+        pageIndex: 0,
+        previousFrontier: 0,
+        frontier: 2,
+        messageCount: 2,
+        hasMore: true,
+        digest: "A".repeat(43),
+      },
+    }, "$history-page-0");
+
+    expect(
+      projection.sessionProviderHistoryMessages("session-a", "snapshot-1")
+        .map(message => message.body),
+    ).toEqual(["older", "newest"]);
+    const restored = new MatrixMlp3Projection();
+    restored.restore(projection.durableState());
+    expect(restored.providerHistoryState("session-a", "snapshot-1")).toMatchObject({
+      frontier: 2,
+      hasMore: true,
+    });
+  });
+
+  it("keeps a committed Provider History page hidden until every message part arrives", () => {
+    const projection = new MatrixMlp3Projection();
+    const part = (eventId: string, partIndex: number, body: string): Mlp3Event => ({
+      kind: "malink.event",
+      version: 3,
+      eventId,
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      sessionId: "session-a",
+      occurredAt: 10,
+      payload: {
+        type: "provider.history.message",
+        snapshotId: "snapshot-1",
+        sourceMessageId: "source-1",
+        sourceOrdinal: 1,
+        role: "assistant",
+        body,
+        pageIndex: 0,
+        partIndex,
+        partCount: 2,
+      },
+    });
+    projection.applyEvent(part("history-part-0", 0, "long "), "$history-part-0");
+    projection.applyEvent({
+      kind: "malink.event",
+      version: 3,
+      eventId: "history-page-0",
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      sessionId: "session-a",
+      occurredAt: 11,
+      payload: {
+        type: "provider.history.page.committed",
+        snapshotId: "snapshot-1",
+        pageIndex: 0,
+        previousFrontier: 0,
+        frontier: 1,
+        messageCount: 1,
+        hasMore: false,
+        digest: "A".repeat(43),
+      },
+    }, "$history-page-0");
+
+    expect(projection.sessionProviderHistoryMessages("session-a", "snapshot-1")).toEqual([]);
+    expect(projection.providerHistoryState("session-a", "snapshot-1")).toBeUndefined();
+
+    projection.applyEvent(part("history-part-1", 1, "message"), "$history-part-1");
+    expect(
+      projection.sessionProviderHistoryMessages("session-a", "snapshot-1")
+        .map(message => message.body),
+    ).toEqual(["long ", "message"]);
+    expect(projection.providerHistoryState("session-a", "snapshot-1")?.frontier).toBe(1);
+  });
+
   it("tracks the active turn across durable restore and clears it on completion", () => {
     const first = new MatrixMlp3Projection();
     first.applyCommand(createCommand("a"), "$root-a");

@@ -855,6 +855,17 @@ function toMlp3Command(
           providerSessionId: payload.providerSessionId,
         },
       };
+    case "provider.history.materialize":
+      return {
+        ...common,
+        sessionId: payload.sessionId,
+        operation: "provider.history.materialize",
+        payload: {
+          operation: "provider.history.materialize",
+          expectedFrontier: payload.expectedFrontier,
+          ...(payload.limit === undefined ? {} : { limit: payload.limit }),
+        },
+      };
     case "session.archive":
     case "session.restore":
     case "session.delete":

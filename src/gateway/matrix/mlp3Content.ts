@@ -106,6 +106,7 @@ export class GatewayMlp3ContentLayer {
     resolve: (result: MatrixSendEventResult) => void
     reject: (error: Error) => void
   }>()
+  private readonly auxiliaryRoomSources = new Map<string, string>()
   private deliveryPump: Promise<void> | null = null
 
   constructor(
@@ -137,6 +138,16 @@ export class GatewayMlp3ContentLayer {
 
   outboxHealth(now = Date.now()): MatrixMlp3OutboxHealth {
     return this.outbox.health(now)
+  }
+
+  authorizeAuxiliaryRoom(roomId: string, sourceRoomId: string): void {
+    this.auxiliaryRoomSources.set(roomId, sourceRoomId)
+  }
+
+  async forgetRoom(roomId: string): Promise<void> {
+    this.auxiliaryRoomSources.delete(roomId)
+    this.transports.delete(roomId)
+    await this.projectKeys.deleteRoom(roomId)
   }
 
   projectId(room: MatrixGatewayRoomConfig): string {
@@ -854,8 +865,10 @@ export class GatewayMlp3ContentLayer {
     const devices = this.getTrustedDevices
       ? await this.getTrustedDevices()
       : this.trustedDevices
+    const sourceRoomId = this.auxiliaryRoomSources.get(roomId)
     return devices.filter(device =>
-      device.allowedRoomIds.includes(roomId)
+      (device.allowedRoomIds.includes(roomId)
+        || (sourceRoomId !== undefined && device.allowedRoomIds.includes(sourceRoomId)))
       && (device.certificateExpiresAt === undefined || device.certificateExpiresAt > now),
     )
   }

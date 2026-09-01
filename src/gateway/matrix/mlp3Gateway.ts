@@ -14,6 +14,7 @@ import {
   type NativeClientRelease,
   type PairingOperation,
   type ProviderCommand,
+  type ProviderHistoryMessage,
   type ProviderSessionEntry,
   type GatewayEnrollmentPending,
   type GatewayUpdateStatus,
@@ -60,6 +61,7 @@ import {
   type PersistedMlp3Project,
   type PersistedMlp3Session,
 } from './fileMlp3RuntimeState'
+import { FileProviderHistorySnapshotStore } from './fileProviderHistorySnapshotStore'
 import {
   MatrixMlp3CommandAuthorizer,
   canApprovePrivilegedExecution,
@@ -93,6 +95,12 @@ import {
   boundedProviderSessionInspection,
   providerSessionsPage,
 } from './providerHistoryTransport'
+import {
+  providerHistoryDigest,
+  providerHistoryIdentity,
+  providerHistoryPage,
+  splitProviderHistoryMessage,
+} from './providerHistoryMaterialization'
 
 interface Mlp3SessionRuntime {
   record: PersistedMlp3Session
@@ -197,6 +205,10 @@ export interface MatrixMlp3GatewayDependencies {
     alreadyExisted: boolean
   }>
   onProjectCreated?: (room: MatrixGatewayRoomConfig) => Promise<void>
+  /** Makes a data-only history room visible to dynamic device authorization. */
+  onProviderHistoryRoomAvailable?: (roomId: string) => void | Promise<void>
+  /** Removes a retired history room from dynamic Matrix sync/authorization. */
+  onProviderHistoryRoomDeleted?: (roomId: string) => void | Promise<void>
   updateProjectMetadata?: (input: {
     sourceRoom: MatrixGatewayRoomConfig
     requestedByDeviceId: string
@@ -306,6 +318,7 @@ export class MatrixMlp3GatewayRunner {
   }>()
   private publishedClientReleases: NativeClientRelease[] = []
   private readonly runtimeEpoch = randomUUID()
+  private readonly providerHistorySnapshots: FileProviderHistorySnapshotStore
   private gatewayNodeStatusTimer: ReturnType<typeof setTimeout> | null = null
   private gatewayNodeStatusFingerprint: string | null = null
   private gatewayNodeStatusLastPublishedAt = 0
@@ -342,6 +355,10 @@ export class MatrixMlp3GatewayRunner {
       `${config.replayLedgerPath}.v3-artifacts.json`,
       config.gatewayId,
       { onLog: dependencies.onLog },
+    )
+    this.providerHistorySnapshots = new FileProviderHistorySnapshotStore(
+      `${config.replayLedgerPath}.v3-provider-history-snapshots.json`,
+      config.gatewayId,
     )
     this.authorizer = new MatrixMlp3CommandAuthorizer(config.gatewayId, this.journal)
     this.content = new GatewayMlp3ContentLayer(
@@ -427,9 +444,11 @@ export class MatrixMlp3GatewayRunner {
       await this.runtimeState.initialize(this.config.rooms)
       await this.nativeClientReleases.initialize()
       await this.artifacts.initialize()
+      await this.providerHistorySnapshots.initialize()
       this.publishedClientReleases = await this.nativeClientReleases.releases()
       await this.content.initialize()
       await this.createProjectRuntimes()
+      await this.registerProviderHistoryRooms()
       for (const record of await this.journal.terminalProjectDeletions()) {
         if (record.terminal?.outcome !== 'succeeded') continue
         const project = this.projectForRecord(record)
@@ -446,12 +465,14 @@ export class MatrixMlp3GatewayRunner {
         await this.client.assertRoomEncrypted(project.config.roomId)
         await this.content.provisionProject(project.config, this.client, false)
         if (project.deletingCommandId) continue
+        await this.cleanupLegacyArchivedSessions(project)
         void this.prepareSessionThreads(project).catch(error => {
           this.log(`[mlp3/matrix] session thread convergence deferred: ${formatError(error)}`)
         })
         await this.publishSessionRecovery(project)
         await this.publishWorkspaceSnapshot(project, false)
         await this.publishProjectSnapshot(project, false)
+        await this.provisionProviderHistoryRooms(project)
       }
       this.state = 'running'
       this.scheduleGatewayNodeStatusObservation(
@@ -583,6 +604,122 @@ export class MatrixMlp3GatewayRunner {
       await this.publishWorkspaceSnapshot(project)
       await this.publishProjectSnapshot(project)
     }
+    for (const record of project.project.sessions) {
+      if (!record.providerHistory) continue
+      await this.provisionProviderHistoryRoom(project, record, deviceId)
+    }
+  }
+
+  private async registerProviderHistoryRooms(): Promise<void> {
+    for (const project of this.projects.values()) {
+      for (const record of project.project.sessions) {
+        const binding = record.providerHistory
+        if (!binding) continue
+        this.content.authorizeAuxiliaryRoom(binding.roomId, project.config.roomId)
+        await this.dependencies.onProviderHistoryRoomAvailable?.(binding.roomId)
+      }
+    }
+  }
+
+  private async provisionProviderHistoryRooms(project: V3ProjectRuntime): Promise<void> {
+    for (const record of project.project.sessions) {
+      if (record.providerHistory) await this.provisionProviderHistoryRoom(project, record)
+    }
+  }
+
+  private async ensureProviderHistoryRoom(
+    project: V3ProjectRuntime,
+    record: PersistedMlp3Session,
+    historyId: string,
+  ): Promise<string> {
+    if (!this.client.ensureProviderHistoryRoom) {
+      throw new Error('Matrix transport cannot provision Provider History rooms')
+    }
+    const devices = await this.trustedDevicesForProject(project)
+    const result = await this.client.ensureProviderHistoryRoom({
+      aliasLocalpart: providerHistoryRoomAliasLocalpart(
+        this.config.gatewayId,
+        this.config.gatewayNodeId,
+        historyId,
+      ),
+      inviteUserIds: [...new Set(devices.map(device => device.matrixUserId))],
+      marker: {
+        kind: 'malink.provider_history.provisioning',
+        version: 1,
+        workspaceId: this.config.gatewayId,
+        gatewayNodeId: this.config.gatewayNodeId,
+        projectId: project.project.projectId,
+        historyId,
+      },
+    })
+    try {
+      this.content.authorizeAuxiliaryRoom(result.roomId, project.config.roomId)
+      await this.dependencies.onProviderHistoryRoomAvailable?.(result.roomId)
+      await this.client.assertRoomEncrypted(result.roomId)
+      for (const userId of new Set(devices.map(device => device.matrixUserId))) {
+        await this.client.ensureRoomInvitation?.(result.roomId, userId)
+      }
+      const room = this.providerHistoryRoomConfig(project, record, result.roomId)
+      await this.content.provisionProject(room, this.client)
+      return result.roomId
+    } catch (error) {
+      await this.retireProviderHistoryRoom(result.roomId).catch(cleanupError => {
+        this.log(
+          `[mlp3/matrix] failed Provider History room rollback for ${result.roomId}: `
+          + formatError(cleanupError),
+        )
+      })
+      throw error
+    }
+  }
+
+  private async provisionProviderHistoryRoom(
+    project: V3ProjectRuntime,
+    record: PersistedMlp3Session,
+    onlyDeviceId?: string,
+  ): Promise<void> {
+    const binding = record.providerHistory
+    if (!binding) return
+    const devices = await this.trustedDevicesForProject(project)
+    this.content.authorizeAuxiliaryRoom(binding.roomId, project.config.roomId)
+    await this.dependencies.onProviderHistoryRoomAvailable?.(binding.roomId)
+    await this.client.assertRoomEncrypted(binding.roomId)
+    for (const userId of new Set(devices.map(device => device.matrixUserId))) {
+      await this.client.ensureRoomInvitation?.(binding.roomId, userId)
+    }
+    const room = this.providerHistoryRoomConfig(project, record)
+    if (onlyDeviceId) {
+      await this.content.provisionPairingDevice(room, onlyDeviceId, this.client)
+    } else {
+      await this.content.provisionProject(room, this.client)
+    }
+  }
+
+  private providerHistoryRoomConfig(
+    project: V3ProjectRuntime,
+    record: PersistedMlp3Session,
+    roomId = record.providerHistory?.roomId,
+  ): MatrixGatewayRoomConfig {
+    if (!roomId) throw new Error(`Session ${record.id} has no Provider History room`)
+    return {
+      ...project.config,
+      roomId,
+      conversationId: record.id,
+      projectId: project.project.projectId,
+      cwd: record.cwd,
+      providerName: record.provider,
+    }
+  }
+
+  private async trustedDevicesForProject(
+    project: V3ProjectRuntime,
+  ): Promise<readonly import('./config').MatrixGatewayTrustedDevice[]> {
+    const devices = await this.dependencies.listTrustedDevices?.() ?? this.config.trustedDevices
+    const now = this.now()
+    return devices.filter(device =>
+      device.allowedRoomIds.includes(project.config.roomId)
+      && device.certificateExpiresAt > now
+    )
   }
 
   publishNativeClientRelease(
@@ -958,6 +1095,9 @@ export class MatrixMlp3GatewayRunner {
       case 'provider.session.inspect':
         await this.inspectProviderSession(project, command)
         return
+      case 'provider.history.materialize':
+        await this.materializeProviderHistory(project, command)
+        return
       case 'device.invitation.create':
         await this.createInvitation(project, command)
         return
@@ -1114,6 +1254,7 @@ export class MatrixMlp3GatewayRunner {
       reasoningEffort: project.project.reasoningEffort,
       permissionMode: 'bypassPermissions',
       providerSessionId: null,
+      providerHistory: null,
       extensions: [],
       extensionRevision: 1,
       inheritedFromProjectExtensionRevision: null,
@@ -1520,6 +1661,7 @@ export class MatrixMlp3GatewayRunner {
       reasoningEffort: settings.reasoningEffort,
       permissionMode: settings.permissionMode,
       providerSessionId: command.payload.providerSessionId ?? null,
+      providerHistory: null,
       extensions: this.extensions.normalizeBindings(
         command.payload.extensions ?? project.project.defaultExtensions,
       ),
@@ -1529,7 +1671,6 @@ export class MatrixMlp3GatewayRunner {
         : null,
       availableCommands: [],
     }
-    project.project.sessions.push(record)
     let runtime: Mlp3SessionRuntime | null = null
     let persisted = false
     const rollback = async (): Promise<void> => {
@@ -1538,6 +1679,12 @@ export class MatrixMlp3GatewayRunner {
       if (runtime) await this.destroySessionRuntime(runtime, 'delete').catch(() => undefined)
       runtime = null
       if (scope === 'scratch') await this.removeScratchSessionDirectory(record).catch(() => undefined)
+      await this.deleteProviderHistoryStorage(record).catch(cleanupError => {
+        this.log(
+          `[mlp3/matrix] failed Provider History session rollback for ${record.id}: `
+          + formatError(cleanupError),
+        )
+      })
       if (persisted) {
         await this.persist(project).catch(persistError => {
           this.log(`[mlp3/matrix] session rollback persistence failed: ${formatError(persistError)}`)
@@ -1545,6 +1692,10 @@ export class MatrixMlp3GatewayRunner {
       }
     }
     try {
+      if (record.providerSessionId) {
+        await this.prepareRecoveredProviderHistory(project, record, signal)
+      }
+      project.project.sessions.push(record)
       runtime = this.createSessionRuntime(project, record)
       project.sessions.set(record.id, runtime)
       await this.persist(project)
@@ -2032,35 +2183,53 @@ export class MatrixMlp3GatewayRunner {
     const record = project.project.sessions.find(candidate => candidate.id === sessionId)
     if (!record) throw new Error(`Unknown Malink session ${sessionId}`)
     if (command.payload.state === 'active' && record.lifecycle !== 'active') {
-      throw new Error('Archived sessions cannot be restored; continue them from Provider History')
+      throw new Error('Deleted sessions cannot be restored; continue them from Provider History')
     }
-    // Legacy delete commands are compatibility aliases for Malink archive.
-    // Provider-owned history is never deleted here.
-    const target = command.payload.state === 'active' ? 'active' : 'archived'
-    const alreadyApplied = record.lifecycle === target
-    if (!alreadyApplied) {
-      if (target === 'active') {
-        record.lifecycle = 'active'
-        const runtime = this.createSessionRuntime(project, record)
-        project.sessions.set(record.id, runtime)
-      } else {
-        await this.assertMaintenanceSessionCanBeArchived(record.id)
-        const active = project.sessions.get(record.id)
-        if (active) {
-          await this.destroySessionRuntime(active, 'archive')
-          project.sessions.delete(record.id)
-        }
-        record.lifecycle = target
-      }
-      record.updatedAt = this.now()
-      record.stateVersion += 1
+    if (command.payload.state === 'active') {
+      const lifecycle = this.eventFor(project, record, command, 'session-lifecycle', {
+        type: 'session.lifecycle',
+        projection: terminalProjection(record, 'idle', this.extensions),
+        state: 'active',
+        alreadyApplied: true,
+      })
+      await this.settleAndDeliver(project, command, lifecycle, 'succeeded')
+      return
+    }
+    await this.assertMaintenanceSessionCanBeArchived(record.id)
+    const active = project.sessions.get(record.id)
+    if (active) {
+      record.providerSessionId = active.session.sessionRecord.conversationId
+      await this.destroySessionRuntime(active, 'archive')
+      project.sessions.delete(record.id)
+    }
+    const previousLifecycle = record.lifecycle
+    const previousUpdatedAt = record.updatedAt
+    const previousStateVersion = record.stateVersion
+    record.lifecycle = 'archived'
+    record.updatedAt = this.now()
+    record.stateVersion += 1
+    try {
       await this.persist(project)
+    } catch (error) {
+      record.lifecycle = previousLifecycle
+      record.updatedAt = previousUpdatedAt
+      record.stateVersion = previousStateVersion
+      if (active) project.sessions.set(record.id, this.createSessionRuntime(project, record))
+      throw error
     }
+    // `archived` is an internal migration/cleanup checkpoint, not a retained
+    // product lifecycle. If the process stops after this point, startup cleanup
+    // finishes the idempotent Matrix redaction before dropping the record.
+    await this.deleteSessionStorage(project, record)
+    record.lifecycle = 'deleted'
+    record.updatedAt = this.now()
+    record.stateVersion += 1
+    project.project.sessions = project.project.sessions.filter(candidate => candidate.id !== record.id)
+    await this.persist(project)
     const lifecycle = this.eventFor(project, record, command, 'session-lifecycle', {
       type: 'session.lifecycle',
       projection: terminalProjection(record, 'idle', this.extensions),
-      state: target,
-      ...(alreadyApplied ? { alreadyApplied: true } : {}),
+      state: 'deleted',
     })
     await this.settleAndDeliver(project, command, lifecycle, 'succeeded')
   }
@@ -2275,8 +2444,8 @@ export class MatrixMlp3GatewayRunner {
     if (!this.dependencies.validateProjectDeletion || !this.dependencies.deleteProject) {
       throw new Error('This Gateway host does not support project deletion')
     }
-    if ([...project.sessions.values()].some(runtime => runtime.activeTurn !== null)) {
-      throw new Error('Wait for active project turns to finish before deleting this project')
+    if (project.project.sessions.length > 0) {
+      throw new Error('Delete every Malink session before deleting this project')
     }
     await this.dependencies.validateProjectDeletion({
       sourceRoom: project.config,
@@ -2435,6 +2604,201 @@ export class MatrixMlp3GatewayRunner {
     }
   }
 
+  private async prepareRecoveredProviderHistory(
+    project: V3ProjectRuntime,
+    record: PersistedMlp3Session,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const providerSessionId = record.providerSessionId
+    if (!providerSessionId) return
+    assertCommandExecutionActive(signal)
+    await this.dependencies.assertDirectoryAccess?.({
+      cwd: record.cwd,
+      operation: 'provider.history',
+      signal,
+    })
+    const provider = this.providerForHistory(project, record)
+    try {
+      if (!provider.getSessionHistory) {
+        throw new Error(`Provider ${record.provider} cannot materialize session history`)
+      }
+      provider.prepareWorkingDirectory?.(record.cwd)
+      const history = await provider.getSessionHistory(providerSessionId, record.cwd)
+      assertCommandExecutionActive(signal)
+      const messages = normalizeProviderHistoryMessages(history.messages)
+      const identity = providerHistoryIdentity({
+        workspaceId: this.config.gatewayId,
+        projectId: project.project.projectId,
+        sessionId: record.id,
+        providerSessionId,
+        messages,
+      })
+      const roomId = await this.ensureProviderHistoryRoom(project, record, identity.historyId)
+      record.providerHistory = {
+        roomId,
+        historyId: identity.historyId,
+        snapshotId: identity.snapshotId,
+        materializedFrontier: 0,
+        nextPageIndex: 0,
+        totalMessages: messages.length,
+      }
+      await this.providerHistorySnapshots.put({
+        sessionId: record.id,
+        provider: record.provider,
+        providerSessionId,
+        snapshotId: identity.snapshotId,
+        title: (history.title.trim() || record.title).slice(0, 512),
+        createdAt: this.now(),
+        messages,
+      })
+      if (record.title === 'New session' && history.title.trim()) {
+        record.title = history.title.trim().slice(0, 512)
+      }
+    } finally {
+      await provider.destroy?.().catch(error => {
+        this.log(`[mlp3/matrix] provider history snapshot cleanup failed: ${formatError(error)}`)
+      })
+    }
+  }
+
+  private providerForHistory(
+    project: V3ProjectRuntime,
+    record: PersistedMlp3Session,
+  ): AgentProvider {
+    const effectiveRoom: MatrixGatewayRoomConfig = {
+      ...project.config,
+      cwd: record.cwd,
+      providerName: record.provider,
+      ...(record.model ? { model: record.model } : { model: undefined }),
+    }
+    const provider = this.dependencies.providerFactory?.(effectiveRoom, record)
+      ?? createProviderInstance(record.provider)
+    if (!provider) throw new Error(`Provider ${record.provider} is not configured`)
+    return provider
+  }
+
+  private async materializeProviderHistory(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'provider.history.materialize'>,
+  ): Promise<void> {
+    const sessionId = command.sessionId
+    if (!sessionId) throw new Error('Provider History command is missing its session ID')
+    const record = project.project.sessions.find(candidate => candidate.id === sessionId)
+    if (!record || record.lifecycle === 'deleted') {
+      throw new Error(`Unknown Malink session ${sessionId}`)
+    }
+    const binding = record.providerHistory
+    if (!binding) throw new Error(`Session ${sessionId} has no Provider History room`)
+    if (command.payload.expectedFrontier > binding.materializedFrontier) {
+      throw new Error(
+        `Provider History frontier conflict: expected ${command.payload.expectedFrontier}, `
+        + `current ${binding.materializedFrontier}`,
+      )
+    }
+    await this.provisionProviderHistoryRoom(project, record)
+    const snapshot = await this.providerHistorySnapshots.get(sessionId)
+    if (!snapshot || snapshot.snapshotId !== binding.snapshotId) {
+      throw new Error(`Provider History snapshot ${binding.snapshotId} is unavailable`)
+    }
+    const previousFrontier = binding.materializedFrontier
+    const alreadyMaterialized = command.payload.expectedFrontier < binding.materializedFrontier
+      || binding.materializedFrontier >= snapshot.messages.length
+    if (!alreadyMaterialized) {
+      const page = providerHistoryPage(
+        snapshot.messages,
+        binding.materializedFrontier,
+        command.payload.limit,
+      )
+      const room = this.providerHistoryRoomConfig(project, record)
+      for (const entry of page) {
+        const parts = splitProviderHistoryMessage(entry.message.text)
+        for (const [partIndex, body] of parts.entries()) {
+          const event: Mlp3Event = {
+            kind: 'malink.event',
+            version: 3,
+            eventId: providerHistoryEventId(
+              binding.historyId,
+              binding.snapshotId,
+              `message:${entry.sourceOrdinal}:${partIndex}`,
+              entry.sourceOrdinal,
+            ),
+            workspaceId: this.config.gatewayId,
+            projectId: project.project.projectId,
+            sessionId,
+            occurredAt: this.now(),
+            payload: {
+              type: 'provider.history.message',
+              snapshotId: binding.snapshotId,
+              sourceMessageId: entry.message.id,
+              sourceOrdinal: entry.sourceOrdinal,
+              role: entry.message.role,
+              body,
+              pageIndex: binding.nextPageIndex,
+              ...(parts.length > 1 ? { partIndex, partCount: parts.length } : {}),
+            },
+          }
+          await this.content.queueEvent(room, event, this.client, { priority: 'bulk' })
+        }
+      }
+      const nextFrontier = binding.materializedFrontier + page.length
+      const hasMore = nextFrontier < snapshot.messages.length
+      const commit: Mlp3Event = {
+        kind: 'malink.event',
+        version: 3,
+        eventId: providerHistoryEventId(
+          binding.historyId,
+          binding.snapshotId,
+          `page:${binding.nextPageIndex}:${binding.materializedFrontier}:${nextFrontier}`,
+          nextFrontier,
+        ),
+        workspaceId: this.config.gatewayId,
+        projectId: project.project.projectId,
+        sessionId,
+        occurredAt: this.now(),
+        payload: {
+          type: 'provider.history.page.committed',
+          snapshotId: binding.snapshotId,
+          pageIndex: binding.nextPageIndex,
+          previousFrontier: binding.materializedFrontier,
+          frontier: nextFrontier,
+          messageCount: page.length,
+          hasMore,
+          digest: providerHistoryDigest(page.map(entry => entry.message)),
+        },
+      }
+      const committed = await this.content.enqueueEvent(
+        room,
+        commit,
+        this.client,
+        { priority: 'bulk' },
+      )
+      // The project-room terminal event is urgent and may otherwise overtake
+      // bulk history traffic. Confirm the page commit only after Matrix has
+      // accepted every earlier event in this room's ordered delivery lane.
+      await committed.confirmation
+      binding.materializedFrontier = nextFrontier
+      binding.nextPageIndex += 1
+      await this.persist(project)
+    }
+    const hasMore = binding.materializedFrontier < snapshot.messages.length
+    const payload = {
+      type: 'provider.history.materialized' as const,
+      historyRoomId: binding.roomId,
+      snapshotId: binding.snapshotId,
+      previousFrontier,
+      frontier: binding.materializedFrontier,
+      hasMore,
+      ...(alreadyMaterialized ? { alreadyMaterialized: true } : {}),
+    }
+    await this.settleAndDeliver(
+      project,
+      command,
+      this.eventFor(project, record, command, 'provider-history-materialized', payload),
+      'succeeded',
+      payload,
+    )
+  }
+
   private async failCommand(
     project: V3ProjectRuntime,
     command: Mlp3Command,
@@ -2566,7 +2930,7 @@ export class MatrixMlp3GatewayRunner {
       )
     }
     await this.journal.markTerminalDelivered(command, matrixEventId, this.now())
-    if (command.operation === 'project.delete') {
+    if (command.operation === 'project.delete' && event.payload.type === 'project.deleted') {
       await this.finalizeProjectDeletion(project, command)
     }
   }
@@ -3256,6 +3620,8 @@ export class MatrixMlp3GatewayRunner {
           models: providerName === project.project.provider ? models : mapModels(providerName),
           can_list_sessions: typeof provider.listSessions === 'function',
           can_inspect_sessions: typeof provider.getSessionHistory === 'function',
+          can_materialize_history: typeof provider.getSessionHistory === 'function'
+            && typeof this.client.ensureProviderHistoryRoom === 'function',
         }
       })
     } catch (error) {
@@ -3358,6 +3724,72 @@ export class MatrixMlp3GatewayRunner {
     }
   }
 
+  private async cleanupLegacyArchivedSessions(project: V3ProjectRuntime): Promise<void> {
+    const legacy = project.project.sessions.filter(record => record.lifecycle !== 'active')
+    for (const record of legacy) {
+      try {
+        await this.deleteSessionStorage(project, record)
+        record.lifecycle = 'deleted'
+        record.updatedAt = this.now()
+        record.stateVersion += 1
+        project.project.sessions = project.project.sessions.filter(candidate => candidate.id !== record.id)
+        await this.persist(project)
+        const event: Mlp3Event = {
+          kind: 'malink.event',
+          version: 3,
+          eventId: logicalArchivedSessionCleanupEventId(
+            this.config.gatewayId,
+            project.project.projectId,
+            record.id,
+          ),
+          workspaceId: this.config.gatewayId,
+          projectId: project.project.projectId,
+          sessionId: record.id,
+          occurredAt: record.updatedAt,
+          payload: {
+            type: 'session.lifecycle',
+            projection: terminalProjection(record, 'idle', this.extensions),
+            state: 'deleted',
+          },
+        }
+        await this.content.queueEvent(project.config, event, this.client, { priority: 'urgent' })
+      } catch (error) {
+        // Keep the legacy tombstone as the durable retry authority. A later
+        // Gateway start, or project deletion precondition, will retry it.
+        this.log(
+          `[mlp3/matrix] archived session cleanup deferred for ${record.id}: ${formatError(error)}`,
+        )
+      }
+    }
+  }
+
+  private async deleteSessionStorage(
+    project: V3ProjectRuntime,
+    record: PersistedMlp3Session,
+  ): Promise<void> {
+    if (!this.client.deleteRoomThread || !this.client.retireRoom) {
+      throw new Error('Matrix transport cannot delete archived session data')
+    }
+    await this.client.deleteRoomThread(project.config.roomId, record.threadRootEventId)
+    await this.deleteProviderHistoryStorage(record)
+    if (record.scope === 'scratch') await this.removeScratchSessionDirectory(record)
+  }
+
+  private async deleteProviderHistoryStorage(record: PersistedMlp3Session): Promise<void> {
+    if (!record.providerHistory) return
+    await this.retireProviderHistoryRoom(record.providerHistory.roomId)
+    await this.providerHistorySnapshots.delete(record.id)
+  }
+
+  private async retireProviderHistoryRoom(roomId: string): Promise<void> {
+    if (!this.client.retireRoom) {
+      throw new Error('Matrix transport cannot retire Provider History rooms')
+    }
+    await this.client.retireRoom(roomId)
+    await this.content.forgetRoom(roomId)
+    await this.dependencies.onProviderHistoryRoomDeleted?.(roomId)
+  }
+
   private observeRelationHint(
     project: V3ProjectRuntime,
     command: Mlp3Command,
@@ -3395,6 +3827,11 @@ export class MatrixMlp3GatewayRunner {
     if (!this.dependencies.deleteProject) {
       throw new Error('This Gateway host does not support project deletion')
     }
+    if (!this.client.retireRoom) {
+      throw new Error('Matrix transport cannot delete project rooms')
+    }
+    await this.client.retireRoom(project.config.roomId)
+    await this.content.forgetRoom(project.config.roomId)
     await this.dependencies.deleteProject({
       sourceRoom: project.config,
       requestedByDeviceId: command.deviceId,
@@ -3505,6 +3942,15 @@ function projection(
     stateVersion: record.stateVersion,
     extensions: extensions.summaries(record.extensions),
     extensionRevision: record.extensionRevision,
+    ...(record.providerHistory
+      ? {
+          providerHistory: {
+            roomId: record.providerHistory.roomId,
+            snapshotId: record.providerHistory.snapshotId,
+            ordering: 'reverse_append_v1' as const,
+          },
+        }
+      : {}),
   }
 }
 
@@ -3728,6 +4174,16 @@ function logicalSessionRecoveryEventId(
     .digest('base64url')
 }
 
+function logicalArchivedSessionCleanupEventId(
+  workspaceId: string,
+  projectId: string,
+  sessionId: string,
+): string {
+  return createHash('sha256')
+    .update(`malink-v3-archived-session-cleanup\0${workspaceId}\0${projectId}\0${sessionId}`)
+    .digest('base64url')
+}
+
 function logicalCommandReconciliationEventId(
   command: Mlp3Command,
   payload: Extract<Mlp3EventPayload, { type: 'command.reconciled' }>,
@@ -3784,6 +4240,47 @@ function providerHistoryRecoveryEventId(command: Mlp3Command): string {
   return createHash('sha256')
     .update(`malink-v3-provider-history-recovery\0${command.commandId}`)
     .digest('base64url')
+}
+
+function providerHistoryRoomAliasLocalpart(
+  workspaceId: string,
+  gatewayNodeId: string,
+  historyId: string,
+): string {
+  const digest = createHash('sha256')
+    .update(`malink-provider-history-room\0${workspaceId}\0${gatewayNodeId}\0${historyId}`)
+    .digest('hex')
+    .slice(0, 40)
+  return `malink-history-${digest}`
+}
+
+function providerHistoryEventId(
+  historyId: string,
+  snapshotId: string,
+  kind: string,
+  sourceOrdinal: number,
+): string {
+  return createHash('sha256')
+    .update(
+      `malink-provider-history-event\0${historyId}\0${snapshotId}\0${kind}\0${sourceOrdinal}`,
+    )
+    .digest('base64url')
+}
+
+function normalizeProviderHistoryMessages(
+  messages: readonly ProviderHistoryMessage[],
+): ProviderHistoryMessage[] {
+  const seen = new Map<string, number>()
+  return messages.map((message, index) => {
+    const base = message.id.slice(0, 220) || `message-${index + 1}`
+    const occurrence = seen.get(base) ?? 0
+    seen.set(base, occurrence + 1)
+    return {
+      id: occurrence === 0 ? base : `${base}#${occurrence + 1}`,
+      role: message.role,
+      text: message.text,
+    }
+  })
 }
 
 function reconciledCommandOutcome(

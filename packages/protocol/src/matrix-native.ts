@@ -231,6 +231,7 @@ export const matrixGatewayCapabilitiesSchema = z
         models: z.array(matrixModelCapabilitySchema).max(256),
         can_list_sessions: z.boolean(),
         can_inspect_sessions: z.boolean(),
+        can_materialize_history: z.boolean().optional(),
       }).strict(),
     ).max(64).optional(),
     permission_modes: z.array(matrixCapabilityOptionSchema).max(128),

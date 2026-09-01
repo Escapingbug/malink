@@ -2615,8 +2615,14 @@ function MalinkAppRuntime() {
     || (!projectSettingsGatewayDescriptor
       && projectSettingsWorkspace?.projectId === matrixConfig.projectId),
   );
+  const projectSettingsHasSessions = Boolean(
+    projectSettingsWorkspace
+    && gatewayState?.sessions.some(session =>
+      session.projectId === projectSettingsWorkspace.projectId),
+  );
   const projectSettingsCanDelete = projectSettingsWorkspace
     ? !projectSettingsIsControlRoute
+      && !projectSettingsHasSessions
       && (gatewayState?.projects ?? [gatewayState?.workspace].filter(Boolean)).filter(project => {
         if (!project) return false;
         const owner = projectGatewaysById.get(project.projectId) ?? fallbackProjectGateway;
@@ -8803,7 +8809,7 @@ function MalinkAppRuntime() {
     chooseSession(sessionId, source.projectId);
   }
 
-  function continueProviderHistorySession(session: ProviderSessionEntry, text: string) {
+  function continueProviderHistorySession(session: ProviderSessionEntry) {
     const source = findProviderHistorySource(providerHistorySources, {
       gatewayNodeId: providerHistoryGatewayNodeIdRef.current,
       projectId: providerHistoryProjectIdRef.current,
@@ -8824,7 +8830,8 @@ function MalinkAppRuntime() {
     const providerCapability = historyCapabilities?.providers.find(
       candidate => candidate.id === provider
         && candidate.canListSessions
-        && candidate.canInspectSessions,
+        && candidate.canInspectSessions
+        && candidate.canMaterializeHistory,
     );
     if (!historyWorkspace || !providerCapability) {
       setProviderHistoryError(
@@ -8843,7 +8850,6 @@ function MalinkAppRuntime() {
       provider,
       providerSessionId: session.sessionId,
       title: session.title,
-      initialPrompt: text,
       ...(provider === historyWorkspace.provider && historyWorkspace.model
         ? { model: historyWorkspace.model }
         : providerCapability.models[0]
@@ -13515,6 +13521,7 @@ function MalinkAppRuntime() {
           gatewayLabel={projectSettingsGateway.label}
           fallbackModels={gatewayState?.capabilities.models ?? []}
           canDelete={projectSettingsCanDelete}
+          hasSessions={projectSettingsHasSessions}
           onClose={() => {
             if (!projectSettingsBusy) setProjectSettingsProjectId(null);
           }}

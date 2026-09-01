@@ -43,6 +43,7 @@ import {
   gatewayMaintenanceSessionId,
   MatrixMlp3GatewayRunner,
 } from '@/gateway/matrix/mlp3Gateway'
+import { FileMlp3RuntimeStateStore } from '@/gateway/matrix/fileMlp3RuntimeState'
 import { gatewayProjectIdentity } from '@/gateway/matrix/project'
 import type { GatewayWebPushService } from '@/gateway/matrix/webPush'
 import { createTopicSessionRecord } from '@/bridge/topicSession'
@@ -56,6 +57,8 @@ import {
 
 class TestMatrixClient extends InMemoryMatrixTransport implements MatrixGatewayClient {
   private readonly listeners = new Set<MatrixGatewayEventListener>()
+  readonly deletedThreads: Array<{ roomId: string; threadRootEventId: string }> = []
+  readonly retiredRooms: string[] = []
   private readonly timelineGates = new Map<string, {
     started: ReturnType<typeof deferred<void>>
     release: ReturnType<typeof deferred<void>>
@@ -68,8 +71,25 @@ class TestMatrixClient extends InMemoryMatrixTransport implements MatrixGatewayC
   start(): Promise<void> { return Promise.resolve() }
   waitUntilReady(): Promise<void> { return Promise.resolve() }
   assertRoomEncrypted(): Promise<void> { return Promise.resolve() }
+  ensureRoomInvitation(): Promise<void> { return Promise.resolve() }
+  ensureProviderHistoryRoom(
+    request: Parameters<NonNullable<MatrixGatewayClient['ensureProviderHistoryRoom']>>[0],
+  ): Promise<{ roomId: string; alreadyExisted: boolean }> {
+    return Promise.resolve({
+      roomId: `!history-${request.marker.historyId.slice(0, 16)}:example.org`,
+      alreadyExisted: false,
+    })
+  }
   pinTrustedDevices(): Promise<void> { return Promise.resolve() }
   prepareRoomThread(): Promise<void> { return Promise.resolve() }
+  deleteRoomThread(roomId: string, threadRootEventId: string): Promise<void> {
+    this.deletedThreads.push({ roomId, threadRootEventId })
+    return Promise.resolve()
+  }
+  retireRoom(roomId: string): Promise<void> {
+    this.retiredRooms.push(roomId)
+    return Promise.resolve()
+  }
   stop(): Promise<void> { return Promise.resolve() }
   blockTimelineTransaction(transactionId: string) {
     const gate = { started: deferred<void>(), release: deferred<void>() }
@@ -216,6 +236,84 @@ describe('MatrixMlp3GatewayRunner', () => {
     await expect(invitationRunner.createInvitation({}, command))
       .rejects.toThrow(/legacy Matrix account cannot invite new devices/)
     expect(invitationsCreated).toBe(0)
+  })
+
+  it('removes legacy archived session tombstones and their Matrix threads during upgrade', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-archive-migration-'))
+    const gatewayKeys = await generateDeviceKeyPair()
+    const client = new TestMatrixClient()
+    const roomId = '!archive-migration:example.org'
+    const replayLedgerPath = join(directory, 'replay')
+    const config: MatrixGatewayConfig = {
+      gatewayId: 'workspace-archive-migration',
+      gatewayNodeId: 'gateway-node-archive-migration',
+      connection: {
+        baseUrl: 'https://matrix.example.org',
+        accessToken: 'gateway-token',
+        userId: '@gateway:example.org',
+        deviceId: 'GATEWAY',
+      },
+      crypto: {
+        backend: 'memory',
+        databasePrefix: 'archive-migration-test',
+        allowInMemoryForTesting: true,
+      },
+      rooms: [{
+        roomId,
+        conversationId: roomId,
+        cwd: '/archive-migration-repo',
+        providerName: 'test',
+      }],
+      trustedDevices: [],
+      replayLedgerPath,
+      applicationSecurity: {
+        gatewayDeviceId: 'workspace-archive-migration',
+        gatewayKeyPair: await exportDeviceKeyPair(gatewayKeys),
+        envelopeReplayLedgerPath: join(directory, 'security'),
+      },
+    }
+    const state = new FileMlp3RuntimeStateStore(
+      `${replayLedgerPath}.v3-runtime-state.json`,
+      config.gatewayId,
+    )
+    await state.initialize(config.rooms)
+    await state.updateProject(roomId, project => {
+      project.sessions.push({
+        id: 'legacy-archive',
+        scope: 'project',
+        cwd: project.cwd,
+        sourceCommandId: 'legacy-create',
+        threadRootEventId: '$legacy-thread-root',
+        title: 'Legacy archive',
+        createdAt: 1,
+        updatedAt: 2,
+        stateVersion: 2,
+        lifecycle: 'archived',
+        provider: 'test',
+        model: null,
+        reasoningEffort: null,
+        permissionMode: 'default',
+        providerSessionId: 'provider-legacy',
+        providerHistory: null,
+        extensions: [],
+        extensionRevision: 1,
+        inheritedFromProjectExtensionRevision: null,
+        availableCommands: [],
+      })
+    })
+
+    const runner = new MatrixMlp3GatewayRunner(config, {
+      client,
+      listTrustedDevices: async () => [],
+    })
+    await runner.start()
+
+    expect(client.deletedThreads).toEqual([{
+      roomId,
+      threadRootEventId: '$legacy-thread-root',
+    }])
+    expect((await state.project(roomId)).sessions).toEqual([])
+    await runner.stop()
   })
 
   it('establishes authoritative pointers for the first device before using the pairing fast path', async () => {
@@ -714,6 +812,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     const validatedProjectDeletions: string[] = []
     const deletedProjects: string[] = []
     const gatewayProfileUpdates: string[] = []
+    const gatewayLogs: string[] = []
     const filesystemAccessChecks: Array<{
       cwd: string
       operation: 'session.create' | 'prompt.submit' | 'provider.history'
@@ -831,6 +930,9 @@ describe('MatrixMlp3GatewayRunner', () => {
       },
       sessionExtensionRegistry: new SessionExtensionRegistry([extensionProvider]),
       sessionFactory: (room, port, session) => {
+        if (session.id === 'session-recovery-failure') {
+          throw new Error('simulated recovered-session runtime failure')
+        }
         sessionExtensions.set(session.id, session.extensions)
         sessionCwds.set(session.id, room.cwd)
         const sessionRecord = createTopicSessionRecord({
@@ -1336,7 +1438,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       && event.payload.type === 'session.lifecycle'
     )?.payload).toMatchObject({
       type: 'session.lifecycle',
-      state: 'archived',
+      state: 'deleted',
     })
     gatewayAgentStaged = true
     gatewayAgentShouldSubmit = true
@@ -1870,8 +1972,6 @@ describe('MatrixMlp3GatewayRunner', () => {
     )?.payload).toMatchObject({
       sessions: [{
         sessionId: 'provider-session-1',
-        latestArchivedSessionId: 'session-a',
-        lastArchivedAt: expect.any(Number),
       }],
     })
     expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
@@ -1880,6 +1980,25 @@ describe('MatrixMlp3GatewayRunner', () => {
     )?.payload).not.toEqual(expect.objectContaining({
       sessions: [expect.objectContaining({ managedSessionId: 'session-a' })],
     }))
+
+    const retiredRoomsBeforeFailedRecovery = client.retiredRooms.length
+    await send({
+      ...base,
+      commandId: 'create-recovered-session-failure',
+      sessionId: 'session-recovery-failure',
+      operation: 'session.create',
+      payload: {
+        operation: 'session.create',
+        providerSessionId: 'provider-session-1',
+      },
+    }, '$create-recovered-session-failure')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'create-recovered-session-failure'
+        && event.payload.type === 'command.rejected'
+      ))
+    expect(client.retiredRooms).toHaveLength(retiredRoomsBeforeFailedRecovery + 1)
+    expect(client.retiredRooms.at(-1)).toMatch(/^!history-/u)
 
     await send({
       ...base,
@@ -1947,6 +2066,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     )
     const restarted = new MatrixMlp3GatewayRunner(config, {
       client,
+      onLog: message => gatewayLogs.push(message),
       webPushService,
       validateProjectDeletion: async input => {
         validatedProjectDeletions.push(input.projectId)
@@ -2011,6 +2131,53 @@ describe('MatrixMlp3GatewayRunner', () => {
     )).toBe(true)
     await send({
       ...base,
+      commandId: 'project-delete-with-sessions',
+      operation: 'project.delete',
+      payload: { operation: 'project.delete' },
+    }, '$project-delete-with-sessions')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'project-delete-with-sessions'
+        && event.payload.type === 'command.rejected'
+      ))
+    expect(deletedProjects).not.toContain(projectId)
+    expect(client.retiredRooms).not.toContain(roomId)
+
+    gatewayAgentStaged = false
+    const remainingSessionIds = [
+      'session-b',
+      'session-long-initial-prompt',
+      'session-scratch',
+      gatewayMaintenanceSessionId('gateway-node-1', 'release-2'),
+    ]
+    for (const [index, sessionId] of remainingSessionIds.entries()) {
+      const commandId = `archive-before-project-delete-${index}`
+      await send({
+        ...base,
+        commandId,
+        sessionId,
+        operation: 'session.set_lifecycle',
+        payload: { operation: 'session.set_lifecycle', state: 'archived' },
+      }, `$${commandId}`)
+      await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+        .some(event =>
+          event.causationCommandId === commandId
+          && ['session.lifecycle', 'command.rejected'].includes(event.payload.type)
+        )).catch(error => {
+        throw new Error(
+          `No terminal event for ${commandId} (${sessionId}).\n${gatewayLogs.slice(-20).join('\n')}`,
+          { cause: error },
+        )
+      })
+      expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+        event.causationCommandId === commandId
+      )?.payload).toMatchObject({
+        type: 'session.lifecycle',
+        state: 'deleted',
+      })
+    }
+    await send({
+      ...base,
       commandId: 'project-delete-1',
       operation: 'project.delete',
       payload: { operation: 'project.delete' },
@@ -2027,6 +2194,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     })
     expect(validatedProjectDeletions).toContain(projectId)
     await waitFor(() => Promise.resolve(deletedProjects.includes(projectId)))
+    expect(client.retiredRooms).toContain(roomId)
     await restarted.stop()
   }, 30_000)
 })

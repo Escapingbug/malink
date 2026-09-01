@@ -25,6 +25,10 @@ import {
   MatrixMlp3ProtocolClient,
   type MatrixMlp3RawEvent,
 } from "./matrixMlp3Client";
+import type {
+  V3ProjectedProviderHistoryMessage,
+  V3ProjectedSession,
+} from "./matrixMlp3Projection";
 import { MatrixMlp3Readiness } from "./matrixMlp3Readiness";
 import {
   acquireMatrixCryptoLock,
@@ -94,6 +98,17 @@ type V3Handlers = {
   onConvergenceRequired?(): void;
 };
 
+type ProviderHistoryProtocolContext = {
+  roomId: string;
+  projectId: string;
+  sessionId: string;
+  snapshotId: string;
+  room: Room;
+  protocol: MatrixMlp3ProtocolClient;
+  forwardInitialized: boolean;
+  forwardToken?: string;
+};
+
 /** Matrix SDK transport host for the MLP/3 core. */
 export async function connectMatrixMlp3(
   configInput: MatrixConnectionConfig,
@@ -129,6 +144,11 @@ export async function connectMatrixMlp3(
     room: Room;
     protocol: MatrixMlp3ProtocolClient;
   }>();
+  const providerHistoryProtocols = new Map<string, ProviderHistoryProtocolContext>();
+  const providerHistoryProtocolFlights = new Map<
+    string,
+    Promise<ProviderHistoryProtocolContext>
+  >();
   const commandProjects = new Map<string, MatrixMlp3ProtocolClient>();
   const pendingSecondaryProjects = new Set<string>();
   const activeSecondaryRecoveries = new Set<Promise<void>>();
@@ -528,6 +548,132 @@ export async function connectMatrixMlp3(
     });
   };
 
+  const ingestProviderHistoryEvent = async (
+    context: ProviderHistoryProtocolContext,
+    event: MatrixEvent,
+  ): Promise<void> => {
+    if (event.isEncrypted() || event.getType() === "m.room.encrypted") {
+      await client.decryptEventIfNeeded(event);
+    }
+    if (event.isDecryptionFailure() || event.getType() !== "m.room.message") return;
+    const eventId = event.getId();
+    const sender = event.getSender();
+    if (!eventId || !sender) return;
+    await context.protocol.ingest({
+      roomId: context.roomId,
+      eventId,
+      sender,
+      timestamp: event.getTs(),
+      content: event.getContent() as Record<string, unknown>,
+    });
+  };
+
+  const ensureProviderHistoryProtocol = async (
+    session: V3ProjectedSession,
+  ): Promise<ProviderHistoryProtocolContext> => {
+    const binding = session.providerHistory;
+    if (!binding) throw new Error(`Session ${session.sessionId} has no Provider History room.`);
+    const existing = providerHistoryProtocols.get(binding.roomId);
+    if (existing) {
+      if (
+        existing.sessionId !== session.sessionId
+        || existing.projectId !== session.projectId
+        || existing.snapshotId !== binding.snapshotId
+      ) throw new Error("The Provider History room is bound to another session snapshot.");
+      return existing;
+    }
+    const inFlight = providerHistoryProtocolFlights.get(binding.roomId);
+    if (inFlight) return inFlight;
+    const operation = (async (): Promise<ProviderHistoryProtocolContext> => {
+      if (!trust) throw new Error("The Workspace trust state is unavailable.");
+      let historyRoom = client.getRoom(binding.roomId);
+      if (workspaceRouteNeedsJoin(historyRoom)) {
+        historyRoom = await client.joinRoom(binding.roomId);
+      }
+      if (!historyRoom) throw new Error(`Provider History room ${binding.roomId} is unavailable.`);
+      if (!client.isRoomEncrypted(binding.roomId)) {
+        throw new Error(`Provider History room ${binding.roomId} is not encrypted.`);
+      }
+      const content = await client.getStateEvent(
+        binding.roomId,
+        MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
+        `${session.projectId}.${identity.keyId}`,
+      );
+      const resolution = resolveAuthoritativeProjectKeyGrant(content, {
+        workspaceId: config.gatewayId,
+        projectId: session.projectId,
+        roomId: binding.roomId,
+        deviceId: identity.keyId,
+        certificateId: trust.certificate.certificate.certificateId,
+      });
+      if (resolution.kind === "reauthorization-required") {
+        throw new Error("This device has not been granted access to the Provider History room.");
+      }
+      const historyProtocol = new MatrixMlp3ProtocolClient(
+        {
+          workspaceId: config.gatewayId,
+          roomId: binding.roomId,
+          projectId: session.projectId,
+        },
+        identity,
+        trust,
+        {
+          async sendMessage() {
+            throw new Error("Provider History rooms are data-only and cannot send commands.");
+          },
+        },
+        new IndexedDbMatrixMlp3ClientStore([
+          config.gatewayId,
+          binding.roomId,
+          session.projectId,
+          identity.keyId,
+          trust.certificate.certificate.certificateId,
+          "provider-history",
+        ].join("\u0000")),
+        undefined,
+        (_event, error) => console.error("[mlp3/matrix] quarantined history event", error),
+      );
+      await historyProtocol.initialize();
+      await historyProtocol.acceptKeyGrant(resolution.grant);
+      const context: ProviderHistoryProtocolContext = {
+        roomId: binding.roomId,
+        projectId: session.projectId,
+        sessionId: session.sessionId,
+        snapshotId: binding.snapshotId,
+        room: historyRoom,
+        protocol: historyProtocol,
+        forwardInitialized: false,
+      };
+      providerHistoryProtocols.set(binding.roomId, context);
+      for (const event of historyRoom.getLiveTimeline().getEvents()) {
+        await ingestProviderHistoryEvent(context, event);
+      }
+      return context;
+    })().finally(() => {
+      providerHistoryProtocolFlights.delete(binding.roomId);
+    });
+    providerHistoryProtocolFlights.set(binding.roomId, operation);
+    return operation;
+  };
+
+  const paginateProviderHistory = async (
+    context: ProviderHistoryProtocolContext,
+    limit: number,
+  ): Promise<number> => {
+    type RawMatrixEvent = Parameters<ReturnType<MatrixClient["getEventMapper"]>>[0];
+    const page = await client.createMessagesRequest(
+      context.roomId,
+      context.forwardInitialized ? context.forwardToken ?? null : null,
+      Math.max(32, Math.min(500, limit)),
+      sdk.Direction.Forward,
+    ) as { chunk?: RawMatrixEvent[]; end?: string };
+    context.forwardInitialized = true;
+    if (page.end) context.forwardToken = page.end;
+    const events = (page.chunk ?? []).map(raw => client.getEventMapper()(raw));
+    for (const event of events) await ingestProviderHistoryEvent(context, event);
+    return events.length;
+  };
+
   const acceptWorkspaceDirectory = async (input: unknown): Promise<void> => {
     if (!trust) return;
     trust = await applyWorkspaceGatewayDirectory(trust, input);
@@ -736,6 +882,15 @@ export async function connectMatrixMlp3(
     // delivers every event seen by /sync; the durable inbox then deduplicates
     // main-timeline, thread, and explicit-history copies by physical event ID.
     if (stopped) return;
+    const providerHistoryContext = providerHistoryProtocols.get(event.getRoomId() ?? "");
+    if (providerHistoryContext) {
+      inboundChain = inboundChain
+        .then(() => ingestProviderHistoryEvent(providerHistoryContext, event))
+        .catch(error => {
+          console.error("[mlp3/matrix] a Provider History event could not be ingested", error);
+        });
+      return;
+    }
     const secondary = [...secondaryProtocols.values()].find(
       value => value.route.roomId === event.getRoomId(),
     );
@@ -1096,6 +1251,80 @@ export async function connectMatrixMlp3(
     return null;
   };
 
+  const loadProviderHistory = async (
+    active: MatrixMlp3ProtocolClient,
+    session: V3ProjectedSession,
+    pageLimit: number,
+  ): Promise<MatrixHistoryPage> => {
+    const binding = session.providerHistory;
+    if (!binding) return { messages: [], hasMore: false };
+    const context = await ensureProviderHistoryProtocol(session);
+    const historyKey = `${session.projectId}\0${session.sessionId}\0provider-history`;
+    const delivered = deliveredHistory.get(historyKey) ?? new Set<string>();
+    deliveredHistory.set(historyKey, delivered);
+    const collect = (): MatrixHistoryPage | null => {
+      const projected = context.protocol.projection.sessionProviderHistoryMessages(
+        session.sessionId,
+        binding.snapshotId,
+      );
+      const groups = providerHistoryIncomingMessages(projected, session, session.projectId)
+        .filter(message => !delivered.has(message.eventId));
+      if (groups.length === 0) return null;
+      const selected = groups.slice(-pageLimit);
+      selected.forEach(message => delivered.add(message.eventId));
+      const state = context.protocol.projection.providerHistoryState(
+        session.sessionId,
+        binding.snapshotId,
+      );
+      return {
+        messages: selected,
+        hasMore: groups.length > selected.length || Boolean(state?.hasMore),
+      };
+    };
+
+    const local = collect();
+    if (local) return local;
+    await paginateProviderHistory(context, pageLimit * 4);
+    const paged = collect();
+    if (paged) return paged;
+
+    const current = context.protocol.projection.providerHistoryState(
+      session.sessionId,
+      binding.snapshotId,
+    );
+    if (current && !current.hasMore) return { messages: [], hasMore: false };
+    const sent = await active.send({
+      operation: "provider.history.materialize",
+      sessionId: session.sessionId,
+      expectedFrontier: current?.frontier ?? 0,
+      limit: pageLimit,
+    });
+    commandProjects.set(sent.commandId, active);
+    const completion = await sent.completion;
+    if (completion.outcome !== "succeeded") {
+      throw new Error("Provider History materialization did not complete successfully.");
+    }
+    const terminal = completion.event.payload;
+    const targetFrontier = terminal.type === "provider.history.materialized"
+      ? terminal.frontier
+      : (current?.frontier ?? 0);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await paginateProviderHistory(context, pageLimit * 4);
+      const materialized = context.protocol.projection.providerHistoryState(
+        session.sessionId,
+        binding.snapshotId,
+      );
+      if ((materialized?.frontier ?? 0) >= targetFrontier) break;
+    }
+    const loaded = collect();
+    if (loaded) return loaded;
+    const state = context.protocol.projection.providerHistoryState(
+      session.sessionId,
+      binding.snapshotId,
+    );
+    return { messages: [], hasMore: Boolean(state?.hasMore) };
+  };
+
   const loadHistory = async (
     sessionId: string,
     limit = 30,
@@ -1106,9 +1335,16 @@ export async function connectMatrixMlp3(
     if (!context) throw new Error("The MLP/3 project is not initialized.");
     const active = context.protocol;
     const session = active.projection.sessions.get(sessionId);
-    if (!session?.threadRootEventId) return { messages: [], hasMore: false };
     const pageLimit = Math.max(1, Math.min(limit, 100));
+    if (!session?.threadRootEventId) {
+      return session ? loadProviderHistory(active, session, pageLimit) : { messages: [], hasMore: false };
+    }
     const historyKey = targetProjectId ? `${targetProjectId}\0${sessionId}` : sessionId;
+    if (
+      session.providerHistory
+      && historyInitialized.has(historyKey)
+      && historyTokens.get(historyKey) === null
+    ) return loadProviderHistory(active, session, pageLimit);
     const from = historyInitialized.has(historyKey)
       ? historyTokens.get(historyKey) ?? undefined
       : undefined;
@@ -1166,7 +1402,10 @@ export async function connectMatrixMlp3(
         delivered.add(message.physicalEventId);
         return toIncomingMessage(message, undefined, "history", targetProjectId);
       });
-    return { messages, hasMore: Boolean(page.next_batch) };
+    if (messages.length > 0 || page.next_batch) {
+      return { messages, hasMore: Boolean(page.next_batch) || Boolean(session.providerHistory) };
+    }
+    return loadProviderHistory(active, session, pageLimit);
   };
 
   const loadLocalHistory = async (
@@ -1380,6 +1619,45 @@ async function sendMatrixMlp3ApplicationEvent(
     content,
   );
   return response.event_id;
+}
+
+function providerHistoryIncomingMessages(
+  projected: readonly V3ProjectedProviderHistoryMessage[],
+  session: V3ProjectedSession,
+  projectId: string,
+): IncomingMalinkMessage[] {
+  const messages: IncomingMalinkMessage[] = [];
+  const multipart = new Map<number, V3ProjectedProviderHistoryMessage[]>();
+  for (const message of projected) {
+    const parts = multipart.get(message.sourceOrdinal) ?? [];
+    parts.push(message);
+    multipart.set(message.sourceOrdinal, parts);
+  }
+  for (const [sourceOrdinal, parts] of multipart) {
+    parts.sort((left, right) => (left.partIndex ?? 0) - (right.partIndex ?? 0));
+    const first = parts[0]!;
+    messages.push({
+      eventId: `provider-history:${session.sessionId}:${first.snapshotId}:${sourceOrdinal}`,
+      sender: first.sender === "user" ? "device" : "gateway",
+      timestamp: Math.max(0, session.updatedAt - 1),
+      encrypted: true,
+      kind: first.sender === "user" ? "user" : "agent",
+      text: parts.map(part => part.body).join(""),
+      sessionId: session.sessionId,
+      projectId,
+      deliveryMode: "history",
+      historical: true,
+      format: "markdown",
+      raw: {
+        ...structuredClone(first.payload) as Record<string, unknown>,
+        providerHistoryOrder: sourceOrdinal * 2 + 1,
+      },
+    });
+  }
+  return messages.sort((left, right) =>
+    Number(left.raw.providerHistoryOrder) - Number(right.raw.providerHistoryOrder)
+    || left.eventId.localeCompare(right.eventId)
+  );
 }
 
 export function toIncomingMessage(
@@ -1610,6 +1888,17 @@ function gatewayState(
       ...(session.activeTurnId ? { activeTurnId: session.activeTurnId } : {}),
       extensions: session.extensions ?? [],
       availableCommands: session.availableCommands ?? [],
+      ...(session.providerHistory
+        ? {
+            providerHistory: {
+              roomId: session.providerHistory.roomId,
+              snapshotId: session.providerHistory.snapshotId,
+              ordering: session.providerHistory.ordering,
+              frontier: 0,
+              hasMore: true,
+            },
+          }
+        : {}),
     })),
     inboxFiles: inboxFiles.map(file => ({
       id: file.fileId,

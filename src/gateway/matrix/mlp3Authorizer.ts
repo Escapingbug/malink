@@ -44,6 +44,7 @@ const CURRENT_WORKSPACE_MEMBER_OPERATIONS = [
   'project.delete',
   'provider.sessions.list',
   'provider.session.inspect',
+  'provider.history.materialize',
   'device.invitation.create',
   'gateway.enrollment.invitation.create',
   'gateway.enrollment.approve',
@@ -152,6 +153,7 @@ function v3AllowedOperations(
         break
       case 'provider.sessions.list': result.add('provider.sessions.list'); break
       case 'provider.session.inspect': result.add('provider.session.inspect'); break
+      case 'provider.history.materialize': result.add('provider.history.materialize'); break
       case 'session.archive':
       case 'session.restore':
       case 'session.delete':

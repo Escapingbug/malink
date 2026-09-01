@@ -48,7 +48,8 @@ as the control plane that establishes device trust and distributes MLP/3 keys.
 | --- | --- | --- |
 | Workspace | a set of encrypted project rooms | local Gateway configuration plus signed room membership |
 | Project | one encrypted Matrix room | `project_id` permanently bound to the room |
-| Session | one Matrix thread | immutable root event and signed lifecycle events |
+| Active session | one Matrix thread | immutable root event and signed lifecycle events |
+| Restored provider history | one auxiliary encrypted room per restored session | signed reverse-append pages and committed frontiers; never execution authority |
 | User prompt or mutation | ordinary `m.room.message` command event | device signature, certificate, stable `command_id` |
 | Agent/tool/status output | ordinary `m.room.message` thread event | Gateway signature and stable logical `event_id` |
 | Current project projection | ordinary signed snapshot event | `io.malink.project.current.v3` points to its physical event ID |
@@ -57,10 +58,12 @@ as the control plane that establishes device trust and distributes MLP/3 keys.
 | Project key grant | directly addressed Room State | `io.malink.project.key_grant.v3` keyed by device ID |
 | Transcript and audit | thread timeline and relations | append-only signed events |
 
-One room represents exactly one project. Project identity therefore does not
-need to be repeated as visual grouping metadata in every session row, and a
-session cannot silently move between projects. Matrix Spaces may organize
-rooms later without changing the room/thread protocol.
+One execution room represents exactly one project. Project identity therefore
+does not need to be repeated as visual grouping metadata in every session row,
+and a session cannot silently move between projects. A recovered-history room
+is an explicitly bound, non-execution auxiliary room; it does not change the
+project-room or thread authority. Matrix Spaces may organize rooms later
+without changing the room/thread protocol.
 
 ## Unified event chain
 
@@ -156,12 +159,16 @@ provider commands such as `/model`.
 
 `project.delete` durably stops execution for that project and emits one signed
 `project.deleted` terminal event. It removes the route from the Gateway catalog
-and verified client projections, but does not erase the fixed working directory,
-provider-retained copies, or Matrix room history. The stable bootstrap control
-route cannot be deleted, and a Gateway always retains at least one project
-route. Deletions share one Gateway-wide lane so concurrent commands cannot both
-pass that invariant. Existing `project.settings` certificate authority covers
-both update and deletion, preserving already-issued device certificates.
+and verified client projections, then retires the project room by removing
+ordinary membership and aliases and making the Gateway leave and forget it.
+Deletion is rejected while any Malink session record remains. It does not erase
+the fixed working directory or provider-retained conversations. Standard
+Client-Server APIs redact/retire Matrix data but do not promise physical purge
+from a homeserver database. The stable bootstrap control route cannot be
+deleted, and a Gateway always retains at least one project route. Deletions
+share one Gateway-wide lane so concurrent commands cannot both pass that
+invariant. Existing `project.settings` certificate authority covers both
+update and deletion, preserving already-issued device certificates.
 
 Project management has a bounded transport budget: one client command and one
 Gateway terminal timeline event per operation. Settings additionally updates
@@ -194,6 +201,21 @@ a compatibility path for already-installed clients. A provider session already
 managed by an active Malink session opens that session instead of creating a
 duplicate.
 
+Provider continuation uses one auxiliary history room per restored Malink
+session. During `session.create`, the Gateway reads the provider transcript once
+and stores an immutable local snapshot plus its digest; it does not copy the
+whole transcript into Matrix. The session projection carries the auxiliary room
+binding, snapshot ID, `reverse_append_v1` ordering, and materialized frontier.
+When an explicit older-history load reaches that frontier, the client sends
+`provider.history.materialize` in the project room. The Gateway writes a bounded
+page from newest toward oldest as signed, application-encrypted
+`provider.history.message` events, then writes
+`provider.history.page.committed`. Message roles preserve the provider-side
+speaker identity. Stable logical IDs and frontier preconditions make retries
+idempotent. Existing pages come from Matrix/local projection; later page loads
+continue from the Gateway snapshot and do not repeat the provider RPC. Normal
+continued conversation remains chronologically ordered in the project thread.
+
 ## Turn lifecycle and delivery boundary
 
 One turn uses the existing bounded MLP/3 lifecycle:
@@ -222,13 +244,19 @@ of keeping the Agent runtime falsely active. Stable logical IDs, outbox
 ordering, and client projection make delayed delivery safe; no status polling,
 heartbeat, or per-provider startup event is added.
 
-Malink has one removal action: archive. It removes a session from the managed
-session projection but retains its metadata tombstone and never invokes a
-provider-level delete. Archived sessions are not restored in place; if the
-provider still lists the conversation, users continue it from Provider
-History, producing a new Malink session identity. Pre-release `delete`
-requests are normalized to archive and `restore` is rejected for compatibility;
-neither redacts Matrix or provider history.
+Malink has one session-removal action: archive. The command name and accepted
+legacy lifecycle values remain wire-compatible, but successful archive emits
+`session.lifecycle(state=deleted)`, redacts the Matrix thread, retires the
+session's auxiliary history room, removes local snapshot/scratch data, and
+deletes the persisted Malink session record. It never invokes provider-level
+delete or removes the project working directory. If the provider still lists
+the conversation, users continue it from Provider History under a new Malink
+session identity. Before destructive Matrix cleanup begins, the Gateway
+durably records an internal `archived` cleanup checkpoint; startup completes
+any interrupted cleanup. Upgrade startup treats tombstones produced by older
+versions the same way, while leaving existing active sessions untouched.
+Pre-release `delete` requests are normalized to archive and `restore` is
+rejected for compatibility.
 
 Browser notification enrollment also uses this path. A web device sends
 `notification.subscribe` or `notification.unsubscribe` as a signed,
