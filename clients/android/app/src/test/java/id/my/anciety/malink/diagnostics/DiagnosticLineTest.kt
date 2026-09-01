@@ -100,6 +100,25 @@ class DiagnosticLineTest {
     }
 
     @Test
+    fun `session tail recovery diagnostics expose aggregate counts only`() {
+        assertEquals(
+            "2026-08-04T12:00:00Z matrix.v3_projection.tail_recovery_completed " +
+                "changed=7 failed=0 rejected=0 targets=7 terminals=7",
+            DiagnosticLine.encode(
+                "2026-08-04T12:00:00Z",
+                "matrix.v3_projection.tail_recovery_completed",
+                mapOf(
+                    "targets" to "7",
+                    "terminals" to "7",
+                    "changed" to "7",
+                    "failed" to "0",
+                    "rejected" to "0",
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun `outbox migration diagnostics retain only schema and aggregate quarantine count`() {
         assertEquals(
             "2026-08-04T12:00:00Z command.outbox.migrated quarantined=1 schema=2",

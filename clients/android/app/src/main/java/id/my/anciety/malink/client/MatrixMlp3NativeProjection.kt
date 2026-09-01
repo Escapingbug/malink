@@ -40,6 +40,14 @@ internal data class MatrixMlp3NativeProjectionResult(
     val changed: Boolean = false,
 )
 
+internal data class MatrixMlp3SessionTailRecoveryTarget(
+    val sessionId: String,
+    val projectId: String,
+    val threadRootEventId: String,
+    val activeTurnId: String,
+    val stateVersion: Long,
+)
+
 internal data class MatrixMlp3DurableProjection(
     val value: JsonObject,
     val encodedBytes: Int,
@@ -912,6 +920,82 @@ internal class MatrixMlp3NativeProjection(
     fun sessionLifecycle(sessionId: String): String? = sessions[sessionId]?.lifecycle
 
     @Synchronized
+    fun activeSessionTailRecoveryTargets(
+        limit: Int,
+    ): List<MatrixMlp3SessionTailRecoveryTarget> {
+        require(limit in 1..MAX_SESSION_TAIL_RECOVERY_TARGETS)
+        return sessions.values
+            .asSequence()
+            .filter {
+                it.lifecycle == "active" &&
+                    it.activity in ACTIVE_SESSION_ACTIVITIES &&
+                    it.threadRootEventId.isNotEmpty() &&
+                    it.activeTurnId != null
+            }
+            .sortedWith(compareByDescending<Session> { it.updatedAt }.thenBy { it.id })
+            .take(limit)
+            .map { session ->
+                MatrixMlp3SessionTailRecoveryTarget(
+                    sessionId = session.id,
+                    projectId = session.projectId,
+                    threadRootEventId = session.threadRootEventId,
+                    activeTurnId = requireNotNull(session.activeTurnId),
+                    stateVersion = session.stateVersion,
+                )
+            }
+            .toList()
+    }
+
+    /**
+     * Repairs a stale active session from one independently verified Matrix
+     * thread terminal. This deliberately projects only the monotonic session
+     * state and terminal command result: transcript pagination owns message
+     * materialization and must not be triggered for every session at startup.
+     */
+    @Synchronized
+    fun reconcileSessionTerminal(
+        event: JsonObject,
+        threadRootHint: String,
+        expectedSessionId: String,
+        expectedTurnId: String,
+    ): MatrixMlp3NativeProjectionResult {
+        val sessionId = event.requiredString("sessionId", 256)
+        require(sessionId == expectedSessionId)
+        val payload = event.requiredObject("payload")
+        val type = payload.requiredString("type", 128)
+        require(type == "turn.completed" || type == "turn.failed")
+        require(payload.requiredString("turnId", 256) == expectedTurnId)
+        val incomingVersion = payload.requiredObject("projection")
+            .requiredPositiveLong("stateVersion")
+        val current = sessions[sessionId] ?: return MatrixMlp3NativeProjectionResult()
+        if (incomingVersion < current.stateVersion) return MatrixMlp3NativeProjectionResult()
+
+        applySessionProjection(
+            sessionId = sessionId,
+            projectId = event.optionalString("projectId", 256),
+            projection = payload.requiredObject("projection"),
+            threadRootHint = threadRootHint,
+        )
+        observeActiveTurn(
+            type = type,
+            sessionId = sessionId,
+            causationCommandId = event.optionalString("causationCommandId", 256),
+            payload = payload,
+        )
+        val changed = sessions[sessionId] != current
+        return MatrixMlp3NativeProjectionResult(
+            terminal = terminal(
+                type = type,
+                event = event,
+                payload = payload,
+                commandId = event.optionalString("causationCommandId", 256),
+                sessionId = sessionId,
+            ),
+            changed = changed,
+        )
+    }
+
+    @Synchronized
     fun workspaceGatewayDirectoryRevision(): Long = workspaceGatewayDirectory
         ?.requiredObject("directory")
         ?.requiredLong("revision")
@@ -1584,6 +1668,7 @@ internal class MatrixMlp3NativeProjection(
     private companion object {
         const val MAX_SEEN_IDS = 10_000
         const val MAX_DURABLE_SESSIONS = 4_000
+        const val MAX_SESSION_TAIL_RECOVERY_TARGETS = 128
         const val DEFAULT_DURABLE_TARGET_BYTES = 6 * 1024 * 1024
         const val MIN_DURABLE_TARGET_BYTES = 256 * 1024
         const val MAX_DURABLE_TARGET_BYTES = 8 * 1024 * 1024

@@ -679,6 +679,68 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `startup tail recovery targets active turns and applies their verified terminal`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$root-a",
+            "\$root-a",
+        )
+        projection.applyGatewayEvent(turn("started", 2, "working"), "\$started-a", "\$root-a")
+
+        assertEquals(
+            listOf(MatrixMlp3SessionTailRecoveryTarget(
+                sessionId = "session-a",
+                projectId = "project-1",
+                threadRootEventId = "\$root-a",
+                activeTurnId = "turn-1",
+                stateVersion = 2,
+            )),
+            projection.activeSessionTailRecoveryTargets(64),
+        )
+
+        val result = projection.reconcileSessionTerminal(
+            event = turn("completed", 3, "idle"),
+            threadRootHint = "\$root-a",
+            expectedSessionId = "session-a",
+            expectedTurnId = "turn-1",
+        )
+
+        assertTrue(result.changed)
+        assertEquals("turn-1", result.terminal?.commandId)
+        assertTrue(projection.activeSessionTailRecoveryTargets(64).isEmpty())
+        val completed = projection.snapshot()!!.getValue("sessions").jsonArray.single().jsonObject
+        assertEquals("idle", completed.getValue("status").jsonPrimitive.content)
+        assertFalse("active_turn_id" in completed)
+    }
+
+    @Test
+    fun `startup tail recovery cannot regress a newer active session`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$root-a",
+            "\$root-a",
+        )
+        projection.applyGatewayEvent(turn("started", 4, "working"), "\$started-a", "\$root-a")
+
+        val result = projection.reconcileSessionTerminal(
+            event = turn("completed", 3, "idle"),
+            threadRootHint = "\$root-a",
+            expectedSessionId = "session-a",
+            expectedTurnId = "turn-1",
+        )
+
+        assertFalse(result.changed)
+        assertNull(result.terminal)
+        val running = projection.snapshot()!!.getValue("sessions").jsonArray.single().jsonObject
+        assertEquals("running", running.getValue("status").jsonPrimitive.content)
+        assertEquals(4L, running.getValue("state_version").jsonPrimitive.content.toLong())
+    }
+
+    @Test
     fun `every authenticated turn terminal exposes one device independent notification`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
