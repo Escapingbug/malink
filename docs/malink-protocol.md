@@ -252,9 +252,12 @@ deletes the persisted Malink session record. It never invokes provider-level
 delete or removes the project working directory. If the provider still lists
 the conversation, users continue it from Provider History under a new Malink
 session identity. Before destructive Matrix cleanup begins, the Gateway
-durably records an internal `archived` cleanup checkpoint; startup completes
-any interrupted cleanup. Upgrade startup treats tombstones produced by older
-versions the same way, while leaving existing active sessions untouched.
+durably records an internal `archived` cleanup checkpoint. That checkpoint
+survives a restart and remains available for an explicit archive retry; startup
+must not turn it into an O(history) Matrix-redaction migration. Tombstones
+produced by older versions therefore cannot delay Gateway availability or
+generate unsolicited Matrix traffic, while existing active sessions remain
+untouched.
 Pre-release `delete` requests are normalized to archive and `restore` is
 rejected for compatibility.
 
