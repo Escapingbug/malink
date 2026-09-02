@@ -265,7 +265,6 @@ import {
   type MobileConnectionSignal,
 } from "./connectionPresentation";
 import {
-  DURABLE_COMMAND_BACKGROUND_RECOVERY_MESSAGE,
   DURABLE_COMMAND_BACKGROUND_RECOVERY_MISSING_MESSAGE,
   durableCommandRecoveryNeedsAttention,
   durableCommandRecoveryPresentation,
@@ -3046,7 +3045,7 @@ function MalinkAppRuntime() {
     });
   }
 
-  function backgroundRecoveredNativeCommandNotice(commandId: string): void {
+  function rememberBackgroundRecoveredNativeCommand(commandId: string): void {
     const command = recoveredNativeCommandsRef.current.get(commandId);
     if (!command || recoveredNativeCommandIsOwned(commandId)) return;
     const current = readBackgroundCommandRecoveries(window.localStorage);
@@ -9836,14 +9835,7 @@ function MalinkAppRuntime() {
             error instanceof CommandCompletionTimeoutError &&
             !alreadyRecoveringInBackground
           ) {
-            backgroundRecoveredNativeCommandNotice(currentCommandId);
-            showUiNotice(
-              `command:background-recovery:${currentCommandId}`,
-              "background",
-              "info",
-              DURABLE_COMMAND_BACKGROUND_RECOVERY_MESSAGE,
-              7_000,
-            );
+            rememberBackgroundRecoveredNativeCommand(currentCommandId);
           }
         } finally {
           recoveredNativeCommandFlightsRef.current.delete(commandId);

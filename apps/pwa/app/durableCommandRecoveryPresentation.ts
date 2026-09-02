@@ -3,9 +3,6 @@ import type { CommandCompletion } from "./commandLifecycle";
 import type { MatrixConnectionStatus } from "./matrix";
 import type { UiNoticeSeverity } from "./uiNotices";
 
-export const DURABLE_COMMAND_BACKGROUND_RECOVERY_MESSAGE =
-  "The Gateway has not returned the signed final result for a previous action yet. No action is needed now: Malink will keep checking the same saved command in the background without running it twice, and will notify you when recovery finishes.";
-
 export const DURABLE_COMMAND_BACKGROUND_RECOVERY_MISSING_MESSAGE =
   "Background recovery stopped because this device no longer has the saved command. Check whether the intended action already took effect before trying it again.";
 
@@ -130,16 +127,6 @@ export function durableCommandRecoveryPresentation(input: {
         "Your computer accepted this action, but this installed Android version can only scan Matrix history and cannot ask the Gateway journal for its signed final result. Update Android, then Malink will verify this same command without executing it twice.",
       stateLabel,
       ...androidUpdateAction(input.manualAndroidUpdateRequired === true),
-    };
-  }
-
-  if (accepted && input.lastCheck?.status === "no-response") {
-    return {
-      title: "Recovery continues in the background",
-      detail:
-        "The target Gateway did not return a signed result during the last check. No action is required: Malink has moved this notice out of the way and will keep checking the same saved command identity in the background, so it cannot submit the action twice.",
-      stateLabel,
-      primaryAction: null,
     };
   }
 

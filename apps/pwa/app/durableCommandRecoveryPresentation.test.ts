@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  DURABLE_COMMAND_BACKGROUND_RECOVERY_MESSAGE,
   DURABLE_COMMAND_BACKGROUND_RECOVERY_MISSING_MESSAGE,
   durableCommandRecoveryNeedsAttention,
   durableCommandRecoveryPresentation,
@@ -119,38 +118,6 @@ describe("durableCommandRecoveryPresentation", () => {
 
     expect(presentation.primaryAction).toBe("open-apk-releases");
     expect(presentation.primaryLabel).toBe("Open APK releases");
-  });
-
-  it("moves an unanswered journal check into automatic background recovery", () => {
-    const presentation = durableCommandRecoveryPresentation({
-      state: "accepted",
-      connectionStatus: "connected",
-      gatewayAvailable: true,
-      journalReconciliationAvailable: true,
-      lastCheck: {
-        status: "no-response",
-        checkedAt: 1_788_000_000_000,
-      },
-    });
-
-    expect(presentation.title).toBe("Recovery continues in the background");
-    expect(presentation.primaryAction).toBeNull();
-    expect(presentation.primaryLabel).toBeUndefined();
-    expect(presentation.detail).toContain("No action is required");
-    expect(presentation.detail).toContain("same saved command identity");
-    expect(presentation.detail).toContain("cannot submit the action twice");
-  });
-
-  it("tells the user what background recovery requires and promises a result", () => {
-    expect(DURABLE_COMMAND_BACKGROUND_RECOVERY_MESSAGE).toContain(
-      "No action is needed now",
-    );
-    expect(DURABLE_COMMAND_BACKGROUND_RECOVERY_MESSAGE).toContain(
-      "without running it twice",
-    );
-    expect(DURABLE_COMMAND_BACKGROUND_RECOVERY_MESSAGE).toContain(
-      "will notify you when recovery finishes",
-    );
   });
 
   it("gives a safe next step when the saved recovery command disappeared", () => {
