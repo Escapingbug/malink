@@ -61,6 +61,7 @@ export const REQUIRED_NATIVE_CAPABILITIES = [
 export const OPTIONAL_NATIVE_CAPABILITIES = [
   "commands.journal-reconciliation",
   "commands.orphan-retirement",
+  "matrix.account-rejoin",
   "matrix.login-token",
   "session.read-receipts",
   "client.update",
@@ -1259,6 +1260,19 @@ export async function bootstrapNativeSession(
   return bridge.request("malink.client.bootstrap", {
     context: bridge.context(),
     idempotencyKey: crypto.randomUUID(),
+    ...input,
+  });
+}
+
+export async function rejoinNativeSession(
+  bridge: NativeRpcBridge,
+  input: NativeBootstrapInput,
+  pairingLink: string,
+): Promise<ClientBootstrapResult> {
+  return bridge.request("malink.client.rejoin", {
+    context: bridge.context(),
+    idempotencyKey: crypto.randomUUID(),
+    pairingLink,
     ...input,
   });
 }

@@ -467,7 +467,15 @@ export class MatrixMlp3GatewayRunner {
         await this.client.assertRoomEncrypted(project.config.roomId)
         await this.content.provisionProject(project.config, this.client, false)
         if (project.deletingCommandId) continue
-        await this.cleanupLegacyArchivedSessions(project)
+        const cleanupCheckpoints = project.project.sessions.filter(
+          record => record.lifecycle !== 'active',
+        ).length
+        if (cleanupCheckpoints > 0) {
+          this.log(
+            `[mlp3/matrix] ${cleanupCheckpoints} archived session cleanup checkpoint(s) `
+            + 'remain available for explicit retry',
+          )
+        }
         void this.prepareSessionThreads(project).catch(error => {
           this.log(`[mlp3/matrix] session thread convergence deferred: ${formatError(error)}`)
         })
@@ -3697,45 +3705,6 @@ export class MatrixMlp3GatewayRunner {
     }
   }
 
-  private async cleanupLegacyArchivedSessions(project: V3ProjectRuntime): Promise<void> {
-    const legacy = project.project.sessions.filter(record => record.lifecycle !== 'active')
-    for (const record of legacy) {
-      try {
-        await this.deleteSessionStorage(project, record)
-        record.lifecycle = 'deleted'
-        record.updatedAt = this.now()
-        record.stateVersion += 1
-        project.project.sessions = project.project.sessions.filter(candidate => candidate.id !== record.id)
-        await this.persist(project)
-        const event: Mlp3Event = {
-          kind: 'malink.event',
-          version: 3,
-          eventId: logicalArchivedSessionCleanupEventId(
-            this.config.gatewayId,
-            project.project.projectId,
-            record.id,
-          ),
-          workspaceId: this.config.gatewayId,
-          projectId: project.project.projectId,
-          sessionId: record.id,
-          occurredAt: record.updatedAt,
-          payload: {
-            type: 'session.lifecycle',
-            projection: terminalProjection(record, 'idle', this.extensions),
-            state: 'deleted',
-          },
-        }
-        await this.content.queueEvent(project.config, event, this.client, { priority: 'urgent' })
-      } catch (error) {
-        // Keep the legacy tombstone as the durable retry authority. A later
-        // Gateway start, or project deletion precondition, will retry it.
-        this.log(
-          `[mlp3/matrix] archived session cleanup deferred for ${record.id}: ${formatError(error)}`,
-        )
-      }
-    }
-  }
-
   private async deleteSessionStorage(
     project: V3ProjectRuntime,
     record: PersistedMlp3Session,
@@ -4140,16 +4109,6 @@ function logicalSessionRecoveryEventId(
     .update(
       `malink-v3-session-recovery\0${workspaceId}\0${projectId}\0${sessionId}\0${stateVersion}`,
     )
-    .digest('base64url')
-}
-
-function logicalArchivedSessionCleanupEventId(
-  workspaceId: string,
-  projectId: string,
-  sessionId: string,
-): string {
-  return createHash('sha256')
-    .update(`malink-v3-archived-session-cleanup\0${workspaceId}\0${projectId}\0${sessionId}`)
     .digest('base64url')
 }
 

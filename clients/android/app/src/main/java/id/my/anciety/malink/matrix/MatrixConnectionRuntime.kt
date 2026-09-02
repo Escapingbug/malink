@@ -123,6 +123,32 @@ class MatrixConnectionRuntime(
         mutex.withLock { bootstrapLocked(input) }
     }.await()
 
+    /**
+     * Replaces only the Matrix transport account. Malink application identity,
+     * Workspace trust, project keys, projection and command state live above
+     * this runtime and remain intact. The old login is revoked before the
+     * one-time token is consumed, so a process interruption falls back to the
+     * existing missing-session repair path instead of owning two accounts.
+     */
+    suspend fun replaceSession(input: MatrixBootstrap): PublicMatrixSession {
+        val existing = mutex.withLock {
+            check(started.get()) { "The persistent native runtime must be started before account replacement." }
+            restorePersistedSessionLocked()
+            secrets?.session
+                ?: throw IllegalStateException("The native Matrix session is unavailable.")
+        }
+        if (
+            MatrixIdentifiers.normalizeHomeserver(existing.homeserverUrl) ==
+                MatrixIdentifiers.normalizeHomeserver(input.homeserver) &&
+            existing.userId == input.expectedUserId &&
+            existing.roomBinding == input.roomBinding
+        ) return existing.toPublic()
+
+        revokeSession()
+        start()
+        return bootstrap(input)
+    }
+
     suspend fun issueLoginToken(password: String?): MatrixLoginTokenIssueResult = scope.async {
         val session = mutex.withLock {
             check(started.get()) { "The native Matrix runtime is stopped." }

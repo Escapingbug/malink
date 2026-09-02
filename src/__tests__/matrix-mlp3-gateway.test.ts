@@ -238,10 +238,11 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(invitationsCreated).toBe(0)
   })
 
-  it('removes legacy archived session tombstones and their Matrix threads during upgrade', async () => {
+  it('keeps legacy archived cleanup off the Gateway startup path', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-v3-archive-migration-'))
     const gatewayKeys = await generateDeviceKeyPair()
     const client = new TestMatrixClient()
+    const gatewayLogs: string[] = []
     const roomId = '!archive-migration:example.org'
     const replayLedgerPath = join(directory, 'replay')
     const config: MatrixGatewayConfig = {
@@ -305,14 +306,17 @@ describe('MatrixMlp3GatewayRunner', () => {
     const runner = new MatrixMlp3GatewayRunner(config, {
       client,
       listTrustedDevices: async () => [],
+      onLog: message => gatewayLogs.push(message),
     })
     await runner.start()
 
-    expect(client.deletedThreads).toEqual([{
-      roomId,
-      threadRootEventId: '$legacy-thread-root',
-    }])
-    expect((await state.project(roomId)).sessions).toEqual([])
+    expect(client.deletedThreads).toEqual([])
+    expect((await state.project(roomId)).sessions).toEqual([
+      expect.objectContaining({ id: 'legacy-archive', lifecycle: 'archived' }),
+    ])
+    expect(gatewayLogs).toContain(
+      '[mlp3/matrix] 1 archived session cleanup checkpoint(s) remain available for explicit retry',
+    )
     await runner.stop()
   })
 

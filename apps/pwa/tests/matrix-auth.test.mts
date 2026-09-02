@@ -3,6 +3,7 @@ import { afterEach, test } from "node:test";
 import {
   MatrixRateLimitError,
   loginWithMatrixToken,
+  logoutMatrixSession,
   requestMatrixLoginToken,
 } from "../app/matrixAuth.ts";
 
@@ -120,6 +121,33 @@ test("creates an independent Matrix device session from a one-time token", async
     matrixDeviceId: "PWA_1",
   });
   assert.equal(bodies.length, 1);
+});
+
+test("revokes a browser Matrix device before account replacement", async () => {
+  let request: { url: string; init?: RequestInit } | null = null;
+  globalThis.fetch = async (input, init) => {
+    request = { url: String(input), init };
+    return new Response(null, { status: 200 });
+  };
+
+  await logoutMatrixSession({
+    homeserver: "https://matrix.example/",
+    accessToken: "legacy-access-token",
+  });
+  assert.equal(request?.url, "https://matrix.example/_matrix/client/v3/logout");
+  assert.equal(request?.init?.method, "POST");
+  assert.equal(
+    new Headers(request?.init?.headers).get("authorization"),
+    "Bearer legacy-access-token",
+  );
+});
+
+test("treats an already-revoked browser Matrix device as logged out", async () => {
+  globalThis.fetch = async () => jsonResponse({ errcode: "M_UNKNOWN_TOKEN" }, 401);
+  await logoutMatrixSession({
+    homeserver: "https://matrix.example",
+    accessToken: "expired-access-token",
+  });
 });
 
 function jsonResponse(body: unknown, status = 200): Response {

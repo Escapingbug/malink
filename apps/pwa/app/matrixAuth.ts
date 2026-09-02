@@ -108,6 +108,29 @@ export async function loginWithMatrixToken(
   );
 }
 
+/**
+ * Revokes the browser-owned Matrix device before an account rejoin. A missing
+ * or already-revoked login is equivalent to a completed logout; other failures
+ * leave the saved local configuration untouched so the user can retry safely.
+ */
+export async function logoutMatrixSession(
+  config: Pick<MatrixConnectionConfig, "homeserver" | "accessToken">,
+): Promise<void> {
+  const homeserver = normalizeHomeserver(config.homeserver);
+  const accessToken = requireText(config.accessToken, "Matrix access token");
+  const response = await fetch(`${homeserver}/_matrix/client/v3/logout`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${accessToken}` },
+  });
+  if (response.ok || response.status === 401 || response.status === 403) return;
+  const result = await readJson(response);
+  throw matrixApiError(
+    response.status,
+    result,
+    "The previous Matrix device could not be signed out.",
+  );
+}
+
 async function login(
   homeserverInput: string,
   body: Record<string, unknown>,

@@ -423,6 +423,7 @@ function parseMethodResult<M extends RequestMethod>(
       result = parseClientSessionResult(input);
       break;
     case "malink.client.bootstrap":
+    case "malink.client.rejoin":
       result = parseClientBootstrapResult(input);
       break;
     case "malink.matrix.loginToken":
@@ -1522,6 +1523,23 @@ function parseMethodParams(method: RequestMethod, input: unknown): JsonObject {
         "deviceName",
         "roomBinding",
       ]);
+      httpsHomeserver(params.homeserver, "homeserver");
+      requiredString(params.oneTimeLoginToken, "oneTimeLoginToken", 4_096);
+      matrixUserId(params.expectedUserId, "expectedUserId");
+      requiredString(params.deviceName, "deviceName", 256);
+      parseMatrixRoomBinding(params.roomBinding, "roomBinding");
+      return params;
+    }
+    case "malink.client.rejoin": {
+      const params = mutationParams(input, [
+        "pairingLink",
+        "homeserver",
+        "oneTimeLoginToken",
+        "expectedUserId",
+        "deviceName",
+        "roomBinding",
+      ]);
+      requiredString(params.pairingLink, "pairingLink", 32_768);
       httpsHomeserver(params.homeserver, "homeserver");
       requiredString(params.oneTimeLoginToken, "oneTimeLoginToken", 4_096);
       matrixUserId(params.expectedUserId, "expectedUserId");

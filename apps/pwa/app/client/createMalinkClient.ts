@@ -19,6 +19,7 @@ import {
   checkNativeUpdateWithCompatibility,
   createNativeBridgeClient,
   readNativeMatrixSession,
+  rejoinNativeSession,
   type NativeBootstrapInput,
 } from "./native/NativeBridgeClient";
 import {
@@ -234,6 +235,51 @@ export async function bootstrapNativeMatrixSessionIfAvailable(
       return null;
     }
     return await bootstrapNativeSession(bridge, input);
+  } finally {
+    bridge.close();
+  }
+}
+
+/**
+ * Replaces an Android-owned Matrix account while preserving the native
+ * Malink identity and projection. Unlike first bootstrap, an Android host
+ * must never fall back to a Web-owned Matrix session during this operation.
+ */
+export async function rejoinNativeMatrixSessionIfAvailable(
+  input: NativeBootstrapInput,
+  pairingLink: string,
+  dependencies: Pick<
+    CreateMalinkClientDependencies,
+    "nativePort" | "createBridge"
+  > = defaultDependencies,
+): Promise<ClientBootstrapResult | null> {
+  const port = dependencies.nativePort();
+  if (!port) return null;
+  const bridge = await dependencies.createBridge(port);
+  try {
+    const hello = await bridge.hello({
+      webBuild: MALINK_BUILD_VERSION,
+      requiredCapabilities: [],
+      optionalCapabilities: [
+        ...REQUIRED_NATIVE_CAPABILITIES,
+        ...OPTIONAL_NATIVE_CAPABILITIES,
+      ].map((name) => ({
+        name,
+        versions: nativeCapabilityVersions(name),
+      })),
+    });
+    if (
+      !REQUIRED_NATIVE_CAPABILITIES.every(
+        (name) => hasCurrentNativeCapability(hello, name),
+      ) || hello.capabilities["matrix.account-rejoin"]?.version !== 1
+    ) {
+      throw new BridgeProtocolError(
+        "CAPABILITY_UNAVAILABLE",
+        "Update the Android app before moving this device to the Workspace Matrix account.",
+        { userAction: "update_native" },
+      );
+    }
+    return await rejoinNativeSession(bridge, input, pairingLink);
   } finally {
     bridge.close();
   }

@@ -1321,6 +1321,12 @@ class MainActivity : ComponentActivity() {
             input: MatrixBootstrap,
         ): Pair<PublicMatrixSession, ClientSnapshot> = awaitServiceBinder().bootstrap(input)
 
+        override suspend fun rejoin(
+            input: MatrixBootstrap,
+            pairingLink: String,
+        ): Pair<PublicMatrixSession, ClientSnapshot> =
+            awaitServiceBinder().rejoin(input, pairingLink)
+
         override suspend fun publicMatrixSession(): PublicMatrixSession? =
             client().publicMatrixSession()
 

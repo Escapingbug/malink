@@ -100,6 +100,15 @@ future account-data state converge naturally across the owner's client devices
 without making Matrix an RPC database; Malink authorization still comes only
 from signed application certificates and grants.
 
+Legacy per-client Matrix users converge through the ordinary device-invitation
+flow. A client already on the canonical account issues a one-time Matrix login
+token after Gateway approval; the legacy client verifies the signed Workspace
+and Gateway route, replaces only its Matrix login, and renews the same Malink
+application identity. Android performs this through the additive
+`matrix.account-rejoin` native capability so the native service remains the
+sole Matrix owner. No MLP/3 version change is required. See
+`docs/client-matrix-account-migration.md`.
+
 Session read state uses Matrix's native private threaded receipt
 (`m.read.private` with `thread_id`), not an MLP/3 command or event. A client
 projects each authenticated session state onto the physical Matrix event that
