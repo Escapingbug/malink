@@ -17,6 +17,7 @@ import type { MatrixLoginTokenResult } from "../matrixAuth";
 import type {
   CollaborationState,
   MatrixConnectionStatus,
+  SessionReadUpdate,
 } from "../matrix";
 
 export type MalinkClientRuntime = "web" | "native";
@@ -92,6 +93,7 @@ export type MalinkClientHandlers = {
   onNativeRuntime?(runtime: MalinkNativeRuntimeInfo | null): void;
   onTrustUpdated?(trust: MalinkPublicTrust | null): void;
   onCollaborationState?(state: CollaborationState): void;
+  onSessionRead?(update: SessionReadUpdate): void;
   onCommandResult?(result: CommandCompletion): void;
   onSessionCreateRecovered?(recovery: MalinkRecoveredSessionCreate): void;
   onDurableCommandRecovered?(command: MalinkRecoveredDurableCommand): void;
@@ -143,6 +145,8 @@ export interface MalinkClient {
     eventIds: readonly string[],
     projectId?: string,
   ): void;
+  /** Publishes this session's current verified projection as a private Matrix receipt. */
+  markSessionRead?(sessionId: string, projectId?: string): Promise<void>;
   /** Reads the runtime's durable local projection without Matrix I/O. */
   loadLocalHistory(sessionId: string, projectId?: string): Promise<MalinkHistoryPage>;
   loadHistoryPage(

@@ -36,6 +36,7 @@ import id.my.anciety.malink.client.events.MAX_BRIDGE_EVENT_PAYLOAD_BYTES
 import id.my.anciety.malink.client.events.PublicClientJson
 import id.my.anciety.malink.client.events.PublicCommandError
 import id.my.anciety.malink.client.events.PublicTrustState
+import id.my.anciety.malink.client.events.SessionReadUpdate
 import id.my.anciety.malink.client.events.SubscriptionBootstrap
 import id.my.anciety.malink.client.events.SubscriptionCursorResult
 import id.my.anciety.malink.client.events.ToolGroupPresentation
@@ -377,6 +378,8 @@ class NativeClientRuntime(
     @Volatile private var authoritativeStateRefreshJob: Job? = null
     @Volatile private var gatewayConvergenceFallbackJob: Job? = null
     @Volatile private var workspaceDirectoryConvergenceJob: Job? = null
+    @Volatile private var sessionReadReceiptReconciliationJob: Job? = null
+    private var sessionReadReceiptReconciliationOffset = 0
     @Volatile private var gatewayConvergenceMinimumRevision: Long? = null
     @Volatile private var pendingPairing: PendingPairing? = restoredPairing.getOrNull()?.let {
         PendingPairing(
@@ -400,6 +403,7 @@ class NativeClientRuntime(
         activeDeviceCount = { trust?.response?.response?.activeDeviceCount ?: 1 },
         initialState = matrixMlp3ProjectionStore.load(),
     )
+    private val sessionReadUpdatedAt = ConcurrentHashMap<String, Long>()
 
     private val eventHub = ClientEventHub(
         eventPersistence,
@@ -425,6 +429,7 @@ class NativeClientRuntime(
         }
         stateUpgrade.complete()
         gatewayState = matrixMlp3Projection.snapshot() ?: eventHub.snapshot().gatewayState
+        sessionReadUpdatedAt.putAll(eventHub.snapshot().sessionReadState)
         if (gatewayState != null) {
             diagnostics.record("gateway.state.cache.restored")
         }
@@ -448,6 +453,40 @@ class NativeClientRuntime(
         }
 
     fun snapshot(): ClientSnapshot = eventHub.snapshot()
+
+    suspend fun markSessionRead(
+        sessionId: String,
+        projectId: String? = null,
+    ): SessionReadUpdate {
+        val target = mutex.withLock {
+            matrixMlp3Projection.sessionReadReceiptTarget(
+                sessionId,
+                projectId,
+                singleProjectRoomFallback(),
+            )
+                ?: throw IllegalStateException(
+                    "The session does not yet have a verified Matrix receipt target.",
+                )
+        }
+        matrix.sendPrivateReadReceipt(
+            target.roomId,
+            target.threadRootEventId,
+            target.eventId,
+        )
+        return mutex.withLock {
+            val current = matrixMlp3Projection.sessionReadReceiptTarget(
+                sessionId,
+                projectId,
+                singleProjectRoomFallback(),
+            )
+            if (current == target) recordSessionRead(target)
+            SessionReadUpdate(
+                sessionId = target.sessionId,
+                projectId = target.projectId,
+                readUpdatedAt = target.updatedAt,
+            )
+        }
+    }
 
     private fun <T> openNativeStateStore(storeId: String, create: () -> T): T {
         diagnostics.record("state.store.open_started", mapOf("kind" to storeId))
@@ -1302,6 +1341,8 @@ class NativeClientRuntime(
         cancelGatewayConvergenceFallback()
         workspaceDirectoryConvergenceJob?.cancel()
         workspaceDirectoryConvergenceJob = null
+        sessionReadReceiptReconciliationJob?.cancel()
+        sessionReadReceiptReconciliationJob = null
         gatewayStateSynchronized = false
         if (revoke) {
             trustStore.clear()
@@ -1363,6 +1404,10 @@ class NativeClientRuntime(
         refreshSnapshot(publishLifecycle = true)
     }
 
+    override fun onSyncUpdated() {
+        scheduleSessionReadReceiptReconciliation()
+    }
+
     override fun onTransportReady(identity: MatrixTransportIdentity) {
         transportIdentity = identity
         pairingTransportIdentityReady.complete(identity)
@@ -1377,6 +1422,7 @@ class NativeClientRuntime(
             // fresh trusted transport performs one coalesced, bounded baseline
             // refresh so a missed completion cannot remain "running" forever.
             startMatrixMlp3ProjectionRefresh()
+            scheduleSessionReadReceiptReconciliation()
             scope.launch {
                 mutex.withLock {
                     runCatching { recoverGatewayTransportSnapshotLocked() }
@@ -2351,6 +2397,7 @@ class NativeClientRuntime(
                     threadRootHint = recovery.target.threadRootEventId,
                     expectedSessionId = recovery.target.sessionId,
                     expectedTurnId = recovery.target.activeTurnId,
+                    physicalEventId = recovery.event.physicalEventId,
                 )
                 if (result.changed) changed += 1
                 result.terminal?.let(::recordMatrixMlp3Terminal)
@@ -2638,8 +2685,77 @@ class NativeClientRuntime(
         result.terminal?.let(::recordMatrixMlp3Terminal)
         result.taskNotification?.let(taskNotificationCoordinator::accept)
         commitMatrixMlp3Projection("gateway_event")
+        scheduleSessionReadReceiptReconciliation()
         return true
     }
+
+    private fun scheduleSessionReadReceiptReconciliation() {
+        if (sessionReadReceiptReconciliationJob?.isActive == true) return
+        sessionReadReceiptReconciliationJob = scope.launch {
+            delay(100)
+            val targets = mutex.withLock {
+                val candidates = matrixMlp3Projection
+                    .sessionReadReceiptTargets(singleProjectRoomFallback())
+                    .filter { (sessionReadUpdatedAt[it.sessionId] ?: -1L) < it.updatedAt }
+                    .sortedByDescending(MatrixMlp3SessionReadReceiptTarget::updatedAt)
+                if (candidates.isEmpty()) return@withLock emptyList()
+                val start = sessionReadReceiptReconciliationOffset % candidates.size
+                val selected = (candidates.drop(start) + candidates.take(start))
+                    .take(MAX_SESSION_READ_RECONCILIATION_TARGETS)
+                sessionReadReceiptReconciliationOffset = (start + selected.size) % candidates.size
+                selected
+            }
+            for (target in targets) {
+                val receiptEventId = runCatching {
+                    matrix.loadPrivateReadReceipt(target.roomId, target.threadRootEventId)
+                }.onFailure { error ->
+                    diagnostics.record(
+                        "matrix.session_read.reconcile_failure",
+                        mapOf("error" to diagnosticErrorName(error)),
+                    )
+                }.getOrNull()
+                if (receiptEventId != target.eventId) continue
+                mutex.withLock {
+                    if (
+                        matrixMlp3Projection.sessionReadReceiptTarget(
+                            target.sessionId,
+                            target.projectId,
+                            singleProjectRoomFallback(),
+                        ) == target
+                    ) {
+                        recordSessionRead(target)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun recordSessionRead(target: MatrixMlp3SessionReadReceiptTarget) {
+        val previous = sessionReadUpdatedAt[target.sessionId] ?: -1L
+        if (previous >= target.updatedAt) return
+        sessionReadUpdatedAt[target.sessionId] = target.updatedAt
+        if (sessionReadUpdatedAt.size > MAX_SESSION_READ_MARKERS) {
+            sessionReadUpdatedAt.entries
+                .sortedBy { it.value }
+                .take(sessionReadUpdatedAt.size - MAX_SESSION_READ_MARKERS)
+                .forEach { sessionReadUpdatedAt.remove(it.key, it.value) }
+        }
+        val update = SessionReadUpdate(
+            sessionId = target.sessionId,
+            projectId = target.projectId,
+            readUpdatedAt = target.updatedAt,
+        )
+        eventHub.publish(
+            ClientEventType.SESSION_READ_CHANGED,
+            PublicClientJson.encodeSessionReadUpdate(update),
+            refreshedSnapshot(),
+        )
+    }
+
+    private fun singleProjectRoomFallback(): String? = matrix.publicSession()
+        ?.roomBindings
+        ?.singleOrNull()
+        ?.roomId
 
     private fun acceptWorkspaceGatewayDirectory(signed: JsonObject) {
         val activeTrust = trust
@@ -3302,6 +3418,7 @@ class NativeClientRuntime(
             ),
             trust = publicTrust(),
             gatewayState = gatewayState,
+            sessionReadState = sessionReadUpdatedAt.toMap(),
             commands = snapshotCommands(),
             pairing = pendingPairing?.let {
                 buildJsonObject {
@@ -3321,6 +3438,7 @@ class NativeClientRuntime(
             lifecycle = lifecycle(),
             foregroundService = ForegroundServiceState(active = active, notificationVisible = visible),
             trust = publicTrust(),
+            sessionReadState = sessionReadUpdatedAt.toMap(),
             commands = snapshotCommands(),
             pairing = pendingPairing?.let {
                 buildJsonObject {
@@ -3557,6 +3675,8 @@ class NativeClientRuntime(
         const val PAIRING_AUTO_RESUME_DELAY_MS = 30_000L
         const val GATEWAY_TRANSPORT_PROFILE_FIELD = "io.malink.gateway_transport"
         const val GATEWAY_CONVERGENCE_GRACE_MS = 3_000L
+        const val MAX_SESSION_READ_MARKERS = 5_000
+        const val MAX_SESSION_READ_RECONCILIATION_TARGETS = 256
     }
 }
 

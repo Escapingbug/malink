@@ -7,6 +7,7 @@ enum class ClientEventType(val wireValue: String) {
     STATUS_CHANGED("client.status.changed"),
     TRUST_CHANGED("trust.changed"),
     GATEWAY_STATE_CHANGED("gateway.state.changed"),
+    SESSION_READ_CHANGED("session.read.changed"),
     MESSAGE_UPSERTED("message.upserted"),
     MESSAGE_REMOVED("message.removed"),
     COMMAND_CHANGED("command.changed"),
@@ -364,6 +365,7 @@ data class ClientSnapshot(
     val foregroundService: ForegroundServiceState,
     val trust: PublicTrustState,
     val gatewayState: JsonObject? = null,
+    val sessionReadState: Map<String, Long> = emptyMap(),
     val commands: List<CommandView> = emptyList(),
     val pairing: JsonObject? = null,
 ) {
@@ -373,9 +375,26 @@ data class ClientSnapshot(
         requireOpaqueId(cursor, "cursor")
         require(generatedAt >= 0)
         require(commands.size <= 1_000)
+        require(sessionReadState.size <= 5_000)
+        sessionReadState.forEach { (sessionId, updatedAt) ->
+            requireOpaqueId(sessionId, "sessionReadState sessionId")
+            require(updatedAt >= 0)
+        }
         requireWireBytes("ClientSnapshot", MAX_BRIDGE_RPC_BYTES) {
             PublicClientJson.encodeSnapshot(this)
         }
+    }
+}
+
+data class SessionReadUpdate(
+    val sessionId: String,
+    val projectId: String? = null,
+    val readUpdatedAt: Long,
+) {
+    init {
+        requireOpaqueId(sessionId, "sessionId")
+        optionalOpaqueId(projectId, "projectId")
+        require(readUpdatedAt >= 0)
     }
 }
 

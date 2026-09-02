@@ -21,12 +21,17 @@ import {
   gatewayUpdateStatusSchema,
 } from "@malink/protocol";
 
-export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 8 as const;
+export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 9 as const;
 
 export type V3ProjectedSession = Mlp3SessionProjection & {
   sessionId: string;
   projectId: string;
   threadRootEventId: string;
+  /**
+   * Physical Matrix event whose verified projection produced `updatedAt`.
+   * Matrix receipts are accepted only when they point at this exact event.
+   */
+  readReceiptEventId?: string;
   provider?: string;
   model?: string;
   reasoningEffort?: string;
@@ -222,6 +227,7 @@ export class MatrixMlp3Projection {
         sessionId: command.sessionId,
         projectId: command.projectId,
         threadRootEventId: physicalEventId,
+        readReceiptEventId: physicalEventId,
         title: command.payload.title ?? titleFromPrompt(command.payload.initialPrompt?.text ?? ""),
         scope: command.payload.scope ?? "project",
         ...(this.project?.cwd ? { cwd: this.project.cwd } : {}),
@@ -428,7 +434,7 @@ export class MatrixMlp3Projection {
       }
     }
     if (event.sessionId && "projection" in payload) {
-      this.applySessionProjection(event, payload.projection, threadRootHint);
+      this.applySessionProjection(event, payload.projection, physicalEventId, threadRootHint);
     }
     if (payload.type === "session.lifecycle" && payload.state === "deleted" && event.sessionId) {
       this.sessions.delete(event.sessionId);
@@ -444,30 +450,35 @@ export class MatrixMlp3Projection {
     }
     if (payload.type === "session.ready" && event.sessionId && event.projectId) {
       const current = this.sessions.get(event.sessionId);
-      const ready: V3ProjectedSession = {
-        sessionId: event.sessionId,
-        projectId: event.projectId,
-        threadRootEventId: current?.threadRootEventId || threadRootHint || "",
-        ...payload.projection,
-        provider: payload.provider,
-        ...(payload.model ? { model: payload.model } : {}),
-        ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
-        permissionMode: payload.permissionMode,
-        extensionBindings: payload.extensionBindings ?? current?.extensionBindings ?? [],
-        ...(current?.activeTurnId && isActiveSessionActivity(payload.projection.activity)
-          ? { activeTurnId: current.activeTurnId }
-          : {}),
-      };
-      this.sessions.set(event.sessionId, ready);
-      if (payload.initialPrompt && payload.rootCommandId) {
-        this.addUserPrompt(
-          payload.rootCommandId,
-          event.sessionId,
-          this.sessions.get(event.sessionId)?.threadRootEventId || physicalEventId,
-          event.occurredAt,
-          payload.initialPrompt.text,
-          payload.originDeviceId,
-        );
+      if (!current || !isOlderSessionProjection(current, payload.projection)) {
+        const ready: V3ProjectedSession = {
+          sessionId: event.sessionId,
+          projectId: event.projectId,
+          threadRootEventId: current?.threadRootEventId || threadRootHint || "",
+          ...(current?.readReceiptEventId
+            ? { readReceiptEventId: current.readReceiptEventId }
+            : {}),
+          ...payload.projection,
+          provider: payload.provider,
+          ...(payload.model ? { model: payload.model } : {}),
+          ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
+          permissionMode: payload.permissionMode,
+          extensionBindings: payload.extensionBindings ?? current?.extensionBindings ?? [],
+          ...(current?.activeTurnId && isActiveSessionActivity(payload.projection.activity)
+            ? { activeTurnId: current.activeTurnId }
+            : {}),
+        };
+        this.sessions.set(event.sessionId, ready);
+        if (payload.initialPrompt && payload.rootCommandId) {
+          this.addUserPrompt(
+            payload.rootCommandId,
+            event.sessionId,
+            this.sessions.get(event.sessionId)?.threadRootEventId || physicalEventId,
+            event.occurredAt,
+            payload.initialPrompt.text,
+            payload.originDeviceId,
+          );
+        }
       }
     }
     this.observeActiveTurn(event);
@@ -683,17 +694,19 @@ export class MatrixMlp3Projection {
   private applySessionProjection(
     event: Mlp3Event,
     next: Mlp3SessionProjection,
+    physicalEventId: string,
     threadRootHint?: string,
   ): void {
     const sessionId = event.sessionId!;
     const current = this.sessions.get(sessionId);
-    if (current && current.stateVersion > next.stateVersion) return;
+    if (current && isOlderSessionProjection(current, next)) return;
     const projected: V3ProjectedSession = {
       sessionId,
       projectId: event.projectId ?? current?.projectId ?? "",
       threadRootEventId: current?.threadRootEventId || threadRootHint || "",
       ...current,
       ...next,
+      readReceiptEventId: physicalEventId,
     };
     // activeTurnId is transient execution state. A projection at the same or
     // newer session version that says the session is no longer active is the
@@ -787,6 +800,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
     && value?.version !== 6
     && value?.version !== 7
     && value?.version !== 8
+    && value?.version !== 9
   ) {
     throw new Error("Unsupported MLP/3 projection version.");
   }
@@ -803,6 +817,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
       || !integer(session.updatedAt)
       || !integer(session.stateVersion, 1)
       || !(session.activeTurnId === undefined || text(session.activeTurnId))
+      || !(session.readReceiptEventId === undefined || text(session.readReceiptEventId))
     ) throw new Error("The MLP/3 session projection is invalid.");
     return {
       ...structuredClone(session),
@@ -992,6 +1007,14 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
 
 function isActiveSessionActivity(activity: Mlp3SessionProjection["activity"]): boolean {
   return activity === "queued" || activity === "working" || activity === "attention";
+}
+
+function isOlderSessionProjection(
+  current: Pick<Mlp3SessionProjection, "stateVersion" | "updatedAt">,
+  next: Pick<Mlp3SessionProjection, "stateVersion" | "updatedAt">,
+): boolean {
+  return current.stateVersion > next.stateVersion
+    || (current.stateVersion === next.stateVersion && current.updatedAt > next.updatedAt);
 }
 
 function providerHistoryPageKey(snapshotId: string, pageIndex: number): string {

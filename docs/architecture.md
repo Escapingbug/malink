@@ -99,6 +99,14 @@ client. Gateway and client users must be distinct. This lets read receipts and
 future account-data state converge naturally across the owner's client devices
 without making Matrix an RPC database; Malink authorization still comes only
 from signed application certificates and grants.
+
+Session read state uses Matrix's native private threaded receipt
+(`m.read.private` with `thread_id`), not an MLP/3 command or event. A client
+projects each authenticated session state onto the physical Matrix event that
+carried it and accepts its own account's receipt only when the receipt points
+to that exact current projection event. This keeps Matrix responsible for the
+small monotonic transport marker while preventing an untrusted homeserver from
+claiming that an unverified or newer Malink state was read.
 On first startup or `invite-gateway`, active certificates created before
 portable grants existed are migrated in place with identical operations and
 expiry, so existing clients do not need to pair again.

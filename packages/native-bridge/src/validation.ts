@@ -36,6 +36,7 @@ import {
   type RpcFailure,
   type RpcId,
   type RpcResponse,
+  type SessionReadUpdate,
   type ToolGroupPresentation,
 } from "./types.js";
 
@@ -54,6 +55,7 @@ const EVENT_TYPES = new Set([
   "client.status.changed",
   "trust.changed",
   "gateway.state.changed",
+  "session.read.changed",
   "message.upserted",
   "message.removed",
   "command.changed",
@@ -472,6 +474,9 @@ function parseMethodResult<M extends RequestMethod>(
     case "malink.history.page":
       result = parseHistoryPageResult(input);
       break;
+    case "malink.session.markRead":
+      result = parseSessionReadUpdate(input);
+      break;
     case "malink.attachment.upload.open":
       result = parseAttachmentUploadOpenResult(input);
       break;
@@ -718,6 +723,7 @@ function parseClientSnapshot(input: unknown): ClientSnapshot {
       "foregroundService",
       "trust",
       "gatewayState",
+      "sessionReadState",
       "commands",
       "pairing",
     ],
@@ -752,6 +758,9 @@ function parseClientSnapshot(input: unknown): ClientSnapshot {
   const pairing = value.pairing === undefined
     ? undefined
     : parseJsonObject(value.pairing, "snapshot.pairing");
+  const sessionReadState = value.sessionReadState === undefined
+    ? undefined
+    : parseSessionReadState(value.sessionReadState);
   return {
     schemaVersion: 1,
     deviceId: opaqueId(value.deviceId, "snapshot.deviceId"),
@@ -781,10 +790,41 @@ function parseClientSnapshot(input: unknown): ClientSnapshot {
     },
     trust: parsePublicTrustState(value.trust, "snapshot.trust"),
     ...(gatewayState === undefined ? {} : { gatewayState }),
+    ...(sessionReadState === undefined ? {} : { sessionReadState }),
     commands: value.commands.map((command, index) =>
       parseCommandView(command, `snapshot.commands[${index}]`),
     ),
     ...(pairing === undefined ? {} : { pairing }),
+  };
+}
+
+function parseSessionReadState(input: unknown): Record<string, number> {
+  const value = strictObject(input, undefined, "snapshot.sessionReadState");
+  const entries = Object.entries(value);
+  if (entries.length > 5_000) {
+    invalidParams("snapshot.sessionReadState must be bounded.");
+  }
+  return Object.fromEntries(entries.map(([sessionId, updatedAt]) => [
+    opaqueId(sessionId, "snapshot.sessionReadState sessionId"),
+    nonnegativeInteger(updatedAt, `snapshot.sessionReadState.${sessionId}`),
+  ]));
+}
+
+export function parseSessionReadUpdate(input: unknown): SessionReadUpdate {
+  const value = strictObject(
+    input,
+    ["sessionId", "projectId", "readUpdatedAt"],
+    "session read update",
+  );
+  return {
+    sessionId: opaqueId(value.sessionId, "sessionRead.sessionId"),
+    ...(value.projectId === undefined
+      ? {}
+      : { projectId: opaqueId(value.projectId, "sessionRead.projectId") }),
+    readUpdatedAt: nonnegativeInteger(
+      value.readUpdatedAt,
+      "sessionRead.readUpdatedAt",
+    ),
   };
 }
 
@@ -1583,6 +1623,12 @@ function parseMethodParams(method: RequestMethod, input: unknown): JsonObject {
       const limit = positiveInteger(params.limit, "limit");
       if (limit > 100) invalidParams("history limit cannot exceed 100.");
       enumValue(params.source, "source", ["local", "matrix"]);
+      return params;
+    }
+    case "malink.session.markRead": {
+      const params = mutationParams(input, ["sessionId", "projectId"]);
+      opaqueId(params.sessionId, "sessionId");
+      optionalOpaqueId(params.projectId, "projectId");
       return params;
     }
     case "malink.attachment.upload.open": {

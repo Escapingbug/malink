@@ -602,6 +602,43 @@ test("projects Android native Gateway Directory ownership into the hosted UI", a
   client.dispose();
 });
 
+test("hydrates and publishes Matrix session read receipts through the native bridge", async () => {
+  const reads: Array<{ sessionId: string; readUpdatedAt: number }> = [];
+  const port = new RuntimePort((request) => {
+    if (request.method === "malink.client.start") {
+      return {
+        deviceId: "native-device-1",
+        snapshot: { ...snapshot(), sessionReadState: { "session-1": 40 } },
+      };
+    }
+    return responseFor(request);
+  });
+  const bridge = await acquireNativeRpcBridge(port);
+  const hello = await bridge.hello({
+    webBuild: "test-build",
+    requiredCapabilities: [],
+    optionalCapabilities: [
+      ...REQUIRED_NATIVE_CAPABILITIES,
+      ...OPTIONAL_NATIVE_CAPABILITIES,
+    ].map((name) => ({ name, versions: nativeCapabilityVersions(name) })),
+  });
+  const client = new NativeBridgeClient(bridge, hello, {
+    onMessage() {},
+    onStatus() {},
+    onSessionRead(update) {
+      reads.push(update);
+    },
+  });
+  await client.ready;
+  await client.markSessionRead("session-1", "project-1");
+
+  assert.deepEqual(reads, [
+    { sessionId: "session-1", readUpdatedAt: 40 },
+    { sessionId: "session-1", projectId: "project-1", readUpdatedAt: 42 },
+  ]);
+  client.dispose();
+});
+
 test("keeps the durable receipt identity while Gateway progress arrives", async () => {
   const port = new RuntimePort((request) => {
     if (request.method !== "malink.command.send") return responseFor(request);
@@ -1266,6 +1303,14 @@ function responseFor(request: Request): unknown {
         updatedAt: 1,
         sessionId: "s1",
         sequence: 1,
+      };
+    }
+    case "malink.session.markRead": {
+      const params = request.params as BridgeMethodParams["malink.session.markRead"];
+      return {
+        sessionId: params.sessionId,
+        ...(params.projectId ? { projectId: params.projectId } : {}),
+        readUpdatedAt: 42,
       };
     }
     case "malink.matrix.loginToken":

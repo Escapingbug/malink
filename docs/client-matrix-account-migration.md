@@ -188,7 +188,9 @@ None of these cleanup actions are part of the compatibility implementation.
 ## State-sync scope
 
 Using one Matrix client user lets standard Matrix read receipts converge across
-that user's devices. Small non-message state may later use account data with
+that user's devices. Malink publishes private threaded receipts for the current
+verified session projection; no receipt is added to the MLP/3 timeline. Small
+non-message state may later use account data with
 bounded, replace-in-place documents; it must not be modeled as an ever-growing
 RPC timeline. Draft synchronization is a separate feature and is not enabled by
 this migration.

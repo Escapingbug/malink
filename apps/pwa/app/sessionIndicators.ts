@@ -76,6 +76,25 @@ export function markSessionRead(
   };
 }
 
+export function markSessionReadAt(
+  state: SessionReadState,
+  sessionId: string,
+  readUpdatedAt: number,
+): SessionReadState {
+  if (!sessionId || !isTimestamp(readUpdatedAt)) return state;
+  const previous = state.readUpdatedAt[sessionId];
+  if (state.initialized && previous !== undefined && previous >= readUpdatedAt) {
+    return state;
+  }
+  return {
+    initialized: true,
+    readUpdatedAt: {
+      ...state.readUpdatedAt,
+      [sessionId]: Math.max(previous ?? 0, readUpdatedAt),
+    },
+  };
+}
+
 export function sessionIndicator(
   session: GatewaySessionSummary,
   state: SessionReadState,

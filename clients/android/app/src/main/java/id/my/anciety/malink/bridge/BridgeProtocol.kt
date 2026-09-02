@@ -26,6 +26,7 @@ import id.my.anciety.malink.client.events.PublicClientJson
 import id.my.anciety.malink.client.events.PublicTrustState
 import id.my.anciety.malink.client.events.SubscriptionBootstrap
 import id.my.anciety.malink.client.events.SubscriptionCursorResult
+import id.my.anciety.malink.client.events.SessionReadUpdate
 import id.my.anciety.malink.client.events.UnknownSubscriptionException
 import id.my.anciety.malink.matrix.MatrixBootstrap
 import id.my.anciety.malink.matrix.MatrixIdentifiers
@@ -154,6 +155,7 @@ object BridgeProtocol {
         "malink.command.retire",
         "malink.command.resolveConflict",
         "malink.history.page",
+        "malink.session.markRead",
         "malink.attachment.upload.open",
         "malink.attachment.upload.chunk",
         "malink.attachment.upload.finish",
@@ -347,6 +349,9 @@ interface BridgeRuntime {
         "Native diagnostic export is unavailable.",
         userAction = "update_native",
     )
+
+    suspend fun markSessionRead(sessionId: String, projectId: String?): SessionReadUpdate =
+        client().markSessionRead(sessionId, projectId)
 }
 
 class BridgeDispatcher(
@@ -382,7 +387,7 @@ class BridgeDispatcher(
                     val snapshot = runtime.start()
                     buildJsonObject {
                         put("deviceId", runtime.nativeDeviceId)
-                        put("snapshot", PublicClientJson.encodeSnapshot(snapshot))
+                        put("snapshot", encodeSnapshotForBridge(snapshot))
                     }
                 }
             }
@@ -429,7 +434,7 @@ class BridgeDispatcher(
                                 includeRoomBindings = true,
                             ),
                         )
-                        put("snapshot", PublicClientJson.encodeSnapshot(snapshot))
+                        put("snapshot", encodeSnapshotForBridge(snapshot))
                     }
                 }
             }
@@ -458,7 +463,7 @@ class BridgeDispatcher(
             }
             "malink.client.snapshot" -> {
                 requireContext(request.params, mutation = false)
-                PublicClientJson.encodeSnapshot(runtime.snapshot())
+                encodeSnapshotForBridge(runtime.snapshot())
             }
             "malink.client.disconnect" -> {
                 requireContext(request.params, mutation = true, requiredExtra = setOf("mode"))
@@ -467,7 +472,7 @@ class BridgeDispatcher(
                 mutationResult(request) {
                     buildJsonObject {
                         put("mode", mode)
-                        put("snapshot", PublicClientJson.encodeSnapshot(runtime.disconnect(mode)))
+                        put("snapshot", encodeSnapshotForBridge(runtime.disconnect(mode)))
                     }
                 }
             }
@@ -679,6 +684,23 @@ class BridgeDispatcher(
                     allowRemote,
                 )
             }
+            "malink.session.markRead" -> {
+                requireSessionReadReceiptsCapability()
+                requireContext(
+                    request.params,
+                    mutation = true,
+                    requiredExtra = setOf("sessionId"),
+                    optionalExtra = setOf("projectId"),
+                )
+                mutationResult(request) {
+                    PublicClientJson.encodeSessionReadUpdate(
+                        runtime.markSessionRead(
+                            requiredString(request.params, "sessionId", 512),
+                            optionalString(request.params, "projectId", 512),
+                        ),
+                    )
+                }
+            }
             "malink.attachment.upload.open" -> {
                 requireContext(
                     request.params,
@@ -808,7 +830,7 @@ class BridgeDispatcher(
                     )
                     buildJsonObject {
                         put("trust", PublicClientJson.encodeTrust(trust))
-                        put("snapshot", PublicClientJson.encodeSnapshot(snapshot))
+                        put("snapshot", encodeSnapshotForBridge(snapshot))
                     }
                 }
             }
@@ -1060,7 +1082,8 @@ class BridgeDispatcher(
     }
 
     private fun notifyEvents(subscriptionId: String, events: List<ClientEvent>) {
-        if (events.isEmpty()) return
+        val visibleEvents = events.filter(::eventVisibleToBridge)
+        if (visibleEvents.isEmpty()) return
         val batch = mutableListOf<JsonObject>()
         fun notification(candidates: List<JsonObject>): String = buildJsonObject {
             put("jsonrpc", "2.0")
@@ -1070,7 +1093,7 @@ class BridgeDispatcher(
                 put("events", JsonArray(candidates))
             })
         }.toString()
-        events.forEach { event ->
+        visibleEvents.forEach { event ->
             val encoded = PublicClientJson.encodeEvent(event)
             val candidate = notification(batch + encoded)
             if (candidate.toByteArray(Charsets.UTF_8).size <= MAX_EVENT_BATCH_BYTES) {
@@ -1095,14 +1118,36 @@ class BridgeDispatcher(
             put("barrierCursor", value.barrierCursor)
             put("mode", "replay")
             put("events", buildJsonArray {
-                value.events.forEach { add(PublicClientJson.encodeEvent(it)) }
+                value.events.filter(::eventVisibleToBridge).forEach {
+                    add(PublicClientJson.encodeEvent(it))
+                }
             })
         }
         is SubscriptionBootstrap.Snapshot -> buildJsonObject {
             put("subscriptionId", value.subscriptionId)
             put("barrierCursor", value.barrierCursor)
             put("mode", "snapshot")
-            put("snapshot", PublicClientJson.encodeSnapshot(value.snapshot))
+            put("snapshot", encodeSnapshotForBridge(value.snapshot))
+        }
+    }
+
+    private fun eventVisibleToBridge(event: ClientEvent): Boolean =
+        event.type != id.my.anciety.malink.client.events.ClientEventType.SESSION_READ_CHANGED ||
+            SESSION_READ_RECEIPTS_CAPABILITY in negotiatedCapabilities
+
+    private fun encodeSnapshotForBridge(snapshot: ClientSnapshot): JsonObject =
+        PublicClientJson.encodeSnapshot(
+            if (SESSION_READ_RECEIPTS_CAPABILITY in negotiatedCapabilities) snapshot
+            else snapshot.copy(sessionReadState = emptyMap()),
+        )
+
+    private fun requireSessionReadReceiptsCapability() {
+        if (SESSION_READ_RECEIPTS_CAPABILITY !in negotiatedCapabilities) {
+            throw BridgeDispatchException(
+                BridgeError.CAPABILITY_UNAVAILABLE,
+                "Matrix session read receipts were not negotiated.",
+                userAction = "update_native",
+            )
         }
     }
 
@@ -1458,6 +1503,7 @@ class BridgeDispatcher(
         const val NATIVE_UPDATE_CAPABILITY = "client.update"
         const val PWA_SOURCE_CAPABILITY = "client.pwa-source"
         const val NATIVE_DIAGNOSTICS_CAPABILITY = "client.diagnostics"
+        const val SESSION_READ_RECEIPTS_CAPABILITY = "session.read-receipts"
         val SUPPORTED_CAPABILITIES = setOf(
             "client.lifecycle",
             "events.replay",
@@ -1475,6 +1521,7 @@ class BridgeDispatcher(
             NATIVE_UPDATE_CAPABILITY,
             PWA_SOURCE_CAPABILITY,
             NATIVE_DIAGNOSTICS_CAPABILITY,
+            SESSION_READ_RECEIPTS_CAPABILITY,
         )
         fun supportedCapabilityVersions(name: String): Set<Int> = when {
             name == "history.page" -> setOf(1, 2, 3)

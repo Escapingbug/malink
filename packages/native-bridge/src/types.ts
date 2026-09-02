@@ -112,6 +112,7 @@ export type CapabilityName =
   | "trust.native"
   | "matrix.session-bootstrap"
   | "matrix.login-token"
+  | "session.read-receipts"
   | "client.update"
   | "client.pwa-source"
   | "client.diagnostics"
@@ -260,6 +261,8 @@ export type ClientSnapshot = {
   };
   trust: PublicTrustState;
   gatewayState?: JsonObject;
+  /** Latest verified session projection acknowledged by this Matrix account. */
+  sessionReadState?: Record<string, number>;
   commands: CommandView[];
   pairing?: JsonObject;
 };
@@ -307,6 +310,7 @@ export type ClientEventType =
   | "client.status.changed"
   | "trust.changed"
   | "gateway.state.changed"
+  | "session.read.changed"
   | "message.upserted"
   | "message.removed"
   | "command.changed"
@@ -320,6 +324,12 @@ export type ClientEvent = {
   occurredAt: number;
   type: ClientEventType;
   payload: JsonValue;
+};
+
+export type SessionReadUpdate = {
+  sessionId: string;
+  projectId?: string;
+  readUpdatedAt: number;
 };
 
 export type EventsSubscribeParams = {
@@ -572,6 +582,7 @@ export const REQUEST_METHODS = [
   "malink.command.retire",
   "malink.command.resolveConflict",
   "malink.history.page",
+  "malink.session.markRead",
   "malink.attachment.upload.open",
   "malink.attachment.upload.chunk",
   "malink.attachment.upload.finish",
@@ -600,6 +611,7 @@ export const MUTATION_METHODS = [
   "malink.command.release",
   "malink.command.retire",
   "malink.command.resolveConflict",
+  "malink.session.markRead",
   "malink.attachment.upload.open",
   "malink.attachment.upload.finish",
   "malink.attachment.upload.abort",
@@ -677,6 +689,10 @@ export type BridgeMethodParams = {
     /** v2: local projection reads can never perform Matrix network I/O. */
     source: "local" | "matrix";
   };
+  "malink.session.markRead": IdempotentMutationParams & {
+    sessionId: string;
+    projectId?: string;
+  };
   "malink.attachment.upload.open": IdempotentMutationParams & {
     name: string;
     mimeType: string;
@@ -736,6 +752,7 @@ export type BridgeMethodResults = {
   "malink.command.retire": CommandRetireResult;
   "malink.command.resolveConflict": CommandReceipt;
   "malink.history.page": HistoryPageResult;
+  "malink.session.markRead": SessionReadUpdate;
   "malink.attachment.upload.open": AttachmentUploadOpenResult;
   "malink.attachment.upload.chunk": AttachmentUploadChunkResult;
   "malink.attachment.upload.finish": AttachmentUploadFinishResult;

@@ -314,6 +314,7 @@ import {
   EMPTY_SESSION_READ_STATE,
   initializeSessionReadState,
   markSessionRead,
+  markSessionReadAt,
   readSessionReadState,
   sessionIndicator,
   writeSessionReadState,
@@ -3001,6 +3002,23 @@ function MalinkAppRuntime() {
     });
   }
 
+  function markSessionReviewed(
+    session: GatewaySessionSummary,
+    connection: MalinkClient | null = malinkClientRef.current,
+  ): void {
+    setSessionReadState((current) => markSessionRead(current, session));
+    if (!connection?.markSessionRead) return;
+    void connection.markSessionRead(session.id, session.projectId).catch((error) => {
+      showUiNotice(
+        `session-read:${session.projectId}:${session.id}`,
+        "connection",
+        "warning",
+        `Read status was saved on this device but could not sync: ${formatUiError(error)}`,
+        8_000,
+      );
+    });
+  }
+
   function syncRecoveredNativeCommands(): void {
     setRecoveredNativeCommands(
       [...recoveredNativeCommandsRef.current.values()].sort((left, right) =>
@@ -5220,7 +5238,7 @@ function MalinkAppRuntime() {
       );
     }
     if (openedSession) {
-      setSessionReadState((current) => markSessionRead(current, openedSession));
+      markSessionReviewed(openedSession, connection);
       if (sessionChanged && revealProject) {
         const projectKey = openedSession.scope === "scratch"
           ? `${matrixConfig.gatewayId}\u0000${
@@ -6360,6 +6378,16 @@ function MalinkAppRuntime() {
               );
             }
           }
+        },
+        onSessionRead(update) {
+          if (!isCurrentStartup()) return;
+          setSessionReadState((current) =>
+            markSessionReadAt(
+              current,
+              update.sessionId,
+              update.readUpdatedAt,
+            ),
+          );
         },
         onCommandReviewRequired(review) {
           if (!isCurrentStartup()) return;
@@ -12546,11 +12574,7 @@ function MalinkAppRuntime() {
                 className={`conversation-update-indicator signal-${selectedUpdateSignal}`}
                 aria-label={`${selectedUpdateLabel}. Mark as reviewed`}
                 title={`${selectedUpdateLabel} · Mark as reviewed`}
-                onClick={() =>
-                  setSessionReadState((current) =>
-                    markSessionRead(current, gatewaySelected),
-                  )
-                }
+                onClick={() => markSessionReviewed(gatewaySelected)}
               >
                 <SessionSignalIcon signal={selectedUpdateSignal} />
                 <span>{selectedUpdateLabel}</span>

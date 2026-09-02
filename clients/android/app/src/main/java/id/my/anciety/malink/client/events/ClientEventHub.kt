@@ -143,7 +143,10 @@ class ClientEventHub(
         // Trust, commands, pairing and lifecycle each have their own durable
         // source and are reconstructed at startup. Gateway state is the only
         // snapshot payload cached here for offline startup.
-        state = if (updated.snapshot.gatewayState != state.snapshot.gatewayState) {
+        state = if (
+            updated.snapshot.gatewayState != state.snapshot.gatewayState ||
+            updated.snapshot.sessionReadState != state.snapshot.sessionReadState
+        ) {
             persist(updated)
         } else {
             updated

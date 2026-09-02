@@ -18,7 +18,7 @@ const PROJECTION = "projection";
 // the PWA upgrade manifest. Bumping the read-model schema discards only state
 // that Matrix can rebuild, even when a user skips several application builds.
 export const MATRIX_MLP3_OUTBOX_SCHEMA_VERSION = 1;
-export const MATRIX_MLP3_READ_MODEL_SCHEMA_VERSION = 2;
+export const MATRIX_MLP3_READ_MODEL_SCHEMA_VERSION = 3;
 
 type OutboxRow = MatrixMlp3OutboxRecord & {
   key: string;

@@ -7,6 +7,7 @@ import {
   countSessionIndicators,
   initializeSessionReadState,
   markSessionRead,
+  markSessionReadAt,
   readSessionReadState,
   sessionIndicator,
   writeSessionReadState,
@@ -93,6 +94,16 @@ test("viewing a session clears current attention but later selected updates stay
     sessionIndicator(refreshed, markSessionRead(read, refreshed)).unread,
     false,
   );
+});
+
+test("a synchronized Matrix receipt advances but never regresses the local marker", () => {
+  const initial = {
+    initialized: true,
+    readUpdatedAt: { shared: 20 },
+  } as const;
+  const advanced = markSessionReadAt(initial, "shared", 30);
+  assert.equal(advanced.readUpdatedAt.shared, 30);
+  assert.equal(markSessionReadAt(advanced, "shared", 25), advanced);
 });
 
 test("read markers persist safely across partial reconnect snapshots", () => {

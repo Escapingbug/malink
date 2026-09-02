@@ -20,6 +20,7 @@ interface NativeMatrixObserver {
     /** The SDK timeline is ready to receive trusted command results. */
     fun onTransportReady(identity: MatrixTransportIdentity)
     fun onRuntimeStatusChanged() = Unit
+    fun onSyncUpdated() = Unit
     suspend fun onDecryptedEvent(event: MatrixDecryptedEvent)
 }
 
@@ -73,6 +74,15 @@ interface NativeMatrixPort {
         throw UnsupportedOperationException("Workspace multi-room recovery is unavailable.")
     suspend fun refreshThreadDirectory(): Int = 0
     suspend fun refreshApplicationProjection()
+    suspend fun sendPrivateReadReceipt(
+        roomId: String,
+        threadRootEventId: String,
+        eventId: String,
+    ): Unit = throw UnsupportedOperationException("Matrix read receipts are unavailable.")
+    suspend fun loadPrivateReadReceipt(
+        roomId: String,
+        threadRootEventId: String,
+    ): String? = null
     suspend fun uploadMedia(mimeType: String, bytes: ByteArray): String
     suspend fun downloadMedia(url: String): ByteArray
     suspend fun profileProperty(userId: String, key: String): JsonObject?
@@ -95,6 +105,7 @@ class MatrixNativePort(context: Context) : NativeMatrixPort {
         onPairingTransportReady = { identity -> observer?.onPairingTransportReady(identity) },
         onTransportReady = { identity -> observer?.onTransportReady(identity) },
         onStatusChanged = { observer?.onRuntimeStatusChanged() },
+        onSyncUpdated = { observer?.onSyncUpdated() },
         onDecryptedEvent = { event -> observer?.onDecryptedEvent(event) },
     )
 
@@ -148,6 +159,15 @@ class MatrixNativePort(context: Context) : NativeMatrixPort {
         runtime.fetchApplicationEvent(eventId, roomId)
     override suspend fun refreshThreadDirectory(): Int = runtime.refreshThreadDirectory()
     override suspend fun refreshApplicationProjection() = runtime.refreshApplicationProjection()
+    override suspend fun sendPrivateReadReceipt(
+        roomId: String,
+        threadRootEventId: String,
+        eventId: String,
+    ) = runtime.sendPrivateReadReceipt(roomId, threadRootEventId, eventId)
+    override suspend fun loadPrivateReadReceipt(
+        roomId: String,
+        threadRootEventId: String,
+    ): String? = runtime.loadPrivateReadReceipt(roomId, threadRootEventId)
     override suspend fun uploadMedia(mimeType: String, bytes: ByteArray): String =
         runtime.uploadMedia(mimeType, bytes)
     override suspend fun downloadMedia(url: String): ByteArray = runtime.downloadMedia(url)

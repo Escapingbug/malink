@@ -49,6 +49,15 @@ internal data class MatrixMlp3SessionTailRecoveryTarget(
     val stateVersion: Long,
 )
 
+internal data class MatrixMlp3SessionReadReceiptTarget(
+    val sessionId: String,
+    val projectId: String,
+    val roomId: String,
+    val threadRootEventId: String,
+    val eventId: String,
+    val updatedAt: Long,
+)
+
 internal data class MatrixMlp3DurableProjection(
     val value: JsonObject,
     val encodedBytes: Int,
@@ -113,6 +122,7 @@ internal class MatrixMlp3NativeProjection(
         val id: String,
         val projectId: String,
         val threadRootEventId: String,
+        val readReceiptEventId: String? = null,
         val title: String,
         val scope: String,
         val cwd: String,
@@ -218,6 +228,7 @@ internal class MatrixMlp3NativeProjection(
                     id = sessionId,
                     projectId = projectId,
                     threadRootEventId = physicalEventId,
+                    readReceiptEventId = physicalEventId,
                     title = payload.optionalString("title", 512)
                         ?: titleFromPrompt(initial?.optionalString("text", Int.MAX_VALUE).orEmpty()),
                     scope = payload.optionalString("scope", 32)?.also {
@@ -510,6 +521,7 @@ internal class MatrixMlp3NativeProjection(
                 sessionId,
                 projectId,
                 payload.requiredObject("projection"),
+                physicalEventId,
                 threadRootHint,
             )
         }
@@ -533,7 +545,12 @@ internal class MatrixMlp3NativeProjection(
             "session.ready" -> if (sessionId != null && projectId != null) {
                 val projection = payload.requiredObject("projection")
                 val current = sessions[sessionId]
-                if (current != null && current.stateVersion > projection.requiredPositiveLong("stateVersion")) {
+                if (
+                    current != null &&
+                    (current.stateVersion > projection.requiredPositiveLong("stateVersion") ||
+                        (current.stateVersion == projection.requiredPositiveLong("stateVersion") &&
+                            current.updatedAt > projection.requiredLong("updatedAt")))
+                ) {
                     return MatrixMlp3NativeProjectionResult()
                 }
                 sessions[sessionId] = decodeSession(
@@ -825,6 +842,57 @@ internal class MatrixMlp3NativeProjection(
         ?.takeIf { it.isNotBlank() }
 
     @Synchronized
+    fun sessionReadReceiptTargets(
+        singleRoomFallback: String? = null,
+    ): List<MatrixMlp3SessionReadReceiptTarget> {
+        val projectRooms = linkedMapOf<String, String>()
+        workspaceGatewayDirectory?.requiredObject("directory")?.let { directory ->
+            val gateways = directory["gateways"] as? JsonArray ?: JsonArray(emptyList())
+            gateways.forEach { gatewayElement ->
+                val projects = (gatewayElement as? JsonObject)?.get("projects") as? JsonArray
+                    ?: return@forEach
+                projects.forEach { projectElement ->
+                    val project = projectElement as? JsonObject ?: return@forEach
+                    projectRooms[project.requiredString("projectId", 256)] =
+                        project.requiredString("roomId", 512)
+                }
+            }
+        }
+        if (projectRooms.isEmpty() && singleRoomFallback != null) {
+            sessions.values.map(Session::projectId).distinct().singleOrNull()?.let { projectId ->
+                projectRooms[projectId] = singleRoomFallback
+            }
+        }
+        return sessions.values.mapNotNull { session ->
+            val roomId = projectRooms[session.projectId]
+            val eventId = session.readReceiptEventId
+            if (
+                session.lifecycle == "deleted" ||
+                roomId == null ||
+                eventId == null ||
+                session.threadRootEventId.isBlank()
+            ) return@mapNotNull null
+            MatrixMlp3SessionReadReceiptTarget(
+                sessionId = session.id,
+                projectId = session.projectId,
+                roomId = roomId,
+                threadRootEventId = session.threadRootEventId,
+                eventId = eventId,
+                updatedAt = session.updatedAt,
+            )
+        }
+    }
+
+    @Synchronized
+    fun sessionReadReceiptTarget(
+        sessionId: String,
+        projectId: String? = null,
+        singleRoomFallback: String? = null,
+    ): MatrixMlp3SessionReadReceiptTarget? = sessionReadReceiptTargets(singleRoomFallback).singleOrNull {
+        it.sessionId == sessionId && (projectId == null || it.projectId == projectId)
+    }
+
+    @Synchronized
     fun providerHistoryRoomIds(): Set<String> = sessions.values.mapNotNull { session ->
         session.providerHistory?.requiredString("roomId", 512)
     }.toSet()
@@ -980,6 +1048,7 @@ internal class MatrixMlp3NativeProjection(
         threadRootHint: String,
         expectedSessionId: String,
         expectedTurnId: String,
+        physicalEventId: String? = null,
     ): MatrixMlp3NativeProjectionResult {
         val sessionId = event.requiredString("sessionId", 256)
         require(sessionId == expectedSessionId)
@@ -996,6 +1065,7 @@ internal class MatrixMlp3NativeProjection(
             sessionId = sessionId,
             projectId = event.optionalString("projectId", 256),
             projection = payload.requiredObject("projection"),
+            physicalEventId = physicalEventId,
             threadRootHint = threadRootHint,
         )
         observeActiveTurn(
@@ -1155,7 +1225,7 @@ internal class MatrixMlp3NativeProjection(
             .filter { it.sessionId in retainedSessionIds }
             .takeLast(MAX_TASK_NOTIFICATION_PREVIEWS)
         val value = buildJsonObject {
-            put("schemaVersion", 17)
+            put("schemaVersion", 18)
             put("projectCapabilities", buildJsonArray {
                 projectCapabilities.entries.sortedBy { it.key }.forEach { (projectId, capabilities) ->
                     add(buildJsonObject {
@@ -1204,6 +1274,7 @@ internal class MatrixMlp3NativeProjection(
                         put("id", session.id)
                         put("projectId", session.projectId)
                         put("threadRootEventId", session.threadRootEventId)
+                        session.readReceiptEventId?.let { put("readReceiptEventId", it) }
                         put("title", session.title)
                         put("scope", session.scope)
                         put("cwd", session.cwd)
@@ -1344,7 +1415,7 @@ internal class MatrixMlp3NativeProjection(
 
     private fun restore(value: JsonObject) {
         val schemaVersion = value.requiredLong("schemaVersion")
-        require(schemaVersion in 1L..17L)
+        require(schemaVersion in 1L..18L)
         val legacyWorkspaceCapabilities = if (schemaVersion == 1L || schemaVersion >= 9L) {
             null
         } else {
@@ -1510,6 +1581,11 @@ internal class MatrixMlp3NativeProjection(
                 id = id,
                 projectId = session.requiredString("projectId", 256),
                 threadRootEventId = session.optionalString("threadRootEventId", 512).orEmpty(),
+                readReceiptEventId = if (schemaVersion >= 18L) {
+                    session.optionalString("readReceiptEventId", 512)
+                } else {
+                    null
+                },
                 title = session.requiredString("title", 512),
                 scope = session.optionalString("scope", 32)?.also {
                     require(it == "project" || it == "scratch")
@@ -1810,11 +1886,17 @@ internal class MatrixMlp3NativeProjection(
         sessionId: String,
         projectId: String?,
         projection: JsonObject,
+        physicalEventId: String?,
         threadRootHint: String?,
     ) {
         val nextVersion = projection.requiredPositiveLong("stateVersion")
         val current = sessions[sessionId]
-        if (current != null && current.stateVersion > nextVersion) return
+        val nextUpdatedAt = projection.requiredLong("updatedAt")
+        if (
+            current != null &&
+            (current.stateVersion > nextVersion ||
+                (current.stateVersion == nextVersion && current.updatedAt > nextUpdatedAt))
+        ) return
         sessions[sessionId] = decodeSession(
             sessionId,
             projectId ?: current?.projectId.orEmpty(),
@@ -1824,7 +1906,7 @@ internal class MatrixMlp3NativeProjection(
             current?.model,
             current?.reasoningEffort,
             current?.permissionMode,
-        )
+        ).copy(readReceiptEventId = physicalEventId ?: current?.readReceiptEventId)
     }
 
     private fun decodeSession(
@@ -1840,6 +1922,7 @@ internal class MatrixMlp3NativeProjection(
         id = sessionId,
         projectId = projectId,
         threadRootEventId = threadRootEventId,
+        readReceiptEventId = sessions[sessionId]?.readReceiptEventId,
         title = projection.requiredString("title", 512),
         scope = projection.optionalString("scope", 32)?.also {
             require(it == "project" || it == "scratch")

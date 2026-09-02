@@ -590,6 +590,28 @@ describe("native bridge JSON-RPC conformance", () => {
     ).toBe(idempotencyKey);
   });
 
+  it("validates session receipt mutations and synchronized snapshot markers", () => {
+    const parsed = parseRpcRequest(request("malink.session.markRead", {
+      context,
+      idempotencyKey,
+      sessionId: "session-1",
+      projectId: "project-1",
+    }));
+    expect(parsed.method).toBe("malink.session.markRead");
+    expect(parseMethodRpcResponse(
+      "malink.session.markRead",
+      response({
+        sessionId: "session-1",
+        projectId: "project-1",
+        readUpdatedAt: 42,
+      }),
+    )).toMatchObject({ result: { readUpdatedAt: 42 } });
+    expect(parseMethodRpcResponse(
+      "malink.client.snapshot",
+      response(snapshot({ sessionReadState: { "session-1": 42 } })),
+    )).toMatchObject({ result: { sessionReadState: { "session-1": 42 } } });
+  });
+
   it("does not require idempotency keys for reads or monotonic event acknowledgement", () => {
     expect(parseRpcRequest(request("malink.client.snapshot", { context })).method)
       .toBe("malink.client.snapshot");

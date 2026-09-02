@@ -22,6 +22,8 @@ import org.matrix.rustcomponents.sdk.Room
 import org.matrix.rustcomponents.sdk.RoomListService
 import org.matrix.rustcomponents.sdk.RoomListServiceState
 import org.matrix.rustcomponents.sdk.RoomListServiceStateListener
+import org.matrix.rustcomponents.sdk.ReceiptThread
+import org.matrix.rustcomponents.sdk.ReceiptType
 import org.matrix.rustcomponents.sdk.SqliteStoreBuilder
 import org.matrix.rustcomponents.sdk.SlidingSyncVersion
 import org.matrix.rustcomponents.sdk.SlidingSyncVersionBuilder
@@ -56,6 +58,17 @@ interface MatrixSdkDriver {
     suspend fun uploadMedia(mimeType: String, bytes: ByteArray): String
 
     suspend fun downloadMedia(url: String): ByteArray
+
+    suspend fun sendPrivateReadReceipt(
+        roomId: String,
+        threadRootEventId: String,
+        eventId: String,
+    ): Unit = throw UnsupportedOperationException("Matrix read receipts are unavailable.")
+
+    suspend fun loadPrivateReadReceipt(
+        roomId: String,
+        threadRootEventId: String,
+    ): String? = null
 
     /**
      * Extends one already-open SDK timeline towards older events. The same
@@ -349,6 +362,28 @@ class OfficialMatrixSdkDriver(
         }
     }
 
+    override suspend fun sendPrivateReadReceipt(
+        roomId: String,
+        threadRootEventId: String,
+        eventId: String,
+    ) {
+        val room = receiptRoom(roomId)
+        room.sendSingleReceipt(
+            ReceiptType.READ_PRIVATE,
+            ReceiptThread.Thread(threadRootEventId),
+            eventId,
+        )
+    }
+
+    override suspend fun loadPrivateReadReceipt(
+        roomId: String,
+        threadRootEventId: String,
+    ): String? = receiptRoom(roomId).loadUserReceipt(
+        ReceiptType.READ_PRIVATE,
+        ReceiptThread.Thread(threadRootEventId),
+        activeSession.userId,
+    )?.eventId
+
     override suspend fun paginateApplicationTimelineBackwards(
         roomId: String,
         eventLimit: Int,
@@ -590,6 +625,15 @@ class OfficialMatrixSdkDriver(
             ?: throw IllegalStateException(
                 "The bound Matrix room disappeared after initial sync.",
             )
+    }
+
+    private fun receiptRoom(roomId: String): Room {
+        require(activeSession.roomBindings.any { it.roomId == roomId }) {
+            "Unknown Matrix project room: $roomId"
+        }
+        check(active.get()) { "The Matrix SDK driver is stopped." }
+        return client?.getRoom(roomId)
+            ?: throw IllegalStateException("The Matrix project room is unavailable.")
     }
 
     private fun TaskHandle?.cancelAndClose() {

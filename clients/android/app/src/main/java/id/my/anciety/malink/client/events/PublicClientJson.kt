@@ -18,6 +18,12 @@ import kotlinx.serialization.json.put
 
 /** Exact JSON wire codec shared by persistence and the future bridge adapter. */
 object PublicClientJson {
+    fun encodeSessionReadUpdate(value: SessionReadUpdate): JsonObject = buildJsonObject {
+        put("sessionId", value.sessionId)
+        value.projectId?.let { put("projectId", it) }
+        put("readUpdatedAt", value.readUpdatedAt)
+    }
+
     fun encodeEvent(value: ClientEvent): JsonObject = buildJsonObject {
         put("schemaVersion", value.schemaVersion)
         put("eventId", value.eventId)
@@ -111,6 +117,13 @@ object PublicClientJson {
         })
         put("trust", encodeTrust(value.trust))
         value.gatewayState?.let { put("gatewayState", it) }
+        if (value.sessionReadState.isNotEmpty()) {
+            put("sessionReadState", buildJsonObject {
+                value.sessionReadState.entries.sortedBy { it.key }.forEach { (sessionId, updatedAt) ->
+                    put(sessionId, updatedAt)
+                }
+            })
+        }
         put("commands", JsonArray(value.commands.map(::encodeCommand)))
         value.pairing?.let { put("pairing", it) }
     }
@@ -145,6 +158,15 @@ object PublicClientJson {
             ),
             trust = decodeTrust(value.getValue("trust")),
             gatewayState = value.optionalObject("gatewayState"),
+            sessionReadState = value.optionalObject("sessionReadState")
+                ?.also { require(it.size <= 5_000) }
+                ?.mapValues { (sessionId, updatedAt) ->
+                    requireOpaqueId(sessionId, "sessionReadState sessionId")
+                    updatedAt.jsonPrimitive.longOrNull
+                        ?.takeIf { it >= 0 }
+                        ?: throw IllegalArgumentException("Session read timestamp is invalid.")
+                }
+                ?: emptyMap(),
             commands = commands,
             pairing = value.optionalObject("pairing"),
         )
@@ -401,6 +423,7 @@ object PublicClientJson {
     private val SNAPSHOT_KEYS = setOf(
         "schemaVersion", "deviceId", "cursor", "generatedAt", "lifecycle",
         "foregroundService", "trust", "gatewayState", "commands", "pairing",
+        "sessionReadState",
     )
     private val SNAPSHOT_REQUIRED_KEYS = setOf(
         "schemaVersion", "deviceId", "cursor", "generatedAt", "lifecycle",

@@ -135,6 +135,12 @@ export type CollaborationState = {
   gatewayState?: GatewayStateSnapshot;
 };
 
+export type SessionReadUpdate = {
+  sessionId: string;
+  projectId?: string;
+  readUpdatedAt: number;
+};
+
 export type CommandResultState = CommandCompletion;
 
 export type CommandSendResult = {
@@ -217,6 +223,7 @@ export type MatrixConnection = {
     eventIds: readonly string[],
     projectId?: string,
   ): void;
+  markSessionRead?(sessionId: string, projectId?: string): Promise<void>;
   loadLocalHistory(sessionId: string, projectId?: string): Promise<MatrixHistoryPage>;
   loadHistoryPage(
     sessionId: string,

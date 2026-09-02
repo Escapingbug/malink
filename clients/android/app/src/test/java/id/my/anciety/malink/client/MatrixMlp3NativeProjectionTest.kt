@@ -75,6 +75,49 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `session receipt target binds the current projection to one physical Matrix event`() {
+        val projection = projection()
+        projection.applyWorkspaceGatewayDirectory(buildJsonObject {
+            put("directory", buildJsonObject {
+                put("revision", 1)
+                put("gateways", buildJsonArray {
+                    add(buildJsonObject {
+                        put("projects", buildJsonArray {
+                            add(buildJsonObject {
+                                put("projectId", "project-1")
+                                put("roomId", "!project:example.org")
+                            })
+                        })
+                    })
+                })
+            })
+        })
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$ready-a",
+            "\$root-a",
+        )
+        projection.applyGatewayEvent(turn("started", 2, "working"), "\$started-a", "\$root-a")
+
+        val expected = MatrixMlp3SessionReadReceiptTarget(
+            sessionId = "session-a",
+            projectId = "project-1",
+            roomId = "!project:example.org",
+            threadRootEventId = "\$root-a",
+            eventId = "\$started-a",
+            updatedAt = 200,
+        )
+        assertEquals(expected, projection.sessionReadReceiptTarget("session-a", "project-1"))
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        assertEquals(expected, restored.sessionReadReceiptTarget("session-a", "project-1"))
+    }
+
+    @Test
     fun `two Gateway projects remain distinct across durable restore and route removal`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project-a", null)

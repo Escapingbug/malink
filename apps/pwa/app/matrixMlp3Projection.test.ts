@@ -16,6 +16,7 @@ describe("MatrixMlp3Projection", () => {
       activity: "idle",
       stateVersion: 4,
       threadRootEventId: "$root-original",
+      readReceiptEventId: "$physical-completed",
     });
     expect(projection.sessions.get("session-a")?.activeTurnId).toBeUndefined();
   });
@@ -396,6 +397,7 @@ describe("MatrixMlp3Projection", () => {
     const restored = new MatrixMlp3Projection();
     restored.restore(projection.durableState());
     expect(restored.messages.get("user:prompt-a")?.originDeviceId).toBe("device-1");
+    expect(restored.sessions.get("session-a")?.readReceiptEventId).toBe("$gateway-prompt");
   });
 
   it("repairs a version-three running projection from its unresolved prompt", () => {

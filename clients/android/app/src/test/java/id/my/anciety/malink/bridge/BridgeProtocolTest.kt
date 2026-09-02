@@ -14,6 +14,7 @@ import id.my.anciety.malink.client.events.ClientSnapshot
 import id.my.anciety.malink.client.events.ForegroundServiceState
 import id.my.anciety.malink.client.events.LifecyclePhase
 import id.my.anciety.malink.client.events.PublicTrustState
+import id.my.anciety.malink.client.events.SessionReadUpdate
 import id.my.anciety.malink.matrix.MatrixBootstrap
 import id.my.anciety.malink.matrix.MatrixLoginTokenIssueResult
 import id.my.anciety.malink.matrix.MatrixRoomBinding
@@ -277,6 +278,43 @@ class BridgeProtocolTest {
             .getValue("phase").jsonPrimitive.content)
         assertEquals("unpaired", snapshot.getValue("trust").jsonObject
             .getValue("state").jsonPrimitive.content)
+        assertFalse("sessionReadState" in snapshot)
+    }
+
+    @Test
+    fun `session receipts are exposed only after additive capability negotiation`() {
+        val runtime = FakeRuntime()
+        val dispatcher = BridgeDispatcher(runtime, BRIDGE_SESSION_ID)
+        dispatch(
+            dispatcher,
+            helloRequest(
+                optionalCapabilities =
+                    """[{"name":"session.read-receipts","versions":[1]}]""",
+            ),
+        )
+        val snapshot = successResult(
+            dispatch(dispatcher, snapshotRequest("snapshot-read", BRIDGE_SESSION_ID)),
+        )
+        assertEquals(
+            40,
+            snapshot.getValue("sessionReadState").jsonObject
+                .getValue("session-1").jsonPrimitive.int,
+        )
+
+        val marked = successResult(dispatch(dispatcher, """
+            {
+              "jsonrpc":"2.0",
+              "id":"mark-read-1",
+              "method":"malink.session.markRead",
+              "params":{
+                "context":{"bridgeSessionId":"$BRIDGE_SESSION_ID"},
+                "idempotencyKey":"$IDEMPOTENCY_KEY",
+                "sessionId":"session-1",
+                "projectId":"project-1"
+              }
+            }
+        """.trimIndent()))
+        assertEquals(42, marked.getValue("readUpdatedAt").jsonPrimitive.int)
     }
 
     @Test
@@ -597,6 +635,7 @@ class BridgeProtocolTest {
                 notificationVisible = active,
             ),
             trust = PublicTrustState.Unpaired,
+            sessionReadState = mapOf("session-1" to 40L),
         )
 
         override suspend fun start(): ClientSnapshot {
@@ -665,6 +704,11 @@ class BridgeProtocolTest {
             active = false
             return snapshot()
         }
+
+        override suspend fun markSessionRead(
+            sessionId: String,
+            projectId: String?,
+        ) = SessionReadUpdate(sessionId, projectId, 42)
 
         override fun checkNativeUpdate(): NativeUpdateStatus {
             updateChecks += 1

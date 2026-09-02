@@ -80,11 +80,13 @@ import {
   MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_MS,
   MATRIX_CRYPTO_LOADING_DETAIL,
 } from "./matrixStartup";
+import { parseOwnPrivateThreadReceipts } from "./matrixSessionReadReceipts";
 
 const LOCAL_TIMEOUT_MS = 10_000;
 const MATRIX_HISTORY_REQUEST_TIMEOUT_MS = 30_000;
 const INITIAL_SYNC_LIMIT = 32;
 const CATCHUP_PRESENTATION_LIMIT_PER_SESSION = 30;
+const MAX_TRACKED_SESSION_READ_RECEIPTS = 5_000;
 
 type ProjectionDeliveryMode = MessageDeliveryMode | "hydrate";
 
@@ -93,6 +95,7 @@ type V3Handlers = {
   onStatus(status: MatrixConnectionStatus, detail?: string): void;
   onTrustUpdated?(trust: TrustedGateway): void;
   onCollaborationState?(state: CollaborationState): void;
+  onSessionRead?(update: { sessionId: string; projectId?: string; readUpdatedAt: number }): void;
   onCommandResult?(result: CommandCompletion): void;
   onHistoryRecovered?(page: { sessionId: string; messages: IncomingMalinkMessage[]; hasMore: boolean }): void;
   onConvergenceRequired?(): void;
@@ -161,6 +164,8 @@ export async function connectMatrixMlp3(
   const deliveredMessages = new Map<string, { version: number; physicalEventId: string }>();
   const emittedCompletions = new Set<string>();
   const deliveredHistory = new Map<string, Set<string>>();
+  const ownPrivateThreadReceipts = new Map<string, string>();
+  const emittedSessionReads = new Map<string, number>();
   const historyTokens = new Map<string, string | null>();
   const historyInitialized = new Set<string>();
   let readySettled = false;
@@ -216,6 +221,60 @@ export async function connectMatrixMlp3(
     return [...secondaryProtocols.values()].find(
       value => value.protocol === target,
     )?.route.projectId;
+  };
+
+  const roomForProtocol = (target: MatrixMlp3ProtocolClient): string | undefined => {
+    if (target === protocol) return config.roomId;
+    return [...secondaryProtocols.values()].find(
+      value => value.protocol === target,
+    )?.route.roomId;
+  };
+
+  const receiptRouteKey = (roomId: string, threadRootEventId: string): string =>
+    `${roomId}\0${threadRootEventId}`;
+
+  const rememberOwnPrivateThreadReceipt = (
+    roomId: string,
+    threadRootEventId: string,
+    eventId: string,
+  ): void => {
+    const key = receiptRouteKey(roomId, threadRootEventId);
+    ownPrivateThreadReceipts.delete(key);
+    ownPrivateThreadReceipts.set(key, eventId);
+    while (ownPrivateThreadReceipts.size > MAX_TRACKED_SESSION_READ_RECEIPTS) {
+      const oldest = ownPrivateThreadReceipts.keys().next().value;
+      if (typeof oldest !== "string") break;
+      ownPrivateThreadReceipts.delete(oldest);
+    }
+  };
+
+  const reconcileSessionReadReceipts = (
+    targets: readonly MatrixMlp3ProtocolClient[] = activeWorkspaceProtocols(),
+  ): void => {
+    for (const target of targets) {
+      const roomId = roomForProtocol(target);
+      const targetProjectId = projectForProtocol(target);
+      if (!roomId) continue;
+      for (const session of target.projection.sessions.values()) {
+        if (!session.threadRootEventId || !session.readReceiptEventId) continue;
+        const receiptEventId = ownPrivateThreadReceipts.get(
+          receiptRouteKey(roomId, session.threadRootEventId),
+        );
+        // A Matrix event ID is meaningful only after MLP/3 verification has
+        // bound it to the current projected session version.
+        if (receiptEventId !== session.readReceiptEventId) continue;
+        const sessionKey = `${targetProjectId ?? session.projectId}\0${session.sessionId}`;
+        if ((emittedSessionReads.get(sessionKey) ?? -1) >= session.updatedAt) continue;
+        emittedSessionReads.set(sessionKey, session.updatedAt);
+        handlers.onSessionRead?.({
+          sessionId: session.sessionId,
+          ...(targetProjectId || session.projectId
+            ? { projectId: targetProjectId ?? session.projectId }
+            : {}),
+          readUpdatedAt: session.updatedAt,
+        });
+      }
+    }
   };
 
   const publishProjection = (
@@ -315,6 +374,7 @@ export async function connectMatrixMlp3(
       revision: 0,
       gatewayState: aggregateGatewayState(activeProtocols, config, trust),
     });
+    reconcileSessionReadReceipts(projectionProtocols);
     reconcileWorkspaceRoutes();
   };
 
@@ -903,6 +963,23 @@ export async function connectMatrixMlp3(
     if (event.getRoomId() !== config.roomId) return;
     enqueue(event);
   };
+  const onReceipt = (event: MatrixEvent, receiptRoom: Room) => {
+    if (stopped) return;
+    const workspaceRoomIds = new Set([
+      config.roomId,
+      ...(config.workspaceRoutes ?? []).map(route => route.roomId),
+      ...(trust ? workspaceRoutesFromTrust(trust).map(route => route.roomId) : []),
+    ]);
+    if (!workspaceRoomIds.has(receiptRoom.roomId)) return;
+    for (const receipt of parseOwnPrivateThreadReceipts(event.getContent(), config.userId)) {
+      rememberOwnPrivateThreadReceipt(
+        receiptRoom.roomId,
+        receipt.threadRootEventId,
+        receipt.eventId,
+      );
+    }
+    reconcileSessionReadReceipts();
+  };
   const onRoomState = (event: MatrixEvent) => {
     if (event.getType() === MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE) {
       void acceptWorkspaceDirectory(event.getContent()).catch(error =>
@@ -1124,6 +1201,7 @@ export async function connectMatrixMlp3(
     if (!matrixDeviceKeys) throw new Error("Matrix device keys are unavailable.");
     client.on(sdk.ClientEvent.Sync, onSync);
     client.on(sdk.ClientEvent.Event, onMatrixEvent);
+    client.on(sdk.RoomEvent.Receipt, onReceipt);
     await client.startClient({ initialSyncLimit: INITIAL_SYNC_LIMIT });
     await waitForInitialSync(client, sdk.ClientEvent.Sync);
     room = client.getRoom(config.roomId);
@@ -1570,6 +1648,34 @@ export async function connectMatrixMlp3(
       deliveredHistory.set(historyKey, delivered);
       for (const eventId of eventIds) delivered.add(eventId);
     },
+    async markSessionRead(sessionId, targetProjectId) {
+      await ready;
+      const context = protocolForSession(sessionId, targetProjectId);
+      const session = context?.protocol.projection.sessions.get(sessionId);
+      if (!context || !session?.threadRootEventId || !session.readReceiptEventId) {
+        throw new Error("The session does not yet have a verified Matrix receipt target.");
+      }
+      const path = [
+        "/rooms/",
+        encodeURIComponent(context.roomId),
+        "/receipt/",
+        encodeURIComponent("m.read.private"),
+        "/",
+        encodeURIComponent(session.readReceiptEventId),
+      ].join("");
+      await client.http.authedRequest(
+        "POST" as Parameters<MatrixClient["http"]["authedRequest"]>[0],
+        path,
+        undefined,
+        { thread_id: session.threadRootEventId },
+      );
+      rememberOwnPrivateThreadReceipt(
+        context.roomId,
+        session.threadRootEventId,
+        session.readReceiptEventId,
+      );
+      reconcileSessionReadReceipts([context.protocol]);
+    },
     loadLocalHistory,
     loadHistoryPage: loadHistory,
     async observeCommandCompletion(commandId, timeoutMs) {
@@ -1588,6 +1694,7 @@ export async function connectMatrixMlp3(
       if (stopped) return;
       stopped = true;
       client.off(sdk.ClientEvent.Event, onMatrixEvent);
+      client.off(sdk.RoomEvent.Receipt, onReceipt);
       room?.off(sdk.RoomStateEvent.Events, onRoomState);
       for (const value of secondaryProtocols.values()) {
         value.room.off(sdk.RoomStateEvent.Events, onRoomState);

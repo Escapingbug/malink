@@ -151,6 +151,10 @@ export class WebMalinkClient implements MalinkClient {
     this.transport.markHistoryLoaded(sessionId, eventIds, projectId);
   }
 
+  markSessionRead(sessionId: string, projectId?: string): Promise<void> {
+    return this.transport.markSessionRead?.(sessionId, projectId) ?? Promise.resolve();
+  }
+
   async loadLocalHistory(
     sessionId: string,
     projectId?: string,
@@ -235,6 +239,7 @@ export async function createWebMalinkClient(
       }
       handlers.onCollaborationState?.(state);
     },
+    onSessionRead: handlers.onSessionRead,
     onCommandResult: handlers.onCommandResult,
     onHistoryRecovered(page) {
       handlers.onHistoryRecovered?.({

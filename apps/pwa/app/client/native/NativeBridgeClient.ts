@@ -4,6 +4,7 @@ import {
   parseClientMessage,
   parseCommandView,
   parsePublicTrustState,
+  parseSessionReadUpdate,
   type BridgeMethodParams,
   type ClientBootstrapResult,
   type ClientEvent,
@@ -61,6 +62,7 @@ export const OPTIONAL_NATIVE_CAPABILITIES = [
   "commands.journal-reconciliation",
   "commands.orphan-retirement",
   "matrix.login-token",
+  "session.read-receipts",
   "client.update",
   "client.pwa-source",
   "client.diagnostics",
@@ -313,6 +315,18 @@ export class NativeBridgeClient implements MalinkClient {
       payload.operation === "session.create",
       completionTimeoutMs,
     );
+  }
+
+  async markSessionRead(sessionId: string, projectId?: string): Promise<void> {
+    await this.ready;
+    if (!this.helloResult.capabilities["session.read-receipts"]) return;
+    const update = await this.bridge.request("malink.session.markRead", {
+      context: this.bridge.context(),
+      idempotencyKey: crypto.randomUUID(),
+      sessionId,
+      ...(projectId ? { projectId } : {}),
+    });
+    this.handlers.onSessionRead?.(update);
   }
 
   async requestMatrixLoginToken(
@@ -864,6 +878,9 @@ export class NativeBridgeClient implements MalinkClient {
       case "gateway.state.changed":
         this.#applyGatewayState(event.payload);
         break;
+      case "session.read.changed":
+        this.handlers.onSessionRead?.(parseSessionReadUpdate(event.payload));
+        break;
       case "message.removed":
       case "attachment.changed":
       case "pairing.changed":
@@ -907,6 +924,11 @@ export class NativeBridgeClient implements MalinkClient {
       }
     });
     if (snapshot.gatewayState) this.#applyGatewayState(snapshot.gatewayState);
+    for (const [sessionId, readUpdatedAt] of Object.entries(
+      snapshot.sessionReadState ?? {},
+    )) {
+      this.handlers.onSessionRead?.({ sessionId, readUpdatedAt });
+    }
   }
 
   #applyGatewayState(input: unknown): void {

@@ -59,6 +59,7 @@ class MatrixConnectionRuntime(
     private val onPairingTransportReady: (MatrixTransportIdentity) -> Unit = {},
     private val onTransportReady: (MatrixTransportIdentity) -> Unit = {},
     private val onStatusChanged: () -> Unit = {},
+    private val onSyncUpdated: () -> Unit = {},
     private val onDecryptedEvent: suspend (MatrixDecryptedEvent) -> Unit = {},
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -349,6 +350,34 @@ class MatrixConnectionRuntime(
             ),
         )
     }
+
+    suspend fun sendPrivateReadReceipt(
+        roomId: String,
+        threadRootEventId: String,
+        eventId: String,
+    ): Unit = scope.async {
+        val current = mutex.withLock {
+            check(started.get()) { "The native Matrix runtime is stopped." }
+            if (!networkAvailable) throw MatrixOfflineException()
+            driver ?: throw IllegalStateException("The native Matrix connection is not ready.")
+        }
+        withTimeout(RECEIPT_OPERATION_TIMEOUT_MS) {
+            current.sendPrivateReadReceipt(roomId, threadRootEventId, eventId)
+        }
+    }.await()
+
+    suspend fun loadPrivateReadReceipt(
+        roomId: String,
+        threadRootEventId: String,
+    ): String? = scope.async {
+        val current = mutex.withLock {
+            check(started.get()) { "The native Matrix runtime is stopped." }
+            driver ?: throw IllegalStateException("The native Matrix connection is not ready.")
+        }
+        withTimeout(RECEIPT_OPERATION_TIMEOUT_MS) {
+            current.loadPrivateReadReceipt(roomId, threadRootEventId)
+        }
+    }.await()
 
     suspend fun refreshThreadDirectory(): Int {
         val session = mutex.withLock {
@@ -643,14 +672,18 @@ class MatrixConnectionRuntime(
                     files = currentFiles,
                     onSyncUpdate = {
                         scope.launch {
-                            mutex.withLock {
+                            val current = mutex.withLock {
                                 if (driver === nextDriver && driverGeneration == generation) {
                                     retryJob?.cancel()
                                     retryJob = null
                                     reconnectFailures = 0
                                     accept(MatrixRuntimeEvent.SyncUpdated)
+                                    true
+                                } else {
+                                    false
                                 }
                             }
+                            if (current) onSyncUpdated()
                         }
                     },
                     onSessionUpdated = { updated ->
@@ -868,6 +901,7 @@ class MatrixConnectionRuntime(
         const val PROFILE_OPERATION_TIMEOUT_MS = 45_000L
         const val LOGIN_TOKEN_OPERATION_TIMEOUT_MS = 45_000L
         const val HISTORY_OPERATION_TIMEOUT_MS = 45_000L
+        const val RECEIPT_OPERATION_TIMEOUT_MS = 15_000L
         const val COMMAND_TIMELINE_RECOVERY_TIMEOUT_MS = 10_000L
         const val THREAD_DIRECTORY_OPERATION_TIMEOUT_MS = 120_000L
         const val MEDIA_OPERATION_TIMEOUT_MS = 120_000L

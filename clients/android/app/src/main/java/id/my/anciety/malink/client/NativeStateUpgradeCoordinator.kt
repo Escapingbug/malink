@@ -81,7 +81,7 @@ internal val NATIVE_STATE_CATALOG = listOf(
     NativeStateCatalogEntry(
         "client-event-projection",
         NativePersistedStateClass.REBUILDABLE_PROJECTION,
-        1,
+        2,
     ),
     NativeStateCatalogEntry(
         "attachment-transfer-scratch",
@@ -91,7 +91,7 @@ internal val NATIVE_STATE_CATALOG = listOf(
     NativeStateCatalogEntry(
         "matrix-v3-projection",
         NativePersistedStateClass.REBUILDABLE_PROJECTION,
-        6,
+        7,
     ),
     NativeStateCatalogEntry(
         "native-update-cache",
