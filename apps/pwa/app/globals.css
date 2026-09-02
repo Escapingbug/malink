@@ -6570,9 +6570,7 @@ select:focus-visible {
 
 .gateway-profile-list > header,
 .gateway-profile-list > header > span,
-.gateway-profile-list > div,
-.gateway-profile-list > div > button,
-.gateway-profile-list > div > button > span:nth-child(2) {
+.gateway-profile-list > div {
   display: flex;
 }
 
@@ -6582,9 +6580,21 @@ select:focus-visible {
   gap: 12px;
 }
 
+.gateway-profile-list > header > button {
+  min-height: 34px;
+  flex: 0 0 auto;
+  padding: 0 10px;
+  border: 1px solid #ded9f3;
+  border-radius: 9px;
+  background: white;
+  color: #5e4dcc;
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .gateway-profile-list > header > span,
-.gateway-profile-list > div,
-.gateway-profile-list > div > button > span:nth-child(2) {
+.gateway-profile-list > div {
   flex-direction: column;
 }
 
@@ -6597,51 +6607,48 @@ select:focus-visible {
   gap: 6px;
 }
 
-.gateway-profile-list > div > button {
+.gateway-profile-card {
+  display: grid;
   width: 100%;
-  align-items: center;
-  gap: 10px;
-  padding: 10px;
-  text-align: left;
-  border: 1px solid transparent;
-  border-radius: 10px;
-}
-
-.gateway-profile-list > div > button.active {
-  border-color: #d9dce6;
-  background: white;
-}
-
-.gateway-profile-list > div > button > span:nth-child(2) {
-  flex: 1;
-}
-
-.gateway-profile-list > div > div {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 10px;
-  padding: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 9px 12px;
+  padding: 11px;
   border: 1px solid #d9dce6;
-  border-radius: 10px;
+  border-radius: 12px;
   background: white;
 }
 
-.gateway-profile-list > div > div > span:nth-child(2) {
+.gateway-profile-overview {
   display: flex;
+  min-width: 0;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 10px;
+}
+
+.gateway-profile-identity {
+  display: flex;
+  min-width: 0;
   flex: 1;
   flex-direction: column;
 }
 
-.gateway-profile-list > div > div > button {
-  flex: 0 0 auto;
+.gateway-profile-identity > strong,
+.gateway-profile-identity > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .gateway-profile-liveness {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-  margin-top: 8px;
+  display: inline-flex;
+  min-height: 28px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: #f3f4f7;
   color: #60697a;
 }
 
@@ -6649,19 +6656,13 @@ select:focus-visible {
   width: 8px;
   height: 8px;
   flex: 0 0 auto;
-  margin-top: 4px;
   border-radius: 50%;
   background: #9ca3af;
 }
 
-.gateway-profile-liveness > span {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-
 .gateway-profile-liveness strong {
-  font-size: 12px;
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .gateway-profile-liveness-online > i {
@@ -6689,22 +6690,96 @@ select:focus-visible {
   background: #a7acb8;
 }
 
-.gateway-profile-actions {
+.gateway-profile-details {
+  min-width: 0;
+  grid-column: 1 / -1;
+  border-top: 1px solid #eceef3;
+  color: #737c8d;
+  font-size: 10px;
+}
+
+.gateway-profile-details summary {
+  width: fit-content;
+  padding-top: 8px;
+  color: #697285;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.gateway-profile-details dl {
   display: grid;
-  flex: 0 0 auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 9px 0 0;
+}
+
+.gateway-profile-details dl > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.gateway-profile-details dt {
+  color: #8a92a1;
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.gateway-profile-details dd {
+  overflow: hidden;
+  margin: 0;
+  color: #555f71;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gateway-profile-details p {
+  margin: 8px 0 0;
+  line-height: 1.45;
+}
+
+.gateway-profile-actions {
+  display: flex;
+  grid-column: 1 / -1;
   gap: 6px;
-  justify-items: stretch;
+  justify-content: flex-end;
 }
 
 .gateway-profile-actions button {
   min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #dfe2e9;
+  border-radius: 8px;
+  background: #f8f9fb;
+  color: #5e687a;
+  font-size: 9px;
+  font-weight: 700;
   white-space: nowrap;
+}
+
+.gateway-profile-actions button:first-child {
+  border-color: #d9d3f5;
+  background: #f2efff;
+  color: #5d4acb;
+}
+
+.gateway-profile-list button:disabled {
+  cursor: default;
+  opacity: 0.52;
 }
 
 .gateway-profile-rename {
   display: grid;
+  min-width: 0;
+  grid-column: 1 / -1;
   gap: 8px;
-  margin-top: 10px;
+}
+
+.gateway-profile-card > .gateway-no-reply-help {
+  grid-column: 1 / -1;
 }
 
 .gateway-profile-rename label,

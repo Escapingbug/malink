@@ -10,15 +10,19 @@ class StaticServiceSettingsPresentationTest {
     @Test
     fun `official PWA remains selectable and visibly current`() {
         assertEquals(
-            listOf(
-                "Official PWA (current)\nhttps://escapingbug.github.io/malink/",
-                "Custom PWA address…\nUse a mirror or self-hosted HTTPS address",
+            StaticServiceSettingsPresentation(
+                currentSource = "Official PWA",
+                currentBaseUrl = "https://escapingbug.github.io/malink/",
+                officialAction = "Switch to official PWA",
+                officialBaseUrl = "https://escapingbug.github.io/malink/",
+                customAction = "Set a custom PWA address",
+                customDetail = "Use a trusted mirror or self-hosted HTTPS address",
             ),
-            staticServiceSettingsChoices(
+            staticServiceSettingsPresentation(
                 selected = official,
                 official = official,
                 usesCustom = false,
-            ).toList(),
+            ),
         )
     }
 
@@ -27,15 +31,19 @@ class StaticServiceSettingsPresentationTest {
         val custom = StaticServiceEndpoint.parse("https://mirror.example/malink")
 
         assertEquals(
-            listOf(
-                "Official PWA\nhttps://escapingbug.github.io/malink/",
-                "Custom PWA address… (current)\nhttps://mirror.example/malink/",
+            StaticServiceSettingsPresentation(
+                currentSource = "Custom PWA",
+                currentBaseUrl = "https://mirror.example/malink/",
+                officialAction = "Switch to official PWA",
+                officialBaseUrl = "https://escapingbug.github.io/malink/",
+                customAction = "Edit custom PWA address",
+                customDetail = "https://mirror.example/malink/",
             ),
-            staticServiceSettingsChoices(
+            staticServiceSettingsPresentation(
                 selected = custom,
                 official = official,
                 usesCustom = true,
-            ).toList(),
+            ),
         )
     }
 }

@@ -11,6 +11,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
@@ -520,26 +522,92 @@ class MainActivity : ComponentActivity() {
     private fun showStaticServiceSettings() {
         val selected = staticServiceStore.selected
         val official = staticServiceStore.official
-        val choices = staticServiceSettingsChoices(
+        val presentation = staticServiceSettingsPresentation(
             selected = selected,
             official = official,
             usesCustom = staticServiceStore.usesCustom,
         )
-        AlertDialog.Builder(this)
-            .setTitle("PWA address")
-            // AlertDialog cannot reliably render a message and a list together:
-            // when both are configured, the platform message panel can replace
-            // the list and leave the user with no selectable address.
-            .setItems(choices) { _, index ->
-                if (index == 0) {
-                    confirmStaticService(official, custom = false)
-                } else {
-                    showCustomStaticServiceDialog(staticServiceStore.custom ?: selected)
+        val officialButton = staticServiceSettingsAction(
+            presentation.officialAction,
+            presentation.officialBaseUrl,
+        )
+        val customButton = staticServiceSettingsAction(
+            presentation.customAction,
+            presentation.customDetail,
+        )
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(4), dp(20), dp(4))
+            addView(TextView(context).apply {
+                text = "Choose where the Android app loads the Malink interface and update channel."
+                textSize = 13f
+                setTextColor(0xFF5F6878.toInt())
+            })
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(12).toFloat()
+                    setColor(0xFFF5F3FF.toInt())
+                    setStroke(dp(1), 0xFFD9D3F7.toInt())
                 }
+                addView(TextView(context).apply {
+                    text = "CURRENT · ${presentation.currentSource}"
+                    textSize = 11f
+                    setTextColor(0xFF6856C9.toInt())
+                    setTypeface(typeface, Typeface.BOLD)
+                })
+                addView(TextView(context).apply {
+                    text = presentation.currentBaseUrl
+                    textSize = 13f
+                    setTextColor(0xFF303748.toInt())
+                    setTextIsSelectable(true)
+                    setPadding(0, dp(5), 0, 0)
+                })
+            }, staticServiceSettingsLayoutParams(topMargin = 14))
+            if (staticServiceStore.usesCustom) {
+                addView(officialButton, staticServiceSettingsLayoutParams(topMargin = 12))
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+            addView(customButton, staticServiceSettingsLayoutParams(topMargin = 12))
+            addView(TextView(context).apply {
+                text = "A custom PWA can use the native bridge. Only enter an HTTPS address you trust."
+                textSize = 11f
+                setTextColor(0xFF767F8F.toInt())
+            }, staticServiceSettingsLayoutParams(topMargin = 12))
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("PWA address")
+            .setView(panel)
+            .setNegativeButton("Close", null)
+            .create()
+        officialButton.setOnClickListener {
+            dialog.dismiss()
+            confirmStaticService(official, custom = false)
+        }
+        customButton.setOnClickListener {
+            dialog.dismiss()
+            showCustomStaticServiceDialog(staticServiceStore.custom ?: selected)
+        }
+        dialog.show()
     }
+
+    private fun staticServiceSettingsAction(title: String, detail: String): Button =
+        Button(this).apply {
+            text = "$title\n$detail"
+            isAllCaps = false
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            minHeight = dp(64)
+            textSize = 13f
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+        }
+
+    private fun staticServiceSettingsLayoutParams(topMargin: Int): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply {
+            this.topMargin = dp(topMargin)
+        }
 
     private fun showCustomStaticServiceDialog(current: StaticServiceEndpoint) {
         val input = EditText(this).apply {
