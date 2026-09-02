@@ -150,10 +150,13 @@ describe('macOS Matrix Gateway release activation', () => {
                 `<string>${join(oldRelease, 'runtime', 'node')}</string>\n<string>${join(oldRelease, 'ops', 'matrix-local-gateway.js')}</string>`,
             )
             let bootstrapAttempts = 0
+            let loaded = true
             const launchctl = vi.fn(async (arguments_: readonly string[]) => {
+                if (arguments_[0] === 'bootout') loaded = false
                 if (arguments_[0] === 'bootstrap' && bootstrapAttempts++ === 0) {
                     throw new Error('Bootstrap failed: 5: Input/output error')
                 }
+                if (arguments_[0] === 'bootstrap') loaded = true
             })
             const sleep = vi.fn(async () => undefined)
 
@@ -165,6 +168,7 @@ describe('macOS Matrix Gateway release activation', () => {
                 adminSocketPath: join(root, 'admin.sock'),
             }, {
                 launchctl,
+                isServiceLoaded: async () => loaded,
                 sleep,
                 healthCheck: async () => undefined,
             })
@@ -177,6 +181,80 @@ describe('macOS Matrix Gateway release activation', () => {
                 `gui/${process.getuid?.() ?? 0}/com.malink.test-gateway`,
             ])
             expect(await readlink(join(root, 'current'))).toBe(nextRelease)
+        } finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    })
+
+    it('waits until launchd has removed the old service before bootstrapping', async () => {
+        const root = await releaseFixture()
+        try {
+            const oldRelease = join(root, 'releases', 'old')
+            const nextRelease = join(root, 'releases', 'next')
+            const plistPath = join(root, 'gateway.plist')
+            await writeFile(
+                plistPath,
+                `<string>${join(oldRelease, 'runtime', 'node')}</string>\n`
+                + `<string>${join(oldRelease, 'ops', 'matrix-local-gateway.js')}</string>`,
+            )
+            const order: string[] = []
+            let probes = 0
+            const launchctl = vi.fn(async (arguments_: readonly string[]) => {
+                order.push(arguments_[0]!)
+            })
+
+            await activateMacosGatewayRelease({
+                releaseDirectory: nextRelease,
+                installRoot: root,
+                launchAgentPath: plistPath,
+                serviceLabel: 'com.malink.test-gateway',
+                adminSocketPath: join(root, 'admin.sock'),
+            }, {
+                launchctl,
+                isServiceLoaded: async () => {
+                    order.push('probe')
+                    probes += 1
+                    return probes === 1
+                },
+                sleep: async () => { order.push('sleep') },
+                healthCheck: async () => undefined,
+            })
+
+            expect(order.slice(0, 5)).toEqual(['bootout', 'probe', 'sleep', 'probe', 'bootstrap'])
+        } finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    })
+
+    it('rejects a production bundle whose external module is unavailable', async () => {
+        const root = await releaseFixture()
+        try {
+            await writeFile(
+                join(root, 'releases', 'next', 'ops', 'matrix-local-gateway.js'),
+                'import { DatabaseSync } from "sqlite"\n',
+            )
+
+            await expect(validateMacosGatewayRelease(
+                join(root, 'releases', 'next'),
+            )).rejects.toThrow(
+                'Gateway bundle ops/matrix-local-gateway.js imports unavailable module sqlite',
+            )
+        } finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    })
+
+    it('accepts a node-prefixed built-in without a package directory', async () => {
+        const root = await releaseFixture()
+        try {
+            await writeFile(
+                join(root, 'releases', 'next', 'ops', 'matrix-local-gateway.js'),
+                'import { DatabaseSync } from "node:sqlite"\n',
+            )
+
+            await expect(validateMacosGatewayRelease(
+                join(root, 'releases', 'next'),
+            )).resolves.toBeUndefined()
         } finally {
             await rm(root, { recursive: true, force: true })
         }
@@ -330,6 +408,9 @@ async function releaseFixture(): Promise<string> {
         await mkdir(join(release, 'mcp'), { recursive: true })
         await writeFile(join(release, 'runtime', 'node'), '#!/bin/sh\n')
         await writeFile(join(release, 'ops', 'matrix-local-gateway.js'), '// gateway\n')
+        await writeFile(join(release, 'ops', 'gatewayUpdateSupervisorMain.js'), '// supervisor\n')
+        await writeFile(join(release, 'ops', 'gatewayAgentUpdateCli.js'), '// update cli\n')
+        await writeFile(join(release, 'ops', 'gatewayJournalRepairCli.js'), '// repair cli\n')
         await writeFile(join(release, 'mcp', 'stdio.js'), '// mcp\n')
     }))
     return root

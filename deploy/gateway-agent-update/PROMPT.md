@@ -14,6 +14,9 @@ Update this Malink Gateway from the exact signed Git commit supplied above.
    tests, type checks, and production bundle build. Fix only reproducible local
    build/runtime issues required to build this exact commit. If a test or build
    cannot pass, stop without submitting the candidate.
+   The production build's static import-closure check is release-blocking. Do
+   not copy or submit bundles if it reports a missing external module or a Node
+   built-in whose required `node:` prefix was removed.
    The Agent process inherits metadata from the active Gateway service. Remove
    `MALINK_GATEWAY_RELEASE_ID` and `MALINK_GATEWAY_BUILD_ID` from the environment
    of repository test and build commands so the installed Gateway identity
@@ -31,7 +34,10 @@ Update this Malink Gateway from the exact signed Git commit supplied above.
    this release-pinned subprocess entrypoint.
    Preserve unchanged production dependencies locally. If the target lockfile
    changes a runtime dependency, install and dereference the exact production
-   dependency tree into the candidate; no symlink may remain.
+   dependency tree into the candidate; no symlink may remain. Validate the
+   external imports of every copied production entrypoint against the completed
+   candidate rather than inferring dependency closure only from the lockfile
+   diff.
 5. Keep the candidate's working Node runtime when it satisfies the target
    repository's runtime requirements. If it does not, obtain the official
    macOS runtime for this Gateway architecture, verify its published checksum,
@@ -53,3 +59,7 @@ Update this Malink Gateway from the exact signed Git commit supplied above.
    without starting a second Gateway.
    Success means the returned phase is exactly `staged`; otherwise report the
    failure and leave the active Gateway unchanged.
+   If an explicitly authorized external activation must outlive the Gateway
+   Agent session, its detached command must invoke a known-working Node runtime
+   and JavaScript entrypoint by absolute path. Do not rely on `node` from PATH,
+   or on pnpm/tsx shell shims, after the Gateway is stopped.

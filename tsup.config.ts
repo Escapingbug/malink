@@ -19,6 +19,10 @@ export default defineConfig({
   splitting: false,
   sourcemap: true,
   clean: true,
+  // Unlike legacy Node built-ins, SQLite is available only through the
+  // node:sqlite specifier. tsup defaults this option to true and would emit a
+  // bare `sqlite` import that fails during ESM linking.
+  removeNodeProtocol: false,
   noExternal: [
     '@malink/protocol',
     '@malink/security',

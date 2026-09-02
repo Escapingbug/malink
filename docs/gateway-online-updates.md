@@ -107,6 +107,7 @@ ops/matrix-local-gateway.js
 mcp/stdio.js
 ops/gatewayUpdateSupervisorMain.js
 ops/gatewayAgentUpdateCli.js
+ops/gatewayJournalRepairCli.js
 ```
 
 It must be self-contained and contain no symlinks. The supervisor rejects
@@ -116,7 +117,10 @@ and covered by the release seal. On submission the supervisor copies the
 candidate into an immutable release directory and records every path, byte
 count, executable bit, and SHA-256 digest in `release-seal.json` alongside the
 signed `release-prompt.json`. It verifies that seal again immediately before
-apply.
+apply. Before stopping the active Gateway, static validation also parses every
+production entrypoint import and requires each external package to exist inside
+the candidate. Node-only built-ins retain their `node:` prefix, so a bundle that
+would fail during ESM linking cannot reach activation.
 
 ## Publication
 
@@ -242,6 +246,10 @@ probation, and finally restarts the independent supervisor from the new
 release and reconciles its signed release status to `committed`. Backup failure
 restarts the unchanged Gateway. Once the target may
 have opened protected state, failure never starts the old binary.
+On macOS, shutdown waits until launchd confirms that the previous job is no
+longer registered before bootstrapping the replacement. A transient bootstrap
+error is also reconciled against launchd state before it is treated as a failed
+activation.
 
 After this bootstrap, the installed supervisor can perform later protected
 updates through the normal PWA flow; they stop at the visible forward-only

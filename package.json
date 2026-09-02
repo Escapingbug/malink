@@ -4,13 +4,16 @@
   "private": true,
   "description": "End-to-end secured Matrix remote agent with a first-party PWA",
   "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "type": "module",
   "bin": {
     "malink": "./bin/malink.js",
     "malink-mcp": "./dist/mcp/stdio.js"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && tsx scripts/check-gateway-build.ts",
     "build:workspace": "pnpm --recursive --if-present build",
     "dev": "tsx src/index.ts",
     "dev:matrix-gateway": "tsx scripts/matrix-local-gateway.ts",

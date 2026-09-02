@@ -14,6 +14,7 @@ import {
     symlink,
 } from 'node:fs/promises'
 import { constants } from 'node:fs'
+import { builtinModules } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { GatewayAdminClient } from '../gateway/admin/client.js'
 
@@ -39,6 +40,7 @@ export interface MacosGatewayReleaseDependencies {
     healthCheck?: (expectedBuildId?: string) => Promise<void>
     sleep?: (milliseconds: number) => Promise<void>
     launchctl?: (arguments_: readonly string[]) => Promise<void>
+    isServiceLoaded?: (service: string) => Promise<boolean>
     onActivated?: () => void | Promise<void>
 }
 
@@ -70,18 +72,23 @@ export async function activateMacosGatewayRelease(
     const reloadLaunchAgent = stablePlist !== originalPlist
     const sleep = dependencies.sleep ?? (milliseconds =>
         new Promise(resolveDelay => setTimeout(resolveDelay, milliseconds)))
+    const launchctl = dependencies.launchctl ?? runLaunchctl
+    const isServiceLoaded = dependencies.isServiceLoaded ?? launchAgentIsLoaded
     const restart = dependencies.restart ?? (reload =>
         restartLaunchAgent(
             input.serviceLabel,
             launchAgentPath,
             reload,
-            dependencies.launchctl ?? runLaunchctl,
+            launchctl,
+            isServiceLoaded,
             sleep,
         ))
     const stop = dependencies.stop ?? (() =>
         stopLaunchAgent(
             input.serviceLabel,
-            dependencies.launchctl ?? runLaunchctl,
+            launchctl,
+            isServiceLoaded,
+            sleep,
         ))
     const defaultHealthCheck = (expectedBuildId?: string) => () =>
         new GatewayAdminClient({
@@ -190,17 +197,29 @@ export async function activateMacosGatewayRelease(
 async function stopLaunchAgent(
     label: string,
     launchctl: (arguments_: readonly string[]) => Promise<void>,
+    isServiceLoaded: (service: string) => Promise<boolean>,
+    sleep: (milliseconds: number) => Promise<void>,
 ): Promise<void> {
     const userDomain = `gui/${process.getuid?.() ?? 0}`
-    await launchctl(['bootout', `${userDomain}/${label}`])
+    const service = `${userDomain}/${label}`
+    try {
+        await launchctl(['bootout', service])
+    } catch (error) {
+        if (!await isServiceLoaded(service)) return
+        throw error
+    }
+    for (let attempt = 0; attempt < MAX_LAUNCH_AGENT_REMOVAL_ATTEMPTS; attempt += 1) {
+        if (!await isServiceLoaded(service)) return
+        await sleep(LAUNCH_AGENT_REMOVAL_POLL_MS)
+    }
+    throw new Error(`LaunchAgent ${service} remained registered after bootout`)
 }
 
 export async function validateMacosGatewayRelease(releaseDirectory: string): Promise<void> {
     const root = await realpath(releaseDirectory)
     const runtime = join(root, 'runtime', 'node')
-    const entrypoint = join(root, 'ops', 'matrix-local-gateway.js')
-    const mcpEntrypoint = join(root, 'mcp', 'stdio.js')
-    for (const path of [runtime, entrypoint, mcpEntrypoint]) {
+    const requiredEntrypoints = REQUIRED_GATEWAY_RELEASE_ENTRYPOINTS.map(path => join(root, path))
+    for (const path of [runtime, ...requiredEntrypoints]) {
         const metadata = await lstat(path).catch(error => {
             if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
                 throw new Error(`Required Gateway release path is missing: ${path}`)
@@ -223,8 +242,82 @@ export async function validateMacosGatewayRelease(releaseDirectory: string): Pro
             await access(runtime, constants.F_OK)
             await chmod(runtime, 0o755)
         })
-    await access(entrypoint, constants.R_OK)
-    await access(mcpEntrypoint, constants.R_OK)
+    await Promise.all(requiredEntrypoints.map(path => access(path, constants.R_OK)))
+    await validateGatewayBundleImports(root, root)
+}
+
+/**
+ * Statically verifies that every external ESM import in the production
+ * entrypoints is either a Node built-in or present in the supplied module
+ * root. It never links or evaluates candidate code.
+ */
+export async function validateGatewayBundleImports(
+    bundleRoot: string,
+    moduleRoot: string,
+    requireAllEntrypoints = false,
+): Promise<void> {
+    const builtins = new Set(builtinModules)
+    for (const relativePath of GATEWAY_RELEASE_ENTRYPOINTS) {
+        const source = await readFile(join(bundleRoot, relativePath), 'utf8').catch(error => {
+            if (
+                !requireAllEntrypoints
+                && (error as NodeJS.ErrnoException).code === 'ENOENT'
+            ) return null
+            throw error
+        })
+        if (source === null) continue
+        for (const specifier of moduleSpecifiers(source)) {
+            if (
+                specifier.startsWith('.')
+                || specifier.startsWith('/')
+                || specifier.startsWith('file:')
+                || builtins.has(specifier)
+                || (specifier.startsWith('node:') && builtins.has(specifier.slice(5)))
+            ) continue
+            const packageName = packageNameFromSpecifier(specifier)
+            const packageManifest = join(moduleRoot, 'node_modules', packageName, 'package.json')
+            const metadata = await lstat(packageManifest).catch(error => {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+                    throw new Error(
+                        `Gateway bundle ${relativePath} imports unavailable module ${specifier}`,
+                    )
+                }
+                throw error
+            })
+            if (!metadata.isFile()) {
+                throw new Error(
+                    `Gateway bundle dependency manifest is not a regular file: ${packageManifest}`,
+                )
+            }
+        }
+    }
+}
+
+function moduleSpecifiers(source: string): Set<string> {
+    const specifiers = new Set<string>()
+    for (const pattern of [
+        /\bfrom\s+(["'])([^"'\\\r\n]+)\1/gu,
+        /(?:^|[;\n])\s*import\s*(?:\(\s*)?(["'])([^"'\\\r\n]+)\1/gmu,
+        /\bimport\s*\(\s*(["'])([^"'\\\r\n]+)\1/gu,
+        /\b(?:require|__require)\s*\(\s*(["'])([^"'\\\r\n]+)\1/gu,
+    ]) {
+        for (const match of source.matchAll(pattern)) {
+            if (match[2]) specifiers.add(match[2])
+        }
+    }
+    return specifiers
+}
+
+function packageNameFromSpecifier(specifier: string): string {
+    const segments = specifier.split('/')
+    if (specifier.startsWith('@')) {
+        if (segments.length < 2 || !segments[0] || !segments[1]) {
+            throw new Error(`Gateway bundle contains invalid module specifier ${specifier}`)
+        }
+        return `${segments[0]}/${segments[1]}`
+    }
+    if (!segments[0]) throw new Error(`Gateway bundle contains invalid module specifier ${specifier}`)
+    return segments[0]
 }
 
 function stableLaunchAgentPlist(
@@ -324,25 +417,28 @@ async function restartLaunchAgent(
     plistPath: string,
     reload: boolean,
     launchctl: (arguments_: readonly string[]) => Promise<void>,
+    isServiceLoaded: (service: string) => Promise<boolean>,
     sleep: (milliseconds: number) => Promise<void>,
 ): Promise<void> {
     const userDomain = `gui/${process.getuid?.() ?? 0}`
     const service = `${userDomain}/${label}`
     if (reload) {
-        await launchctl(['bootout', service]).catch(() => undefined)
-        await bootstrapLaunchAgent(launchctl, userDomain, plistPath, sleep)
+        await stopLaunchAgent(label, launchctl, isServiceLoaded, sleep)
+        await bootstrapLaunchAgent(launchctl, isServiceLoaded, service, userDomain, plistPath, sleep)
     }
     try {
         await launchctl(['kickstart', '-k', service])
     } catch (error) {
         if (reload) throw error
-        await bootstrapLaunchAgent(launchctl, userDomain, plistPath, sleep)
+        await bootstrapLaunchAgent(launchctl, isServiceLoaded, service, userDomain, plistPath, sleep)
         await launchctl(['kickstart', '-k', service])
     }
 }
 
 async function bootstrapLaunchAgent(
     launchctl: (arguments_: readonly string[]) => Promise<void>,
+    isServiceLoaded: (service: string) => Promise<boolean>,
+    service: string,
     userDomain: string,
     plistPath: string,
     sleep: (milliseconds: number) => Promise<void>,
@@ -354,10 +450,23 @@ async function bootstrapLaunchAgent(
             return
         } catch (error) {
             lastError = error
+            // launchctl may report EIO while completing an asynchronous
+            // registration. A registered service is safe to kickstart.
+            if (await isServiceLoaded(service)) return
         }
         if (attempt < 4) await sleep(250 * (attempt + 1))
     }
     throw lastError
+}
+
+function launchAgentIsLoaded(service: string): Promise<boolean> {
+    return new Promise(resolveStatus => {
+        const child = spawn('/bin/launchctl', ['print', service], {
+            stdio: 'ignore',
+        })
+        child.once('error', () => resolveStatus(false))
+        child.once('exit', code => resolveStatus(code === 0))
+    })
 }
 
 function runLaunchctl(arguments_: readonly string[]): Promise<void> {
@@ -409,3 +518,17 @@ async function verifyProbation(
 function formatError(error: unknown): string {
     return error instanceof Error ? error.message : String(error)
 }
+
+const GATEWAY_RELEASE_ENTRYPOINTS = [
+    'ops/matrix-local-gateway.js',
+    'ops/gatewayUpdateSupervisorMain.js',
+    'ops/gatewayAgentUpdateCli.js',
+    'ops/gatewayJournalRepairCli.js',
+    'mcp/stdio.js',
+] as const
+const REQUIRED_GATEWAY_RELEASE_ENTRYPOINTS = [
+    'ops/matrix-local-gateway.js',
+    'mcp/stdio.js',
+] as const
+const MAX_LAUNCH_AGENT_REMOVAL_ATTEMPTS = 60
+const LAUNCH_AGENT_REMOVAL_POLL_MS = 250
