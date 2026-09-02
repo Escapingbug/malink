@@ -64,6 +64,11 @@ one identity from being driven by both transports.
   node-scoped operation. Android keeps the hosted setup screen visible instead
   of presenting the ordinary **Reconnect** action. A durable native setup marker
   also clears stale hosted-Web account state after an interrupted sign-out.
+- A `.malink-auth` attachment can be opened or shared directly into Malink.
+  Android reads it through the sender's one-time content permission, enforces a
+  128 KiB limit, and passes it through an immediately consumed URL fragment to
+  the trusted static PWA. The shared PWA parser then verifies the strict wrapper
+  and the existing signed, expiring, one-use invitation before pairing.
 
 Android's explicit force-stop remains a platform override: no application can
 restart itself until the user opens it again.

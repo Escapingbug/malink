@@ -17,11 +17,21 @@ test("extracts a self-contained device invitation and removes it from history", 
   assert.equal(route.sanitizedPath, "/");
 });
 
+test("extracts an Android-delivered authorization file and removes it from history", () => {
+  const route = pairingRouteFromUrl(
+    "https://malink.example/#session=keep&authorization=eyJraW5kIjoidGVzdCJ9",
+  );
+  assert.equal(route.authorizationTransfer, "eyJraW5kIjoidGVzdCJ9");
+  assert.equal(route.sanitizedPath, "/#session=keep");
+  assert.equal(hasPairingRoute(route), true);
+});
+
 test("sanitizes a retired short invitation without trying to resolve it", () => {
   const route = pairingRouteFromUrl("https://malink.example/#i=abc&k=secret");
   assert.equal(route.legacyShortInvitation, true);
   assert.equal(route.pairingLink, null);
   assert.equal(route.deviceInvitation, null);
+  assert.equal(route.authorizationTransfer, null);
   assert.equal(route.sanitizedPath, "/");
   assert.equal(hasPairingRoute(route), true);
 });

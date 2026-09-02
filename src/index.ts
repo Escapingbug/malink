@@ -6,6 +6,7 @@ import { homedir, hostname } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import QRCode from 'qrcode'
+import { serializeAuthorizationTransfer } from '@malink/protocol'
 import { config, getDaemonLogPath, getDaemonBaseDir } from './config'
 import { pairing } from './channel/telegram/pairing'
 import { GatewayAdminClient } from './gateway/admin/client'
@@ -73,6 +74,7 @@ async function main() {
             'matrix-login': { type: 'string' },
             qr: { type: 'string' },
             output: { type: 'string' },
+            'authorization-file': { type: 'string' },
             reason: { type: 'string' },
             caption: { type: 'string' },
             filename: { type: 'string' },
@@ -377,7 +379,7 @@ Usage:
   malink watchdog uninstall        Remove Windows scheduled watchdog task
   malink status                    Show daemon and config status
   malink gateway status            Show the local Matrix Gateway status
-  malink gateway invite            Create a one-time device invitation QR
+  malink gateway invite            Create a one-time device invitation
   malink gateway devices           List paired PWA devices
   malink gateway cancel <offer>    Cancel an unused invitation
   malink gateway revoke <device>   Revoke a paired PWA device
@@ -492,7 +494,8 @@ async function handleGatewayCommand(
   malink gateway invite [--socket PATH] [--app-url URL]
       [--lifetime SECONDS] [--matrix-login required|preferred|disabled]
       [--privilege-approval]
-      [--qr terminal|png|none] [--output PATH] [--json]
+      [--qr terminal|png|none] [--output PATH]
+      [--authorization-file PATH] [--json]
   malink gateway invite-gateway --gateway-data-dir PATH
   malink gateway join <invitation-link> --gateway-data-dir PATH [--gateway-name NAME]
   malink gateway rename <name> [--socket PATH] [--json]
@@ -741,17 +744,59 @@ async function handleGatewayCommand(
             ?? process.env.MALINK_PWA_URL
         const matrixLogin = parseMatrixLoginMode(values['matrix-login'])
         const lifetimeMs = parseLifetimeMs(values.lifetime)
+        const qrMode = stringOption(values.qr) ?? 'terminal'
+        if (!['terminal', 'png', 'none'].includes(qrMode)) {
+            throw new Error('--qr must be terminal, png, or none')
+        }
+        const qrOutput = qrMode === 'png'
+            ? resolve(
+                stringOption(values.output)
+                ?? join(process.cwd(), 'malink-device-invitation.png'),
+            )
+            : null
+        const authorizationFile = stringOption(values['authorization-file'])
+        const authorizationOutput = authorizationFile ? resolve(authorizationFile) : null
+        if (authorizationOutput && existsSync(authorizationOutput)) {
+            throw new Error(`Authorization file already exists: ${authorizationOutput}`)
+        }
+        if (authorizationOutput && qrOutput === authorizationOutput) {
+            throw new Error('--authorization-file and the QR --output must be different paths')
+        }
         const invitation = await client.createInvitation({
             ...(lifetimeMs === undefined ? {} : { lifetimeMs }),
             matrixLogin,
             ...(appUrl ? { appUrl } : {}),
             ...(values['privilege-approval'] ? { privilegeApproval: true } : {}),
         })
+        if (authorizationOutput) {
+            try {
+                writeFileSync(
+                    authorizationOutput,
+                    serializeAuthorizationTransfer({
+                        link: invitation.url,
+                        expiresAt: invitation.expiresAt,
+                        includesMatrixLogin: invitation.includesMatrixLogin,
+                    }),
+                    { encoding: 'utf8', flag: 'wx', mode: 0o600 },
+                )
+            } catch (error) {
+                try {
+                    await client.cancelInvitation(invitation.invitationId)
+                } catch (cancelError) {
+                    throw new AggregateError(
+                        [error, cancelError],
+                        'Authorization file export failed, and the unused invitation could not be cancelled',
+                    )
+                }
+                throw new Error('Authorization file export failed; the unused invitation was cancelled', {
+                    cause: error,
+                })
+            }
+        }
         if (values.json) {
             console.log(JSON.stringify(invitation, null, 2))
             return
         }
-        const qrMode = stringOption(values.qr) ?? 'terminal'
         if (qrMode === 'terminal') {
             console.log(await QRCode.toString(invitation.url, {
                 type: 'terminal',
@@ -759,20 +804,17 @@ async function handleGatewayCommand(
                 errorCorrectionLevel: 'L',
             }))
         } else if (qrMode === 'png') {
-            const output = stringOption(values.output)
-                ?? join(process.cwd(), 'malink-device-invitation.png')
             const png = await QRCode.toBuffer(invitation.url, {
                 type: 'png',
                 width: 512,
                 margin: 2,
                 errorCorrectionLevel: 'L',
             })
-            writeFileSync(output, png, { mode: 0o600 })
-            if (process.platform !== 'win32') chmodSync(output, 0o600)
-            console.log(`QR code: ${output}`)
-        } else if (qrMode !== 'none') {
-            throw new Error('--qr must be terminal, png, or none')
+            writeFileSync(qrOutput!, png, { mode: 0o600 })
+            if (process.platform !== 'win32') chmodSync(qrOutput!, 0o600)
+            console.log(`QR code: ${qrOutput}`)
         }
+        if (authorizationOutput) console.log(`Authorization file: ${authorizationOutput}`)
         console.log(`Invitation link:\n${invitation.url}`)
         console.log(`Verification code: ${formatGatewayCode(invitation.verificationCode)}`)
         console.log(`Expires: ${new Date(invitation.expiresAt).toISOString()}`)

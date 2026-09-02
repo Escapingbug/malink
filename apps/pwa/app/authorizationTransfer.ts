@@ -1,97 +1,63 @@
-import type { GeneratedDeviceInvitation } from "./pairing";
-import { decodeDeviceInvitationLink } from "./pairing";
+import {
+  AUTHORIZATION_TRANSFER_MIME_TYPE,
+  MAX_AUTHORIZATION_TRANSFER_BYTES,
+  parseAuthorizationTransfer,
+  serializeAuthorizationTransfer,
+  type GeneratedDeviceInvitation,
+} from "@malink/protocol";
 
-const AUTHORIZATION_TRANSFER_KIND = "malink.authorization-transfer";
-const AUTHORIZATION_TRANSFER_VERSION = 1;
-export const MAX_AUTHORIZATION_TRANSFER_BYTES = 128 * 1024;
-const MAX_AUTHORIZATION_TRANSFER_CHARACTERS = MAX_AUTHORIZATION_TRANSFER_BYTES;
-
-type AuthorizationTransferDocument = {
-  kind: typeof AUTHORIZATION_TRANSFER_KIND;
-  version: typeof AUTHORIZATION_TRANSFER_VERSION;
-  createdAt: number;
-  expiresAt: number;
-  invitation: string;
+export {
+  AUTHORIZATION_TRANSFER_MIME_TYPE,
+  MAX_AUTHORIZATION_TRANSFER_BYTES,
+  parseAuthorizationTransfer,
+  serializeAuthorizationTransfer,
 };
 
-export function serializeAuthorizationTransfer(
-  invitation: GeneratedDeviceInvitation,
-  now = Date.now(),
-): string {
-  const verified = verifiedInvitation(invitation.link);
-  if (verified.expiresAt !== invitation.expiresAt) {
-    throw new Error("The authorization invitation expiry does not match its signed payload.");
-  }
-  if (verified.expiresAt <= now) {
-    throw new Error("This authorization invitation has expired. Create a new one.");
-  }
-  const document: AuthorizationTransferDocument = {
-    kind: AUTHORIZATION_TRANSFER_KIND,
-    version: AUTHORIZATION_TRANSFER_VERSION,
-    createdAt: now,
-    expiresAt: verified.expiresAt,
-    invitation: invitation.link,
-  };
-  const serialized = JSON.stringify(document, null, 2);
-  if (serialized.length > MAX_AUTHORIZATION_TRANSFER_CHARACTERS) {
-    throw new Error("The authorization file is too large.");
-  }
-  return `${serialized}\n`;
-}
+const MAX_AUTHORIZATION_TRANSFER_FRAGMENT_CHARACTERS =
+  Math.ceil(MAX_AUTHORIZATION_TRANSFER_BYTES / 3) * 4;
 
-export function parseAuthorizationTransfer(
-  input: string,
+export function parseAuthorizationTransferFragment(
+  payload: string,
   now = Date.now(),
 ): GeneratedDeviceInvitation {
-  if (!input || input.length > MAX_AUTHORIZATION_TRANSFER_CHARACTERS) {
-    throw new Error("The authorization file is empty or too large.");
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(input);
-  } catch (error) {
-    throw new Error("The authorization file is not valid JSON.", { cause: error });
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("The authorization file must contain one object.");
-  }
-  const value = parsed as Record<string, unknown>;
-  const expectedKeys = ["createdAt", "expiresAt", "invitation", "kind", "version"];
   if (
-    Object.keys(value).sort().join("\0") !== expectedKeys.sort().join("\0") ||
-    value.kind !== AUTHORIZATION_TRANSFER_KIND ||
-    value.version !== AUTHORIZATION_TRANSFER_VERSION ||
-    typeof value.invitation !== "string" ||
-    !Number.isSafeInteger(value.createdAt) ||
-    !Number.isSafeInteger(value.expiresAt)
+    !payload ||
+    payload.length > MAX_AUTHORIZATION_TRANSFER_FRAGMENT_CHARACTERS ||
+    !/^[A-Za-z0-9_-]+$/u.test(payload)
   ) {
-    throw new Error("The authorization file has an unsupported or invalid format.");
+    throw new Error("The authorization file transfer is empty or too large.");
   }
-  const verified = verifiedInvitation(value.invitation);
-  const createdAt = value.createdAt as number;
-  if (createdAt < 0 || createdAt > verified.expiresAt) {
-    throw new Error("The authorization file creation time is invalid.");
+  let bytes: Uint8Array;
+  try {
+    const padded =
+      payload.replaceAll("-", "+").replaceAll("_", "/") +
+      "=".repeat((4 - (payload.length % 4)) % 4);
+    const binary = atob(padded);
+    bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+  } catch (error) {
+    throw new Error("The authorization file transfer is invalid.", { cause: error });
   }
-  if (verified.expiresAt !== value.expiresAt) {
-    throw new Error("The authorization file expiry does not match its signed invitation.");
+  if (bytes.byteLength > MAX_AUTHORIZATION_TRANSFER_BYTES) {
+    throw new Error("The authorization file is too large.");
   }
-  if (verified.expiresAt <= now) {
-    throw new Error("This authorization file has expired. Export a new one.");
+  let contents: string;
+  try {
+    contents = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch (error) {
+    throw new Error("The authorization file is not valid UTF-8.", { cause: error });
   }
-  return verified;
+  return parseAuthorizationTransfer(contents, now);
 }
 
 export function downloadAuthorizationTransfer(
   invitation: GeneratedDeviceInvitation,
   now = Date.now(),
 ): void {
-  const contents = serializeAuthorizationTransfer(invitation, now);
-  const blob = new Blob([contents], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
+  const file = createAuthorizationTransferFile(invitation, now);
+  const url = URL.createObjectURL(file);
   const anchor = document.createElement("a");
-  const timestamp = new Date(now).toISOString().replaceAll(/[-:]/gu, "").replace(/\.\d{3}Z$/u, "Z");
   anchor.href = url;
-  anchor.download = `malink-authorization-${timestamp}.malink-auth`;
+  anchor.download = file.name;
   anchor.hidden = true;
   document.body.append(anchor);
   anchor.click();
@@ -99,14 +65,36 @@ export function downloadAuthorizationTransfer(
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-function verifiedInvitation(link: string): GeneratedDeviceInvitation {
-  const invitation = decodeDeviceInvitationLink(link);
-  return {
-    link,
-    expiresAt: Math.min(
-      invitation.offer.offer.expiresAt,
-      invitation.matrixLogin?.expiresAt ?? Number.POSITIVE_INFINITY,
-    ),
-    includesMatrixLogin: invitation.matrixLogin !== undefined,
-  };
+export function createAuthorizationTransferFile(
+  invitation: GeneratedDeviceInvitation,
+  now = Date.now(),
+): File {
+  const contents = serializeAuthorizationTransfer(invitation, now);
+  const timestamp = new Date(now)
+    .toISOString()
+    .replaceAll(/[-:]/gu, "")
+    .replace(/\.\d{3}Z$/u, "Z");
+  return new File(
+    [contents],
+    `malink-authorization-${timestamp}.malink-auth`,
+    { type: AUTHORIZATION_TRANSFER_MIME_TYPE },
+  );
+}
+
+export function canShareAuthorizationTransferFile(): boolean {
+  if (
+    typeof navigator === "undefined" ||
+    typeof navigator.share !== "function" ||
+    typeof navigator.canShare !== "function" ||
+    typeof File !== "function"
+  ) return false;
+  try {
+    return navigator.canShare({
+      files: [new File(["{}"], "invitation.malink-auth", {
+        type: AUTHORIZATION_TRANSFER_MIME_TYPE,
+      })],
+    });
+  } catch {
+    return false;
+  }
 }

@@ -30,6 +30,10 @@ isolation remains intact. A connected PWA can export a `.malink-auth` file and
 another PWA can import it; the file wraps the same one-use, expiring Gateway
 device invitation used by QR pairing, so the destination creates its own
 device identity and receives no broader operation set than the inviter.
+The Android host also accepts that file from a file manager or compatible
+system share target and forwards it only to the configured, trusted static PWA
+origin for strict parsing. No invitation relay or dynamic application server is
+required.
 
 ## Development
 

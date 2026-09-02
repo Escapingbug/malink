@@ -309,7 +309,7 @@ export function deriveConnectionRecoveryPlan(input: {
     return {
       title: "Repair this device",
       detail:
-        "Create a one-time invitation on another connected Malink device or on the Gateway computer, then scan or paste it here. Server conversation history is preserved.",
+        "Create a one-time invitation on another connected Malink device or on the Gateway computer, then import, scan, or paste it here. Server conversation history is preserved.",
       primary: {
         action: "new-invitation",
         label: "Use a new invitation",

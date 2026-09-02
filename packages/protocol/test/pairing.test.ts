@@ -11,6 +11,8 @@ import {
   pairingOfferSchema,
   pairingRequestSchema,
   pairingLinkFromDeviceInvitation,
+  parseAuthorizationTransfer,
+  serializeAuthorizationTransfer,
   type SignedPairingOffer,
 } from '../src/index.js'
 
@@ -234,6 +236,13 @@ describe('pairing schemas', () => {
     const decoded = decodeDeviceInvitationLink(generated.link)
     expect(decoded.matrixLogin?.loginToken).toBe('one-time-login-token')
     expect(pairingLinkFromDeviceInvitation(decoded)).toBe(pairingLink)
+    const authorizationFile = serializeAuthorizationTransfer(generated, 100_001)
+    expect(parseAuthorizationTransfer(authorizationFile, 100_001)).toEqual(generated)
+    const altered = JSON.parse(authorizationFile) as Record<string, unknown>
+    expect(() => parseAuthorizationTransfer(JSON.stringify({
+      ...altered,
+      expiresAt: 120_000,
+    }), 100_001)).toThrow(/expiry does not match/u)
   })
 
   it('only accepts a device-key-only Matrix rotation', () => {

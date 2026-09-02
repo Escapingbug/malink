@@ -8,7 +8,11 @@ import {
 } from "@malink/security";
 import { createDeviceInvitationLink } from "../app/pairing.ts";
 import {
+  AUTHORIZATION_TRANSFER_MIME_TYPE,
+  canShareAuthorizationTransferFile,
+  createAuthorizationTransferFile,
   parseAuthorizationTransfer,
+  parseAuthorizationTransferFragment,
   serializeAuthorizationTransfer,
 } from "../app/authorizationTransfer.ts";
 
@@ -24,6 +28,15 @@ test("round trips a one-time authorization without exporting device keys", async
   ]);
   assert.doesNotMatch(serialized, /privateKey|accessToken/iu);
   assert.deepEqual(parseAuthorizationTransfer(serialized, NOW), invitation);
+  assert.deepEqual(
+    parseAuthorizationTransferFragment(Buffer.from(serialized).toString("base64url"), NOW),
+    invitation,
+  );
+  const file = createAuthorizationTransferFile(invitation, NOW);
+  assert.equal(file.name, "malink-authorization-20270115T080000Z.malink-auth");
+  assert.equal(file.type, AUTHORIZATION_TRANSFER_MIME_TYPE);
+  assert.equal(await file.text(), serialized);
+  assert.equal(canShareAuthorizationTransferFile(), false);
 });
 
 test("rejects expired, modified, and unknown authorization files", async () => {
@@ -42,6 +55,10 @@ test("rejects expired, modified, and unknown authorization files", async () => {
   assert.throws(
     () => parseAuthorizationTransfer(JSON.stringify({ ...parsed, extra: true }), NOW),
     /invalid format/iu,
+  );
+  assert.throws(
+    () => parseAuthorizationTransferFragment("not+base64", NOW),
+    /empty or too large/iu,
   );
 });
 

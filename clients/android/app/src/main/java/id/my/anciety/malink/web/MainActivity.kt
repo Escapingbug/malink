@@ -52,6 +52,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.core.content.IntentCompat
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -108,6 +109,8 @@ class MainActivity : ComponentActivity() {
     private var webViewResumed = false
     private var pendingForegroundStart = false
     private var pendingSessionId: String? = null
+    private var pendingAuthorizationTransfer: String? = null
+    private var authorizationImportGeneration = 0L
     private var nativeBackDispatchPending = false
     private var nativeBackDispatchGeneration = 0L
     private val staticServiceStore by lazy { StaticServiceStore(this) }
@@ -306,6 +309,8 @@ class MainActivity : ComponentActivity() {
         pendingFileChooser = null
         pendingCameraCaptureUri = null
         pendingCameraIntent = null
+        authorizationImportGeneration += 1
+        pendingAuthorizationTransfer = null
         webView?.apply {
             stopLoading()
             loadUrl("about:blank")
@@ -1056,6 +1061,7 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         when (intent?.action) {
+            Intent.ACTION_VIEW, Intent.ACTION_SEND -> importAuthorizationTransfer(intent)
             ACTION_EXPORT_DIAGNOSTICS -> {
                 intent.action = null
                 exportDiagnostics()
@@ -1084,6 +1090,62 @@ class MainActivity : ComponentActivity() {
                 lifecycleScope.launch(Dispatchers.IO) {
                     updateManager?.acceptPublishedRelease(release)
                 }
+            }
+        }
+    }
+
+    private fun importAuthorizationTransfer(intent: Intent) {
+        val uri = when (intent.action) {
+            Intent.ACTION_VIEW -> intent.data
+            Intent.ACTION_SEND -> IntentCompat.getParcelableExtra(
+                intent,
+                Intent.EXTRA_STREAM,
+                Uri::class.java,
+            )
+            else -> null
+        }
+        intent.action = null
+        intent.data = null
+        intent.removeExtra(Intent.EXTRA_STREAM)
+        intent.clipData = null
+        if (uri?.scheme != "content") {
+            diagnostics.record("authorization_file.rejected", mapOf("reason" to "invalid_uri"))
+            Toast.makeText(
+                this,
+                "Malink could not read this authorization file.",
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        val generation = ++authorizationImportGeneration
+        lifecycleScope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    val contents = contentResolver.openInputStream(uri)?.use {
+                        readAuthorizationTransfer(it)
+                    } ?: throw IllegalArgumentException(
+                        "The authorization file could not be opened.",
+                    )
+                    authorizationTransferFragment(contents)
+                }
+            }
+            if (generation != authorizationImportGeneration || isFinishing || isDestroyed) {
+                return@launch
+            }
+            result.onSuccess { payload ->
+                pendingAuthorizationTransfer = payload
+                diagnostics.record("authorization_file.opened")
+                webView?.loadUrl(pendingWebAppUrl())
+            }.onFailure { error ->
+                diagnostics.record(
+                    "authorization_file.rejected",
+                    mapOf("reason" to error.javaClass.simpleName.take(160)),
+                )
+                Toast.makeText(
+                    this@MainActivity,
+                    error.message ?: "Malink could not read this authorization file.",
+                    Toast.LENGTH_LONG,
+                ).show()
             }
         }
     }
@@ -1159,6 +1221,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun pendingWebAppUrl(): String {
+        val authorization = pendingAuthorizationTransfer
+        if (authorization != null) {
+            pendingAuthorizationTransfer = null
+            return "${trustedWebOrigin.appUrl}#authorization=${Uri.encode(authorization)}"
+        }
         val sessionId = pendingSessionId ?: return trustedWebOrigin.appUrl
         pendingSessionId = null
         return "${trustedWebOrigin.appUrl}#session=${Uri.encode(sessionId)}"

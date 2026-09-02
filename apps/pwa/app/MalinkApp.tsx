@@ -74,6 +74,7 @@ import { MalinkMark } from "./MalinkMark";
 import type { GatewayEnrollmentBusyState } from "./GatewayEnrollmentPanel";
 import { waitForUiCommit } from "./uiScheduling";
 import { hasPairingRoute, pairingRouteFromUrl } from "./pairingRoute";
+import { parseAuthorizationTransferFragment } from "./authorizationTransfer";
 import {
   NewSessionDialog,
   type NewSessionInput,
@@ -4241,7 +4242,18 @@ function MalinkAppRuntime() {
   useEffect(() => {
     const route = pairingRouteFromUrl(window.location.href);
     const link = route.pairingLink;
-    const invitation = route.deviceInvitation;
+    let invitation = route.deviceInvitation;
+    let authorizationTransferError: string | null = null;
+    if (route.authorizationTransfer) {
+      try {
+        invitation = parseAuthorizationTransferFragment(
+          route.authorizationTransfer,
+        ).link;
+      } catch (error) {
+        authorizationTransferError = formatUiError(error);
+        invitation = null;
+      }
+    }
     const legacyShortInvitation = route.legacyShortInvitation;
     const deferStoredStartupForPairing =
       shouldDeferStoredMatrixStartupForPairing({
@@ -4259,6 +4271,14 @@ function MalinkAppRuntime() {
     if (invitation) void openDeviceInvitation(invitation);
     else if (link) void openPairingLink(link);
     void (async () => {
+      if (authorizationTransferError) {
+        await Promise.resolve();
+        setConnectionError(
+          `The authorization file could not be opened: ${authorizationTransferError}`,
+        );
+        setSettingsOpen(true);
+        return;
+      }
       if (rejectedQueryPairing) {
         await Promise.resolve();
         setConnectionError(
@@ -4384,7 +4404,19 @@ function MalinkAppRuntime() {
         "",
         route.sanitizedPath,
       );
-      if (route.deviceInvitation) void openDeviceInvitation(route.deviceInvitation);
+      if (route.authorizationTransfer) {
+        try {
+          const invitation = parseAuthorizationTransferFragment(
+            route.authorizationTransfer,
+          );
+          void openDeviceInvitation(invitation.link);
+        } catch (error) {
+          setConnectionError(
+            `The authorization file could not be opened: ${formatUiError(error)}`,
+          );
+          setSettingsOpen(true);
+        }
+      } else if (route.deviceInvitation) void openDeviceInvitation(route.deviceInvitation);
       else if (route.pairingLink) void openPairingLink(route.pairingLink);
       else if (route.legacyShortInvitation) {
         setConnectionError(

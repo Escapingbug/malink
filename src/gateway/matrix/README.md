@@ -159,6 +159,12 @@ For example:
 malink gateway invite \
   --app-url https://pwa.example/ \
   --matrix-login required \
-  --qr png \
-  --output malink-invitation.png
+  --qr none \
+  --authorization-file malink-authorization.malink-auth
 ```
+
+The authorization file contains the same self-contained, one-use invitation as
+the link and QR forms. It is created owner-only and is never overwritten. If
+file creation fails, the CLI cancels the otherwise-unused invitation. Transfer
+the file to the new device, open it with Malink or choose **Import authorization
+file**, and complete pairing before it expires.

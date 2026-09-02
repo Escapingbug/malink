@@ -21,6 +21,9 @@ import { useDialogFocus } from "./dialogFocus";
 import { BusyActionLabel, OperationProgress } from "./OperationProgress";
 import type { ConnectionRepairReason } from "./connectionPresentation";
 import {
+  AUTHORIZATION_TRANSFER_MIME_TYPE,
+  canShareAuthorizationTransferFile,
+  createAuthorizationTransferFile,
   downloadAuthorizationTransfer,
   MAX_AUTHORIZATION_TRANSFER_BYTES,
   parseAuthorizationTransfer,
@@ -113,6 +116,7 @@ export function PairingWizard({
   }, [deviceInvitation]);
   const qrDataUrl =
     qrCode.link === deviceInvitation?.link ? qrCode.dataUrl : "";
+  const canShareAuthorizationFile = canShareAuthorizationTransferFile();
 
   if (trustedGateway && !preview && !repairRequired) {
     return (
@@ -187,7 +191,7 @@ export function PairingWizard({
         {deviceInvitation && (
           <section className="generated-device-invitation" aria-live="polite">
             <div>
-              <strong>Scan on the new device</strong>
+              <strong>Transfer to the new device</strong>
               <p>
                 This invitation works once and expires{" "}
                 {formatExpiry(deviceInvitation.expiresAt)}.
@@ -207,7 +211,7 @@ export function PairingWizard({
               />
             ) : qrErrorLink === deviceInvitation.link ? (
               <div className="invitation-qr-loading">
-                This self-contained invitation is too large for one QR code. Copy or share the link instead.
+                This self-contained invitation is too large for one QR code. Export the authorization file or copy the link instead.
               </div>
             ) : (
               <div className="invitation-qr-loading">
@@ -254,8 +258,24 @@ export function PairingWizard({
                   onClick={() => {
                     setShareStatus(null);
                     setShareBusy("share");
+                    let authorizationFile: File | null;
+                    try {
+                      authorizationFile = canShareAuthorizationFile
+                        ? createAuthorizationTransferFile(deviceInvitation)
+                        : null;
+                    } catch (error) {
+                      setShareStatus(
+                        error instanceof Error ? error.message : String(error),
+                      );
+                      setShareBusy(null);
+                      return;
+                    }
                     void navigator
-                      .share({
+                      .share(authorizationFile ? {
+                        title: `Join ${trustedGateway.gatewayName}`,
+                        text: "Open this one-time Malink authorization file.",
+                        files: [authorizationFile],
+                      } : {
                         title: `Join ${trustedGateway.gatewayName}`,
                         text: "Open this one-time Malink device invitation.",
                         url: deviceInvitation.link,
@@ -266,7 +286,9 @@ export function PairingWizard({
                 >
                   {shareBusy === "share"
                     ? <BusyActionLabel>Sharing…</BusyActionLabel>
-                    : "Share"}
+                    : canShareAuthorizationFile
+                      ? "Share authorization file"
+                      : "Share link"}
                 </button>
               )}
               <button
@@ -362,7 +384,7 @@ export function PairingWizard({
                 its saved authorization no longer matches. On another connected
                 Malink device, choose Add another device. You can also run{" "}
                 <code>malink-matrix gateway invite</code> on the Gateway
-                computer. Scan or paste that one-time invitation below.
+                computer. Import, scan, or paste that one-time invitation below.
               </p>
               <p>
                 Reauthorizing this device does not delete conversation history
@@ -375,9 +397,9 @@ export function PairingWizard({
               <p>
                 This device still recognizes {trustedGateway.gatewayName}, but
                 its local Matrix sign-in is missing. On another connected Malink
-                device, choose Add another device, then scan or paste that
-                one-time invitation here. Your Malink device identity and
-                approved Gateway will stay the same.
+                device, choose Add another device, then import its authorization
+                file, scan its QR code, or paste that one-time invitation here.
+                Your Malink device identity and approved Gateway will stay the same.
               </p>
             </>
           )}
@@ -397,8 +419,8 @@ export function PairingWizard({
           </h3>
           <p>
             Open Malink on another connected device and choose Add another
-            device. Then scan its QR code or paste the one-time invitation shown
-            there.
+            device. Then import its authorization file, scan its QR code, or
+            paste the one-time invitation shown there.
           </p>
         </div>
       </div>
@@ -487,7 +509,7 @@ export function PairingWizard({
       <input
         ref={authorizationFileInputRef}
         type="file"
-        accept=".malink-auth,application/json"
+        accept={`.malink-auth,${AUTHORIZATION_TRANSFER_MIME_TYPE},application/json`}
         hidden
         disabled={busy || authorizationFileBusy}
         onChange={(event) => {
