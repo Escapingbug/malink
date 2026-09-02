@@ -4,7 +4,9 @@ import {
   MatrixRateLimitError,
   loginWithMatrixToken,
   logoutMatrixSession,
+  matrixAccountReplacementRequired,
   requestMatrixLoginToken,
+  tryLogoutMatrixSession,
 } from "../app/matrixAuth.ts";
 
 const originalFetch = globalThis.fetch;
@@ -123,7 +125,7 @@ test("creates an independent Matrix device session from a one-time token", async
   assert.equal(bodies.length, 1);
 });
 
-test("revokes a browser Matrix device before account replacement", async () => {
+test("requests browser Matrix revocation before local account removal", async () => {
   let request: { url: string; init?: RequestInit } | null = null;
   globalThis.fetch = async (input, init) => {
     request = { url: String(input), init };
@@ -140,6 +142,26 @@ test("revokes a browser Matrix device before account replacement", async () => {
     new Headers(request?.init?.headers).get("authorization"),
     "Bearer legacy-access-token",
   );
+});
+
+test("does not let a failed Matrix revocation block local browser sign-out", async () => {
+  globalThis.fetch = async () => jsonResponse({ errcode: "M_UNKNOWN" }, 503);
+  assert.equal(await tryLogoutMatrixSession({
+    homeserver: "https://matrix.example",
+    accessToken: "local-token",
+  }), false);
+});
+
+test("requires explicit sign-out before accepting another Matrix account", () => {
+  assert.equal(
+    matrixAccountReplacementRequired("@legacy:example", "@workspace:example"),
+    true,
+  );
+  assert.equal(
+    matrixAccountReplacementRequired("@workspace:example", "@workspace:example"),
+    false,
+  );
+  assert.equal(matrixAccountReplacementRequired("", "@workspace:example"), false);
 });
 
 test("treats an already-revoked browser Matrix device as logged out", async () => {

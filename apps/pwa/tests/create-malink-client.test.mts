@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  BridgeProtocolError,
   NATIVE_BRIDGE_LIMITS,
   type HelloResult,
 } from "@malink/native-bridge";
@@ -17,7 +16,7 @@ import {
   createMalinkClient,
   nativeRuntimeInfo,
   nativeMatrixSessionConfig,
-  rejoinNativeMatrixSessionIfAvailable,
+  signOutNativeMatrixSessionIfAvailable,
   resumeNativeMatrixSessionIfAvailable,
 } from "../app/client/createMalinkClient.ts";
 import {
@@ -337,31 +336,14 @@ test("consumes a one-time login token only after complete native negotiation", a
   assert.equal(complete.bootstrapToken, "single-use-secret");
 });
 
-test("requires the additive native account-rejoin capability before replacing a session", async () => {
-  const input = nativeBootstrapInput();
-  const oldHostError = await rejoinNativeMatrixSessionIfAvailable(
-    input,
-    "malink://pair?data=signed-offer",
-    {
-      nativePort: () => new BootstrapPort(),
-      createBridge: (port) => new NativeRpcBridge(port),
-    },
-  ).catch((error: unknown) => error);
-  assert.ok(oldHostError instanceof BridgeProtocolError);
-  assert.equal(oldHostError.errorCode, "CAPABILITY_UNAVAILABLE");
-
-  const port = new RejoinPort();
-  const result = await rejoinNativeMatrixSessionIfAvailable(
-    input,
-    "malink://pair?data=signed-offer",
-    {
-      nativePort: () => port,
-      createBridge: (nativePort) => new NativeRpcBridge(nativePort),
-    },
-  );
-  assert.equal(result?.session.matrixDeviceId, "NATIVE_REJOINED_DEVICE");
-  assert.equal(port.pairingLink, "malink://pair?data=signed-offer");
-  assert.equal(port.loginToken, "single-use-secret");
+test("can remove a native account without constructing the ordinary client", async () => {
+  const port = new AccountRemovalPort();
+  assert.equal(await signOutNativeMatrixSessionIfAvailable({
+    nativePort: () => port,
+    createBridge: (nativePort) => new NativeRpcBridge(nativePort),
+  }), true);
+  assert.equal(port.disconnectMode, "revoke");
+  assert.equal(port.onmessage, null);
 });
 
 test("recovers an existing native session without exporting credentials", async () => {
@@ -477,10 +459,9 @@ class BootstrapPort implements NativeBridgePort {
   }
 }
 
-class RejoinPort implements NativeBridgePort {
+class AccountRemovalPort implements NativeBridgePort {
   onmessage: NativeBridgePort["onmessage"] = null;
-  pairingLink = "";
-  loginToken = "";
+  disconnectMode = "";
 
   postMessage(message: string): void {
     const request = JSON.parse(message) as {
@@ -492,43 +473,30 @@ class RejoinPort implements NativeBridgePort {
     if (request.method === "malink.bridge.hello") {
       result = {
         protocolVersion: 1,
-        bridgeSessionId: "bridge-rejoin-1",
+        bridgeSessionId: "bridge-account-removal-1",
         native: {
           runtimeVersion: "1.1.0",
-          runtimeBuild: "android-rejoin",
+          runtimeBuild: "android-account-removal",
           platform: "android",
         },
-        capabilities: Object.fromEntries([
-          ...REQUIRED_NATIVE_CAPABILITIES.map((name) => [
-            name,
-            { version: nativeCapabilityVersions(name)[0] },
-          ]),
-          ["matrix.account-rejoin", { version: 1 }],
-        ]),
+        capabilities: { "client.lifecycle": { version: 1 } },
         limits: NATIVE_BRIDGE_LIMITS,
       };
     } else {
-      assert.equal(request.method, "malink.client.rejoin");
-      this.pairingLink = String(request.params.pairingLink);
-      this.loginToken = String(request.params.oneTimeLoginToken);
+      assert.equal(request.method, "malink.client.disconnect");
+      this.disconnectMode = String(request.params.mode);
       result = {
-        deviceId: "native-device-1",
-        session: {
-          homeserver: "https://matrix.example.test",
-          userId: "@device:example.test",
-          matrixDeviceId: "NATIVE_REJOINED_DEVICE",
-          roomBinding: nativeBootstrapInput().roomBinding,
-        },
+        mode: "revoke",
         snapshot: {
           schemaVersion: 1,
           deviceId: "native-device-1",
-          cursor: "cursor-rejoin-1",
+          cursor: "cursor-account-removal-1",
           generatedAt: 1,
-          lifecycle: { phase: "connecting", since: 1 },
+          lifecycle: { phase: "stopped", since: 1 },
           foregroundService: {
             required: true,
-            active: true,
-            notificationVisible: true,
+            active: false,
+            notificationVisible: false,
           },
           trust: { state: "unpaired" },
           commands: [],

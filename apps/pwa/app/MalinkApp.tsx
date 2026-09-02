@@ -68,7 +68,6 @@ import {
   MatrixSettings,
   nativeUpdateStatusText,
   OFFICIAL_ANDROID_RELEASES_URL,
-  type ClientMatrixAccountUpgradeNotice,
 } from "./MatrixSettings";
 import { ConnectionOnboarding } from "./ConnectionOnboarding";
 import { MalinkMark } from "./MalinkMark";
@@ -399,7 +398,7 @@ import {
   createMalinkClient,
   isNativeManagedMatrixConfig,
   nativeMatrixSessionConfig,
-  rejoinNativeMatrixSessionIfAvailable,
+  signOutNativeMatrixSessionIfAvailable,
   resumeNativeMatrixSessionIfAvailable,
 } from "./client/createMalinkClient";
 import { injectedNativeBridgePort } from "./client/native/NativeRpcBridge";
@@ -469,7 +468,6 @@ import {
   loadTrustedGateways,
   nativeMatrixRoomBindingFromPairingPreview,
   pairingLinkFromDeviceInvitation,
-  requireTrustedWorkspaceInvitation,
   trustedGatewayConfig,
   type DeviceInvitation,
   type GeneratedDeviceInvitation,
@@ -477,7 +475,8 @@ import {
 } from "./pairing";
 import {
   loginWithMatrixToken,
-  logoutMatrixSession,
+  matrixAccountReplacementRequired,
+  tryLogoutMatrixSession,
 } from "./matrixAuth";
 import {
   MATRIX_STARTUP_RECOVERY_SESSION_KEY,
@@ -495,16 +494,6 @@ type RevisionConflictNotice = {
 
 type NativeCommandReviewNotice = MalinkCommandReview & {
   busy: boolean;
-};
-
-type PendingClientMatrixAccountRejoin = {
-  invitation: DeviceInvitation & {
-    matrixLogin: NonNullable<DeviceInvitation["matrixLogin"]>;
-  };
-  preview: PairingPreview;
-  previousConfig: MatrixConnectionConfig;
-  currentUserId: string;
-  targetUserId: string;
 };
 
 type SessionSettingsField = "model" | "reasoningEffort" | "permissionMode";
@@ -1648,24 +1637,6 @@ function MalinkAppRuntime() {
     useState<GatewayStateSnapshot | null>(initialGatewayUi.gatewayState);
   const gatewayStateRef = useRef<GatewayStateSnapshot | null>(gatewayState);
   gatewayStateRef.current = gatewayState;
-  const clientMatrixAccountUpgrade = useMemo<ClientMatrixAccountUpgradeNotice | null>(() => {
-    const targetUserId =
-      gatewayState?.gatewayDirectory?.directory.clientMatrixUserId?.trim() ?? "";
-    const currentUserId = matrixConfig.userId.trim();
-    if (!targetUserId || !currentUserId || targetUserId === currentUserId) return null;
-    return { currentUserId, targetUserId, mode: "rejoin" };
-  }, [gatewayState?.gatewayDirectory, matrixConfig.userId]);
-  const promptedClientMatrixUpgradeRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!clientMatrixAccountUpgrade) return;
-    const key = [
-      clientMatrixAccountUpgrade.currentUserId,
-      clientMatrixAccountUpgrade.targetUserId,
-    ].join("\u0000");
-    if (promptedClientMatrixUpgradeRef.current === key) return;
-    promptedClientMatrixUpgradeRef.current = key;
-    setSettingsOpen(true);
-  }, [clientMatrixAccountUpgrade]);
   const [workspaceProjectRecoveryState, setWorkspaceProjectRecoveryState] =
     useState<WorkspaceProjectRecovery | null>(() =>
       initialGatewayUi.gatewayState
@@ -1683,11 +1654,6 @@ function MalinkAppRuntime() {
     useState<MalinkPublicTrust | null>(null);
   const [savedGateways, setSavedGateways] = useState<MalinkPublicTrust[]>([]);
   const [pairingBusy, setPairingBusy] = useState(false);
-  const [clientMatrixAccountRejoinBusy, setClientMatrixAccountRejoinBusy] =
-    useState(false);
-  const clientMatrixAccountRejoinFlightRef = useRef(false);
-  const [pendingClientMatrixAccountRejoin, setPendingClientMatrixAccountRejoin] =
-    useState<PendingClientMatrixAccountRejoin | null>(null);
   const [deviceInvitation, setDeviceInvitation] =
     useState<GeneratedDeviceInvitation | null>(null);
   const [invitationBusy, setInvitationBusy] = useState(false);
@@ -6651,8 +6617,6 @@ function MalinkAppRuntime() {
     setGatewayEnrollmentBusy(null);
     setGatewayEnrollmentError(null);
     setPairingBusy(false);
-    setClientMatrixAccountRejoinBusy(false);
-    setPendingClientMatrixAccountRejoin(null);
     setSessionSettingsUpdate(null);
   }
 
@@ -6705,7 +6669,6 @@ function MalinkAppRuntime() {
     setSelectedSessionId(null);
     setSelectedProjectId(null);
     setPairingPreview(null);
-    setPendingClientMatrixAccountRejoin(null);
     setDeviceInvitation(null);
     setInvitationReauthRequired(false);
     setConnectionError(null);
@@ -6731,17 +6694,18 @@ function MalinkAppRuntime() {
   async function signOutCurrentDevice(): Promise<void> {
     if (deviceSignOutBusy) return;
     const client = malinkClientRef.current;
-    if (!client) {
-      setDeviceSignOutError(
-        "Reconnect this device before signing out. Matrix must confirm that this device was revoked before Malink removes its local account data.",
-      );
-      return;
-    }
     setDeviceSignOutBusy(true);
     setDeviceSignOutError(null);
     try {
-      await client.signOut();
-      if (malinkClientRef.current === client) {
+      if (client) {
+        await client.signOut();
+      } else {
+        const nativeSignOut = await signOutNativeMatrixSessionIfAvailable();
+        if (!nativeSignOut) {
+          await tryLogoutMatrixSession(matrixConfig);
+        }
+      }
+      if (client && malinkClientRef.current === client) {
         malinkClientRef.current = null;
       }
       if (matrixConfig.gatewayId) {
@@ -6751,7 +6715,7 @@ function MalinkAppRuntime() {
       forgetMatrixConfig();
     } catch (error) {
       setDeviceSignOutError(
-        "Malink could not complete Matrix sign-out, so it kept this device’s account and local data unchanged. Reconnect to Matrix, then try again. " +
+        "Malink could not remove this device’s protected local account, so it kept the setup unchanged. Export diagnostics, then retry. " +
           `Details: ${formatUiError(error)}`,
       );
     } finally {
@@ -6817,66 +6781,14 @@ function MalinkAppRuntime() {
         return;
       }
 
-      const identity = await getOrCreateDeviceIdentity();
-      const existingTrusts = await loadTrustedGateways(identity);
-      let previousConfig = matrixConfig;
-      let currentUserId = matrixConfig.userId.trim();
-      if (!currentUserId && injectedNativeBridgePort()) {
-        const nativeSession = await resumeNativeMatrixSessionIfAvailable();
-        if (nativeSession) {
-          previousConfig = nativeMatrixSessionConfig(nativeSession);
-          currentUserId = nativeSession.userId.trim();
-        }
-      }
-      const nativeOwnedSession = isNativeManagedMatrixConfig(previousConfig);
-      const hasExistingWorkspace =
-        nativeOwnedSession || existingTrusts.length > 0 || trustedGateway !== null;
       if (
         matrixLogin &&
-        currentUserId &&
-        matrixLogin.userId !== currentUserId &&
-        hasExistingWorkspace
+        matrixAccountReplacementRequired(matrixConfig.userId, matrixLogin.userId)
       ) {
-        if (
-          normalizeHomeserver(previousConfig.homeserver) !==
-            normalizeHomeserver(matrixLogin.homeserver)
-        ) {
-          throw new Error(
-            "Direct account rejoin cannot move this device to a different Matrix server.",
-          );
-        }
-        const canonicalUserIds = new Set(
-          [
-            gatewayStateRef.current?.gatewayDirectory?.directory.clientMatrixUserId,
-            ...existingTrusts.map(
-              trust => trust.gatewayDirectory?.directory.clientMatrixUserId,
-            ),
-          ].flatMap(userId => userId?.trim() ? [userId.trim()] : []),
+        throw new Error(
+          `This invitation belongs to ${matrixLogin.userId}, but this device is still signed in as ${matrixConfig.userId.trim()}. ` +
+          "Sign out of this device first, then open a new invitation. Malink will not replace accounts automatically.",
         );
-        if (
-          (canonicalUserIds.size > 0 && !canonicalUserIds.has(matrixLogin.userId)) ||
-          (canonicalUserIds.size === 0 && !nativeOwnedSession)
-        ) {
-          throw new Error(
-            "This invitation does not sign in to the account named by the signed Workspace directory.",
-          );
-        }
-        if (!nativeOwnedSession) {
-          await requireTrustedWorkspaceInvitation(preview, identity);
-        }
-        setPendingClientMatrixAccountRejoin({
-          invitation: {
-            ...invitation,
-            matrixLogin,
-          },
-          preview,
-          previousConfig,
-          currentUserId,
-          targetUserId: matrixLogin.userId,
-        });
-        setPairingPreview(preview);
-        setSettingsOpen(true);
-        return;
       }
 
       let nextConfig: MatrixConnectionConfig = {
@@ -6904,7 +6816,6 @@ function MalinkAppRuntime() {
           invitation,
           preview,
           nextConfig,
-          false,
         );
       } catch (error) {
         setConnectionError(
@@ -6921,7 +6832,6 @@ function MalinkAppRuntime() {
     invitation: DeviceInvitation,
     preview: PairingPreview,
     baseConfig: MatrixConnectionConfig,
-    replacingExistingAccount: boolean,
   ): Promise<MatrixConnectionConfig> {
     const matrixLogin = invitation.matrixLogin;
     if (!matrixLogin) {
@@ -6939,12 +6849,7 @@ function MalinkAppRuntime() {
         deviceName: browserDeviceName(),
         roomBinding: nativeMatrixRoomBindingFromPairingPreview(preview),
       };
-      const nativeBootstrap = replacingExistingAccount
-        ? await rejoinNativeMatrixSessionIfAvailable(
-            bootstrapInput,
-            pairingLinkFromDeviceInvitation(invitation),
-          )
-        : await bootstrapNativeMatrixSessionIfAvailable(bootstrapInput);
+      const nativeBootstrap = await bootstrapNativeMatrixSessionIfAvailable(bootstrapInput);
       let nextConfig: MatrixConnectionConfig;
       if (nativeBootstrap) {
         nextConfig = {
@@ -6955,9 +6860,6 @@ function MalinkAppRuntime() {
           accessToken: NATIVE_MANAGED_ACCESS_TOKEN,
         };
       } else {
-        if (replacingExistingAccount) {
-          await logoutMatrixSession(baseConfig);
-        }
         const credentials = await loginWithMatrixToken(
           matrixLogin.homeserver,
           matrixLogin.loginToken,
@@ -6973,48 +6875,6 @@ function MalinkAppRuntime() {
     } catch (error) {
       settleNativeBootstrapTransfer("error");
       throw error;
-    }
-  }
-
-  async function confirmClientMatrixAccountRejoin(): Promise<void> {
-    const pending = pendingClientMatrixAccountRejoin;
-    if (!pending || pairingBusy || clientMatrixAccountRejoinFlightRef.current) return;
-    clientMatrixAccountRejoinFlightRef.current = true;
-    setClientMatrixAccountRejoinBusy(true);
-    setConnectionError(null);
-    setPairingError(null);
-    try {
-      const transport = pending.preview.transport;
-      const baseConfig: MatrixConnectionConfig = {
-        ...bindCredentialsToHomeserver(pending.previousConfig, transport.homeserver),
-        roomId: transport.roomId,
-        gatewayId: pending.preview.gatewayId,
-        gatewayNodeId: pending.preview.gatewayNodeId,
-        conversationId: transport.roomId,
-        gatewayMatrixUserId: transport.userId,
-        gatewayMatrixDeviceId: transport.deviceId,
-        gatewayMatrixEd25519: transport.ed25519,
-        userId: pending.targetUserId,
-      };
-      const nextConfig = await consumeDeviceInvitationMatrixLogin(
-        pending.invitation,
-        pending.preview,
-        baseConfig,
-        true,
-      );
-      // The old account is gone and the one-time token has been consumed. From
-      // this point any pairing error is a normal resumable reauthorization on
-      // the new account and must not attempt the account replacement again.
-      setPendingClientMatrixAccountRejoin(null);
-      await confirmPairing(pending.preview, nextConfig);
-    } catch (error) {
-      setPairingError(
-        `This device could not rejoin the Workspace account: ${formatUiError(error)}`,
-      );
-      setSettingsOpen(true);
-    } finally {
-      clientMatrixAccountRejoinFlightRef.current = false;
-      setClientMatrixAccountRejoinBusy(false);
     }
   }
 
@@ -14025,20 +13885,7 @@ function MalinkAppRuntime() {
         trustedGateway={trustedGateway}
         savedGateways={savedGateways}
         gatewayDirectory={gatewayState?.gatewayDirectory ?? null}
-        clientMatrixAccountUpgrade={
-          clientMatrixAccountUpgrade ??
-          (pendingClientMatrixAccountRejoin
-            ? {
-                currentUserId: pendingClientMatrixAccountRejoin.currentUserId,
-                targetUserId: pendingClientMatrixAccountRejoin.targetUserId,
-                mode: "rejoin" as const,
-              }
-            : null)
-        }
-        clientMatrixAccountRejoinPending={
-          pendingClientMatrixAccountRejoin !== null
-        }
-        pairingBusy={pairingBusy || clientMatrixAccountRejoinBusy}
+        pairingBusy={pairingBusy}
         deviceInvitation={deviceInvitation}
         invitationBusy={invitationBusy}
         invitationError={invitationError}
@@ -14069,21 +13916,13 @@ function MalinkAppRuntime() {
         copyPageLinkBusy={pageLinkCopyBusy}
         onChange={setMatrixConfig}
         onPairingLink={(link) => void openPairingLink(link)}
-        onAccountRejoinLink={(link) => void openDeviceInvitation(link)}
         onClearPairing={() => {
           pairingAbortRef.current?.abort();
           setPairingPreview(null);
-          setPendingClientMatrixAccountRejoin(null);
           setPairingError(null);
           setConnectionError(null);
         }}
-        onConfirmPairing={() => {
-          if (pendingClientMatrixAccountRejoin) {
-            void confirmClientMatrixAccountRejoin();
-          } else {
-            void confirmPairing();
-          }
-        }}
+        onConfirmPairing={() => void confirmPairing()}
         onClose={() => setSettingsOpen(false)}
         onDisconnect={() => disconnectClient()}
         onForget={() => {

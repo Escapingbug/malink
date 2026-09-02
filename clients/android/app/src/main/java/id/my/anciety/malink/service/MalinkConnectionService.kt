@@ -375,20 +375,6 @@ class MalinkConnectionService : Service() {
             return result
         }
 
-        suspend fun rejoin(
-            input: MatrixBootstrap,
-            pairingLink: String,
-        ): Pair<PublicMatrixSession, ClientSnapshot> {
-            check(foregroundStarted) { "The persistent native runtime is not active." }
-            val result = withContext(Dispatchers.IO) {
-                val runtime = awaitClientRuntime()
-                runtime.start()
-                runtime.rejoinWorkspace(input, pairingLink)
-            }
-            preferences.accountSetupRequired = false
-            return result
-        }
-
         suspend fun completePairing(
             pairingId: String,
             deviceName: String,

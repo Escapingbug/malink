@@ -136,7 +136,7 @@ test("keeps UI disposal distinct from an explicit web disconnect", async () => {
   assert.equal(disconnectedStops, 1);
 });
 
-test("revokes the browser Matrix login before stopping local transport", async () => {
+test("attempts browser Matrix revocation before stopping local transport", async () => {
   const originalFetch = globalThis.fetch;
   let request: { url: string; authorization: string | null } | null = null;
   let stops = 0;
@@ -160,6 +160,21 @@ test("revokes the browser Matrix login before stopping local transport", async (
     url: "https://matrix.example.test/_matrix/client/v3/logout",
     authorization: "Bearer token",
   });
+  assert.equal(stops, 1);
+});
+
+test("stops and removes the browser account when remote revocation fails", async () => {
+  const originalFetch = globalThis.fetch;
+  let stops = 0;
+  globalThis.fetch = async () => new Response(null, { status: 503 });
+  try {
+    await new WebMalinkClient(
+      fakeTransport(() => stops += 1),
+      config,
+    ).signOut();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
   assert.equal(stops, 1);
 });
 

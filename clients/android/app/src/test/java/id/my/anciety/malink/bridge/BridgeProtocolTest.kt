@@ -405,33 +405,20 @@ class BridgeProtocolTest {
     }
 
     @Test
-    fun `account rejoin is additive capability gated and idempotent`() {
+    fun `retired account rejoin is not advertised or executable`() {
         val runtime = FakeRuntime()
         val dispatcher = BridgeDispatcher(runtime, BRIDGE_SESSION_ID)
-        successResult(dispatch(
+        val capabilities = successResult(dispatch(
             dispatcher,
             helloRequest(
                 optionalCapabilities =
                     """[{"name":"matrix.account-rejoin","versions":[1]}]""",
             ),
-        ))
-
-        val first = dispatch(dispatcher, rejoinRequest("rejoin-1", IDEMPOTENCY_KEY))
-        val second = dispatch(dispatcher, rejoinRequest("rejoin-2", IDEMPOTENCY_KEY))
-        assertEquals(successResult(first), successResult(second))
-        assertEquals(1, runtime.rejoins)
-        assertFalse(first.contains("one-time-secret-token"))
-        assertFalse(first.contains("accessToken", ignoreCase = true))
-
-        val unavailable = BridgeDispatcher(runtime, "without-rejoin")
-        successResult(dispatch(
-            unavailable,
-            helloRequest().replace(BRIDGE_SESSION_ID, "without-rejoin"),
-        ))
+        )).getValue("capabilities").jsonObject
+        assertFalse(capabilities.containsKey("matrix.account-rejoin"))
         val rejected = failure(dispatch(
-            unavailable,
-            rejoinRequest("rejoin-3", DISCONNECT_IDEMPOTENCY_KEY)
-                .replace(BRIDGE_SESSION_ID, "without-rejoin"),
+            dispatcher,
+            rejoinRequest("rejoin-retired", IDEMPOTENCY_KEY),
         ))
         assertEquals(
             "CAPABILITY_UNAVAILABLE",
@@ -673,7 +660,6 @@ class BridgeProtocolTest {
         override val nativeDeviceId = "native-device-1"
         var starts = 0
         var bootstraps = 0
-        var rejoins = 0
         var loginTokenIssues = 0
         var updateChecks = 0
         var diagnosticExports = 0
@@ -718,20 +704,6 @@ class BridgeProtocolTest {
                 homeserver = input.homeserver,
                 userId = input.expectedUserId,
                 matrixDeviceId = "MATRIX-DEVICE",
-                roomBinding = input.roomBinding,
-            ) to snapshot()
-        }
-
-        override suspend fun rejoin(
-            input: MatrixBootstrap,
-            pairingLink: String,
-        ): Pair<PublicMatrixSession, ClientSnapshot> {
-            check(pairingLink == "malink://pair?data=signed-offer")
-            rejoins += 1
-            return PublicMatrixSession(
-                homeserver = input.homeserver,
-                userId = input.expectedUserId,
-                matrixDeviceId = "MATRIX-REJOINED",
                 roomBinding = input.roomBinding,
             ) to snapshot()
         }

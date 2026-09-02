@@ -4,12 +4,7 @@ import id.my.anciety.malink.matrix.MatrixIdentifiers
 import id.my.anciety.malink.matrix.PublicMatrixSession
 import id.my.anciety.malink.security.malink.GatewayTrust
 import id.my.anciety.malink.security.malink.MatrixTransportBinding
-import id.my.anciety.malink.security.malink.MatrixMlp3Protocol
-import id.my.anciety.malink.security.malink.PairingSecurity
 import id.my.anciety.malink.security.malink.SignedPairingOffer
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Distinguishes a missing/replaced Matrix login from a new, untrusted device.
@@ -56,46 +51,6 @@ internal object MatrixSessionRepairPolicy {
         }
         require(sameTransport(offer.offer.gatewayTransport, trust.transportTrust.currentTransport)) {
             "Connection repair must use the Gateway's currently approved Matrix route."
-        }
-    }
-
-    /**
-     * Account convergence may be authorized by any node in the already signed
-     * Workspace directory. Joined Gateway nodes share the Workspace root key,
-     * but retain distinct Matrix transports and node IDs.
-     */
-    fun requireWorkspaceOffer(
-        trust: GatewayTrust,
-        offer: SignedPairingOffer,
-        signedDirectory: JsonObject? = trust.response.response.gatewayDirectory,
-    ) {
-        require(offer.offer.gatewayId == trust.gatewayId) {
-            "Account rejoin must use an invitation from the approved Workspace."
-        }
-        require(offer.offer.gatewayKey.keyId == trust.gatewayKey.keyId) {
-            "Account rejoin cannot replace the approved Workspace identity."
-        }
-        PairingSecurity.verifyOffer(offer, trust.gatewayKey)
-        val availableDirectory = signedDirectory ?: throw IllegalArgumentException(
-                "The signed Workspace Gateway directory is unavailable.",
-            )
-        val directory = MatrixMlp3Protocol.verifyWorkspaceGatewayDirectory(
-            availableDirectory,
-            trust.gatewayKey,
-            trust.gatewayId,
-        )
-        val nodeId = offer.offer.gatewayNodeId ?: offer.offer.gatewayId
-        val descriptor = (directory["gateways"] as JsonArray)
-            .map { it as JsonObject }
-            .firstOrNull { it["gatewayNodeId"]?.jsonPrimitive?.content == nodeId }
-            ?: throw IllegalArgumentException(
-                "The invitation Gateway is not in the signed Workspace directory.",
-            )
-        require(descriptor["publicKey"] == offer.offer.gatewayKey.toJson()) {
-            "The invitation Gateway key does not match the signed Workspace directory."
-        }
-        require(descriptor["transport"] == offer.offer.gatewayTransport.toJson()) {
-            "The invitation Gateway route does not match the signed Workspace directory."
         }
     }
 

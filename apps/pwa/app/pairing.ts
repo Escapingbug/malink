@@ -160,48 +160,6 @@ export async function inspectPairingLink(
   };
 }
 
-/**
- * Verifies that an account-rejoin invitation came from a node already listed
- * by this device's signed Workspace directory. This check runs before the old
- * browser Matrix login is revoked.
- */
-export async function requireTrustedWorkspaceInvitation(
-  preview: PairingPreview,
-  identity: DeviceIdentity,
-): Promise<void> {
-  const trusts = await loadTrustedGateways(identity);
-  const workspaceTrust = trusts.find(
-    trust => trust.gatewayId === preview.gatewayId,
-  );
-  if (!workspaceTrust) {
-    throw new Error(
-      "This invitation does not belong to the Workspace already approved on this device.",
-    );
-  }
-  await verifyPairingOffer(
-    preview.signedOffer,
-    workspaceTrust.gatewayKey.publicKey,
-  );
-  const nodeId = preview.gatewayNodeId;
-  const descriptor = workspaceTrust.gatewayDirectory?.directory.gateways.find(
-    gateway => gateway.gatewayNodeId === nodeId,
-  );
-  if (!descriptor) {
-    throw new Error(
-      "The invitation Gateway is not in this device's signed Workspace directory.",
-    );
-  }
-  if (
-    canonicalJson(descriptor.publicKey) !==
-      canonicalJson(preview.signedOffer.offer.gatewayKey) ||
-    canonicalJson(descriptor.transport) !== canonicalJson(preview.transport)
-  ) {
-    throw new Error(
-      "The invitation does not match the Gateway route approved by this Workspace.",
-    );
-  }
-}
-
 export function createDeviceInvitationLink(input: {
   pairingLink: string;
   appUrl: string;

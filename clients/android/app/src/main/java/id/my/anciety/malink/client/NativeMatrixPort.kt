@@ -33,8 +33,6 @@ interface NativeMatrixPort {
     suspend fun updateRoomBindings(bindings: List<MatrixRoomBinding>): PublicMatrixSession =
         throw UnsupportedOperationException("Workspace multi-room routing is unavailable.")
     suspend fun bootstrap(input: MatrixBootstrap): PublicMatrixSession
-    suspend fun replaceSession(input: MatrixBootstrap): PublicMatrixSession =
-        throw UnsupportedOperationException("Matrix account replacement is unavailable.")
     suspend fun issueLoginToken(password: String?): MatrixLoginTokenIssueResult
     suspend fun sendPairingMessage(contentJson: String)
     suspend fun closePairingChannel()
@@ -123,8 +121,6 @@ class MatrixNativePort(context: Context) : NativeMatrixPort {
     override suspend fun updateRoomBindings(bindings: List<MatrixRoomBinding>): PublicMatrixSession =
         runtime.updateRoomBindings(bindings)
     override suspend fun bootstrap(input: MatrixBootstrap): PublicMatrixSession = runtime.bootstrap(input)
-    override suspend fun replaceSession(input: MatrixBootstrap): PublicMatrixSession =
-        runtime.replaceSession(input)
     override suspend fun issueLoginToken(password: String?): MatrixLoginTokenIssueResult =
         runtime.issueLoginToken(password)
     override suspend fun sendPairingMessage(contentJson: String) =

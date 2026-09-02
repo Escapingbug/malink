@@ -17,6 +17,15 @@ export type MatrixLoginCredentials = Pick<
   "homeserver" | "userId" | "accessToken" | "matrixDeviceId"
 >;
 
+export function matrixAccountReplacementRequired(
+  currentUserId: string,
+  invitedUserId: string,
+): boolean {
+  const current = currentUserId.trim();
+  const invited = invitedUserId.trim();
+  return Boolean(current && invited && current !== invited);
+}
+
 export type MatrixLoginTokenResult =
   | {
       status: "ready";
@@ -109,18 +118,20 @@ export async function loginWithMatrixToken(
 }
 
 /**
- * Revokes the browser-owned Matrix device before an account rejoin. A missing
- * or already-revoked login is equivalent to a completed logout; other failures
- * leave the saved local configuration untouched so the user can retry safely.
+ * Requests server-side revocation of a browser-owned Matrix device. A missing
+ * or already-revoked login is equivalent to a completed logout. Callers that
+ * own local account removal decide whether other server failures are fatal.
  */
 export async function logoutMatrixSession(
   config: Pick<MatrixConnectionConfig, "homeserver" | "accessToken">,
+  signal?: AbortSignal,
 ): Promise<void> {
   const homeserver = normalizeHomeserver(config.homeserver);
   const accessToken = requireText(config.accessToken, "Matrix access token");
   const response = await fetch(`${homeserver}/_matrix/client/v3/logout`, {
     method: "POST",
     headers: { authorization: `Bearer ${accessToken}` },
+    signal,
   });
   if (response.ok || response.status === 401 || response.status === 403) return;
   const result = await readJson(response);
@@ -129,6 +140,29 @@ export async function logoutMatrixSession(
     result,
     "The previous Matrix device could not be signed out.",
   );
+}
+
+/**
+ * Makes a short server-side revocation attempt without turning Matrix
+ * availability into a prerequisite for removing this browser account.
+ */
+export async function tryLogoutMatrixSession(
+  config: Pick<MatrixConnectionConfig, "homeserver" | "accessToken">,
+  timeoutMs = 3_000,
+): Promise<boolean> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new Error("Matrix logout timeout must be a positive integer.");
+  }
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    await logoutMatrixSession(config, controller.signal);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    globalThis.clearTimeout(timeout);
+  }
 }
 
 async function login(

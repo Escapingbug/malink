@@ -80,12 +80,12 @@ export function GatewayForgetDialog({
         <h2 id="gateway-forget-title">{title}</h2>
         <p id="gateway-forget-description">
           {deviceKind
-            ? `Matrix will revoke this ${deviceKind === "android" ? "Android device" : "browser session"} first. After Matrix confirms, Malink removes the local account, authorization, pending commands, and cached conversation history.`
+            ? `Malink will remove this ${deviceKind === "android" ? "Android app" : "browser"} account, authorization, pending commands, and cached conversation history. It also makes a short best-effort request to revoke the Matrix login.`
             : "This disconnects Malink and removes the saved connection, approved computer, and locally cached conversation history from this device."}
         </p>
         <div id="gateway-forget-boundary" className="delete-boundary-note">
           {deviceKind
-            ? "Your Workspace, Gateways, and sessions remain available on your other signed-in devices. If revocation fails, this app keeps its local data so you can reconnect and retry."
+            ? "Your Workspace, Gateways, and server history remain available on your other signed-in devices. Matrix being offline will not block local sign-out; use a new invitation to sign in again."
             : "Your sessions and data on the computer or server are not deleted."}
         </div>
         {error && (

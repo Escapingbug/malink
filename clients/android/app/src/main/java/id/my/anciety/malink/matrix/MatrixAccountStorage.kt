@@ -89,6 +89,13 @@ class MatrixAccountStorage(
         sdkRoot.listFiles()?.takeIf { it.isEmpty() }?.let { sdkRoot.delete() }
     }
 
+    /** Account sign-out removes every current or interrupted Matrix account scope. */
+    fun clearAll() {
+        check(!root.exists() || root.deleteRecursively()) {
+            "Native Matrix account storage could not be removed."
+        }
+    }
+
     /** Clears replaceable SDK state without opening a delete-before-save gap for the login. */
     fun prepareForBootstrap(files: MatrixAccountFiles) {
         require(ACCOUNT_SCOPE.matches(files.accountScope)) { "Matrix account scope is invalid." }

@@ -61,7 +61,6 @@ export const REQUIRED_NATIVE_CAPABILITIES = [
 export const OPTIONAL_NATIVE_CAPABILITIES = [
   "commands.journal-reconciliation",
   "commands.orphan-retirement",
-  "matrix.account-rejoin",
   "matrix.login-token",
   "session.read-receipts",
   "client.update",
@@ -656,10 +655,9 @@ export class NativeBridgeClient implements MalinkClient {
   async signOut(): Promise<void> {
     await this.ready;
     if (this.#disposed) return;
-    // Revocation is fail-closed: keep the live bridge and its event listener
-    // intact until Android confirms that Matrix logged this device out and the
-    // protected native stores were cleared. A rejected/offline request leaves
-    // the current client usable so the user can reconnect and retry.
+    // Android owns both the Matrix token and protected Malink stores. Keep the
+    // bridge attached until native code confirms that local account removal
+    // completed; server-side Matrix revocation is bounded and best effort.
     await this.bridge.request("malink.client.disconnect", {
       context: this.bridge.context(),
       idempotencyKey: crypto.randomUUID(),
@@ -1280,19 +1278,6 @@ export async function bootstrapNativeSession(
   return bridge.request("malink.client.bootstrap", {
     context: bridge.context(),
     idempotencyKey: crypto.randomUUID(),
-    ...input,
-  });
-}
-
-export async function rejoinNativeSession(
-  bridge: NativeRpcBridge,
-  input: NativeBootstrapInput,
-  pairingLink: string,
-): Promise<ClientBootstrapResult> {
-  return bridge.request("malink.client.rejoin", {
-    context: bridge.context(),
-    idempotencyKey: crypto.randomUUID(),
-    pairingLink,
     ...input,
   });
 }

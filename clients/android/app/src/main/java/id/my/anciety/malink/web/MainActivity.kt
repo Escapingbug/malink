@@ -1336,12 +1336,6 @@ class MainActivity : ComponentActivity() {
         ): Pair<PublicMatrixSession, ClientSnapshot> =
             accountSetupBinder().bootstrap(input)
 
-        override suspend fun rejoin(
-            input: MatrixBootstrap,
-            pairingLink: String,
-        ): Pair<PublicMatrixSession, ClientSnapshot> =
-            accountSetupBinder().rejoin(input, pairingLink)
-
         private suspend fun accountSetupBinder(): MalinkConnectionService.LocalBinder {
             serviceBinder?.let { return it }
             withContext(Dispatchers.Main.immediate) {
@@ -1364,6 +1358,17 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 MalinkConnectionService.startFromUser(this@MainActivity)
+                bindHostOnly()
+            }
+            return awaitServiceBinder()
+        }
+
+        private suspend fun accountRemovalBinder(): MalinkConnectionService.LocalBinder {
+            serviceBinder?.let { return it }
+            withContext(Dispatchers.Main.immediate) {
+                // A broken or stopped connection must not disable the account
+                // removal escape hatch. Binding creates the service without
+                // requiring a new foreground-session permission gate.
                 bindHostOnly()
             }
             return awaitServiceBinder()
@@ -1402,7 +1407,8 @@ class MainActivity : ComponentActivity() {
         }
 
         override suspend fun disconnect(mode: String): ClientSnapshot {
-            val snapshot = awaitServiceBinder().disconnect(mode)
+            val binder = if (mode == "revoke") accountRemovalBinder() else awaitServiceBinder()
+            val snapshot = binder.disconnect(mode)
             withContext(Dispatchers.Main.immediate) {
                 if (serviceBound || bindingRequested) {
                     runCatching { unbindService(serviceConnection) }

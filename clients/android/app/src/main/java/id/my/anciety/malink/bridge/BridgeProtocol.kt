@@ -321,11 +321,6 @@ interface BridgeRuntime {
 
     suspend fun bootstrap(input: MatrixBootstrap): Pair<PublicMatrixSession, ClientSnapshot>
 
-    suspend fun rejoin(
-        input: MatrixBootstrap,
-        pairingLink: String,
-    ): Pair<PublicMatrixSession, ClientSnapshot> = client().rejoinWorkspace(input, pairingLink)
-
     suspend fun onPresentationActivated() = Unit
 
     suspend fun issueMatrixLoginToken(
@@ -445,6 +440,10 @@ class BridgeDispatcher(
                 }
             }
             "malink.client.rejoin" -> {
+                // Compatibility tombstone for a previously released optional
+                // method. Current hosts do not advertise this capability, so
+                // cached callers receive CAPABILITY_UNAVAILABLE and cannot
+                // start an in-place account replacement.
                 requireContext(
                     request.params,
                     mutation = true,
@@ -457,28 +456,10 @@ class BridgeDispatcher(
                         "roomBinding",
                     ),
                 )
-                if (MATRIX_ACCOUNT_REJOIN_CAPABILITY !in negotiatedCapabilities) {
-                    throw BridgeDispatchException(
-                        BridgeError.CAPABILITY_UNAVAILABLE,
-                        "Matrix account rejoin was not negotiated.",
-                        userAction = "update_native",
-                    )
-                }
-                mutationResult(request) {
-                    val bootstrap = parseBootstrap(request.params)
-                    val (session, snapshot) = runtime.rejoin(
-                        bootstrap,
-                        requiredString(request.params, "pairingLink", 32_768),
-                    )
-                    buildJsonObject {
-                        put("deviceId", runtime.nativeDeviceId)
-                        put(
-                            "session",
-                            session.toJson(includeRoomBindings = true),
-                        )
-                        put("snapshot", encodeSnapshotForBridge(snapshot))
-                    }
-                }
+                throw BridgeDispatchException(
+                    BridgeError.CAPABILITY_UNAVAILABLE,
+                    "Automatic Matrix account replacement has been retired. Sign out, then open a new device invitation.",
+                )
             }
             "malink.matrix.loginToken" -> {
                 requireContext(
@@ -1541,7 +1522,6 @@ class BridgeDispatcher(
         const val COMMAND_JOURNAL_RECONCILIATION_CAPABILITY = "commands.journal-reconciliation"
         const val COMMAND_ORPHAN_RETIREMENT_CAPABILITY = "commands.orphan-retirement"
         const val MATRIX_BOOTSTRAP_CAPABILITY = "matrix.session-bootstrap"
-        const val MATRIX_ACCOUNT_REJOIN_CAPABILITY = "matrix.account-rejoin"
         const val MATRIX_LOGIN_TOKEN_CAPABILITY = "matrix.login-token"
         const val NATIVE_UPDATE_CAPABILITY = "client.update"
         const val PWA_SOURCE_CAPABILITY = "client.pwa-source"
@@ -1560,7 +1540,6 @@ class BridgeDispatcher(
             "trust.native",
             FOREGROUND_SERVICE_CAPABILITY,
             MATRIX_BOOTSTRAP_CAPABILITY,
-            MATRIX_ACCOUNT_REJOIN_CAPABILITY,
             MATRIX_LOGIN_TOKEN_CAPABILITY,
             NATIVE_UPDATE_CAPABILITY,
             PWA_SOURCE_CAPABILITY,

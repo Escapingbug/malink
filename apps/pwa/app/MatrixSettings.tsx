@@ -51,12 +51,6 @@ import { GatewayNoReplyHelp } from "./GatewayNoReplyHelp";
 export const OFFICIAL_ANDROID_RELEASES_URL =
   "https://github.com/Escapingbug/malink/releases";
 
-export type ClientMatrixAccountUpgradeNotice = {
-  currentUserId: string;
-  targetUserId: string;
-  mode: "rejoin";
-};
-
 type Props = {
   open: boolean;
   config: MatrixConnectionConfig;
@@ -68,8 +62,6 @@ type Props = {
   trustedGateway: MalinkPublicTrust | null;
   savedGateways: MalinkPublicTrust[];
   gatewayDirectory: SignedWorkspaceGatewayDirectory | null;
-  clientMatrixAccountUpgrade: ClientMatrixAccountUpgradeNotice | null;
-  clientMatrixAccountRejoinPending: boolean;
   pairingBusy: boolean;
   deviceInvitation: GeneratedDeviceInvitation | null;
   invitationBusy: boolean;
@@ -101,7 +93,6 @@ type Props = {
   signOutBusy: boolean;
   onChange(config: MatrixConnectionConfig): void;
   onPairingLink(link: string): void;
-  onAccountRejoinLink(link: string): void;
   onClearPairing(): void;
   onConfirmPairing(): void;
   onClose(): void;
@@ -147,8 +138,6 @@ function MatrixSettingsDialog({
   trustedGateway,
   savedGateways,
   gatewayDirectory,
-  clientMatrixAccountUpgrade,
-  clientMatrixAccountRejoinPending,
   repairReason,
   pairingBusy,
   deviceInvitation,
@@ -181,7 +170,6 @@ function MatrixSettingsDialog({
   signOutBusy,
   onChange,
   onPairingLink,
-  onAccountRejoinLink,
   onClearPairing,
   onConfirmPairing,
   onClose,
@@ -212,11 +200,6 @@ function MatrixSettingsDialog({
   const effectiveRepairReason = repairReason ?? manualRepairReason;
   const repairRequired = effectiveRepairReason !== null;
   const [addingGateway, setAddingGateway] = useState(false);
-  const [clientMatrixAccountRejoinRequested, setClientMatrixAccountRejoinRequested] =
-    useState(false);
-  const clientMatrixAccountRejoinOpen =
-    clientMatrixAccountRejoinPending ||
-    (clientMatrixAccountUpgrade !== null && clientMatrixAccountRejoinRequested);
   const [editingGatewayNodeId, setEditingGatewayNodeId] = useState<string | null>(null);
   const [gatewayNameDraft, setGatewayNameDraft] = useState("");
   const [diagnosticExportStatus, setDiagnosticExportStatus] = useState<
@@ -693,42 +676,6 @@ function MatrixSettingsDialog({
           </section>
         )}
 
-        {clientMatrixAccountUpgrade && !clientMatrixAccountRejoinOpen && (
-          <section className="connection-recovery-panel" role="alert">
-            <div>
-              <span className="connection-recovery-mark" aria-hidden="true">!</span>
-              <span>
-                <strong>Matrix account upgrade available</strong>
-                <p>
-                  This device still uses the legacy account {clientMatrixAccountUpgrade.currentUserId}.
-                  To move it safely, create an Add another device invitation on
-                  a client already using the Workspace account, then open that
-                  invitation here.
-                </p>
-                <small>
-                  Target account: {clientMatrixAccountUpgrade.targetUserId}. The
-                  Workspace remains in Matrix, and Malink keeps this device’s
-                  identity and recoverable local history while it rejoins.
-                </small>
-              </span>
-            </div>
-            <div className="connection-recovery-actions">
-              <button
-                type="button"
-                className="connect-button"
-                disabled={busy}
-                onClick={() => {
-                  setAddingGateway(false);
-                  setClientMatrixAccountRejoinRequested(true);
-                }}
-              >
-                Rejoin with invitation
-              </button>
-              <button type="button" onClick={onClose}>Later</button>
-            </div>
-          </section>
-        )}
-
         {addingGateway && (
           <GatewayEnrollmentPanel
             invitation={gatewayEnrollmentInvitation}
@@ -745,32 +692,18 @@ function MatrixSettingsDialog({
           />
         )}
 
-        {!addingGateway &&
-          (!clientMatrixAccountUpgrade || clientMatrixAccountRejoinOpen) &&
-          <PairingWizard
+        {!addingGateway && <PairingWizard
           preview={pairingPreview}
           trustedGateway={trustedGateway}
           repairReason={effectiveRepairReason}
           busy={pairingBusy}
           progressDetail={connectionDetail}
-          canConfirm={clientMatrixAccountRejoinPending || Boolean(config.accessToken)}
+          canConfirm={Boolean(config.accessToken)}
           deviceInvitation={deviceInvitation}
           invitationBusy={invitationBusy}
           invitationError={invitationError}
           invitationReauthRequired={invitationReauthRequired}
-          accountRejoin={
-            clientMatrixAccountRejoinPending
-              ? clientMatrixAccountUpgrade
-              : null
-          }
-          accountRejoinRequested={
-            clientMatrixAccountRejoinOpen || clientMatrixAccountRejoinPending
-          }
-          onLink={
-            clientMatrixAccountRejoinOpen
-              ? onAccountRejoinLink
-              : onPairingLink
-          }
+          onLink={onPairingLink}
           onClear={() => {
             setAddingGateway(false);
             onClearPairing();
@@ -1023,7 +956,7 @@ function MatrixSettingsDialog({
                 : "browser"
               : null
           }
-          busy={busy}
+          busy={signOutBusy}
           onRemove={onForget}
         />
         </div>
@@ -1070,9 +1003,9 @@ export function DeviceRemovalSettings({
         </strong>
         <small>
           {deviceKind === "android"
-            ? "Revoke this Android device’s Matrix login, then remove its local Malink authorization and cached history."
+            ? "Remove this app’s local Matrix account, Malink authorization, pending commands, and cached history."
             : deviceKind === "browser"
-              ? "Revoke this browser’s Matrix login, then remove its local Malink authorization and cached history."
+              ? "Remove this browser’s local Matrix account, Malink authorization, pending commands, and cached history."
               : "Clear incomplete connection data stored on this device."}
         </small>
       </span>

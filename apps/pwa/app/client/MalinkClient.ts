@@ -111,8 +111,8 @@ export type MalinkClientHandlers = {
  * owned by the current tab, while a native client only detaches the WebView and
  * leaves its foreground service connected. `disconnect()` is the explicit user
  * action that stops the active transport on every runtime. `signOut()` is the
- * shared account-removal boundary: Matrix revocation must complete before
- * protected local account state is removed.
+ * shared local account-removal boundary. Server-side Matrix revocation is a
+ * bounded best-effort step and cannot prevent the user from changing account.
  */
 export interface MalinkClient {
   readonly runtime: MalinkClientRuntime;

@@ -241,19 +241,19 @@ test("signs the Android Matrix device out through the revocation boundary", asyn
   assert.equal(port.onmessage, null);
 });
 
-test("keeps the native connection usable when Matrix revocation fails", async () => {
+test("keeps the native connection usable when protected local removal fails", async () => {
   const port = new RuntimePort((request) => {
     if (request.method === "malink.client.disconnect") {
       throw new BridgeProtocolError(
         "NATIVE_INTERNAL",
-        "Matrix did not confirm logout.",
+        "Protected local account storage could not be removed.",
       );
     }
     return responseFor(request);
   });
   const client = await createTestClient(port);
 
-  await assert.rejects(client.signOut(), /Matrix did not confirm logout/);
+  await assert.rejects(client.signOut(), /Protected local account storage could not be removed/);
   assert.deepEqual(await client.requestMatrixLoginToken("invite-command-1"), {
     status: "ready",
     loginToken: "single-use-token",

@@ -28,6 +28,32 @@ fun interface MatrixSdkDriverFactory {
 class MatrixOfflineException(message: String = "The native Matrix connection is offline.") :
     IllegalStateException(message)
 
+internal enum class MatrixRemoteLogoutOutcome {
+    CONFIRMED,
+    SKIPPED_OFFLINE,
+    TIMED_OUT,
+    FAILED,
+}
+
+internal suspend fun attemptMatrixRemoteLogout(
+    networkAvailable: Boolean,
+    timeoutMs: Long,
+    logout: suspend () -> Unit,
+): MatrixRemoteLogoutOutcome {
+    require(timeoutMs > 0)
+    if (!networkAvailable) return MatrixRemoteLogoutOutcome.SKIPPED_OFFLINE
+    return try {
+        withTimeout(timeoutMs) { logout() }
+        MatrixRemoteLogoutOutcome.CONFIRMED
+    } catch (_: TimeoutCancellationException) {
+        MatrixRemoteLogoutOutcome.TIMED_OUT
+    } catch (error: CancellationException) {
+        throw error
+    } catch (_: Exception) {
+        MatrixRemoteLogoutOutcome.FAILED
+    }
+}
+
 class MatrixConnectionRuntime(
     context: Context,
     private val loginClient: MatrixTokenLoginClient = MatrixTokenLoginClient(),
@@ -123,32 +149,6 @@ class MatrixConnectionRuntime(
         mutex.withLock { bootstrapLocked(input) }
     }.await()
 
-    /**
-     * Replaces only the Matrix transport account. Malink application identity,
-     * Workspace trust, project keys, projection and command state live above
-     * this runtime and remain intact. The old login is revoked before the
-     * one-time token is consumed, so a process interruption falls back to the
-     * existing missing-session repair path instead of owning two accounts.
-     */
-    suspend fun replaceSession(input: MatrixBootstrap): PublicMatrixSession {
-        val existing = mutex.withLock {
-            check(started.get()) { "The persistent native runtime must be started before account replacement." }
-            restorePersistedSessionLocked()
-            secrets?.session
-                ?: throw IllegalStateException("The native Matrix session is unavailable.")
-        }
-        if (
-            MatrixIdentifiers.normalizeHomeserver(existing.homeserverUrl) ==
-                MatrixIdentifiers.normalizeHomeserver(input.homeserver) &&
-            existing.userId == input.expectedUserId &&
-            existing.roomBinding == input.roomBinding
-        ) return existing.toPublic()
-
-        revokeSession()
-        start()
-        return bootstrap(input)
-    }
-
     suspend fun issueLoginToken(password: String?): MatrixLoginTokenIssueResult = scope.async {
         val session = mutex.withLock {
             check(started.get()) { "The native Matrix runtime is stopped." }
@@ -237,29 +237,33 @@ class MatrixConnectionRuntime(
     }.await()
 
     suspend fun revokeSession() = scope.async {
-        val current = mutex.withLock {
-            check(started.get()) { "The native Matrix runtime is stopped." }
-            if (!networkAvailable) {
-                throw MatrixOfflineException("The native Matrix session must be online before revocation.")
-            }
-            driver
-                ?: throw IllegalStateException("The native Matrix session is not ready for revocation.")
+        val (current, canReachServer) = mutex.withLock {
+            runCatching { restorePersistedSessionLocked() }
+                .onFailure {
+                    diagnostics.record(
+                        "matrix.account_removal_restore_failed",
+                        errorAttributes(it),
+                    )
+                }
+            driver to (networkAvailable && driver != null)
         }
-        // Preserve recoverable local credentials until the homeserver confirms
-        // logout. The network operation must not hold the lifecycle mutex.
-        withTimeout(LOGOUT_OPERATION_TIMEOUT_MS) {
-            current.logout()
-        }
+        val remoteOutcome = attemptMatrixRemoteLogout(
+            canReachServer,
+            REMOTE_LOGOUT_GRACE_MS,
+        ) { current!!.logout() }
+        diagnostics.record(
+            "matrix.account_removal.remote_logout",
+            mapOf("outcome" to remoteOutcome.name.lowercase()),
+        )
         mutex.withLock {
-            check(driver === current) { "The Matrix connection changed while revocation was in progress." }
             retryJob?.cancel()
             retryJob = null
             networkMonitor.stop()
             sdkTimelineReady = false
-            stopDriver(current)
+            driver?.let { stopDriver(it, ACCOUNT_REMOVAL_DRIVER_STOP_TIMEOUT_MS) }
             driver = null
             driverGeneration += 1
-            files?.let(accountStorage::clear)
+            accountStorage.clearAll()
             secrets?.sdkStoreKey?.fill(0)
             secrets = null
             files = null
@@ -889,9 +893,12 @@ class MatrixConnectionRuntime(
         return next
     }
 
-    private suspend fun stopDriver(current: MatrixSdkDriver) {
+    private suspend fun stopDriver(
+        current: MatrixSdkDriver,
+        timeoutMs: Long = DRIVER_STOP_TIMEOUT_MS,
+    ) {
         try {
-            withTimeout(DRIVER_STOP_TIMEOUT_MS) { current.stop() }
+            withTimeout(timeoutMs) { current.stop() }
         } catch (_: TimeoutCancellationException) {
             diagnostics.record("matrix.driver.stop_timeout")
         } catch (error: CancellationException) {
@@ -922,6 +929,7 @@ class MatrixConnectionRuntime(
     private companion object {
         const val DRIVER_START_TIMEOUT_MS = 30_000L
         const val DRIVER_STOP_TIMEOUT_MS = 10_000L
+        const val ACCOUNT_REMOVAL_DRIVER_STOP_TIMEOUT_MS = 2_000L
         const val NETWORK_CONTROL_TIMEOUT_MS = 10_000L
         const val SEND_OPERATION_TIMEOUT_MS = 45_000L
         const val PROFILE_OPERATION_TIMEOUT_MS = 45_000L
@@ -931,7 +939,7 @@ class MatrixConnectionRuntime(
         const val COMMAND_TIMELINE_RECOVERY_TIMEOUT_MS = 10_000L
         const val THREAD_DIRECTORY_OPERATION_TIMEOUT_MS = 120_000L
         const val MEDIA_OPERATION_TIMEOUT_MS = 120_000L
-        const val LOGOUT_OPERATION_TIMEOUT_MS = 45_000L
+        const val REMOTE_LOGOUT_GRACE_MS = 3_000L
         const val MAX_THREAD_DIRECTORY_PAGES = 1_000
         const val MAX_COMMAND_TIMELINE_RECOVERY_EVENTS = 32
     }

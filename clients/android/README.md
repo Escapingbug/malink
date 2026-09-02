@@ -58,14 +58,12 @@ one identity from being driven by both transports.
 - Explicit Disconnect finishes the native runtime before stopping the service.
   **Sign out of Android app** remains visible in settings as the account-removal
   boundary shared with the browser client. It requires an explicit confirmation,
-  logs the Matrix device out while online, and only then wipes local credentials.
-  Account sign-out clears every local Gateway route for that shared account,
-  while removing one Gateway remains a separate node-scoped operation. Android
-  keeps the hosted setup screen visible after revocation instead of presenting
-  the ordinary **Reconnect** action. A durable native setup marker also clears
-  stale hosted-Web account state after an interrupted sign-out. A failed remote
-  logout fails closed and retains the local identity so revocation cannot be
-  falsely reported as complete.
+  makes a short best-effort Matrix logout request, then wipes local credentials
+  even when Matrix is offline. Account sign-out clears every local Gateway route
+  for that shared account, while removing one Gateway remains a separate
+  node-scoped operation. Android keeps the hosted setup screen visible instead
+  of presenting the ordinary **Reconnect** action. A durable native setup marker
+  also clears stale hosted-Web account state after an interrupted sign-out.
 
 Android's explicit force-stop remains a platform override: no application can
 restart itself until the user opens it again.
@@ -135,9 +133,6 @@ Bridge protocol version 1 currently implements:
 - `matrix.session-bootstrap` v3 (v2 added credential-free discovery of an
   existing native-owned Matrix session; v3 removes arbitrary password
   bootstrap and accepts only a one-time login token from a device invitation)
-- optional `matrix.account-rejoin` v1 (verifies a canonical Workspace
-  invitation, replaces only the native Matrix account, and preserves the
-  Malink device identity, trust, command state, and local projection)
 - `client.update` v1 (`status`/`install`, plus the additive idempotent
   `check` operation; Web clients fall back when a pre-extension v1 APK returns
   `METHOD_NOT_FOUND`)
