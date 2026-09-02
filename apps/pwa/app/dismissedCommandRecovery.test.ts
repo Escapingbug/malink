@@ -3,6 +3,7 @@ import {
   hasBackgroundCommandRecovery,
   readBackgroundCommandRecoveries,
   readDismissedCommandRecoveries,
+  removeBackgroundCommandRecoveries,
   writeBackgroundCommandRecoveries,
   writeDismissedCommandRecoveries,
 } from "./dismissedCommandRecovery";
@@ -51,5 +52,19 @@ describe("dismissed command recovery storage", () => {
     expect(hasBackgroundCommandRecovery(current, "command-2")).toBe(true);
     expect(hasBackgroundCommandRecovery(legacy, "command-2")).toBe(true);
     expect(hasBackgroundCommandRecovery(legacy, "command-3")).toBe(false);
+  });
+
+  it("removes current and legacy markers when background recovery finishes", () => {
+    const current = new Set([
+      "command-1",
+      "command-2\u0000running\u0000200",
+      "command-3",
+    ]);
+
+    expect(removeBackgroundCommandRecoveries(
+      current,
+      ["command-1", "command-2"],
+    )).toEqual(new Set(["command-3"]));
+    expect(current.size).toBe(3);
   });
 });

@@ -43,6 +43,17 @@ export function hasBackgroundCommandRecovery(
   return [...values].some(value => value.startsWith(legacyPrefix));
 }
 
+export function removeBackgroundCommandRecoveries(
+  values: ReadonlySet<string>,
+  commandIds: readonly string[],
+): Set<string> {
+  return new Set([...values].filter(value =>
+    !commandIds.some(commandId =>
+      value === commandId || value.startsWith(`${commandId}\0`),
+    )
+  ));
+}
+
 function readRecoveryVersions(
   storage: Pick<Storage, "getItem"> | null,
   key: string,

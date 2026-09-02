@@ -265,14 +265,18 @@ import {
   type MobileConnectionSignal,
 } from "./connectionPresentation";
 import {
+  DURABLE_COMMAND_BACKGROUND_RECOVERY_MESSAGE,
+  DURABLE_COMMAND_BACKGROUND_RECOVERY_MISSING_MESSAGE,
   durableCommandRecoveryNeedsAttention,
   durableCommandRecoveryPresentation,
+  durableCommandRecoveryResolutionPresentation,
   type DurableCommandRecoveryCheckResult,
 } from "./durableCommandRecoveryPresentation";
 import {
   hasBackgroundCommandRecovery,
   readBackgroundCommandRecoveries,
   readDismissedCommandRecoveries,
+  removeBackgroundCommandRecoveries,
   writeBackgroundCommandRecoveries,
   writeDismissedCommandRecoveries,
 } from "./dismissedCommandRecovery";
@@ -3049,6 +3053,52 @@ function MalinkAppRuntime() {
     if (hasBackgroundCommandRecovery(current, commandId)) return;
     current.add(commandId);
     writeBackgroundCommandRecoveries(window.localStorage, current);
+  }
+
+  function clearBackgroundRecoveredNativeCommandNotice(
+    ...commandIds: string[]
+  ): boolean {
+    const ids = [...new Set(commandIds)];
+    const current = readBackgroundCommandRecoveries(window.localStorage);
+    if (!ids.some(commandId => hasBackgroundCommandRecovery(current, commandId))) {
+      return false;
+    }
+    const remaining = removeBackgroundCommandRecoveries(current, ids);
+    writeBackgroundCommandRecoveries(window.localStorage, remaining);
+    for (const commandId of ids) {
+      recoverUiNotice(`command:background-recovery:${commandId}`);
+    }
+    return true;
+  }
+
+  function resolveBackgroundRecoveredNativeCommandNotice(
+    completion: CommandCompletion,
+    ...commandIds: string[]
+  ): void {
+    const ids = [...new Set([...commandIds, completion.commandId])];
+    if (!clearBackgroundRecoveredNativeCommandNotice(...ids)) return;
+    const presentation = durableCommandRecoveryResolutionPresentation(completion);
+    showUiNotice(
+      `command:background-recovery:${completion.commandId}`,
+      "background",
+      presentation.severity,
+      presentation.message,
+      presentation.autoDismissMs,
+    );
+  }
+
+  function reportMissingBackgroundRecoveredNativeCommand(
+    ...commandIds: string[]
+  ): void {
+    if (!clearBackgroundRecoveredNativeCommandNotice(...commandIds)) return;
+    const commandId = commandIds.at(-1);
+    if (!commandId) return;
+    showUiNotice(
+      `command:background-recovery:${commandId}`,
+      "background",
+      "warning",
+      DURABLE_COMMAND_BACKGROUND_RECOVERY_MISSING_MESSAGE,
+    );
   }
 
   function selectGatewayFilter(gatewayNodeId: string): void {
@@ -9685,27 +9735,50 @@ function MalinkAppRuntime() {
             syncRecoveredNativeCommandFlights();
           }
           if (recoveredNativeCommandIsOwned(currentCommandId)) return;
-          await waitForCommandCompletion(
+          const completion = await waitForCommandCompletion(
             sent.completion,
             RECOVERED_COMMAND_CHECK_TIMEOUT_MS,
           );
           if (recoveredNativeCommandIsOwned(currentCommandId)) return;
+          resolveBackgroundRecoveredNativeCommandNotice(
+            completion,
+            commandId,
+            currentCommandId,
+          );
           await connection.releaseCommand(currentCommandId);
           completedCommandResultsRef.current.delete(commandId);
           completedCommandResultsRef.current.delete(currentCommandId);
           forgetRecoveredNativeCommand(commandId, currentCommandId);
           recoverUiNotice("command:startup-recovery");
-        } catch (error) {
-          if (
-            error instanceof CommandReviewRequiredError
-            || isMissingSessionCreateRecoveryCommand(error)
-          ) {
+        } catch (caughtError) {
+          let error = caughtError;
+          if (error instanceof CommandReviewRequiredError) {
+            clearBackgroundRecoveredNativeCommandNotice(
+              commandId,
+              currentCommandId,
+            );
+            forgetRecoveredNativeCommand(commandId, currentCommandId);
+            return;
+          }
+          if (isMissingSessionCreateRecoveryCommand(error)) {
+            reportMissingBackgroundRecoveredNativeCommand(
+              commandId,
+              currentCommandId,
+            );
             forgetRecoveredNativeCommand(commandId, currentCommandId);
             return;
           }
           if (error instanceof CommandCompletionTimeoutError) {
             try {
-              await connection.observeCommandCompletion(currentCommandId, 1);
+              const completion = await connection.observeCommandCompletion(
+                currentCommandId,
+                1,
+              );
+              resolveBackgroundRecoveredNativeCommandNotice(
+                completion,
+                commandId,
+                currentCommandId,
+              );
               await connection.releaseCommand(currentCommandId);
               completedCommandResultsRef.current.delete(commandId);
               completedCommandResultsRef.current.delete(currentCommandId);
@@ -9714,10 +9787,15 @@ function MalinkAppRuntime() {
               return;
             } catch (observationError) {
               if (isMissingSessionCreateRecoveryCommand(observationError)) {
+                reportMissingBackgroundRecoveredNativeCommand(
+                  commandId,
+                  currentCommandId,
+                );
                 forgetRecoveredNativeCommand(commandId, currentCommandId);
                 recoverUiNotice("command:startup-recovery");
                 return;
               }
+              error = observationError;
             }
           }
           retryDelayMs = error instanceof CommandCompletionTimeoutError
@@ -9732,6 +9810,15 @@ function MalinkAppRuntime() {
                 currentNoticeCommand.commandId,
               )
             : false;
+          if (
+            !(error instanceof CommandCompletionTimeoutError) &&
+            alreadyRecoveringInBackground
+          ) {
+            clearBackgroundRecoveredNativeCommandNotice(
+              commandId,
+              currentCommandId,
+            );
+          }
           setRecoveredNativeCommandChecks((current) => ({
             ...current,
             [currentCommandId]: error instanceof CommandCompletionTimeoutError
@@ -9754,7 +9841,7 @@ function MalinkAppRuntime() {
               `command:background-recovery:${currentCommandId}`,
               "background",
               "info",
-              "The Gateway did not return a signed result yet. Malink will keep recovering this action in the background; you can continue using the app.",
+              DURABLE_COMMAND_BACKGROUND_RECOVERY_MESSAGE,
               7_000,
             );
           }
@@ -11157,7 +11244,7 @@ function MalinkAppRuntime() {
     (notice) => ({
       key: `ui:${notice.key}`,
       severity: notice.severity,
-      title: uiNoticeTitle(notice.scope),
+      title: uiNoticeTitle(notice.scope, notice.key),
       detail: notice.message,
       active: notice.active,
       meta: `${notice.hidden ? "Hidden" : "Visible"} · ${formatRecoveryTimestamp(notice.createdAt)}`,
@@ -14149,11 +14236,14 @@ function recoveredCommandNoticeVersion(
   return `${command.commandId}\0${command.state}\0${command.updatedAt}`;
 }
 
-function uiNoticeTitle(scope: UiNoticeScope): string {
+function uiNoticeTitle(scope: UiNoticeScope, key?: string): string {
   switch (scope) {
     case "connection": return "Connection";
     case "pairing": return "Authorization";
-    case "background": return "Background operation";
+    case "background":
+      return key?.startsWith("command:background-recovery:")
+        ? "Previous action recovery"
+        : "Background operation";
     case "history": return "Conversation history";
     case "session": return "Conversation or project";
     case "composer": return "Agent command";
