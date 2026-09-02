@@ -109,6 +109,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
@@ -2171,6 +2172,9 @@ class NativeClientRuntime(
                             ?: throw IllegalArgumentException("Gateway release ID is missing."),
                     )
                     put("mode", raw.string("mode") ?: "when_idle")
+                    if (raw.boolean("allowForwardOnly") == true) {
+                        put("allowForwardOnly", true)
+                    }
                 }
             }
             "gateway.update.status" -> {
@@ -3659,6 +3663,7 @@ class NativeClientRuntime(
         runCatching { value.jsonPrimitive.takeIf { it.isString }?.contentOrNull }.getOrNull()
     }
 
+    private fun JsonObject.boolean(key: String): Boolean? = get(key)?.jsonPrimitive?.booleanOrNull
     private fun JsonObject.long(key: String): Long? = get(key)?.jsonPrimitive?.longOrNull
     private fun JsonObject.int(key: String): Int? = get(key)?.jsonPrimitive?.intOrNull
     private fun JsonObject.objectValue(key: String): JsonObject = get(key) as? JsonObject

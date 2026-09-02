@@ -1124,8 +1124,9 @@ describe('MatrixMlp3GatewayRunner', () => {
             updatedAt: 13,
           }
         },
-        async scheduleApply(releaseId) {
+        async scheduleApply(releaseId, allowForwardOnly) {
           gatewayUpdateCalls.push(`apply:${releaseId}`)
+          gatewayUpdateCalls.push(`apply-forward-only:${allowForwardOnly === true}`)
           return {
             version: 1,
             phase: 'scheduled',
@@ -2020,6 +2021,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         operation: 'gateway.update.apply',
         releaseId: 'release-2',
         mode: 'when_idle',
+        allowForwardOnly: true,
       },
     }, '$gateway-update-apply-1')
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
@@ -2048,6 +2050,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         && event.payload.status.phase === 'scheduled'
       ))
     expect(gatewayUpdateCalls).toContain('apply:release-2')
+    expect(gatewayUpdateCalls).toContain('apply-forward-only:true')
     const eventsBeforeSwitch = await events(client, activeKey.key, roomId, projectId)
     const completedIndex = eventsBeforeSwitch.findIndex(event =>
       event.causationCommandId === 'prompt-active-during-update'

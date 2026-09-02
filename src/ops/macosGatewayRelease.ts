@@ -29,10 +29,13 @@ export interface MacosGatewayReleaseOptions {
     requireDeepHealth?: boolean
     syncFreshnessMs?: number
     probationMs?: number
+    rollbackMode?: 'automatic' | 'disabled'
+    onGatewayStopped?: () => void | Promise<void>
 }
 
 export interface MacosGatewayReleaseDependencies {
     restart?: (reloadLaunchAgent: boolean) => Promise<void>
+    stop?: () => Promise<void>
     healthCheck?: (expectedBuildId?: string) => Promise<void>
     sleep?: (milliseconds: number) => Promise<void>
     launchctl?: (arguments_: readonly string[]) => Promise<void>
@@ -75,6 +78,11 @@ export async function activateMacosGatewayRelease(
             dependencies.launchctl ?? runLaunchctl,
             sleep,
         ))
+    const stop = dependencies.stop ?? (() =>
+        stopLaunchAgent(
+            input.serviceLabel,
+            dependencies.launchctl ?? runLaunchctl,
+        ))
     const defaultHealthCheck = (expectedBuildId?: string) => () =>
         new GatewayAdminClient({
             socketPath: input.adminSocketPath,
@@ -108,6 +116,46 @@ export async function activateMacosGatewayRelease(
     const rollbackHealthCheck = dependencies.healthCheck
         ? () => dependencies.healthCheck?.(input.rollbackBuildId) ?? Promise.resolve()
         : defaultHealthCheck(input.rollbackBuildId)
+    if (input.rollbackMode === 'disabled') {
+        await stop()
+        try {
+            await input.onGatewayStopped?.()
+        } catch (error) {
+            await restart(reloadLaunchAgent).catch(restartError => {
+                throw new Error(
+                    `Gateway forward-only preparation failed and the unchanged Gateway could not restart: `
+                    + `${formatError(restartError)}`,
+                    { cause: error },
+                )
+            })
+            throw new Error(
+                `Gateway forward-only preparation failed before activation: ${formatError(error)}`,
+                { cause: error },
+            )
+        }
+        if (reloadLaunchAgent) await atomicWrite(launchAgentPath, stablePlist)
+        await replaceSymlink(currentLink, releaseDirectory)
+        try {
+            await restart(reloadLaunchAgent)
+            await waitForHealth(targetHealthCheck, sleep, input.healthTimeoutMs ?? 30_000)
+            await dependencies.onActivated?.()
+            await verifyProbation(targetHealthCheck, sleep, input.probationMs ?? 0)
+            return
+        } catch (activationError) {
+            let stopError: unknown
+            try {
+                await stop()
+            } catch (error) {
+                stopError = error
+            }
+            throw new Error(
+                `Matrix Gateway forward-only activation failed; automatic rollback is disabled: `
+                + `${formatError(activationError)}`
+                + (stopError ? `; stopping the target also failed: ${formatError(stopError)}` : ''),
+                { cause: activationError },
+            )
+        }
+    }
     if (reloadLaunchAgent) await atomicWrite(launchAgentPath, stablePlist)
     await replaceSymlink(currentLink, releaseDirectory)
     try {
@@ -137,6 +185,14 @@ export async function activateMacosGatewayRelease(
             { cause: activationError },
         )
     }
+}
+
+async function stopLaunchAgent(
+    label: string,
+    launchctl: (arguments_: readonly string[]) => Promise<void>,
+): Promise<void> {
+    const userDomain = `gui/${process.getuid?.() ?? 0}`
+    await launchctl(['bootout', `${userDomain}/${label}`])
 }
 
 export async function validateMacosGatewayRelease(releaseDirectory: string): Promise<void> {

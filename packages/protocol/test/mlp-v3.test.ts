@@ -8,6 +8,38 @@ import {
 import { matrixGatewayCapabilitiesSchema } from '../src/matrix-native.js'
 
 describe('Malink Protocol v3 (MLP/3)', () => {
+  it('carries an explicit true-only confirmation for forward-only Gateway updates', () => {
+    const common = {
+      kind: 'malink.command' as const,
+      version: 3 as const,
+      commandId: 'gateway-update-apply-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      deviceId: 'device-1',
+      certificateId: 'certificate-1',
+      createdAt: 1,
+      operation: 'gateway.update.apply' as const,
+    }
+    expect(mlp3CommandSchema.parse({
+      ...common,
+      payload: {
+        operation: 'gateway.update.apply',
+        releaseId: 'release-2',
+        mode: 'when_idle',
+        allowForwardOnly: true,
+      },
+    }).payload).toMatchObject({ allowForwardOnly: true })
+    expect(() => mlp3CommandSchema.parse({
+      ...common,
+      payload: {
+        operation: 'gateway.update.apply',
+        releaseId: 'release-2',
+        mode: 'when_idle',
+        allowForwardOnly: false,
+      },
+    })).toThrow()
+  })
+
   it('models lazy artifact materialization and bounded assistant stat metadata', () => {
     const command = mlp3CommandSchema.parse({
       kind: 'malink.command',

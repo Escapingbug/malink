@@ -7,6 +7,7 @@ import {
   runPwaIndexedDbUpgrade,
   type PwaIndexedDbCatalogEntry,
 } from "../app/indexedDbUpgrade.ts";
+import { prepareMatrixMlp3ProjectionForReplay } from "../app/IndexedDbMatrixMlp3ClientStore.ts";
 
 class MemoryStorage implements Storage {
   readonly values = new Map<string, string>();
@@ -116,6 +117,47 @@ test("future IndexedDB projection bump resets only its database", async () => {
     { ...v1, schemaVersion: 2 },
   ]);
   assert.equal(resets, 1);
+});
+
+test("a registered projection migration preserves the read model", async () => {
+  const storage = new MemoryStorage();
+  const rows = ["named session", "completed session"];
+  let resets = 0;
+  let migrations = 0;
+  const v1 = {
+    ...catalog("rebuildable-projection", 1),
+    reset: async () => { resets += 1; rows.length = 0; },
+  };
+  await runPwaIndexedDbUpgrade(storage, unusedFactory, 1_000, [v1]);
+
+  await runPwaIndexedDbUpgrade(storage, unusedFactory, 2_000, [{
+    ...v1,
+    schemaVersion: 2,
+    migrationFromVersions: new Set([1]),
+    migrate: async () => { migrations += 1; },
+  }]);
+
+  assert.equal(migrations, 1);
+  assert.equal(resets, 0);
+  assert.deepEqual(rows, ["named session", "completed session"]);
+});
+
+test("the MLP/3 repair migration preserves sessions while reopening bounded event replay", () => {
+  const state = {
+    version: 9,
+    sessions: [
+      { sessionId: "named", title: "Named session", activity: "idle" },
+      { sessionId: "finished", title: "Finished", activity: "working" },
+    ],
+    messages: [{ logicalId: "assistant:one", body: "Done" }],
+    seenLogicalEvents: ["event-root", "event-terminal"],
+  };
+
+  assert.deepEqual(prepareMatrixMlp3ProjectionForReplay(state), {
+    ...state,
+    seenLogicalEvents: [],
+  });
+  assert.deepEqual(state.seenLogicalEvents, ["event-root", "event-terminal"]);
 });
 
 test("a skipped read-model upgrade preserves commands in the same physical database", async () => {

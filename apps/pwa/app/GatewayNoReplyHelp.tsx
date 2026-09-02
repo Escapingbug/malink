@@ -8,6 +8,8 @@ const GATEWAY_RESTART_COMMAND =
   "for service in com.malink.matrix-gateway io.malink.gateway; do launchctl kickstart -k \"gui/$(id -u)/$service\" 2>/dev/null && break; done";
 const GATEWAY_UPDATE_ISSUE_URL =
   "https://github.com/Escapingbug/malink/issues/new?labels=bug&title=Gateway%20update%20failure";
+const GATEWAY_FORWARD_UPDATE_DOC_URL =
+  "https://github.com/Escapingbug/malink/blob/main/docs/gateway-online-updates.md#bootstrap-an-older-supervisor-across-a-protected-state-boundary";
 
 export function GatewayNoReplyHelp({
   gatewayLabel,
@@ -75,14 +77,23 @@ export function GatewayUpdateFailureHelp({
   diagnosticExportBusy?: boolean;
 }) {
   const repairRequired = status.phase === "repair_required";
+  const externalRequired = recovery.kind === "external";
   return (
     <details className="gateway-no-reply-help gateway-update-failure-help">
-      <summary>{repairRequired ? "Repair this Gateway" : "Diagnose update failure"}</summary>
+      <summary>
+        {repairRequired
+          ? "Repair this Gateway"
+          : externalRequired
+            ? "Complete update on Gateway Mac"
+            : "Diagnose update failure"}
+      </summary>
       <div>
         <p>
           {repairRequired
             ? `The update supervisor on ${gatewayLabel} could not prove either activation or rollback healthy.`
-            : `The update stopped on ${gatewayLabel}. Its active build was not replaced by an unverified candidate.`}
+            : externalRequired
+              ? `The release changes protected data on ${gatewayLabel}, so this installed supervisor stopped before staging or migration.`
+              : `The update stopped on ${gatewayLabel}. Its active build was not replaced by an unverified candidate.`}
         </p>
         {repairRequired ? (
           <ol>
@@ -96,6 +107,29 @@ export function GatewayUpdateFailureHelp({
               <code>~/.local/share/malink-matrix/update-supervisor.error.log</code>.
             </li>
           </ol>
+        ) : externalRequired ? (
+          <>
+            <p>{recovery.explanation}</p>
+            <ol>
+              <li>Let every active Agent task finish; do not force-restart the Gateway.</li>
+              <li>On the Gateway Mac, make and verify an offline backup of the Gateway data and supervisor state.</li>
+              <li>
+                From the target source checkout, run
+                <code>pnpm forward-update:matrix-gateway:macos -- …</code>
+                with the signed release/build IDs and this Mac&apos;s Gateway paths.
+                Do not point the old Gateway at data already opened by the new release.
+              </li>
+              <li>Verify the new build, Matrix synchronization, command journal, inbox, and outbox before resuming work.</li>
+            </ol>
+            <a
+              className="secondary-button"
+              href={GATEWAY_FORWARD_UPDATE_DOC_URL}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open exact bootstrap procedure
+            </a>
+          </>
         ) : (
           <p>{recovery.explanation}</p>
         )}

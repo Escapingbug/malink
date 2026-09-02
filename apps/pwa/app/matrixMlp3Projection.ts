@@ -223,34 +223,53 @@ export class MatrixMlp3Projection {
     if (this.seenLogicalEvents.has(logicalId)) return false;
     this.seenLogicalEvents.add(logicalId);
     if (command.operation === "session.create") {
-      this.sessions.set(command.sessionId, {
-        sessionId: command.sessionId,
-        projectId: command.projectId,
-        threadRootEventId: physicalEventId,
-        readReceiptEventId: physicalEventId,
-        title: command.payload.title ?? titleFromPrompt(command.payload.initialPrompt?.text ?? ""),
-        scope: command.payload.scope ?? "project",
-        ...(this.project?.cwd ? { cwd: this.project.cwd } : {}),
-        lifecycle: "active",
-        activity: command.payload.initialPrompt ? "queued" : "idle",
-        updatedAt: timestamp,
-        stateVersion: 1,
-        ...(command.payload.provider ? { provider: command.payload.provider } : {}),
-        ...(command.payload.model ? { model: command.payload.model } : {}),
-        ...(command.payload.reasoningEffort
-          ? { reasoningEffort: command.payload.reasoningEffort }
-          : {}),
-        ...(command.payload.permissionMode
-          ? { permissionMode: command.payload.permissionMode }
-          : {}),
-        extensionBindings: command.payload.extensions ?? [],
-        extensions: (command.payload.extensions ?? []).map(binding => ({
-          id: binding.id,
-          name: binding.id,
-          version: "pending",
-        })),
-        extensionRevision: 1,
-      });
+      const current = this.sessions.get(command.sessionId);
+      const commandTitle = command.payload.title
+        ?? titleFromPrompt(command.payload.initialPrompt?.text ?? "");
+      if (current) {
+        // A Matrix thread-directory replay can deliver the immutable root
+        // command after a newer Gateway projection. The root is useful for
+        // filling routing metadata, but it must never downgrade the title,
+        // lifecycle, activity, or state version back to the creation defaults.
+        this.sessions.set(command.sessionId, {
+          ...current,
+          projectId: current.projectId || command.projectId,
+          threadRootEventId: current.threadRootEventId || physicalEventId,
+          ...(current.readReceiptEventId ? {} : { readReceiptEventId: physicalEventId }),
+          ...(current.title === "New session" && commandTitle !== "New session"
+            ? { title: commandTitle }
+            : {}),
+        });
+      } else {
+        this.sessions.set(command.sessionId, {
+          sessionId: command.sessionId,
+          projectId: command.projectId,
+          threadRootEventId: physicalEventId,
+          readReceiptEventId: physicalEventId,
+          title: commandTitle,
+          scope: command.payload.scope ?? "project",
+          ...(this.project?.cwd ? { cwd: this.project.cwd } : {}),
+          lifecycle: "active",
+          activity: command.payload.initialPrompt ? "queued" : "idle",
+          updatedAt: timestamp,
+          stateVersion: 1,
+          ...(command.payload.provider ? { provider: command.payload.provider } : {}),
+          ...(command.payload.model ? { model: command.payload.model } : {}),
+          ...(command.payload.reasoningEffort
+            ? { reasoningEffort: command.payload.reasoningEffort }
+            : {}),
+          ...(command.payload.permissionMode
+            ? { permissionMode: command.payload.permissionMode }
+            : {}),
+          extensionBindings: command.payload.extensions ?? [],
+          extensions: (command.payload.extensions ?? []).map(binding => ({
+            id: binding.id,
+            name: binding.id,
+            version: "pending",
+          })),
+          extensionRevision: 1,
+        });
+      }
       if (command.payload.initialPrompt) {
         this.addUserPrompt(
           command.commandId,
@@ -261,6 +280,7 @@ export class MatrixMlp3Projection {
           command.deviceId,
         );
       }
+      this.reconcileCompletedTurn(command.sessionId);
     } else if (command.operation === "prompt.submit") {
       this.addUserPrompt(
         command.commandId,

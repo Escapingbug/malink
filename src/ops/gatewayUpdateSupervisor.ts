@@ -45,6 +45,9 @@ import {
 } from './macosGatewayRelease.js'
 import { GATEWAY_STATE_CATALOG } from '@/gateway/matrix/stateUpgradeCatalog'
 import { GatewayAdminClient, type GatewayAdminStatus } from '@/gateway/admin'
+import { createGatewayForwardOnlyBackup } from './gatewayForwardOnlyBackup.js'
+
+type GatewayActivationMode = 'rollback-safe' | 'forward-only'
 
 interface GatewayUpdateSupervisorState {
   version: 1
@@ -56,6 +59,8 @@ interface GatewayUpdateSupervisorState {
   agentOwnerCommandId?: string
   previousTarget?: string
   scheduledAt?: number
+  activationMode?: GatewayActivationMode
+  forwardOnlyBackupPath?: string
 }
 
 interface GatewayAgentReleaseSeal {
@@ -95,6 +100,7 @@ export interface GatewayUpdateSupervisorConfig {
   launchAgentPath: string
   serviceLabel: string
   gatewayAdminSocketPath: string
+  gatewayDataDirectory?: string
   updateSocketPath?: string
   currentBuildId?: string
   activationDelayMs?: number
@@ -119,6 +125,7 @@ export interface GatewayUpdateSupervisorDependencies {
   activate?: (options: MacosGatewayReleaseOptions) => Promise<void>
   gatewayHealth?: () => Promise<GatewayAdminStatus>
   onCommitted?: () => void | Promise<void>
+  backupForwardOnlyState?: typeof createGatewayForwardOnlyBackup
   onLog?: (message: string) => void
 }
 
@@ -126,6 +133,7 @@ export class GatewayUpdateSupervisor {
   private readonly installRoot: string
   private readonly releasesRoot: string
   private readonly agentUpdatesRoot: string
+  private readonly gatewayDataDirectory: string
   private readonly stateFile: AtomicJsonFile<GatewayUpdateSupervisorState>
   private timer: ReturnType<typeof setTimeout> | null = null
   private activation: Promise<void> | null = null
@@ -138,6 +146,9 @@ export class GatewayUpdateSupervisor {
     this.installRoot = resolve(config.installRoot)
     this.releasesRoot = join(this.installRoot, 'releases')
     this.agentUpdatesRoot = join(this.installRoot, 'agent-updates')
+    this.gatewayDataDirectory = resolve(
+      config.gatewayDataDirectory ?? dirname(config.gatewayAdminSocketPath),
+    )
     this.stateFile = new AtomicJsonFile(join(this.installRoot, 'supervisor-state.json'))
     if (!config.manifestBaseUrl && !config.agentChannelUrl && !config.agentPromptBaseUrl) {
       throw new Error('A Gateway update channel, Prompt, or legacy manifest URL is required')
@@ -416,6 +427,8 @@ export class GatewayUpdateSupervisor {
       state.agentUpdate = undefined
       state.agentSeal = undefined
       state.agentOwnerCommandId = undefined
+      state.activationMode = undefined
+      state.forwardOnlyBackupPath = undefined
       state.status = {
         version: 1,
         phase: 'staging',
@@ -428,6 +441,7 @@ export class GatewayUpdateSupervisor {
     })
     try {
       const signed = await this.fetchAndVerifyAgentPrompt(releaseId)
+      const activation = gatewayStateActivation(signed.update)
       if (currentBuildId && signed.update.buildId === currentBuildId) {
         return await this.writeState(state => {
           state.status = {
@@ -444,6 +458,7 @@ export class GatewayUpdateSupervisor {
       await this.prepareAgentWorkspace(signed)
       return await this.writeState(state => {
         state.agentUpdate = signed
+        state.activationMode = activation.mode
         state.status = {
           version: 1,
           phase: 'agent_required',
@@ -451,7 +466,10 @@ export class GatewayUpdateSupervisor {
           releaseId,
           targetBuildId: signed.update.buildId,
           ...(currentBuildId ? { currentBuildId } : {}),
-          detail: 'The signed update Prompt is ready for a local maintenance Agent',
+          activationMode: activation.mode,
+          detail: activation.mode === 'forward-only'
+            ? forwardOnlyPreparationDetail(activation.changes)
+            : 'The signed update Prompt is ready for a local maintenance Agent',
           updatedAt: this.now(),
         }
       })
@@ -502,7 +520,9 @@ export class GatewayUpdateSupervisor {
         current.status = {
           ...current.status,
           phase: 'staged',
-          detail: 'The Agent-built release passed local supervisor validation',
+          detail: current.activationMode === 'forward-only'
+            ? forwardOnlyStagedDetail()
+            : 'The Agent-built release passed local supervisor validation',
           updatedAt: this.now(),
         }
       })
@@ -542,6 +562,8 @@ export class GatewayUpdateSupervisor {
       state.agentUpdate = undefined
       state.agentSeal = undefined
       state.agentOwnerCommandId = undefined
+      state.activationMode = undefined
+      state.forwardOnlyBackupPath = undefined
       state.status = {
         version: 1,
         phase: 'staging',
@@ -553,6 +575,7 @@ export class GatewayUpdateSupervisor {
     })
     try {
       const signed = await this.fetchAndVerifyManifest(releaseId)
+      const activation = gatewayStateActivation(signed.manifest)
       if (currentBuildId && signed.manifest.buildId === currentBuildId) {
         return await this.writeState(state => {
           state.staged = undefined
@@ -573,6 +596,7 @@ export class GatewayUpdateSupervisor {
         state.agentUpdate = undefined
         state.agentSeal = undefined
         state.agentOwnerCommandId = undefined
+        state.activationMode = activation.mode
         state.status = {
           version: 1,
           phase: 'staged',
@@ -580,6 +604,10 @@ export class GatewayUpdateSupervisor {
           releaseId,
           targetBuildId: signed.manifest.buildId,
           ...(currentBuildId ? { currentBuildId } : {}),
+          activationMode: activation.mode,
+          ...(activation.mode === 'forward-only'
+            ? { detail: forwardOnlyStagedDetail() }
+            : {}),
           updatedAt: this.now(),
         }
       })
@@ -599,11 +627,17 @@ export class GatewayUpdateSupervisor {
     }
   }
 
-  async scheduleApply(releaseId: string): Promise<GatewayUpdateStatus> {
-    return this.serializeRequest(() => this.scheduleApplyOnce(releaseId))
+  async scheduleApply(
+    releaseId: string,
+    allowForwardOnly = false,
+  ): Promise<GatewayUpdateStatus> {
+    return this.serializeRequest(() => this.scheduleApplyOnce(releaseId, allowForwardOnly))
   }
 
-  private async scheduleApplyOnce(releaseId: string): Promise<GatewayUpdateStatus> {
+  private async scheduleApplyOnce(
+    releaseId: string,
+    allowForwardOnly: boolean,
+  ): Promise<GatewayUpdateStatus> {
     requireReleaseId(releaseId)
     const stagedState = await this.readState()
     if (
@@ -625,6 +659,13 @@ export class GatewayUpdateSupervisor {
     }
     if (stagedState.status.phase !== 'staged') {
       throw new Error(`Cannot schedule a release while update is ${stagedState.status.phase}`)
+    }
+    const activationMode = activationModeForState(stagedState)
+    if (activationMode === 'forward-only' && !allowForwardOnly) {
+      throw new Error(
+        'Gateway release requires explicit forward-only activation confirmation; '
+        + 'automatic rollback will be disabled',
+      )
     }
     const stagedDirectory = join(this.releasesRoot, releaseId)
     if (legacyRelease) {
@@ -670,6 +711,7 @@ export class GatewayUpdateSupervisor {
       }
       state.previousTarget = previousTarget
       state.scheduledAt = scheduledAt
+      state.activationMode = activationMode
       state.status = {
         version: 1,
         phase: 'scheduled',
@@ -678,6 +720,10 @@ export class GatewayUpdateSupervisor {
         targetBuildId,
         ...(currentBuildId ? { currentBuildId } : {}),
         previousReleaseId,
+        activationMode,
+        ...(activationMode === 'forward-only'
+          ? { detail: 'Forward-only activation confirmed; the Gateway will stop, back up protected state, and install after the activation delay' }
+          : {}),
         ...(state.status.maintenanceSessionId
           ? { maintenanceSessionId: state.status.maintenanceSessionId }
           : {}),
@@ -716,6 +762,7 @@ export class GatewayUpdateSupervisor {
     const target = state.staged?.manifest ?? state.agentUpdate?.update
     if (!target) return
     const previousReleaseId = state.status.previousReleaseId
+    const activationMode = activationModeForState(state)
     await this.writeState(current => {
       current.status = {
         ...current.status,
@@ -750,10 +797,44 @@ export class GatewayUpdateSupervisor {
         requireDeepHealth: true,
         syncFreshnessMs: this.config.syncFreshnessMs ?? 45_000,
         probationMs: this.config.probationMs ?? 60_000,
+        rollbackMode: activationMode === 'forward-only' ? 'disabled' : 'automatic',
+        ...(activationMode === 'forward-only'
+          ? {
+              onGatewayStopped: async () => {
+                if (!state.previousTarget) {
+                  throw new Error('Forward-only activation has no previous release target')
+                }
+                const backup = await (
+                  this.dependencies.backupForwardOnlyState
+                    ?? createGatewayForwardOnlyBackup
+                )({
+                  dataDirectory: this.gatewayDataDirectory,
+                  installRoot: this.installRoot,
+                  releaseId: target.releaseId,
+                  targetBuildId: target.buildId,
+                  ...(state.status.currentBuildId
+                    ? { currentBuildId: state.status.currentBuildId }
+                    : {}),
+                  previousTarget: state.previousTarget,
+                  createdAt: this.now(),
+                })
+                await this.writeState(current => {
+                  current.forwardOnlyBackupPath = backup
+                  current.status = {
+                    ...current.status,
+                    detail: 'Protected Gateway state was backed up and verified; starting the forward-only target',
+                    updatedAt: this.now(),
+                  }
+                })
+                this.log(`[gateway-update] verified forward-only backup at ${backup}`)
+              },
+            }
+          : {}),
       })
       await this.writeState(current => {
         current.scheduledAt = undefined
         current.previousTarget = undefined
+        current.activationMode = undefined
         current.status = {
           version: 1,
           phase: 'committed',
@@ -773,11 +854,14 @@ export class GatewayUpdateSupervisor {
       })
     } catch (error) {
       const rolledBack = /rolled back/iu.test(formatError(error))
+      const preparationFailed = activationMode === 'forward-only'
+        && /forward-only preparation failed before activation/iu.test(formatError(error))
       await this.writeState(current => {
         current.scheduledAt = undefined
+        if (preparationFailed) current.previousTarget = undefined
         current.status = {
           ...current.status,
-          phase: rolledBack ? 'rolled_back' : 'repair_required',
+          phase: rolledBack ? 'rolled_back' : preparationFailed ? 'staged' : 'repair_required',
           detail: statusDetail(error),
           updatedAt: this.now(),
         }
@@ -787,6 +871,19 @@ export class GatewayUpdateSupervisor {
   }
 
   private async recoverInterruptedActivation(state: GatewayUpdateSupervisorState): Promise<void> {
+    if (activationModeForState(state) === 'forward-only') {
+      await this.writeState(current => {
+        current.activationMode = 'forward-only'
+        current.status = {
+          ...current.status,
+          activationMode: 'forward-only',
+          phase: 'repair_required',
+          detail: 'Forward-only activation was interrupted. Automatic rollback remains disabled; verify the target locally before acknowledging recovery.',
+          updatedAt: this.now(),
+        }
+      })
+      return
+    }
     if (!state.previousTarget) {
       await this.writeState(current => {
         current.status = {
@@ -1125,7 +1222,7 @@ export class GatewayUpdateSupervisor {
       toArrayBuffer(canonicalJsonBytes(signed.update)),
     )
     if (!verified) throw new Error('Gateway Agent update Prompt signature is invalid')
-    assertRollbackCompatibleState(signed.update)
+    gatewayStateActivation(signed.update)
   }
 
   private async prepareAgentWorkspace(signed: SignedGatewayAgentUpdatePrompt): Promise<void> {
@@ -1321,7 +1418,7 @@ export class GatewayUpdateSupervisor {
         throw new Error(`Gateway release file ${file.path} uses an untrusted origin`)
       }
     }
-    assertRollbackCompatibleState(signed.manifest)
+    gatewayStateActivation(signed.manifest)
   }
 
   private async stageManifest(signed: SignedGatewayReleaseManifest): Promise<void> {
@@ -1976,13 +2073,24 @@ function validateState(state: GatewayUpdateSupervisorState): void {
   if (state.scheduledAt !== undefined && !Number.isSafeInteger(state.scheduledAt)) {
     throw new Error('Gateway update supervisor schedule is invalid')
   }
+  if (
+    state.activationMode !== undefined
+    && state.activationMode !== 'rollback-safe'
+    && state.activationMode !== 'forward-only'
+  ) {
+    throw new Error('Gateway update supervisor activation mode is invalid')
+  }
+  if (state.forwardOnlyBackupPath !== undefined && !state.forwardOnlyBackupPath) {
+    throw new Error('Gateway update supervisor backup path is invalid')
+  }
 }
 
-function assertRollbackCompatibleState(
+function gatewayStateActivation(
   manifest: Pick<GatewayReleaseManifest, 'stateCatalog'>,
-): void {
+): { mode: GatewayActivationMode; changes: string[] } {
   const currentCatalog = new Map(GATEWAY_STATE_CATALOG.map(entry => [entry.id, entry]))
   const target = new Map(manifest.stateCatalog.map(entry => [entry.id, entry]))
+  const changes: string[] = []
   for (const current of GATEWAY_STATE_CATALOG) {
     const next = target.get(current.id)
     if (!next) throw new Error(`Gateway release omits persistent state ${current.id}`)
@@ -1993,20 +2101,45 @@ function assertRollbackCompatibleState(
       (current.stateClass === 'security-critical' || current.stateClass === 'durable-command')
       && next.schemaVersion !== current.schemaVersion
     ) {
-      throw new Error(
-        `Gateway release changes protected state ${current.id} from schema `
-        + `${current.schemaVersion} to ${next.schemaVersion}; automatic rollback is unsafe`,
+      changes.push(
+        `${current.id} schema ${current.schemaVersion} -> ${next.schemaVersion}`,
       )
     }
   }
   for (const next of manifest.stateCatalog) {
     if (currentCatalog.has(next.id)) continue
     if (next.stateClass === 'security-critical' || next.stateClass === 'durable-command') {
-      throw new Error(
-        `Gateway release introduces protected state ${next.id}; automatic rollback is unsafe`,
-      )
+      changes.push(`new protected store ${next.id}`)
     }
   }
+  return {
+    mode: changes.length > 0 ? 'forward-only' : 'rollback-safe',
+    changes,
+  }
+}
+
+function activationModeForState(state: GatewayUpdateSupervisorState): GatewayActivationMode {
+  const target = state.staged?.manifest ?? state.agentUpdate?.update
+  const catalogMode = target ? gatewayStateActivation(target).mode : undefined
+  // Missing fields from an interrupted older state must never silently regain
+  // rollback authority. If either durable source says forward-only, keep the
+  // more restrictive activation mode.
+  return state.activationMode === 'forward-only'
+    || state.status.activationMode === 'forward-only'
+    || catalogMode === 'forward-only'
+    ? 'forward-only'
+    : state.activationMode ?? state.status.activationMode ?? catalogMode ?? 'rollback-safe'
+}
+
+function forwardOnlyPreparationDetail(changes: readonly string[]): string {
+  return statusDetail(
+    `Forward-only Gateway maintenance is required (${changes.join(', ')}). `
+    + 'The release may be prepared now, but activation requires a second explicit confirmation.',
+  )
+}
+
+function forwardOnlyStagedDetail(): string {
+  return 'Forward-only update staged. Review the warning and explicitly confirm activation; automatic binary rollback will be disabled.'
 }
 
 function requireReleaseId(value: string): void {

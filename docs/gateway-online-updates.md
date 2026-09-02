@@ -68,9 +68,15 @@ The normal apply mode is `when_idle`:
 - A release commits only after the expected build reports `running`, Matrix has
   completed a fresh sync, the durable inbox is readable, and probation remains
   healthy.
-- Failed activation restores the previous symlink and restarts the previous
-  release. If rollback cannot be proven, the supervisor enters
-  `repair_required` and stops automatic switching.
+- For rollback-safe releases, failed activation restores the previous symlink
+  and restarts the previous release. If rollback cannot be proven, the
+  supervisor enters `repair_required` and stops automatic switching.
+- A release that changes security-critical or durable-command state is marked
+  `forward-only`. It stops at `staged` until a second explicit confirmation,
+  then stops the Gateway, makes and SHA-256 verifies a local state backup, and
+  starts the target with binary rollback disabled. If the target has opened
+  the new state and fails health, the supervisor leaves it stopped in
+  `repair_required`; it never starts the older binary against newer state.
 - After commit, launchd reloads the independent supervisor from `current`; the
   Gateway remains running during that supervisor reload.
 
@@ -87,9 +93,11 @@ The signed object fixes:
 - the bounded maintenance Prompt;
 - the complete persistent-state catalog used to prove rollback compatibility.
 
-Automatic activation rejects protected state schema changes and new
-security-critical or durable-command stores that the previous release could
-not resume. Such changes require a separately designed forward-only migration.
+Protected schema changes and new security-critical or durable-command stores
+are classified as forward-only. Preparation may complete normally, but apply
+requires an explicit `allowForwardOnly: true` confirmation. The supervisor
+backs up stopped state before switching and disables automatic binary rollback.
+Omitted state and state-class changes remain invalid releases.
 
 The Agent-built candidate must contain regular files at:
 
@@ -184,6 +192,53 @@ otherwise the first installation needs `--current-build-id` so rollback can
 prove the baseline returned. Signer rotation remains an explicit offline
 migration.
 
+### Bootstrap an older supervisor across a protected-state boundary
+
+A supervisor released before forward-only support fails before it stages the
+candidate, with a message such as `introduces protected state ...; automatic
+rollback is unsafe`. Repeating the Matrix command cannot change that binary.
+This is a one-time local bootstrap: prepare the exact signed target commit and
+self-contained candidate using the release Prompt, then run the external
+updater from that target checkout while local recovery access is available:
+
+```sh
+pnpm forward-update:matrix-gateway:macos -- \
+  --release /absolute/path/to/prepared-candidate \
+  --prompt-file /absolute/path/to/releases/<signed-release-id>.json \
+  --install-root "$HOME/Library/Application Support/Malink/gateway" \
+  --data-dir "$HOME/.malink/gateway" \
+  --current-build-id <currently-installed-build-id> \
+  --launch-agent "$HOME/Library/LaunchAgents/io.malink.gateway.plist" \
+  --service-label io.malink.gateway \
+  --admin-socket "$HOME/.malink/gateway/admin.sock" \
+  --supervisor-socket "$HOME/Library/Application Support/Malink/gateway/update-supervisor.sock" \
+  --supervisor-service-label io.malink.gateway-update-supervisor
+```
+
+The command verifies the Prompt against the signer pinned at
+`<install-root>/release-signer.json`, derives the target release/build IDs from
+that signed object, verifies that the current checkout is the exact clean signed
+commit, checks that its state catalog and production bundles exactly match the
+candidate, installs the same metadata into the candidate, and validates the
+candidate before stopping anything. Run the Prompt's frozen install, tests,
+type checks, production build, and candidate-assembly steps first. Optional `--release-id` and
+`--target-build-id` arguments are accepted only as equality checks; they never
+override the signed values. The updater rejects symlinks and special files,
+copies the candidate into the immutable
+`<install-root>/releases/<signed-release-id>` location, and only then stops
+the Gateway, copies and hashes every regular state file, records symlinks and
+skipped sockets in `backups/<release>-*/backup-manifest.json`, atomically
+switches `current`, proves the expected build and fresh Matrix health through
+probation, and finally restarts the independent supervisor from the new
+release and reconciles its signed release status to `committed`. Backup failure
+restarts the unchanged Gateway. Once the target may
+have opened protected state, failure never starts the old binary.
+
+After this bootstrap, the installed supervisor can perform later protected
+updates through the normal PWA flow; they stop at the visible forward-only
+warning and require the second user confirmation. The local backup path is
+kept in supervisor state and logs, not sent through Matrix.
+
 The installer also creates the stable self-hosted macOS permission app. Before
 it mutates either LaunchAgent, it runs a protected-folder probe through that
 app. The first run therefore stops safely when Full Disk Access has not yet
@@ -207,10 +262,13 @@ supervisor phase changes. Current liveness is checked with the existing signed
 status command while the client is visible and connected; hiding the client or
 losing the network cancels the schedule. Any newer signed node activity defers
 the next check. A connected Matrix client or an old cached snapshot is not
-Gateway liveness. The user then confirms one exact node once. The client
-sends `stage`, creates the visible maintenance Agent session, and sends `apply`
-as soon as the signed staged checkpoint is ready. These remain separate
-compatible wire commands, but they are one user transaction. Multiple nodes are
+Gateway liveness. The user then confirms one exact node. The client sends
+`stage`, creates the visible maintenance Agent session, and sends `apply` as
+soon as a rollback-safe signed checkpoint is ready. A forward-only checkpoint
+stops instead, explains that automatic rollback is disabled, and requires a
+second confirmation before the client sends `apply` with
+`allowForwardOnly: true`. These remain separate compatible wire commands.
+Multiple nodes are
 updated as separate, concurrent node-local operations; one node's maintenance
 Agent never disables another node's action.
 The current client persists that explicit update intent before sending `stage`.
@@ -251,9 +309,13 @@ shows that as an update error instead of the generic `Online now` state, retains
 the supervisor's signed detail, and offers only recovery steps that can change
 the result. Prompt/artifact downloads automatically retry bounded network,
 408, 425, 429, and 5xx failures. If those attempts are exhausted, the client
-offers a later retry. HTTP 404, invalid publication/signature, incompatible
-state, candidate validation, integrity, and rollback failures do not expose a
-same-release retry; the client offers diagnostic export and a bug-report link.
+offers a later retry. HTTP 404, invalid publication/signature, omitted or
+reclassified state, candidate validation, integrity, and rollback failures do
+not expose a same-release retry; the client offers diagnostic export and a
+bug-report link. The exact failure emitted by an older supervisor for newly
+introduced protected state is identified separately: the panel says the
+current Gateway is unchanged and gives the local external-bootstrap
+requirements instead of offering a retry that cannot succeed.
 `repair_required` exposes local repair guidance, not update retry. A genuinely
 new immutable release remains actionable after an older failure. Connection
 diagnostics include bounded per-node liveness timestamps,

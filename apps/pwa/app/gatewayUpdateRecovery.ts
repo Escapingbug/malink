@@ -9,11 +9,13 @@ export type GatewayUpdateRecoveryAction =
       explanation: string;
     }
   | {
-      kind: "report" | "repair" | "wait";
+      kind: "external" | "report" | "repair" | "wait";
       explanation: string;
     };
 
 const TRANSIENT_FAILURE = /(?:\bHTTP (?:408|425|429|5\d\d)\b|fetch failed|network(?:error| request)?|timed out|timeout|socket hang up|connection (?:reset|refused)|temporar(?:y|ily)|rate.?limit|too many requests|service unavailable)/iu;
+const EXTERNAL_MAINTENANCE_REQUIRED = /(?:introduces protected state|changes protected state).*automatic rollback is unsafe/iu;
+const FORWARD_ONLY_STAGED = /Forward-only update staged\./u;
 
 /**
  * Decides whether repeating an update can change the result. Deterministic
@@ -52,6 +54,17 @@ export function gatewayUpdateRecoveryAction(input: {
     };
   }
   if (status.phase === "staged") {
+    if (
+      status.activationMode === "forward-only" ||
+      FORWARD_ONLY_STAGED.test(status.detail ?? "")
+    ) {
+      return {
+        kind: "continue",
+        label: "Confirm forward-only update",
+        busyLabel: "Confirming forward-only update…",
+        explanation: "This protected-state update will stop the Gateway, create and verify a local backup, and start the new release without automatic binary rollback. Continue only when local recovery access to the Gateway Mac is available.",
+      };
+    }
     return {
       kind: "continue",
       label: "Continue update",
@@ -72,6 +85,12 @@ export function gatewayUpdateRecoveryAction(input: {
     };
   }
   if (status.phase === "failed") {
+    if (EXTERNAL_MAINTENANCE_REQUIRED.test(status.detail ?? "")) {
+      return {
+        kind: "external",
+        explanation: "This release changes protected Gateway data. The current build is still running and its data was not migrated, but this supervisor cannot install the release safely. Retrying cannot succeed; finish active work, then perform the release from the Gateway Mac with a verified backup and local recovery access.",
+      };
+    }
     const transient = commandFailure?.retryable === true ||
       (commandFailure?.retryable !== false && TRANSIENT_FAILURE.test(status.detail ?? ""));
     if (transient) {

@@ -224,6 +224,47 @@ test("does not offer a useless retry for an unpublished 404 release", () => {
   assert.doesNotMatch(html, /class="primary-button"/);
 });
 
+test("explains the external maintenance path for a protected-state release", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [nodes[0]!],
+    runtimeByNode: {
+      "node-office": {
+        state: "online",
+        status: {
+          version: 1,
+          phase: "failed",
+          releaseId: release.releaseId,
+          currentBuildId: "gateway-old-arm64",
+          detail: "Gateway release introduces protected state matrix-mlp3-command-journal; automatic rollback is unsafe",
+          updatedAt: 1,
+        },
+        commandFailureCode: "gateway_update_invalid_release",
+        commandFailureRetryable: false,
+      },
+    },
+    activeGatewayNodeIds: new Set(),
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  assert.match(html, /Complete update on Gateway Mac/);
+  assert.match(html, /stopped before staging or migration/);
+  assert.match(html, /Let every active Agent task finish/);
+  assert.match(html, /make and verify an offline backup/);
+  assert.match(html, /forward-update:matrix-gateway:macos/);
+  assert.match(html, /Open exact bootstrap procedure/);
+  assert.match(html, /Retrying cannot succeed/);
+  assert.doesNotMatch(html, /Try update again/);
+  assert.doesNotMatch(html, /class="primary-button"/);
+});
+
 test("does not render the review panel while closed", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
     open: false,
@@ -479,6 +520,42 @@ test("offers installation when the maintenance Agent already staged the target",
 
   assert.match(html, /gateway-staged-arm64.*staged locally and ready to install/);
   assert.match(html, /Continue update/);
+});
+
+test("requires an explicit second action for a forward-only staged release", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [nodes[0]!],
+    runtimeByNode: {
+      "node-office": {
+        state: "online",
+        status: {
+          version: 1,
+          phase: "staged",
+          releaseId: release.releaseId,
+          targetBuildId: release.buildId,
+          currentBuildId: "gateway-old-arm64",
+          activationMode: "forward-only",
+          detail: "Forward-only update staged.",
+          updatedAt: 1,
+        },
+      },
+    },
+    activeGatewayNodeIds: new Set(),
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  assert.match(html, /Forward-only update ready/);
+  assert.match(html, /Protected-state update/);
+  assert.match(html, /Confirm forward-only update/);
+  assert.match(html, /does not automatically switch binaries back/);
 });
 
 test("treats a verified installed build as complete without cleanup warnings", () => {

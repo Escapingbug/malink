@@ -108,6 +108,7 @@ class CommandPayloadValidatorTest {
                 put("operation", "gateway.update.apply")
                 put("releaseId", "release-2")
                 put("mode", "when_idle")
+                put("allowForwardOnly", true)
             },
             buildJsonObject {
                 put("operation", "gateway.update.status")
@@ -164,6 +165,11 @@ class CommandPayloadValidatorTest {
         assertInvalid(buildJsonObject {
             put("operation", "session.archive")
             put("sessionId", "x".repeat(257))
+        })
+        assertInvalid(buildJsonObject {
+            put("operation", "gateway.update.apply")
+            put("releaseId", "release-2")
+            put("allowForwardOnly", false)
         })
     }
 

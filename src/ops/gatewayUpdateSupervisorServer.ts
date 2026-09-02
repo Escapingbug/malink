@@ -46,8 +46,11 @@ export async function startGatewayUpdateSupervisorServer(input: {
         return
       }
       if (request.method === 'POST' && path === '/v1/releases/apply') {
-        const releaseId = releaseIdFromBody(await readJsonBody(request))
-        sendJson(response, 202, await input.supervisor.scheduleApply(releaseId))
+        const body = applyReleaseFromBody(await readJsonBody(request))
+        sendJson(response, 202, await input.supervisor.scheduleApply(
+          body.releaseId,
+          body.allowForwardOnly,
+        ))
         return
       }
       if (request.method === 'POST' && path === '/v1/agent-updates/instruction') {
@@ -130,8 +133,14 @@ export class GatewayUpdateSupervisorClient {
       .then(value => gatewayUpdateStatusSchema.parse(value))
   }
 
-  scheduleApply(releaseId: string): Promise<GatewayUpdateStatus> {
-    return this.request('POST', '/v1/releases/apply', { releaseId })
+  scheduleApply(
+    releaseId: string,
+    allowForwardOnly = false,
+  ): Promise<GatewayUpdateStatus> {
+    return this.request('POST', '/v1/releases/apply', {
+      releaseId,
+      ...(allowForwardOnly ? { allowForwardOnly: true } : {}),
+    })
       .then(value => gatewayUpdateStatusSchema.parse(value))
   }
 
@@ -254,6 +263,29 @@ function releaseIdFromBody(input: unknown): string {
     throw new SupervisorHttpError(400, 'invalid_release_id')
   }
   return values[0][1]
+}
+
+function applyReleaseFromBody(input: unknown): {
+  releaseId: string
+  allowForwardOnly: boolean
+} {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new SupervisorHttpError(400, 'invalid_request')
+  }
+  const value = input as Record<string, unknown>
+  if (
+    !Object.keys(value).every(key => key === 'releaseId' || key === 'allowForwardOnly')
+    || Object.keys(value).length < 1
+    || typeof value.releaseId !== 'string'
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value.releaseId)
+    || !(value.allowForwardOnly === undefined || value.allowForwardOnly === true)
+  ) {
+    throw new SupervisorHttpError(400, 'invalid_request')
+  }
+  return {
+    releaseId: value.releaseId,
+    allowForwardOnly: value.allowForwardOnly === true,
+  }
 }
 
 function agentBeginFromBody(input: unknown): {

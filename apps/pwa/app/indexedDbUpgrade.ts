@@ -18,6 +18,7 @@ import {
   MATRIX_MLP3_READ_MODEL_SCHEMA_VERSION,
   ensureMatrixMlp3OutboxDatabase,
   ensureMatrixMlp3ReadModelDatabase,
+  migrateMatrixMlp3ReadModel,
   resetMatrixMlp3ReadModel,
 } from "./IndexedDbMatrixMlp3ClientStore";
 import type { UpgradeStorage } from "./stateUpgrade";
@@ -143,6 +144,8 @@ export function pwaIndexedDbCatalog(
       stateClass: "rebuildable-projection",
       schemaVersion: MATRIX_MLP3_READ_MODEL_SCHEMA_VERSION,
       legacySchemaVersion: 1,
+      migrationFromVersions: new Set([2, 3]),
+      migrate: () => migrateMatrixMlp3ReadModel(factory),
       validate: () => ensureMatrixMlp3ReadModelDatabase(factory),
       reset: () => resetMatrixMlp3ReadModel(factory),
     },
@@ -243,13 +246,14 @@ export async function runPwaIndexedDbUpgrade(
         continue;
       }
       while (fromVersion < entry.schemaVersion) {
-        if (isDiscardable(entry.stateClass)) {
+        const canMigrate = entry.migrationFromVersions?.has(fromVersion) && entry.migrate;
+        if (!canMigrate && isDiscardable(entry.stateClass)) {
           await entry.reset();
           checkpointStore(entry, entry.schemaVersion, true);
           fromVersion = entry.schemaVersion;
           break;
         }
-        if (!entry.migrationFromVersions?.has(fromVersion) || !entry.migrate) {
+        if (!canMigrate) {
           blocked.push(entry.databaseName);
           break;
         }

@@ -5,6 +5,7 @@ import {
   collidingGatewayMaintenanceSessionIds,
   gatewayMaintenanceSessionCanBeArchived,
   gatewayMaintenanceSessionShouldAutoArchive,
+  type GatewayUpdateCommand,
   gatewayUpdateCanApplyStaged,
   gatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
@@ -95,6 +96,43 @@ test("creates the maintenance session and schedules the confirmed Gateway", asyn
   ]);
 });
 
+test("stops after staging a forward-only release and sends confirmation only on the second action", async () => {
+  const commands: Array<{ operation: string; allowForwardOnly?: true }> = [];
+  const target = {
+    gatewayNodeId: "node-1",
+    gatewayName: "Office Mac",
+    currentBuildId: "gateway-old-arm64",
+    targetProjectId: "project-1",
+  };
+  const send = async (command: GatewayUpdateCommand) => {
+    commands.push({
+      operation: command.operation,
+      ...(command.operation === "gateway.update.apply" && command.allowForwardOnly
+        ? { allowForwardOnly: true as const }
+        : {}),
+    });
+    return command.operation === "gateway.update.stage"
+      ? { ...status("staged"), detail: "Forward-only update staged. Review the warning." }
+      : status("scheduled");
+  };
+
+  const staged = await triggerGatewayUpdate({ release, target, send });
+  assert.equal(staged.phase, "staged");
+  assert.deepEqual(commands, [{ operation: "gateway.update.stage" }]);
+
+  const scheduled = await triggerGatewayUpdate({
+    release,
+    target,
+    allowForwardOnly: true,
+    send,
+  });
+  assert.equal(scheduled.phase, "scheduled");
+  assert.deepEqual(commands.at(-1), {
+    operation: "gateway.update.apply",
+    allowForwardOnly: true,
+  });
+});
+
 test("treats a duplicate already-scheduled release as successful", async () => {
   let calls = 0;
   const result = await triggerGatewayUpdate({
@@ -137,6 +175,21 @@ test("offers retry only after a transient failure exhausted automatic retries", 
       detail: "Gateway Agent update Prompt signature is invalid",
     },
   }).kind, "report");
+});
+
+test("routes a protected-state release to external maintenance instead of retry", () => {
+  const action = gatewayUpdateRecoveryAction({
+    release,
+    status: {
+      ...status("failed"),
+      detail: "Gateway release introduces protected state matrix-mlp3-command-journal; automatic rollback is unsafe",
+    },
+  });
+
+  assert.equal(action.kind, "external");
+  assert.match(action.explanation, /current build is still running/i);
+  assert.match(action.explanation, /Retrying cannot succeed/i);
+  assert.match(action.explanation, /Gateway Mac/i);
 });
 
 test("continues an old staged checkpoint and never retries repair state", () => {
@@ -367,6 +420,17 @@ test("offers activation for any complete staged release identity", () => {
       updatedAt: 10,
     },
   }), true);
+  assert.equal(gatewayUpdateCanApplyStaged({
+    status: {
+      version: 1,
+      phase: "staged",
+      releaseId: "release-forward",
+      targetBuildId: "gateway-forward",
+      currentBuildId: "gateway-old",
+      activationMode: "forward-only",
+      updatedAt: 10,
+    },
+  }), false);
   assert.equal(gatewayUpdateCanApplyStaged({
     status: {
       version: 1,

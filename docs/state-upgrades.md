@@ -129,17 +129,20 @@ Installing an older PWA/APK/Gateway over newer protected state is also a repair
 condition, not a reverse migration. Explicit reverse migrations may be added
 later, but an ordinary forward migration must never be run backwards.
 
-The online Gateway supervisor consequently accepts automatic activation only
-when every current security-critical and durable-command catalog entry exists
-in the target release with the same class and schema version. Rebuildable and
-ephemeral stores may change under their normal reset/rebuild rules. The target
-also cannot introduce a new protected store unknown to the rollback release:
-it could otherwise accept work during probation that the old release cannot
-resume. A protected schema migration or protected-store addition needs a
-forward-only maintenance release and a recovery plan; it must not be disguised
-as an automatically rollback-capable update.
+The online Gateway supervisor consequently uses automatic rollback only when
+every current security-critical and durable-command catalog entry exists in
+the target release with the same class and schema version. Rebuildable and
+ephemeral stores may change under their normal reset/rebuild rules. A protected
+schema migration or new protected store is classified as forward-only: it may
+be prepared, but activation requires a second explicit confirmation, a verified
+backup taken while the Gateway is stopped, and automatic binary rollback is
+disabled. If the target has touched state and fails, it remains stopped for
+repair; the older release is never restarted against the new format. Missing
+catalog entries and state-class changes remain release-blocking defects.
 
 The SQLite command-journal release is such a protected-store addition. It must
 use a maintenance rollout with automatic rollback disabled: an older Gateway
 would otherwise resume appending the now-historical JSONL and create two local
-execution authorities.
+execution authorities. Supervisors older than this forward-only mechanism need
+one local external bootstrap; after that release, later protected migrations
+use the ordinary signed stage plus explicit forward-only apply flow.

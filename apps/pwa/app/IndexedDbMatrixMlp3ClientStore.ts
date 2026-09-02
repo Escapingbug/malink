@@ -18,7 +18,7 @@ const PROJECTION = "projection";
 // the PWA upgrade manifest. Bumping the read-model schema discards only state
 // that Matrix can rebuild, even when a user skips several application builds.
 export const MATRIX_MLP3_OUTBOX_SCHEMA_VERSION = 1;
-export const MATRIX_MLP3_READ_MODEL_SCHEMA_VERSION = 3;
+export const MATRIX_MLP3_READ_MODEL_SCHEMA_VERSION = 4;
 
 type OutboxRow = MatrixMlp3OutboxRecord & {
   key: string;
@@ -333,6 +333,56 @@ export async function ensureMatrixMlp3ReadModelDatabase(
   } finally {
     database.close();
   }
+}
+
+/**
+ * Preserves the durable Matrix-derived projection while forcing one bounded
+ * authoritative thread-directory convergence after the next connection.
+ *
+ * Schema 3 was shipped for an optional receipt field but incorrectly reset the
+ * whole read model. Preserve the materialized sessions/messages, but clear the
+ * rebuildable raw inbox and its logical-event fence so the bounded replay can
+ * actually re-apply authoritative roots and latest events. The migration is
+ * idempotent and intentionally covers every stored Workspace/project scope in
+ * the shared database.
+ */
+export async function migrateMatrixMlp3ReadModel(
+  factory: IDBFactory = indexedDB,
+): Promise<void> {
+  const database = await openDatabase(factory);
+  try {
+    const transaction = database.transaction(
+      [INBOX, PROJECTION],
+      "readwrite",
+      { durability: "strict" },
+    );
+    transaction.objectStore(INBOX).clear();
+    const cursor = transaction.objectStore(PROJECTION).openCursor();
+    cursor.onsuccess = () => {
+      const current = cursor.result;
+      if (!current) return;
+      const row = current.value as ProjectionRow;
+      const migrated = {
+        ...row,
+        state: prepareMatrixMlp3ProjectionForReplay(row.state),
+      };
+      delete migrated.syncCheckpoint;
+      current.update(migrated);
+      current.continue();
+    };
+    cursor.onerror = () => transaction.abort();
+    await transactionDone(transaction);
+  } finally {
+    database.close();
+  }
+}
+
+export function prepareMatrixMlp3ProjectionForReplay(state: unknown): unknown {
+  if (!state || typeof state !== "object" || Array.isArray(state)) return state;
+  const record = state as Record<string, unknown>;
+  return Array.isArray(record.seenLogicalEvents)
+    ? { ...record, seenLogicalEvents: [] }
+    : state;
 }
 
 /** Clears Matrix-derived state without touching independently durable commands. */

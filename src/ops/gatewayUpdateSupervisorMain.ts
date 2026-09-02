@@ -18,6 +18,7 @@ const supervisor = new GatewayUpdateSupervisor({
   launchAgentPath: requiredEnvironment('MALINK_GATEWAY_LAUNCH_AGENT'),
   serviceLabel: requiredEnvironment('MALINK_GATEWAY_SERVICE_LABEL'),
   gatewayAdminSocketPath: requiredEnvironment('MALINK_GATEWAY_ADMIN_SOCKET'),
+  gatewayDataDirectory: optionalEnvironment('MALINK_GATEWAY_DATA_DIR'),
   updateSocketPath: optionalEnvironment('MALINK_GATEWAY_UPDATE_SOCKET'),
   currentBuildId: process.env.MALINK_GATEWAY_BUILD_ID,
   activationDelayMs: optionalDuration('MALINK_GATEWAY_UPDATE_ACTIVATION_DELAY_MS', 5_000),

@@ -21,6 +21,24 @@ describe("MatrixMlp3Projection", () => {
     expect(projection.sessions.get("session-a")?.activeTurnId).toBeUndefined();
   });
 
+  it("does not let a replayed session root erase a newer title or terminal state", () => {
+    const projection = new MatrixMlp3Projection();
+    projection.applyEvent(turnEvent("completed", 4, "idle"), "$physical-completed", "$root-a");
+    const replayedRoot = createCommand("a");
+    replayedRoot.payload = { operation: "session.create" };
+
+    projection.applyCommand(replayedRoot, "$root-a", 1);
+
+    expect(projection.sessions.get("session-a")).toMatchObject({
+      title: "A",
+      activity: "idle",
+      stateVersion: 4,
+      updatedAt: 4,
+      threadRootEventId: "$root-a",
+      readReceiptEventId: "$physical-completed",
+    });
+  });
+
   it("deduplicates command retries and retains history beyond an arbitrary sync window", () => {
     const projection = new MatrixMlp3Projection();
     const command = createCommand("a");

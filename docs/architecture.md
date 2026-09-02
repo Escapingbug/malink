@@ -566,10 +566,12 @@ static host without accepting a client-supplied URL. The public website stores
 immutable files but does not become execution or release-signing authority.
 
 Activation requires the expected build ID, a ready and recent Matrix sync, and
-a readable durable inbox throughout probation. Failure restores the previous
-symlink. Protected-state schema changes are refused by automatic activation
-because binary rollback would be unsafe. The full release and recovery
-procedure is in [`gateway-online-updates.md`](gateway-online-updates.md).
+a readable durable inbox throughout probation. Rollback-safe failure restores
+the previous symlink. Protected-state changes instead require an explicit
+forward-only confirmation and a verified stopped-state backup; after the target
+may have opened that state, the older binary is never started automatically.
+The full release and recovery procedure is in
+[`gateway-online-updates.md`](gateway-online-updates.md).
 
 ## Release acceptance
 

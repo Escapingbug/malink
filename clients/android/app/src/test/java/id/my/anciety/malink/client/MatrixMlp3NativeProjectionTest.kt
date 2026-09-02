@@ -981,6 +981,7 @@ class MatrixMlp3NativeProjectionTest {
                         put("releaseId", "release-2")
                         put("targetBuildId", "build-2")
                         put("currentBuildId", "build-1")
+                        put("activationMode", "forward-only")
                         put("maintenanceSessionId", "gateway-update-session-2")
                         put("updatedAt", 20)
                     })
@@ -998,6 +999,7 @@ class MatrixMlp3NativeProjectionTest {
         val status = restored.snapshot()!!.getValue("gateway_update").jsonObject
         assertEquals("agent_running", status.getValue("phase").jsonPrimitive.content)
         assertEquals("release-2", status.getValue("releaseId").jsonPrimitive.content)
+        assertEquals("forward-only", status.getValue("activationMode").jsonPrimitive.content)
         assertEquals(
             "gateway-update-session-2",
             status.getValue("maintenanceSessionId").jsonPrimitive.content,

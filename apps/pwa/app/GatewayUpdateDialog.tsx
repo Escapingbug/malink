@@ -4,7 +4,10 @@ import React, { useRef } from "react";
 import type { GatewayUpdateStatus } from "@malink/protocol";
 import type { GatewayReleaseBuild } from "./buildInfo";
 import { useDialogFocus } from "./dialogFocus";
-import type { GatewayUpdatePlanNode } from "./gatewayUpdateTrigger";
+import {
+  gatewayUpdateRequiresForwardOnlyConfirmation,
+  type GatewayUpdatePlanNode,
+} from "./gatewayUpdateTrigger";
 import {
   GatewayNoReplyHelp,
   GatewayUpdateFailureHelp,
@@ -164,6 +167,8 @@ function GatewayUpdateDialogContent({
                 retryable: runtime.commandFailureRetryable,
               },
             });
+            const forwardOnlyConfirmation =
+              gatewayUpdateRequiresForwardOnlyConfirmation(runtime.status);
             const updateActionAvailable = recovery.kind === "start" ||
               recovery.kind === "continue" || recovery.kind === "retry";
             const runtimeNeedsAttention = runtime.state === "error" ||
@@ -236,6 +241,17 @@ function GatewayUpdateDialogContent({
                     onExportDiagnostics={onExportDiagnostics}
                     diagnosticExportBusy={diagnosticExportBusy}
                   />
+                )}
+                {forwardOnlyConfirmation && (
+                  <div className="gateway-no-reply-help gateway-update-failure-help" role="alert">
+                    <strong>Protected-state update</strong>
+                    <p>{recovery.explanation}</p>
+                    <p>
+                      The old Gateway must not be started against state already opened by the
+                      new release. If activation fails, recovery continues locally from the
+                      verified backup; it does not automatically switch binaries back.
+                    </p>
+                  </div>
                 )}
 
                 <div className="gateway-update-node-actions">
@@ -435,6 +451,9 @@ function runtimeStateTitle(
     if (runtime.status?.phase === "repair_required") return "Gateway repair required";
     if (runtime.status?.phase === "failed") return "Gateway update failed";
     if (runtime.status?.phase === "rolled_back") return "Gateway update rolled back";
+    if (gatewayUpdateRequiresForwardOnlyConfirmation(runtime.status)) {
+      return "Forward-only update ready";
+    }
     switch (runtime.status?.phase) {
       case "staging":
       case "agent_required":
@@ -501,6 +520,12 @@ function runtimeStateDetail(
       return runtime.checkedAt
         ? `${failure} · replied ${formatCheckedTime(runtime.checkedAt)}`
         : failure;
+    }
+    if (gatewayUpdateRequiresForwardOnlyConfirmation(runtime.status)) {
+      const detail = runtime.status?.detail ?? "Forward-only update staged.";
+      return runtime.checkedAt
+        ? `${detail} · replied ${formatCheckedTime(runtime.checkedAt)}`
+        : detail;
     }
     const supervisor = runtime.status?.phase === "staged" &&
       runtime.status.targetBuildId !== release.buildId

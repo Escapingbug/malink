@@ -141,6 +141,7 @@ import {
   gatewayMaintenanceSessionShouldAutoArchive,
   gatewayUpdatePlan as buildGatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
+  gatewayUpdateRequiresForwardOnlyConfirmation,
   gatewayUpdateTarget,
   legacyGatewayMaintenanceSessionsByNode,
   recoverAmbiguousGatewayUpdateCompletion,
@@ -7539,6 +7540,9 @@ function MalinkAppRuntime() {
             operation: "gateway.update.apply",
             releaseId: stagedReleaseId,
             mode: "when_idle",
+            ...(gatewayUpdateRequiresForwardOnlyConfirmation(liveStatus)
+              ? { allowForwardOnly: true as const }
+              : {}),
           }, target.targetProjectId)
         : await triggerGatewayUpdate({
             release: gatewayRelease,

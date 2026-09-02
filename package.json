@@ -15,6 +15,7 @@
     "dev": "tsx src/index.ts",
     "dev:matrix-gateway": "tsx scripts/matrix-local-gateway.ts",
     "activate:matrix-gateway:macos": "tsx scripts/macos-matrix-gateway-release.ts",
+    "forward-update:matrix-gateway:macos": "tsx scripts/macos-gateway-forward-update.ts",
     "run:gateway-update-supervisor": "tsx src/ops/gatewayUpdateSupervisorMain.ts",
     "release:gateway-update": "tsx scripts/gateway-update-release.ts",
     "release:gateway-agent-update": "tsx scripts/gateway-agent-update-release.ts",

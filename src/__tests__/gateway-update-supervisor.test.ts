@@ -60,6 +60,10 @@ describe('GatewayUpdateSupervisor', () => {
         releaseId: 'release-2',
         targetBuildId: 'build-2',
       })
+      await expect(client.scheduleApply('release-2', true)).resolves.toMatchObject({
+        phase: 'scheduled',
+        releaseId: 'release-2',
+      })
     } finally {
       await server.stop()
       await supervisor.stop()
@@ -975,28 +979,101 @@ describe('GatewayUpdateSupervisor', () => {
     await supervisor.stop()
   })
 
-  it('rejects a protected state migration that makes automatic rollback unsafe', async () => {
+  it('requires explicit confirmation and a stopped-state backup for a protected migration', async () => {
     const fixture = await releaseFixture({ protectedSchemaIncrease: true })
-    const supervisor = new GatewayUpdateSupervisor(fixture.config, {
+    const backupForwardOnlyState = vi.fn(async () => join(fixture.installRoot, 'backups', 'verified'))
+    const activate = vi.fn(async options => {
+      await options.onGatewayStopped?.()
+    })
+    const supervisor = new GatewayUpdateSupervisor({
+      ...fixture.config,
+      activationDelayMs: 0,
+      probationMs: 0,
+    }, {
       fetch: fixture.fetch,
+      activate,
+      backupForwardOnlyState,
     })
     await supervisor.initialize()
 
-    await expect(supervisor.stage('release-2')).rejects.toThrow(/automatic rollback is unsafe/u)
-    await expect(supervisor.status()).resolves.toMatchObject({ phase: 'failed' })
+    await expect(supervisor.stage('release-2')).resolves.toMatchObject({
+      phase: 'staged',
+      activationMode: 'forward-only',
+      detail: expect.stringContaining('Forward-only update staged.'),
+    })
+    await expect(supervisor.scheduleApply('release-2')).rejects.toThrow(
+      /requires explicit forward-only activation confirmation/u,
+    )
+    await expect(supervisor.scheduleApply('release-2', true)).resolves.toMatchObject({
+      phase: 'scheduled',
+      detail: expect.stringContaining('back up protected state'),
+    })
+    await vi.waitFor(async () => {
+      expect(await supervisor.status()).toMatchObject({
+        phase: 'committed',
+        currentBuildId: 'build-2',
+      })
+    })
+    expect(activate).toHaveBeenCalledWith(expect.objectContaining({
+      rollbackMode: 'disabled',
+      onGatewayStopped: expect.any(Function),
+    }))
+    expect(backupForwardOnlyState).toHaveBeenCalledWith(expect.objectContaining({
+      releaseId: 'release-2',
+      targetBuildId: 'build-2',
+      currentBuildId: 'build-1',
+    }))
   })
 
-  it('rejects a new protected state that the rollback release cannot resume', async () => {
+  it('stages a new protected store instead of pretending automatic rollback is safe', async () => {
     const fixture = await releaseFixture({ protectedStateAddition: true })
     const supervisor = new GatewayUpdateSupervisor(fixture.config, {
       fetch: fixture.fetch,
     })
     await supervisor.initialize()
 
-    await expect(supervisor.stage('release-2')).rejects.toThrow(
-      /introduces protected state future-command-store; automatic rollback is unsafe/u,
+    await expect(supervisor.stage('release-2')).resolves.toMatchObject({
+      phase: 'staged',
+      activationMode: 'forward-only',
+      detail: expect.stringContaining('Forward-only update staged.'),
+    })
+    await expect(supervisor.scheduleApply('release-2')).rejects.toThrow(
+      /automatic rollback will be disabled/u,
     )
-    await expect(supervisor.status()).resolves.toMatchObject({ phase: 'failed' })
+    await expect(supervisor.status()).resolves.toMatchObject({ phase: 'staged' })
+  })
+
+  it('never guesses rollback after a forward-only activation is interrupted', async () => {
+    const fixture = await releaseFixture({ protectedSchemaIncrease: true })
+    const first = new GatewayUpdateSupervisor({
+      ...fixture.config,
+      activationDelayMs: 60_000,
+    }, { fetch: fixture.fetch })
+    await first.initialize()
+    await first.stage('release-2')
+    await first.scheduleApply('release-2', true)
+    await first.stop()
+
+    const statePath = join(fixture.installRoot, 'supervisor-state.json')
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as {
+      status: { phase: string }
+      activationMode?: string
+    }
+    state.status.phase = 'activating'
+    delete state.activationMode
+    delete (state.status as { activationMode?: string }).activationMode
+    await writeFile(statePath, `${JSON.stringify(state)}\n`)
+    const activate = vi.fn(async () => undefined)
+    const recovered = new GatewayUpdateSupervisor(fixture.config, { activate })
+
+    await recovered.initialize()
+
+    expect(activate).not.toHaveBeenCalled()
+    await expect(recovered.status()).resolves.toMatchObject({
+      phase: 'repair_required',
+      activationMode: 'forward-only',
+      detail: expect.stringContaining('Automatic rollback remains disabled'),
+    })
   })
 
   it('proves the previous build and deep Matrix health after an interrupted activation', async () => {

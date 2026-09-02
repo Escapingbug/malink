@@ -465,6 +465,7 @@ const gatewayUpdateApplyPayloadSchema = z
     operation: z.literal('gateway.update.apply'),
     releaseId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u),
     mode: z.enum(['when_idle', 'force']).default('when_idle'),
+    allowForwardOnly: z.literal(true).optional(),
   })
   .strict()
 const gatewayUpdateStatusPayloadSchema = z

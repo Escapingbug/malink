@@ -2268,6 +2268,7 @@ internal class MatrixMlp3NativeProjection(
                 "targetBuildId",
                 "currentBuildId",
                 "previousReleaseId",
+                "activationMode",
                 "detail",
                 "maintenanceSessionId",
                 "activeTurns",
@@ -2291,6 +2292,9 @@ internal class MatrixMlp3NativeProjection(
             "failed",
             "repair_required",
         ))
+        value.optionalString("activationMode", 32)?.let { mode ->
+            require(mode == "rollback-safe" || mode == "forward-only")
+        }
         value.optionalString("updateId", 256)
         value.optionalString("releaseId", 128)
         value.optionalString("targetBuildId", 256)

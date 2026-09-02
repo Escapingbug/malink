@@ -43,7 +43,10 @@ export type GatewayUpdateCommand =
       operation: "gateway.update.apply";
       releaseId: string;
       mode: "when_idle";
+      allowForwardOnly?: true;
     };
+
+const FORWARD_ONLY_STAGED = /Forward-only update staged\./u;
 
 export class GatewayUpdateCommandFailure extends Error {
   constructor(
@@ -178,7 +181,16 @@ export function gatewayUpdateCanApplyStaged(input: {
 }): boolean {
   return input.status?.phase === "staged" &&
     Boolean(input.status.releaseId) &&
-    Boolean(input.status.targetBuildId);
+    Boolean(input.status.targetBuildId) &&
+    !gatewayUpdateRequiresForwardOnlyConfirmation(input.status);
+}
+
+export function gatewayUpdateRequiresForwardOnlyConfirmation(
+  status: GatewayUpdateStatus | undefined,
+): boolean {
+  return status?.phase === "staged" && (
+    status.activationMode === "forward-only" || FORWARD_ONLY_STAGED.test(status.detail ?? "")
+  );
 }
 
 /**
@@ -256,6 +268,7 @@ export function legacyGatewayMaintenanceSessionsByNode(input: {
 export async function triggerGatewayUpdate(input: {
   release: GatewayReleaseBuild;
   target: GatewayUpdateTarget;
+  allowForwardOnly?: boolean;
   send(
     command: GatewayUpdateCommand,
     targetProjectId: string,
@@ -280,6 +293,9 @@ export async function triggerGatewayUpdate(input: {
       `Gateway ${input.target.gatewayName} staged a different signed release.`,
     );
   }
+  if (gatewayUpdateRequiresForwardOnlyConfirmation(staged) && !input.allowForwardOnly) {
+    return staged;
+  }
   return input.send({
     operation: "gateway.update.apply",
     releaseId: input.release.releaseId,
@@ -287,6 +303,7 @@ export async function triggerGatewayUpdate(input: {
     // gate immediately, drains only work that was already running, and leaves
     // later commands durably queued for the replacement process.
     mode: "when_idle",
+    ...(input.allowForwardOnly ? { allowForwardOnly: true as const } : {}),
   }, input.target.targetProjectId);
 }
 

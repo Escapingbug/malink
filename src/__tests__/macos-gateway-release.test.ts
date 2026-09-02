@@ -223,6 +223,102 @@ describe('macOS Matrix Gateway release activation', () => {
             await rm(root, { recursive: true, force: true })
         }
     })
+
+    it('stops and prepares protected state before a forward-only switch', async () => {
+        const root = await releaseFixture()
+        try {
+            const oldRelease = join(root, 'releases', 'old')
+            const nextRelease = join(root, 'releases', 'next')
+            await symlink(oldRelease, join(root, 'current'))
+            const plistPath = join(root, 'gateway.plist')
+            await writeFile(plistPath, `<string>${join(root, 'current')}</string>`)
+            const order: string[] = []
+
+            await activateMacosGatewayRelease({
+                releaseDirectory: nextRelease,
+                installRoot: root,
+                launchAgentPath: plistPath,
+                serviceLabel: 'com.malink.test-gateway',
+                adminSocketPath: join(root, 'admin.sock'),
+                rollbackMode: 'disabled',
+                onGatewayStopped: async () => { order.push('backup') },
+            }, {
+                stop: async () => { order.push('stop') },
+                restart: async () => { order.push('restart') },
+                healthCheck: async () => { order.push('health') },
+            })
+
+            expect(order).toEqual(['stop', 'backup', 'restart', 'health'])
+            expect(await readlink(join(root, 'current'))).toBe(nextRelease)
+        } finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    })
+
+    it('restarts the unchanged Gateway when forward-only backup preparation fails', async () => {
+        const root = await releaseFixture()
+        try {
+            const oldRelease = join(root, 'releases', 'old')
+            const nextRelease = join(root, 'releases', 'next')
+            await symlink(oldRelease, join(root, 'current'))
+            const plistPath = join(root, 'gateway.plist')
+            await writeFile(plistPath, `<string>${join(root, 'current')}</string>`)
+            const restart = vi.fn(async () => undefined)
+
+            await expect(activateMacosGatewayRelease({
+                releaseDirectory: nextRelease,
+                installRoot: root,
+                launchAgentPath: plistPath,
+                serviceLabel: 'com.malink.test-gateway',
+                adminSocketPath: join(root, 'admin.sock'),
+                rollbackMode: 'disabled',
+                onGatewayStopped: async () => { throw new Error('backup failed') },
+            }, {
+                stop: async () => undefined,
+                restart,
+            })).rejects.toThrow(/preparation failed before activation/u)
+
+            expect(await readlink(join(root, 'current'))).toBe(oldRelease)
+            expect(restart).toHaveBeenCalledTimes(1)
+        } finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    })
+
+    it('never starts the previous binary after a forward-only target fails health', async () => {
+        const root = await releaseFixture()
+        try {
+            const oldRelease = join(root, 'releases', 'old')
+            const nextRelease = join(root, 'releases', 'next')
+            await symlink(oldRelease, join(root, 'current'))
+            const plistPath = join(root, 'gateway.plist')
+            await writeFile(plistPath, `<string>${join(root, 'current')}</string>`)
+            const stop = vi.fn(async () => undefined)
+            const restart = vi.fn(async () => undefined)
+
+            await expect(activateMacosGatewayRelease({
+                releaseDirectory: nextRelease,
+                installRoot: root,
+                launchAgentPath: plistPath,
+                serviceLabel: 'com.malink.test-gateway',
+                adminSocketPath: join(root, 'admin.sock'),
+                healthTimeoutMs: 1,
+                rollbackMode: 'disabled',
+                onGatewayStopped: async () => undefined,
+            }, {
+                stop,
+                restart,
+                healthCheck: async () => { throw new Error('target unhealthy') },
+                sleep: async () => undefined,
+            })).rejects.toThrow(/automatic rollback is disabled/u)
+
+            expect(await readlink(join(root, 'current'))).toBe(nextRelease)
+            expect(restart).toHaveBeenCalledTimes(1)
+            expect(stop).toHaveBeenCalledTimes(2)
+        } finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    })
 })
 
 async function releaseFixture(): Promise<string> {

@@ -231,7 +231,10 @@ export interface MatrixMlp3GatewayDependencies {
   gatewayUpdateSupervisor?: {
     status(): Promise<GatewayUpdateStatus>
     stage(releaseId: string): Promise<GatewayUpdateStatus>
-    scheduleApply(releaseId: string): Promise<GatewayUpdateStatus>
+    scheduleApply(
+      releaseId: string,
+      allowForwardOnly?: boolean,
+    ): Promise<GatewayUpdateStatus>
     agentInstruction(releaseId: string): Promise<GatewayAgentUpdateInstruction>
     beginAgentUpdate(
       releaseId: string,
@@ -1317,7 +1320,10 @@ export class MatrixMlp3GatewayRunner {
       // gate synchronously prevents another one from starting before the
       // supervisor records its activation timer.
       this.updateDrainState = 'sealed'
-      const status = await supervisor.scheduleApply(command.payload.releaseId)
+      const status = await supervisor.scheduleApply(
+        command.payload.releaseId,
+        command.payload.allowForwardOnly === true,
+      )
       scheduled = true
       await this.settleAndDeliver(
         project,

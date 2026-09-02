@@ -265,6 +265,7 @@ data class GatewayUpdateCommandPayload(
     override val operation: CommandOperation,
     val releaseId: String?,
     val mode: String?,
+    val allowForwardOnly: Boolean?,
 ) : ValidatedCommandPayload {
     override val sessionId: String? = null
 
@@ -582,11 +583,15 @@ object CommandPayloadValidator {
     ): GatewayUpdateCommandPayload {
         if (operation == CommandOperation.GATEWAY_UPDATE_STATUS) {
             value.requireExactKeys(setOf("operation"))
-            return GatewayUpdateCommandPayload(operation, null, null)
+            return GatewayUpdateCommandPayload(operation, null, null, null)
         }
         value.requireExactKeys(
             required = setOf("operation", "releaseId"),
-            optional = if (operation == CommandOperation.GATEWAY_UPDATE_APPLY) setOf("mode") else emptySet(),
+            optional = if (operation == CommandOperation.GATEWAY_UPDATE_APPLY) {
+                setOf("mode", "allowForwardOnly")
+            } else {
+                emptySet()
+            },
         )
         val releaseId = value.requiredString("releaseId", 128)
         require(RELEASE_ID.matches(releaseId)) { "Gateway release ID is invalid." }
@@ -594,7 +599,11 @@ object CommandPayloadValidator {
         require(mode == null || mode == "when_idle" || mode == "force") {
             "Gateway update mode is invalid."
         }
-        return GatewayUpdateCommandPayload(operation, releaseId, mode)
+        val allowForwardOnly = value.optionalBoolean("allowForwardOnly")
+        require(allowForwardOnly == null || allowForwardOnly) {
+            "Gateway forward-only confirmation must be true when present."
+        }
+        return GatewayUpdateCommandPayload(operation, releaseId, mode, allowForwardOnly)
     }
 
     private fun validateAttachment(element: JsonElement): CommandAttachmentPayload {
