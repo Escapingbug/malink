@@ -224,6 +224,45 @@ test("returns a durable native receipt immediately and acknowledges event cursor
   replacement.close();
 });
 
+test("signs the Android Matrix device out through the revocation boundary", async () => {
+  const port = new RuntimePort();
+  const client = await createTestClient(port);
+
+  await client.signOut();
+
+  const request = port.requests.find(
+    (candidate) => candidate.method === "malink.client.disconnect",
+  );
+  assert.ok(request);
+  assert.equal(
+    (request.params as BridgeMethodParams["malink.client.disconnect"]).mode,
+    "revoke",
+  );
+  assert.equal(port.onmessage, null);
+});
+
+test("keeps the native connection usable when Matrix revocation fails", async () => {
+  const port = new RuntimePort((request) => {
+    if (request.method === "malink.client.disconnect") {
+      throw new BridgeProtocolError(
+        "NATIVE_INTERNAL",
+        "Matrix did not confirm logout.",
+      );
+    }
+    return responseFor(request);
+  });
+  const client = await createTestClient(port);
+
+  await assert.rejects(client.signOut(), /Matrix did not confirm logout/);
+  assert.deepEqual(await client.requestMatrixLoginToken("invite-command-1"), {
+    status: "ready",
+    loginToken: "single-use-token",
+    expiresAt: 120_000,
+  });
+  assert.notEqual(port.onmessage, null);
+  client.dispose();
+});
+
 test("bounds native replay as catch-up while later events remain live", async () => {
   const replayEvents = Array.from({ length: 35 }, (_, index) => ({
     schemaVersion: 1,
@@ -1330,6 +1369,10 @@ function responseFor(request: Request): unknown {
         status: "share_opened",
         filename: "malink-native-diagnostics.txt",
       };
+    case "malink.client.disconnect": {
+      const params = request.params as BridgeMethodParams["malink.client.disconnect"];
+      return { mode: params.mode, snapshot: snapshot() };
+    }
     case "malink.command.retire": {
       const params = request.params as BridgeMethodParams["malink.command.retire"];
       return { commandId: params.commandId, retired: true };

@@ -9,16 +9,18 @@ import {
 
 type Props = {
   open: boolean;
-  gatewayName: string | null;
+  deviceKind: "android" | "browser" | null;
   busy: boolean;
+  error?: string | null;
   onClose(): void;
   onConfirm(): void;
 };
 
 export function GatewayForgetDialog({
   open,
-  gatewayName,
+  deviceKind,
   busy,
+  error,
   onClose,
   onConfirm,
 }: Props) {
@@ -45,7 +47,11 @@ export function GatewayForgetDialog({
   );
 
   if (!open) return null;
-  const trustedGateway = Boolean(gatewayName);
+  const title = deviceKind === "android"
+    ? "Sign out of this Android app?"
+    : deviceKind === "browser"
+      ? "Sign out of this browser?"
+      : "Clear this device’s local setup?";
 
   return (
     <div
@@ -59,7 +65,10 @@ export function GatewayForgetDialog({
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="gateway-forget-title"
-        aria-describedby="gateway-forget-description gateway-forget-boundary"
+        aria-describedby={
+          `gateway-forget-description gateway-forget-boundary` +
+          (error ? " gateway-forget-error" : "")
+        }
         aria-busy={busy}
         tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
@@ -68,18 +77,23 @@ export function GatewayForgetDialog({
           !
         </div>
         <span className="eyebrow">This device</span>
-        <h2 id="gateway-forget-title">
-          {trustedGateway
-            ? `Remove “${gatewayName}” from this device?`
-            : "Clear this device’s local setup?"}
-        </h2>
+        <h2 id="gateway-forget-title">{title}</h2>
         <p id="gateway-forget-description">
-          This disconnects Malink and removes the saved connection, approved
-          computer, and locally cached conversation history from this device.
+          {deviceKind
+            ? `Matrix will revoke this ${deviceKind === "android" ? "Android device" : "browser session"} first. After Matrix confirms, Malink removes the local account, authorization, pending commands, and cached conversation history.`
+            : "This disconnects Malink and removes the saved connection, approved computer, and locally cached conversation history from this device."}
         </p>
         <div id="gateway-forget-boundary" className="delete-boundary-note">
-          Your sessions and data on the computer or server are not deleted.
+          {deviceKind
+            ? "Your Workspace, Gateways, and sessions remain available on your other signed-in devices. If revocation fails, this app keeps its local data so you can reconnect and retry."
+            : "Your sessions and data on the computer or server are not deleted."}
         </div>
+        {error && (
+          <div id="gateway-forget-error" className="connection-error" role="alert">
+            <strong>Sign-out needs attention</strong>
+            <span>{error}</span>
+          </div>
+        )}
         <footer>
           <button
             ref={cancelRef}
@@ -88,7 +102,9 @@ export function GatewayForgetDialog({
             disabled={busy}
             onClick={requestClose}
           >
-            {trustedGateway ? "Keep computer" : "Keep local setup"}
+            {deviceKind
+              ? "Stay signed in"
+              : "Keep local setup"}
           </button>
           <button
             type="button"
@@ -97,9 +113,11 @@ export function GatewayForgetDialog({
             onClick={onConfirm}
           >
             {busy
-              ? "Removing…"
-              : trustedGateway
-                ? "Remove computer"
+              ? deviceKind
+                ? "Signing out…"
+                : "Removing…"
+              : deviceKind
+                ? "Sign out"
                 : "Clear local setup"}
           </button>
         </footer>

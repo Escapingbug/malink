@@ -653,6 +653,26 @@ export class NativeBridgeClient implements MalinkClient {
     this.bridge.close();
   }
 
+  async signOut(): Promise<void> {
+    await this.ready;
+    if (this.#disposed) return;
+    // Revocation is fail-closed: keep the live bridge and its event listener
+    // intact until Android confirms that Matrix logged this device out and the
+    // protected native stores were cleared. A rejected/offline request leaves
+    // the current client usable so the user can reconnect and retry.
+    await this.bridge.request("malink.client.disconnect", {
+      context: this.bridge.context(),
+      idempotencyKey: crypto.randomUUID(),
+      mode: "revoke",
+    });
+    this.#disposed = true;
+    this.#discardNetworkCatchup();
+    this.#detachEventListener?.();
+    this.#detachEventListener = null;
+    this.#subscriptionId = null;
+    this.bridge.close();
+  }
+
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;

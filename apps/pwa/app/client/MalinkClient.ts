@@ -110,7 +110,9 @@ export type MalinkClientHandlers = {
  * `dispose()` follows the UI host lifecycle: a web client closes the transport
  * owned by the current tab, while a native client only detaches the WebView and
  * leaves its foreground service connected. `disconnect()` is the explicit user
- * action that stops the active transport on every runtime.
+ * action that stops the active transport on every runtime. `signOut()` is the
+ * shared account-removal boundary: Matrix revocation must complete before
+ * protected local account state is removed.
  */
 export interface MalinkClient {
   readonly runtime: MalinkClientRuntime;
@@ -164,6 +166,7 @@ export interface MalinkClient {
   checkNativeUpdate?(): Promise<NativeUpdateStatus>;
   installNativeUpdate?(): Promise<NativeUpdateStatus>;
   exportDiagnostics?(): Promise<boolean>;
+  signOut(): Promise<void>;
 
   disconnect(): Promise<void>;
   dispose(): void;
