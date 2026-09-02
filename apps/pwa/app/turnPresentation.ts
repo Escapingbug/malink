@@ -19,6 +19,7 @@ export type CompletedTurnProcess = TurnResultPresentation & {
 };
 
 export type CompletedTurnPresentation = {
+  completionByMessageId: ReadonlyMap<string, TurnResultPresentation>;
   processByMessageId: ReadonlyMap<string, CompletedTurnProcess>;
   resultByMessageId: ReadonlyMap<string, TurnResultPresentation>;
 };
@@ -37,9 +38,12 @@ export function completedTurnPresentation(
   completions: readonly ObservedCommandCompletion[],
   sessionId: string | null,
 ): CompletedTurnPresentation {
+  const completionByMessageId = new Map<string, TurnResultPresentation>();
   const processByMessageId = new Map<string, CompletedTurnProcess>();
   const resultByMessageId = new Map<string, TurnResultPresentation>();
-  if (!sessionId) return { processByMessageId, resultByMessageId };
+  if (!sessionId) {
+    return { completionByMessageId, processByMessageId, resultByMessageId };
+  }
 
   const terminalByCommand = new Map<string, ObservedCommandCompletion>();
   for (const completion of completions) {
@@ -61,13 +65,15 @@ export function completedTurnPresentation(
   for (const [commandId, completion] of terminalByCommand) {
     const work = workByCommand.get(commandId);
     if (!work?.length) continue;
-    const result = findResultMessage(work, completion.outcome);
-    if (!result) continue;
-
     const resultPresentation: TurnResultPresentation = {
       commandId,
       outcome: completion.outcome,
     };
+    for (const message of work) {
+      completionByMessageId.set(message.id, resultPresentation);
+    }
+    const result = findResultMessage(work, completion.outcome);
+    if (!result) continue;
     resultByMessageId.set(result.id, resultPresentation);
 
     const processMessages = work.filter((message) => message.id !== result.id);
@@ -94,7 +100,7 @@ export function completedTurnPresentation(
     }
   }
 
-  return { processByMessageId, resultByMessageId };
+  return { completionByMessageId, processByMessageId, resultByMessageId };
 }
 
 function isTurnWorkMessage(message: ChatMessage): boolean {

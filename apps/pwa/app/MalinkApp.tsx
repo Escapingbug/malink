@@ -12844,6 +12844,13 @@ function MalinkAppRuntime() {
                     time={message.time}
                     fullText={fullToolTranscript(message.text)}
                     live={liveToolMessage?.id === message.id}
+                    terminalOutcome={
+                      completedTurns.completionByMessageId.get(message.id)
+                        ?.outcome ??
+                      (gatewaySelected && !isStreaming
+                        ? "succeeded"
+                        : undefined)
+                    }
                   />
                 </div>
               );

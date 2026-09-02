@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { CommandCompletion } from "./commandLifecycle";
 import type {
   ToolCategory,
   ToolGroupPresentation,
@@ -27,12 +28,14 @@ export function ToolActivityCard({
   fullText,
   live = false,
   defaultExpanded = false,
+  terminalOutcome,
 }: {
   group: ToolGroupPresentation;
   time?: string;
   fullText?: string;
   live?: boolean;
   defaultExpanded?: boolean;
+  terminalOutcome?: CommandCompletion["outcome"];
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [selectedStageKind, setSelectedStageKind] =
@@ -42,8 +45,12 @@ export function ToolActivityCard({
     "idle" | "copying" | "copied" | "failed"
   >("idle");
   const followLatestRef = useRef(true);
-  const stages = useMemo(() => toolStages(group.tools), [group.tools]);
-  const latest = currentTool(group.tools);
+  const tools = useMemo(
+    () => settleTerminalToolPhases(group.tools, terminalOutcome),
+    [group.tools, terminalOutcome],
+  );
+  const stages = useMemo(() => toolStages(tools), [tools]);
+  const latest = currentTool(tools);
   const latestToolId = latest?.id;
   const defaultStage =
     stages.find((stage) => stage.tools.some((tool) => tool.id === latest?.id)) ??
@@ -53,7 +60,7 @@ export function ToolActivityCard({
   const selectedTool =
     selectedStage?.tools.find((tool) => tool.id === selectedToolId) ??
     currentTool(selectedStage?.tools ?? []);
-  const summary = toolStateSummary(group.tools);
+  const summary = toolStateSummary(tools);
   const detailsId = useMemo(
     () => `tool-activity-${safeDomId(group.groupId)}`,
     [group.groupId],
@@ -69,7 +76,7 @@ export function ToolActivityCard({
   }, [latestToolId, live, stages]);
 
   async function copyDetails() {
-    const structuredDetails = group.tools
+    const structuredDetails = tools
       .map((tool) =>
         [tool.name, tool.detail || tool.title, tool.result]
           .filter(Boolean)
@@ -114,11 +121,11 @@ export function ToolActivityCard({
         <ActivityStateMark phase={summary.phase} />
         <span className="tool-activity-copy">
           <strong>{live ? "Agent working" : "Activity completed"}</strong>
-          <small>{toolActivityDescription(group.tools)}</small>
+          <small>{toolActivityDescription(tools)}</small>
         </span>
         <span className="tool-activity-meta">
           <ToolState phase={summary.phase} label={summary.label} />
-          <time>{formatDuration(group.tools)}</time>
+          <time>{formatDuration(tools)}</time>
         </span>
         <span className="tool-activity-chevron" aria-hidden="true">
           {expanded ? "−" : "+"}
@@ -207,7 +214,7 @@ export function ToolActivityCard({
           <footer className="tool-activity-footer">
             <span>
               {time && <time>{time}</time>}
-              <small>{formatDuration(group.tools)} total</small>
+              <small>{formatDuration(tools)} total</small>
             </span>
             <button
               type="button"
@@ -349,6 +356,33 @@ function toolStateSummary(tools: readonly ToolPresentationItem[]): {
     return { completed, failed, running, phase: "updated", label: "Running" };
   }
   return { completed, failed, running, phase: "completed", label: "Completed" };
+}
+
+/**
+ * A verified turn result is authoritative over an intermediate tool snapshot.
+ * Android can restore the last progressive `started`/`updated` presentation
+ * even after the terminal event has made the session idle. Mirror the Gateway
+ * turn-boundary settlement so an ended turn never renders as still running.
+ */
+function settleTerminalToolPhases(
+  tools: readonly ToolPresentationItem[],
+  outcome: CommandCompletion["outcome"] | undefined,
+): readonly ToolPresentationItem[] {
+  if (!outcome) return tools;
+  const terminalPhase: ToolPhase = outcome === "succeeded"
+    ? "completed"
+    : "failed";
+  let changed = false;
+  const settled = tools.map((tool) => {
+    if (tool.phase !== "started" && tool.phase !== "updated") return tool;
+    changed = true;
+    return {
+      ...tool,
+      phase: terminalPhase,
+      isError: terminalPhase === "failed" ? true : tool.isError,
+    };
+  });
+  return changed ? settled : tools;
 }
 
 function toolActivityDescription(tools: readonly ToolPresentationItem[]): string {
