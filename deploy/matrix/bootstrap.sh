@@ -26,7 +26,8 @@ ensure_secret "$SECRETS/postgres-password"
 ensure_secret "$SECRETS/macaroon-secret"
 ensure_secret "$SECRETS/form-secret"
 ensure_secret "$SECRETS/registration-secret"
-ensure_secret "$SECRETS/malink-account-password"
+ensure_secret "$SECRETS/gateway-account-password"
+ensure_secret "$SECRETS/client-account-password"
 
 escape_sed() {
     printf '%s' "$1" | sed 's/[&|\\]/\\&/g'

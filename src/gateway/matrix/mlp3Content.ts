@@ -45,6 +45,7 @@ import {
   type MatrixMlp3DeliveryPriority,
   type MatrixMlp3DeliveryMetadata,
   type MatrixMlp3EventDelivery,
+  type MatrixMlp3OutboxHealth,
 } from './fileMatrixMlp3Outbox'
 import { gatewayProjectIdentity } from './project'
 
@@ -105,6 +106,7 @@ export class GatewayMlp3ContentLayer {
     resolve: (result: MatrixSendEventResult) => void
     reject: (error: Error) => void
   }>()
+  private readonly auxiliaryRoomSources = new Map<string, string>()
   private deliveryPump: Promise<void> | null = null
 
   constructor(
@@ -134,6 +136,20 @@ export class GatewayMlp3ContentLayer {
     this.retryAttempts.clear()
   }
 
+  outboxHealth(now = Date.now()): MatrixMlp3OutboxHealth {
+    return this.outbox.health(now)
+  }
+
+  authorizeAuxiliaryRoom(roomId: string, sourceRoomId: string): void {
+    this.auxiliaryRoomSources.set(roomId, sourceRoomId)
+  }
+
+  async forgetRoom(roomId: string): Promise<void> {
+    this.auxiliaryRoomSources.delete(roomId)
+    this.transports.delete(roomId)
+    await this.projectKeys.deleteRoom(roomId)
+  }
+
   projectId(room: MatrixGatewayRoomConfig): string {
     return room.projectId ?? gatewayProjectIdentity(room.cwd, room.projectName).id
   }
@@ -145,6 +161,7 @@ export class GatewayMlp3ContentLayer {
   async provisionProject(
     room: MatrixGatewayRoomConfig,
     transport: MatrixTransport,
+    waitForDelivery = true,
   ): Promise<void> {
     this.transports.set(room.roomId, transport)
     const devices = await this.activeDevices(room.roomId)
@@ -155,7 +172,7 @@ export class GatewayMlp3ContentLayer {
     )
     await this.classifyPendingEvents(room, ring)
     await Promise.all(devices.map(device =>
-      this.publishKeyGrant(room, ring, device, transport)
+      this.publishKeyGrant(room, ring, device, transport, waitForDelivery)
     ))
     // Recovery traffic must not hold Gateway startup behind a homeserver
     // token bucket. The durable outbox continues in the background while new
@@ -590,6 +607,7 @@ export class GatewayMlp3ContentLayer {
     ring: TimelineKeyRing,
     device: MatrixGatewayTrustedDevice,
     transport: MatrixTransport,
+    waitForDelivery = true,
   ): Promise<void> {
     const projectId = this.projectId(room)
     const certificateId = certificateIdFor(device)
@@ -652,7 +670,14 @@ export class GatewayMlp3ContentLayer {
       createdAt: Date.now(),
     })
     this.rejectSupersededConfirmations(await this.outbox.stage(delivery))
-    await this.deliver(this.outbox.delivery(delivery.deliveryId) ?? delivery, transport)
+    const attempt = this.deliver(this.outbox.delivery(delivery.deliveryId) ?? delivery, transport)
+    if (waitForDelivery) {
+      await attempt
+    } else {
+      void attempt.catch(error => {
+        this.onLog?.(`[mlp3/matrix] project key grant delivery deferred: ${formatError(error)}`)
+      })
+    }
   }
 
   private deliver(
@@ -840,8 +865,10 @@ export class GatewayMlp3ContentLayer {
     const devices = this.getTrustedDevices
       ? await this.getTrustedDevices()
       : this.trustedDevices
+    const sourceRoomId = this.auxiliaryRoomSources.get(roomId)
     return devices.filter(device =>
-      device.allowedRoomIds.includes(roomId)
+      (device.allowedRoomIds.includes(roomId)
+        || (sourceRoomId !== undefined && device.allowedRoomIds.includes(sourceRoomId)))
       && (device.certificateExpiresAt === undefined || device.certificateExpiresAt > now),
     )
   }
@@ -885,7 +912,12 @@ function eventDeliveryMetadata(event: Mlp3Event): MatrixMlp3DeliveryMetadata {
   if (payload.type === 'assistant.message') {
     const ui = asRecord(payload.ui)
     return {
-      priority: ui?.kind === 'tool_group' ? 'bulk' : 'normal',
+      // A terminal command result is urgent. Its final assistant response must
+      // use the same priority so the scheduler preserves their enqueue order
+      // instead of letting turn.completed overtake the notification preview.
+      priority: ui?.kind === 'tool_group'
+        ? 'bulk'
+        : payload.final && event.causationCommandId ? 'urgent' : 'normal',
       ...(event.sessionId
         ? {
             supersession: {

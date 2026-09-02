@@ -162,20 +162,20 @@ test("derives activity from explicit Matrix status phases", () => {
   );
 });
 
-test("keeps the delivery-to-execution gap explicit for MLP/3 turns", () => {
+test("maps queued and started MLP/3 turns to their actual execution phases", () => {
   assert.equal(
     reduceAgentActivity(SENDING_AGENT_ACTIVITY, {
       type: "turn.queued",
       turnId: "turn-1",
     }),
-    WAITING_AGENT_ACTIVITY,
+    STARTING_AGENT_ACTIVITY,
   );
   assert.equal(
-    reduceAgentActivity(WAITING_AGENT_ACTIVITY, {
+    reduceAgentActivity(STARTING_AGENT_ACTIVITY, {
       type: "turn.started",
       turnId: "turn-1",
     }),
-    STARTING_AGENT_ACTIVITY,
+    WORKING_AGENT_ACTIVITY,
   );
   assert.equal(
     reduceAgentActivity(STARTING_AGENT_ACTIVITY, {

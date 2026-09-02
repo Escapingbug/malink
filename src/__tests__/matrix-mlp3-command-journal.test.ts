@@ -1,11 +1,18 @@
-import { mkdtemp } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import type { Mlp3Command, Mlp3Event } from '@malink/protocol'
 import { FileMlp3CommandJournal } from '@/gateway/matrix/fileMlp3CommandJournal'
+import {
+  inspectSqliteMlp3CommandJournal,
+  SqliteMlp3CommandJournal,
+} from '@/gateway/matrix/sqliteMlp3CommandJournal'
 
-function command(id = 'command-1'): Mlp3Command {
+function command(
+  id = 'command-1',
+): Extract<Mlp3Command, { operation: 'prompt.submit' }> {
   return {
     kind: 'malink.command',
     version: 3,
@@ -58,6 +65,21 @@ function providerListCommand(): Mlp3Command {
     createdAt: 1,
     operation: 'provider.sessions.list',
     payload: { operation: 'provider.sessions.list', provider: 'codex' },
+  }
+}
+
+function projectDeleteCommand(): Extract<Mlp3Command, { operation: 'project.delete' }> {
+  return {
+    kind: 'malink.command',
+    version: 3,
+    commandId: 'project-delete-command',
+    workspaceId: 'workspace-1',
+    projectId: 'project-1',
+    deviceId: 'device-1',
+    certificateId: 'certificate-1',
+    createdAt: 1,
+    operation: 'project.delete',
+    payload: { operation: 'project.delete' },
   }
 }
 
@@ -161,5 +183,144 @@ describe('FileMlp3CommandJournal', () => {
       command: { commandId: input.commandId },
       terminal: { eventId: 'legacy-provider-terminal' },
     }])
+  })
+})
+
+describe('SqliteMlp3CommandJournal', () => {
+  it('imports JSONL once without modifying it and keeps unfinished commands queryable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'malink-v3-sqlite-journal-'))
+    const jsonlPath = join(root, 'journal.jsonl')
+    const sqlitePath = join(root, 'journal.sqlite')
+    const legacy = new FileMlp3CommandJournal(jsonlPath)
+    await legacy.initialize()
+    await legacy.claim(command(), 1, {
+      roomId: '!project:example.org',
+      matrixEventId: '$command:example.org',
+    })
+    await legacy.markDispatched(command(), 2)
+    const before = await readFile(jsonlPath)
+
+    const journal = new SqliteMlp3CommandJournal(sqlitePath, jsonlPath)
+    await journal.initialize()
+    expect(await readFile(jsonlPath)).toEqual(before)
+    await expect(journal.unfinished()).resolves.toMatchObject([{
+      status: 'dispatched',
+      command: { commandId: 'command-1' },
+      matrixEventId: '$command:example.org',
+    }])
+    await expect(inspectSqliteMlp3CommandJournal(sqlitePath)).resolves.toMatchObject({
+      generation: legacy.getGeneration(),
+      legacySourcePath: jsonlPath,
+      legacySourceSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    })
+    await journal.close()
+
+    const reopened = new SqliteMlp3CommandJournal(sqlitePath, jsonlPath)
+    await expect(reopened.initialize()).resolves.toBeUndefined()
+    await expect(reopened.claim(command(), 4)).resolves.toMatchObject({
+      kind: 'duplicate',
+      record: { status: 'dispatched' },
+    })
+    await reopened.close()
+  })
+
+  it('retains exact pending delivery data, then compacts delivered prompt payloads', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'malink-v3-sqlite-journal-'))
+    const jsonlPath = join(root, 'journal.jsonl')
+    const sqlitePath = join(root, 'journal.sqlite')
+    const journal = new SqliteMlp3CommandJournal(sqlitePath, jsonlPath)
+    await journal.claim(command(), 1)
+    await journal.markDispatched(command(), 2)
+    await journal.settle(command(), {
+      outcome: 'succeeded',
+      eventId: 'terminal-event-1',
+      event: terminalEvent(),
+      sessionId: 'session-1',
+    }, 3)
+    await expect(journal.pendingTerminalDeliveries()).resolves.toMatchObject([{
+      command: { payload: { text: 'hello' } },
+      terminal: { event: { payload: { type: 'turn.completed' } } },
+    }])
+    await journal.markTerminalDelivered(command(), '$matrix-terminal', 4)
+    await expect(journal.pendingTerminalDeliveries()).resolves.toEqual([])
+    await expect(journal.claim(command(), 5)).resolves.toMatchObject({
+      kind: 'duplicate',
+      record: {
+        terminalDeliveryEventId: '$matrix-terminal',
+        terminal: { eventId: 'terminal-event-1', sessionId: 'session-1' },
+      },
+    })
+    await journal.close()
+
+    const database = new DatabaseSync(sqlitePath, { readOnly: true })
+    try {
+      expect(database.prepare(`
+        SELECT COUNT(*) AS count, command_json, terminal_json
+        FROM commands WHERE operation = 'prompt.submit'
+      `).get()).toMatchObject({ count: 1, command_json: null })
+      const row = database.prepare(`
+        SELECT terminal_json FROM commands WHERE operation = 'prompt.submit'
+      `).get() as { terminal_json: string }
+      expect(JSON.parse(row.terminal_json)).not.toHaveProperty('event')
+    } finally {
+      database.close()
+    }
+  })
+
+  it('retains delivered project deletion authority for restart recovery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'malink-v3-sqlite-journal-'))
+    const journal = new SqliteMlp3CommandJournal(
+      join(root, 'journal.sqlite'),
+      join(root, 'journal.jsonl'),
+    )
+    const input = projectDeleteCommand()
+    await journal.claim(input, 1)
+    await journal.markDispatched(input, 2)
+    await journal.settle(input, {
+      outcome: 'succeeded',
+      eventId: 'terminal-event-1',
+      event: terminalEvent(),
+    }, 3)
+    await journal.markTerminalDelivered(input, '$matrix-terminal', 4)
+    await expect(journal.terminalProjectDeletions()).resolves.toMatchObject([{
+      command: { commandId: 'project-delete-command', operation: 'project.delete' },
+      terminal: { outcome: 'succeeded' },
+    }])
+    await journal.close()
+  })
+
+  it('does not read historical JSONL again after migration', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'malink-v3-sqlite-journal-'))
+    const jsonlPath = join(root, 'journal.jsonl')
+    const sqlitePath = join(root, 'journal.sqlite')
+    const legacy = new FileMlp3CommandJournal(jsonlPath)
+    await legacy.initialize()
+    await legacy.claim(command(), 1)
+    const journal = new SqliteMlp3CommandJournal(sqlitePath, jsonlPath)
+    await journal.initialize()
+    await journal.close()
+
+    await chmod(jsonlPath, 0o600)
+    await rename(jsonlPath, `${jsonlPath}.archived`)
+    const reopened = new SqliteMlp3CommandJournal(sqlitePath, jsonlPath)
+    await expect(reopened.initialize()).resolves.toBeUndefined()
+    await expect(reopened.claim(command(), 2)).resolves.toMatchObject({
+      kind: 'duplicate',
+    })
+    await reopened.close()
+  })
+
+  it('rejects command ID reuse with different signed content', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'malink-v3-sqlite-journal-'))
+    const journal = new SqliteMlp3CommandJournal(
+      join(root, 'journal.sqlite'),
+      join(root, 'journal.jsonl'),
+    )
+    await journal.claim(command(), 1)
+    await expect(journal.claim({
+      ...command(),
+      payload: { operation: 'prompt.submit', text: 'different' },
+    }, 2)).rejects.toMatchObject({ code: 'idempotency_conflict' })
+    await journal.close()
   })
 })

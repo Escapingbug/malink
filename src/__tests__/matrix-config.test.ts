@@ -49,6 +49,58 @@ describe('Matrix gateway configuration', () => {
             'Duplicate trusted application public key',
         )
     })
+
+    it('bounds control command execution timeouts', () => {
+        const tooShort = fixture()
+        tooShort.commandExecutionTimeoutMs = 999
+        expect(() => validateMatrixGatewayConfig(tooShort)).toThrow(
+            'commandExecutionTimeoutMs must be between 1000 and 3600000',
+        )
+
+        const valid = fixture()
+        valid.commandExecutionTimeoutMs = 1_000
+        expect(() => validateMatrixGatewayConfig(valid)).not.toThrow()
+    })
+
+    it('bounds Agent-driven Gateway update execution timeouts independently', () => {
+        const tooShort = fixture()
+        tooShort.gatewayUpdateExecutionTimeoutMs = 999
+        expect(() => validateMatrixGatewayConfig(tooShort)).toThrow(
+            'gatewayUpdateExecutionTimeoutMs must be between 1000 and 86400000',
+        )
+
+        const valid = fixture()
+        valid.gatewayUpdateExecutionTimeoutMs = 2 * 60 * 60_000
+        expect(() => validateMatrixGatewayConfig(valid)).not.toThrow()
+    })
+
+    it('requires a positive Workspace control repair cadence', () => {
+        const invalid = fixture()
+        invalid.workspaceControlIntervalMs = 0
+        expect(() => validateMatrixGatewayConfig(invalid)).toThrow(
+            'workspaceControlIntervalMs must be positive',
+        )
+
+        const valid = fixture()
+        valid.workspaceControlIntervalMs = 60_000
+        expect(() => validateMatrixGatewayConfig(valid)).not.toThrow()
+    })
+
+    it('bounds the Matrix request retry budget', () => {
+        const invalid = fixture()
+        invalid.connection.requestRetryBudgetMs = 999
+        expect(() => validateMatrixGatewayConfig(invalid)).toThrow(
+            'connection.requestRetryBudgetMs must be between 1000 and 600000',
+        )
+    })
+
+    it('bounds the compatible provider timeout setting', () => {
+        const invalid = fixture()
+        invalid.rooms[0]!.timeoutSeconds = 0
+        expect(() => validateMatrixGatewayConfig(invalid)).toThrow(
+            'room.timeoutSeconds must be between 1 and 86400',
+        )
+    })
 })
 
 function fixture(): MatrixGatewayConfig {

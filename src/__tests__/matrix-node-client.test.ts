@@ -145,6 +145,57 @@ describe('MatrixNodeSdkGatewayClient', () => {
         expect(post?.[1]?.body).toBe(JSON.stringify({ user_id: '@new:example.test' }))
     })
 
+    it('redacts recursively paged thread relations and retires the room', async () => {
+        const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+            const url = new URL(String(input))
+            const path = decodeURIComponent(url.pathname)
+            if (path.includes('/relations/')) {
+                return jsonResponse(url.searchParams.get('from')
+                    ? { chunk: [{ event_id: '$reply-1' }] }
+                    : { chunk: [{ event_id: '$reply-2' }], next_batch: 'next' })
+            }
+            if (path.endsWith('/members')) {
+                return jsonResponse({
+                    chunk: [
+                        {
+                            state_key: '@gateway:example.test',
+                            content: { membership: 'join' },
+                        },
+                        {
+                            state_key: '@phone:example.test',
+                            content: { membership: 'join' },
+                        },
+                    ],
+                })
+            }
+            if (path.endsWith('/aliases')) {
+                return jsonResponse({ aliases: ['#history:example.test'] })
+            }
+            return jsonResponse({})
+        })
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test',
+            accessToken: 'token',
+            userId: '@gateway:example.test',
+            deviceId: 'STABLE_DEVICE',
+        }, 1_000, undefined, fetchMock as unknown as typeof fetch)
+
+        await client.deleteRoomThread('!room:example.test', '$root')
+        await client.retireRoom('!room:example.test')
+
+        const calls = fetchMock.mock.calls.map(([input, init]) => ({
+            method: init?.method,
+            path: decodeURIComponent(new URL(String(input)).pathname),
+        }))
+        expect(calls.filter(call => call.path.includes('/redact/'))).toHaveLength(3)
+        expect(calls).toEqual(expect.arrayContaining([
+            expect.objectContaining({ method: 'POST', path: expect.stringContaining('/kick') }),
+            expect.objectContaining({ method: 'DELETE', path: '/_matrix/client/v3/directory/room/#history:example.test' }),
+            expect.objectContaining({ method: 'POST', path: expect.stringContaining('/leave') }),
+            expect.objectContaining({ method: 'POST', path: expect.stringContaining('/forget') }),
+        ]))
+    })
+
     it('reopens the same Olm identity for a persisted Matrix device', async () => {
         const directory = await temporaryDirectory()
         const fetchMock = vi.fn(async () => new Response(JSON.stringify({
@@ -447,6 +498,47 @@ describe('MatrixNodeSdkGatewayClient', () => {
         expect(logs.some(message =>
             message.startsWith('[matrix-node] PUT /_matrix/client/v3/rooms/')
             && message.endsWith('rate limited; retrying in 250ms'))).toBe(true)
+    })
+
+    it('releases the room write lane when a 429 exceeds the request retry budget', async () => {
+        let calls = 0
+        const fetchMock = vi.fn(async () => {
+            calls += 1
+            if (calls === 1) {
+                return new Response(JSON.stringify({
+                    errcode: 'M_LIMIT_EXCEEDED',
+                    retry_after_ms: 10_000,
+                }), { status: 429, headers: { 'content-type': 'application/json' } })
+            }
+            return jsonResponse({ event_id: '$recovered' })
+        }) as unknown as typeof fetch
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test',
+            accessToken: 'token',
+            userId: '@gateway:example.test',
+            deviceId: 'STABLE_DEVICE',
+            requestRetryBudgetMs: 1_000,
+        }, 1_000, undefined, fetchMock)
+        const state = (stateKey: string) => client.setApplicationRoomState({
+            roomId: '!room:example.test',
+            eventType: MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
+            stateKey,
+            content: {
+                version: 2,
+                kind: 'state_envelope',
+                state_envelope: {
+                    envelope: {
+                        eventType: MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
+                        stateKey,
+                    },
+                    signature: {},
+                },
+            },
+        })
+
+        await expect(state('first')).rejects.toThrow('exhausted its 1000ms retry budget')
+        await expect(state('second')).resolves.toMatchObject({ eventId: '$recovered' })
+        expect(calls).toBe(2)
     })
 })
 

@@ -20,6 +20,7 @@ enum class CommandOperation(val wireName: String) {
     PROJECT_DELETE("project.delete"),
     PROVIDER_SESSIONS_LIST("provider.sessions.list"),
     PROVIDER_SESSION_INSPECT("provider.session.inspect"),
+    PROVIDER_HISTORY_MATERIALIZE("provider.history.materialize"),
     SESSION_ARCHIVE("session.archive"),
     SESSION_RESTORE("session.restore"),
     SESSION_DELETE("session.delete"),
@@ -202,6 +203,14 @@ data class ProviderSessionInspectCommandPayload(
     override val sessionId: String? = null
 }
 
+data class ProviderHistoryMaterializeCommandPayload(
+    override val sessionId: String,
+    val expectedFrontier: Long,
+    val limit: Long?,
+) : ValidatedCommandPayload {
+    override val operation = CommandOperation.PROVIDER_HISTORY_MATERIALIZE
+}
+
 data class SessionExtensionBindingPayload(
     val id: String,
     val config: JsonObject?,
@@ -287,6 +296,7 @@ object CommandPayloadValidator {
             CommandOperation.PROJECT_DELETE -> validateProjectDelete(value)
             CommandOperation.PROVIDER_SESSIONS_LIST -> validateProviderSessionsList(value)
             CommandOperation.PROVIDER_SESSION_INSPECT -> validateProviderSessionInspect(value)
+            CommandOperation.PROVIDER_HISTORY_MATERIALIZE -> validateProviderHistoryMaterialize(value)
             CommandOperation.SESSION_ARCHIVE,
             CommandOperation.SESSION_RESTORE,
             CommandOperation.SESSION_DELETE,
@@ -480,6 +490,24 @@ object CommandPayloadValidator {
         return ProviderSessionInspectCommandPayload(
             provider = value.requiredString("provider", 256),
             providerSessionId = value.requiredOpaqueId("providerSessionId"),
+        )
+    }
+
+    private fun validateProviderHistoryMaterialize(
+        value: JsonObject,
+    ): ProviderHistoryMaterializeCommandPayload {
+        value.requireExactKeys(
+            required = setOf("operation", "sessionId", "expectedFrontier"),
+            optional = setOf("limit"),
+        )
+        val expectedFrontier = value.requiredLong("expectedFrontier")
+        val limit = value.optionalLong("limit")
+        require(expectedFrontier >= 0) { "Provider History frontier is invalid." }
+        require(limit == null || limit in 1..100) { "Provider History page limit is invalid." }
+        return ProviderHistoryMaterializeCommandPayload(
+            sessionId = value.requiredOpaqueId("sessionId"),
+            expectedFrontier = expectedFrontier,
+            limit = limit,
         )
     }
 

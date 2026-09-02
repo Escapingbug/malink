@@ -26,6 +26,7 @@ import {
   readPendingSessionCreateRecovery,
 } from "./sessionCreateRecovery";
 import { SESSION_READ_STATE_STORAGE_KEY } from "./sessionIndicators";
+import { SESSION_MEANINGFUL_ACTIVITY_STORAGE_KEY } from "./sessionMeaningfulActivity";
 import { SELECTED_SESSION_STORAGE_PREFIX } from "./selectedSessionState";
 import { NATIVE_CURSOR_STORAGE_PREFIX } from "./client/native/storageKeys";
 import { GATEWAY_UI_CACHE_STORAGE_KEY } from "./gatewayUiCache";
@@ -210,6 +211,18 @@ export const PWA_STATE_CATALOG: readonly PwaStateCatalogEntry[] = Object.freeze(
     schemaVersion: 1,
     legacySchemaVersion: 1,
     validate: versionedJsonValidator(SESSION_READ_STATE_STORAGE_KEY, 1),
+  },
+  {
+    id: "session-meaningful-activity",
+    key: SESSION_MEANINGFUL_ACTIVITY_STORAGE_KEY,
+    prefix: false,
+    stateClass: "ephemeral-ui",
+    schemaVersion: 1,
+    legacySchemaVersion: 1,
+    validate: versionedJsonValidator(
+      SESSION_MEANINGFUL_ACTIVITY_STORAGE_KEY,
+      1,
+    ),
   },
 ]);
 

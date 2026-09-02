@@ -265,7 +265,9 @@ export async function resumeNativeMatrixSessionIfAvailable(
         versions: nativeCapabilityVersions(name),
       })),
     });
-    if (hello.capabilities["matrix.session-bootstrap"]?.version !== 2) {
+    const bootstrapVersion =
+      hello.capabilities["matrix.session-bootstrap"]?.version;
+    if (bootstrapVersion !== 2 && bootstrapVersion !== 3) {
       return null;
     }
     return await readNativeMatrixSession(bridge);

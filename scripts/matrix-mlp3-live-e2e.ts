@@ -4,6 +4,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import {
     MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
     MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
@@ -58,6 +59,7 @@ const enrolledGatewayDataDirectory = join(temporaryDirectory, 'enrolled-gateway-
 const enrolledGatewayAdminSocket = join(temporaryDirectory, 'enrolled-gateway-admin.sock')
 const enrolledGatewayName = `Enrolled Gateway ${runId}`
 const fixturePath = join(temporaryDirectory, 'matrix-fixture.json')
+const pwaLoginPath = join(temporaryDirectory, 'pwa-login.json')
 const pwaPort = await freePort()
 let matrixPort = await freePort()
 while (matrixPort === pwaPort) matrixPort = await freePort()
@@ -93,6 +95,12 @@ try {
         tester: { userId: fixture.tester.userId },
         gateway: { userId: fixture.gateway.userId },
     }, null, 2), 'utf8')
+    await writeFile(pwaLoginPath, JSON.stringify({
+        access_token: fixture.tester.accessToken,
+        user_id: fixture.tester.userId,
+        device_id: fixture.tester.deviceId,
+        home_server: new URL(fixture.homeserver).host,
+    }, null, 2), { encoding: 'utf8', mode: 0o600 })
     process.stdout.write('[2/7] Building the actual PWA and starting the MLP/3 Gateway…\n')
     await runProcess(
         join(repositoryRoot, 'apps', 'pwa', 'node_modules', '.bin', 'vite'),
@@ -125,7 +133,7 @@ try {
     // injection below observes the exact production SDK traffic.
     first = await browser.newPage({ serviceWorkers: 'block' })
     capture(first)
-    await pairBrowser(first, pairing[1]!.trim(), fixture)
+    await pairBrowser(first, pairing[1]!.trim())
     await gateway.waitFor(/Gateway ready with 1 trusted device\(s\)\./u)
     await assertProjectIdentity(first, repositoryRoot)
 
@@ -146,10 +154,10 @@ try {
 
     process.stdout.write('[5/7] Pairing a second device and restoring inventory/history without refresh…\n')
     const admin = new GatewayAdminClient({ socketPath: gatewayAdminSocket, timeoutMs: 10_000 })
-    const invitation = await admin.createInvitation({ matrixLogin: 'disabled', appUrl: pwaUrl })
+    const invitation = await admin.createInvitation({ matrixLogin: 'required', appUrl: pwaUrl })
     second = await browser.newPage({ serviceWorkers: 'block' })
     capture(second)
-    await pairBrowser(second, invitation.pairingLink, fixture)
+    await pairBrowser(second, invitation.url)
     await waitFor(async () => (await admin.devices()).length === 2, {
         description: 'two trusted devices',
         timeoutMs: STARTUP_TIMEOUT_MS,
@@ -214,7 +222,7 @@ try {
     if (androidSerial) {
         process.stdout.write('[5a/7] Running the native Android MLP/3 acceptance journey…\n')
         const androidInvitation = await admin.createInvitation({
-            matrixLogin: 'disabled',
+            matrixLogin: 'required',
             appUrl: pwaUrl,
         })
         await suspendAndClearMlp3ReadModel(second)
@@ -224,10 +232,8 @@ try {
             pwaUrl,
             pwaPort,
             matrixPort,
-            pairingLink: androidInvitation.pairingLink,
+            pairingLink: androidInvitation.url,
             gatewayName: `MLP/3 E2E ${runId}`,
-            matrixUserId: fixture.tester.userId,
-            matrixPassword: fixture.tester.password,
             browserPage: first,
             existingSessionId: firstSession,
             providerResponse: PROVIDER_RESPONSE,
@@ -377,16 +383,12 @@ process.exit(0)
 
 async function pairBrowser(
     page: Page,
-    pairingLink: string,
-    matrix: DisposableMatrixFixture,
+    invitationLink: string,
 ): Promise<void> {
-    await page.goto(`${pwaUrl}/#pair=${encodeURIComponent(pairingLink)}`)
+    await page.goto(invitationLink)
     const dialog = page.getByRole('dialog', { name: 'Connect a computer' })
     await dialog.waitFor({ state: 'visible', timeout: STARTUP_TIMEOUT_MS })
     await dialog.getByText('Computer found').waitFor({ state: 'visible' })
-    await dialog.getByPlaceholder('@you:example.org').fill(matrix.tester.userId)
-    await dialog.getByPlaceholder('Your account password').fill(matrix.tester.password)
-    await dialog.getByRole('button', { name: 'Sign in', exact: true }).click()
     const connect = dialog.getByRole('button', { name: /^Connect to /u })
     await waitFor(async () => {
         if (await isConnected(page)) return true
@@ -587,32 +589,25 @@ async function waitForSessionActive(page: Page, sessionId: string): Promise<void
 }
 
 async function waitForDispatchedPromptSessions(sessionIds: string[]): Promise<void> {
-    const journalPath = join(gatewayDataDirectory, 'gateway-replay.jsonl.v3-commands.jsonl')
+    const journalPath = join(gatewayDataDirectory, 'gateway-replay.jsonl.v3-commands.sqlite')
     await waitFor(async () => {
-        const entries = (await readFile(journalPath, 'utf8'))
-            .split(/\r?\n/u)
-            .filter(Boolean)
-            .map(line => JSON.parse(line) as {
-                kind: string
-                key?: string
-                command?: { operation?: string; sessionId?: string }
-            })
-        const promptSessions = new Map<string, string>()
-        const dispatched = new Set<string>()
-        const terminal = new Set<string>()
-        for (const entry of entries) {
-            if (
-                entry.kind === 'accepted'
-                && entry.key
-                && entry.command?.operation === 'prompt.submit'
-                && entry.command.sessionId
-            ) promptSessions.set(entry.key, entry.command.sessionId)
-            if (entry.kind === 'dispatched' && entry.key) dispatched.add(entry.key)
-            if (entry.kind === 'terminal' && entry.key) terminal.add(entry.key)
+        let database: DatabaseSync | undefined
+        try {
+            database = new DatabaseSync(journalPath, { readOnly: true })
+            const rows = database.prepare(`
+                SELECT command_json FROM commands
+                WHERE operation = 'prompt.submit' AND status = 'dispatched'
+            `).all() as Array<{ command_json: string }>
+            const dispatchedSessions = new Set(rows.map(row => {
+                const command = JSON.parse(row.command_json) as { sessionId?: string }
+                return command.sessionId
+            }).filter((value): value is string => Boolean(value)))
+            return sessionIds.every(sessionId => dispatchedSessions.has(sessionId))
+        } catch {
+            return false
+        } finally {
+            database?.close()
         }
-        return sessionIds.every(sessionId => [...promptSessions].some(([key, candidate]) =>
-            candidate === sessionId && dispatched.has(key) && !terminal.has(key)
-        ))
     }, {
         description: 'both prompt commands to cross the durable dispatch boundary',
         timeoutMs: CONVERGENCE_TIMEOUT_MS,
@@ -1015,7 +1010,7 @@ async function assertProjectAuthorizationRepair(
         await download.delete()
 
         const invitation = await admin.createInvitation({
-            matrixLogin: 'disabled',
+            matrixLogin: 'required',
             appUrl: pwaUrl,
         })
         await dialog.getByLabel('One-time pairing link').fill(invitation.pairingLink)
@@ -1421,6 +1416,9 @@ function launchGateway(matrix: DisposableMatrixFixture): ManagedProcess {
             ...process.env,
             MALINK_MATRIX_FIXTURE: fixturePath,
             MALINK_MATRIX_DATA_DIR: gatewayDataDirectory,
+            MALINK_PWA_LOGIN_FILE: pwaLoginPath,
+            MALINK_PWA_URL: pwaUrl,
+            MALINK_MATRIX_CLIENT_PASSWORD: matrix.tester.password,
             MALINK_MATRIX_GATEWAY_USER: matrix.gateway.username,
             MALINK_MATRIX_GATEWAY_PASSWORD: matrix.gateway.password,
             MALINK_GATEWAY_NAME: `MLP/3 E2E ${runId}`,
@@ -1440,6 +1438,9 @@ function launchEnrolledGateway(matrix: DisposableMatrixFixture): ManagedProcess 
         {
             ...process.env,
             MALINK_MATRIX_DATA_DIR: enrolledGatewayDataDirectory,
+            MALINK_PWA_LOGIN_FILE: pwaLoginPath,
+            MALINK_PWA_URL: pwaUrl,
+            MALINK_MATRIX_CLIENT_PASSWORD: matrix.tester.password,
             MALINK_MATRIX_GATEWAY_USER: matrix.gateway.username,
             MALINK_GATEWAY_NAME: enrolledGatewayName,
             MALINK_GATEWAY_ADMIN_SOCKET: enrolledGatewayAdminSocket,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DefaultProviderSemanticAdapter } from '@/runtime/providerAdapter'
+import { createProviderSemanticAdapter, DefaultProviderSemanticAdapter } from '@/runtime/providerAdapter'
 import type { AgentEvent } from '@/providers/types'
 import { mapSessionUpdate } from '@/providers/acp/eventAdapter'
 import { ChannelProjector } from '@/runtime/channelProjector'
@@ -126,6 +126,125 @@ describe('DefaultProviderSemanticAdapter', () => {
 
         expect(first[0].meta.id).toBe('t1:result')
         expect(second[0].meta.id).toBe('t1:result')
+    })
+})
+
+describe('ACP tool label fidelity', () => {
+    it.each([
+        ['Bash', 'execute', 'Bash', undefined],
+        ['Terminal', 'execute', 'Terminal', undefined],
+        ['Grep', 'search', 'Grep', undefined],
+        ['Web Search', 'search', 'Search', 'Web Search'],
+        ['Find', 'search', 'Search', 'Find'],
+        ['Python runner', 'execute', 'Execute', 'Python runner'],
+    ] as const)(
+        'keeps provider title %s distinct from its %s category',
+        (title, kind, expectedName, expectedDisplayTitle) => {
+            const [event] = mapSessionUpdate({
+                sessionUpdate: 'tool_call',
+                toolCallId: `tool-${title}`,
+                title,
+                kind,
+                status: 'pending',
+                rawInput: {},
+            } as Parameters<typeof mapSessionUpdate>[0])
+
+            expect(event).toMatchObject({
+                kind: 'tool_use',
+                toolName: expectedName,
+                toolKind: kind,
+            })
+            if (expectedDisplayTitle) {
+                expect(event).toMatchObject({ displayTitle: expectedDisplayTitle })
+            } else {
+                expect(event).not.toHaveProperty('displayTitle')
+            }
+        },
+    )
+
+    it.each([
+        {
+            title: 'Python runner',
+            kind: 'execute',
+            rawInput: { command: 'python -m pytest' },
+            expectedName: 'Python runner',
+            expectedCategory: 'execute',
+            expectedDetail: 'python -m pytest',
+            forbiddenName: 'Bash',
+        },
+        {
+            title: 'Web Search',
+            kind: 'search',
+            rawInput: { query: 'ACP tool kinds' },
+            expectedName: 'Web Search',
+            expectedCategory: 'search',
+            expectedDetail: 'ACP tool kinds',
+            forbiddenName: 'Grep',
+        },
+    ] as const)(
+        'projects $title with its provider label instead of $forbiddenName',
+        ({ title, kind, rawInput, expectedName, expectedCategory, expectedDetail, forbiddenName }) => {
+            const adapter = createProviderSemanticAdapter('agent')
+            const projector = new ChannelProjector()
+            const messages = mapSessionUpdate({
+                sessionUpdate: 'tool_call',
+                toolCallId: `tool-${kind}`,
+                title,
+                kind,
+                status: 'pending',
+                rawInput,
+            } as Parameters<typeof mapSessionUpdate>[0]).flatMap((event) =>
+                adapter.toConversationEvents(event, {
+                    sessionId: 'session-1',
+                    turnId: 'turn-1',
+                    provider: 'agent',
+                }).flatMap((semanticEvent) => projector.project(semanticEvent)),
+            )
+
+            expect(messages[0]?.message.presentation).toMatchObject({
+                kind: 'tool_group',
+                tools: [{
+                    name: expectedName,
+                    category: expectedCategory,
+                    detail: expectedDetail,
+                }],
+            })
+            expect(messages[0]?.message.text).toContain(title)
+            expect(messages[0]?.message.text).not.toContain(forbiddenName)
+        },
+    )
+
+    it('does not replace an explicit Grep label with a later search fallback', () => {
+        const adapter = createProviderSemanticAdapter('agent')
+        const context = {
+            sessionId: 'session-1',
+            turnId: 'turn-1',
+            provider: 'agent',
+        }
+        const [started] = mapSessionUpdate({
+            sessionUpdate: 'tool_call',
+            toolCallId: 'tool-grep',
+            title: 'Grep',
+            kind: 'search',
+            status: 'pending',
+            rawInput: {},
+        } as Parameters<typeof mapSessionUpdate>[0])
+        const [updated] = mapSessionUpdate({
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'tool-grep',
+            title: null,
+            kind: 'search',
+            status: 'in_progress',
+            rawInput: { query: 'tool label' },
+        } as Parameters<typeof mapSessionUpdate>[0])
+
+        adapter.toConversationEvents(started, context)
+        expect(adapter.toConversationEvents(updated, context)[0]).toMatchObject({
+            kind: 'tool',
+            toolName: 'Grep',
+            category: 'search',
+            input: { pattern: 'tool label' },
+        })
     })
 })
 

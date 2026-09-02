@@ -370,14 +370,35 @@ class GatewayStateSyncPolicyTest {
     }
 
     @Test
-    fun `published commands resume journal recovery without a WebView`() {
+    fun `published commands wait for SDK delivery until recovery is explicitly requested`() {
         val commands = listOf(
             command("later", 4, CommandState.RUNNING),
             command("ignored", 2, CommandState.RECOVERY_REQUIRED),
             command("earlier", 3, CommandState.PUBLISHED),
         )
 
-        assertEquals(listOf("earlier", "later"), publishedRecoveryCommandIds(commands))
+        assertEquals(listOf("ignored"), recoverableCommandIds(commands))
+        assertEquals(emptyList<String>(), queuedCommandIds(commands))
+    }
+
+    @Test
+    fun `background client skips only uncaused Gateway status observations`() {
+        assertEquals(
+            false,
+            shouldProjectGatewayStatusObservation("gateway.update.status", null, false),
+        )
+        assertEquals(
+            true,
+            shouldProjectGatewayStatusObservation("gateway.update.status", "command-1", false),
+        )
+        assertEquals(
+            true,
+            shouldProjectGatewayStatusObservation("gateway.update.status", null, true),
+        )
+        assertEquals(
+            true,
+            shouldProjectGatewayStatusObservation("assistant.message", null, false),
+        )
     }
 
     private fun command(id: String, sequence: Long, state: CommandState): CommandView {

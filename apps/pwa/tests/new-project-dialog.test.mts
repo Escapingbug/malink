@@ -78,6 +78,9 @@ test("shows the owning Gateway for every project session route", () => {
   assert.match(html, /NAS Gateway · home-nas/);
   assert.match(html, /Malink — Office Gateway · alice-macbook/);
   assert.match(html, /Archive — NAS Gateway · home-nas/);
+  assert.match(html, /aria-describedby="new-session-model-catalog-note"/);
+  assert.match(html, /The model list is still syncing or is not exposed by this provider/);
+  assert.match(html, /This session will use the computer default/);
 });
 
 test("keeps dismissal available while project creation continues", () => {
@@ -130,6 +133,7 @@ test("manages project metadata and defaults in one settings surface", () => {
     gatewayLabel: "Office Gateway · alice-macbook",
     fallbackModels: [],
     canDelete: true,
+    hasSessions: false,
     onClose() {},
     onSave() {},
     onDelete() {},

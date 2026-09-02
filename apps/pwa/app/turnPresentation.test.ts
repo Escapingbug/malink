@@ -24,6 +24,10 @@ describe("completedTurnPresentation", () => {
       commandId: "turn-a",
       outcome: "succeeded",
     });
+    expect(presentation.completionByMessageId.get("tools")).toEqual({
+      commandId: "turn-a",
+      outcome: "succeeded",
+    });
     const process = presentation.processByMessageId.get("progress");
     expect(process?.firstMessageId).toBe("progress");
     expect([...process!.messageIds]).toEqual(["progress", "tools"]);
@@ -42,6 +46,21 @@ describe("completedTurnPresentation", () => {
       "session-a",
     );
 
+    expect(presentation.resultByMessageId.size).toBe(0);
+    expect(presentation.processByMessageId.size).toBe(0);
+  });
+
+  it("associates terminal state with a tool-only turn", () => {
+    const presentation = completedTurnPresentation(
+      [toolMessage("tools", "turn-a", 1, 1)],
+      [completion("turn-a", "succeeded")],
+      "session-a",
+    );
+
+    expect(presentation.completionByMessageId.get("tools")).toEqual({
+      commandId: "turn-a",
+      outcome: "succeeded",
+    });
     expect(presentation.resultByMessageId.size).toBe(0);
     expect(presentation.processByMessageId.size).toBe(0);
   });

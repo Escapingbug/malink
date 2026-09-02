@@ -14,6 +14,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -36,9 +37,18 @@ internal data class MatrixMlp3NativeProjectionResult(
     val messages: List<ClientMessage> = emptyList(),
     val progressedCommandId: String? = null,
     val terminal: MatrixMlp3NativeTerminal? = null,
+    val taskNotification: MatrixMlp3TaskNotification? = null,
     val changed: Boolean = false,
     /** The change only advances rebuildable Gateway liveness metadata. */
     val livenessOnly: Boolean = false,
+)
+
+internal data class MatrixMlp3SessionTailRecoveryTarget(
+    val sessionId: String,
+    val projectId: String,
+    val threadRootEventId: String,
+    val activeTurnId: String,
+    val stateVersion: Long,
 )
 
 internal data class MatrixMlp3DurableProjection(
@@ -70,6 +80,15 @@ internal class MatrixMlp3NativeProjection(
         val sessionId: String,
         val messageId: String,
         val partIndex: Int,
+    )
+
+    private data class TaskNotificationPreview(
+        val sessionId: String,
+        val commandId: String,
+        val messageId: String,
+        val messageVersion: Long,
+        val occurredAt: Long,
+        val body: String,
     )
 
     private data class Project(
@@ -110,7 +129,38 @@ internal class MatrixMlp3NativeProjection(
         val extensions: JsonArray,
         val extensionRevision: Long,
         val availableCommands: JsonArray,
+        val providerHistory: JsonObject?,
         val activeTurnId: String? = null,
+    )
+
+    private data class ProviderHistoryPageState(
+        val snapshotId: String,
+        val frontier: Long,
+        val hasMore: Boolean,
+    )
+
+    private data class ProviderHistoryMessagePart(
+        val sessionId: String,
+        val snapshotId: String,
+        val sourceMessageId: String,
+        val sourceOrdinal: Long,
+        val role: String,
+        val body: String,
+        val pageIndex: Long,
+        val partIndex: Int,
+        val partCount: Int,
+        val occurredAt: Long,
+    )
+
+    private data class ProviderHistoryPageCommit(
+        val sessionId: String,
+        val snapshotId: String,
+        val pageIndex: Long,
+        val previousFrontier: Long,
+        val frontier: Long,
+        val messageCount: Long,
+        val hasMore: Boolean,
+        val digest: String,
     )
 
     private data class InboxFile(
@@ -138,6 +188,10 @@ internal class MatrixMlp3NativeProjection(
     private val seenEvents = linkedSetOf<String>()
     private val seenCommands = linkedSetOf<String>()
     private val assistantMessageVersions = linkedMapOf<AssistantMessageKey, Long>()
+    private val taskNotificationPreviews = linkedMapOf<String, TaskNotificationPreview>()
+    private val providerHistoryPageStates = linkedMapOf<String, ProviderHistoryPageState>()
+    private val providerHistoryMessageParts = linkedMapOf<String, ProviderHistoryMessagePart>()
+    private val providerHistoryPageCommits = linkedMapOf<String, ProviderHistoryPageCommit>()
 
     init {
         initialState?.let(::restore)
@@ -183,6 +237,7 @@ internal class MatrixMlp3NativeProjection(
                     extensions = payload["extensions"] as? JsonArray ?: JsonArray(emptyList()),
                     extensionRevision = 1,
                     availableCommands = JsonArray(emptyList()),
+                    providerHistory = null,
                 )
                 MatrixMlp3NativeProjectionResult(
                     messages = initial?.let {
@@ -326,6 +381,7 @@ internal class MatrixMlp3NativeProjection(
                 .toSet()
             sessions.keys.removeAll(deletedSessionIds)
             assistantMessageVersions.keys.removeAll { it.sessionId in deletedSessionIds }
+            taskNotificationPreviews.entries.removeAll { it.value.sessionId in deletedSessionIds }
             return MatrixMlp3NativeProjectionResult(
                 terminal = terminal(type, event, payload, causation, sessionId),
                 changed = true,
@@ -374,6 +430,89 @@ internal class MatrixMlp3NativeProjection(
             return MatrixMlp3NativeProjectionResult(changed = true)
         }
 
+        if (type == "provider.history.message" && sessionId != null) {
+            val snapshotId = payload.requiredString("snapshotId", 256)
+            val sourceOrdinal = payload.requiredLong("sourceOrdinal").also { require(it >= 0) }
+            val pageIndex = payload.requiredLong("pageIndex").also { require(it >= 0) }
+            val hasPartIndex = "partIndex" in payload
+            val hasPartCount = "partCount" in payload
+            require(hasPartIndex == hasPartCount)
+            val partIndex = payload.optionalInt("partIndex") ?: 0
+            val partCount = payload.optionalInt("partCount") ?: 1
+            require(partIndex >= 0 && partCount > 0 && partIndex < partCount)
+            require(sessions[sessionId]?.providerHistory
+                ?.requiredString("snapshotId", 256) == snapshotId)
+            val role = payload.requiredOneOf("role", setOf("user", "assistant"))
+            val part = ProviderHistoryMessagePart(
+                sessionId = sessionId,
+                snapshotId = snapshotId,
+                sourceMessageId = payload.requiredString("sourceMessageId", 256),
+                sourceOrdinal = sourceOrdinal,
+                role = role,
+                body = requireNotNull(payload.optionalString("body", 16 * 1024)) {
+                    "The Provider History message body is missing."
+                },
+                pageIndex = pageIndex,
+                partIndex = partIndex,
+                partCount = partCount,
+                occurredAt = occurredAt,
+            )
+            val key = providerHistoryPartKey(part)
+            val current = providerHistoryMessageParts[key]
+            require(current == null || current == part) {
+                "The Provider History message part conflicts with an earlier event."
+            }
+            providerHistoryMessageParts[key] = part
+            return MatrixMlp3NativeProjectionResult(
+                messages = materializeCommittedProviderHistoryPage(sessionId, snapshotId, pageIndex),
+                changed = true,
+            )
+        }
+
+        if (type == "provider.history.page.committed" && sessionId != null) {
+            val snapshotId = payload.requiredString("snapshotId", 256)
+            val previousFrontier = payload.requiredLong("previousFrontier")
+                .also { require(it >= 0) }
+            val frontier = payload.requiredLong("frontier").also { require(it >= previousFrontier) }
+            val pageIndex = payload.requiredLong("pageIndex").also { require(it >= 0) }
+            val messageCount = payload.requiredLong("messageCount").also { require(it >= 0) }
+            val digest = payload.requiredString("digest", 43)
+            require(sessions[sessionId]?.providerHistory
+                ?.requiredString("snapshotId", 256) == snapshotId)
+            val commit = ProviderHistoryPageCommit(
+                sessionId = sessionId,
+                snapshotId = snapshotId,
+                pageIndex = pageIndex,
+                previousFrontier = previousFrontier,
+                frontier = frontier,
+                messageCount = messageCount,
+                hasMore = payload.requiredBoolean("hasMore"),
+                digest = digest,
+            )
+            val commitKey = providerHistoryPageKey(sessionId, snapshotId, pageIndex)
+            val existingCommit = providerHistoryPageCommits[commitKey]
+            require(existingCommit == null || existingCommit == commit) {
+                "The Provider History page commit conflicts with an earlier event."
+            }
+            providerHistoryPageCommits[commitKey] = commit
+            val current = providerHistoryPageStates[sessionId]
+            if (current == null || frontier >= current.frontier) {
+                providerHistoryPageStates[sessionId] = ProviderHistoryPageState(
+                    snapshotId = snapshotId,
+                    frontier = frontier,
+                    hasMore = commit.hasMore,
+                )
+            }
+            return MatrixMlp3NativeProjectionResult(
+                messages = materializeCommittedProviderHistoryPage(
+                    sessionId,
+                    snapshotId,
+                    pageIndex,
+                ),
+                changed = true,
+            )
+        }
+
         if (sessionId != null && payload["projection"] is JsonObject) {
             applySessionProjection(
                 sessionId,
@@ -381,6 +520,18 @@ internal class MatrixMlp3NativeProjection(
                 payload.requiredObject("projection"),
                 threadRootHint,
             )
+        }
+        if (
+            type == "session.lifecycle" &&
+            sessionId != null &&
+            payload.requiredString("state", 32) == "deleted"
+        ) {
+            sessions.remove(sessionId)
+            assistantMessageVersions.keys.removeAll { it.sessionId == sessionId }
+            taskNotificationPreviews.entries.removeAll { it.value.sessionId == sessionId }
+            providerHistoryPageStates.remove(sessionId)
+            providerHistoryMessageParts.entries.removeAll { it.value.sessionId == sessionId }
+            providerHistoryPageCommits.entries.removeAll { it.value.sessionId == sessionId }
         }
 
         observeActiveTurn(type, sessionId, causation, payload)
@@ -443,6 +594,15 @@ internal class MatrixMlp3NativeProjection(
                         assistantMessageVersions.remove(assistantMessageVersions.keys.first())
                     }
                     val toolGroup = decodeMlp3ToolGroup(payload)
+                    rememberTaskNotificationPreview(
+                        payload = payload,
+                        sessionId = sessionId,
+                        commandId = causation,
+                        messageId = messageId,
+                        messageVersion = version,
+                        occurredAt = occurredAt,
+                        eligible = toolGroup == null,
+                    )
                     val attachments = (payload["attachments"] as? JsonArray)?.mapNotNull { item ->
                         runCatching { PublicClientJson.decodeAttachment(item) }.getOrNull()
                     }
@@ -541,6 +701,7 @@ internal class MatrixMlp3NativeProjection(
                 else -> null
             },
             terminal = terminal(type, event, payload, causation, sessionId),
+            taskNotification = taskNotification(type, eventId, payload, causation, sessionId),
             changed = sessionId != null || messages.isNotEmpty(),
         )
     }
@@ -685,7 +846,197 @@ internal class MatrixMlp3NativeProjection(
         ?.takeIf { it.isNotBlank() }
 
     @Synchronized
+    fun providerHistoryRoomIds(): Set<String> = sessions.values.mapNotNull { session ->
+        session.providerHistory?.requiredString("roomId", 512)
+    }.toSet()
+
+    @Synchronized
+    fun providerHistoryRoomBindings(): List<Triple<String, String, String>> = sessions.values
+        .mapNotNull { session ->
+            session.providerHistory?.let { binding ->
+                Triple(
+                    session.id,
+                    session.projectId,
+                    binding.requiredString("roomId", 512),
+                )
+            }
+        }
+
+    @Synchronized
+    fun providerHistory(sessionId: String): JsonObject? = sessions[sessionId]
+        ?.providerHistory
+
+    @Synchronized
+    fun providerHistoryHasMore(sessionId: String): Boolean = sessions[sessionId]
+        ?.providerHistory
+        ?.let { binding ->
+            providerHistoryPageStates[sessionId]
+                ?.takeIf { it.snapshotId == binding.requiredString("snapshotId", 256) }
+                ?.hasMore
+                ?: true
+        }
+        ?: false
+
+    private fun providerHistoryPartKey(part: ProviderHistoryMessagePart): String =
+        "${part.sessionId}\u0000${part.snapshotId}\u0000${part.sourceOrdinal}\u0000${part.partIndex}"
+
+    private fun providerHistoryPageKey(
+        sessionId: String,
+        snapshotId: String,
+        pageIndex: Long,
+    ): String = "$sessionId\u0000$snapshotId\u0000$pageIndex"
+
+    private fun materializeCommittedProviderHistoryPage(
+        sessionId: String,
+        snapshotId: String,
+        pageIndex: Long,
+    ): List<ClientMessage> {
+        val commitKey = providerHistoryPageKey(sessionId, snapshotId, pageIndex)
+        val commit = providerHistoryPageCommits[commitKey] ?: return emptyList()
+        val parts = providerHistoryMessageParts.values.filter {
+            it.sessionId == sessionId &&
+                it.snapshotId == snapshotId &&
+                it.pageIndex == pageIndex
+        }
+        val grouped = parts.groupBy(ProviderHistoryMessagePart::sourceOrdinal)
+        require(grouped.size.toLong() <= commit.messageCount) {
+            "The Provider History page contains too many source messages."
+        }
+        if (grouped.size.toLong() < commit.messageCount) return emptyList()
+        val orderedGroups = grouped.entries.sortedBy { it.key }
+        for ((_, sourceParts) in orderedGroups) {
+            val expectedPartCount = sourceParts.first().partCount
+            require(sourceParts.size <= expectedPartCount) {
+                "The Provider History source message contains too many parts."
+            }
+            if (sourceParts.size < expectedPartCount) return emptyList()
+        }
+        val messages = orderedGroups.map { (sourceOrdinal, sourceParts) ->
+            val ordered = sourceParts.sortedBy(ProviderHistoryMessagePart::partIndex)
+            val first = ordered.first()
+            require(ordered.map(ProviderHistoryMessagePart::partIndex) == ordered.indices.toList()) {
+                "The Provider History source message has a missing part."
+            }
+            require(ordered.all {
+                it.sourceMessageId == first.sourceMessageId &&
+                    it.role == first.role &&
+                    it.partCount == first.partCount
+            }) { "The Provider History source message parts disagree." }
+            val body = ordered.joinToString(separator = "", transform = ProviderHistoryMessagePart::body)
+            val semantic = buildJsonObject {
+                put("type", "provider.history.message")
+                put("snapshotId", snapshotId)
+                put("sourceMessageId", first.sourceMessageId)
+                put("sourceOrdinal", sourceOrdinal)
+                put("role", first.role)
+                put("body", body)
+                put("pageIndex", pageIndex)
+                put("providerHistoryOrder", sourceOrdinal * 2 + 1)
+            }
+            ClientMessage(
+                eventId = "provider-history:$sessionId:$snapshotId:$sourceOrdinal",
+                sender = if (first.role == "user") "provider-history-user" else gatewayId(),
+                timestamp = ordered.minOf(ProviderHistoryMessagePart::occurredAt),
+                encrypted = true,
+                kind = if (first.role == "user") {
+                    ClientMessageKind.USER
+                } else {
+                    ClientMessageKind.AGENT
+                },
+                format = ClientMessageFormat.MARKDOWN,
+                text = body,
+                sessionId = sessionId,
+                historical = true,
+                semantic = semantic,
+            )
+        }
+        providerHistoryMessageParts.entries.removeAll { (_, part) ->
+            part.sessionId == sessionId &&
+                part.snapshotId == snapshotId &&
+                part.pageIndex == pageIndex
+        }
+        providerHistoryPageCommits.remove(commitKey)
+        return messages
+    }
+
+    @Synchronized
     fun sessionLifecycle(sessionId: String): String? = sessions[sessionId]?.lifecycle
+
+    @Synchronized
+    fun activeSessionTailRecoveryTargets(
+        limit: Int,
+    ): List<MatrixMlp3SessionTailRecoveryTarget> {
+        require(limit in 1..MAX_SESSION_TAIL_RECOVERY_TARGETS)
+        return sessions.values
+            .asSequence()
+            .filter {
+                it.lifecycle == "active" &&
+                    it.activity in ACTIVE_SESSION_ACTIVITIES &&
+                    it.threadRootEventId.isNotEmpty() &&
+                    it.activeTurnId != null
+            }
+            .sortedWith(compareByDescending<Session> { it.updatedAt }.thenBy { it.id })
+            .take(limit)
+            .map { session ->
+                MatrixMlp3SessionTailRecoveryTarget(
+                    sessionId = session.id,
+                    projectId = session.projectId,
+                    threadRootEventId = session.threadRootEventId,
+                    activeTurnId = requireNotNull(session.activeTurnId),
+                    stateVersion = session.stateVersion,
+                )
+            }
+            .toList()
+    }
+
+    /**
+     * Repairs a stale active session from one independently verified Matrix
+     * thread terminal. This deliberately projects only the monotonic session
+     * state and terminal command result: transcript pagination owns message
+     * materialization and must not be triggered for every session at startup.
+     */
+    @Synchronized
+    fun reconcileSessionTerminal(
+        event: JsonObject,
+        threadRootHint: String,
+        expectedSessionId: String,
+        expectedTurnId: String,
+    ): MatrixMlp3NativeProjectionResult {
+        val sessionId = event.requiredString("sessionId", 256)
+        require(sessionId == expectedSessionId)
+        val payload = event.requiredObject("payload")
+        val type = payload.requiredString("type", 128)
+        require(type == "turn.completed" || type == "turn.failed")
+        require(payload.requiredString("turnId", 256) == expectedTurnId)
+        val incomingVersion = payload.requiredObject("projection")
+            .requiredPositiveLong("stateVersion")
+        val current = sessions[sessionId] ?: return MatrixMlp3NativeProjectionResult()
+        if (incomingVersion < current.stateVersion) return MatrixMlp3NativeProjectionResult()
+
+        applySessionProjection(
+            sessionId = sessionId,
+            projectId = event.optionalString("projectId", 256),
+            projection = payload.requiredObject("projection"),
+            threadRootHint = threadRootHint,
+        )
+        observeActiveTurn(
+            type = type,
+            sessionId = sessionId,
+            causationCommandId = event.optionalString("causationCommandId", 256),
+            payload = payload,
+        )
+        val changed = sessions[sessionId] != current
+        return MatrixMlp3NativeProjectionResult(
+            terminal = terminal(
+                type = type,
+                event = event,
+                payload = payload,
+                commandId = event.optionalString("causationCommandId", 256),
+                sessionId = sessionId,
+            ),
+            changed = changed,
+        )
+    }
 
     @Synchronized
     fun workspaceGatewayDirectoryRevision(): Long = workspaceGatewayDirectory
@@ -751,6 +1102,8 @@ internal class MatrixMlp3NativeProjection(
         workspacePendingGatewayEnrollmentsByProject.keys.retainAll(projectIds + "__legacy__")
         gatewayUpdateObservationsByProject.keys.retainAll(projectIds)
         sessions.entries.removeAll { it.value.projectId !in projectIds }
+        val retainedSessionIds = sessions.keys
+        taskNotificationPreviews.entries.removeAll { it.value.sessionId !in retainedSessionIds }
     }
 
     @Synchronized
@@ -766,6 +1119,7 @@ internal class MatrixMlp3NativeProjection(
         seenEvents.clear()
         seenCommands.clear()
         assistantMessageVersions.clear()
+        taskNotificationPreviews.clear()
     }
 
     @Synchronized
@@ -878,8 +1232,12 @@ internal class MatrixMlp3NativeProjection(
         val retainedAssistantVersions = assistantMessageVersions.entries
             .toList()
             .takeLast(policy.assistantVersionLimit)
+        val retainedSessionIds = retainedSessions.mapTo(mutableSetOf(), Session::id)
+        val retainedTaskNotificationPreviews = taskNotificationPreviews.values
+            .filter { it.sessionId in retainedSessionIds }
+            .takeLast(MAX_TASK_NOTIFICATION_PREVIEWS)
         val value = buildJsonObject {
-            put("schemaVersion", 14)
+            put("schemaVersion", 17)
             put("projectCapabilities", buildJsonArray {
                 projectCapabilities.entries.sortedBy { it.key }.forEach { (projectId, capabilities) ->
                     add(buildJsonObject {
@@ -945,6 +1303,7 @@ internal class MatrixMlp3NativeProjection(
                             "availableCommandsRef",
                             availableCommandCatalog.getValue(session.availableCommands),
                         )
+                        session.providerHistory?.let { put("providerHistory", it) }
                         session.activeTurnId?.let { put("activeTurnId", it) }
                     })
                 }
@@ -976,6 +1335,74 @@ internal class MatrixMlp3NativeProjection(
                     })
                 }
             })
+            put("taskNotificationPreviews", buildJsonArray {
+                retainedTaskNotificationPreviews.forEach { preview ->
+                    add(buildJsonObject {
+                        put("sessionId", preview.sessionId)
+                        put("commandId", preview.commandId)
+                        put("messageId", preview.messageId)
+                        put("messageVersion", preview.messageVersion)
+                        put("occurredAt", preview.occurredAt)
+                        put("body", preview.body)
+                    })
+                }
+            })
+            put("providerHistoryPageStates", buildJsonObject {
+                providerHistoryPageStates.entries.sortedBy { it.key }
+                    .forEach { (sessionId, state) ->
+                        put(sessionId, buildJsonObject {
+                            put("snapshotId", state.snapshotId)
+                            put("frontier", state.frontier)
+                            put("hasMore", state.hasMore)
+                        })
+                    }
+            })
+            put("providerHistoryMessageParts", buildJsonArray {
+                providerHistoryMessageParts.values
+                    .filter { it.sessionId in retainedSessionIds }
+                    .sortedWith(compareBy(
+                        ProviderHistoryMessagePart::sessionId,
+                        ProviderHistoryMessagePart::snapshotId,
+                        ProviderHistoryMessagePart::pageIndex,
+                        ProviderHistoryMessagePart::sourceOrdinal,
+                        ProviderHistoryMessagePart::partIndex,
+                    ))
+                    .forEach { part ->
+                        add(buildJsonObject {
+                            put("sessionId", part.sessionId)
+                            put("snapshotId", part.snapshotId)
+                            put("sourceMessageId", part.sourceMessageId)
+                            put("sourceOrdinal", part.sourceOrdinal)
+                            put("role", part.role)
+                            put("body", part.body)
+                            put("pageIndex", part.pageIndex)
+                            put("partIndex", part.partIndex)
+                            put("partCount", part.partCount)
+                            put("occurredAt", part.occurredAt)
+                        })
+                    }
+            })
+            put("providerHistoryPageCommits", buildJsonArray {
+                providerHistoryPageCommits.values
+                    .filter { it.sessionId in retainedSessionIds }
+                    .sortedWith(compareBy(
+                        ProviderHistoryPageCommit::sessionId,
+                        ProviderHistoryPageCommit::snapshotId,
+                        ProviderHistoryPageCommit::pageIndex,
+                    ))
+                    .forEach { commit ->
+                        add(buildJsonObject {
+                            put("sessionId", commit.sessionId)
+                            put("snapshotId", commit.snapshotId)
+                            put("pageIndex", commit.pageIndex)
+                            put("previousFrontier", commit.previousFrontier)
+                            put("frontier", commit.frontier)
+                            put("messageCount", commit.messageCount)
+                            put("hasMore", commit.hasMore)
+                            put("digest", commit.digest)
+                        })
+                    }
+            })
         }
         val encoded = CanonicalJson.bytes(value)
         val encodedBytes = try {
@@ -999,7 +1426,7 @@ internal class MatrixMlp3NativeProjection(
 
     private fun restore(value: JsonObject) {
         val schemaVersion = value.requiredLong("schemaVersion")
-        require(schemaVersion in 1L..14L)
+        require(schemaVersion in 1L..17L)
         val legacyWorkspaceCapabilities = if (schemaVersion == 1L || schemaVersion >= 9L) {
             null
         } else {
@@ -1201,12 +1628,122 @@ internal class MatrixMlp3NativeProjection(
                 } else {
                     session["availableCommands"] as? JsonArray ?: JsonArray(emptyList())
                 },
+                providerHistory = if (schemaVersion >= 15L) {
+                    decodeProviderHistory(session["providerHistory"])
+                } else {
+                    null
+                },
                 activeTurnId = if (schemaVersion >= 4L) {
                     session.optionalString("activeTurnId", 256)
                 } else {
                     null
                 },
             )
+        }
+        if (schemaVersion >= 15L) {
+            val restoredProviderHistory = value.requiredObject("providerHistoryPageStates")
+            require(restoredProviderHistory.size <= 20_000)
+            restoredProviderHistory.entries.forEach { (sessionId, element) ->
+                require(sessionId in sessions)
+                val state = element as? JsonObject
+                    ?: throw IllegalArgumentException("The Provider History page state is invalid.")
+                state.requireKeys(
+                    setOf("snapshotId", "frontier", "hasMore"),
+                    emptySet(),
+                    "Provider History page state",
+                )
+                val snapshotId = state.requiredString("snapshotId", 256)
+                require(sessions[sessionId]?.providerHistory
+                    ?.requiredString("snapshotId", 256) == snapshotId)
+                providerHistoryPageStates[sessionId] = ProviderHistoryPageState(
+                    snapshotId = snapshotId,
+                    frontier = state.requiredLong("frontier").also { require(it >= 0) },
+                    hasMore = state.requiredBoolean("hasMore"),
+                )
+            }
+        }
+        if (schemaVersion >= 16L) {
+            value.requiredArray("providerHistoryMessageParts", 10_000).forEach { element ->
+                val item = element as? JsonObject
+                    ?: throw IllegalArgumentException("A Provider History message part is invalid.")
+                item.requireKeys(
+                    setOf(
+                        "sessionId",
+                        "snapshotId",
+                        "sourceMessageId",
+                        "sourceOrdinal",
+                        "role",
+                        "body",
+                        "pageIndex",
+                        "partIndex",
+                        "partCount",
+                        "occurredAt",
+                    ),
+                    emptySet(),
+                    "Provider History message part",
+                )
+                val part = ProviderHistoryMessagePart(
+                    sessionId = item.requiredString("sessionId", 256),
+                    snapshotId = item.requiredString("snapshotId", 256),
+                    sourceMessageId = item.requiredString("sourceMessageId", 256),
+                    sourceOrdinal = item.requiredLong("sourceOrdinal").also { require(it >= 0) },
+                    role = item.requiredOneOf("role", setOf("user", "assistant")),
+                    body = requireNotNull(item.optionalString("body", 16 * 1024)) {
+                        "The Provider History message body is missing."
+                    },
+                    pageIndex = item.requiredLong("pageIndex").also { require(it >= 0) },
+                    partIndex = item.requiredLong("partIndex")
+                        .also { require(it in 0..Int.MAX_VALUE.toLong()) }
+                        .toInt(),
+                    partCount = item.requiredLong("partCount")
+                        .also { require(it in 1..Int.MAX_VALUE.toLong()) }
+                        .toInt(),
+                    occurredAt = item.requiredLong("occurredAt").also { require(it >= 0) },
+                )
+                require(part.partIndex < part.partCount)
+                require(sessions[part.sessionId]?.providerHistory
+                    ?.requiredString("snapshotId", 256) == part.snapshotId)
+                require(providerHistoryMessageParts.put(providerHistoryPartKey(part), part) == null) {
+                    "A Provider History message part is duplicated."
+                }
+            }
+            value.requiredArray("providerHistoryPageCommits", 10_000).forEach { element ->
+                val item = element as? JsonObject
+                    ?: throw IllegalArgumentException("A Provider History page commit is invalid.")
+                item.requireKeys(
+                    setOf(
+                        "sessionId",
+                        "snapshotId",
+                        "pageIndex",
+                        "previousFrontier",
+                        "frontier",
+                        "messageCount",
+                        "hasMore",
+                        "digest",
+                    ),
+                    emptySet(),
+                    "Provider History page commit",
+                )
+                val previousFrontier = item.requiredLong("previousFrontier")
+                    .also { require(it >= 0) }
+                val commit = ProviderHistoryPageCommit(
+                    sessionId = item.requiredString("sessionId", 256),
+                    snapshotId = item.requiredString("snapshotId", 256),
+                    pageIndex = item.requiredLong("pageIndex").also { require(it >= 0) },
+                    previousFrontier = previousFrontier,
+                    frontier = item.requiredLong("frontier")
+                        .also { require(it >= previousFrontier) },
+                    messageCount = item.requiredLong("messageCount").also { require(it >= 0) },
+                    hasMore = item.requiredBoolean("hasMore"),
+                    digest = item.requiredString("digest", 43),
+                )
+                require(sessions[commit.sessionId]?.providerHistory
+                    ?.requiredString("snapshotId", 256) == commit.snapshotId)
+                require(providerHistoryPageCommits.put(
+                    providerHistoryPageKey(commit.sessionId, commit.snapshotId, commit.pageIndex),
+                    commit,
+                ) == null) { "A Provider History page commit is duplicated." }
+            }
         }
         if (schemaVersion >= 3L) {
             val restoredInbox = value["inboxFiles"] as? JsonArray
@@ -1248,11 +1785,48 @@ internal class MatrixMlp3NativeProjection(
                     assistantMessageVersions[key] = entry.requiredPositiveLong("version")
                 }
         }
+        if (schemaVersion >= 17L) {
+            value.requiredArray(
+                "taskNotificationPreviews",
+                MAX_TASK_NOTIFICATION_PREVIEWS,
+            ).forEach { element ->
+                val item = element as? JsonObject
+                    ?: throw IllegalArgumentException("A task notification preview is invalid.")
+                item.requireKeys(
+                    setOf(
+                        "sessionId",
+                        "commandId",
+                        "messageId",
+                        "messageVersion",
+                        "occurredAt",
+                        "body",
+                    ),
+                    emptySet(),
+                    "Task notification preview",
+                )
+                val preview = TaskNotificationPreview(
+                    sessionId = item.requiredString("sessionId", 256),
+                    commandId = item.requiredString("commandId", 256),
+                    messageId = item.requiredString("messageId", 256),
+                    messageVersion = item.requiredPositiveLong("messageVersion"),
+                    occurredAt = item.requiredLong("occurredAt").also { require(it >= 0) },
+                    body = item.requiredString("body", MAX_NOTIFICATION_BODY_CHARS),
+                )
+                require(preview.sessionId in sessions)
+                require(taskNotificationPreviews.put(
+                    taskNotificationPreviewKey(preview.sessionId, preview.commandId),
+                    preview,
+                ) == null) { "A task notification preview is duplicated." }
+            }
+        }
     }
 
     private companion object {
         const val MAX_SEEN_IDS = 10_000
         const val MAX_DURABLE_SESSIONS = 4_000
+        const val MAX_SESSION_TAIL_RECOVERY_TARGETS = 128
+        const val MAX_TASK_NOTIFICATION_PREVIEWS = 128
+        const val MAX_NOTIFICATION_BODY_CHARS = 2_048
         const val DEFAULT_DURABLE_TARGET_BYTES = 6 * 1024 * 1024
         const val MIN_DURABLE_TARGET_BYTES = 256 * 1024
         const val MAX_DURABLE_TARGET_BYTES = 8 * 1024 * 1024
@@ -1376,8 +1950,24 @@ internal class MatrixMlp3NativeProjection(
         availableCommands = projection["availableCommands"] as? JsonArray
             ?: sessions[sessionId]?.availableCommands
             ?: JsonArray(emptyList()),
+        providerHistory = decodeProviderHistory(projection["providerHistory"]),
         activeTurnId = sessions[sessionId]?.activeTurnId,
     )
+
+    private fun decodeProviderHistory(value: JsonElement?): JsonObject? {
+        if (value == null || value is JsonNull) return null
+        val binding = value as? JsonObject
+            ?: throw IllegalArgumentException("The Provider History room binding is invalid.")
+        binding.requireKeys(
+            setOf("roomId", "snapshotId", "ordering"),
+            emptySet(),
+            "Provider History room binding",
+        )
+        binding.requiredString("roomId", 512)
+        binding.requiredString("snapshotId", 256)
+        require(binding.requiredString("ordering", 64) == "reverse_append_v1")
+        return binding
+    }
 
     private fun observeActiveTurn(
         type: String,
@@ -1452,7 +2042,7 @@ internal class MatrixMlp3NativeProjection(
             "extension.interaction.resolved", "project.snapshot", "project.deleted",
             "notification.subscription.changed" ->
                 MatrixMlp3NativeTerminal(commandId, "succeeded", sessionId)
-            "provider.sessions.listed", "provider.session.inspected" ->
+            "provider.sessions.listed", "provider.session.inspected", "provider.history.materialized" ->
                 MatrixMlp3NativeTerminal(commandId, "succeeded", sessionId, result = payload)
             "project.created" ->
                 MatrixMlp3NativeTerminal(commandId, "succeeded", sessionId, result = payload)
@@ -1567,6 +2157,107 @@ internal class MatrixMlp3NativeProjection(
         }
     }
 
+    private fun taskNotification(
+        type: String,
+        eventId: String,
+        payload: JsonObject,
+        commandId: String?,
+        sessionId: String?,
+    ): MatrixMlp3TaskNotification? {
+        commandId ?: return null
+        val previewKey = sessionId?.let { taskNotificationPreviewKey(it, commandId) }
+        val finalPreview = if (type == "turn.completed" || type == "turn.failed") {
+            previewKey?.let(taskNotificationPreviews::remove)
+        } else {
+            null
+        }
+        return when (type) {
+            "turn.completed" -> {
+                val outcome = if (payload.requiredString("outcome", 32) == "cancelled") {
+                    "cancelled"
+                } else {
+                    "succeeded"
+                }
+                MatrixMlp3TaskNotification(
+                    eventId = eventId,
+                    commandId = commandId,
+                    outcome = outcome,
+                    sessionId = sessionId,
+                    body = finalPreview?.body?.takeUnless { outcome == "cancelled" },
+                )
+            }
+            "turn.failed" -> MatrixMlp3TaskNotification(
+                eventId = eventId,
+                commandId = commandId,
+                outcome = "failed",
+                sessionId = sessionId,
+                body = compactTaskNotificationBody(payload.requiredString("message", 8_192)),
+            )
+            else -> null
+        }
+    }
+
+    private fun rememberTaskNotificationPreview(
+        payload: JsonObject,
+        sessionId: String,
+        commandId: String?,
+        messageId: String,
+        messageVersion: Long,
+        occurredAt: Long,
+        eligible: Boolean,
+    ) {
+        commandId ?: return
+        if (!eligible || payload["ui"] != null) return
+        if (payload["final"]?.jsonPrimitive?.booleanOrNull != true) return
+        if ((payload.optionalInt("partIndex") ?: 0) != 0) return
+        val body = compactTaskNotificationBody(
+            payload.optionalString("body", Int.MAX_VALUE).orEmpty(),
+        ) ?: return
+        val preview = TaskNotificationPreview(
+            sessionId = sessionId,
+            commandId = commandId,
+            messageId = messageId,
+            messageVersion = messageVersion,
+            occurredAt = occurredAt,
+            body = body,
+        )
+        val key = taskNotificationPreviewKey(sessionId, commandId)
+        val current = taskNotificationPreviews[key]
+        val newer = current == null || compareValuesBy(
+            preview,
+            current,
+            TaskNotificationPreview::occurredAt,
+            TaskNotificationPreview::messageId,
+            TaskNotificationPreview::messageVersion,
+        ) > 0
+        if (!newer) return
+        taskNotificationPreviews.remove(key)
+        taskNotificationPreviews[key] = preview
+        while (taskNotificationPreviews.size > MAX_TASK_NOTIFICATION_PREVIEWS) {
+            taskNotificationPreviews.remove(taskNotificationPreviews.keys.first())
+        }
+    }
+
+    private fun taskNotificationPreviewKey(sessionId: String, commandId: String): String =
+        "$sessionId\u0000$commandId"
+
+    private fun compactTaskNotificationBody(value: String): String? {
+        val normalized = value.replace("\r\n", "\n").replace('\r', '\n').trim()
+        if (normalized.isEmpty()) return null
+        return if (normalized.length > MAX_NOTIFICATION_BODY_CHARS) {
+            var endExclusive = MAX_NOTIFICATION_BODY_CHARS - 1
+            if (
+                Character.isHighSurrogate(normalized[endExclusive - 1]) &&
+                Character.isLowSurrogate(normalized[endExclusive])
+            ) {
+                endExclusive -= 1
+            }
+            "${normalized.take(endExclusive).trimEnd()}…"
+        } else {
+            normalized
+        }
+    }
+
     private fun validateGatewayUpdateStatus(value: JsonObject) {
         value.requireKeys(
             setOf("version", "phase", "updatedAt"),
@@ -1659,6 +2350,17 @@ internal class MatrixMlp3NativeProjection(
         session.activeTurnId?.let { put("active_turn_id", it) }
         put("extensions", session.extensions)
         put("available_commands", session.availableCommands)
+        session.providerHistory?.let { binding ->
+            val page = providerHistoryPageStates[session.id]
+                ?.takeIf { it.snapshotId == binding.requiredString("snapshotId", 256) }
+            put("provider_history", buildJsonObject {
+                put("room_id", binding.requiredString("roomId", 512))
+                put("snapshot_id", binding.requiredString("snapshotId", 256))
+                put("ordering", binding.requiredString("ordering", 64))
+                put("frontier", page?.frontier ?: 0)
+                put("has_more", page?.hasMore ?: true)
+            })
+        }
     }
 
     private fun validateCapabilities(value: JsonObject) {
@@ -1711,7 +2413,7 @@ internal class MatrixMlp3NativeProjection(
                 ?: throw IllegalArgumentException("A MLP/3 provider capability must be an object.")
             provider.requireKeys(
                 setOf("id", "name", "models", "can_list_sessions", "can_inspect_sessions"),
-                emptySet(),
+                setOf("can_materialize_history"),
                 "MLP/3 provider capability",
             )
             provider.requiredString("id", 256)
@@ -1722,6 +2424,9 @@ internal class MatrixMlp3NativeProjection(
             )
             provider.requiredBoolean("can_list_sessions")
             provider.requiredBoolean("can_inspect_sessions")
+            if (provider["can_materialize_history"] != null) {
+                provider.requiredBoolean("can_materialize_history")
+            }
         }
         requireUniqueIds(providers, "MLP/3 provider capabilities")
 
@@ -1821,6 +2526,20 @@ internal class MatrixMlp3NativeProjection(
         if (title.isEmpty()) return "New session"
         return if (title.length <= 64) title else title.take(61) + "..."
     }
+}
+
+/**
+ * Validates the semantic projection shape before NativeClientRuntime consumes
+ * the rebuildable cache. The encrypted blob store can only validate that the
+ * payload is JSON; format-level incompatibilities must be handled while the
+ * state upgrade coordinator can still discard and rebuild this cache.
+ */
+internal fun validateMatrixMlp3ProjectionState(value: JsonObject) {
+    MatrixMlp3NativeProjection(
+        gatewayId = { "validation-gateway" },
+        activeDeviceCount = { 1 },
+        initialState = value,
+    )
 }
 
 private fun decodeMlp3ToolGroup(payload: JsonObject): ToolGroupPresentation? {

@@ -39,6 +39,9 @@ export const MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE =
 /** Idempotent ownership marker for a Gateway-created Matrix project room. */
 export const MLP3_MATRIX_PROJECT_PROVISIONING_EVENT_TYPE =
   'io.malink.project.provisioning.v1' as const
+/** Idempotent ownership marker for one recovered session's read-only history room. */
+export const MLP3_MATRIX_PROVIDER_HISTORY_PROVISIONING_EVENT_TYPE =
+  'io.malink.provider_history.provisioning.v1' as const
 /** Signed Workspace control state replicated to every authorized project room. */
 export const MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE =
   'io.malink.workspace.gateway_directory.v1' as const
@@ -72,6 +75,22 @@ export const mlp3ProjectProvisioningStateSchema = z
 
 export type Mlp3ProjectProvisioningState = z.infer<
   typeof mlp3ProjectProvisioningStateSchema
+>
+
+export const mlp3ProviderHistoryProvisioningStateSchema = z
+  .object({
+    kind: z.literal('malink.provider_history.provisioning'),
+    version: z.literal(1),
+    workspaceId: opaqueId,
+    gatewayNodeId: opaqueId,
+    projectId: opaqueId,
+    /** Non-sensitive, one-way room ownership identifier; never a provider session ID. */
+    historyId: opaqueId,
+  })
+  .strict()
+
+export type Mlp3ProviderHistoryProvisioningState = z.infer<
+  typeof mlp3ProviderHistoryProvisioningStateSchema
 >
 
 export const providerCommandSchema = z
@@ -111,6 +130,16 @@ export const providerHistoryMessageSchema = z
   .strict()
 
 export type ProviderHistoryMessage = z.infer<typeof providerHistoryMessageSchema>
+
+export const providerHistoryRoomBindingSchema = z
+  .object({
+    roomId: matrixRoomId,
+    snapshotId: opaqueId,
+    ordering: z.literal('reverse_append_v1'),
+  })
+  .strict()
+
+export type ProviderHistoryRoomBinding = z.infer<typeof providerHistoryRoomBindingSchema>
 
 export const webPushSubscriptionSchema = z
   .object({
@@ -406,6 +435,13 @@ const providerSessionInspectPayloadSchema = z
     providerSessionId: opaqueId,
   })
   .strict()
+const providerHistoryMaterializePayloadSchema = z
+  .object({
+    operation: z.literal('provider.history.materialize'),
+    expectedFrontier: z.number().int().nonnegative(),
+    limit: z.number().int().min(1).max(100).optional(),
+  })
+  .strict()
 const notificationSubscribePayloadSchema = z
   .object({
     operation: z.literal('notification.subscribe'),
@@ -448,6 +484,7 @@ export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   projectDeletePayloadSchema,
   providerSessionsListPayloadSchema,
   providerSessionInspectPayloadSchema,
+  providerHistoryMaterializePayloadSchema,
   deviceInvitationPayloadSchema,
   gatewayEnrollmentInvitationPayloadSchema,
   gatewayEnrollmentApprovePayloadSchema,
@@ -519,6 +556,11 @@ export const mlp3CommandSchema = z.union([
     sessionId: z.undefined().optional(),
     operation: z.literal('provider.session.inspect'),
     payload: providerSessionInspectPayloadSchema,
+  }).strict(),
+  z.object({
+    ...sessionCommandCommon,
+    operation: z.literal('provider.history.materialize'),
+    payload: providerHistoryMaterializePayloadSchema,
   }).strict(),
   z.object({
     ...sessionCommandCommon,
@@ -626,6 +668,7 @@ const sessionProjectionSchema = z
     extensions: z.array(sessionExtensionSummarySchema).max(8).optional(),
     availableCommands: z.array(providerCommandSchema).max(256).optional(),
     extensionRevision: z.number().int().positive().optional(),
+    providerHistory: providerHistoryRoomBindingSchema.optional(),
   })
   .strict()
 
@@ -934,6 +977,67 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
     )
     .refine(value => JSON.stringify(value.messages).length <= 96 * 1024, {
       message: 'Provider session history is too large',
+    }),
+  z
+    .object({
+      type: z.literal('provider.history.message'),
+      snapshotId: opaqueId,
+      sourceMessageId: opaqueId,
+      sourceOrdinal: z.number().int().nonnegative(),
+      role: z.enum(['user', 'assistant']),
+      body: z.string().max(16 * 1024),
+      pageIndex: z.number().int().nonnegative(),
+      partIndex: z.number().int().nonnegative().optional(),
+      partCount: z.number().int().positive().optional(),
+    })
+    .strict()
+    .superRefine((value, context) => {
+      if ((value.partIndex === undefined) !== (value.partCount === undefined)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['partIndex'],
+          message: 'History message part index and count must be provided together',
+        })
+      } else if (
+        value.partIndex !== undefined
+        && value.partCount !== undefined
+        && value.partIndex >= value.partCount
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['partIndex'],
+          message: 'History message part index must be less than part count',
+        })
+      }
+    }),
+  z
+    .object({
+      type: z.literal('provider.history.page.committed'),
+      snapshotId: opaqueId,
+      pageIndex: z.number().int().nonnegative(),
+      previousFrontier: z.number().int().nonnegative(),
+      frontier: z.number().int().nonnegative(),
+      messageCount: z.number().int().nonnegative(),
+      hasMore: z.boolean(),
+      digest: base64Url.length(43),
+    })
+    .strict()
+    .refine(value => value.frontier >= value.previousFrontier, {
+      message: 'Provider history frontier cannot move backwards',
+    }),
+  z
+    .object({
+      type: z.literal('provider.history.materialized'),
+      historyRoomId: matrixRoomId,
+      snapshotId: opaqueId,
+      previousFrontier: z.number().int().nonnegative(),
+      frontier: z.number().int().nonnegative(),
+      hasMore: z.boolean(),
+      alreadyMaterialized: z.boolean().optional(),
+    })
+    .strict()
+    .refine(value => value.frontier >= value.previousFrontier, {
+      message: 'Provider history frontier cannot move backwards',
     }),
   z
     .object({

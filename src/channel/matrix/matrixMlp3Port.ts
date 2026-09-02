@@ -73,12 +73,6 @@ interface PendingDecision {
   resolve(value: DecisionResponse): void
 }
 
-interface CausalAssistantDelivery {
-  commandId: string
-  version: number
-  confirmations: Promise<{ eventId: string }>[]
-}
-
 export interface ResolvedV3Decision {
   kind: 'decision' | 'extension'
   decisionType?: DecisionRequest['type']
@@ -109,25 +103,13 @@ export class MatrixMlp3Port implements ChannelPort {
   private readonly physicalEventIds = new Map<string, string>()
   private readonly messageVersions = new Map<string, number>()
   private readonly messageTimestamps = new Map<string, number>()
-  private readonly causalAssistantDeliveries = new Map<string, CausalAssistantDelivery>()
   private causationCommandId: string | null = null
   private lastOccurredAt = -1
 
   constructor(private readonly options: MatrixMlp3PortOptions) {}
 
   setCausationCommandId(commandId: string | null): void {
-    if (commandId !== null && commandId !== this.causationCommandId) {
-      this.causalAssistantDeliveries.clear()
-    }
     this.causationCommandId = commandId
-    if (commandId === null) this.causalAssistantDeliveries.clear()
-  }
-
-  causalDeliveryBarrier(commandId: string): Promise<void> {
-    const confirmations = [...this.causalAssistantDeliveries.values()]
-      .filter(delivery => delivery.commandId === commandId)
-      .flatMap(delivery => delivery.confirmations)
-    return Promise.all(confirmations).then(() => undefined)
   }
 
   observeMessageVersion(messageId: string, version: number): void {
@@ -202,9 +184,6 @@ export class MatrixMlp3Port implements ChannelPort {
         index === 0 ? messageId : undefined,
         version,
       )
-      if (!liveToolGroup || context.finalSnapshot) {
-        this.trackCausalAssistantDelivery(messageId, version, queued.confirmation)
-      }
     }
     return { messageId }
   }
@@ -289,9 +268,6 @@ export class MatrixMlp3Port implements ChannelPort {
         index === 0 ? messageId : undefined,
         version,
       )
-      if (!toolGroup || context.finalSnapshot) {
-        this.trackCausalAssistantDelivery(messageId, version, queued.confirmation)
-      }
     }
   }
 
@@ -559,25 +535,6 @@ export class MatrixMlp3Port implements ChannelPort {
         `[mlp3/matrix] assistant ${logicalPartId} v${version} queued: ${formatError(error)}`,
       )
     })
-  }
-
-  private trackCausalAssistantDelivery(
-    messageId: string,
-    version: number,
-    confirmation: Promise<{ eventId: string }>,
-  ): void {
-    const commandId = this.causationCommandId
-    if (!commandId) return
-    const current = this.causalAssistantDeliveries.get(messageId)
-    if (!current || current.commandId !== commandId || current.version < version) {
-      this.causalAssistantDeliveries.set(messageId, {
-        commandId,
-        version,
-        confirmations: [confirmation],
-      })
-      return
-    }
-    if (current.version === version) current.confirmations.push(confirmation)
   }
 
   private baseEvent(

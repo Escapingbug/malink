@@ -1,5 +1,16 @@
 import type { CommandState } from "@malink/native-bridge";
+import type { CommandCompletion } from "./commandLifecycle";
 import type { MatrixConnectionStatus } from "./matrix";
+import type { UiNoticeSeverity } from "./uiNotices";
+
+export const DURABLE_COMMAND_BACKGROUND_RECOVERY_MISSING_MESSAGE =
+  "Background recovery stopped because this device no longer has the saved command. Check whether the intended action already took effect before trying it again.";
+
+export type DurableCommandRecoveryResolutionPresentation = {
+  severity: UiNoticeSeverity;
+  message: string;
+  autoDismissMs: number | null;
+};
 
 export type DurableCommandRecoveryPresentation = {
   title: string;
@@ -24,6 +35,35 @@ export function durableCommandRecoveryNeedsAttention(
   lastCheck?: DurableCommandRecoveryCheckResult | null,
 ): boolean {
   return lastCheck?.status === "failed";
+}
+
+export function durableCommandRecoveryResolutionPresentation(
+  completion: Pick<CommandCompletion, "outcome" | "error">,
+): DurableCommandRecoveryResolutionPresentation {
+  const verified =
+    "Background recovery finished. Malink received and verified the Gateway's signed final result.";
+  switch (completion.outcome) {
+    case "succeeded":
+      return {
+        severity: "success",
+        message: `${verified} The previous action completed successfully.`,
+        autoDismissMs: 8_000,
+      };
+    case "failed":
+      return {
+        severity: "error",
+        message: completion.error?.message
+          ? `${verified} The previous action failed: ${completion.error.message}`
+          : `${verified} The previous action failed.`,
+        autoDismissMs: null,
+      };
+    case "cancelled":
+      return {
+        severity: "info",
+        message: `${verified} The previous action was cancelled.`,
+        autoDismissMs: 8_000,
+      };
+  }
 }
 
 /**
@@ -87,16 +127,6 @@ export function durableCommandRecoveryPresentation(input: {
         "Your computer accepted this action, but this installed Android version can only scan Matrix history and cannot ask the Gateway journal for its signed final result. Update Android, then Malink will verify this same command without executing it twice.",
       stateLabel,
       ...androidUpdateAction(input.manualAndroidUpdateRequired === true),
-    };
-  }
-
-  if (accepted && input.lastCheck?.status === "no-response") {
-    return {
-      title: "Recovery continues in the background",
-      detail:
-        "The target Gateway did not return a signed result during the last check. No action is required: Malink has moved this notice out of the way and will keep checking the same saved command identity in the background, so it cannot submit the action twice.",
-      stateLabel,
-      primaryAction: null,
     };
   }
 

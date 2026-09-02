@@ -152,7 +152,7 @@ export function createTopicSession(options: TopicSessionConfig): TopicSession {
         destroy,
         get state(): SessionState {
             const state = runtime.getState()
-            if (state === 'querying' || state === 'finalizing') return 'querying'
+            if (state === 'starting' || state === 'querying' || state === 'finalizing') return 'querying'
             if (state === 'canceling') return 'canceling'
             if (state === 'dead') return 'dead'
             return 'idle'
@@ -166,7 +166,7 @@ export function createTopicSession(options: TopicSessionConfig): TopicSession {
         getProgress() {
             const progress = runtime.getProgress()
             return {
-                state: progress.state === 'querying' || progress.state === 'finalizing'
+                state: progress.state === 'starting' || progress.state === 'querying' || progress.state === 'finalizing'
                     ? 'querying'
                     : progress.state === 'canceling'
                         ? 'canceling'

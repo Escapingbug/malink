@@ -32,6 +32,10 @@ one identity from being driven by both transports.
   connection, its retry policy, room subscriptions, and encrypted timelines.
 - Activity backgrounding pauses the WebView and its timers; the native service
   remains the only owner of background Matrix delivery and task notifications.
+  Every newly projected, authenticated `turn.completed` or `turn.failed` event
+  is eligible regardless of which trusted Malink device submitted the prompt.
+  A separate encrypted notification outbox retries failed delivery and dedupes
+  logical event IDs across Matrix replay and Android process restart.
 - A visible ongoing `remoteMessaging` notification is mandatory. There is no
   battery-saving or connection-mode selector. Refusing notification permission
   blocks native connection startup with a visible explanation.
@@ -113,17 +117,18 @@ Bridge protocol version 1 currently implements:
 - `client.lifecycle`
 - `events.replay`
 - `state.snapshot`
-- `commands.durable` v4 (v2 adds project settings/provider history; v3 adds explicit project routing for simultaneous multi-Gateway management; v4 adds atomic project metadata/default updates and deletion)
+- `commands.durable` v5 (v2 adds project settings/provider history; v3 adds explicit project routing for simultaneous multi-Gateway management; v4 adds atomic project metadata/default updates and deletion; v5 adds Provider History materialization)
 - `commands.journal-reconciliation` v1
 - `commands.orphan-retirement` v1 (diagnostic local retirement keeps an
   idempotency tombstone and never claims to cancel an accepted Gateway action;
   normal no-reply recovery remains automatic)
-- `history.page` v2 (`source=local` is network-free; `source=matrix` is explicit pagination)
+- `history.page` v3 (`source=local` is network-free; `source=matrix` also joins and pages data-only Provider History rooms)
 - `attachments.chunked`
 - `pairing.native`
 - `trust.native`
-- `matrix.session-bootstrap` v2 (v2 adds credential-free discovery of an
-  existing native-owned Matrix session for a newly loaded Web origin)
+- `matrix.session-bootstrap` v3 (v2 added credential-free discovery of an
+  existing native-owned Matrix session; v3 removes arbitrary password
+  bootstrap and accepts only a one-time login token from a device invitation)
 - `client.update` v1 (`status`/`install`, plus the additive idempotent
   `check` operation; Web clients fall back when a pre-extension v1 APK returns
   `METHOD_NOT_FOUND`)
@@ -270,8 +275,9 @@ after explicit approval.
 - Make attachment transfer metadata process-durable. Current temporary chunks
   are encrypted, but an interrupted process discards orphan transfer state and
   the UI must restart that transfer.
-- Add session-specific notification deep links and product message
-  notifications; the current ongoing notification opens the main Activity.
+- Add product notifications beyond task terminals. Successful task alerts now
+  show a bounded preview of the verified final Agent message, failed alerts
+  show the verified error, and every alert opens its owning session.
 - Complete stable Android application-signing key custody and the one-time
   transition from existing debug-signed development installs. Static channel
   releases use the installed application's APK signature acceptance boundary;

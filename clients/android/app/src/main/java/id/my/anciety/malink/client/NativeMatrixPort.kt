@@ -48,6 +48,13 @@ interface NativeMatrixPort {
     ): MatrixThreadHistoryBatch = throw UnsupportedOperationException(
         "Workspace multi-room history is unavailable.",
     )
+    suspend fun loadProviderHistory(
+        roomId: String,
+        from: String?,
+        limit: Int,
+    ): MatrixThreadHistoryBatch = throw UnsupportedOperationException(
+        "Provider History rooms are unavailable.",
+    )
     suspend fun recoverApplicationTimeline(
         roomId: String,
         stopWhen: () -> Boolean,
@@ -119,6 +126,11 @@ class MatrixNativePort(context: Context) : NativeMatrixPort {
         limit: Int,
         roomId: String,
     ): MatrixThreadHistoryBatch = runtime.loadThreadHistory(threadRootEventId, from, limit, roomId)
+    override suspend fun loadProviderHistory(
+        roomId: String,
+        from: String?,
+        limit: Int,
+    ): MatrixThreadHistoryBatch = runtime.loadProviderHistory(roomId, from, limit)
     override suspend fun recoverApplicationTimeline(
         roomId: String,
         stopWhen: () -> Boolean,

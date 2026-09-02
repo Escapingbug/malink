@@ -51,6 +51,12 @@ import { GatewayNoReplyHelp } from "./GatewayNoReplyHelp";
 export const OFFICIAL_ANDROID_RELEASES_URL =
   "https://github.com/Escapingbug/malink/releases";
 
+export type ClientMatrixAccountUpgradeNotice = {
+  currentUserId: string;
+  targetUserId: string;
+  mode: "notice-only";
+};
+
 type Props = {
   open: boolean;
   config: MatrixConnectionConfig;
@@ -62,6 +68,7 @@ type Props = {
   trustedGateway: MalinkPublicTrust | null;
   savedGateways: MalinkPublicTrust[];
   gatewayDirectory: SignedWorkspaceGatewayDirectory | null;
+  clientMatrixAccountUpgrade: ClientMatrixAccountUpgradeNotice | null;
   pairingBusy: boolean;
   deviceInvitation: GeneratedDeviceInvitation | null;
   invitationBusy: boolean;
@@ -97,7 +104,6 @@ type Props = {
   onClose(): void;
   onDisconnect(): void;
   onForget(): void;
-  onPasswordLogin(userId: string, password: string): void;
   onCreateInvitation(password?: string): void;
   onClearInvitation(): void;
   onCreateGatewayEnrollment(): void;
@@ -138,6 +144,7 @@ function MatrixSettingsDialog({
   trustedGateway,
   savedGateways,
   gatewayDirectory,
+  clientMatrixAccountUpgrade,
   repairReason,
   pairingBusy,
   deviceInvitation,
@@ -174,7 +181,6 @@ function MatrixSettingsDialog({
   onClose,
   onDisconnect,
   onForget,
-  onPasswordLogin,
   onCreateInvitation,
   onClearInvitation,
   onCreateGatewayEnrollment,
@@ -199,7 +205,6 @@ function MatrixSettingsDialog({
     useState<ConnectionRepairReason | null>(null);
   const effectiveRepairReason = repairReason ?? manualRepairReason;
   const repairRequired = effectiveRepairReason !== null;
-  const [loginPassword, setLoginPassword] = useState("");
   const [addingGateway, setAddingGateway] = useState(false);
   const [editingGatewayNodeId, setEditingGatewayNodeId] = useState<string | null>(null);
   const [gatewayNameDraft, setGatewayNameDraft] = useState("");
@@ -300,7 +305,6 @@ function MatrixSettingsDialog({
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const requestClose = () => {
     if (actionBusy) return;
-    setLoginPassword("");
     onClose();
   };
 
@@ -480,19 +484,16 @@ function MatrixSettingsDialog({
                 return (
                   <div
                     key={gatewayProfileId}
-                    className="active"
+                    className="gateway-profile-card active"
                   >
-                    <span className="gateway-device-mark" aria-hidden="true">G</span>
-                    <span>
-                      <strong>
-                        {gatewayIdentity.label}
-                      </strong>
-                      <small title={gatewayProfileId}>
-                        Computer: {gatewayIdentity.computerName}
-                      </small>
-                      <small title={gateway.buildId ?? "This Gateway did not report a build ID"}>
-                        Build: {gateway.buildId ?? "Not reported"} · Node {gatewayIdentity.shortId}
-                      </small>
+                    <div className="gateway-profile-overview">
+                      <span className="gateway-device-mark" aria-hidden="true">G</span>
+                      <span className="gateway-profile-identity">
+                        <strong>{gatewayIdentity.label}</strong>
+                        <small title={gatewayProfileId}>
+                          {gatewayIdentity.computerName}
+                        </small>
+                      </span>
                       <span
                         className={
                           `gateway-profile-liveness gateway-profile-liveness-${liveness.state}` +
@@ -503,75 +504,87 @@ function MatrixSettingsDialog({
                             : "")
                         }
                         aria-live="polite"
+                        title={liveness.detail}
                       >
                         <i aria-hidden="true" />
-                        <span>
-                          <strong>{liveness.label}</strong>
-                          <small>
-                            {liveness.detail}{lastVerified ? ` ${lastVerified}` : ""}
-                          </small>
-                        </span>
+                        <strong>{liveness.label}</strong>
                       </span>
-                      {livenessValue.state === "unreachable" && (
-                        <GatewayNoReplyHelp
-                          gatewayLabel={gatewayIdentity.label}
-                          consecutiveNoReplies={livenessValue.consecutiveNoReplies}
-                          onExportDiagnostics={onExportDiagnostics}
-                          diagnosticExportBusy={diagnosticExportBusy}
-                        />
-                      )}
-                      {editing && (
-                        <form
-                          className="gateway-profile-rename"
-                          onSubmit={(event) => {
-                            event.preventDefault();
-                            if (!targetProjectId || !gatewayNameDraft.trim()) return;
-                            void onRenameGateway(
-                              gatewayProfileId,
-                              gatewayNameDraft.trim(),
-                              targetProjectId,
-                            ).then(() => setEditingGatewayNodeId(null)).catch(() => undefined);
-                          }}
-                        >
-                          <label>
-                            <span>Custom name</span>
-                            <input
-                              value={gatewayNameDraft}
-                              maxLength={128}
-                              autoComplete="off"
-                              disabled={gatewayProfileBusy === gatewayProfileId}
-                              onChange={(event) => setGatewayNameDraft(event.target.value)}
-                            />
-                          </label>
-                          <span>
-                            <button
-                              type="submit"
-                              className="connect-button"
-                              disabled={
-                                gatewayProfileBusy === gatewayProfileId ||
-                                !gatewayNameDraft.trim() ||
-                                gatewayNameDraft.trim() === gateway.gatewayName
-                              }
-                            >
-                              {gatewayProfileBusy === gatewayProfileId ? "Saving…" : "Save"}
-                            </button>
-                            <button
-                              type="button"
-                              disabled={gatewayProfileBusy === gatewayProfileId}
-                              onClick={() => setEditingGatewayNodeId(null)}
-                            >
-                              Cancel
-                            </button>
-                          </span>
-                          {gatewayProfileError && (
-                            <em role="alert">{gatewayProfileError}</em>
-                          )}
-                        </form>
-                      )}
-                    </span>
-                    {editing ? (
-                      <b aria-hidden="true">✓</b>
-                    ) : (
+                    </div>
+                    <details className="gateway-profile-details">
+                      <summary>Gateway details</summary>
+                      <dl>
+                        <div>
+                          <dt>Build</dt>
+                          <dd title={gateway.buildId ?? "This Gateway did not report a build ID"}>
+                            {gateway.buildId ?? "Not reported"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Node</dt>
+                          <dd title={gatewayProfileId}>{gatewayIdentity.shortId}</dd>
+                        </div>
+                      </dl>
+                      <p>
+                        {liveness.detail}{lastVerified ? ` ${lastVerified}` : ""}
+                      </p>
+                    </details>
+                    {livenessValue.state === "unreachable" && (
+                      <GatewayNoReplyHelp
+                        gatewayLabel={gatewayIdentity.label}
+                        consecutiveNoReplies={livenessValue.consecutiveNoReplies}
+                        onExportDiagnostics={onExportDiagnostics}
+                        diagnosticExportBusy={diagnosticExportBusy}
+                      />
+                    )}
+                    {editing && (
+                      <form
+                        className="gateway-profile-rename"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          if (!targetProjectId || !gatewayNameDraft.trim()) return;
+                          void onRenameGateway(
+                            gatewayProfileId,
+                            gatewayNameDraft.trim(),
+                            targetProjectId,
+                          ).then(() => setEditingGatewayNodeId(null)).catch(() => undefined);
+                        }}
+                      >
+                        <label>
+                          <span>Custom name</span>
+                          <input
+                            value={gatewayNameDraft}
+                            maxLength={128}
+                            autoComplete="off"
+                            disabled={gatewayProfileBusy === gatewayProfileId}
+                            onChange={(event) => setGatewayNameDraft(event.target.value)}
+                          />
+                        </label>
+                        <span>
+                          <button
+                            type="submit"
+                            className="connect-button"
+                            disabled={
+                              gatewayProfileBusy === gatewayProfileId ||
+                              !gatewayNameDraft.trim() ||
+                              gatewayNameDraft.trim() === gateway.gatewayName
+                            }
+                          >
+                            {gatewayProfileBusy === gatewayProfileId ? "Saving…" : "Save"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={gatewayProfileBusy === gatewayProfileId}
+                            onClick={() => setEditingGatewayNodeId(null)}
+                          >
+                            Cancel
+                          </button>
+                        </span>
+                        {gatewayProfileError && (
+                          <em role="alert">{gatewayProfileError}</em>
+                        )}
+                      </form>
+                    )}
+                    {!editing && (
                       <span className="gateway-profile-actions">
                         <button
                           type="button"
@@ -588,7 +601,7 @@ function MatrixSettingsDialog({
                             ? "Checking…"
                             : liveness.state === "unreachable"
                               ? noReply.retryLabel
-                              : "Check live status"}
+                              : "Check status"}
                         </button>
                         <button
                           type="button"
@@ -609,13 +622,18 @@ function MatrixSettingsDialog({
                 );
               })}
               {gatewayProfiles.length === 0 && (
-                <div className="active" aria-live="polite">
-                  <span className="gateway-device-mark" aria-hidden="true">G</span>
-                  <span>
-                    <strong>Current Gateway</strong>
-                    <small>Loading its saved profile…</small>
-                  </span>
-                  <b>…</b>
+                <div className="gateway-profile-card active" aria-live="polite">
+                  <div className="gateway-profile-overview">
+                    <span className="gateway-device-mark" aria-hidden="true">G</span>
+                    <span className="gateway-profile-identity">
+                      <strong>Current Gateway</strong>
+                      <small>Loading its saved profile…</small>
+                    </span>
+                    <span className="gateway-profile-liveness gateway-profile-liveness-checking">
+                      <i aria-hidden="true" />
+                      <strong>Loading</strong>
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
@@ -660,6 +678,31 @@ function MatrixSettingsDialog({
               nativeUpdateState && (
                 <small>{nativeUpdateStatusText(nativeUpdateState)}</small>
               )}
+          </section>
+        )}
+
+        {clientMatrixAccountUpgrade && (
+          <section className="connection-recovery-panel" role="alert">
+            <div>
+              <span className="connection-recovery-mark" aria-hidden="true">!</span>
+              <span>
+                <strong>Matrix account upgrade available</strong>
+                <p>
+                  This device still uses the legacy account {clientMatrixAccountUpgrade.currentUserId}.
+                  It can continue working while Malink prepares a safe move to the Workspace account.
+                </p>
+                <small>
+                  Target account: {clientMatrixAccountUpgrade.targetUserId}. No account,
+                  authorization, queued command, or local history has been changed.
+                </small>
+              </span>
+            </div>
+            <div className="connection-recovery-actions">
+              <span className="connection-recovery-disabled-action">
+                Upgrade after migration review
+              </span>
+              <button type="button" onClick={onClose}>Later</button>
+            </div>
           </section>
         )}
 
@@ -741,72 +784,16 @@ function MatrixSettingsDialog({
                 />
               </label>
               {needsAccount && !config.accessToken && (
-                <>
-                  <label className="wide-field">
-                    <span>Account ID</span>
-                    <input
-                      value={config.userId}
-                      placeholder="@you:example.org"
-                      autoComplete="username"
-                      spellCheck={false}
-                      onChange={(event) =>
-                        onChange({ ...config, userId: event.target.value })
-                      }
-                    />
-                  </label>
-                  <label className="wide-field">
-                    <span>Account password</span>
-                    <input
-                      type="password"
-                      value={loginPassword}
-                      placeholder="Your account password"
-                      autoComplete="current-password"
-                      onChange={(event) => setLoginPassword(event.target.value)}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="matrix-password-login-button wide-field"
-                    disabled={
-                      busy || !config.userId.trim() || !loginPassword
-                    }
-                    onClick={() => {
-                      onPasswordLogin(config.userId, loginPassword);
-                      setLoginPassword("");
-                    }}
-                  >
-                    {pairingBusy ? "Signing in…" : "Sign in"}
-                  </button>
-                  <p className="matrix-session-hint wide-field">
-                    This signs in only this Malink device. You will never be
-                    asked to copy a private access token.
-                  </p>
-                </>
+                <p className="matrix-session-hint wide-field" role="alert">
+                  This invitation does not contain a valid one-time device sign-in.
+                  Request a new invitation from an approved Malink device or Gateway.
+                </p>
               )}
               {config.accessToken && (
                 <p className="matrix-session-hint wide-field">
                   Signed in as {config.userId || "your account"} on this device.
                 </p>
               )}
-              <details className="advanced-token-field wide-field">
-                <summary>Advanced: use an access token</summary>
-                <label>
-                  <span>Access token</span>
-                  <input
-                    type="password"
-                    value={config.accessToken}
-                    placeholder="syt_••••••••••••"
-                    autoComplete="off"
-                    spellCheck={false}
-                    onChange={(event) =>
-                      onChange({
-                        ...config,
-                        accessToken: event.target.value,
-                      })
-                    }
-                  />
-                </label>
-              </details>
               <label>
                 <span>Conversation channel</span>
                 <input value={config.roomId} readOnly placeholder="From QR code" />

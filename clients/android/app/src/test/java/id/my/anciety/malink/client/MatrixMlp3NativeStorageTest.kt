@@ -3,8 +3,12 @@ package id.my.anciety.malink.client
 import id.my.anciety.malink.diagnostics.DiagnosticRecorder
 import id.my.anciety.malink.matrix.JvmAesGcmCipher
 import id.my.anciety.malink.matrix.MatrixDecryptedEvent
+import id.my.anciety.malink.security.SecretEnvelope
+import id.my.anciety.malink.security.malink.Base64Url
+import id.my.anciety.malink.security.malink.CanonicalJson
 import id.my.anciety.malink.security.malink.MatrixMlp3ProjectKey
 import id.my.anciety.malink.security.malink.MatrixMlp3ProjectKeyGrant
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.coroutines.runBlocking
@@ -12,6 +16,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -129,6 +134,106 @@ class MatrixMlp3NativeStorageTest {
     }
 
     @Test
+    fun `task notification outbox retries once and deduplicates across restart`() {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val value = MatrixMlp3TaskNotification(
+            eventId = "terminal-event-1",
+            commandId = "remote-command-1",
+            outcome = "succeeded",
+            sessionId = "session-1",
+            body = "Implemented the requested fix.",
+        )
+        var attempts = 0
+        val firstStore = AtomicEncryptedMatrixMlp3TaskNotificationStore(
+            blob,
+            JvmAesGcmCipher(),
+            "account-a",
+        )
+        MatrixMlp3TaskNotificationCoordinator(firstStore) {
+            attempts += 1
+            throw IllegalStateException("simulated Android notification failure")
+        }.accept(value)
+
+        assertEquals(1, attempts)
+        assertEquals(listOf(value), firstStore.pending())
+        assertFalse(blob.bytes!!.toString(Charsets.UTF_8).contains("remote-command-1"))
+        assertFalse(blob.bytes!!.toString(Charsets.UTF_8).contains("Implemented the requested fix."))
+
+        val restoredStore = AtomicEncryptedMatrixMlp3TaskNotificationStore(
+            blob,
+            JvmAesGcmCipher(),
+            "account-a",
+        )
+        val delivered = mutableListOf<MatrixMlp3TaskNotification>()
+        val restored = MatrixMlp3TaskNotificationCoordinator(restoredStore) { delivered += it }
+        restored.drain()
+        restored.accept(value)
+
+        assertEquals(listOf(value), delivered)
+        assertTrue(restoredStore.pending().isEmpty())
+        AtomicEncryptedMatrixMlp3TaskNotificationStore(
+            blob,
+            JvmAesGcmCipher(),
+            "account-a",
+        ).validateStoredState()
+    }
+
+    @Test
+    fun `task notification store migrates legacy records without losing delivery`() {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val cipher = JvmAesGcmCipher()
+        val associatedData = "malink.matrix-v3-task-notifications.v1\u0000account-a".toByteArray()
+        val plaintext = CanonicalJson.bytes(buildJsonObject {
+            put("schemaVersion", 1)
+            put("pending", buildJsonArray {
+                add(buildJsonObject {
+                    put("eventId", "legacy-terminal-1")
+                    put("commandId", "legacy-command-1")
+                    put("outcome", "succeeded")
+                    put("sessionId", "session-1")
+                })
+            })
+            put("deliveredEventIds", buildJsonArray {})
+        })
+        val envelope = cipher.encrypt(plaintext, associatedData)
+        blob.write(SecretEnvelope.encode(envelope))
+        envelope.iv.fill(0)
+        envelope.ciphertext.fill(0)
+        plaintext.fill(0)
+
+        val store = AtomicEncryptedMatrixMlp3TaskNotificationStore(blob, cipher, "account-a")
+        assertEquals(null, store.pending().single().body)
+        store.migrateStoredState()
+
+        val restored = AtomicEncryptedMatrixMlp3TaskNotificationStore(blob, cipher, "account-a")
+        assertEquals("legacy-terminal-1", restored.pending().single().eventId)
+        assertEquals(null, restored.pending().single().body)
+    }
+
+    @Test
+    fun `task notification delivery remains pending when its durable commit fails`() {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val store = AtomicEncryptedMatrixMlp3TaskNotificationStore(
+            blob,
+            JvmAesGcmCipher(),
+            "account-a",
+        )
+        val value = MatrixMlp3TaskNotification(
+            eventId = "terminal-event-1",
+            commandId = "remote-command-1",
+            outcome = "failed",
+            sessionId = "session-1",
+        )
+        assertTrue(store.enqueue(value))
+        blob.failWrites = true
+
+        assertThrows(IllegalStateException::class.java) {
+            store.delivered(value.eventId)
+        }
+        assertEquals(listOf(value), store.pending())
+    }
+
+    @Test
     fun `project keys and projection survive encrypted restart with account binding`() {
         val keyBlob = MemoryMatrixMlp3BlobStore()
         val projectionBlob = MemoryMatrixMlp3BlobStore()
@@ -167,6 +272,81 @@ class MatrixMlp3NativeStorageTest {
                 "account-a",
             ).load(),
         )
+    }
+
+    @Test
+    fun `project key store retains a primary and recovered history room for one project`() {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val primary = MatrixMlp3ProjectKeyGrant(
+            workspaceId = "workspace-1",
+            projectId = "project-1",
+            roomId = "!project:example.org",
+            deviceId = "device-1",
+            certificateId = "certificate-1",
+            activeKeyId = "key-project",
+            keys = listOf(MatrixMlp3ProjectKey("key-project", ByteArray(32) { 1 }, 1)),
+        )
+        val history = MatrixMlp3ProjectKeyGrant(
+            workspaceId = "workspace-1",
+            projectId = "project-1",
+            roomId = "!history:example.org",
+            deviceId = "device-1",
+            certificateId = "certificate-1",
+            activeKeyId = "key-history",
+            keys = listOf(MatrixMlp3ProjectKey("key-history", ByteArray(32) { 2 }, 2)),
+        )
+        AtomicEncryptedMatrixMlp3ProjectKeyStore(blob, JvmAesGcmCipher(), "account-a").apply {
+            save(primary)
+            save(history)
+        }
+
+        val restored = AtomicEncryptedMatrixMlp3ProjectKeyStore(
+            blob,
+            JvmAesGcmCipher(),
+            "account-a",
+        )
+        assertEquals(2, restored.values().size)
+        assertEquals("key-history", restored.valueForRoom(history.roomId)?.activeKeyId)
+        assertEquals(
+            "key-project",
+            restored.valueForProject("project-1", setOf(history.roomId))?.activeKeyId,
+        )
+        assertNull(restored.value())
+    }
+
+    @Test
+    fun `legacy project indexed keys with one room migrate without dropping either grant`() {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val cipher = JvmAesGcmCipher()
+        val first = projectKeyGrant("project-old", "key-old", 1)
+        val second = projectKeyGrant("project-current", "key-current", 2)
+        writeLegacyProjectKeyStore(blob, cipher, "account-a", listOf(first, second))
+
+        AtomicEncryptedMatrixMlp3ProjectKeyStore(blob, cipher, "account-a").apply {
+            assertEquals(2, values().size)
+            assertNull(valueForRoom(first.roomId))
+            assertEquals(
+                first.activeKeyId,
+                valueForRoom(first.roomId, first.projectId)?.activeKeyId,
+            )
+            assertEquals(
+                second.activeKeyId,
+                valueForRoom(second.roomId, second.projectId)?.activeKeyId,
+            )
+            migrateStoredState()
+        }
+
+        AtomicEncryptedMatrixMlp3ProjectKeyStore(blob, cipher, "account-a").apply {
+            assertEquals(2, values().size)
+            assertEquals(
+                first.activeKeyId,
+                valueForRoom(first.roomId, first.projectId)?.activeKeyId,
+            )
+            assertEquals(
+                second.activeKeyId,
+                valueForRoom(second.roomId, second.projectId)?.activeKeyId,
+            )
+        }
     }
 
     @Test
@@ -245,6 +425,59 @@ class MatrixMlp3NativeStorageTest {
         timestamp = 1234,
         rawJson = rawJson,
     )
+
+    private fun projectKeyGrant(projectId: String, keyId: String, marker: Byte) =
+        MatrixMlp3ProjectKeyGrant(
+            workspaceId = "workspace-1",
+            projectId = projectId,
+            roomId = "!shared-room:example.org",
+            deviceId = "device-1",
+            certificateId = "certificate-1",
+            activeKeyId = keyId,
+            keys = listOf(MatrixMlp3ProjectKey(keyId, ByteArray(32) { marker }, marker.toLong())),
+        )
+
+    private fun writeLegacyProjectKeyStore(
+        blob: MemoryMatrixMlp3BlobStore,
+        cipher: JvmAesGcmCipher,
+        scope: String,
+        grants: List<MatrixMlp3ProjectKeyGrant>,
+    ) {
+        val plaintext = CanonicalJson.bytes(buildJsonObject {
+            put("schemaVersion", 2)
+            put("grants", buildJsonArray {
+                grants.forEach { grant ->
+                    add(buildJsonObject {
+                        put("schemaVersion", 1)
+                        put("workspaceId", grant.workspaceId)
+                        put("projectId", grant.projectId)
+                        put("roomId", grant.roomId)
+                        put("deviceId", grant.deviceId)
+                        put("certificateId", grant.certificateId)
+                        put("activeKeyId", grant.activeKeyId)
+                        put("keys", buildJsonArray {
+                            grant.keys.forEach { key ->
+                                add(buildJsonObject {
+                                    put("keyId", key.keyId)
+                                    put("key", Base64Url.encode(key.key))
+                                    put("createdAt", key.createdAt)
+                                })
+                            }
+                        })
+                    })
+                }
+            })
+        })
+        val associatedData = "malink.matrix-v3-project-keys.v1\u0000$scope".toByteArray()
+        val encrypted = cipher.encrypt(plaintext, associatedData)
+        try {
+            blob.write(SecretEnvelope.encode(encrypted))
+        } finally {
+            plaintext.fill(0)
+            encrypted.iv.fill(0)
+            encrypted.ciphertext.fill(0)
+        }
+    }
 
     private class MemoryMatrixMlp3BlobStore : MatrixMlp3BlobStore {
         var bytes: ByteArray? = null

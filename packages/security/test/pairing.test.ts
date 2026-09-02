@@ -24,6 +24,7 @@ import {
   signPairingRejection,
   signPairingRequest,
   signPairingResponse,
+  signWorkspaceGatewayDirectory,
   verifyGatewayDeviceRotation,
   verifyGatewayTransportSnapshot,
   verifyPairingOffer,
@@ -159,6 +160,48 @@ describe('independent Malink pairing', () => {
         },
       },
     })
+  })
+
+  it('binds a pairing certificate to the client Matrix identity in the signed Workspace directory', async () => {
+    const fixture = await handshake()
+    const directory = await signWorkspaceGatewayDirectory({
+      kind: 'malink.workspace.gateway-directory',
+      version: 1,
+      directoryId: 'directory-1',
+      workspaceId: fixture.offer.offer.gatewayId,
+      clientMatrixUserId: deviceTransport.userId,
+      revision: 1,
+      gateways: [],
+      issuedAt: now,
+    }, fixture.gatewayKeys.privateKey, fixture.gatewayKeys.keyId)
+    const accepted = await signPairingResponse({
+      ...fixture.response.response,
+      gatewayDirectory: directory,
+    }, fixture.gatewayKeys.privateKey, fixture.gatewayKeys.keyId)
+
+    await expect(verifyPairingResponse(
+      accepted,
+      fixture.offer,
+      fixture.request,
+      { now },
+    )).resolves.toMatchObject({ gatewayDirectory: directory })
+
+    const mismatchedDirectory = await signWorkspaceGatewayDirectory({
+      ...directory.directory,
+      directoryId: 'directory-2',
+      clientMatrixUserId: '@other:example.org',
+    }, fixture.gatewayKeys.privateKey, fixture.gatewayKeys.keyId)
+    const rejected = await signPairingResponse({
+      ...fixture.response.response,
+      gatewayDirectory: mismatchedDirectory,
+    }, fixture.gatewayKeys.privateKey, fixture.gatewayKeys.keyId)
+
+    await expect(verifyPairingResponse(
+      rejected,
+      fixture.offer,
+      fixture.request,
+      { now },
+    )).rejects.toMatchObject({ code: 'binding_mismatch' })
   })
 
   it('verifies a persisted response after the one-time offer has expired', async () => {

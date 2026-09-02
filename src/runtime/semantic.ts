@@ -63,6 +63,10 @@ export type SessionInput =
         richInput?: RichUserInput
         source: SessionInputSource
         user?: UserRef
+        /** Internal execution boundary; invoked when the provider emits its first turn event. */
+        onExecutionStarted?: () => Promise<void> | void
+        /** Internal pre-dispatch cancellation bridge; never serialized into MLP. */
+        cancellationSignal?: AbortSignal
     }
     | {
         kind: 'command'
@@ -115,6 +119,7 @@ export type ConversationEvent =
         meta: SemanticMeta
         phase: 'started' | 'updated' | 'completed' | 'failed'
         toolCallId: string
+        /** Display label only; authorization must never treat it as executable identity. */
         toolName: string
         category?: 'read' | 'edit' | 'write' | 'execute' | 'search' | 'agent' | 'unknown'
         input?: unknown

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, open, readFile } from 'node:fs/promises'
+import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { canonicalJson, jsonValueSchema } from '@malink/protocol'
 
@@ -62,14 +62,35 @@ type ClassifiedEntry = {
 }
 type OutboxEntry = PendingEntry | DeliveredEntry | SupersededEntry | ClassifiedEntry
 
+export interface MatrixMlp3OutboxHealth {
+  pending: number
+  oldestPendingAgeMs: number | null
+  retainedDeliveries: number
+  terminalTombstones: number
+  walBytes: number
+}
+
+export interface FileMatrixMlp3OutboxOptions {
+  compactAfterBytes?: number
+  compactAfterEntries?: number
+}
+
+const DEFAULT_COMPACT_AFTER_BYTES = 8 * 1024 * 1024
+const DEFAULT_COMPACT_AFTER_ENTRIES = 10_000
+
 /** One WAL for both timeline sends and the few directly-addressed state writes. */
 export class FileMatrixMlp3Outbox {
   private readonly pendingEntries = new Map<string, MatrixMlp3Delivery>()
   private readonly deliveries = new Map<string, MatrixMlp3Delivery>()
   private readonly terminal = new Map<string, { eventId?: string }>()
   private chain: Promise<unknown> = Promise.resolve()
+  private walBytes = 0
+  private entriesSinceCompaction = 0
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly options: FileMatrixMlp3OutboxOptions = {},
+  ) {}
 
   initialize(): Promise<void> {
     return this.serial(async () => {
@@ -80,8 +101,11 @@ export class FileMatrixMlp3Outbox {
         if (isMissingFile(error)) return
         throw error
       }
+      this.walBytes = Buffer.byteLength(text)
+      let loadedEntries = 0
       for (const [index, line] of text.split(/\r?\n/u).entries()) {
         if (!line.trim()) continue
+        loadedEntries += 1
         const entry = parseEntry(JSON.parse(line), index + 1)
         if (entry.status === 'pending') {
           this.deliveries.set(entry.delivery.deliveryId, entry.delivery)
@@ -102,6 +126,12 @@ export class FileMatrixMlp3Outbox {
             ...(entry.status === 'delivered' ? { eventId: entry.eventId } : {}),
           })
         }
+      }
+      if (
+        this.walBytes >= (this.options.compactAfterBytes ?? DEFAULT_COMPACT_AFTER_BYTES)
+        || loadedEntries >= (this.options.compactAfterEntries ?? DEFAULT_COMPACT_AFTER_ENTRIES)
+      ) {
+        await this.compact()
       }
     })
   }
@@ -180,6 +210,7 @@ export class FileMatrixMlp3Outbox {
         )
         superseded.push(delivery.deliveryId)
       }
+      await this.compactIfNeeded()
       return superseded
     })
   }
@@ -237,6 +268,7 @@ export class FileMatrixMlp3Outbox {
         this.pendingEntries.delete(deliveryId)
         this.terminal.set(deliveryId, {})
       }
+      await this.compactIfNeeded()
       return superseded
     })
   }
@@ -256,6 +288,7 @@ export class FileMatrixMlp3Outbox {
       })
       this.pendingEntries.delete(deliveryId)
       this.terminal.set(deliveryId, { eventId })
+      await this.compactIfNeeded()
     })
   }
 
@@ -278,6 +311,7 @@ export class FileMatrixMlp3Outbox {
       })
       this.pendingEntries.delete(deliveryId)
       this.terminal.set(deliveryId, {})
+      await this.compactIfNeeded()
     })
   }
 
@@ -320,6 +354,19 @@ export class FileMatrixMlp3Outbox {
     return latest ? structuredClone(latest) : undefined
   }
 
+  health(now = Date.now()): MatrixMlp3OutboxHealth {
+    const pending = [...this.pendingEntries.values()]
+    return {
+      pending: pending.length,
+      oldestPendingAgeMs: pending.length === 0
+        ? null
+        : Math.max(0, now - Math.min(...pending.map(delivery => delivery.createdAt))),
+      retainedDeliveries: this.deliveries.size,
+      terminalTombstones: this.terminal.size,
+      walBytes: this.walBytes,
+    }
+  }
+
   private serial<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.chain.then(operation)
     this.chain = result.then(() => undefined, () => undefined)
@@ -333,13 +380,91 @@ export class FileMatrixMlp3Outbox {
   private async appendMany(entries: readonly OutboxEntry[]): Promise<void> {
     if (entries.length === 0) return
     await mkdir(dirname(this.filePath), { recursive: true })
+    const encoded = `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`
     const handle = await open(this.filePath, 'a', 0o600)
     try {
-      await handle.writeFile(`${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`, 'utf8')
+      await handle.writeFile(encoded, 'utf8')
       await handle.sync()
     } finally {
       await handle.close()
     }
+    this.walBytes += Buffer.byteLength(encoded)
+    this.entriesSinceCompaction += entries.length
+  }
+
+  private async compactIfNeeded(): Promise<void> {
+    if (
+      this.walBytes < (this.options.compactAfterBytes ?? DEFAULT_COMPACT_AFTER_BYTES)
+      && this.entriesSinceCompaction < (
+        this.options.compactAfterEntries ?? DEFAULT_COMPACT_AFTER_ENTRIES
+      )
+    ) return
+    await this.compact()
+  }
+
+  private async compact(): Promise<void> {
+    const retainedDeliveryIds = new Set(this.pendingEntries.keys())
+    const latestStates = new Map<string, MatrixMlp3StateDelivery>()
+    for (const delivery of this.deliveries.values()) {
+      if (delivery.kind !== 'state') continue
+      const key = `${delivery.roomId}\0${delivery.eventType}\0${delivery.stateKey}`
+      const current = latestStates.get(key)
+      if (!current || current.createdAt < delivery.createdAt) latestStates.set(key, delivery)
+    }
+    for (const delivery of latestStates.values()) retainedDeliveryIds.add(delivery.deliveryId)
+
+    const entries: OutboxEntry[] = []
+    for (const deliveryId of retainedDeliveryIds) {
+      const delivery = this.deliveries.get(deliveryId)
+      if (delivery) entries.push({ version: 3, status: 'pending', delivery })
+    }
+    const compactedAt = Date.now()
+    for (const [deliveryId, terminal] of this.terminal) {
+      entries.push(terminal.eventId
+        ? {
+            version: 3,
+            status: 'delivered',
+            deliveryId,
+            eventId: terminal.eventId,
+            deliveredAt: compactedAt,
+          }
+        : {
+            version: 3,
+            status: 'superseded',
+            deliveryId,
+            supersededAt: compactedAt,
+            reason: 'compacted_terminal',
+          })
+    }
+    const encoded = entries.length === 0
+      ? ''
+      : `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`
+    await mkdir(dirname(this.filePath), { recursive: true })
+    const temporaryPath = `${this.filePath}.compact-${process.pid}-${Date.now()}`
+    try {
+      const handle = await open(temporaryPath, 'wx', 0o600)
+      try {
+        await handle.writeFile(encoded, 'utf8')
+        await handle.sync()
+      } finally {
+        await handle.close()
+      }
+      await rename(temporaryPath, this.filePath)
+      const directoryHandle = await open(dirname(this.filePath), 'r')
+      try {
+        await directoryHandle.sync()
+      } finally {
+        await directoryHandle.close()
+      }
+    } catch (error) {
+      await rm(temporaryPath, { force: true }).catch(() => undefined)
+      throw error
+    }
+    for (const deliveryId of this.deliveries.keys()) {
+      if (!retainedDeliveryIds.has(deliveryId)) this.deliveries.delete(deliveryId)
+    }
+    this.walBytes = Buffer.byteLength(encoded)
+    this.entriesSinceCompaction = 0
   }
 
   private async supersede(

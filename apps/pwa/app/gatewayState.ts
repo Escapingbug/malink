@@ -58,6 +58,13 @@ export type GatewaySessionSummary = {
   activeTurnId?: string;
   extensions: SessionExtensionSummary[];
   availableCommands: ProviderCommand[];
+  providerHistory?: {
+    roomId: string;
+    snapshotId: string;
+    ordering: "reverse_append_v1";
+    frontier: number;
+    hasMore: boolean;
+  };
 };
 
 export type GatewayInboxFile = {
@@ -88,6 +95,7 @@ export type GatewayCapabilities = {
     models: GatewayModelCapability[];
     canListSessions: boolean;
     canInspectSessions: boolean;
+    canMaterializeHistory?: boolean;
   }>;
   permissionModes: GatewayCapabilityOption[];
   canCreateSession: boolean;
@@ -104,7 +112,7 @@ export type GatewayStateSnapshot = {
   revisionEpoch: string;
   revisionEpochGeneration: number;
   activeDeviceCount: number;
-  /** Signed Gateway heartbeat time. Missing only in a legacy local cache. */
+  /** Latest signed Gateway projection time. Missing only in a legacy local cache. */
   updatedAt?: number;
   currentSessionId: string | null;
   sessions: GatewaySessionSummary[];
@@ -116,7 +124,7 @@ export type GatewayStateSnapshot = {
   nativeClientReleases?: NativeClientRelease[];
   gatewayDirectory?: import('@malink/protocol').SignedWorkspaceGatewayDirectory;
   pendingGatewayEnrollments?: import('@malink/protocol').GatewayEnrollmentPending[];
-  /** Latest shared signed heartbeat/update observation for each Gateway node. */
+  /** Latest shared signed semantic update observation for each Gateway node. */
   gatewayNodeStatuses?: Record<string, GatewayNodeStatusObservation>;
   gatewayUpdate?: GatewayUpdateStatus;
 };
@@ -275,6 +283,7 @@ export function parseGatewayStateExtension(
           session.status === "failed"
         ? session.status
         : "idle";
+    const providerHistory = parseProviderHistorySummary(session.provider_history);
     return {
       id: session.id,
       title: session.title,
@@ -305,6 +314,7 @@ export function parseGatewayStateExtension(
       cwd: session.cwd,
       extensions: parseSessionExtensionSummaries(session.extensions),
       availableCommands: parseProviderCommands(session.available_commands),
+      ...(providerHistory ? { providerHistory } : {}),
     };
   });
 
@@ -413,6 +423,32 @@ function parseGatewayNodeStatuses(input: unknown): Record<string, GatewayNodeSta
     };
   }
   return parsed;
+}
+
+function parseProviderHistorySummary(
+  input: unknown,
+): GatewaySessionSummary["providerHistory"] {
+  if (input === undefined) return undefined;
+  const value = asRecord(input);
+  if (
+    !value
+    || typeof value.room_id !== "string"
+    || !value.room_id
+    || typeof value.snapshot_id !== "string"
+    || !value.snapshot_id
+    || value.ordering !== "reverse_append_v1"
+    || !isNonnegativeInteger(value.frontier)
+    || typeof value.has_more !== "boolean"
+  ) {
+    throw new Error("The authenticated Provider History summary is malformed.");
+  }
+  return {
+    roomId: value.room_id,
+    snapshotId: value.snapshot_id,
+    ordering: "reverse_append_v1",
+    frontier: value.frontier,
+    hasMore: value.has_more,
+  };
 }
 
 function parseGatewayWorkspaceState(input: unknown): GatewayWorkspaceState {
@@ -572,6 +608,7 @@ export function parseGatewayCapabilities(input: unknown): GatewayCapabilities {
             models: parseModels(provider.models),
             canListSessions: provider.can_list_sessions,
             canInspectSessions: provider.can_inspect_sessions,
+            canMaterializeHistory: provider.can_materialize_history === true,
           };
         })
       : [],
@@ -693,6 +730,17 @@ export function gatewayStateExtension(
         version: extension.version,
       })),
       available_commands: session.availableCommands,
+      ...(session.providerHistory
+        ? {
+            provider_history: {
+              room_id: session.providerHistory.roomId,
+              snapshot_id: session.providerHistory.snapshotId,
+              ordering: session.providerHistory.ordering,
+              frontier: session.providerHistory.frontier,
+              has_more: session.providerHistory.hasMore,
+            },
+          }
+        : {}),
     })),
     ...(state.inboxFiles === undefined
       ? {}
@@ -747,6 +795,9 @@ function gatewayCapabilitiesExtension(
         name: provider.name,
         can_list_sessions: provider.canListSessions,
         can_inspect_sessions: provider.canInspectSessions,
+        ...(provider.canMaterializeHistory === undefined
+          ? {}
+          : { can_materialize_history: provider.canMaterializeHistory }),
         models: provider.models.map((model) => ({
           id: model.id,
           name: model.name,

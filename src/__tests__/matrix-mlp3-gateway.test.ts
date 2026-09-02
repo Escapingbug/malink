@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -43,11 +43,12 @@ import {
   gatewayMaintenanceSessionId,
   MatrixMlp3GatewayRunner,
 } from '@/gateway/matrix/mlp3Gateway'
+import { FileMlp3RuntimeStateStore } from '@/gateway/matrix/fileMlp3RuntimeState'
 import { gatewayProjectIdentity } from '@/gateway/matrix/project'
 import type { GatewayWebPushService } from '@/gateway/matrix/webPush'
 import { createTopicSessionRecord } from '@/bridge/topicSession'
 import type { TopicSession } from '@/bridge/channelPort'
-import { registerProvider } from '@/providers/registry'
+import { clearProviderRegistryForTesting, registerProvider } from '@/providers/registry'
 import {
   normalizeDeclarativeExtensionConfig,
   SessionExtensionRegistry,
@@ -56,6 +57,8 @@ import {
 
 class TestMatrixClient extends InMemoryMatrixTransport implements MatrixGatewayClient {
   private readonly listeners = new Set<MatrixGatewayEventListener>()
+  readonly deletedThreads: Array<{ roomId: string; threadRootEventId: string }> = []
+  readonly retiredRooms: string[] = []
   private readonly timelineGates = new Map<string, {
     started: ReturnType<typeof deferred<void>>
     release: ReturnType<typeof deferred<void>>
@@ -68,8 +71,25 @@ class TestMatrixClient extends InMemoryMatrixTransport implements MatrixGatewayC
   start(): Promise<void> { return Promise.resolve() }
   waitUntilReady(): Promise<void> { return Promise.resolve() }
   assertRoomEncrypted(): Promise<void> { return Promise.resolve() }
+  ensureRoomInvitation(): Promise<void> { return Promise.resolve() }
+  ensureProviderHistoryRoom(
+    request: Parameters<NonNullable<MatrixGatewayClient['ensureProviderHistoryRoom']>>[0],
+  ): Promise<{ roomId: string; alreadyExisted: boolean }> {
+    return Promise.resolve({
+      roomId: `!history-${request.marker.historyId.slice(0, 16)}:example.org`,
+      alreadyExisted: false,
+    })
+  }
   pinTrustedDevices(): Promise<void> { return Promise.resolve() }
   prepareRoomThread(): Promise<void> { return Promise.resolve() }
+  deleteRoomThread(roomId: string, threadRootEventId: string): Promise<void> {
+    this.deletedThreads.push({ roomId, threadRootEventId })
+    return Promise.resolve()
+  }
+  retireRoom(roomId: string): Promise<void> {
+    this.retiredRooms.push(roomId)
+    return Promise.resolve()
+  }
   stop(): Promise<void> { return Promise.resolve() }
   blockTimelineTransaction(transactionId: string) {
     const gate = { started: deferred<void>(), release: deferred<void>() }
@@ -142,6 +162,157 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(runner.getState()).toBe('running')
     expect(client.delivered).toHaveLength(0)
     expect(client.state.size).toBe(0)
+    await runner.stop()
+  })
+
+  it('keeps legacy devices authorized but prevents them from inviting more legacy devices', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-legacy-invite-'))
+    const gatewayKeys = await generateDeviceKeyPair()
+    const phoneKeys = await generateDeviceKeyPair()
+    const roomId = '!legacy-invite:example.org'
+    const legacyDevice: MatrixGatewayTrustedDevice = {
+      deviceId: 'legacy-phone',
+      publicKey: phoneKeys.publicJwk,
+      allowedRoomIds: [roomId],
+      allowedOperations: ['device.invite'],
+      matrixUserId: '@legacy-client:example.org',
+      matrixDeviceId: 'LEGACY',
+      matrixDeviceKeys: ['legacy-matrix-key'],
+      certificateExpiresAt: Date.now() + 60_000,
+      sequenceEpoch: 'legacy-certificate',
+    }
+    let invitationsCreated = 0
+    const runner = new MatrixMlp3GatewayRunner({
+      gatewayId: 'workspace-legacy-invite',
+      gatewayNodeId: 'gateway-node-legacy-invite',
+      clientMatrixUserId: '@workspace-client:example.org',
+      connection: {
+        baseUrl: 'https://matrix.example.org',
+        accessToken: 'gateway-token',
+        userId: '@gateway:example.org',
+        deviceId: 'GATEWAY',
+      },
+      crypto: {
+        backend: 'memory',
+        databasePrefix: 'legacy-invite-test',
+        allowInMemoryForTesting: true,
+      },
+      rooms: [{
+        roomId,
+        conversationId: roomId,
+        cwd: '/legacy-invite-repo',
+        providerName: 'test',
+      }],
+      trustedDevices: [legacyDevice],
+      replayLedgerPath: join(directory, 'replay'),
+      applicationSecurity: {
+        gatewayDeviceId: 'workspace-legacy-invite',
+        gatewayKeyPair: await exportDeviceKeyPair(gatewayKeys),
+        envelopeReplayLedgerPath: join(directory, 'security'),
+      },
+    }, {
+      client: new TestMatrixClient(),
+      listTrustedDevices: async () => [legacyDevice],
+      createDeviceInvitation: async () => {
+        invitationsCreated += 1
+        return { pairingLink: 'malink-pair:v1:unused', expiresAt: Date.now() + 60_000 }
+      },
+    })
+    const command = {
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'legacy-invite-command',
+      workspaceId: 'workspace-legacy-invite',
+      deviceId: legacyDevice.deviceId,
+      certificateId: legacyDevice.sequenceEpoch,
+      createdAt: Date.now(),
+      operation: 'device.invitation.create',
+      payload: { operation: 'device.invitation.create' },
+    } satisfies Mlp3Command
+    const invitationRunner = runner as unknown as {
+      createInvitation(project: unknown, command: Mlp3Command): Promise<void>
+    }
+
+    await expect(invitationRunner.createInvitation({}, command))
+      .rejects.toThrow(/legacy Matrix account cannot invite new devices/)
+    expect(invitationsCreated).toBe(0)
+  })
+
+  it('removes legacy archived session tombstones and their Matrix threads during upgrade', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-archive-migration-'))
+    const gatewayKeys = await generateDeviceKeyPair()
+    const client = new TestMatrixClient()
+    const roomId = '!archive-migration:example.org'
+    const replayLedgerPath = join(directory, 'replay')
+    const config: MatrixGatewayConfig = {
+      gatewayId: 'workspace-archive-migration',
+      gatewayNodeId: 'gateway-node-archive-migration',
+      connection: {
+        baseUrl: 'https://matrix.example.org',
+        accessToken: 'gateway-token',
+        userId: '@gateway:example.org',
+        deviceId: 'GATEWAY',
+      },
+      crypto: {
+        backend: 'memory',
+        databasePrefix: 'archive-migration-test',
+        allowInMemoryForTesting: true,
+      },
+      rooms: [{
+        roomId,
+        conversationId: roomId,
+        cwd: '/archive-migration-repo',
+        providerName: 'test',
+      }],
+      trustedDevices: [],
+      replayLedgerPath,
+      applicationSecurity: {
+        gatewayDeviceId: 'workspace-archive-migration',
+        gatewayKeyPair: await exportDeviceKeyPair(gatewayKeys),
+        envelopeReplayLedgerPath: join(directory, 'security'),
+      },
+    }
+    const state = new FileMlp3RuntimeStateStore(
+      `${replayLedgerPath}.v3-runtime-state.json`,
+      config.gatewayId,
+    )
+    await state.initialize(config.rooms)
+    await state.updateProject(roomId, project => {
+      project.sessions.push({
+        id: 'legacy-archive',
+        scope: 'project',
+        cwd: project.cwd,
+        sourceCommandId: 'legacy-create',
+        threadRootEventId: '$legacy-thread-root',
+        title: 'Legacy archive',
+        createdAt: 1,
+        updatedAt: 2,
+        stateVersion: 2,
+        lifecycle: 'archived',
+        provider: 'test',
+        model: null,
+        reasoningEffort: null,
+        permissionMode: 'default',
+        providerSessionId: 'provider-legacy',
+        providerHistory: null,
+        extensions: [],
+        extensionRevision: 1,
+        inheritedFromProjectExtensionRevision: null,
+        availableCommands: [],
+      })
+    })
+
+    const runner = new MatrixMlp3GatewayRunner(config, {
+      client,
+      listTrustedDevices: async () => [],
+    })
+    await runner.start()
+
+    expect(client.deletedThreads).toEqual([{
+      roomId,
+      threadRootEventId: '$legacy-thread-root',
+    }])
+    expect((await state.project(roomId)).sessions).toEqual([])
     await runner.stop()
   })
 
@@ -280,6 +451,7 @@ describe('MatrixMlp3GatewayRunner', () => {
 
     const first = new MatrixMlp3GatewayRunner(config, { client })
     await first.start()
+    await waitFor(() => Promise.resolve(client.delivered.length === 2 && stateWrites === 3))
     await first.stop()
     const firstTimelineWrites = client.delivered.length
     const firstStateWrites = stateWrites
@@ -291,6 +463,255 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(client.delivered).toHaveLength(firstTimelineWrites)
     expect(stateWrites).toBe(firstStateWrites)
     await restarted.stop()
+  })
+
+  it('settles and releases a session creation whose filesystem preflight never returns', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-command-timeout-'))
+    const gatewayKeys = await generateDeviceKeyPair()
+    const phoneKeys = await generateDeviceKeyPair()
+    const client = new TestMatrixClient()
+    const roomId = '!timeout-project:example.org'
+    const projectId = gatewayProjectIdentity('/timeout-repo').id
+    const accessGate = deferred<void>()
+    const config: MatrixGatewayConfig = {
+      gatewayId: 'workspace-timeout',
+      gatewayNodeId: 'gateway-node-timeout',
+      connection: {
+        baseUrl: 'https://matrix.example.org',
+        accessToken: 'gateway-token',
+        userId: '@gateway:example.org',
+        deviceId: 'GATEWAY',
+      },
+      crypto: {
+        backend: 'memory',
+        databasePrefix: 'command-timeout-test',
+        allowInMemoryForTesting: true,
+      },
+      rooms: [{
+        roomId,
+        conversationId: roomId,
+        cwd: '/timeout-repo',
+        providerName: 'test',
+      }],
+      trustedDevices: [{
+        deviceId: 'phone-1',
+        publicKey: phoneKeys.publicJwk,
+        allowedRoomIds: [roomId],
+        allowedOperations: ['session.create'],
+        matrixUserId: '@phone:example.org',
+        matrixDeviceId: 'PHONE',
+        matrixDeviceKeys: ['matrix-phone-key'],
+        certificateExpiresAt: Date.now() + 60_000,
+        sequenceEpoch: 'certificate-timeout',
+      }],
+      replayLedgerPath: join(directory, 'replay'),
+      commandExecutionTimeoutMs: 1_000,
+      applicationSecurity: {
+        gatewayDeviceId: 'workspace-timeout',
+        gatewayKeyPair: await exportDeviceKeyPair(gatewayKeys),
+        envelopeReplayLedgerPath: join(directory, 'security'),
+      },
+    }
+    const runner = new MatrixMlp3GatewayRunner(config, {
+      client,
+      assertDirectoryAccess: async () => accessGate.promise,
+      sessionFactory: () => { throw new Error('timed-out creation must not build a runtime') },
+    })
+    await runner.start()
+    const grantState = [...client.state.values()].find(state =>
+      state.eventType === MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE
+      && state.content.deviceId === 'phone-1'
+    )
+    const grant = mlp3ProjectKeyGrantStateSchema.parse(grantState?.content)
+    const keyGrant = await openMlp3ProjectKeyGrant(grant.sealedGrant, {
+      expected: {
+        grantId: grant.grantId,
+        workspaceId: grant.workspaceId,
+        projectId: grant.projectId,
+        roomId: grant.roomId,
+        deviceId: grant.deviceId,
+        certificateId: grant.certificateId,
+        senderKeyId: grant.sealedGrant.envelope.senderKeyId,
+        recipientKeyId: grant.sealedGrant.envelope.recipientKeyId,
+      },
+      recipientPrivateKey: phoneKeys.privateKey,
+      senderPublicKey: gatewayKeys.publicKey,
+    })
+    const activeKey = keyGrant.keys.find(key => key.keyId === keyGrant.activeKeyId)!
+    const command: Mlp3Command = {
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'create-timeout',
+      workspaceId: 'workspace-timeout',
+      projectId,
+      sessionId: 'session-timeout',
+      deviceId: 'phone-1',
+      certificateId: 'certificate-timeout',
+      createdAt: Date.now(),
+      operation: 'session.create',
+      payload: { operation: 'session.create', title: 'Must not get stuck' },
+    }
+    const signed = await signMlp3Command(command, phoneKeys.privateKey, phoneKeys.keyId)
+    const envelope = await sealMlp3Envelope({
+      plaintext: { kind: 'signed_command', value: signed },
+      projectKey: base64UrlDecode(activeKey.key),
+      roomId,
+      projectId,
+      keyId: activeKey.keyId,
+      logicalEventId: command.commandId,
+    })
+    client.emit({
+      roomId,
+      eventId: '$create-timeout',
+      eventType: 'm.room.message',
+      sender: '@phone:example.org',
+      encrypted: false,
+      content: {
+        msgtype: 'm.notice',
+        body: 'Encrypted Malink command',
+        [MALINK_MATRIX_EXTENSION]: { version: 3, envelope },
+      },
+    })
+
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === command.commandId), 2_500)
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === command.commandId
+    )?.payload).toMatchObject({
+      type: 'command.rejected',
+      code: 'gateway_execution_timeout',
+      retryable: true,
+    })
+    expect(await runner.healthSnapshot()).toMatchObject({
+      activeCommands: 0,
+      unfinishedCommands: 0,
+      expiredCommandExecutions: 1,
+    })
+
+    accessGate.resolve()
+    await waitFor(async () => (await runner.healthSnapshot()).expiredCommandExecutions === 0)
+    expect((await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === command.commandId
+      && event.payload.type === 'session.ready'
+    )).toBe(false)
+    await runner.stop()
+  }, 5_000)
+
+  it('republishes every project after a background model catalog refresh', async () => {
+    clearProviderRegistryForTesting()
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-model-refresh-'))
+    const gatewayKeys = await generateDeviceKeyPair()
+    const phoneKeys = await generateDeviceKeyPair()
+    const client = new TestMatrixClient()
+    const firstRoomId = '!model-refresh-first:example.org'
+    const secondRoomId = '!model-refresh-second:example.org'
+    let models: Array<{ id: string; name: string }> = []
+    let refreshQueued = false
+    const listeners = new Set<() => void>()
+    registerProvider({
+      name: 'background-models',
+      startQuery() { throw new Error('The catalog provider must not execute a query') },
+      isReady: () => true,
+      getInitError: () => null,
+      getAvailableModels() {
+        if (!refreshQueued) {
+          refreshQueued = true
+          queueMicrotask(() => {
+            models = [{ id: 'model-ready', name: 'Ready model' }]
+            for (const listener of [...listeners]) listener()
+          })
+        }
+        return models.map(model => ({ ...model }))
+      },
+      onAvailableModelsRefreshed(listener) {
+        listeners.add(listener)
+        return () => { listeners.delete(listener) }
+      },
+      getAvailablePermissionModes: () => ['default'],
+    })
+    const config: MatrixGatewayConfig = {
+      gatewayId: 'workspace-model-refresh',
+      gatewayNodeId: 'gateway-node-model-refresh',
+      connection: {
+        baseUrl: 'https://matrix.example.org',
+        accessToken: 'gateway-token',
+        userId: '@gateway:example.org',
+        deviceId: 'GATEWAY',
+      },
+      crypto: {
+        backend: 'memory',
+        databasePrefix: 'model-refresh-test',
+        allowInMemoryForTesting: true,
+      },
+      rooms: [{
+        roomId: firstRoomId,
+        conversationId: firstRoomId,
+        projectName: 'First project',
+        cwd: '/first-project',
+        providerName: 'background-models',
+      }, {
+        roomId: secondRoomId,
+        conversationId: secondRoomId,
+        projectName: 'Second project',
+        cwd: '/second-project',
+        providerName: 'background-models',
+      }],
+      trustedDevices: [{
+        deviceId: 'phone-1',
+        publicKey: phoneKeys.publicJwk,
+        allowedRoomIds: [firstRoomId, secondRoomId],
+        allowedOperations: ['prompt'],
+        matrixUserId: '@phone:example.org',
+        matrixDeviceId: 'PHONE',
+        matrixDeviceKeys: ['matrix-phone-key'],
+        certificateExpiresAt: Date.now() + 60_000,
+        sequenceEpoch: 'certificate-1',
+      }],
+      replayLedgerPath: join(directory, 'replay'),
+      applicationSecurity: {
+        gatewayDeviceId: 'workspace-model-refresh',
+        gatewayKeyPair: await exportDeviceKeyPair(gatewayKeys),
+        envelopeReplayLedgerPath: join(directory, 'security'),
+      },
+    }
+    const runner = new MatrixMlp3GatewayRunner(config, { client })
+    try {
+      await runner.start()
+      let projects: Array<{
+        name: string
+        capabilitySnapshotVersion: number
+        capabilities: { models: Array<{ id: string }> }
+      }> = []
+      await waitFor(async () => {
+        let state: { projects: Record<string, typeof projects[number]> }
+        try {
+          state = JSON.parse(await readFile(
+            `${config.replayLedgerPath}.v3-runtime-state.json`,
+            'utf8',
+          )) as typeof state
+        } catch (error) {
+          if (
+            error instanceof Error
+            && 'code' in error
+            && (error as NodeJS.ErrnoException).code === 'ENOENT'
+          ) return false
+          throw error
+        }
+        projects = Object.values(state.projects)
+        return projects.length === 2
+          && projects.every(project => project.capabilities.models[0]?.id === 'model-ready')
+      })
+      expect(projects.map(project => ({
+        name: project.name,
+        capabilitySnapshotVersion: project.capabilitySnapshotVersion,
+      }))).toEqual([
+        { name: 'First project', capabilitySnapshotVersion: 2 },
+        { name: 'Second project', capabilitySnapshotVersion: 1 },
+      ])
+    } finally {
+      await runner.stop()
+      clearProviderRegistryForTesting()
+    }
   })
 
   it('runs session threads independently and deduplicates by logical command identity', async () => {
@@ -327,6 +748,7 @@ describe('MatrixMlp3GatewayRunner', () => {
           conversationId: 'unused-v3',
           cwd: '/repo',
           providerName: 'test',
+          timeoutSeconds: 1,
         },
       ],
       trustedDevices: [{
@@ -372,7 +794,10 @@ describe('MatrixMlp3GatewayRunner', () => {
       },
     }
     const blocked = deferred<void>()
+    const initialPromptBlocked = deferred<void>()
     const updateDrainBlocked = deferred<void>()
+    const activeCancelBlocked = deferred<void>()
+    let activeCancelRequested = false
     const dispatched: Array<{ sessionId: string; text: string }> = []
     const decisionResults: string[] = []
     const generatedImagePath = join(directory, 'generated-image.png')
@@ -387,6 +812,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     const validatedProjectDeletions: string[] = []
     const deletedProjects: string[] = []
     const gatewayProfileUpdates: string[] = []
+    const gatewayLogs: string[] = []
     const filesystemAccessChecks: Array<{
       cwd: string
       operation: 'session.create' | 'prompt.submit' | 'provider.history'
@@ -504,6 +930,9 @@ describe('MatrixMlp3GatewayRunner', () => {
       },
       sessionExtensionRegistry: new SessionExtensionRegistry([extensionProvider]),
       sessionFactory: (room, port, session) => {
+        if (session.id === 'session-recovery-failure') {
+          throw new Error('simulated recovered-session runtime failure')
+        }
         sessionExtensions.set(session.id, session.extensions)
         sessionCwds.set(session.id, room.cwd)
         const sessionRecord = createTopicSessionRecord({
@@ -517,9 +946,15 @@ describe('MatrixMlp3GatewayRunner', () => {
           receiveInput: () => undefined,
           async dispatch(input) {
             if (input.kind === 'user_message') {
+              await input.onExecutionStarted?.()
               dispatched.push({ sessionId: session.id, text: input.text })
               if (input.text === 'block A') await blocked.promise
+              if (input.text === 'block initial prompt') await initialPromptBlocked.promise
               if (input.text === 'finish before update') await updateDrainBlocked.promise
+              if (input.text === 'cancel active') {
+                await activeCancelBlocked.promise
+                return { status: activeCancelRequested ? 'cancelled' : 'succeeded' }
+              }
               if (input.text === 'needs permission') {
                 const response = await port.requestDecision({
                   type: 'permission',
@@ -544,6 +979,10 @@ describe('MatrixMlp3GatewayRunner', () => {
                     : `reply-${session.id}-${input.text}`,
                 },
               })
+            }
+            if (input.kind === 'cancel') {
+              activeCancelRequested = true
+              activeCancelBlocked.resolve()
             }
             if (input.kind === 'command' && input.name === 'send_file') {
               const request = JSON.parse(input.args ?? '{}') as {
@@ -720,6 +1159,8 @@ describe('MatrixMlp3GatewayRunner', () => {
       senderPublicKey: gatewayKeys.publicKey,
     })
     const activeKey = keyGrant.keys.find(key => key.keyId === keyGrant.activeKeyId)!
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.payload.type === 'workspace.snapshot'))
     const startupEvents = await events(client, activeKey.key, roomId, projectId)
     expect(startupEvents).toContainEqual(expect.objectContaining({
       payload: expect.objectContaining({
@@ -730,6 +1171,9 @@ describe('MatrixMlp3GatewayRunner', () => {
         }),
       }),
     }))
+    await waitFor(() => Promise.resolve([...client.state.values()].some(state =>
+      state.eventType === MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
+    )))
     const workspacePointerState = [...client.state.values()].find(state =>
       state.eventType === MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
     )
@@ -740,15 +1184,12 @@ describe('MatrixMlp3GatewayRunner', () => {
         projectId,
         roomId,
     })
-    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
-      .some(event => event.payload.type === 'gateway.update.status'
-        && event.causationCommandId === undefined))
-    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 1_100))
+    const idleEvents = await events(client, activeKey.key, roomId, projectId)
+    expect(idleEvents.some(event =>
       event.payload.type === 'gateway.update.status'
-        && event.causationCommandId === undefined
-    )?.payload).toMatchObject({
-      status: { currentBuildId: 'build-1' },
-    })
+      && event.causationCommandId === undefined
+    )).toBe(false)
 
     await expect(runner.publishNativeClientRelease(nativeRelease(42))).resolves.toMatchObject({
       changed: true,
@@ -949,6 +1390,10 @@ describe('MatrixMlp3GatewayRunner', () => {
       && event.sessionId?.startsWith('gateway-update-')
     )).toBe(true)
     expect(gatewayUpdateCalls).toContain('stage:release-2')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === undefined
+        && event.payload.type === 'gateway.update.status'
+        && event.payload.status.phase === 'staged'))
     expect(gatewayUpdateCalls).toContain('instruction:release-2')
     expect(gatewayUpdateCalls).toContain(
       `begin:release-2:${gatewayMaintenanceSessionId('gateway-node-1', 'release-2')}`,
@@ -994,7 +1439,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       && event.payload.type === 'session.lifecycle'
     )?.payload).toMatchObject({
       type: 'session.lifecycle',
-      state: 'archived',
+      state: 'deleted',
     })
     gatewayAgentStaged = true
     gatewayAgentShouldSubmit = true
@@ -1162,6 +1607,21 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(scratchCwd).not.toBe('/repo')
     await expect(stat(scratchCwd!)).resolves.toMatchObject({})
 
+    await send({
+      ...base,
+      commandId: 'create-with-long-initial-prompt',
+      sessionId: 'session-long-initial-prompt',
+      operation: 'session.create',
+      payload: {
+        operation: 'session.create',
+        title: 'Long initial prompt',
+        initialPrompt: { text: 'block initial prompt' },
+      },
+    }, '$root-long-initial-prompt')
+    await waitFor(() => Promise.resolve(
+      dispatched.some(item => item.text === 'block initial prompt'),
+    ))
+
     const promptA: Mlp3Command = {
       ...base,
       commandId: 'prompt-a',
@@ -1174,6 +1634,29 @@ describe('MatrixMlp3GatewayRunner', () => {
       event_id: '$homeserver-rewrote-this-relation',
     })
     await waitFor(() => Promise.resolve(dispatched.some(item => item.text === 'block A')))
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 1_100))
+    const longRunningEvents = await events(client, activeKey.key, roomId, projectId)
+    expect(longRunningEvents.some(event =>
+      ['create-with-long-initial-prompt', 'prompt-a'].includes(event.causationCommandId ?? '')
+      && event.payload.type === 'turn.failed'
+      && event.payload.code === 'gateway_execution_timeout'
+    )).toBe(false)
+    expect(await runner.healthSnapshot()).toMatchObject({
+      activeTurns: 2,
+      activeCommands: 2,
+      expiredCommandExecutions: 0,
+    })
+    initialPromptBlocked.resolve()
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'create-with-long-initial-prompt'
+        && event.payload.type === 'turn.completed'
+      ))
+    expect(await runner.healthSnapshot()).toMatchObject({
+      activeTurns: 1,
+      activeCommands: 1,
+      expiredCommandExecutions: 0,
+    })
 
     const queuedPrompt: Mlp3Command = {
       ...base,
@@ -1248,9 +1731,9 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(dispatched.some(item => item.text === 'must not reach provider')).toBe(false)
     blockFilesystemAccess = false
     expect(filesystemAccessChecks).toEqual(expect.arrayContaining([
-      { cwd: '/repo', operation: 'provider.history' },
-      { cwd: '/repo', operation: 'session.create' },
-      { cwd: '/repo', operation: 'prompt.submit' },
+      expect.objectContaining({ cwd: '/repo', operation: 'provider.history' }),
+      expect.objectContaining({ cwd: '/repo', operation: 'session.create' }),
+      expect.objectContaining({ cwd: '/repo', operation: 'prompt.submit' }),
     ]))
 
     // An exact retry arrives as a different physical Matrix event. It remains
@@ -1353,6 +1836,51 @@ describe('MatrixMlp3GatewayRunner', () => {
       decision: 'allow',
     })
 
+    await send({
+      ...base,
+      commandId: 'prompt-cancel-active',
+      sessionId: 'session-b',
+      operation: 'prompt.submit',
+      payload: { operation: 'prompt.submit', text: 'cancel active' },
+    }, '$prompt-cancel-active')
+    await waitFor(() => Promise.resolve(dispatched.some(item => item.text === 'cancel active')))
+    await send({
+      ...base,
+      commandId: 'cancel-active-b',
+      sessionId: 'session-b',
+      operation: 'turn.cancel',
+      payload: { operation: 'turn.cancel', turnId: 'prompt-cancel-active' },
+    }, '$cancel-active-b')
+    await waitFor(async () => {
+      const deliveredEvents = await events(client, activeKey.key, roomId, projectId)
+      return deliveredEvents.some(event =>
+        event.causationCommandId === 'prompt-cancel-active'
+        && event.payload.type === 'turn.completed'
+        && event.payload.outcome === 'cancelled'
+      ) && deliveredEvents.some(event =>
+        event.causationCommandId === 'cancel-active-b'
+        && event.payload.type === 'turn.completed'
+        && event.payload.outcome === 'cancelled'
+      )
+    })
+    await send({
+      ...base,
+      commandId: 'prompt-cancel-active',
+      sessionId: 'session-b',
+      operation: 'prompt.submit',
+      payload: { operation: 'prompt.submit', text: 'cancel active' },
+    }, '$prompt-cancel-active-reconcile')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === 'prompt-cancel-active'
+      && event.payload.type === 'command.reconciled'
+      && event.payload.state === 'terminal'
+    ))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'prompt-cancel-active'
+      && event.payload.type === 'command.reconciled'
+      && event.payload.state === 'terminal'
+    )?.payload).toMatchObject({ outcome: 'cancelled' })
+
     const causalText = 'causal barrier'
     const causalMessageId = `reply-session-b-${causalText}`
     const causalGate = client.blockTimelineTransaction(
@@ -1366,6 +1894,14 @@ describe('MatrixMlp3GatewayRunner', () => {
       payload: { operation: 'prompt.submit', text: causalText },
     }, '$prompt-causal-barrier')
     await causalGate.started.promise
+    await waitFor(async () => {
+      const health = await runner.healthSnapshot()
+      return health.activeTurns === 0 && health.activeCommands === 0
+    })
+    expect(await runner.healthSnapshot()).toMatchObject({
+      activeTurns: 0,
+      activeCommands: 0,
+    })
     expect((await events(client, activeKey.key, roomId, projectId)).some(event =>
       event.causationCommandId === 'prompt-causal-barrier'
       && event.payload.type === 'turn.completed'
@@ -1437,8 +1973,6 @@ describe('MatrixMlp3GatewayRunner', () => {
     )?.payload).toMatchObject({
       sessions: [{
         sessionId: 'provider-session-1',
-        latestArchivedSessionId: 'session-a',
-        lastArchivedAt: expect.any(Number),
       }],
     })
     expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
@@ -1447,6 +1981,25 @@ describe('MatrixMlp3GatewayRunner', () => {
     )?.payload).not.toEqual(expect.objectContaining({
       sessions: [expect.objectContaining({ managedSessionId: 'session-a' })],
     }))
+
+    const retiredRoomsBeforeFailedRecovery = client.retiredRooms.length
+    await send({
+      ...base,
+      commandId: 'create-recovered-session-failure',
+      sessionId: 'session-recovery-failure',
+      operation: 'session.create',
+      payload: {
+        operation: 'session.create',
+        providerSessionId: 'provider-session-1',
+      },
+    }, '$create-recovered-session-failure')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'create-recovered-session-failure'
+        && event.payload.type === 'command.rejected'
+      ))
+    expect(client.retiredRooms).toHaveLength(retiredRoomsBeforeFailedRecovery + 1)
+    expect(client.retiredRooms.at(-1)).toMatch(/^!history-/u)
 
     await send({
       ...base,
@@ -1514,6 +2067,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     )
     const restarted = new MatrixMlp3GatewayRunner(config, {
       client,
+      onLog: message => gatewayLogs.push(message),
       webPushService,
       validateProjectDeletion: async input => {
         validatedProjectDeletions.push(input.projectId)
@@ -1569,12 +2123,60 @@ describe('MatrixMlp3GatewayRunner', () => {
         .digest('hex')
         .slice(0, 40)}`,
       'session-b',
+      'session-long-initial-prompt',
       'session-scratch',
     ].sort())
     expect(recovered.every(event =>
       event.payload.type === 'session.ready'
       && event.payload.projection.activity === 'idle'
     )).toBe(true)
+    await send({
+      ...base,
+      commandId: 'project-delete-with-sessions',
+      operation: 'project.delete',
+      payload: { operation: 'project.delete' },
+    }, '$project-delete-with-sessions')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'project-delete-with-sessions'
+        && event.payload.type === 'command.rejected'
+      ))
+    expect(deletedProjects).not.toContain(projectId)
+    expect(client.retiredRooms).not.toContain(roomId)
+
+    gatewayAgentStaged = false
+    const remainingSessionIds = [
+      'session-b',
+      'session-long-initial-prompt',
+      'session-scratch',
+      gatewayMaintenanceSessionId('gateway-node-1', 'release-2'),
+    ]
+    for (const [index, sessionId] of remainingSessionIds.entries()) {
+      const commandId = `archive-before-project-delete-${index}`
+      await send({
+        ...base,
+        commandId,
+        sessionId,
+        operation: 'session.set_lifecycle',
+        payload: { operation: 'session.set_lifecycle', state: 'archived' },
+      }, `$${commandId}`)
+      await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+        .some(event =>
+          event.causationCommandId === commandId
+          && ['session.lifecycle', 'command.rejected'].includes(event.payload.type)
+        )).catch(error => {
+        throw new Error(
+          `No terminal event for ${commandId} (${sessionId}).\n${gatewayLogs.slice(-20).join('\n')}`,
+          { cause: error },
+        )
+      })
+      expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+        event.causationCommandId === commandId
+      )?.payload).toMatchObject({
+        type: 'session.lifecycle',
+        state: 'deleted',
+      })
+    }
     await send({
       ...base,
       commandId: 'project-delete-1',
@@ -1593,6 +2195,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     })
     expect(validatedProjectDeletions).toContain(projectId)
     await waitFor(() => Promise.resolve(deletedProjects.includes(projectId)))
+    expect(client.retiredRooms).toContain(roomId)
     await restarted.stop()
   }, 30_000)
 })

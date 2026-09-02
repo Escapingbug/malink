@@ -51,7 +51,8 @@ internal val NATIVE_STATE_CATALOG = listOf(
     NativeStateCatalogEntry(
         "matrix-v3-project-keys",
         NativePersistedStateClass.SECURITY_CRITICAL,
-        1,
+        2,
+        migrationFromVersions = setOf(1),
     ),
     NativeStateCatalogEntry(
         "command-outbox",
@@ -64,6 +65,13 @@ internal val NATIVE_STATE_CATALOG = listOf(
         "matrix-v3-raw-inbox",
         NativePersistedStateClass.DURABLE_COMMAND,
         1,
+    ),
+    NativeStateCatalogEntry(
+        "matrix-v3-task-notifications",
+        NativePersistedStateClass.DURABLE_COMMAND,
+        2,
+        legacySchemaVersion = 1,
+        migrationFromVersions = setOf(1),
     ),
     NativeStateCatalogEntry(
         "matrix-v3-command-content",
@@ -88,7 +96,7 @@ internal val NATIVE_STATE_CATALOG = listOf(
     NativeStateCatalogEntry(
         "matrix-v3-projection",
         NativePersistedStateClass.REBUILDABLE_PROJECTION,
-        4,
+        6,
     ),
     NativeStateCatalogEntry(
         "matrix-v3-liveness",

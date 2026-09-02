@@ -1,6 +1,5 @@
 package id.my.anciety.malink.service
 
-import id.my.anciety.malink.client.command.CommandOperation
 import id.my.anciety.malink.client.command.CommandOutcome
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -11,32 +10,37 @@ class TaskNotificationPolicyTest {
     fun `background prompt completion is visible for every terminal outcome`() {
         assertEquals(
             TaskNotificationKind.SUCCEEDED,
-            TaskNotificationPolicy.decide(false, CommandOperation.PROMPT, CommandOutcome.SUCCEEDED),
+            TaskNotificationPolicy.decide(false, CommandOutcome.SUCCEEDED),
         )
         assertEquals(
             TaskNotificationKind.FAILED,
-            TaskNotificationPolicy.decide(false, CommandOperation.PROMPT, CommandOutcome.FAILED),
+            TaskNotificationPolicy.decide(false, CommandOutcome.FAILED),
         )
         assertEquals(
             TaskNotificationKind.CANCELLED,
-            TaskNotificationPolicy.decide(false, CommandOperation.PROMPT, CommandOutcome.CANCELLED),
+            TaskNotificationPolicy.decide(false, CommandOutcome.CANCELLED),
         )
     }
 
     @Test
     fun `foreground prompt completion is handled in app`() {
         assertNull(
-            TaskNotificationPolicy.decide(true, CommandOperation.PROMPT, CommandOutcome.SUCCEEDED),
+            TaskNotificationPolicy.decide(true, CommandOutcome.SUCCEEDED),
         )
     }
 
     @Test
-    fun `non prompt commands do not masquerade as agent task completion`() {
-        assertNull(
-            TaskNotificationPolicy.decide(false, CommandOperation.SESSION_CREATE, CommandOutcome.SUCCEEDED),
+    fun `verified final message replaces the generic notification body`() {
+        assertEquals(
+            "Implemented the fix and all tests pass.",
+            taskNotificationBody(
+                "  Implemented the fix and all tests pass.  ",
+                "Tap to view the result.",
+            ),
         )
-        assertNull(
-            TaskNotificationPolicy.decide(false, CommandOperation.CANCEL, CommandOutcome.SUCCEEDED),
+        assertEquals(
+            "Tap to view the result.",
+            taskNotificationBody("   ", "Tap to view the result."),
         )
     }
 }

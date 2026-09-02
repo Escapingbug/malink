@@ -2,6 +2,7 @@ import type { SignedWorkspaceGatewayDirectory } from "@malink/protocol";
 
 // Background heartbeats are intentionally sparse. The visible client performs
 // an immediate signed check when this short proof window has expired.
+export const GATEWAY_FOREGROUND_PROBE_INTERVAL_MS = 60_000;
 export const GATEWAY_ONLINE_PROOF_WINDOW_MS = 150_000;
 export const GATEWAY_AUTOMATIC_PROBE_MIN_INTERVAL_MS = GATEWAY_ONLINE_PROOF_WINDOW_MS;
 // Matrix delivery, Gateway journal execution, and the signed reply are each
@@ -50,11 +51,23 @@ export type GatewayNoReplyPresentation = {
   retryLabel: string;
 };
 
-export function gatewayNodeNeedsForegroundProbe(input: {
+export function gatewayForegroundProbeDue(input: {
+  visible: boolean;
+  networkOnline: boolean;
+  matrixConnected: boolean;
+  inFlight: boolean;
   value: GatewayNodeLiveness | undefined;
   now: number;
   lastAutomaticProbeAt: number | undefined;
 }): boolean {
+  if (
+    !input.visible ||
+    !input.networkOnline ||
+    !input.matrixConnected ||
+    input.inFlight
+  ) {
+    return false;
+  }
   const value = input.value;
   if (value?.state === "checking" || value?.state === "unavailable") return false;
   if (

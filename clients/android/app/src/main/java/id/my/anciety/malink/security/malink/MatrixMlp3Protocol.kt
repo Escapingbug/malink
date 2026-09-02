@@ -19,6 +19,7 @@ const val MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE = "io.malink.project.current.v3
 const val MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE = "io.malink.workspace.current.v3"
 const val MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE =
     "io.malink.workspace.gateway_directory.v1"
+private val MATRIX_USER_ID = Regex("^@[^:\\s]+:[^\\s]+$")
 
 data class MatrixMlp3ProjectKey(
     val keyId: String,
@@ -306,9 +307,26 @@ object MatrixMlp3Protocol {
                 put("document", directory)
             },
         )
+        directory.requireAllowedKeys(
+            required = setOf(
+                "kind", "version", "directoryId", "workspaceId", "revision",
+                "gateways", "issuedAt",
+            ),
+            optional = setOf("clientMatrixUserId", "removedGatewayNodeIds"),
+            label = "Workspace Gateway Directory",
+        )
         require(directory.string("kind") == "malink.workspace.gateway-directory")
         require(directory.long("version") == 1L)
+        directory.opaque("directoryId", 512)
         require(directory.opaque("workspaceId") == workspaceId)
+        directory.nonnegative("issuedAt")
+        if ("clientMatrixUserId" in directory) {
+            val userId = directory.string("clientMatrixUserId")
+                ?: throw IllegalArgumentException("Workspace client Matrix user ID is invalid.")
+            require(userId.length <= 512 && MATRIX_USER_ID.matches(userId)) {
+                "Workspace client Matrix user ID is invalid."
+            }
+        }
         val revision = directory.nonnegative("revision")
         require(revision >= minimumRevision) { "Workspace Gateway Directory rolled back." }
         val gateways = directory["gateways"] as? JsonArray

@@ -63,6 +63,17 @@ export class IndexedDbMatrixMlp3ClientStore implements MatrixMlp3ClientStore {
     }
   }
 
+  async deleteOutbox(commandId: string): Promise<void> {
+    const database = await openDatabase();
+    try {
+      const transaction = database.transaction(OUTBOX, "readwrite", { durability: "strict" });
+      transaction.objectStore(OUTBOX).delete(this.key(commandId));
+      await transactionDone(transaction);
+    } finally {
+      database.close();
+    }
+  }
+
   async listPendingOutbox(): Promise<MatrixMlp3OutboxRecord[]> {
     const database = await openDatabase();
     try {

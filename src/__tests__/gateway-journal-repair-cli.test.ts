@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { GatewayAdminStatus } from '@/gateway/admin'
 import type { Mlp3Command, Mlp3Event } from '@malink/protocol'
 import { FileMlp3CommandJournal } from '@/gateway/matrix/fileMlp3CommandJournal'
+import { SqliteMlp3CommandJournal } from '@/gateway/matrix/sqliteMlp3CommandJournal'
 import { runGatewayJournalRepairCli } from '@/ops/gatewayJournalRepairCli'
 
 const updateCommand: Mlp3Command = {
@@ -102,6 +103,36 @@ describe('Gateway journal repair CLI', () => {
         .toContain('event-succeeded')
       const recovered = new FileMlp3CommandJournal(journalPath)
       await recovered.initialize()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reports completed migration and refuses to mutate historical JSONL', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'malink-journal-cli-'))
+    try {
+      const dataDirectory = join(root, 'gateway-data')
+      await mkdir(dataDirectory)
+      const jsonlPath = join(dataDirectory, 'gateway-replay.jsonl.v3-commands.jsonl')
+      const sqlitePath = join(dataDirectory, 'gateway-replay.jsonl.v3-commands.sqlite')
+      const legacy = new FileMlp3CommandJournal(jsonlPath)
+      await legacy.initialize()
+      await legacy.claim(updateCommand, 1)
+      const journal = new SqliteMlp3CommandJournal(sqlitePath, jsonlPath)
+      await journal.initialize()
+      await journal.close()
+
+      await expect(runGatewayJournalRepairCli([
+        'diagnose', '--data-dir', dataDirectory,
+      ])).resolves.toMatchObject({
+        state: 'migrated',
+        journalPath: jsonlPath,
+        sqlitePath,
+        migration: { legacySourcePath: jsonlPath },
+      })
+      await expect(runGatewayJournalRepairCli([
+        'recover', '--data-dir', dataDirectory,
+      ])).rejects.toThrow('immutable after SQLite migration')
     } finally {
       await rm(root, { recursive: true, force: true })
     }

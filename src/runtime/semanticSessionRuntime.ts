@@ -41,7 +41,12 @@ import {
     MCP_RUNTIME_FILE_DELIVERY_UNAVAILABLE,
 } from './mcpFileDelivery'
 
-export type SemanticRuntimeState = 'idle' | 'querying' | 'canceling' | 'finalizing' | 'dead'
+export type SemanticRuntimeState = 'idle' | 'starting' | 'querying' | 'canceling' | 'finalizing' | 'dead'
+
+export interface SemanticTurnResult {
+    status: 'succeeded' | 'cancelled' | 'failed'
+    message?: string
+}
 
 const FILE_REFERENCE_PATTERN = /file:\/\/[^\s<>"'`()\[\],]+/g
 const MAX_FILE_REFERENCES = 20
@@ -54,6 +59,10 @@ const FINALIZE_OUTBOX_DRAIN_TIMEOUT_MS = 5_000
 const ASSISTANT_TEXT_FLUSH_DEBOUNCE_MS = 1_500
 const ASSISTANT_TEXT_STREAM_UPDATE_MS = 500
 const TERMINAL_TOOL_EDIT_GRACE_MS = ASSISTANT_TEXT_FLUSH_DEBOUNCE_MS + 500
+const CANCEL_INTERRUPT_TIMEOUT_MS = 4_000
+const CANCEL_PROVIDER_DESTROY_TIMEOUT_MS = 4_000
+const PROVIDER_TAIL_DRAIN_TIMEOUT_MS = 2_000
+const ABORTED_STEP = Symbol('aborted-step')
 
 export interface RuntimeProgress {
     state: SemanticRuntimeState
@@ -136,6 +145,126 @@ async function waitForShutdownStep(
     }
 }
 
+async function settleWithin(
+    promise: Promise<unknown>,
+    timeoutMs: number,
+    onTimeoutOrError: (message: string) => void,
+): Promise<boolean> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+        const result = await Promise.race([
+            promise.then(() => 'settled' as const),
+            new Promise<'timeout'>(resolve => {
+                timeout = setTimeout(() => resolve('timeout'), timeoutMs)
+            }),
+        ])
+        if (result === 'timeout') {
+            onTimeoutOrError(`timed out after ${timeoutMs}ms`)
+            return false
+        }
+        return true
+    } catch (error) {
+        onTimeoutOrError(error instanceof Error ? error.message : String(error))
+        return false
+    } finally {
+        if (timeout) clearTimeout(timeout)
+    }
+}
+
+async function nextIteratorResult<T>(
+    iterator: AsyncIterator<T>,
+    signal: AbortSignal,
+    timeoutMs?: number,
+): Promise<IteratorResult<T> | null> {
+    if (signal.aborted) return null
+    return await new Promise<IteratorResult<T> | null>((resolve, reject) => {
+        let timeout: ReturnType<typeof setTimeout> | undefined
+        const onAbort = (): void => {
+            cleanup()
+            resolve(null)
+        }
+        const cleanup = (): void => {
+            signal.removeEventListener('abort', onAbort)
+            if (timeout) clearTimeout(timeout)
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+        if (timeoutMs !== undefined) {
+            timeout = setTimeout(() => {
+                cleanup()
+                resolve(null)
+            }, timeoutMs)
+        }
+        void iterator.next().then(
+            result => {
+                cleanup()
+                resolve(result)
+            },
+            error => {
+                cleanup()
+                reject(error)
+            },
+        )
+    })
+}
+
+async function nextAbortableStep(
+    promise: Promise<void>,
+    signal: AbortSignal,
+): Promise<void> {
+    if (signal.aborted) return
+    await new Promise<void>((resolve, reject) => {
+        const onAbort = (): void => {
+            cleanup()
+            resolve()
+        }
+        const cleanup = (): void => signal.removeEventListener('abort', onAbort)
+        signal.addEventListener('abort', onAbort, { once: true })
+        void promise.then(
+            () => {
+                cleanup()
+                resolve()
+            },
+            error => {
+                cleanup()
+                reject(error)
+            },
+        )
+    })
+}
+
+async function abortableResult<T>(
+    promise: Promise<T>,
+    signal: AbortSignal,
+): Promise<T | typeof ABORTED_STEP> {
+    if (signal.aborted) return ABORTED_STEP
+    return await new Promise<T | typeof ABORTED_STEP>((resolve, reject) => {
+        const onAbort = (): void => {
+            cleanup()
+            resolve(ABORTED_STEP)
+        }
+        const cleanup = (): void => signal.removeEventListener('abort', onAbort)
+        signal.addEventListener('abort', onAbort, { once: true })
+        void promise.then(
+            result => {
+                cleanup()
+                resolve(result)
+            },
+            error => {
+                cleanup()
+                reject(error)
+            },
+        )
+    })
+}
+
+function semanticTurnResult(
+    event: Extract<ConversationEvent, { kind: 'turn_finished' }>,
+): SemanticTurnResult {
+    if (event.status === 'success') return { status: 'succeeded' }
+    if (event.status === 'cancelled') return { status: 'cancelled', message: event.summary }
+    return { status: 'failed', message: event.summary }
+}
+
 export interface SemanticSessionRuntimeConfig {
     sessionId: string
     cwd: string
@@ -191,6 +320,8 @@ export class SemanticSessionRuntime {
     private queuedUserInputs: QueuedUserInput[] = []
     private readonly extensionHost: SessionExtensionHost
     private privilegeChain: Promise<void> = Promise.resolve()
+    private cancellationBarrier: Promise<void> = Promise.resolve()
+    private providerResetRequired = false
 
     constructor(private config: SemanticSessionRuntimeConfig) {
         this.adapter = config.adapter ?? createProviderSemanticAdapter(getProviderType(config.providerName) ?? config.providerName)
@@ -249,7 +380,7 @@ export class SemanticSessionRuntime {
         if (this.isQueuedChannelUserInput(input)) {
             queuedUserInput = this.trackQueuedUserInput()
             void this.send({ text: 'Agent is working. Your message has been queued. Send /cancel to discard the latest queued message before it starts.', format: 'html' })
-        } else if (input.kind === 'scheduled_message' && (this.state === 'querying' || this.state === 'finalizing')) {
+        } else if (input.kind === 'scheduled_message' && this.isActiveTurnState()) {
             void this.send({ text: 'Agent is working. The scheduled message has been queued and will be processed when the current task completes.', format: 'html' })
         }
 
@@ -396,11 +527,13 @@ export class SemanticSessionRuntime {
 
         switch (input.kind) {
             case 'user_message':
-                await this.runTurn(input.richInput ?? input.text)
-                return
+                return await this.runTurn(
+                    input.richInput ?? input.text,
+                    input.onExecutionStarted,
+                    input.cancellationSignal,
+                )
             case 'scheduled_message':
-                await this.runTurn(input.text)
-                return
+                return await this.runTurn(input.text)
             case 'cancel':
                 await this.cancel()
                 return
@@ -412,17 +545,69 @@ export class SemanticSessionRuntime {
         }
     }
 
-    private async runTurn(prompt: string | RichUserInput): Promise<void> {
+    private async runTurn(
+        prompt: string | RichUserInput,
+        onExecutionStarted?: () => Promise<void> | void,
+        cancellationSignal?: AbortSignal,
+    ): Promise<SemanticTurnResult> {
+        const turnId = randomUUID()
+        const turnAbortController = new AbortController()
+        if (cancellationSignal?.aborted) turnAbortController.abort()
+        else cancellationSignal?.addEventListener(
+            'abort',
+            () => turnAbortController.abort(),
+            { once: true },
+        )
+        this.abortController = turnAbortController
+        this.state = 'starting'
+        this.turnStartedAt = Date.now()
+        await this.cancellationBarrier
+        if (turnAbortController.signal.aborted || this.isStopping()) {
+            await this.finishTurnBeforeQuery(turnId, 'cancelled')
+            if (this.abortController === turnAbortController) this.abortController = null
+            return { status: 'cancelled' }
+        }
+
+        if (this.providerResetRequired) {
+            const reset = this.config.provider.destroy
+                ? await settleWithin(
+                    Promise.resolve().then(() => this.config.provider.destroy!()),
+                    CANCEL_PROVIDER_DESTROY_TIMEOUT_MS,
+                    message => this.log(`[cancel] provider reset did not finish cleanly: ${message}`),
+                )
+                : false
+            if (!reset) {
+                const message = 'The previous Agent process could not be isolated after cancellation'
+                await this.finishTurnBeforeQuery(turnId, 'failed', message)
+                if (this.abortController === turnAbortController) this.abortController = null
+                return { status: 'failed', message }
+            }
+            this.providerResetRequired = false
+        }
+
         this.config.provider.prepareWorkingDirectory?.(this.config.cwd)
         if (!this.config.provider.isReady()) {
-            await this.handleProviderNotReady()
-            if (!this.config.provider.isReady()) return
+            this.notifyStatus('idle', 'starting')
+            await this.handleProviderNotReady(turnAbortController.signal)
+            if (turnAbortController.signal.aborted || this.isStopping()) {
+                await this.finishTurnBeforeQuery(turnId, 'cancelled')
+                if (this.abortController === turnAbortController) this.abortController = null
+                return { status: 'cancelled' }
+            }
+            if (!this.config.provider.isReady()) {
+                const message = this.config.provider.getInitError() ?? 'Provider initialization failed'
+                await this.finishTurnBeforeQuery(turnId, 'failed', message)
+                if (this.abortController === turnAbortController) this.abortController = null
+                return { status: 'failed', message }
+            }
         }
 
         await this.flushBufferedAssistantText('pre-turn')
-        const turnId = randomUUID()
-        this.state = 'querying'
-        this.turnStartedAt = Date.now()
+        if (turnAbortController.signal.aborted || this.isStopping()) {
+            await this.finishTurnBeforeQuery(turnId, 'cancelled')
+            if (this.abortController === turnAbortController) this.abortController = null
+            return { status: 'cancelled' }
+        }
         this.lastToolName = null
         this.pendingMalinkSendFileCalls.clear()
         this.projector.reset()
@@ -436,13 +621,6 @@ export class SemanticSessionRuntime {
             hadAssistantText: false,
             deliveryFailures: [],
         }
-        this.notifyStatus('querying')
-        this.record({
-            kind: 'turn_started',
-            meta: this.syntheticMeta(turnId, 'turn_started', 0),
-        })
-
-        this.abortController = new AbortController()
         const activeModel = this.getActiveModel()
         const extensionContext: SessionExtensionTurnContext = {
             sessionId: this.config.sessionId,
@@ -451,24 +629,33 @@ export class SemanticSessionRuntime {
         }
         let extensionTurn: PreparedExtensionTurn
         try {
-            extensionTurn = await this.extensionHost.prepareTurn(
-                prompt,
-                extensionContext,
-                async interaction => {
-                    const response = this.config.channelPort.requestExtensionInteraction
-                        ? await this.config.channelPort.requestExtensionInteraction(interaction)
-                        : await this.config.channelPort.requestDecision({
-                            type: 'question',
-                            title: `${interaction.extension.name}: ${interaction.view.title}`,
-                            details: extensionViewTextFallback(interaction.view),
-                            options: interaction.view.actions.map(action => ({
-                                label: action.label,
-                                value: action.id,
-                            })),
-                        })
-                    return response.value
-                },
+            const prepared = await abortableResult(
+                this.extensionHost.prepareTurn(
+                    prompt,
+                    extensionContext,
+                    async interaction => {
+                        const response = this.config.channelPort.requestExtensionInteraction
+                            ? await this.config.channelPort.requestExtensionInteraction(interaction)
+                            : await this.config.channelPort.requestDecision({
+                                type: 'question',
+                                title: `${interaction.extension.name}: ${interaction.view.title}`,
+                                details: extensionViewTextFallback(interaction.view),
+                                options: interaction.view.actions.map(action => ({
+                                    label: action.label,
+                                    value: action.id,
+                                })),
+                            })
+                        return response.value
+                    },
+                ),
+                turnAbortController.signal,
             )
+            if (prepared === ABORTED_STEP) {
+                await this.finishTurnBeforeQuery(turnId, 'cancelled')
+                if (this.abortController === turnAbortController) this.abortController = null
+                return { status: 'cancelled' }
+            }
+            extensionTurn = prepared
         } catch (error) {
             if (error instanceof SessionExtensionRejectedError) {
                 this.record({
@@ -479,8 +666,8 @@ export class SemanticSessionRuntime {
                 })
                 await this.send({ text: 'Request cancelled before it reached the Agent.', format: 'plain' })
                 await this.finalize()
-                this.abortController = null
-                return
+                if (this.abortController === turnAbortController) this.abortController = null
+                return { status: 'cancelled' }
             }
             const message = error instanceof Error ? error.message : String(error)
             this.record({
@@ -491,29 +678,104 @@ export class SemanticSessionRuntime {
             })
             await this.send({ text: `Error: ${message}`, format: 'plain' })
             await this.finalize()
-            this.abortController = null
-            return
+            if (this.abortController === turnAbortController) this.abortController = null
+            return { status: 'failed', message }
         }
 
-        const handle = this.config.provider.startQuery(this.prepareProviderInput(extensionTurn.input), {
-            cwd: this.config.cwd,
-            malinkSessionId: this.config.sessionId,
-            sessionId: this.config.providerSessionId ?? undefined,
-            signal: this.abortController.signal,
-            ...(activeModel ? { model: activeModel } : {}),
-            permissionHandler: this.createPermissionHandler(),
-            decisionHandler: {
-                requestDecision: (request) => this.config.channelPort.requestDecision(request),
-            },
-            providerSettings: this.config.providerSettings ?? {},
-            debugLog: (line) => this.log(line),
+        if (turnAbortController.signal.aborted || this.isStopping()) {
+            await this.finishTurnBeforeQuery(turnId, 'cancelled')
+            if (this.abortController === turnAbortController) this.abortController = null
+            return { status: 'cancelled' }
+        }
+        this.state = 'querying'
+        this.notifyStatus('querying')
+        this.record({
+            kind: 'turn_started',
+            meta: this.syntheticMeta(turnId, 'turn_started', 0),
         })
+
+        let handle: AgentQueryHandle
+        let iterator: AsyncIterator<AgentEvent>
+        try {
+            handle = this.config.provider.startQuery(
+                this.prepareProviderInput(extensionTurn.input),
+                {
+                    cwd: this.config.cwd,
+                    malinkSessionId: this.config.sessionId,
+                    sessionId: this.config.providerSessionId ?? undefined,
+                    signal: turnAbortController.signal,
+                    ...(activeModel ? { model: activeModel } : {}),
+                    permissionHandler: this.createPermissionHandler(),
+                    decisionHandler: {
+                        requestDecision: (request) => this.config.channelPort.requestDecision(request),
+                    },
+                    providerSettings: this.config.providerSettings ?? {},
+                    debugLog: (line) => this.log(line),
+                },
+            )
+            iterator = handle.events[Symbol.asyncIterator]()
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            const terminalEvent: ConversationEvent = {
+                kind: 'turn_finished',
+                meta: this.syntheticMeta(turnId, 'provider-start-error', Number.MAX_SAFE_INTEGER),
+                status: 'error',
+                summary: message,
+            }
+            this.record(terminalEvent)
+            if (!this.extensionHost.active) {
+                await this.send({ text: `❌ Error: ${message}`, format: 'html' })
+            } else {
+                try {
+                    const presentedEvents = await this.extensionHost.presentEvent(
+                        terminalEvent,
+                        extensionContext,
+                        extensionTurn.stateRefs,
+                    )
+                    for (const presented of presentedEvents) await this.projectAndDeliver(presented)
+                } catch (presentationError) {
+                    const detail = presentationError instanceof Error
+                        ? presentationError.message
+                        : String(presentationError)
+                    await this.send({
+                        text: `Agent output was blocked because a session extension failed: ${detail}`,
+                        format: 'plain',
+                    })
+                }
+            }
+            await this.finalize()
+            if (this.abortController === turnAbortController) this.abortController = null
+            return { status: 'failed', message }
+        }
         this.currentHandle = handle
 
         let seenResult = false
-        try {
-            for await (const providerEvent of handle.events) {
-                if (this.isStopping()) break
+        let result: SemanticTurnResult | null = null
+        let executionStarted = false
+        let tailDrainExpired = false
+        const reportExecutionStarted = async (): Promise<void> => {
+            if (executionStarted || turnAbortController.signal.aborted || this.isStopping()) return
+            executionStarted = true
+            await onExecutionStarted?.()
+        }
+        providerEvents: try {
+            while (true) {
+                const next = await nextIteratorResult(
+                    iterator,
+                    turnAbortController.signal,
+                    seenResult ? PROVIDER_TAIL_DRAIN_TIMEOUT_MS : undefined,
+                )
+                if (!next && seenResult && !turnAbortController.signal.aborted) {
+                    tailDrainExpired = true
+                    this.providerResetRequired = true
+                    this.log(
+                        `[session] provider tail drain exceeded ${PROVIDER_TAIL_DRAIN_TIMEOUT_MS}ms; `
+                        + 'the completed turn was released and the provider will reset before reuse',
+                    )
+                }
+                if (!next || next.done || this.isStopping()) break
+                const providerEvent = next.value
+                await reportExecutionStarted()
                 if (providerEvent.kind === 'session_init' && providerEvent.sessionId) {
                     this.config.providerSessionId = providerEvent.sessionId
                     this.config.onProviderSessionId?.(providerEvent.sessionId)
@@ -542,54 +804,67 @@ export class SemanticSessionRuntime {
                 })
                 for (const event of semanticEvents) {
                     this.record(event)
-                    const presentedEvents = await this.extensionHost.presentEvent(
-                        event,
-                        extensionContext,
-                        extensionTurn.stateRefs,
+                    const presentedEvents = await abortableResult(
+                        this.extensionHost.presentEvent(
+                            event,
+                            extensionContext,
+                            extensionTurn.stateRefs,
+                        ),
+                        turnAbortController.signal,
                     )
+                    if (presentedEvents === ABORTED_STEP) {
+                        result = { status: 'cancelled' }
+                        break providerEvents
+                    }
                     for (const presented of presentedEvents) {
                         await this.projectAndDeliver(presented)
                     }
                     if (event.kind === 'turn_finished') {
                         seenResult = true
+                        result = semanticTurnResult(event)
                     }
                 }
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
-            const terminalEvent: ConversationEvent = {
-                kind: 'turn_finished',
-                meta: this.syntheticMeta(turnId, 'error', Number.MAX_SAFE_INTEGER),
-                status: 'error',
-                summary: message,
-            }
-            this.record(terminalEvent)
-            if (!this.extensionHost.active) {
-                await this.send({ text: `❌ Error: ${message}`, format: 'html' })
+            if (turnAbortController.signal.aborted || this.isStopping()) {
+                result = { status: 'cancelled' }
             } else {
-                try {
-                    const presentedEvents = await this.extensionHost.presentEvent(
-                        terminalEvent,
-                        extensionContext,
-                        extensionTurn.stateRefs,
-                    )
-                    for (const presented of presentedEvents) {
-                        await this.projectAndDeliver(presented)
-                    }
-                } catch (presentationError) {
-                    const detail = presentationError instanceof Error
-                        ? presentationError.message
-                        : String(presentationError)
-                    await this.send({
-                        text: `Agent output was blocked because a session extension failed: ${detail}`,
-                        format: 'plain',
-                    })
+                const terminalEvent: ConversationEvent = {
+                    kind: 'turn_finished',
+                    meta: this.syntheticMeta(turnId, 'error', Number.MAX_SAFE_INTEGER),
+                    status: 'error',
+                    summary: message,
                 }
+                this.record(terminalEvent)
+                if (!this.extensionHost.active) {
+                    await this.send({ text: `❌ Error: ${message}`, format: 'html' })
+                } else {
+                    try {
+                        const presentedEvents = await this.extensionHost.presentEvent(
+                            terminalEvent,
+                            extensionContext,
+                            extensionTurn.stateRefs,
+                        )
+                        for (const presented of presentedEvents) {
+                            await this.projectAndDeliver(presented)
+                        }
+                    } catch (presentationError) {
+                        const detail = presentationError instanceof Error
+                            ? presentationError.message
+                            : String(presentationError)
+                        await this.send({
+                            text: `Agent output was blocked because a session extension failed: ${detail}`,
+                            format: 'plain',
+                        })
+                    }
+                }
+                seenResult = true
+                result = { status: 'failed', message }
             }
-            seenResult = true
         } finally {
-            if (!seenResult && this.extensionHost.active) {
-                const cancelled = this.isStopping()
+            const cancelled = turnAbortController.signal.aborted || this.isStopping()
+            if (!seenResult) {
                 const terminalEvent: ConversationEvent = {
                     kind: 'turn_finished',
                     meta: this.syntheticMeta(
@@ -603,40 +878,66 @@ export class SemanticSessionRuntime {
                         : 'Provider stream ended without a terminal result',
                 }
                 this.record(terminalEvent)
-                try {
-                    const presentedEvents = await this.extensionHost.presentEvent(
-                        terminalEvent,
-                        extensionContext,
-                        extensionTurn.stateRefs,
-                    )
-                    for (const presented of presentedEvents) {
-                        await this.projectAndDeliver(presented)
+                if (this.extensionHost.active && !cancelled) {
+                    try {
+                        const presentedEvents = await this.extensionHost.presentEvent(
+                            terminalEvent,
+                            extensionContext,
+                            extensionTurn.stateRefs,
+                        )
+                        for (const presented of presentedEvents) {
+                            await this.projectAndDeliver(presented)
+                        }
+                    } catch (presentationError) {
+                        const detail = presentationError instanceof Error
+                            ? presentationError.message
+                            : String(presentationError)
+                        await this.send({
+                            text: `Agent output was blocked because a session extension failed: ${detail}`,
+                            format: 'plain',
+                        })
                     }
-                } catch (presentationError) {
-                    const detail = presentationError instanceof Error
-                        ? presentationError.message
-                        : String(presentationError)
-                    await this.send({
-                        text: `Agent output was blocked because a session extension failed: ${detail}`,
-                        format: 'plain',
-                    })
                 }
+                result = cancelled
+                    ? { status: 'cancelled' }
+                    : { status: 'failed', message: terminalEvent.summary }
             }
             await this.finalize()
             this.currentHandle = null
-            this.abortController = null
+            if (this.abortController === turnAbortController) this.abortController = null
+            if (cancelled || tailDrainExpired) void iterator.return?.().catch(() => undefined)
         }
+        return result ?? { status: 'failed', message: 'Provider stream ended without a terminal result' }
     }
 
     private async cancel(): Promise<void> {
-        if (this.state !== 'querying') return
+        if (this.state === 'canceling') return this.cancellationBarrier
+        if (this.state !== 'starting' && this.state !== 'querying') return
         const handle = this.currentHandle
         const abortController = this.abortController
         this.state = 'canceling'
         this.notifyStatus('canceling')
-        const interrupting = handle?.interrupt()
         abortController?.abort()
-        await interrupting
+        const cleanup = (async () => {
+            const interrupted = handle
+                ? await settleWithin(
+                    Promise.resolve().then(() => handle.interrupt()),
+                    CANCEL_INTERRUPT_TIMEOUT_MS,
+                    message => this.log(`[cancel] provider interrupt did not finish cleanly: ${message}`),
+                )
+                : false
+            if (interrupted) return
+            this.providerResetRequired = true
+            if (!this.config.provider.destroy) return
+            const destroyed = await settleWithin(
+                Promise.resolve().then(() => this.config.provider.destroy!()),
+                CANCEL_PROVIDER_DESTROY_TIMEOUT_MS,
+                message => this.log(`[cancel] provider destroy did not finish cleanly: ${message}`),
+            )
+            if (destroyed) this.providerResetRequired = false
+        })()
+        this.cancellationBarrier = cleanup.then(() => undefined, () => undefined)
+        await cleanup
     }
 
     private cancelQueuedUserInput(): CancelQueuedMessageCommandResult {
@@ -666,7 +967,7 @@ export class SemanticSessionRuntime {
     private isQueuedChannelUserInput(input: SessionInput): input is Extract<SessionInput, { kind: 'user_message' }> {
         return input.kind === 'user_message'
             && input.source === 'channel'
-            && (this.state === 'querying' || this.state === 'finalizing')
+            && this.isActiveTurnState()
     }
 
     private trackQueuedUserInput(): QueuedUserInput {
@@ -684,30 +985,30 @@ export class SemanticSessionRuntime {
     }
 
     private async resetActiveConversation(): Promise<void> {
-        const handle = this.currentHandle
-        const abortController = this.abortController
         this.config.providerSessionId = null
         this.config.provider.clearSessionId?.()
         this.recordCommand('new', { reset: true })
 
-        this.state = 'canceling'
-        this.notifyStatus('canceling')
-        const interrupting = handle?.interrupt()
-        abortController?.abort()
-        await interrupting
+        await this.cancel()
 
         // A /new during an active turn is a recovery action. If the provider
         // ignored cancel, restart its subprocess so the next turn is not
         // blocked behind the stuck ACP request.
-        try {
-            await this.config.provider.destroy?.()
-        } catch (error) {
-            this.log(`[session] Provider destroy during /new failed: ${error instanceof Error ? error.message : String(error)}`)
+        if (this.config.provider.destroy) {
+            const destroyed = await settleWithin(
+                Promise.resolve().then(() => this.config.provider.destroy!()),
+                CANCEL_PROVIDER_DESTROY_TIMEOUT_MS,
+                message => this.log(`[session] Provider destroy during /new did not finish cleanly: ${message}`),
+            )
+            this.providerResetRequired = !destroyed
         }
     }
 
     private isActiveTurnState(): boolean {
-        return this.state === 'querying' || this.state === 'canceling' || this.state === 'finalizing'
+        return this.state === 'starting'
+            || this.state === 'querying'
+            || this.state === 'canceling'
+            || this.state === 'finalizing'
     }
 
     private prepareProviderInput(input: string | RichUserInput): string | RichUserInput {
@@ -727,6 +1028,23 @@ export class SemanticSessionRuntime {
 
     private isStopping(): boolean {
         return this.state === 'canceling' || this.state === 'dead'
+    }
+
+    private async finishTurnBeforeQuery(
+        turnId: string,
+        status: 'cancelled' | 'failed',
+        message?: string,
+    ): Promise<void> {
+        this.record({
+            kind: 'turn_finished',
+            meta: this.syntheticMeta(turnId, `pre-query-${status}`, Number.MAX_SAFE_INTEGER),
+            status: status === 'cancelled' ? 'cancelled' : 'error',
+            ...(message ? { summary: message } : {}),
+        })
+        if (this.state !== 'dead') {
+            this.state = 'idle'
+            this.notifyStatus('idle')
+        }
     }
 
     private async finalize(): Promise<void> {
@@ -1424,9 +1742,15 @@ export class SemanticSessionRuntime {
     }
 
     private formatProgressDetails(progress: RuntimeProgress): string {
-        const lines = this.state === 'querying'
-            ? [`🔄 Task in progress: ${progress.elapsedSeconds}s elapsed${this.lastToolName ? `\nCurrent tool: ${this.lastToolName}` : ''}`]
-            : ['✅ No active task']
+        const lines = this.state === 'starting'
+            ? [`🔄 Agent is starting: ${progress.elapsedSeconds}s elapsed`]
+            : this.state === 'querying'
+                ? [`🔄 Task in progress: ${progress.elapsedSeconds}s elapsed${this.lastToolName ? `\nCurrent tool: ${this.lastToolName}` : ''}`]
+                : this.state === 'canceling'
+                    ? [`⏹️ Agent is stopping: ${progress.elapsedSeconds}s elapsed`]
+                    : this.state === 'finalizing'
+                        ? [`🔄 Saving the final result: ${progress.elapsedSeconds}s elapsed`]
+                        : ['✅ No active task']
 
         if (progress.outbox.pendingControl || progress.outbox.pendingNormal || progress.outbox.pendingProgressiveEdits) {
             lines.push(`Outbox pending: control=${progress.outbox.pendingControl}, normal=${progress.outbox.pendingNormal}, edits=${progress.outbox.pendingProgressiveEdits}`)
@@ -1628,16 +1952,18 @@ export class SemanticSessionRuntime {
         return port.getRecentTables?.().map(table => table.markdown) ?? []
     }
 
-    private async handleProviderNotReady(): Promise<void> {
+    private async handleProviderNotReady(signal: AbortSignal): Promise<void> {
         if (this.config.provider.wasReady?.() && this.config.provider.reinit) {
             await this.send({ text: '⚠️ Agent process crashed, reconnecting...', format: 'html' })
             try {
-                await this.config.provider.reinit()
+                await nextAbortableStep(this.config.provider.reinit(), signal)
             } catch (error) {
+                if (signal.aborted) return
                 const message = error instanceof Error ? error.message : String(error)
                 await this.send({ text: `❌ Agent could not restart: ${message}. Use /new to start a fresh session.`, format: 'html' })
                 return
             }
+            if (signal.aborted) return
             if (!this.config.provider.isReady()) {
                 const err = this.config.provider.getInitError() ?? 'Reconnection failed'
                 await this.send({ text: `❌ Agent could not restart: ${err}. Use /new to start a fresh session.`, format: 'html' })
@@ -1648,18 +1974,20 @@ export class SemanticSessionRuntime {
         }
 
         if ('init' in this.config.provider && typeof (this.config.provider as any).init === 'function') {
-            this.notifyStatus('idle', 'starting')
             try {
-                await (this.config.provider as any).init()
+                await nextAbortableStep(
+                    Promise.resolve((this.config.provider as AgentProvider & { init(): Promise<void> }).init()),
+                    signal,
+                )
             } catch (error) {
+                if (signal.aborted) return
                 const message = error instanceof Error ? error.message : String(error)
-                this.notifyStatus('idle')
                 await this.send({ text: `❌ Provider "${this.config.provider.name}" is not available: ${message}`, format: 'html' })
                 return
             }
+            if (signal.aborted) return
             if (!this.config.provider.isReady()) {
                 const err = this.config.provider.getInitError() ?? 'Initialization failed'
-                this.notifyStatus('idle')
                 await this.send({ text: `❌ Provider "${this.config.provider.name}" is not available: ${err}`, format: 'html' })
             }
             return

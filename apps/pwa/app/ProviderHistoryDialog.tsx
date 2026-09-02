@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type {
   ProviderHistoryMessage,
   ProviderSessionEntry,
@@ -20,6 +20,7 @@ type ProviderOption = {
   name: string;
   canListSessions: boolean;
   canInspectSessions: boolean;
+  canMaterializeHistory?: boolean;
 };
 
 type Props = {
@@ -40,7 +41,7 @@ type Props = {
   onInspect(session: ProviderSessionEntry): void;
   onRetry(): void;
   onOpenManaged(sessionId: string): void;
-  onContinue(session: ProviderSessionEntry, text: string): void;
+  onContinue(session: ProviderSessionEntry): void;
 };
 
 export function ProviderHistoryDialog(props: Props) {
@@ -68,10 +69,7 @@ function ProviderHistoryDialogContent({
   onOpenManaged,
   onContinue,
 }: Props) {
-  const draftKey = `${sourceKey}\u0000${provider}\u0000${selected?.sessionId ?? ""}`;
-  const [draftState, setDraftState] = useState({ key: draftKey, text: "" });
   const [mobilePreviewOpen, setMobilePreviewOpen] = useState(Boolean(selected));
-  const draft = draftState.key === draftKey ? draftState.text : "";
   const dialogRef = useRef<HTMLElement>(null);
   const sourceRef = useRef<HTMLSelectElement>(null);
   const providerRef = useRef<HTMLSelectElement>(null);
@@ -97,14 +95,6 @@ function ProviderHistoryDialogContent({
     initialFocusRef: sourceRef,
     onEscape: onClose,
   });
-
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    const text = draft.trim();
-    if (!selected || !text || loading === "session") return;
-    setDraftState({ key: draftKey, text: "" });
-    onContinue(selected, text);
-  };
 
   return (
     <div
@@ -294,19 +284,18 @@ function ProviderHistoryDialogContent({
                   )}
                 </div>
                 {!selected.managedSessionId && (
-                  <form className="provider-history-composer" onSubmit={submit}>
-                    <textarea
-                      value={draft}
-                      onChange={(event) => setDraftState({ key: draftKey, text: event.target.value })}
-                      placeholder="Continue this provider session in Malink"
-                      rows={2}
-                    />
-                    <button type="submit" disabled={!draft.trim() || loading === "session"}>
+                  <div className="provider-history-composer">
+                    <p>The session opens immediately. Earlier provider messages load only as you scroll back.</p>
+                    <button
+                      type="button"
+                      disabled={loading === "session"}
+                      onClick={() => onContinue(selected)}
+                    >
                       {selected.latestArchivedSessionId
                         ? "Continue as new Malink session"
                         : "Continue in Malink"}
                     </button>
-                  </form>
+                  </div>
                 )}
               </>
             )}

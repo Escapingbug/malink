@@ -55,6 +55,11 @@ class NativeClientReleaseTest {
         )))
     }
 
+    @Test
+    fun `self update always asks Android for user confirmation`() {
+        assertTrue(nativeUpdateRequiresUserConfirmation())
+    }
+
     private val parser = NativeClientReleaseParser(
         StaticServiceEndpoint.parse("https://updates.example"),
     )

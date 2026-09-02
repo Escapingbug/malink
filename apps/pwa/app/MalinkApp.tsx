@@ -36,6 +36,10 @@ import {
   type CommandCompletion,
 } from "./commandLifecycle";
 import {
+  composerEnterAction,
+  isDesktopBrowserUserAgent,
+} from "./composerKeyboard";
+import {
   DeviceInvitationLifecycle,
   InvitationRequestCancelledError,
 } from "./deviceInvitationLifecycle";
@@ -64,6 +68,7 @@ import {
   MatrixSettings,
   nativeUpdateStatusText,
   OFFICIAL_ANDROID_RELEASES_URL,
+  type ClientMatrixAccountUpgradeNotice,
 } from "./MatrixSettings";
 import { ConnectionOnboarding } from "./ConnectionOnboarding";
 import { MalinkMark } from "./MalinkMark";
@@ -185,6 +190,7 @@ import {
   sessionCreateCompletionMatchesRecovery,
   sessionCreateFailureMessage,
   sessionCreateRecoveryMatches,
+  sessionCreateRecoveryRemainingMs,
   writePendingSessionCreateRecovery,
   type PendingSessionCreateRecovery,
 } from "./sessionCreateRecovery";
@@ -194,8 +200,10 @@ import {
   createOptimisticSessionRecord,
   failOptimisticSession,
   markOptimisticSessionUncertain,
+  optimisticSessionProgressLabel,
   readOptimisticSession,
   retryOptimisticSession,
+  updateOptimisticSessionProgress,
   writeOptimisticSession,
   type OptimisticSessionRecord,
 } from "./optimisticSession";
@@ -257,14 +265,17 @@ import {
   type MobileConnectionSignal,
 } from "./connectionPresentation";
 import {
+  DURABLE_COMMAND_BACKGROUND_RECOVERY_MISSING_MESSAGE,
   durableCommandRecoveryNeedsAttention,
   durableCommandRecoveryPresentation,
+  durableCommandRecoveryResolutionPresentation,
   type DurableCommandRecoveryCheckResult,
 } from "./durableCommandRecoveryPresentation";
 import {
   hasBackgroundCommandRecovery,
   readBackgroundCommandRecoveries,
   readDismissedCommandRecoveries,
+  removeBackgroundCommandRecoveries,
   writeBackgroundCommandRecoveries,
   writeDismissedCommandRecoveries,
 } from "./dismissedCommandRecovery";
@@ -274,13 +285,14 @@ import {
   connectionRecoveryDisposition,
 } from "./connectionRecovery";
 import { deriveGatewayLiveness } from "./gatewayLiveness";
+import { ConnectionPathIndicator } from "./ConnectionPathIndicator";
+import { deriveConnectionPathPresentation } from "./connectionPathPresentation";
 import {
+  GATEWAY_FOREGROUND_PROBE_INTERVAL_MS,
   GATEWAY_LIVE_STATUS_TIMEOUT_MS,
   GATEWAY_ONLINE_PROOF_WINDOW_MS,
-  gatewayNodeNeedsForegroundProbe,
+  gatewayForegroundProbeDue,
   gatewayNodeLivenessAfterProbeTimeout,
-  gatewayNodeLivenessPresentation,
-  gatewayNodeLivenessSummary,
   gatewayNodeLivenessTargets,
   gatewayProbeRecoveryBackoffMs,
   type GatewayNodeLiveness,
@@ -308,10 +320,22 @@ import {
   type SessionReadState,
 } from "./sessionIndicators";
 import {
+  EMPTY_SESSION_MEANINGFUL_ACTIVITY,
+  isMeaningfulSessionMessage,
+  readSessionMeaningfulActivity,
+  recordSessionMeaningfulActivity,
+  writeSessionMeaningfulActivity,
+  type SessionMeaningfulActivityState,
+} from "./sessionMeaningfulActivity";
+import {
   compareSessionsForDisplay,
   projectSessionSummaryLabel,
   reconcileSessionDisplayOrder,
+  sessionDisplayKey,
+  sessionDisplayPriority,
+  sessionHasKnownMeaningfulActivity,
   sessionListSignal,
+  sessionMeaningfulActivityAt,
   sessionSignalLabel,
   sessionStatusTone,
   summarizeProjectSessions,
@@ -323,6 +347,11 @@ import {
   gatewayProjectOwner,
   gatewayProjectOwners,
 } from "./projectCatalog";
+import {
+  preserveProjectsDuringRecovery,
+  workspaceProjectRecovery,
+  type WorkspaceProjectRecovery,
+} from "./workspaceProjectRecovery";
 import {
   ALL_GATEWAYS_FILTER,
   normalizeGatewayFilter,
@@ -404,6 +433,7 @@ import {
 } from "./turnTimeline";
 import {
   latestPendingPromptCommandId,
+  selectStopControlTarget,
   stopRequestAccepted,
 } from "./stopControl";
 import {
@@ -440,7 +470,6 @@ import {
   type PairingPreview,
 } from "./pairing";
 import {
-  loginWithMatrixPassword,
   loginWithMatrixToken,
 } from "./matrixAuth";
 import {
@@ -1540,6 +1569,13 @@ function MalinkAppRuntime() {
   ));
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [composerOptionsOpen, setComposerOptionsOpen] = useState(false);
+  const desktopEnterSends = useMemo(
+    () => typeof navigator !== "undefined" && isDesktopBrowserUserAgent(
+      navigator.userAgent,
+      navigator.maxTouchPoints,
+    ),
+    [],
+  );
   const [providerCommandsOpen, setProviderCommandsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
@@ -1593,6 +1629,32 @@ function MalinkAppRuntime() {
   );
   const [gatewayState, setGatewayState] =
     useState<GatewayStateSnapshot | null>(initialGatewayUi.gatewayState);
+  const gatewayStateRef = useRef<GatewayStateSnapshot | null>(gatewayState);
+  gatewayStateRef.current = gatewayState;
+  const clientMatrixAccountUpgrade = useMemo<ClientMatrixAccountUpgradeNotice | null>(() => {
+    const targetUserId =
+      gatewayState?.gatewayDirectory?.directory.clientMatrixUserId?.trim() ?? "";
+    const currentUserId = matrixConfig.userId.trim();
+    if (!targetUserId || !currentUserId || targetUserId === currentUserId) return null;
+    return { currentUserId, targetUserId, mode: "notice-only" };
+  }, [gatewayState?.gatewayDirectory, matrixConfig.userId]);
+  const promptedClientMatrixUpgradeRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!clientMatrixAccountUpgrade) return;
+    const key = [
+      clientMatrixAccountUpgrade.currentUserId,
+      clientMatrixAccountUpgrade.targetUserId,
+    ].join("\u0000");
+    if (promptedClientMatrixUpgradeRef.current === key) return;
+    promptedClientMatrixUpgradeRef.current = key;
+    setSettingsOpen(true);
+  }, [clientMatrixAccountUpgrade]);
+  const [workspaceProjectRecoveryState, setWorkspaceProjectRecoveryState] =
+    useState<WorkspaceProjectRecovery | null>(() =>
+      initialGatewayUi.gatewayState
+        ? workspaceProjectRecovery(initialGatewayUi.gatewayState)
+        : null
+    );
   const [, setGatewayRevision] = useState<number | null>(null);
   const [revisionConflict, setRevisionConflict] =
     useState<RevisionConflictNotice | null>(null);
@@ -1703,6 +1765,12 @@ function MalinkAppRuntime() {
       ? EMPTY_SESSION_READ_STATE
       : readSessionReadState(window.localStorage),
   );
+  const [sessionMeaningfulActivity, setSessionMeaningfulActivity] =
+    useState<SessionMeaningfulActivityState>(() =>
+      typeof window === "undefined"
+        ? EMPTY_SESSION_MEANINGFUL_ACTIVITY
+        : readSessionMeaningfulActivity(window.localStorage),
+    );
   const [uiNotices, dispatchUiNotice] = useReducer(
     reduceUiNotices,
     EMPTY_UI_NOTICE_STATE,
@@ -1795,6 +1863,7 @@ function MalinkAppRuntime() {
     connection: MalinkClient;
   } | null>(null);
   const sessionCreateRecoveryTimerRef = useRef<number | null>(null);
+  const sessionCreateWatchdogTimerRef = useRef<number | null>(null);
   const sessionLifecycleRecoveriesRef = useRef(
     new Map<string, PendingSessionLifecycleRecovery>(),
   );
@@ -1832,6 +1901,7 @@ function MalinkAppRuntime() {
   );
   const reconciledOptimisticMessageIdsRef = useRef(new Set<string>());
   const pendingPromptSessionIdsRef = useRef(new Set<string>());
+  const locallyCancelledPromptSessionIdsRef = useRef(new Set<string>());
   const queuedSessionFlushIdsRef = useRef(new Set<string>());
   const queuedSessionFlushInFlightRef = useRef(new Set<string>());
   const optimisticPromotionInFlightRef = useRef<string | null>(null);
@@ -1895,6 +1965,11 @@ function MalinkAppRuntime() {
     scrollTop: number;
   } | null>(null);
   const sessionDisplayOrderRef = useRef<SessionDisplayOrder>(new Map());
+  const sessionMeaningfulActivityRef =
+    useRef<SessionMeaningfulActivityState>(sessionMeaningfulActivity);
+  const visibleGatewaySessionsRef = useRef<readonly GatewaySessionSummary[]>(
+    initialGatewayUi.gatewayState?.sessions ?? [],
+  );
 
   const gatewaySelected =
     gatewayState?.sessions.find(
@@ -1918,9 +1993,9 @@ function MalinkAppRuntime() {
       ? "ready"
       : null;
   const selectedUpdateLabel = selectedUpdateSignal === "failed"
-    ? "Task needs attention"
+    ? "Review error"
     : selectedUpdateSignal === "ready"
-      ? "New result ready"
+      ? "Reply needed"
       : null;
   const selectedLifecycleAction = gatewaySelected
     ? sessionLifecycleBusy.get(
@@ -2005,10 +2080,13 @@ function MalinkAppRuntime() {
     () => gatewayState?.sessions ?? [],
     [gatewayState],
   );
+  visibleGatewaySessionsRef.current = visibleGatewaySessions;
+  sessionMeaningfulActivityRef.current = sessionMeaningfulActivity;
   const sessionDisplayOrder = useMemo(() => {
     const next = reconcileSessionDisplayOrder(
       sessionDisplayOrderRef.current,
       visibleGatewaySessions,
+      sessionMeaningfulActivityRef.current,
     );
     sessionDisplayOrderRef.current = next;
     return next;
@@ -2182,7 +2260,12 @@ function MalinkAppRuntime() {
     const projects = [...groups.values()];
     for (const project of projects) {
       project.sessions.sort((left, right) =>
-        compareSessionsForDisplay(left, right, sessionDisplayOrder),
+        compareSessionsForDisplay(
+          left,
+          right,
+          sessionDisplayOrder,
+          sessionReadState,
+        ),
       );
     }
     projects.sort((left, right) =>
@@ -2199,6 +2282,7 @@ function MalinkAppRuntime() {
     projectGatewaysById,
     search,
     sessionDisplayOrder,
+    sessionReadState,
   ]);
   const scratchGroups = useMemo(() => {
     const groups = new Map<string, {
@@ -2228,7 +2312,12 @@ function MalinkAppRuntime() {
     const ordered = [...groups.values()];
     for (const group of ordered) {
       group.sessions.sort((left, right) =>
-        compareSessionsForDisplay(left, right, sessionDisplayOrder),
+        compareSessionsForDisplay(
+          left,
+          right,
+          sessionDisplayOrder,
+          sessionReadState,
+        ),
       );
     }
     ordered.sort((left, right) =>
@@ -2241,11 +2330,47 @@ function MalinkAppRuntime() {
     matrixConfig.gatewayId,
     projectGatewaysById,
     sessionDisplayOrder,
+    sessionReadState,
   ]);
-  const conversationGroups = useMemo(() => [
-    ...scratchGroups,
-    ...projectGroups.map((project) => ({ ...project, temporary: false as const })),
-  ], [projectGroups, scratchGroups]);
+  const conversationGroups = useMemo(() => {
+    const groups = [
+      ...scratchGroups,
+      ...projectGroups.map((project) => ({ ...project, temporary: false as const })),
+    ];
+    groups.sort((left, right) => {
+      const leftPriority = Math.min(
+        3,
+        ...left.sessions.map((session) =>
+          sessionDisplayPriority(session, sessionReadState)
+        ),
+      );
+      const rightPriority = Math.min(
+        3,
+        ...right.sessions.map((session) =>
+          sessionDisplayPriority(session, sessionReadState)
+        ),
+      );
+      const leftRank = Math.min(
+        Number.POSITIVE_INFINITY,
+        ...left.sessions.map(
+          (session) => sessionDisplayOrder.get(sessionDisplayKey(session)) ??
+            Number.POSITIVE_INFINITY,
+        ),
+      );
+      const rightRank = Math.min(
+        Number.POSITIVE_INFINITY,
+        ...right.sessions.map(
+          (session) => sessionDisplayOrder.get(sessionDisplayKey(session)) ??
+            Number.POSITIVE_INFINITY,
+        ),
+      );
+      return leftPriority - rightPriority ||
+        leftRank - rightRank ||
+        left.projectName.localeCompare(right.projectName) ||
+        left.gatewayLabel.localeCompare(right.gatewayLabel);
+    });
+    return groups;
+  }, [projectGroups, scratchGroups, sessionDisplayOrder, sessionReadState]);
   const inboxFiles = gatewayState?.inboxFiles ?? [];
   const matrixConnectionPresentation = useMemo(
     () => deriveConnectionPresentation(connectionStatus, connectionDetail),
@@ -2349,6 +2474,9 @@ function MalinkAppRuntime() {
   const isStopping = Boolean(
     selectedSessionId && stoppingSessionIds.has(selectedSessionId),
   );
+  const isPromptSubmitting = Boolean(
+    selectedSessionId && submittingPromptSessionIds.has(selectedSessionId),
+  );
   const agentActivity = selectedSessionId
     ? agentActivitiesBySession.get(selectedSessionId) ?? null
     : null;
@@ -2372,15 +2500,20 @@ function MalinkAppRuntime() {
         receivedPromptCommandIds,
       )
     : null;
-  const stopTargetId = pendingPromptStopTargetId ?? selected?.activeTurnId ?? null;
-  const stopTargetsPendingPrompt = pendingPromptStopTargetId !== null;
+  const stopControlTarget = selectStopControlTarget({
+    promptSubmitting: isPromptSubmitting,
+    pendingPromptCommandId: pendingPromptStopTargetId,
+    activeTurnId: selected?.activeTurnId ?? null,
+  });
+  const stopTargetId = "commandId" in stopControlTarget
+    ? stopControlTarget.commandId
+    : null;
+  const stopTargetsPendingPrompt = stopControlTarget.kind === "queued-prompt";
+  const stopTargetsLocalSubmission = stopControlTarget.kind === "local-submission";
   useLayoutEffect(() => {
     resizeComposerTextarea(composerTextareaRef.current);
   }, [draft, selectedSessionId]);
 
-  const isPromptSubmitting = Boolean(
-    selectedSessionId && submittingPromptSessionIds.has(selectedSessionId),
-  );
   const sessionReady = Boolean(
     gatewayAvailable &&
       gatewayState &&
@@ -2487,8 +2620,14 @@ function MalinkAppRuntime() {
     || (!projectSettingsGatewayDescriptor
       && projectSettingsWorkspace?.projectId === matrixConfig.projectId),
   );
+  const projectSettingsHasSessions = Boolean(
+    projectSettingsWorkspace
+    && gatewayState?.sessions.some(session =>
+      session.projectId === projectSettingsWorkspace.projectId),
+  );
   const projectSettingsCanDelete = projectSettingsWorkspace
     ? !projectSettingsIsControlRoute
+      && !projectSettingsHasSessions
       && (gatewayState?.projects ?? [gatewayState?.workspace].filter(Boolean)).filter(project => {
         if (!project) return false;
         const owner = projectGatewaysById.get(project.projectId) ?? fallbackProjectGateway;
@@ -2788,13 +2927,25 @@ function MalinkAppRuntime() {
         .sort()
         .join("\0")}`
     : null;
-  const gatewayNodeSummary = useMemo(
-    () => gatewayNodeLivenessSummary({
-      gatewayNodeIds: gatewayNodeProbeTargets.map((target) => target.gatewayNodeId),
-      values: gatewayNodeLivenessById,
+  const connectionPathPresentation = useMemo(
+    () => deriveConnectionPathPresentation({
+      trusted: trustedGateway !== null,
+      matrixStatus: connectionStatus,
+      gatewayLabel: activeProjectGateway.label,
+      gatewayLiveness:
+        gatewayNodeLivenessById[activeProjectGateway.gatewayNodeId],
+      gatewaySnapshotAvailable: gatewayState?.updatedAt !== undefined,
       now: gatewayLivenessNow,
     }),
-    [gatewayLivenessNow, gatewayNodeLivenessById, gatewayNodeProbeTargets],
+    [
+      activeProjectGateway.gatewayNodeId,
+      activeProjectGateway.label,
+      connectionStatus,
+      gatewayLivenessNow,
+      gatewayNodeLivenessById,
+      gatewayState?.updatedAt,
+      trustedGateway,
+    ],
   );
   const providerHistorySources = useMemo<ProviderHistorySource[]>(() => {
     if (!gatewayState) return [];
@@ -2895,13 +3046,59 @@ function MalinkAppRuntime() {
     });
   }
 
-  function backgroundRecoveredNativeCommandNotice(commandId: string): void {
+  function rememberBackgroundRecoveredNativeCommand(commandId: string): void {
     const command = recoveredNativeCommandsRef.current.get(commandId);
     if (!command || recoveredNativeCommandIsOwned(commandId)) return;
     const current = readBackgroundCommandRecoveries(window.localStorage);
     if (hasBackgroundCommandRecovery(current, commandId)) return;
     current.add(commandId);
     writeBackgroundCommandRecoveries(window.localStorage, current);
+  }
+
+  function clearBackgroundRecoveredNativeCommandNotice(
+    ...commandIds: string[]
+  ): boolean {
+    const ids = [...new Set(commandIds)];
+    const current = readBackgroundCommandRecoveries(window.localStorage);
+    if (!ids.some(commandId => hasBackgroundCommandRecovery(current, commandId))) {
+      return false;
+    }
+    const remaining = removeBackgroundCommandRecoveries(current, ids);
+    writeBackgroundCommandRecoveries(window.localStorage, remaining);
+    for (const commandId of ids) {
+      recoverUiNotice(`command:background-recovery:${commandId}`);
+    }
+    return true;
+  }
+
+  function resolveBackgroundRecoveredNativeCommandNotice(
+    completion: CommandCompletion,
+    ...commandIds: string[]
+  ): void {
+    const ids = [...new Set([...commandIds, completion.commandId])];
+    if (!clearBackgroundRecoveredNativeCommandNotice(...ids)) return;
+    const presentation = durableCommandRecoveryResolutionPresentation(completion);
+    showUiNotice(
+      `command:background-recovery:${completion.commandId}`,
+      "background",
+      presentation.severity,
+      presentation.message,
+      presentation.autoDismissMs,
+    );
+  }
+
+  function reportMissingBackgroundRecoveredNativeCommand(
+    ...commandIds: string[]
+  ): void {
+    if (!clearBackgroundRecoveredNativeCommandNotice(...commandIds)) return;
+    const commandId = commandIds.at(-1);
+    if (!commandId) return;
+    showUiNotice(
+      `command:background-recovery:${commandId}`,
+      "background",
+      "warning",
+      DURABLE_COMMAND_BACKGROUND_RECOVERY_MISSING_MESSAGE,
+    );
   }
 
   function selectGatewayFilter(gatewayNodeId: string): void {
@@ -3136,6 +3333,42 @@ function MalinkAppRuntime() {
     });
   }
 
+  function observeMeaningfulSessionMessage(
+    incoming: IncomingMalinkMessage,
+    sessionId: string,
+  ): void {
+    if (!isMeaningfulSessionMessage(incoming)) return;
+    const projectId = resolveIncomingProjectId(incoming, sessionId);
+    if (!projectId) return;
+    const sessionKey = sessionDisplayKey({ id: sessionId, projectId });
+    const current = sessionMeaningfulActivityRef.current;
+    const next = recordSessionMeaningfulActivity(
+      current,
+      sessionKey,
+      incoming.timestamp,
+    );
+    if (next === current) return;
+    sessionMeaningfulActivityRef.current = next;
+    setSessionMeaningfulActivity(next);
+  }
+
+  function resolveIncomingProjectId(
+    incoming: IncomingMalinkMessage,
+    sessionId: string,
+  ): string | undefined {
+    if (incoming.projectId) return incoming.projectId;
+    if (
+      selectedSessionIdRef.current === sessionId &&
+      selectedProjectIdRef.current
+    ) {
+      return selectedProjectIdRef.current;
+    }
+    const matches = visibleGatewaySessionsRef.current.filter(
+      (session) => session.id === sessionId,
+    );
+    return matches.length === 1 ? matches[0]?.projectId : undefined;
+  }
+
   function reconcileSessionActivityUpdatedAt(
     sessions: readonly GatewaySessionSummary[],
   ): void {
@@ -3259,6 +3492,13 @@ function MalinkAppRuntime() {
   }, [sessionReadState]);
 
   useEffect(() => {
+    writeSessionMeaningfulActivity(
+      window.localStorage,
+      sessionMeaningfulActivity,
+    );
+  }, [sessionMeaningfulActivity]);
+
+  useEffect(() => {
     if (!Object.values(uiNotices).some((notice) => notice.expiresAt !== null)) {
       return;
     }
@@ -3375,7 +3615,12 @@ function MalinkAppRuntime() {
         // The in-memory failed draft remains usable for this page lifetime.
       }
     }
-    if (recovery) pendingSessionCreateRecoveryRef.current = recovery;
+    if (recovery) {
+      pendingSessionCreateRecoveryRef.current = recovery;
+      if (optimistic?.phase === "creating") {
+        armPendingSessionCreateWatchdog(recovery);
+      }
+    }
     if (optimistic) optimisticSessionRef.current = optimistic;
     let active = true;
     queueMicrotask(() => {
@@ -3470,10 +3715,89 @@ function MalinkAppRuntime() {
 
   useEffect(() => {
     if (gatewayNodeProbeTargets.length === 0) return;
+    let timer: number | null = null;
     const refreshClock = () => setGatewayLivenessNow(Date.now());
-    const timer = window.setInterval(refreshClock, 30_000);
-    return () => window.clearInterval(timer);
+    const reconcile = () => {
+      if (timer !== null) {
+        window.clearInterval(timer);
+        timer = null;
+      }
+      if (document.visibilityState !== "visible") return;
+      refreshClock();
+      timer = window.setInterval(refreshClock, 30_000);
+    };
+    reconcile();
+    document.addEventListener("visibilitychange", reconcile);
+    return () => {
+      if (timer !== null) window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", reconcile);
+    };
   }, [gatewayNodeProbeTargets.length]);
+
+  useEffect(() => {
+    connectionStatusRef.current = connectionStatus;
+  }, [connectionStatus]);
+
+  useEffect(() => {
+    const probeTargets = gatewayNodeProbeTargets.filter((target) =>
+      target.canProbe && target.targetProjectId
+    );
+    if (probeTargets.length === 0) return;
+    let timer: number | null = null;
+    const clearTimer = () => {
+      if (timer === null) return;
+      window.clearInterval(timer);
+      timer = null;
+    };
+    const tick = () => {
+      const visible = document.visibilityState === "visible";
+      const networkOnline = navigator.onLine;
+      const matrixConnected = connectionStatus === "connected";
+      if (!visible || !networkOnline || !matrixConnected) {
+        clearTimer();
+        return;
+      }
+      const now = Date.now();
+      for (const target of probeTargets) {
+        const current = gatewayNodeLivenessRef.current[target.gatewayNodeId];
+        if (!gatewayForegroundProbeDue({
+          visible,
+          networkOnline,
+          matrixConnected,
+          inFlight: gatewayNodeProbeFlightsRef.current.has(target.gatewayNodeId),
+          now,
+          value: current,
+          lastAutomaticProbeAt:
+            gatewayNodeAutomaticProbeAtRef.current[target.gatewayNodeId],
+        })) continue;
+        gatewayNodeAutomaticProbeAtRef.current[target.gatewayNodeId] = now;
+        void probeGatewayNodeLiveness(target);
+      }
+    };
+    const reconcile = () => {
+      clearTimer();
+      if (
+        document.visibilityState !== "visible" ||
+        !navigator.onLine ||
+        connectionStatus !== "connected"
+      ) return;
+      tick();
+      timer = window.setInterval(tick, GATEWAY_FOREGROUND_PROBE_INTERVAL_MS);
+    };
+    reconcile();
+    document.addEventListener("visibilitychange", reconcile);
+    window.addEventListener("online", reconcile);
+    window.addEventListener("offline", reconcile);
+    return () => {
+      clearTimer();
+      document.removeEventListener("visibilitychange", reconcile);
+      window.removeEventListener("online", reconcile);
+      window.removeEventListener("offline", reconcile);
+    };
+    // The probe function intentionally reads the current client and command
+    // refs. Restart only when routes or Matrix connectivity change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionStatus, gatewayNodeProbeTargets]);
 
   useEffect(() => {
     const knownNodeIds = new Set(
@@ -3511,7 +3835,7 @@ function MalinkAppRuntime() {
           checkedAt: verifiedAt,
           lastVerifiedAt: verifiedAt,
           consecutiveNoReplies: 0,
-          detail: "A shared signed Gateway heartbeat was received.",
+          detail: "A signed Gateway status transition was received.",
         };
       });
       setGatewayUpdateNodeRuntime(gatewayNodeId, current => {
@@ -3531,36 +3855,6 @@ function MalinkAppRuntime() {
     // client-originated Matrix command is needed to observe them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gatewayState?.gatewayNodeStatuses, gatewayUpdateReleaseKey]);
-
-  useEffect(() => {
-    if (connectionStatus !== "connected" || gatewayNodeProbeTargets.length === 0) return;
-    const probeExpiredNodes = () => {
-      if (document.visibilityState !== "visible") return;
-      const now = Date.now();
-      for (const target of gatewayNodeProbeTargets) {
-        if (!target.canProbe || !target.targetProjectId) continue;
-        if (!gatewayNodeNeedsForegroundProbe({
-          value: gatewayNodeLivenessRef.current[target.gatewayNodeId],
-          now,
-          lastAutomaticProbeAt:
-            gatewayNodeAutomaticProbeAtRef.current[target.gatewayNodeId],
-        })) continue;
-        gatewayNodeAutomaticProbeAtRef.current[target.gatewayNodeId] = now;
-        void probeGatewayNodeLiveness(target);
-      }
-    };
-    probeExpiredNodes();
-    const onVisibilityChange = () => probeExpiredNodes();
-    const timer = window.setInterval(probeExpiredNodes, 30_000);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-    // The probe function intentionally reads current runtime refs. Restarting
-    // this effect for render-local helper identities would duplicate commands.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionStatus, gatewayNodeProbeTargets]);
 
   useEffect(() => {
     if (connectionStatus !== "connected") return;
@@ -3739,10 +4033,6 @@ function MalinkAppRuntime() {
   }
 
   useEffect(() => {
-    connectionStatusRef.current = connectionStatus;
-  }, [connectionStatus]);
-
-  useEffect(() => {
     if (isNativeManagedMatrixConfig(matrixConfig)) return;
     const reportBrowserOffline = () => {
       connectionStatusRef.current = "offline";
@@ -3759,6 +4049,9 @@ function MalinkAppRuntime() {
     () => () => {
       if (sessionCreateRecoveryTimerRef.current !== null) {
         window.clearTimeout(sessionCreateRecoveryTimerRef.current);
+      }
+      if (sessionCreateWatchdogTimerRef.current !== null) {
+        window.clearTimeout(sessionCreateWatchdogTimerRef.current);
       }
       if (connectionRecoveryTimerRef.current !== null) {
         window.clearTimeout(connectionRecoveryTimerRef.current);
@@ -3995,7 +4288,16 @@ function MalinkAppRuntime() {
       // a stored native session at the same time would attach a second Web
       // client before the one-time Matrix bootstrap can acquire the port.
       if (deferStoredStartupForPairing) return;
-      const nativeSession = await resumeNativeMatrixSessionIfAvailable();
+      let nativeSession: Awaited<ReturnType<typeof resumeNativeMatrixSessionIfAvailable>>;
+      try {
+        nativeSession = await resumeNativeMatrixSessionIfAvailable();
+      } catch (error) {
+        setConnectionError(
+          `Android local runtime could not start: ${formatUiError(error)}. ` +
+            "Keep the app data intact, then export native diagnostics from Android app settings.",
+        );
+        return;
+      }
       if (nativeSession) {
         const nativeConfig = nativeMatrixSessionConfig(nativeSession);
         clearPendingPairing();
@@ -4076,7 +4378,7 @@ function MalinkAppRuntime() {
       setSettingsOpen(true);
       await pairingRecoveryRef.current(preview, recoveryConfig);
     })().catch((error) => {
-      setConnectionError(`Saved trust could not be verified: ${formatUiError(error)}`);
+      setConnectionError(`Connection startup failed: ${formatUiError(error)}`);
     });
     // URL fragments and persisted pairing recovery are consumed once at boot.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -4188,6 +4490,7 @@ function MalinkAppRuntime() {
     }
     const sessionId =
       incoming.sessionId ?? selectedSessionIdRef.current ?? undefined;
+    if (sessionId) observeMeaningfulSessionMessage(incoming, sessionId);
     const liveSessionKey = sessionId
       ? historyCacheSessionId(sessionId, incoming.projectId)
       : undefined;
@@ -5351,6 +5654,7 @@ function MalinkAppRuntime() {
       input,
     };
     pendingSessionCreateRecoveryRef.current = recovery;
+    armPendingSessionCreateWatchdog(recovery);
     setPendingSessionCreate(input);
     setNewSessionBusy(true);
     try {
@@ -5380,6 +5684,10 @@ function MalinkAppRuntime() {
       window.clearTimeout(sessionCreateRecoveryTimerRef.current);
       sessionCreateRecoveryTimerRef.current = null;
     }
+    if (sessionCreateWatchdogTimerRef.current !== null) {
+      window.clearTimeout(sessionCreateWatchdogTimerRef.current);
+      sessionCreateWatchdogTimerRef.current = null;
+    }
     try {
       clearPendingSessionCreateRecovery(window.localStorage, commandId);
     } catch (error) {
@@ -5390,6 +5698,59 @@ function MalinkAppRuntime() {
         `The completed session recovery marker could not be cleared: ${formatUiError(error)}`,
       );
     }
+  }
+
+  function armPendingSessionCreateWatchdog(
+    recovery: PendingSessionCreateRecovery,
+  ): void {
+    if (sessionCreateWatchdogTimerRef.current !== null) {
+      window.clearTimeout(sessionCreateWatchdogTimerRef.current);
+    }
+    sessionCreateWatchdogTimerRef.current = window.setTimeout(() => {
+      sessionCreateWatchdogTimerRef.current = null;
+      const current = pendingSessionCreateRecoveryRef.current;
+      if (!current || current.commandId !== recovery.commandId) return;
+      const draft = optimisticSessionRef.current;
+      if (!draft || draft.phase !== "creating") return;
+      commitOptimisticSession(
+        markOptimisticSessionUncertain(
+          draft,
+          "Your computer accepted the secure command. Malink is still checking its final result in the background; checking it again cannot create a duplicate.",
+        ),
+      );
+      clearPendingSessionCreateUi();
+      showUiNotice(
+        "session:create",
+        "session",
+        "warning",
+        "Session creation has not reached a confirmed result yet. Malink will keep checking the same saved command and will not submit it twice.",
+      );
+    }, sessionCreateRecoveryRemainingMs(recovery));
+  }
+
+  function applySessionCreateCommandProgress(
+    command: MalinkRecoveredDurableCommand,
+  ): void {
+    const recovery = pendingSessionCreateRecoveryRef.current;
+    const draft = optimisticSessionRef.current;
+    if (
+      !recovery || recovery.commandId !== command.commandId ||
+      !draft || draft.phase !== "creating"
+    ) return;
+    const progress = command.state === "transmitting"
+      ? "transmitting"
+      : command.state === "accepted"
+        ? "matrix_accepted"
+        : command.state === "running"
+          ? "gateway_running"
+          : command.state === "needs_review" || command.state === "recovery_required"
+            ? "checking"
+            : command.state === "queued"
+              ? "saved"
+              : null;
+    if (!progress) return;
+    const next = updateOptimisticSessionProgress(draft, progress);
+    if (next !== draft) commitOptimisticSession(next);
   }
 
   function schedulePendingSessionCreateRecovery(
@@ -5455,6 +5816,7 @@ function MalinkAppRuntime() {
           }
           activeCommandId = rebound.commandId;
           pendingSessionCreateRecoveryRef.current = rebound;
+          armPendingSessionCreateWatchdog(rebound);
           sessionCreateRecoveryInFlightRef.current = {
             commandId: activeCommandId,
             connection,
@@ -5635,6 +5997,7 @@ function MalinkAppRuntime() {
       optimisticMessagesRef.current.clear();
       reconciledOptimisticMessageIdsRef.current.clear();
       pendingPromptSessionIdsRef.current.clear();
+      locallyCancelledPromptSessionIdsRef.current.clear();
       setSubmittingPromptSessionIds(new Set());
       revisionConflictRef.current = null;
       nativeCommandReviewRef.current = null;
@@ -5674,7 +6037,9 @@ function MalinkAppRuntime() {
     if (!automaticRecovery && !preserveGatewayProjection) {
       knownGatewaySessionIdsRef.current.clear();
       liveMessagesBySessionRef.current.clear();
+      gatewayStateRef.current = null;
       setGatewayState(null);
+      setWorkspaceProjectRecoveryState(null);
       setGatewayRevision(null);
       selectedSessionIdRef.current = null;
       selectedProjectIdRef.current = null;
@@ -5842,13 +6207,21 @@ function MalinkAppRuntime() {
             );
           }
           if (state.gatewayState) {
+            const incomingGatewayState = state.gatewayState;
+            const projectRecovery = workspaceProjectRecovery(incomingGatewayState);
+            const nextGatewayState = preserveProjectsDuringRecovery(
+              gatewayStateRef.current,
+              incomingGatewayState,
+            );
+            gatewayStateRef.current = nextGatewayState;
+            setWorkspaceProjectRecoveryState(projectRecovery);
             writeGatewayUiCache(
               window.localStorage,
               normalized,
-              state.gatewayState,
+              nextGatewayState,
             );
             const nextSessionIds = new Set(
-              state.gatewayState.sessions.map((session) => session.id),
+              nextGatewayState.sessions.map((session) => session.id),
             );
             for (const previousSessionId of knownGatewaySessionIdsRef.current) {
               if (nextSessionIds.has(previousSessionId)) continue;
@@ -5878,16 +6251,16 @@ function MalinkAppRuntime() {
                 malinkClientRef.current,
               );
             }
-            setGatewayState(state.gatewayState);
-            reconcileSessionActivityUpdatedAt(state.gatewayState.sessions);
-            for (const session of state.gatewayState.sessions) {
+            setGatewayState(nextGatewayState);
+            reconcileSessionActivityUpdatedAt(nextGatewayState.sessions);
+            for (const session of nextGatewayState.sessions) {
               observeAgentActivityWatermark(
                 session.id,
                 agentActivityWatermarkForSession(session),
               );
             }
             const runningIds = new Set(
-              state.gatewayState.sessions
+              nextGatewayState.sessions
                 .filter(
                   (session) =>
                     session.status === "running" ||
@@ -5896,7 +6269,7 @@ function MalinkAppRuntime() {
                 .map((session) => session.id),
             );
             const stoppingIds = new Set(
-              state.gatewayState.sessions
+              nextGatewayState.sessions
                 .filter((session) => session.status === "stopping")
                 .map((session) => session.id),
             );
@@ -5904,7 +6277,7 @@ function MalinkAppRuntime() {
             setStoppingSessionIds(stoppingIds);
             setAgentActivitiesBySession((current) => {
               const next = new Map<string, AgentActivity>();
-              for (const session of state.gatewayState!.sessions) {
+              for (const session of nextGatewayState.sessions) {
                 if (session.activityPhase === "starting") {
                   next.set(session.id, STARTING_AGENT_ACTIVITY);
                 } else if (
@@ -5935,7 +6308,7 @@ function MalinkAppRuntime() {
               return next;
             });
             const selectableSessions = sessionsAvailableForAutomaticSelection(
-              state.gatewayState.sessions,
+              nextGatewayState.sessions,
               pendingSessionLifecycleIds(sessionLifecycleBusyRef.current),
             );
             const openedSessionId = pendingOpenedSessionIdRef.current;
@@ -5955,7 +6328,7 @@ function MalinkAppRuntime() {
               requestedSessionId: openedSessionId,
               pendingCreatedSessionId: localDraftId ? null : pendingCreated,
               localDraftSessionId: localDraftId,
-              currentSessionId: state.gatewayState.currentSessionId,
+              currentSessionId: nextGatewayState.currentSessionId,
             });
             const explicitlyOpened = selection.source === "requested";
             const createdSelected = selection.source === "pending-created";
@@ -5970,7 +6343,7 @@ function MalinkAppRuntime() {
             }
             setSessionReadState((current) => initializeSessionReadState(
               current,
-              state.gatewayState!.sessions,
+              nextGatewayState.sessions,
             ));
             if (selection.shouldActivate) {
               const nextSession = selection.session;
@@ -6031,11 +6404,13 @@ function MalinkAppRuntime() {
         },
         onDurableCommandRecovered(command) {
           if (!isCurrentStartup()) return;
+          applySessionCreateCommandProgress(command);
           recoveredNativeCommandsRef.current.set(command.commandId, command);
           syncRecoveredNativeCommands();
         },
         onDurableCommandChanged(command) {
           if (!isCurrentStartup()) return;
+          applySessionCreateCommandProgress(command);
           if (!recoveredNativeCommandsRef.current.has(command.commandId)) return;
           recoveredNativeCommandsRef.current.set(command.commandId, command);
           syncRecoveredNativeCommands();
@@ -6161,6 +6536,7 @@ function MalinkAppRuntime() {
     optimisticMessagesRef.current.clear();
     reconciledOptimisticMessageIdsRef.current.clear();
     pendingPromptSessionIdsRef.current.clear();
+    locallyCancelledPromptSessionIdsRef.current.clear();
     setSubmittingPromptSessionIds(new Set());
     revisionConflictRef.current = null;
     nativeCommandReviewRef.current = null;
@@ -6210,7 +6586,9 @@ function MalinkAppRuntime() {
     agentActivityWatermarksRef.current.clear();
     setSelectedSessionId(null);
     setSelectedProjectId(null);
+    gatewayStateRef.current = null;
     setGatewayState(null);
+    setWorkspaceProjectRecoveryState(null);
     setGatewayRevision(null);
     selectedSessionIdRef.current = null;
     selectedProjectIdRef.current = null;
@@ -6289,7 +6667,9 @@ function MalinkAppRuntime() {
     );
     setActiveDeviceCount(null);
     setGatewayRevision(null);
+    gatewayStateRef.current = null;
     setGatewayState(null);
+    setWorkspaceProjectRecoveryState(null);
     selectedSessionIdRef.current = null;
     selectedProjectIdRef.current = null;
     setSelectedSessionId(null);
@@ -6380,7 +6760,7 @@ function MalinkAppRuntime() {
       if (!matrixLogin) return;
       if (matrixLogin.expiresAt <= Date.now()) {
         setConnectionError(
-          "The one-time sign-in expired. Sign in below; the invitation may still be valid.",
+          "The one-time sign-in expired. Request a new device invitation.",
         );
         return;
       }
@@ -6416,56 +6796,12 @@ function MalinkAppRuntime() {
       } catch (error) {
         settleNativeBootstrapTransfer("error");
         setConnectionError(
-          `The one-time sign-in could not be used: ${formatUiError(error)} Sign in below to continue.`,
+          `The one-time sign-in could not be used: ${formatUiError(error)} Request a new device invitation.`,
         );
       }
     } catch (error) {
       setConnectionError(formatUiError(error));
       setSettingsOpen(true);
-    }
-  }
-
-  async function signInForPairing(userId: string, password: string) {
-    if (pairingBusy) return;
-    setPairingBusy(true);
-    setPairingError(null);
-    try {
-      detachClientForNativeBootstrap();
-      const preview = pairingPreview;
-      const nativeBootstrap = preview
-        ? await bootstrapNativeMatrixSessionIfAvailable({
-            homeserver: matrixConfig.homeserver,
-            password,
-            expectedUserId: userId,
-            deviceName: browserDeviceName(),
-            roomBinding: nativeMatrixRoomBindingFromPairingPreview(preview),
-          })
-        : null;
-      const credentials = nativeBootstrap
-        ? {
-            homeserver: nativeBootstrap.session.homeserver,
-            userId: nativeBootstrap.session.userId,
-            matrixDeviceId: nativeBootstrap.session.matrixDeviceId,
-            accessToken: NATIVE_MANAGED_ACCESS_TOKEN,
-          }
-        : await loginWithMatrixPassword(
-            matrixConfig.homeserver,
-            userId,
-            password,
-            browserDeviceName(),
-          );
-      const next = { ...matrixConfig, ...credentials };
-      setMatrixConfig(next);
-      saveMatrixConfig(next);
-      // Native bootstrap is opportunistic. A regular browser deliberately
-      // falls back to the Web Matrix client, so the temporary transfer state
-      // must be settled for both outcomes before pairing can be confirmed.
-      settleNativeBootstrapTransfer("offline");
-    } catch (error) {
-      settleNativeBootstrapTransfer("error");
-      setConnectionError(formatUiError(error));
-    } finally {
-      setPairingBusy(false);
     }
   }
 
@@ -6583,19 +6919,20 @@ function MalinkAppRuntime() {
             setInvitationReauthRequired(true);
             throw new InvitationReauthenticationRequiredError();
           }
+          if (tokenResult.status !== "ready") {
+            throw new Error(
+              "This Matrix server could not create the required one-time device sign-in. No incomplete invitation was shared.",
+            );
+          }
           const fullInvitation = createDeviceInvitationLink({
             pairingLink: gatewayInvitation.pairingLink,
             appUrl: window.location.href,
-            ...(tokenResult.status === "ready"
-              ? {
-                  matrixLogin: {
-                    homeserver: matrixConfig.homeserver,
-                    userId: matrixConfig.userId,
-                    loginToken: tokenResult.loginToken,
-                    expiresAt: tokenResult.expiresAt,
-                  },
-                }
-              : {}),
+            matrixLogin: {
+              homeserver: matrixConfig.homeserver,
+              userId: matrixConfig.userId,
+              loginToken: tokenResult.loginToken,
+              expiresAt: tokenResult.expiresAt,
+            },
           });
           if (fullInvitation.expiresAt <= Date.now() + 15_000) {
             await connection.releaseCommand(gatewayInvitation.commandId);
@@ -8607,7 +8944,7 @@ function MalinkAppRuntime() {
     chooseSession(sessionId, source.projectId);
   }
 
-  function continueProviderHistorySession(session: ProviderSessionEntry, text: string) {
+  function continueProviderHistorySession(session: ProviderSessionEntry) {
     const source = findProviderHistorySource(providerHistorySources, {
       gatewayNodeId: providerHistoryGatewayNodeIdRef.current,
       projectId: providerHistoryProjectIdRef.current,
@@ -8628,7 +8965,8 @@ function MalinkAppRuntime() {
     const providerCapability = historyCapabilities?.providers.find(
       candidate => candidate.id === provider
         && candidate.canListSessions
-        && candidate.canInspectSessions,
+        && candidate.canInspectSessions
+        && candidate.canMaterializeHistory,
     );
     if (!historyWorkspace || !providerCapability) {
       setProviderHistoryError(
@@ -8647,7 +8985,6 @@ function MalinkAppRuntime() {
       provider,
       providerSessionId: session.sessionId,
       title: session.title,
-      initialPrompt: text,
       ...(provider === historyWorkspace.provider && historyWorkspace.model
         ? { model: historyWorkspace.model }
         : providerCapability.models[0]
@@ -8963,6 +9300,19 @@ function MalinkAppRuntime() {
       if (!connection) {
         throw new Error("The secure session command was not accepted.");
       }
+      if (input.initialPrompt) {
+        const queued = await queueMessageForCreatingSession(
+          localRecord,
+          input.initialPrompt,
+          undefined,
+          `queued-initial:${localRecord.localSessionId}`,
+        );
+        if (!queued) {
+          throw new Error(
+            "The first message could not be saved locally, so the session was not created.",
+          );
+        }
+      }
       if (input.setAsProjectDefault) {
         const settingsUpdate = await sendRealCommand({
           operation: "project.settings",
@@ -8980,7 +9330,6 @@ function MalinkAppRuntime() {
         provider: input.provider,
         ...(input.providerSessionId ? { providerSessionId: input.providerSessionId } : {}),
         ...(input.title ? { title: input.title } : {}),
-        ...(input.initialPrompt ? { initialPrompt: input.initialPrompt } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.reasoningEffort
           ? { reasoningEffort: input.reasoningEffort }
@@ -9387,27 +9736,50 @@ function MalinkAppRuntime() {
             syncRecoveredNativeCommandFlights();
           }
           if (recoveredNativeCommandIsOwned(currentCommandId)) return;
-          await waitForCommandCompletion(
+          const completion = await waitForCommandCompletion(
             sent.completion,
             RECOVERED_COMMAND_CHECK_TIMEOUT_MS,
           );
           if (recoveredNativeCommandIsOwned(currentCommandId)) return;
+          resolveBackgroundRecoveredNativeCommandNotice(
+            completion,
+            commandId,
+            currentCommandId,
+          );
           await connection.releaseCommand(currentCommandId);
           completedCommandResultsRef.current.delete(commandId);
           completedCommandResultsRef.current.delete(currentCommandId);
           forgetRecoveredNativeCommand(commandId, currentCommandId);
           recoverUiNotice("command:startup-recovery");
-        } catch (error) {
-          if (
-            error instanceof CommandReviewRequiredError
-            || isMissingSessionCreateRecoveryCommand(error)
-          ) {
+        } catch (caughtError) {
+          let error = caughtError;
+          if (error instanceof CommandReviewRequiredError) {
+            clearBackgroundRecoveredNativeCommandNotice(
+              commandId,
+              currentCommandId,
+            );
+            forgetRecoveredNativeCommand(commandId, currentCommandId);
+            return;
+          }
+          if (isMissingSessionCreateRecoveryCommand(error)) {
+            reportMissingBackgroundRecoveredNativeCommand(
+              commandId,
+              currentCommandId,
+            );
             forgetRecoveredNativeCommand(commandId, currentCommandId);
             return;
           }
           if (error instanceof CommandCompletionTimeoutError) {
             try {
-              await connection.observeCommandCompletion(currentCommandId, 1);
+              const completion = await connection.observeCommandCompletion(
+                currentCommandId,
+                1,
+              );
+              resolveBackgroundRecoveredNativeCommandNotice(
+                completion,
+                commandId,
+                currentCommandId,
+              );
               await connection.releaseCommand(currentCommandId);
               completedCommandResultsRef.current.delete(commandId);
               completedCommandResultsRef.current.delete(currentCommandId);
@@ -9416,10 +9788,15 @@ function MalinkAppRuntime() {
               return;
             } catch (observationError) {
               if (isMissingSessionCreateRecoveryCommand(observationError)) {
+                reportMissingBackgroundRecoveredNativeCommand(
+                  commandId,
+                  currentCommandId,
+                );
                 forgetRecoveredNativeCommand(commandId, currentCommandId);
                 recoverUiNotice("command:startup-recovery");
                 return;
               }
+              error = observationError;
             }
           }
           retryDelayMs = error instanceof CommandCompletionTimeoutError
@@ -9434,6 +9811,15 @@ function MalinkAppRuntime() {
                 currentNoticeCommand.commandId,
               )
             : false;
+          if (
+            !(error instanceof CommandCompletionTimeoutError) &&
+            alreadyRecoveringInBackground
+          ) {
+            clearBackgroundRecoveredNativeCommandNotice(
+              commandId,
+              currentCommandId,
+            );
+          }
           setRecoveredNativeCommandChecks((current) => ({
             ...current,
             [currentCommandId]: error instanceof CommandCompletionTimeoutError
@@ -9451,14 +9837,7 @@ function MalinkAppRuntime() {
             error instanceof CommandCompletionTimeoutError &&
             !alreadyRecoveringInBackground
           ) {
-            backgroundRecoveredNativeCommandNotice(currentCommandId);
-            showUiNotice(
-              `command:background-recovery:${currentCommandId}`,
-              "background",
-              "info",
-              "The Gateway did not return a signed result yet. Malink will keep recovering this action in the background; you can continue using the app.",
-              7_000,
-            );
+            rememberBackgroundRecoveredNativeCommand(currentCommandId);
           }
         } finally {
           recoveredNativeCommandFlightsRef.current.delete(commandId);
@@ -9910,6 +10289,12 @@ function MalinkAppRuntime() {
       })
       : Promise.resolve();
     setSessionPromptSubmitting(sessionId, true);
+    locallyCancelledPromptSessionIdsRef.current.delete(sessionId);
+    setSessionRunning(sessionId, true);
+    if (!queueBehindActiveTurn) {
+      resetSessionActivityUpdatedAt(sessionId);
+      setSessionAgentActivity(sessionId, SENDING_AGENT_ACTIVITY);
+    }
     let result: MalinkCommandSendResult | null;
     let acknowledgementTimeout: CommandAcknowledgementTimeoutError | null = null;
     try {
@@ -9917,6 +10302,30 @@ function MalinkAppRuntime() {
       // optimistic message, an immediate reload/background transition must be
       // able to restore it without waiting for Matrix history pagination.
       await optimisticHistoryPersisted;
+      if (locallyCancelledPromptSessionIdsRef.current.delete(sessionId)) {
+        if (submissionHistoryScope) {
+          await deleteMessageHistory(submissionHistoryScope, optimisticId).catch((error) => {
+            showUiNotice(
+              "history:update",
+              "history",
+              "warning",
+              `The cancelled message could not be removed from local history: ${formatUiError(error)}`,
+            );
+          });
+        }
+        if (selectedSessionIdRef.current === sessionId) setDraft("");
+        setPendingFiles([]);
+        setSessionPromptSubmitting(sessionId, false);
+        setSessionStopping(sessionId, false);
+        if (hasActivePromptCommand(sessionId)) {
+          setSessionRunning(sessionId, true);
+          setSessionAgentActivity(sessionId, activityBeforeSubmission);
+        } else {
+          setSessionRunning(sessionId, false);
+          setSessionAgentActivity(sessionId, null);
+        }
+        return;
+      }
       optimisticMessagesRef.current.set(optimisticId, {
         id: optimisticId,
         text: value,
@@ -9928,11 +10337,6 @@ function MalinkAppRuntime() {
         setMessages((current) => [...current, optimisticMessage]);
         setDraft("");
       }
-      setSessionRunning(sessionId, true);
-      if (!queueBehindActiveTurn) {
-        resetSessionActivityUpdatedAt(sessionId);
-        setSessionAgentActivity(sessionId, SENDING_AGENT_ACTIVITY);
-      }
       result = await sendRealCommand(
         createPromptCommandPayload({
           sessionId,
@@ -9941,7 +10345,13 @@ function MalinkAppRuntime() {
         }),
       );
     } catch (error) {
-      if (!(error instanceof CommandAcknowledgementTimeoutError)) throw error;
+      if (!(error instanceof CommandAcknowledgementTimeoutError)) {
+        locallyCancelledPromptSessionIdsRef.current.delete(sessionId);
+        setSessionStopping(sessionId, false);
+        setSessionRunning(sessionId, queueBehindActiveTurn);
+        setSessionAgentActivity(sessionId, activityBeforeSubmission);
+        throw error;
+      }
       acknowledgementTimeout = error;
       result = null;
     } finally {
@@ -9980,9 +10390,18 @@ function MalinkAppRuntime() {
           ? "Your computer's Malink Gateway is offline. This message is saved for reconciliation and has not been submitted again."
           : "Your computer did not acknowledge this message. It is saved for reconciliation; do not send it again while Malink determines whether it ran.",
       );
+      if (locallyCancelledPromptSessionIdsRef.current.delete(sessionId)) {
+        await stopStreaming(
+          sessionId,
+          acknowledgementTimeout.commandId,
+          true,
+          true,
+        );
+      }
       return;
     }
     if (!result) {
+      locallyCancelledPromptSessionIdsRef.current.delete(sessionId);
       finishLocalPromptCommand(sessionId);
       if (revisionConflictRef.current) {
         const conflict = revisionConflictRef.current;
@@ -10150,6 +10569,9 @@ function MalinkAppRuntime() {
         });
       }
       recoverUiNotice("composer:send");
+      if (locallyCancelledPromptSessionIdsRef.current.delete(sessionId)) {
+        await stopStreaming(sessionId, result.commandId, true, true);
+      }
     }
   }
 
@@ -10157,7 +10579,8 @@ function MalinkAppRuntime() {
     record: OptimisticSessionRecord,
     text: string,
     attachments?: MalinkAttachment[],
-  ): Promise<void> {
+    messageId = `queued-${Date.now()}-${crypto.randomUUID()}`,
+  ): Promise<boolean> {
     const scope = historyScopeRef.current;
     if (!scope) {
       showUiNotice(
@@ -10166,10 +10589,10 @@ function MalinkAppRuntime() {
         "error",
         "The local encrypted message store is not ready yet. Your draft was kept.",
       );
-      return;
+      return false;
     }
     const message: ChatMessage = {
-      id: `queued-${Date.now()}-${crypto.randomUUID()}`,
+      id: messageId,
       kind: "user",
       text,
       time: "now",
@@ -10188,17 +10611,20 @@ function MalinkAppRuntime() {
         "error",
         `The message could not be queued safely: ${formatUiError(error)}`,
       );
-      return;
+      return false;
     }
     rememberLiveMessage(record.localSessionId, message);
     if (selectedSessionIdRef.current === record.localSessionId) {
       followLatestRef.current = true;
-      setMessages((current) => [...current, message]);
+      setMessages((current) => current.some(candidate => candidate.id === message.id)
+        ? current.map(candidate => candidate.id === message.id ? message : candidate)
+        : [...current, message]);
       setDraft("");
     }
     setPendingFiles([]);
     setSessionAgentActivity(record.localSessionId, null);
     recoverUiNotice("session:create-queue-storage");
+    return true;
   }
 
   async function flushQueuedSessionMessages(
@@ -10343,11 +10769,16 @@ function MalinkAppRuntime() {
       setComposerOptionsOpen(false);
       return;
     }
-    if (
-      event.key === "Enter" &&
-      (event.ctrlKey || event.metaKey) &&
-      !event.nativeEvent.isComposing
-    ) {
+    const enterAction = composerEnterAction({
+      key: event.key,
+      shiftKey: event.shiftKey,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      altKey: event.altKey,
+      composing: event.nativeEvent.isComposing,
+      desktopBrowser: desktopEnterSends,
+    });
+    if (enterAction === "send") {
       event.preventDefault();
       void sendMessage();
     }
@@ -10458,8 +10889,9 @@ function MalinkAppRuntime() {
     sessionId: string,
     targetCommandId: string,
     targetsPendingPrompt: boolean,
+    stopAlreadyRequested = false,
   ) {
-    if (stoppingSessionIdsRef.current.has(sessionId)) return;
+    if (stoppingSessionIdsRef.current.has(sessionId) && !stopAlreadyRequested) return;
     if (selectedSessionIdRef.current !== sessionId) return;
     setSessionStopping(sessionId, true);
     const activityBeforeStop = agentActivitiesBySession.get(sessionId) ?? null;
@@ -10485,6 +10917,13 @@ function MalinkAppRuntime() {
         recoverUiNotice(`session:stop:${sessionId}`);
         if (targetsPendingPrompt) {
           await removeStoppedPendingPrompt(sessionId, targetCommandId);
+        } else {
+          // The signed cancel completion is the authoritative terminal result.
+          // Do not keep the composer locked while waiting for a separate
+          // session-state projection, which may be delayed or coalesced away.
+          setSessionRunning(sessionId, false);
+          setSessionStopping(sessionId, false);
+          setSessionAgentActivity(sessionId, null);
         }
       }
     } catch (error) {
@@ -10507,6 +10946,13 @@ function MalinkAppRuntime() {
         );
       }
     }
+  }
+
+  function stopLocalPromptSubmission(sessionId: string): void {
+    if (!pendingPromptSessionIdsRef.current.has(sessionId)) return;
+    locallyCancelledPromptSessionIdsRef.current.add(sessionId);
+    setSessionStopping(sessionId, true);
+    setSessionAgentActivity(sessionId, STOPPING_AGENT_ACTIVITY);
   }
 
   async function materializeArtifact(
@@ -10792,7 +11238,7 @@ function MalinkAppRuntime() {
     (notice) => ({
       key: `ui:${notice.key}`,
       severity: notice.severity,
-      title: uiNoticeTitle(notice.scope),
+      title: uiNoticeTitle(notice.scope, notice.key),
       detail: notice.message,
       active: notice.active,
       meta: `${notice.hidden ? "Hidden" : "Visible"} · ${formatRecoveryTimestamp(notice.createdAt)}`,
@@ -11401,51 +11847,16 @@ function MalinkAppRuntime() {
         )}
 
         <button
-          className={`gateway-card gateway-card-button connection-state-${displayedConnectionStatus} ${
-            displayedConnectionStatus === "offline" || displayedConnectionStatus === "error"
-              ? "offline"
-              : ""
-          }`}
-          aria-label={`Open connection settings, ${mobileConnectionSignal.label}${
-            gatewayNodeProbeTargets.length > 0 ? `; Gateways: ${gatewayNodeSummary}` : ""
-          }`}
-          title={`Connection: ${mobileConnectionSignal.label}${
-            gatewayNodeProbeTargets.length > 0 ? `; Gateways: ${gatewayNodeSummary}` : ""
-          }`}
+          className="gateway-card gateway-card-button"
+          aria-label={`Open connection settings. ${connectionPathPresentation.accessibleLabel}`}
+          title={connectionPathPresentation.accessibleLabel}
           onClick={() => setSettingsOpen(true)}
         >
-          <span className="gateway-icon">G</span>
-          <div>
-            <strong>
-              {workspaceGatewayTitle}
-            </strong>
-            <span className="gateway-status-copy">
-              <span
-                className={`mobile-connection-icon mobile-connection-${mobileConnectionSignal.state}`}
-                aria-hidden="true"
-              >
-                <MobileConnectionIcon state={mobileConnectionSignal.state} />
-              </span>
-              <span>
-                {gatewayNodeProbeTargets.length > 0
-                  ? gatewayNodeSummary
-                  : mobileConnectionSignal.label}
-              </span>
-            </span>
-            <span className="gateway-mobile-status" aria-hidden="true">
-              <span
-                className={`mobile-connection-icon mobile-connection-${mobileConnectionSignal.state}`}
-              >
-                <MobileConnectionIcon state={mobileConnectionSignal.state} />
-              </span>
-              <span className="gateway-mobile-status-copy">
-                {gatewayNodeProbeTargets.length > 0
-                  ? `${mobileConnectionSignal.label} · ${gatewayNodeSummary}`
-                  : mobileConnectionSignal.label}
-              </span>
-            </span>
-          </div>
-          <span className="gateway-more" aria-hidden="true">•••</span>
+          <ConnectionPathIndicator
+            gatewayLabel={activeProjectGateway.label}
+            presentation={connectionPathPresentation}
+          />
+          <span className="gateway-more" aria-hidden="true">›</span>
         </button>
 
         {gatewayFilterOptions.length > 1 && (
@@ -11459,10 +11870,16 @@ function MalinkAppRuntime() {
               <option value={ALL_GATEWAYS_FILTER}>All computers</option>
               {gatewayFilterOptions.map(gateway => (
                 <option key={gateway.gatewayNodeId} value={gateway.gatewayNodeId}>
-                  {gateway.label} · {gatewayNodeLivenessPresentation(
-                    gatewayNodeLivenessById[gateway.gatewayNodeId],
-                    gatewayLivenessNow,
-                  ).label}
+                  {gateway.label} · {deriveConnectionPathPresentation({
+                    trusted: trustedGateway !== null,
+                    matrixStatus: connectionStatus,
+                    gatewayLabel: gateway.label,
+                    gatewayLiveness:
+                      gatewayNodeLivenessById[gateway.gatewayNodeId],
+                    gatewaySnapshotAvailable:
+                      gatewayState?.updatedAt !== undefined,
+                    now: gatewayLivenessNow,
+                  }).matrixToGateway.label}
                 </option>
               ))}
             </select>
@@ -11476,6 +11893,22 @@ function MalinkAppRuntime() {
         />
 
         <div className="session-list">
+          {workspaceProjectRecoveryState && (
+            <section
+              className="workspace-project-recovery"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <span className="workspace-project-recovery-spinner" aria-hidden="true" />
+              <span>
+                <strong>Refreshing Workspace projects</strong>
+                <small>
+                  {`${workspaceProjectRecoveryState.loaded} of ${workspaceProjectRecoveryState.total} refreshed · restoring remaining project rooms`}
+                </small>
+              </span>
+            </section>
+          )}
           {optimisticSession && projectMatchesGatewayFilter(
             activeGatewayFilter,
             optimisticSession.input.projectId ?? gatewayState?.workspace.projectId ?? "",
@@ -11533,7 +11966,7 @@ function MalinkAppRuntime() {
                       ? "Creation failed · Open to retry"
                       : optimisticSession.phase === "uncertain"
                         ? "Result not confirmed · Open to resolve"
-                        : "Creating · Ready for messages"}
+                        : optimisticSessionProgressLabel(optimisticSession.progress)}
                   </span>
                 </span>
               </span>
@@ -11672,9 +12105,37 @@ function MalinkAppRuntime() {
               project.sessions,
               sessionReadState,
             );
+            const projectAttentionTone = projectSummary.failed > 0
+              ? "error"
+              : projectSummary.ready > 0
+                ? "reply"
+                : null;
+            const projectLatestActivityAt = project.sessions.reduce(
+              (latest, session) => Math.max(
+                latest,
+                sessionMeaningfulActivityAt(
+                  session,
+                  sessionMeaningfulActivity,
+                ),
+              ),
+              0,
+            );
+            const projectHasKnownMeaningfulActivity = project.sessions.some(
+              (session) => sessionHasKnownMeaningfulActivity(
+                session,
+                sessionMeaningfulActivity,
+              ),
+            );
             const contentId = `project-sessions-${encodeURIComponent(project.key)}`;
             return (
-            <section className="project-session-group" key={project.key}>
+            <section
+              className={`project-session-group${
+                projectAttentionTone
+                  ? ` project-needs-${projectAttentionTone}`
+                  : ""
+              }`}
+              key={project.key}
+            >
               <div className="project-session-heading">
               <button
                 type="button"
@@ -11687,7 +12148,13 @@ function MalinkAppRuntime() {
                 aria-label={`${projectSessionSummaryLabel(
                   `${project.projectName} on ${project.gatewayLabel}`,
                   projectSummary,
-                )}. ${expanded ? "Collapse project" : "Expand project"}`}
+                )}.${projectLatestActivityAt > 0 ? ` ${
+                  projectHasKnownMeaningfulActivity
+                    ? "Latest message"
+                    : "Latest update"
+                } ${formatSessionTime(projectLatestActivityAt)}.` : ""} ${
+                  expanded ? "Collapse project" : "Expand project"
+                }`}
                 onClick={() =>
                   setCollapsedProjects((current) =>
                     toggleProjectCollapsed(current, project.key),
@@ -11710,10 +12177,26 @@ function MalinkAppRuntime() {
                   </small>
                 </span>
                 <span className="project-indicators" aria-hidden="true">
+                  {projectLatestActivityAt > 0 && (
+                    <time
+                      className="project-latest-time"
+                      title={`${
+                        projectHasKnownMeaningfulActivity
+                          ? "Latest message"
+                          : "Latest update"
+                      }: ${formatSessionTime(projectLatestActivityAt)}`}
+                    >
+                      {formatSessionTime(projectLatestActivityAt)}
+                    </time>
+                  )}
                   {projectSummary.failed > 0 && (
                     <span
                       className="project-signal project-signal-failed"
-                      title={`${projectSummary.failed} failed`}
+                      title={`${projectSummary.failed} ${
+                        projectSummary.failed === 1
+                          ? "error to review"
+                          : "errors to review"
+                      }`}
                     >
                       <SessionSignalIcon signal="failed" />
                       <b>{projectSummary.failed}</b>
@@ -11722,7 +12205,11 @@ function MalinkAppRuntime() {
                   {projectSummary.ready > 0 && (
                     <span
                       className="project-signal project-signal-ready"
-                      title={`${projectSummary.ready} new`}
+                      title={`${projectSummary.ready} ${
+                        projectSummary.ready === 1
+                          ? "reply needed"
+                          : "replies needed"
+                      }`}
                     >
                       <SessionSignalIcon signal="ready" />
                       <b>{projectSummary.ready}</b>
@@ -11788,12 +12275,23 @@ function MalinkAppRuntime() {
                 });
                 const showStatusSummary =
                   Boolean(lifecycleAction || activity) || signal !== "idle";
+                const meaningfulActivityAt = sessionMeaningfulActivityAt(
+                  session,
+                  sessionMeaningfulActivity,
+                );
+                const meaningfulActivityKnown = sessionHasKnownMeaningfulActivity(
+                  session,
+                  sessionMeaningfulActivity,
+                );
                 return (
                 <button
                   key={`${session.projectId}\0${session.id}`}
                   data-session-id={session.id}
+                  data-project-id={session.projectId}
                   data-project-name={session.projectName}
-                  aria-label={`${session.title}. ${statusSummary}. ${technicalSummary}. Updated ${formatSessionTime(session.updatedAt)}`}
+                  aria-label={`${session.title}. ${statusSummary}. ${technicalSummary}. ${
+                    meaningfulActivityKnown ? "Last message" : "Updated"
+                  } ${formatSessionTime(meaningfulActivityAt)}`}
                   title={`${session.title} · ${statusSummary}`}
                   data-session-signal={visualSignal}
                   aria-pressed={
@@ -11805,7 +12303,7 @@ function MalinkAppRuntime() {
                     selectedProjectId === session.projectId
                       ? "selected"
                       : ""
-                  } session-state-${indicator.activity} session-signal-${visualSignal} ${indicator.unread ? "unread" : ""} ${lifecycleAction ? "is-busy" : ""}`}
+                  } session-state-${indicator.activity} session-signal-${visualSignal} ${indicator.unread ? "unread" : ""} ${indicator.needsAttention ? "needs-attention" : ""} ${signal === "ready" ? "needs-reply" : ""} ${lifecycleAction ? "is-busy" : ""}`}
                   onClick={() => {
                     void chooseSession(session.id, session.projectId);
                   }}
@@ -11818,7 +12316,13 @@ function MalinkAppRuntime() {
                     <span className="session-title-line">
                       <strong>{session.title}</strong>
                       <span className="session-title-meta">
-                        <time>{formatSessionTime(session.updatedAt)}</time>
+                        <time
+                          title={`${
+                            meaningfulActivityKnown ? "Last message" : "Updated"
+                          }: ${formatSessionTime(meaningfulActivityAt)}`}
+                        >
+                          {formatSessionTime(meaningfulActivityAt)}
+                        </time>
                         {visualSignal !== "idle" && (
                           <span
                             className={`session-signal-mark signal-${visualSignal} ${
@@ -12015,43 +12519,22 @@ function MalinkAppRuntime() {
           <div className="conversation-heading">
             <h2>{conversationTitle}</h2>
             <span className="conversation-status">
-              {gatewayAvailable && gatewayState && (
-                <i
-                  className={`connection-dot connection-state-${displayedConnectionStatus}`}
-                  aria-hidden="true"
-                />
-              )}
-              <span className="conversation-status-copy">
-                {gatewayAvailable && gatewayState ? (
-                  `${activeWorkspace?.projectName || "Project"} · ${activeProvider}`
-                ) : (
-                  <>
-                    <span
-                      className="conversation-connection-desktop"
-                      title={mobileConnectionSignal.label}
-                    >
-                      <span
-                        className={`mobile-connection-icon mobile-connection-${mobileConnectionSignal.state}`}
-                        aria-hidden="true"
-                      >
-                        <MobileConnectionIcon state={mobileConnectionSignal.state} />
-                      </span>
-                      <span className="visually-hidden">
-                        {mobileConnectionSignal.label}
-                      </span>
-                    </span>
-                    <span className="conversation-connection-mobile">
-                      <span
-                        className={`mobile-connection-icon mobile-connection-${mobileConnectionSignal.state}`}
-                        aria-hidden="true"
-                      >
-                        <MobileConnectionIcon state={mobileConnectionSignal.state} />
-                      </span>
-                      {mobileConnectionSignal.label}
-                    </span>
-                  </>
-                )}
+              <span className="conversation-project-copy">
+                {activeWorkspace?.projectName || "Project"} · {activeProvider}
               </span>
+              <button
+                type="button"
+                className="conversation-connection-path"
+                aria-label={`Open connection settings. ${connectionPathPresentation.accessibleLabel}`}
+                title={connectionPathPresentation.accessibleLabel}
+                onClick={() => setSettingsOpen(true)}
+              >
+                <ConnectionPathIndicator
+                  gatewayLabel={activeProjectGateway.label}
+                  presentation={connectionPathPresentation}
+                  variant="compact"
+                />
+              </button>
             </span>
           </div>
           <div
@@ -12363,6 +12846,13 @@ function MalinkAppRuntime() {
                     time={message.time}
                     fullText={fullToolTranscript(message.text)}
                     live={liveToolMessage?.id === message.id}
+                    terminalOutcome={
+                      completedTurns.completionByMessageId.get(message.id)
+                        ?.outcome ??
+                      (gatewaySelected && !isStreaming
+                        ? "succeeded"
+                        : undefined)
+                    }
                   />
                 </div>
               );
@@ -12676,7 +13166,7 @@ function MalinkAppRuntime() {
                 </strong>
                 <p>
                   {optimisticSession.phase === "creating"
-                    ? "You can start now. Messages are saved here and will be sent in order as soon as creation succeeds."
+                    ? `${optimisticSessionProgressLabel(optimisticSession.progress)}. You can start now; messages are saved and will be sent in order after creation succeeds.`
                     : optimisticSession.phase === "uncertain"
                       ? uncertainSessionRecovery?.detail ??
                         "Malink is still verifying the original creation command."
@@ -12804,7 +13294,10 @@ function MalinkAppRuntime() {
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={onComposerKeyDown}
-              aria-keyshortcuts="Control+Enter Meta+Enter"
+              aria-describedby="composer-send-shortcut"
+              aria-keyshortcuts={desktopEnterSends
+                ? "Enter"
+                : "Control+Enter Meta+Enter"}
               placeholder={
                 gatewayAvailable
                   ? `Message ${activeProvider}…`
@@ -12820,10 +13313,19 @@ function MalinkAppRuntime() {
               id="composer-send-shortcut"
               className="composer-send-shortcut"
             >
-              <kbd>Ctrl/⌘</kbd>
-              <span>+</span>
+              {!desktopEnterSends && (
+                <>
+                  <kbd>Ctrl/⌘</kbd>
+                  <span>+</span>
+                </>
+              )}
               <kbd>Enter</kbd>
               <span>to send</span>
+              <span className="visually-hidden">
+                {desktopEnterSends
+                  ? ". Shift, Control, Command, or Option plus Enter inserts a new line."
+                  : ". Enter inserts a new line."}
+              </span>
             </span>
             <div className="composer-actions">
               <input
@@ -13006,7 +13508,9 @@ function MalinkAppRuntime() {
                     type="button"
                     className="send-button stop-button mount-feedback"
                     onClick={() => {
-                      if (selectedSessionId && stopTargetId) {
+                      if (selectedSessionId && stopTargetsLocalSubmission) {
+                        stopLocalPromptSubmission(selectedSessionId);
+                      } else if (selectedSessionId && stopTargetId) {
                         void stopStreaming(
                           selectedSessionId,
                           stopTargetId,
@@ -13016,10 +13520,14 @@ function MalinkAppRuntime() {
                     }}
                     aria-label={
                       isStopping
-                        ? stopTargetsPendingPrompt
+                        ? stopTargetsLocalSubmission
+                          ? "Cancelling message submission"
+                          : stopTargetsPendingPrompt
                           ? "Cancelling queued message"
                           : "Stopping agent"
-                        : stopTargetsPendingPrompt
+                        : stopTargetsLocalSubmission
+                          ? "Cancel message submission"
+                          : stopTargetsPendingPrompt
                           ? "Cancel queued message"
                           : stopTargetId
                             ? "Stop agent"
@@ -13027,13 +13535,15 @@ function MalinkAppRuntime() {
                     }
                     aria-busy={isStopping}
                     title={
-                      stopTargetsPendingPrompt
+                      stopTargetsLocalSubmission
+                        ? "Cancel this message before it reaches the Agent"
+                        : stopTargetsPendingPrompt
                         ? "Cancel queued message before the Agent starts it"
                         : stopTargetId
                           ? "Stop agent"
                           : "Syncing the active task before it can be stopped"
                     }
-                    disabled={isStopping || !stopTargetId}
+                    disabled={isStopping || (!stopTargetId && !stopTargetsLocalSubmission)}
                   >
                     {isStopping ? <span className="button-spinner" /> : "■"}
                   </button>
@@ -13189,6 +13699,7 @@ function MalinkAppRuntime() {
           gatewayLabel={projectSettingsGateway.label}
           fallbackModels={gatewayState?.capabilities.models ?? []}
           canDelete={projectSettingsCanDelete}
+          hasSessions={projectSettingsHasSessions}
           onClose={() => {
             if (!projectSettingsBusy) setProjectSettingsProjectId(null);
           }}
@@ -13302,6 +13813,7 @@ function MalinkAppRuntime() {
         trustedGateway={trustedGateway}
         savedGateways={savedGateways}
         gatewayDirectory={gatewayState?.gatewayDirectory ?? null}
+        clientMatrixAccountUpgrade={clientMatrixAccountUpgrade}
         pairingBusy={pairingBusy}
         deviceInvitation={deviceInvitation}
         invitationBusy={invitationBusy}
@@ -13342,9 +13854,6 @@ function MalinkAppRuntime() {
         onClose={() => setSettingsOpen(false)}
         onDisconnect={() => disconnectClient()}
         onForget={() => setForgetDialogOpen(true)}
-        onPasswordLogin={(userId, password) =>
-          void signInForPairing(userId, password)
-        }
         onCreateInvitation={(password) =>
           void createDeviceInvitation(password)
         }
@@ -13728,11 +14237,14 @@ function recoveredCommandNoticeVersion(
   return `${command.commandId}\0${command.state}\0${command.updatedAt}`;
 }
 
-function uiNoticeTitle(scope: UiNoticeScope): string {
+function uiNoticeTitle(scope: UiNoticeScope, key?: string): string {
   switch (scope) {
     case "connection": return "Connection";
     case "pairing": return "Authorization";
-    case "background": return "Background operation";
+    case "background":
+      return key?.startsWith("command:background-recovery:")
+        ? "Previous action recovery"
+        : "Background operation";
     case "history": return "Conversation history";
     case "session": return "Conversation or project";
     case "composer": return "Agent command";

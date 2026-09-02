@@ -7,6 +7,7 @@ import type {
   ToolPresentationItem,
 } from "./presentation";
 import { writeClipboardTextWithTimeout } from "./uiClipboard";
+import { ToolInvocation } from "./ToolInvocation";
 
 export function ToolFocusPanel({
   group,
@@ -115,7 +116,7 @@ export function ToolFocusPanel({
         {outputOpen && tool.result ? (
           <ToolOutput tool={tool} />
         ) : (
-          <pre className="tool-focus-invocation">{invocation}</pre>
+          <ToolInvocation className="tool-focus-invocation" tool={tool} />
         )}
       </div>
     </aside>

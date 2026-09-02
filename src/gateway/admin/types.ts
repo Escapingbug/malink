@@ -187,11 +187,20 @@ export interface GatewayAdminStatus {
   pid: number
   startedAt: number
   activeDeviceCount: number
+  clientMatrixUserId?: string
+  legacyClientDeviceCount?: number
+  clientMatrixIdentityStatus?: 'converged' | 'migration-required'
   openInvitationCount: number
   buildId?: string
   runtimeEpoch?: string
   activeTurns?: number
   activeCommands?: number
+  expiredCommandExecutions?: number
+  unfinishedCommands?: number
+  oldestUnfinishedCommandAgeMs?: number | null
+  pendingOutboxDeliveries?: number
+  oldestPendingOutboxDeliveryAgeMs?: number | null
+  outboxWalBytes?: number
   pendingInboxEvents?: number
   quarantinedInboxEvents?: number
   matrixReady?: boolean | null

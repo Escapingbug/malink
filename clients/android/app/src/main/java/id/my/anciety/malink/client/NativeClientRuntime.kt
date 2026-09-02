@@ -69,6 +69,7 @@ import id.my.anciety.malink.security.malink.MLP3_MATRIX_KEY_GRANT_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE
+import id.my.anciety.malink.security.malink.MatrixMlp3ProjectKeyGrant
 import id.my.anciety.malink.security.malink.MatrixMlp3Protocol
 import id.my.anciety.malink.security.malink.PairingCodec
 import id.my.anciety.malink.security.malink.PairingOperation
@@ -141,7 +142,8 @@ class NativeClientRuntime(
     private val identity: MalinkPrivateIdentity = AndroidKeystoreP256Identity(),
     private val cipher: SecretCipher = AndroidKeystoreSecretCipher(),
     private val foregroundState: () -> Pair<Boolean, Boolean>,
-    private val onCommandCompletion: (CommandOperation, DurableCompletion) -> Unit = { _, _ -> },
+    private val uiForegroundState: () -> Boolean = { true },
+    private val onTaskCompletion: (String, DurableCompletion, String?) -> Unit = { _, _, _ -> },
     private val now: () -> Long = System::currentTimeMillis,
 ) : NativeMatrixObserver {
     internal fun injectNetworkAvailabilityForE2e(available: Boolean) {
@@ -160,6 +162,17 @@ class NativeClientRuntime(
         val pairingId: String,
         val result: CompletableDeferred<Pair<PublicTrustState.Trusted, ClientSnapshot>>,
         val job: Job,
+    )
+
+    private data class VerifiedHistoricalMlp3Event(
+        val protocolEvent: JsonObject,
+        val physicalEventId: String,
+        val threadRootHint: String?,
+    )
+
+    private data class RecoveredSessionTerminal(
+        val target: MatrixMlp3SessionTailRecoveryTarget,
+        val event: VerifiedHistoricalMlp3Event,
     )
 
     val deviceId: String = identity.publicIdentity.keyId
@@ -223,19 +236,56 @@ class NativeClientRuntime(
     ).also {
         stateUpgrade.recoverPreserved("timeline-key-ring", validate = it::validateStoredState)
     }
-    private val matrixMlp3ProjectKeys = AtomicEncryptedMatrixMlp3ProjectKeyStore(
-        files.matrixMlp3ProjectKeys,
-        cipher,
-        deviceId,
-    ).also {
-        stateUpgrade.recoverPreserved("matrix-v3-project-keys", validate = it::validateStoredState)
+    private val matrixMlp3ProjectKeys = openNativeStateStore("matrix-v3-project-keys") {
+        AtomicEncryptedMatrixMlp3ProjectKeyStore(
+            files.matrixMlp3ProjectKeys,
+            cipher,
+            deviceId,
+        ).also {
+            stateUpgrade.recoverPreserved(
+                "matrix-v3-project-keys",
+                migrate = { _, _ -> it.migrateStoredState() },
+                validate = it::validateStoredState,
+            )
+        }
     }
-    private val matrixMlp3Inbox = AtomicEncryptedMatrixMlp3InboxStore(
-        files.matrixMlp3Inbox,
-        cipher,
-        deviceId,
-    ).also {
-        stateUpgrade.recoverPreserved("matrix-v3-raw-inbox", validate = it::validateStoredState)
+    private val matrixMlp3Inbox = openNativeStateStore("matrix-v3-raw-inbox") {
+        AtomicEncryptedMatrixMlp3InboxStore(
+            files.matrixMlp3Inbox,
+            cipher,
+            deviceId,
+        ).also {
+            stateUpgrade.recoverPreserved("matrix-v3-raw-inbox", validate = it::validateStoredState)
+        }
+    }
+    private val matrixMlp3TaskNotifications = openNativeStateStore(
+        "matrix-v3-task-notifications",
+    ) {
+        AtomicEncryptedMatrixMlp3TaskNotificationStore(
+            files.matrixMlp3TaskNotifications,
+            cipher,
+            deviceId,
+        ).also {
+            stateUpgrade.recoverPreserved(
+                "matrix-v3-task-notifications",
+                migrate = { _, _ -> it.migrateStoredState() },
+                validate = it::validateStoredState,
+            )
+        }
+    }
+    private val taskNotificationCoordinator = MatrixMlp3TaskNotificationCoordinator(
+        matrixMlp3TaskNotifications,
+        diagnostics,
+    ) { value ->
+        onTaskCompletion(
+            value.eventId,
+            DurableCompletion(
+                commandId = value.commandId,
+                outcome = DurableOutcome.fromWireName(value.outcome),
+                sessionId = value.sessionId,
+            ),
+            value.body,
+        )
     }
     private val matrixMlp3ProjectionStore = AtomicEncryptedMatrixMlp3ProjectionStore(
         files.matrixMlp3Projection,
@@ -244,7 +294,9 @@ class NativeClientRuntime(
     ).also {
         stateUpgrade.recoverRebuildable(
             "matrix-v3-projection",
-            validate = it::validateStoredState,
+            validate = {
+                it.load()?.let(::validateMatrixMlp3ProjectionState)
+            },
             reset = it::clear,
         )
     }
@@ -317,6 +369,7 @@ class NativeClientRuntime(
     private val commandRecoveryJobs = ConcurrentHashMap<String, Job>()
     private val publishedCommandRecoveryJobs = ConcurrentHashMap<String, Job>()
     private val publishedCommandRecoveryNotBefore = ConcurrentHashMap<String, Long>()
+    private val publishedCommandDiagnosticStates = ConcurrentHashMap<String, DurableState>()
     private val legacyTimelineRecoveryGate = LegacyTimelineRecoveryGate()
     private val commandRecoveryAttempts = ConcurrentHashMap<String, Int>()
     private val json = Json { isLenient = false; allowSpecialFloatingPointValues = false }
@@ -363,6 +416,8 @@ class NativeClientRuntime(
     private val preTrustEvents = ArrayDeque<MatrixDecryptedEvent>()
     private val initializedHistoryRelations = mutableSetOf<String>()
     private val historyRelationTokens = mutableMapOf<String, String>()
+    private val initializedProviderHistoryRooms = mutableSetOf<String>()
+    private val providerHistoryTokens = mutableMapOf<String, String>()
     @Volatile private var lastLifecycle: Pair<LifecyclePhase, String?>? = null
     private val matrixMlp3Projection = MatrixMlp3NativeProjection(
         gatewayId = { trust?.gatewayId ?: "gateway" },
@@ -405,6 +460,7 @@ class NativeClientRuntime(
     }
 
     fun start(): ClientSnapshot {
+        taskNotificationCoordinator.drain()
         matrix.start()
         refreshSnapshot(publishLifecycle = true)
         return snapshot()
@@ -418,6 +474,24 @@ class NativeClientRuntime(
         }
 
     fun snapshot(): ClientSnapshot = eventHub.snapshot()
+
+    private fun <T> openNativeStateStore(storeId: String, create: () -> T): T {
+        diagnostics.record("state.store.open_started", mapOf("kind" to storeId))
+        return try {
+            create().also {
+                diagnostics.record("state.store.open_completed", mapOf("kind" to storeId))
+            }
+        } catch (error: Exception) {
+            diagnostics.record(
+                "state.store.open_failed",
+                mapOf(
+                    "kind" to storeId,
+                    "error" to error.javaClass.simpleName.take(160),
+                ),
+            )
+            throw error
+        }
+    }
 
     fun publicMatrixSession(): PublicMatrixSession? = matrix.publicSession()
 
@@ -453,8 +527,14 @@ class NativeClientRuntime(
                     diagnostics.record("history.page.requested")
                 val online = matrix.status.phase == MatrixRuntimePhase.SYNCING
                 val initialized = sessionId in initializedHistoryRelations
+                val providerHistoryAvailable = matrixMlp3Projection.providerHistory(sessionId) != null
+                val providerHistoryHasMore = matrixMlp3Projection.providerHistoryHasMore(sessionId)
                 val externalHasMore = allowRemote && online && (
-                    !initialized || historyRelationTokens.containsKey(sessionId)
+                    !initialized
+                        || historyRelationTokens.containsKey(sessionId)
+                        || (providerHistoryAvailable && sessionId !in initializedProviderHistoryRooms)
+                        || providerHistoryTokens.containsKey(sessionId)
+                        || providerHistoryHasMore
                 )
                 var local = eventHub.historyPage(
                     sessionId,
@@ -476,12 +556,16 @@ class NativeClientRuntime(
                     // empty history, not a restoration failure.
                     initializedHistoryRelations += sessionId
                     historyRelationTokens.remove(sessionId)
-                    local = eventHub.historyPage(
-                        sessionId,
-                        before,
-                        limit,
-                        externalHasMore = false,
-                    )
+                    local = if (matrixMlp3Projection.providerHistory(sessionId) != null) {
+                        loadProviderHistoryIntoPage(sessionId, before, limit)
+                    } else {
+                        eventHub.historyPage(
+                            sessionId,
+                            before,
+                            limit,
+                            externalHasMore = false,
+                        )
+                    }
                     diagnostics.record(
                         "history.page.completed",
                         mapOf("received" to "0"),
@@ -490,7 +574,7 @@ class NativeClientRuntime(
                 }
                 val projectId = matrixMlp3Projection.projectId(sessionId)
                     ?: throw IllegalStateException("The session has no project route.")
-                val projectKeys = matrixMlp3ProjectKeys.value(projectId)
+                val projectKeys = primaryProjectKeys(projectId)
                     ?: throw IllegalStateException("The session project key is unavailable.")
                 val roomId = try {
                     projectKeys.roomId
@@ -532,14 +616,30 @@ class NativeClientRuntime(
                         sessionId,
                         before,
                         limit,
-                        externalHasMore = online && historyRelationTokens.containsKey(sessionId),
+                        externalHasMore = online && (
+                            historyRelationTokens.containsKey(sessionId)
+                                || providerHistoryTokens.containsKey(sessionId)
+                                || matrixMlp3Projection.providerHistoryHasMore(sessionId)
+                        ),
                     )
-                    if (local.messages.isNotEmpty() || remote.nextBatch == null) {
+                    if (local.messages.isNotEmpty()) {
                         diagnostics.record(
                             "history.page.completed",
                             mapOf("received" to imported.toString()),
                         )
                         return@withLock local
+                    }
+                    if (remote.nextBatch == null) {
+                        val providerPage = if (matrixMlp3Projection.providerHistory(sessionId) != null) {
+                            loadProviderHistoryIntoPage(sessionId, before, limit)
+                        } else {
+                            local
+                        }
+                        diagnostics.record(
+                            "history.page.completed",
+                            mapOf("received" to (imported + providerPage.messages.size).toString()),
+                        )
+                        return@withLock providerPage
                     }
                     from = remote.nextBatch
                 }
@@ -568,6 +668,36 @@ class NativeClientRuntime(
             )
             throw error
         }
+    }
+
+    private suspend fun loadProviderHistoryIntoPage(
+        sessionId: String,
+        before: String?,
+        limit: Int,
+    ): HistoryPage {
+        val binding = matrixMlp3Projection.providerHistory(sessionId)
+            ?: return eventHub.historyPage(sessionId, before, limit, externalHasMore = false)
+        val roomId = binding.string("roomId")
+            ?.takeIf { it.isNotBlank() && it.length <= 512 }
+            ?: throw IllegalStateException("The Provider History room binding is invalid.")
+        check(matrix.publicSession()?.roomBindings?.any { it.roomId == roomId } == true) {
+            "The Provider History room is still joining."
+        }
+        val from = providerHistoryTokens[sessionId]
+        val remote = matrix.loadProviderHistory(roomId, from, maxOf(64, limit * 4))
+        mutex.withLock {
+            remote.events.forEach { processMatrixEvent(it) }
+        }
+        initializedProviderHistoryRooms += sessionId
+        if (remote.nextBatch == null) providerHistoryTokens.remove(sessionId)
+        else providerHistoryTokens[sessionId] = remote.nextBatch
+        return eventHub.historyPage(
+            sessionId,
+            before,
+            limit,
+            externalHasMore = remote.nextBatch != null
+                || matrixMlp3Projection.providerHistoryHasMore(sessionId),
+        )
     }
 
     suspend fun inspectPairing(link: String): NativePairingPreview = mutex.withLock {
@@ -895,6 +1025,7 @@ class NativeClientRuntime(
     ): List<id.my.anciety.malink.matrix.MatrixRoomBinding> {
         val output = linkedMapOf<String, id.my.anciety.malink.matrix.MatrixRoomBinding>()
         val projectIds = mutableSetOf<String>()
+        val projectBindings = linkedMapOf<String, id.my.anciety.malink.matrix.MatrixRoomBinding>()
         val directory = signedDirectory.requiredObject("directory")
         require(directory.requiredOpaqueId("workspaceId") == workspaceId) {
             "Gateway Directory belongs to another Workspace."
@@ -914,7 +1045,7 @@ class NativeClientRuntime(
                 require(projectIds.add(projectId)) { "Workspace project route is duplicated." }
                 val roomId = project.requiredOpaqueId("roomId")
                 require(roomId !in output) { "Workspace project room is duplicated." }
-                output[roomId] = id.my.anciety.malink.matrix.MatrixRoomBinding(
+                val binding = id.my.anciety.malink.matrix.MatrixRoomBinding(
                     roomId = roomId,
                     gatewayId = workspaceId,
                     conversationId = project.requiredOpaqueId("conversationId"),
@@ -922,7 +1053,17 @@ class NativeClientRuntime(
                     gatewayDeviceId = transport.deviceId,
                     gatewayDeviceEd25519 = transport.ed25519,
                 )
+                output[roomId] = binding
+                projectBindings[projectId] = binding
             }
+        }
+        matrixMlp3Projection.providerHistoryRoomBindings().forEach {
+                (sessionId, projectId, roomId) ->
+            val source = projectBindings[projectId] ?: return@forEach
+            require(roomId !in output || output[roomId]?.conversationId == sessionId) {
+                "Provider History room binding is duplicated."
+            }
+            output[roomId] = source.copy(roomId = roomId, conversationId = sessionId)
         }
         require(output.isNotEmpty()) { "Workspace Gateway Directory contains no project rooms." }
         return output.values.toList()
@@ -1121,7 +1262,10 @@ class NativeClientRuntime(
         cancelScheduledCommandRecovery(commandId)
         cancelPublishedCommandResultRecovery(commandId)
         val released = outbox.release(commandId)
-        if (released) matrixMlp3CommandContent.remove(commandId)
+        if (released) {
+            matrixMlp3CommandContent.remove(commandId)
+            publishedCommandDiagnosticStates.remove(commandId)
+        }
         if (released) refreshSnapshot(publishLifecycle = false)
         return released
     }
@@ -1191,6 +1335,7 @@ class NativeClientRuntime(
             timelineKeys.clear()
             matrixMlp3ProjectKeys.clear()
             matrixMlp3Inbox.clear()
+            matrixMlp3TaskNotifications.clear()
             matrixMlp3Projection.clear()
             matrixMlp3ProjectionStore.clear()
             matrixMlp3LivenessStore.clear()
@@ -1430,9 +1575,6 @@ class NativeClientRuntime(
         recoverableCommandIds(commands).forEach { commandId ->
             scheduleCommandRecovery(commandId, immediate)
         }
-        publishedRecoveryCommandIds(commands).forEach { commandId ->
-            outbox.get(commandId)?.let(::startPublishedCommandResultRecovery)
-        }
     }
 
     private fun scheduleCommandRecovery(commandId: String, immediate: Boolean = false) {
@@ -1570,11 +1712,17 @@ class NativeClientRuntime(
         commandRecoveryAttempts.clear()
     }
 
+    private fun primaryProjectKeys(projectId: String): MatrixMlp3ProjectKeyGrant? =
+        matrixMlp3ProjectKeys.valueForProject(
+            projectId,
+            matrixMlp3Projection.providerHistoryRoomIds(),
+        )
+
     private fun commandProjectRouteReady(commandId: String): Boolean {
         val targetProjectId = outbox.projectId(commandId)
-            ?: matrixMlp3ProjectKeys.values().singleOrNull()?.projectId
+            ?: matrixMlp3ProjectKeys.singleProjectId()
             ?: return false
-        val keys = matrixMlp3ProjectKeys.value(targetProjectId) ?: return false
+        val keys = primaryProjectKeys(targetProjectId) ?: return false
         val roomId = try {
             keys.roomId
         } finally {
@@ -1619,94 +1767,86 @@ class NativeClientRuntime(
                 recoveryNow + PUBLISHED_COMMAND_RECONCILIATION_MIN_INTERVAL_MS
             val job = scope.launch(start = CoroutineStart.LAZY) {
                 try {
-                    while (outbox.get(command.commandId)?.state in setOf(
-                            DurableState.PUBLISHED,
-                            DurableState.RUNNING,
-                        )
-                    ) {
-                        val projectId = outbox.projectId(command.commandId)
-                            ?: throw IllegalStateException("The published command project is unavailable.")
-                        val keys = matrixMlp3ProjectKeys.value(projectId)
-                            ?: throw IllegalStateException("The published command project key is unavailable.")
-                        val roomId = try {
-                            keys.roomId
-                        } finally {
-                            keys.wipe()
-                        }
-                        recoverPublishedCommandDelivery(
-                            isTerminal = {
-                                outbox.get(command.commandId)?.state?.isTerminal == true
-                            },
-                            submitReconciliation = {
-                                sendPublishedCommandReconciliation(command, roomId)
-                            },
-                            awaitReconciliation = {
-                                val terminal = awaitPublishedCommandReconciliation(isTerminal = {
-                                    outbox.get(command.commandId)?.state?.isTerminal == true
-                                })
-                                diagnostics.record(
-                                    "command.reconciliation.await_completed",
-                                    mapOf(
-                                        "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
-                                        "terminal" to terminal.toString(),
-                                    ),
-                                )
-                            },
-                            scanTimeline = legacyTimeline@{
-                                val acquired = legacyTimelineRecoveryGate.runIfIdle {
-                                    val scannedPages = matrix.recoverApplicationTimeline(
-                                        roomId,
-                                    ) {
-                                        outbox.get(command.commandId)?.state?.isTerminal == true
-                                    }
-                                    diagnostics.record(
-                                        "command.timeline_recovery.completed",
-                                        mapOf(
-                                            "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
-                                            "pages" to scannedPages.toString(),
-                                            "terminal" to (outbox.get(command.commandId)?.state?.isTerminal == true).toString(),
-                                        ),
-                                    )
-                                }
-                                if (!acquired) {
-                                    diagnostics.record(
-                                        "command.timeline_recovery.skipped_busy",
-                                        mapOf(
-                                            "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
-                                        ),
-                                    )
-                                    return@legacyTimeline
-                                }
-                            },
-                            onReconciliationFailure = { error ->
-                                diagnostics.record(
-                                    "command.reconciliation.failed",
-                                    mapOf(
-                                        "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
-                                    ) + diagnosticCommandDeliveryError(error),
-                                )
-                            },
-                            onTimelineFailure = { error ->
-                                diagnostics.record(
-                                    if (error is TimeoutCancellationException) {
-                                        "command.timeline_recovery.timed_out"
-                                    } else {
-                                        "command.timeline_recovery.failed"
-                                    },
-                                    mapOf(
-                                        "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
-                                        "error" to diagnosticErrorName(error),
-                                    ),
-                                )
-                            },
-                        )
-                        if (outbox.get(command.commandId)?.state !in setOf(
-                                DurableState.PUBLISHED,
-                                DurableState.RUNNING,
-                            )
-                        ) break
-                        delay(PUBLISHED_COMMAND_RECOVERY_RETRY_MS)
+                    val current = outbox.get(command.commandId) ?: return@launch
+                    if (current.state !in setOf(DurableState.PUBLISHED, DurableState.RUNNING)) {
+                        return@launch
                     }
+                    val projectId = outbox.projectId(command.commandId)
+                        ?: throw IllegalStateException("The published command project is unavailable.")
+                    val keys = primaryProjectKeys(projectId)
+                        ?: throw IllegalStateException("The published command project key is unavailable.")
+                    val roomId = try {
+                        keys.roomId
+                    } finally {
+                        keys.wipe()
+                    }
+                    recoverPublishedCommandDelivery(
+                        isTerminal = {
+                            outbox.get(command.commandId)?.state?.isTerminal == true
+                        },
+                        submitReconciliation = {
+                            sendPublishedCommandReconciliation(command, roomId)
+                        },
+                        awaitReconciliation = {
+                            val terminal = awaitPublishedCommandReconciliation(isTerminal = {
+                                outbox.get(command.commandId)?.state?.isTerminal == true
+                            })
+                            diagnostics.record(
+                                "command.reconciliation.await_completed",
+                                mapOf(
+                                    "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                                    "terminal" to terminal.toString(),
+                                ),
+                            )
+                        },
+                        scanTimeline = legacyTimeline@{
+                            val acquired = legacyTimelineRecoveryGate.runIfIdle {
+                                val scannedPages = matrix.recoverApplicationTimeline(
+                                    roomId,
+                                ) {
+                                    outbox.get(command.commandId)?.state?.isTerminal == true
+                                }
+                                diagnostics.record(
+                                    "command.timeline_recovery.completed",
+                                    mapOf(
+                                        "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                                        "pages" to scannedPages.toString(),
+                                        "terminal" to (outbox.get(command.commandId)?.state?.isTerminal == true).toString(),
+                                    ),
+                                )
+                            }
+                            if (!acquired) {
+                                diagnostics.record(
+                                    "command.timeline_recovery.skipped_busy",
+                                    mapOf(
+                                        "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                                    ),
+                                )
+                                return@legacyTimeline
+                            }
+                        },
+                        onReconciliationFailure = { error ->
+                            diagnostics.record(
+                                "command.reconciliation.failed",
+                                mapOf(
+                                    "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                                ) + diagnosticCommandDeliveryError(error),
+                            )
+                        },
+                        onTimelineFailure = { error ->
+                            diagnostics.record(
+                                if (error is TimeoutCancellationException) {
+                                    "command.timeline_recovery.timed_out"
+                                } else {
+                                    "command.timeline_recovery.failed"
+                                },
+                                mapOf(
+                                    "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                                    "error" to diagnosticErrorName(error),
+                                ),
+                            )
+                        },
+                    )
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
@@ -1772,9 +1912,9 @@ class NativeClientRuntime(
         matrixMlp3CommandContent.get(transmission.commandId)?.let { return it }
         val activeTrust = trust ?: throw NativeTrustRequiredException("Pair the Gateway before sending commands.")
         val targetProjectId = transmission.projectId
-            ?: matrixMlp3ProjectKeys.values().singleOrNull()?.projectId
+            ?: matrixMlp3ProjectKeys.singleProjectId()
             ?: throw IllegalStateException("A target project is required for this command.")
-        val keys = matrixMlp3ProjectKeys.value(targetProjectId)
+        val keys = primaryProjectKeys(targetProjectId)
             ?: throw IllegalStateException("The MLP/3 project key grant is unavailable.")
         val roomId = keys.roomId
         require(matrix.publicSession()?.roomBindings?.any { it.roomId == roomId } == true) {
@@ -1918,6 +2058,20 @@ class NativeClientRuntime(
                     put("providerSessionId", raw.string("providerSessionId")!!)
                 }
             }
+            "provider.history.materialize" -> {
+                v3Operation = "provider.history.materialize"
+                v3SessionId = sessionId
+                    ?: throw IllegalArgumentException("Provider History session is missing.")
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    put(
+                        "expectedFrontier",
+                        raw.long("expectedFrontier")
+                            ?: throw IllegalArgumentException("Provider History frontier is missing."),
+                    )
+                    raw.long("limit")?.let { put("limit", it) }
+                }
+            }
             "session.archive", "session.restore", "session.delete" -> {
                 v3Operation = "session.set_lifecycle"
                 v3SessionId = sessionId ?: throw IllegalArgumentException("Session lifecycle target is missing.")
@@ -2059,9 +2213,9 @@ class NativeClientRuntime(
 
     private fun commandRoomId(transmission: CommandTransmission): String {
         val targetProjectId = transmission.projectId
-            ?: matrixMlp3ProjectKeys.values().singleOrNull()?.projectId
+            ?: matrixMlp3ProjectKeys.singleProjectId()
             ?: throw IllegalStateException("A target project is required for this command.")
-        val keys = matrixMlp3ProjectKeys.value(targetProjectId)
+        val keys = primaryProjectKeys(targetProjectId)
             ?: throw IllegalStateException("The MLP/3 project key grant is unavailable.")
         return try {
             keys.roomId
@@ -2085,7 +2239,17 @@ class NativeClientRuntime(
                 ) {
                     if (trust == null) break
                     var refreshed = false
-                    runCatching { matrix.refreshApplicationProjection() }
+                    runCatching {
+                        // Repair known active turns first. The complete Matrix
+                        // Room State and thread-directory baseline may take
+                        // minutes on a large multi-Gateway workspace, while
+                        // each known session tail is one bounded read.
+                        reconcileActiveSessionTails()
+                        matrix.refreshApplicationProjection()
+                        // A cold projection can discover additional sessions
+                        // only during the directory refresh.
+                        reconcileActiveSessionTails()
+                    }
                         .onSuccess {
                             refreshed = true
                             diagnostics.record("matrix.v3_projection.refresh_completed")
@@ -2123,6 +2287,113 @@ class NativeClientRuntime(
                 }
             }
         }
+    }
+
+    private suspend fun reconcileActiveSessionTails() {
+        val targets = mutex.withLock {
+            matrixMlp3Projection.activeSessionTailRecoveryTargets(
+                MAX_ACTIVE_SESSION_TAIL_RECOVERY_TARGETS,
+            )
+        }
+        if (targets.isEmpty()) return
+        diagnostics.record(
+            "matrix.v3_projection.tail_recovery_started",
+            mapOf("targets" to targets.size.toString()),
+        )
+
+        val recovered = mutableListOf<RecoveredSessionTerminal>()
+        var failed = 0
+        var rejected = 0
+        for (target in targets) {
+            val keys = primaryProjectKeys(target.projectId)
+            if (keys == null) {
+                failed += 1
+                continue
+            }
+            val roomId = try {
+                keys.roomId
+            } finally {
+                keys.wipe()
+            }
+            var events: List<MatrixDecryptedEvent>? = null
+            for (attempt in 0 until MAX_SESSION_TAIL_REQUEST_ATTEMPTS) {
+                try {
+                    events = matrix.loadThreadHistory(
+                        target.threadRootEventId,
+                        null,
+                        SESSION_TAIL_RECOVERY_EVENT_LIMIT,
+                        roomId,
+                    ).events
+                    break
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    if (attempt + 1 < MAX_SESSION_TAIL_REQUEST_ATTEMPTS) {
+                        delay(SESSION_TAIL_RECOVERY_RETRY_DELAY_MS)
+                    } else {
+                        failed += 1
+                        diagnostics.record(
+                            "matrix.v3_projection.tail_request_failed",
+                            mapOf("error" to diagnosticErrorName(error)),
+                        )
+                    }
+                }
+            }
+
+            var selected: VerifiedHistoricalMlp3Event? = null
+            var selectedVersion = -1L
+            for (event in events.orEmpty()) {
+                val verified = try {
+                    verifyHistoricalMlp3Event(event, target.sessionId)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    rejected += 1
+                    diagnostics.record(
+                        "matrix.v3_projection.tail_event_rejected",
+                        mapOf("error" to diagnosticErrorName(error)),
+                    )
+                    null
+                } ?: continue
+                if (verified.threadRootHint != target.threadRootEventId) continue
+                val payload = verified.protocolEvent["payload"] as? JsonObject ?: continue
+                if (payload.string("type") !in setOf("turn.completed", "turn.failed")) continue
+                if (payload.string("turnId") != target.activeTurnId) continue
+                val version = (payload["projection"] as? JsonObject)
+                    ?.long("stateVersion")
+                    ?: continue
+                if (version >= target.stateVersion && version > selectedVersion) {
+                    selected = verified
+                    selectedVersion = version
+                }
+            }
+            selected?.let { recovered += RecoveredSessionTerminal(target, it) }
+        }
+
+        var changed = 0
+        mutex.withLock {
+            recovered.forEach { recovery ->
+                val result = matrixMlp3Projection.reconcileSessionTerminal(
+                    event = recovery.event.protocolEvent,
+                    threadRootHint = recovery.target.threadRootEventId,
+                    expectedSessionId = recovery.target.sessionId,
+                    expectedTurnId = recovery.target.activeTurnId,
+                )
+                if (result.changed) changed += 1
+                result.terminal?.let(::recordMatrixMlp3Terminal)
+            }
+            if (changed > 0) commitMatrixMlp3Projection("session_tail_recovery")
+        }
+        diagnostics.record(
+            "matrix.v3_projection.tail_recovery_completed",
+            mapOf(
+                "targets" to targets.size.toString(),
+                "terminals" to recovered.size.toString(),
+                "changed" to changed.toString(),
+                "failed" to failed.toString(),
+                "rejected" to rejected.toString(),
+            ),
+        )
     }
 
     private fun diagnosticErrorName(error: Throwable): String =
@@ -2284,7 +2555,10 @@ class NativeClientRuntime(
                     roomId,
                 )
             }
-            val keys = matrixMlp3ProjectKeys.values().firstOrNull { it.roomId == roomId }
+            val keys = matrixMlp3ProjectKeys.valueForRoom(
+                roomId,
+                pointer.string("projectId"),
+            )
                 ?: throw MatrixMlp3EventDeferredException("project_key_grant_pending")
             try {
                 require(pointer.string("projectId") == keys.projectId) {
@@ -2312,10 +2586,12 @@ class NativeClientRuntime(
             }
             return true
         }
-        val keys = matrixMlp3ProjectKeys.values().firstOrNull { it.roomId == roomId }
-            ?: throw MatrixMlp3EventDeferredException("project_key_grant_pending")
         val extension = content["io.malink"] as? JsonObject
             ?: throw IllegalArgumentException("The MLP/3 extension is missing.")
+        val keys = matrixMlp3ProjectKeys.valueForRoom(
+            roomId,
+            extension.objectValue("envelope").string("projectId"),
+        ) ?: throw MatrixMlp3EventDeferredException("project_key_grant_pending")
         val opened = try {
             MatrixMlp3Protocol.openContent(extension, roomId, keys.projectId, keys)
         } finally {
@@ -2331,6 +2607,17 @@ class NativeClientRuntime(
             opened.projectId,
         )
         val protocolPayload = protocolEvent.objectValue("payload")
+        if (!shouldProjectGatewayStatusObservation(
+            protocolPayload.string("type"),
+            protocolEvent.string("causationCommandId"),
+            uiForegroundState(),
+        )) {
+            // Older Gateways may still broadcast uncaused liveness observations.
+            // The raw inbox has already authenticated and durably ordered this
+            // event, but a background APK must not rebuild and fsync the complete
+            // business projection for a status value no UI is currently reading.
+            return true
+        }
         if (protocolPayload.string("type") == "workspace.snapshot") {
             require(protocolPayload.string("gatewayKeyId") == activeTrust.gatewayKey.keyId) {
                 "The MLP/3 workspace snapshot names another Gateway key."
@@ -2351,6 +2638,20 @@ class NativeClientRuntime(
             event.eventId,
             threadRootHint,
         )
+        if (protocolPayload.string("type") in setOf("session.ready", "session.lifecycle")) {
+            scheduleWorkspaceDirectoryConvergence()
+        }
+        if (
+            protocolPayload.string("type") == "session.lifecycle"
+            && protocolPayload.string("state") == "deleted"
+        ) {
+            protocolEvent.string("sessionId")?.let { deletedSessionId ->
+                initializedHistoryRelations.remove(deletedSessionId)
+                historyRelationTokens.remove(deletedSessionId)
+                initializedProviderHistoryRooms.remove(deletedSessionId)
+                providerHistoryTokens.remove(deletedSessionId)
+            }
+        }
         result.messages.forEach { message ->
             val sessionId = message.sessionId ?: return@forEach
             eventHub.upsertMessage(sessionId, message, refreshedSnapshot())
@@ -2362,6 +2663,7 @@ class NativeClientRuntime(
             }
         }
         result.terminal?.let(::recordMatrixMlp3Terminal)
+        result.taskNotification?.let(taskNotificationCoordinator::accept)
         when {
             !result.changed -> Unit
             result.livenessOnly -> commitMatrixMlp3Liveness("gateway_observation")
@@ -2468,10 +2770,14 @@ class NativeClientRuntime(
     ) {
         val activeTrust = trust ?: return
         if (matrix.publicSession()?.roomBindings?.none { it.roomId == roomId } != false) return
-        val keys = matrixMlp3ProjectKeys.values().firstOrNull { it.roomId == roomId } ?: return
+        val extension = content.objectValue("io.malink")
+        val keys = matrixMlp3ProjectKeys.valueForRoom(
+            roomId,
+            extension.objectValue("envelope").string("projectId"),
+        ) ?: return
         val opened = try {
             MatrixMlp3Protocol.openContent(
-                content.objectValue("io.malink"),
+                extension,
                 roomId,
                 keys.projectId,
                 keys,
@@ -2581,6 +2887,26 @@ class NativeClientRuntime(
         event: MatrixDecryptedEvent,
         expectedSessionId: String,
     ): ClientMessage? {
+        val verified = verifyHistoricalMlp3Event(event, expectedSessionId) ?: return null
+        val projected = matrixMlp3Projection.applyGatewayEvent(
+            verified.protocolEvent,
+            verified.physicalEventId,
+            verified.threadRootHint,
+        )
+        projected.progressedCommandId?.let { commandId ->
+            outbox.recordProgress(commandId, verified.protocolEvent.string("sessionId"))
+        }
+        projected.terminal?.let(::recordMatrixMlp3Terminal)
+        // Explicit user-requested history pagination may rebuild messages and
+        // local command state, but it must never alert for old turns. Only the
+        // persisted raw-inbox/live event path accepts task notifications.
+        return projected.messages.singleOrNull()?.copy(historical = true)
+    }
+
+    private fun verifyHistoricalMlp3Event(
+        event: MatrixDecryptedEvent,
+        expectedSessionId: String,
+    ): VerifiedHistoricalMlp3Event? {
         val binding = matrix.publicSession()?.roomBindings?.singleOrNull {
             it.roomId == event.roomId
         } ?: return null
@@ -2589,43 +2915,34 @@ class NativeClientRuntime(
         val eventType = root.string("type") ?: return null
         if (eventType != "m.room.message") return null
         val extension = content["io.malink"] as? JsonObject ?: return null
-        if (extension.long("version") == 3L) {
-            val activeTrust = trust ?: return null
-            if (event.sender != binding.gatewayUserId) return null
-            val keys = matrixMlp3ProjectKeys.values().firstOrNull { it.roomId == event.roomId }
-                ?: return null
-            val opened = try {
-                MatrixMlp3Protocol.openContent(extension, event.roomId, keys.projectId, keys)
-            } finally {
-                keys.wipe()
-            }
-            if (opened.plaintext.string("kind") != "signed_event") return null
-            val protocolEvent = MatrixMlp3Protocol.verifyGatewayEvent(
-                opened.plaintext.objectValue("value"),
-                activeTrust.gatewayKey,
-                activeTrust.gatewayId,
-                opened.projectId,
-            )
-            require(opened.logicalEventId == protocolEvent.string("eventId")) {
-                "The MLP/3 historical event envelope logical ID is invalid."
-            }
-            if (protocolEvent.string("sessionId") != expectedSessionId) return null
-            val relation = content["m.relates_to"] as? JsonObject
-            val threadRootHint = relation
-                ?.takeIf { it.string("rel_type") == "m.thread" }
-                ?.string("event_id")
-            val projected = matrixMlp3Projection.applyGatewayEvent(
-                protocolEvent,
-                event.eventId,
-                threadRootHint,
-            )
-            projected.progressedCommandId?.let { commandId ->
-                outbox.recordProgress(commandId, protocolEvent.string("sessionId"))
-            }
-            projected.terminal?.let(::recordMatrixMlp3Terminal)
-            return projected.messages.singleOrNull()?.copy(historical = true)
+        if (extension.long("version") != 3L) return null
+        val activeTrust = trust ?: return null
+        if (event.sender != binding.gatewayUserId) return null
+        val keys = matrixMlp3ProjectKeys.valueForRoom(
+            event.roomId,
+            extension.objectValue("envelope").string("projectId"),
+        ) ?: return null
+        val opened = try {
+            MatrixMlp3Protocol.openContent(extension, event.roomId, keys.projectId, keys)
+        } finally {
+            keys.wipe()
         }
-        return null
+        if (opened.plaintext.string("kind") != "signed_event") return null
+        val protocolEvent = MatrixMlp3Protocol.verifyGatewayEvent(
+            opened.plaintext.objectValue("value"),
+            activeTrust.gatewayKey,
+            activeTrust.gatewayId,
+            opened.projectId,
+        )
+        require(opened.logicalEventId == protocolEvent.string("eventId")) {
+            "The MLP/3 historical event envelope logical ID is invalid."
+        }
+        if (protocolEvent.string("sessionId") != expectedSessionId) return null
+        val relation = content["m.relates_to"] as? JsonObject
+        val threadRootHint = relation
+            ?.takeIf { it.string("rel_type") == "m.thread" }
+            ?.string("event_id")
+        return VerifiedHistoricalMlp3Event(protocolEvent, event.eventId, threadRootHint)
     }
 
     private fun commitMatrixMlp3Projection(reason: String) {
@@ -2814,7 +3131,6 @@ class NativeClientRuntime(
                         completedOperation,
                     )
                 }
-                onCommandCompletion(completedOperation, completion)
             }
         }.onFailure { error ->
             diagnostics.record(
@@ -3201,6 +3517,16 @@ class NativeClientRuntime(
     }
 
     private fun publishCommand(command: DurableView) {
+        val previous = publishedCommandDiagnosticStates.put(command.commandId, command.state)
+        if (previous != command.state) {
+            diagnostics.record(
+                "command.lifecycle",
+                mapOf(
+                    "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                    "stage" to command.state.wireName,
+                ),
+            )
+        }
         val public = publicCommand(command)
         eventHub.publish(
             ClientEventType.COMMAND_CHANGED,
@@ -3524,8 +3850,11 @@ private const val PAIRING_RECOVERY_WINDOW_MS = 366L * 24 * 60 * 60_000
 private const val PAIRING_TRANSPORT_READY_TIMEOUT_MS = 60_000L
 private const val MAX_PAIRING_EXPIRY_SLEEP_MS = 24L * 60 * 60_000
 private const val MAX_AUTHORITATIVE_STATE_REFRESH_ATTEMPTS = 6
+private const val MAX_ACTIVE_SESSION_TAIL_RECOVERY_TARGETS = 64
+private const val SESSION_TAIL_RECOVERY_EVENT_LIMIT = 32
+private const val MAX_SESSION_TAIL_REQUEST_ATTEMPTS = 2
+private const val SESSION_TAIL_RECOVERY_RETRY_DELAY_MS = 1_000L
 private const val COMMAND_RECONCILIATION_DELIVERY_GRACE_MS = 12_000L
-private const val PUBLISHED_COMMAND_RECOVERY_RETRY_MS = 60_000L
 private const val PUBLISHED_COMMAND_RECONCILIATION_MIN_INTERVAL_MS = 60_000L
 
 internal fun recoverableCommandIds(commands: List<DurableView>): List<String> =
@@ -3544,12 +3873,10 @@ internal fun queuedCommandIds(commands: List<DurableView>): List<String> =
         .map(DurableView::commandId)
         .toList()
 
-internal fun publishedRecoveryCommandIds(commands: List<DurableView>): List<String> =
-    commands
-        .asSequence()
-        .filter { command ->
-            command.state == DurableState.PUBLISHED || command.state == DurableState.RUNNING
-        }
-        .sortedBy(DurableView::submittedAt)
-        .map(DurableView::commandId)
-        .toList()
+internal fun shouldProjectGatewayStatusObservation(
+    payloadType: String?,
+    causationCommandId: String?,
+    uiForeground: Boolean,
+): Boolean = payloadType != "gateway.update.status" ||
+    causationCommandId != null ||
+    uiForeground

@@ -6,8 +6,8 @@ import type {
 import { verifyMlp3Command } from '@malink/security'
 import type { MatrixGatewayTrustedDevice } from './config'
 import {
-  FileMlp3CommandJournal,
   type Mlp3CommandClaim,
+  type Mlp3CommandJournal,
 } from './fileMlp3CommandJournal'
 
 export type Mlp3CommandAuthorizationRejection = {
@@ -44,6 +44,7 @@ const CURRENT_WORKSPACE_MEMBER_OPERATIONS = [
   'project.delete',
   'provider.sessions.list',
   'provider.session.inspect',
+  'provider.history.materialize',
   'device.invitation.create',
   'gateway.enrollment.invitation.create',
   'gateway.enrollment.approve',
@@ -67,7 +68,7 @@ void ALL_WORKSPACE_MEMBER_OPERATIONS_ARE_LISTED
 export class MatrixMlp3CommandAuthorizer {
   constructor(
     private readonly workspaceId: string,
-    private readonly journal: FileMlp3CommandJournal,
+    private readonly journal: Mlp3CommandJournal,
   ) {}
 
   async authorize(
@@ -152,6 +153,7 @@ function v3AllowedOperations(
         break
       case 'provider.sessions.list': result.add('provider.sessions.list'); break
       case 'provider.session.inspect': result.add('provider.session.inspect'); break
+      case 'provider.history.materialize': result.add('provider.history.materialize'); break
       case 'session.archive':
       case 'session.restore':
       case 'session.delete':

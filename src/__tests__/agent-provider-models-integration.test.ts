@@ -42,6 +42,8 @@ describe('AgentProvider model discovery integration', () => {
             modelsArgs: ['models'],
             modelsReader,
         })
+        const refreshed = vi.fn()
+        const unsubscribe = provider.onAvailableModelsRefreshed(refreshed)
 
         expect(provider.getAvailableModels()).toEqual([])
         expect(modelsReader).toHaveBeenCalledWith({
@@ -58,6 +60,8 @@ describe('AgentProvider model discovery integration', () => {
             'Tip: use --model <id> (or /model <id> in interactive mode) to switch.',
         ].join('\n'))
         await provider.refreshAvailableModels()
+        expect(refreshed).toHaveBeenCalledTimes(1)
+        unsubscribe()
         expect(provider.getAvailableModels()).toEqual([
             { id: 'auto', name: 'Auto', provider: 'cursor' },
             { id: 'composer-2-fast', name: 'Composer 2 Fast (default)', provider: 'cursor' },

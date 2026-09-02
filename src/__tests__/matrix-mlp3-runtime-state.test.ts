@@ -33,6 +33,7 @@ describe('FileMlp3RuntimeStateStore', () => {
         reasoningEffort: null,
         permissionMode: 'default',
         providerSessionId: null,
+        providerHistory: null,
         extensions: [],
         extensionRevision: 1,
         inheritedFromProjectExtensionRevision: null,

@@ -15,7 +15,13 @@ internal class NativeUpdateInstaller(private val context: Context) {
         val parameters = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(context.packageName)
             setSize(release.artifact.size)
-            setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+            setRequireUserAction(
+                if (nativeUpdateRequiresUserConfirmation()) {
+                    PackageInstaller.SessionParams.USER_ACTION_REQUIRED
+                } else {
+                    PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED
+                },
+            )
         }
         val sessionId = installer.createSession(parameters)
         try {
@@ -45,6 +51,14 @@ internal class NativeUpdateInstaller(private val context: Context) {
         const val APK_NAME = "malink-update.apk"
     }
 }
+
+/**
+ * Malink is a normal self-updating application, not a device owner or an app
+ * store with silent-update privileges. Asking PackageInstaller to skip user
+ * action can terminate the running app before it delivers the confirmation
+ * callback, forcing a second install attempt after process restoration.
+ */
+internal fun nativeUpdateRequiresUserConfirmation(): Boolean = true
 
 class NativeUpdateInstallReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {

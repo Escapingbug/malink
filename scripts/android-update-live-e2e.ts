@@ -52,6 +52,7 @@ async function main() {
       "--",
       "--apk", newApk,
       "--out", bundle,
+      "--artifact-host", "static",
       "--base-url", updateOrigin,
       "--allow-loopback-e2e", "true",
       "--release-note", "Native update E2E fixture",
@@ -149,7 +150,7 @@ async function buildE2eApk(epoch: number, updateOrigin: string) {
     env: {
       ...process.env,
       MALINK_ANDROID_BUILD_EPOCH_MS: String(epoch),
-      MALINK_ANDROID_E2E_UPDATE_ORIGIN: updateOrigin,
+      MALINK_ANDROID_E2E_WEB_ORIGIN: updateOrigin,
     },
     timeout: 10 * 60_000,
   });
@@ -180,7 +181,10 @@ async function acceptInstallerConfirmation(serial: string) {
   await adb(serial, ["shell", "uiautomator", "dump", "/sdcard/malink-update-window.xml"], true);
   const xml = await adb(serial, ["shell", "cat", "/sdcard/malink-update-window.xml"], true);
   for (const node of xml.match(/<node\b[^>]+>/gu) ?? []) {
-    if (!/text="(?:Update|Install)"/u.test(node)) continue;
+    if (
+      !/resource-id="android:id\/button1"/u.test(node) &&
+      !/text="(?:Update|Install)"/u.test(node)
+    ) continue;
     const bounds = node.match(/bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"/u);
     if (!bounds) continue;
     const x = Math.floor((Number(bounds[1]) + Number(bounds[3])) / 2);

@@ -48,6 +48,7 @@ export interface GatewayAdminServerOptions {
   socketPath: string
   gatewayId: string
   gatewayNodeId: string
+  clientMatrixUserId?: string
   getGatewayName: () => string
   getComputerName?: () => string
   renameGateway?: (gatewayName: string) => Promise<void>
@@ -60,6 +61,12 @@ export interface GatewayAdminServerOptions {
     runtimeEpoch: string
     activeTurns: number
     activeCommands: number
+    expiredCommandExecutions?: number
+    unfinishedCommands?: number
+    oldestUnfinishedCommandAgeMs?: number | null
+    pendingOutboxDeliveries?: number
+    oldestPendingOutboxDeliveryAgeMs?: number | null
+    outboxWalBytes?: number
     pendingInboxEvents: number
     quarantinedInboxEvents: number
     matrixReady: boolean | null
@@ -348,7 +355,7 @@ export async function startGatewayAdminServer(
         const created = await options.coordinator.create({
           source: { kind: 'local-admin' },
           ...(data.lifetimeMs === undefined ? {} : { lifetimeMs: data.lifetimeMs }),
-          matrixLogin: data.matrixLogin ?? 'preferred',
+          matrixLogin: data.matrixLogin ?? 'required',
           ...(data.appUrl ? { appUrl: data.appUrl } : {}),
           ...(data.privilegeApproval
             ? {
@@ -459,6 +466,12 @@ async function statusResponse(
     options.registry.listOffers(now),
   ])
   const diagnostics = await options.getGatewayDiagnostics?.()
+  const legacyClientDeviceCount = options.clientMatrixUserId
+    ? activeDevices.filter(record =>
+        record.certificate.certificate.deviceTransport.userId
+          !== options.clientMatrixUserId,
+      ).length
+    : undefined
   return {
     version: 1,
     gatewayId: options.gatewayId,
@@ -471,6 +484,16 @@ async function statusResponse(
     pid: process.pid,
     startedAt,
     activeDeviceCount: activeDevices.length,
+    ...(options.clientMatrixUserId
+      ? {
+          clientMatrixUserId: options.clientMatrixUserId,
+          legacyClientDeviceCount: legacyClientDeviceCount ?? 0,
+          clientMatrixIdentityStatus:
+            legacyClientDeviceCount === 0
+              ? 'converged' as const
+              : 'migration-required' as const,
+        }
+      : {}),
     openInvitationCount: offers.filter((offer) => offer.status === 'open').length,
     ...(options.buildId ? { buildId: options.buildId } : {}),
     ...(diagnostics ?? {}),

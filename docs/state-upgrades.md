@@ -42,8 +42,11 @@ interrupted attempt.
 
 Web localStorage and IndexedDB have separate journals because their atomicity
 boundaries differ. Android keeps one journal beside the encrypted native
-stores and another beside the Matrix-account stores. Gateway JSON/WAL files
-carry their own schema version and use the same adjacent-migration rule.
+stores and another beside the Matrix-account stores. Gateway JSON/WAL/SQLite
+stores carry their own schema version and use the same adjacent-migration rule.
+The MLP/3 command journal migration is deliberately forward-only: JSONL v1 is
+imported into SQLite v2 in one transaction, retained unchanged and hash-bound
+as historical evidence, but never opened for active command processing again.
 
 ## Version boundaries
 
@@ -135,3 +138,8 @@ it could otherwise accept work during probation that the old release cannot
 resume. A protected schema migration or protected-store addition needs a
 forward-only maintenance release and a recovery plan; it must not be disguised
 as an automatically rollback-capable update.
+
+The SQLite command-journal release is such a protected-store addition. It must
+use a maintenance rollout with automatic rollback disabled: an older Gateway
+would otherwise resume appending the now-historical JSONL and create two local
+execution authorities.

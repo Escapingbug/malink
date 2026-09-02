@@ -74,6 +74,12 @@ class CommandPayloadValidatorTest {
                 put("provider", "codex")
                 put("providerSessionId", "provider-session-1")
             },
+            buildJsonObject {
+                put("operation", "provider.history.materialize")
+                put("sessionId", "session-1")
+                put("expectedFrontier", 0)
+                put("limit", 30)
+            },
             lifecycle("session.archive"),
             lifecycle("session.restore"),
             lifecycle("session.delete"),
@@ -117,7 +123,11 @@ class CommandPayloadValidatorTest {
         assertTrue(CommandPayloadValidator.validate(payloads[3]) is ArtifactMaterializeCommandPayload)
         assertTrue(CommandPayloadValidator.validate(payloads[5]) is SessionCreateCommandPayload)
         assertTrue(CommandPayloadValidator.validate(payloads[6]) is ProjectCreateCommandPayload)
-        assertTrue(CommandPayloadValidator.validate(payloads[11]) is SessionLifecycleCommandPayload)
+        assertTrue(
+            CommandPayloadValidator.validate(payloads[11])
+                is ProviderHistoryMaterializeCommandPayload,
+        )
+        assertTrue(CommandPayloadValidator.validate(payloads[12]) is SessionLifecycleCommandPayload)
     }
 
     @Test

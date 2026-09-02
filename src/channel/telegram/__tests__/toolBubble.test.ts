@@ -201,6 +201,21 @@ describe('toolBubble — search result summaries', () => {
 
         expect(result).toContain('2 files')
     })
+
+    it('renders a broad search using its provider title without calling it Grep', () => {
+        const result = formatToolBubble({
+            toolName: 'Search',
+            input: { query: 'ACP tool kinds' },
+            status: 'completed',
+            displayTitle: 'Web Search',
+            output: '2 matches',
+        })
+
+        expect(result).toContain('Web Search')
+        expect(result).toContain('ACP tool kinds')
+        expect(result).toContain('2 matches')
+        expect(result).not.toContain('Grep')
+    })
 })
 
 describe('toolBubble — ExitPlanMode shows full plan', () => {
@@ -270,6 +285,19 @@ describe('toolBubble — formatToolBubble renders correctly', () => {
 
         const result = formatToolBubble(state)
         expect(result).toContain('⏹️')
+    })
+
+    it('renders a generic execution with its provider title without calling it Bash', () => {
+        const result = formatToolBubble({
+            toolName: 'Execute',
+            input: { command: 'python -m pytest' },
+            status: 'running',
+            displayTitle: 'Python runner',
+        })
+
+        expect(result).toContain('Python runner')
+        expect(result).toContain('python -m pytest')
+        expect(result).not.toContain('Bash')
     })
 
     it('renders TodoWrite with todo list', () => {

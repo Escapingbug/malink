@@ -13,7 +13,6 @@ import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import id.my.anciety.malink.R
-import id.my.anciety.malink.client.command.CommandCompletion
 import id.my.anciety.malink.web.MainActivity
 
 class AgentTaskNotifier(private val context: Context) {
@@ -44,25 +43,39 @@ class AgentTaskNotifier(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun show(kind: TaskNotificationKind, completion: CommandCompletion): TaskNotificationChannelState {
-        val notificationId = notificationId(completion.sessionId ?: completion.commandId)
+    fun show(
+        kind: TaskNotificationKind,
+        eventId: String,
+        sessionId: String?,
+        messageBody: String?,
+    ): TaskNotificationChannelState {
+        val notificationId = notificationId(eventId)
         val openSession = Intent(context, MainActivity::class.java)
             .setAction(MainActivity.ACTION_OPEN_SESSION)
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        completion.sessionId?.let { openSession.putExtra(MainActivity.EXTRA_SESSION_ID, it) }
+        sessionId?.let { openSession.putExtra(MainActivity.EXTRA_SESSION_ID, it) }
         val contentIntent = PendingIntent.getActivity(
             context,
             notificationId,
             openSession,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val fallbackBody = context.getString(kind.bodyResource())
+        val body = taskNotificationBody(messageBody, fallbackBody)
+        val publicNotification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_malink_notification)
+            .setContentTitle(context.getString(kind.titleResource()))
+            .setContentText(fallbackBody)
+            .build()
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_malink_notification)
             .setContentTitle(context.getString(kind.titleResource()))
-            .setContentText(context.getString(kind.bodyResource()))
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicNotification)
             .setGroup(TASK_NOTIFICATION_GROUP)
             .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_ALL)
             .setAutoCancel(true)
@@ -125,6 +138,9 @@ class AgentTaskNotifier(private val context: Context) {
         private val TASK_VIBRATION_PATTERN = longArrayOf(0L, 250L, 150L, 250L)
     }
 }
+
+internal fun taskNotificationBody(messageBody: String?, fallbackBody: String): String =
+    messageBody?.trim()?.takeIf(String::isNotEmpty) ?: fallbackBody
 
 data class TaskNotificationChannelState(
     val appNotificationsEnabled: Boolean,

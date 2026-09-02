@@ -25,17 +25,20 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
     write: 'Write',
     'write file': 'Write',
     write_file: 'Write',
-    terminal: 'Bash',
-    shell: 'Bash',
-    command: 'Bash',
-    run_command: 'Bash',
+    terminal: 'Terminal',
+    shell: 'Shell',
+    command: 'Command',
+    run_command: 'Command',
+    execute: 'Execute',
     glob: 'Glob',
     grep: 'Grep',
+    search: 'Search',
     agent: 'Agent',
     websearch: 'WebSearch',
     web_search: 'WebSearch',
     webfetch: 'WebFetch',
     web_fetch: 'WebFetch',
+    fetch: 'Fetch',
     todowrite: 'TodoWrite',
     todo_write: 'TodoWrite',
     'todo write': 'TodoWrite',
@@ -47,18 +50,19 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
     'loaded skill': 'Skill',
 }
 
-/** Canonical ACP tool names (normalized) that we trust as real tool names */
-const KNOWN_CANONICAL_TOOL_NAMES = new Set([
-    'Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep',
-    'WebSearch', 'WebFetch', 'TodoWrite', 'ExitPlanMode',
+/** Stable provider labels that can be normalized without changing their meaning. */
+const KNOWN_STABLE_TOOL_LABELS = new Set([
+    'Bash', 'Terminal', 'Shell', 'Command', 'Execute',
+    'Read', 'Edit', 'Write', 'Glob', 'Grep', 'Search',
+    'WebSearch', 'WebFetch', 'Fetch', 'TodoWrite', 'ExitPlanMode',
     'Task', 'Skill', 'Agent',
 ])
 
-/** Check if a title string looks like a trusted canonical tool name */
-function isKnownToolName(title: string): boolean {
+/** Check if a provider title has a stable normalized label. */
+function isKnownToolLabel(title: string): boolean {
     if (!title) return false
     // Check exact match first
-    if (KNOWN_CANONICAL_TOOL_NAMES.has(title)) return true
+    if (KNOWN_STABLE_TOOL_LABELS.has(title)) return true
     // Check alias normalization
     const normalized = title.toLowerCase()
     return normalized in TOOL_NAME_ALIASES
@@ -209,10 +213,10 @@ export function mapSessionUpdate(update: SessionUpdate, debugLog?: AcpDebugLog):
                 break
             }
 
-            // Determine canonical toolName and displayTitle
-            // rawTitle might be the real tool name OR a file path / descriptive title
+            // Keep stable provider labels separate from descriptive titles. ACP
+            // kind is only a broad UI category, never proof of a concrete tool.
             const inferredToolName = inferToolNameFromKind(toolCall.kind)
-            const isKnown = isKnownToolName(rawTitle)
+            const isKnown = isKnownToolLabel(rawTitle)
             const toolName = isKnown ? normalizeToolName(rawTitle) : inferredToolName ?? 'tool_call'
             // IMPORTANT: Do NOT use generic 'tool_call'/'tool' as displayTitle
             const isGenericTitle = !rawTitle || rawTitle === 'tool_call' || rawTitle === 'tool'
@@ -268,11 +272,11 @@ export function mapSessionUpdate(update: SessionUpdate, debugLog?: AcpDebugLog):
 
             const isTerminal = toolUpdate.status === 'completed' || toolUpdate.status === 'failed'
             const inferredToolName = inferToolNameFromKind(toolUpdate.kind ?? undefined)
-            const isKnown = isKnownToolName(rawTitle)
+            const isKnown = isKnownToolLabel(rawTitle)
 
             if (isTerminal) {
-                // For terminal events (completed/failed), do NOT blindly derive canonical toolName from title.
-                // Only set toolName if the title is a known/canonical tool name.
+                // For terminal events (completed/failed), do not blindly use a
+                // descriptive title or path as a stable tool label.
                 // Otherwise omit toolName and set displayTitle so the projector can merge with prior state.
                 const toolName = isKnown ? normalizeToolName(rawTitle) : undefined
                 const output = extractToolOutput(toolUpdate)
@@ -310,7 +314,7 @@ export function mapSessionUpdate(update: SessionUpdate, debugLog?: AcpDebugLog):
                 })
             } else {
                 // For non-terminal updates, title might be a file path or descriptive text.
-                // Only use as canonical toolName if it's a known tool name.
+                // Only use it as toolName if it has a stable normalized label.
                 // Otherwise use 'tool_call' as generic and store title as displayTitle.
                 // IMPORTANT: Do NOT use generic 'tool_call'/'tool' as displayTitle - it's not descriptive.
                 const toolName = isKnown ? normalizeToolName(rawTitle) : inferredToolName ?? 'tool_call'
@@ -570,11 +574,11 @@ function inferToolNameFromKind(kind: unknown): string | undefined {
         case 'edit':
             return 'Edit'
         case 'execute':
-            return 'Bash'
+            return 'Execute'
         case 'search':
-            return 'Grep'
+            return 'Search'
         case 'fetch':
-            return 'WebFetch'
+            return 'Fetch'
         default:
             return undefined
     }
@@ -589,7 +593,7 @@ function normalizeToolInput(
     const normalizedName = toolName ? normalizeToolName(toolName) : undefined
     const record = asInputRecord(parsed)
 
-    if (normalizedName === 'Bash') {
+    if (['Bash', 'Terminal', 'Shell', 'Command', 'Execute'].includes(normalizedName ?? '')) {
         const command = pickStringFromRecord(record, ['command', 'cmd', 'script'])
             ?? (typeof parsed === 'string' ? parsed : undefined)
         if (command) return { ...(record ?? {}), command }

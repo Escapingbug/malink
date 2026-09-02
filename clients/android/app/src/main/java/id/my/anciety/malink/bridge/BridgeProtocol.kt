@@ -388,7 +388,7 @@ class BridgeDispatcher(
             }
             "malink.client.session" -> {
                 requireContext(request.params, mutation = false)
-                if (negotiatedCapabilities[MATRIX_BOOTSTRAP_CAPABILITY] != 2) {
+                if (negotiatedCapabilities[MATRIX_BOOTSTRAP_CAPABILITY] != 3) {
                     throw BridgeDispatchException(
                         BridgeError.CAPABILITY_UNAVAILABLE,
                         "Native Matrix session discovery was not negotiated.",
@@ -405,11 +405,11 @@ class BridgeDispatcher(
                     mutation = true,
                     requiredExtra = setOf(
                         "homeserver",
+                        "oneTimeLoginToken",
                         "expectedUserId",
                         "deviceName",
                         "roomBinding",
                     ),
-                    optionalExtra = setOf("oneTimeLoginToken", "password"),
                 )
                 if (MATRIX_BOOTSTRAP_CAPABILITY !in negotiatedCapabilities) {
                     throw BridgeDispatchException(
@@ -426,8 +426,7 @@ class BridgeDispatcher(
                         put(
                             "session",
                             session.toJson(
-                                includeRoomBindings =
-                                    negotiatedCapabilities[MATRIX_BOOTSTRAP_CAPABILITY] == 2,
+                                includeRoomBindings = true,
                             ),
                         )
                         put("snapshot", PublicClientJson.encodeSnapshot(snapshot))
@@ -1270,21 +1269,15 @@ class BridgeDispatcher(
     }
 
     private fun parseBootstrap(params: JsonObject): MatrixBootstrap {
-        val oneTimeLoginToken = optionalString(params, "oneTimeLoginToken", 4_096)
-        val password = optionalString(params, "password", 4_096)
-        if ((oneTimeLoginToken == null) == (password == null)) {
-            invalidParams("Exactly one Matrix bootstrap credential is required.")
-        }
         val bootstrap = MatrixBootstrap(
             homeserver = requiredString(params, "homeserver", 2_048),
-            oneTimeLoginToken = oneTimeLoginToken,
+            oneTimeLoginToken = requiredString(params, "oneTimeLoginToken", 4_096),
             expectedUserId = requiredString(params, "expectedUserId", 512),
             deviceName = requiredString(params, "deviceName", 256),
             roomBinding = params["roomBinding"]
                 ?.let { runCatching { it.jsonObject }.getOrNull() }
                 ?.let(::parseRoomBinding)
                 ?: invalidParams("roomBinding must be an object."),
-            password = password,
         )
         return try {
             MatrixIdentifiers.validateBootstrap(bootstrap)
@@ -1484,9 +1477,9 @@ class BridgeDispatcher(
             NATIVE_DIAGNOSTICS_CAPABILITY,
         )
         fun supportedCapabilityVersions(name: String): Set<Int> = when {
-            name == "history.page" -> setOf(1, 2)
-            name == "commands.durable" -> setOf(1, 2, 3, 4)
-            name == MATRIX_BOOTSTRAP_CAPABILITY -> setOf(1, 2)
+            name == "history.page" -> setOf(1, 2, 3)
+            name == "commands.durable" -> setOf(1, 2, 3, 4, 5)
+            name == MATRIX_BOOTSTRAP_CAPABILITY -> setOf(3)
             name in SUPPORTED_CAPABILITIES -> setOf(1)
             else -> emptySet()
         }

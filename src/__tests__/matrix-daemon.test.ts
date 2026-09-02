@@ -41,6 +41,47 @@ describe('MatrixJsSdkGatewayClient', () => {
         expect(invite).toHaveBeenCalledWith('!room:example.org', '@new:example.org')
     })
 
+    it('redacts a complete thread and tolerates retiring a room missing from the SDK cache', async () => {
+        const relation = (eventId: string) => ({ getId: () => eventId } as unknown as MatrixEvent)
+        const relations = vi.fn()
+            .mockResolvedValueOnce({ events: [relation('$reply-2')], nextBatch: 'next' })
+            .mockResolvedValueOnce({ events: [relation('$reply-1')], nextBatch: null })
+        const redactEvent = vi.fn(async (
+            _roomId: string,
+            _eventId: string,
+            _transactionId: string,
+            _options: unknown,
+        ) => ({}))
+        const leave = vi.fn(async () => {
+            throw { errcode: 'M_FORBIDDEN' }
+        })
+        const forget = vi.fn(async () => ({}))
+        const sdk = {
+            relations,
+            redactEvent,
+            getUserId: vi.fn(() => '@gateway:example.org'),
+            getRoom: vi.fn(() => undefined),
+            leave,
+            forget,
+        } as unknown as MatrixClient
+        const client = new MatrixJsSdkGatewayClient(sdk)
+
+        await client.deleteRoomThread('!room:example.org', '$root')
+        await client.retireRoom('!room:example.org')
+
+        expect(relations).toHaveBeenCalledTimes(2)
+        expect(redactEvent.mock.calls.map(call => call.slice(0, 2))).toEqual([
+            ['!room:example.org', '$reply-2'],
+            ['!room:example.org', '$reply-1'],
+            ['!room:example.org', '$root'],
+        ])
+        expect(redactEvent.mock.calls.every(call =>
+            String(call[2]).startsWith('malink.retire.')
+        )).toBe(true)
+        expect(leave).toHaveBeenCalledWith('!room:example.org')
+        expect(forget).toHaveBeenCalledWith('!room:example.org', true)
+    })
+
     it('leaves delivery ordering to the durable Malink scheduler instead of the SDK message FIFO', () => {
         const message = {
             getType: () => 'm.room.message',

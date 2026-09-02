@@ -52,6 +52,7 @@ export type MatrixMlp3InboxRecord = {
 export interface MatrixMlp3ClientStore {
   putOutbox(record: MatrixMlp3OutboxRecord): Promise<void>;
   getOutbox(commandId: string): Promise<MatrixMlp3OutboxRecord | null>;
+  deleteOutbox(commandId: string): Promise<void>;
   listPendingOutbox(): Promise<MatrixMlp3OutboxRecord[]>;
   putInbox(record: MatrixMlp3InboxRecord): Promise<boolean>;
   getInbox(eventId: string): Promise<MatrixMlp3InboxRecord | null>;
@@ -306,6 +307,19 @@ export class MatrixMlp3ProtocolClient {
     await Promise.all((await this.store.listPendingOutbox()).map(record =>
       this.transmit(record).catch(() => undefined),
     ));
+  }
+
+  async release(commandId: string): Promise<void> {
+    await this.initialize();
+    const record = await this.store.getOutbox(commandId);
+    if (!record) return;
+    if (record.status !== "completed") {
+      throw new Error(`The durable command ${commandId} has not completed.`);
+    }
+    this.reconciliationFlights.delete(commandId);
+    this.reconciliationNotBefore.delete(commandId);
+    this.waiters.delete(commandId);
+    await this.store.deleteOutbox(commandId);
   }
 
   async prepareAuthoritativeRecovery(): Promise<void> {
@@ -615,6 +629,9 @@ export class MemoryMatrixMlp3ClientStore implements MatrixMlp3ClientStore {
     const record = this.outbox.get(commandId);
     return record ? structuredClone(record) : null;
   }
+  async deleteOutbox(commandId: string): Promise<void> {
+    this.outbox.delete(commandId);
+  }
   async listPendingOutbox(): Promise<MatrixMlp3OutboxRecord[]> {
     return [...this.outbox.values()].filter(record => record.status === "pending").map(record => structuredClone(record));
   }
@@ -836,6 +853,17 @@ function toMlp3Command(
           operation: "provider.session.inspect",
           provider: payload.provider,
           providerSessionId: payload.providerSessionId,
+        },
+      };
+    case "provider.history.materialize":
+      return {
+        ...common,
+        sessionId: payload.sessionId,
+        operation: "provider.history.materialize",
+        payload: {
+          operation: "provider.history.materialize",
+          expectedFrontier: payload.expectedFrontier,
+          ...(payload.limit === undefined ? {} : { limit: payload.limit }),
         },
       };
     case "session.archive":

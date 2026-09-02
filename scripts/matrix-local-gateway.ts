@@ -29,7 +29,6 @@ import {
     listenForMatrixPairingRequests,
     announceMatrixDeviceRotation,
     publishMatrixTransportSnapshot,
-    pairingVerificationCode,
     ensurePortableWorkspaceGrant,
     trustedDeviceFromRecord,
     trustedDeviceFromWorkspaceGrant,
@@ -170,24 +169,50 @@ const login = await loadOrLoginMatrixGateway({
     onLog: message => process.stderr.write(`[matrix-login] ${message}\n`),
 })
 const matrixInitialSyncTimeoutMs = 120_000
+const matrixRequestRetryBudgetMs = positiveDurationFromEnvironment(
+    'MALINK_MATRIX_REQUEST_RETRY_BUDGET_MS',
+    60_000,
+)
 const client = new MatrixNodeSdkGatewayClient({
     baseUrl: fixture.homeserver,
     accessToken: login.access_token,
     userId: login.user_id,
     deviceId: login.device_id,
     initialSyncTimeoutMs: matrixInitialSyncTimeoutMs,
+    requestRetryBudgetMs: matrixRequestRetryBudgetMs,
 }, matrixInitialSyncTimeoutMs, message => {
     process.stderr.write(`${message}\n`)
 })
 const registry = new FileTrustedDeviceRegistry(
     join(dataDirectory, 'trusted-devices.json'),
 )
+const pwaLoginPath = process.env.MALINK_PWA_LOGIN_FILE
+    ?? join(dirname(dataDirectory), 'pwa-login.json')
+const pwaLoginTokenIssuer = new FileMatrixLoginTokenIssuer({
+    credentialsPath: pwaLoginPath,
+    readPassword: async () => process.env.MALINK_MATRIX_CLIENT_PASSWORD
+        ?? await readPasswordFile(process.env.MALINK_MATRIX_CLIENT_PASSWORD_FILE),
+})
+const clientMatrixUserId = await pwaLoginTokenIssuer.userId()
+if (!clientMatrixUserId) {
+    throw new Error(
+        `The fixed client Matrix credential is unavailable at ${pwaLoginPath}. `
+        + 'Malink does not permit arbitrary client-account sign-in.',
+    )
+}
+if (clientMatrixUserId === login.user_id) {
+    throw new Error(
+        'The Gateway Matrix account and Workspace client Matrix account must be distinct',
+    )
+}
+const pwaAppUrl = process.env.MALINK_PWA_URL?.trim()
 const pairingService = new GatewayPairingService(
     identity,
     registry,
     new PairingOfferGuard(
         new FileReplayStore(join(dataDirectory, 'pairing-replay.json')),
     ),
+    { clientMatrixUserId },
 )
 
 const cryptoConfig = {
@@ -213,6 +238,7 @@ const workspaceDirectory = new FileWorkspaceGatewayDirectory(
     join(dataDirectory, 'workspace-gateways.json'),
     identity,
 )
+await workspaceDirectory.setClientMatrixUserId(clientMatrixUserId)
 const workspaceStatePublicationCache = new FileMatrixStatePublicationCache(
     join(dataDirectory, 'workspace-state-publications.json'),
 )
@@ -264,17 +290,13 @@ const gatewayLoginTokenIssuer = new FileMatrixLoginTokenIssuer({
         ?? await readPasswordFile(process.env.MALINK_MATRIX_GATEWAY_PASSWORD_FILE),
 })
 pairingService.setWorkspaceDirectoryProvider(() => workspaceDirectory.load())
-const pwaLoginPath = process.env.MALINK_PWA_LOGIN_FILE
-    ?? join(dirname(dataDirectory), 'pwa-login.json')
 const invitationCoordinator = new DeviceInvitationCoordinator(
     pairingService,
     registry,
     {
         gatewayName: () => gatewayProfile.gatewayName,
         gatewayTransport: () => currentTransport,
-        matrixLoginTokenIssuer: new FileMatrixLoginTokenIssuer({
-            credentialsPath: pwaLoginPath,
-        }),
+        matrixLoginTokenIssuer: pwaLoginTokenIssuer,
         onAudit: event => {
             if (event.action === 'created') {
                 process.stdout.write(
@@ -306,25 +328,34 @@ let startupPairing: {
     verificationCode: string
 } | null = null
 if (active.length === 0) {
-    const created = await pairingService.createOffer({
-        gatewayName: gatewayProfile.gatewayName,
-        gatewayTransport: currentTransport,
+    if (!pwaAppUrl) {
+        throw new Error(
+            'MALINK_PWA_URL is required for the first fixed-account device invitation',
+        )
+    }
+    const created = await invitationCoordinator.create({
         ...(e2eStartupPairingOperations
             ? { allowedOperations: e2eStartupPairingOperations }
             : {}),
         source: { kind: 'gateway-startup' },
+        matrixLogin: 'required',
+        appUrl: pwaAppUrl,
     })
-    const invitationCode = await pairingVerificationCode(
-        created.signedOffer.offer.offerId,
-        created.signedOffer.offer.challenge,
-        created.signedOffer.offer.gatewayKey.keyId,
-    )
     startupPairing = {
-        link: created.link,
-        expiresAt: created.signedOffer.offer.expiresAt,
-        verificationCode: invitationCode,
+        link: created.invitationLink,
+        expiresAt: created.expiresAt,
+        verificationCode: created.verificationCode,
     }
 } else {
+    const legacyClientCount = active.filter(record =>
+        record.certificate.certificate.deviceTransport.userId !== clientMatrixUserId,
+    ).length
+    if (legacyClientCount > 0) {
+        process.stderr.write(
+            `[client-matrix-identity] ${legacyClientCount} active device(s) use a legacy `
+            + 'Matrix account; existing authorization remains active pending user-approved migration.\n',
+        )
+    }
     const rotated = await announceMatrixDeviceRotation({
         client,
         service: pairingService,
@@ -343,9 +374,15 @@ if (active.length === 0) {
     })
     process.stdout.write('Published the durable Gateway profile recovery snapshot.\n')
     if (process.env.MALINK_PAIR_NEW_DEVICE === '1') {
+        if (!pwaAppUrl) {
+            throw new Error(
+                'MALINK_PWA_URL is required for a fixed-account device invitation',
+            )
+        }
         const created = await invitationCoordinator.create({
             source: { kind: 'gateway-startup' },
-            matrixLogin: 'disabled',
+            matrixLogin: 'required',
+            appUrl: pwaAppUrl,
         })
         process.stdout.write('\nAdd another Malink device:\n\n')
         process.stdout.write(await QRCode.toString(created.invitationLink, {
@@ -357,12 +394,13 @@ if (active.length === 0) {
             `\nInvitation code: ${formatCode(created.verificationCode)}\n`,
         )
         process.stdout.write(
-            `Pairing link (paste fallback):\n${created.pairingLink}\n\n`,
+            `Pairing link (paste fallback):\n${created.invitationLink}\n\n`,
         )
     }
 }
 
 const localRoomIds = configuredRooms.map(room => room.roomId)
+const providerHistoryRoomIds = new Set<string>()
 const portableTrustedDevices = async () =>
     (await workspaceAuthorization.activeGrants()).map(grant =>
         trustedDeviceFromWorkspaceGrant(grant, localRoomIds))
@@ -550,12 +588,14 @@ const stopPairingRecovery = listenForMatrixPairingRequests({
 const config: MatrixGatewayConfig = {
     gatewayId: identity.gatewayId,
     gatewayNodeId: identity.gatewayNodeId,
+    clientMatrixUserId,
     connection: {
         baseUrl: fixture.homeserver,
         accessToken: login.access_token,
         userId: login.user_id,
         deviceId: login.device_id,
         initialSyncTimeoutMs: 30_000,
+        requestRetryBudgetMs: matrixRequestRetryBudgetMs,
     },
     crypto: cryptoConfig,
     rooms: configuredRooms,
@@ -566,9 +606,18 @@ const config: MatrixGatewayConfig = {
         gatewayKeyPair: identity.serialized,
         envelopeReplayLedgerPath: join(dataDirectory, 'envelope-replay.json'),
     },
-    gatewayHeartbeatIntervalMs: positiveDurationFromEnvironment(
+    commandExecutionTimeoutMs: positiveDurationFromEnvironment(
+        'MALINK_GATEWAY_COMMAND_EXECUTION_TIMEOUT_MS',
+        60_000,
+    ),
+    gatewayUpdateExecutionTimeoutMs: positiveDurationFromEnvironment(
+        'MALINK_GATEWAY_UPDATE_EXECUTION_TIMEOUT_MS',
+        2 * 60 * 60_000,
+    ),
+    workspaceControlIntervalMs: positiveDurationFromEnvironment(
+        'MALINK_MATRIX_WORKSPACE_CONTROL_INTERVAL_MS',
+        60_000,
         'MALINK_MATRIX_GATEWAY_HEARTBEAT_INTERVAL_MS',
-        5 * 60_000,
     ),
 }
 runner = new MatrixMlp3GatewayRunner(config, {
@@ -595,6 +644,15 @@ runner = new MatrixMlp3GatewayRunner(config, {
                 trustedDeviceFromRecord(record, localRoomIds)),
             ...await portableTrustedDevices(),
         ]),
+    onProviderHistoryRoomAvailable: roomId => {
+        providerHistoryRoomIds.add(roomId)
+        if (!localRoomIds.includes(roomId)) localRoomIds.push(roomId)
+    },
+    onProviderHistoryRoomDeleted: roomId => {
+        providerHistoryRoomIds.delete(roomId)
+        const index = localRoomIds.indexOf(roomId)
+        if (index >= 0) localRoomIds.splice(index, 1)
+    },
     isTrustedDeviceActive: async deviceId => {
         const local = await registry.get(deviceId)
         if (local?.workspaceGrant) return workspaceAuthorization.isActive(deviceId)
@@ -776,9 +834,10 @@ runner = new MatrixMlp3GatewayRunner(config, {
             cwd: projectCwd,
             providerName: selectedProvider,
         })
-        localRoomIds.splice(0, localRoomIds.length, ...(
-            await projectCatalog.list()
-        ).map(project => project.roomId))
+        localRoomIds.splice(0, localRoomIds.length, ...new Set([
+            ...(await projectCatalog.list()).map(project => project.roomId),
+            ...providerHistoryRoomIds,
+        ]))
         process.stdout.write(
             `Device ${input.requestedByDeviceId} created project ${projectName} on this Gateway.\n`,
         )
@@ -820,9 +879,10 @@ runner = new MatrixMlp3GatewayRunner(config, {
     },
     deleteProject: async input => {
         await projectCatalog.remove(input.projectId)
-        localRoomIds.splice(0, localRoomIds.length, ...(
-            await projectCatalog.list()
-        ).map(project => project.roomId))
+        localRoomIds.splice(0, localRoomIds.length, ...new Set([
+            ...(await projectCatalog.list()).map(project => project.roomId),
+            ...providerHistoryRoomIds,
+        ]))
         process.stdout.write(
             `Device ${input.requestedByDeviceId} deleted project ${input.projectId}.\n`,
         )
@@ -841,16 +901,19 @@ runner = new MatrixMlp3GatewayRunner(config, {
 })
 
 await runner.start()
-await synchronizeWorkspaceControl()
+void synchronizeWorkspaceControl().catch(error => {
+    process.stderr.write(`[workspace-control] initial synchronization deferred: ${formatError(error)}\n`)
+})
 const workspaceControlTimer = setInterval(() => {
     void synchronizeWorkspaceControl(publishLocalWorkspaceDirectory).catch(error => {
         process.stderr.write(`[workspace-control] synchronization failed: ${formatError(error)}\n`)
     })
-}, config.gatewayHeartbeatIntervalMs ?? 5 * 60_000)
+}, config.workspaceControlIntervalMs ?? 60_000)
 const adminServer = await startGatewayAdminServer({
     socketPath: adminSocketPath,
     gatewayId: identity.gatewayId,
     gatewayNodeId: identity.gatewayNodeId,
+    clientMatrixUserId,
     getGatewayName: () => gatewayProfile.gatewayName,
     getComputerName: () => gatewayProfile.computerName,
     renameGateway: async gatewayName => {
@@ -1104,12 +1167,19 @@ function deduplicateTrustedDevices(
     return [...result.values()]
 }
 
-function positiveDurationFromEnvironment(name: string, fallbackMs: number): number {
-    const raw = process.env[name]
+function positiveDurationFromEnvironment(
+    name: string,
+    fallbackMs: number,
+    legacyName?: string,
+): number {
+    const sourceName = process.env[name] === undefined && legacyName && process.env[legacyName] !== undefined
+        ? legacyName
+        : name
+    const raw = process.env[sourceName]
     if (raw === undefined) return fallbackMs
     const value = Number(raw)
     if (!Number.isFinite(value) || value <= 0) {
-        throw new Error(`${name} must be a positive duration in milliseconds`)
+        throw new Error(`${sourceName} must be a positive duration in milliseconds`)
     }
     return value
 }

@@ -48,7 +48,8 @@ as the control plane that establishes device trust and distributes MLP/3 keys.
 | --- | --- | --- |
 | Workspace | a set of encrypted project rooms | local Gateway configuration plus signed room membership |
 | Project | one encrypted Matrix room | `project_id` permanently bound to the room |
-| Session | one Matrix thread | immutable root event and signed lifecycle events |
+| Active session | one Matrix thread | immutable root event and signed lifecycle events |
+| Restored provider history | one auxiliary encrypted room per restored session | signed reverse-append pages and committed frontiers; never execution authority |
 | User prompt or mutation | ordinary `m.room.message` command event | device signature, certificate, stable `command_id` |
 | Agent/tool/status output | ordinary `m.room.message` thread event | Gateway signature and stable logical `event_id` |
 | Current project projection | ordinary signed snapshot event | `io.malink.project.current.v3` points to its physical event ID |
@@ -57,10 +58,12 @@ as the control plane that establishes device trust and distributes MLP/3 keys.
 | Project key grant | directly addressed Room State | `io.malink.project.key_grant.v3` keyed by device ID |
 | Transcript and audit | thread timeline and relations | append-only signed events |
 
-One room represents exactly one project. Project identity therefore does not
-need to be repeated as visual grouping metadata in every session row, and a
-session cannot silently move between projects. Matrix Spaces may organize
-rooms later without changing the room/thread protocol.
+One execution room represents exactly one project. Project identity therefore
+does not need to be repeated as visual grouping metadata in every session row,
+and a session cannot silently move between projects. A recovered-history room
+is an explicitly bound, non-execution auxiliary room; it does not change the
+project-room or thread authority. Matrix Spaces may organize rooms later
+without changing the room/thread protocol.
 
 ## Unified event chain
 
@@ -113,15 +116,15 @@ timeline-recovery fallback. Native hosts advertise the optional
 `commands.journal-reconciliation` bridge capability so a newer PWA does not
 claim this recovery path when hosted by an older APK.
 
-The native outbox owns this recovery even when no WebView is attached. It
-resumes published/running journal probes after process restart instead of
-waiting for the PWA to request recovery. A missing terminal remains
-nonterminal; clients MUST NOT synthesize success. They MAY retire a record only
-with a duplicate-execution tombstone and evidence that cannot conceal Matrix
-acceptance: deterministic local envelope failure, an authoritatively removed
-project route, or a matching authoritative session lifecycle that already satisfies the
-idempotent lifecycle request. The latter is state convergence, not proof that
-the retired command caused the state.
+The native outbox resumes queued sends and transport-uncertain sends without a
+WebView. Published/running commands rely on the Matrix SDK timeline unless a
+foreground caller explicitly requests one bounded journal reconciliation; the
+native service MUST NOT loop that probe or scan history on an idle background
+timer. A missing terminal remains nonterminal, and clients MUST NOT synthesize
+success. They MAY retire a record only with a duplicate-execution tombstone and
+evidence that cannot conceal Matrix acceptance: deterministic local envelope
+failure, an authoritatively removed project route, or a matching authoritative
+session lifecycle that already satisfies the idempotent lifecycle request.
 
 `gateway.update.status` is a read-only observation. Clients may reuse one
 unfinished same-project probe for at most two minutes to coalesce overlapping
@@ -156,12 +159,16 @@ provider commands such as `/model`.
 
 `project.delete` durably stops execution for that project and emits one signed
 `project.deleted` terminal event. It removes the route from the Gateway catalog
-and verified client projections, but does not erase the fixed working directory,
-provider-retained copies, or Matrix room history. The stable bootstrap control
-route cannot be deleted, and a Gateway always retains at least one project
-route. Deletions share one Gateway-wide lane so concurrent commands cannot both
-pass that invariant. Existing `project.settings` certificate authority covers
-both update and deletion, preserving already-issued device certificates.
+and verified client projections, then retires the project room by removing
+ordinary membership and aliases and making the Gateway leave and forget it.
+Deletion is rejected while any Malink session record remains. It does not erase
+the fixed working directory or provider-retained conversations. Standard
+Client-Server APIs redact/retire Matrix data but do not promise physical purge
+from a homeserver database. The stable bootstrap control route cannot be
+deleted, and a Gateway always retains at least one project route. Deletions
+share one Gateway-wide lane so concurrent commands cannot both pass that
+invariant. Existing `project.settings` certificate authority covers both
+update and deletion, preserving already-issued device certificates.
 
 Project management has a bounded transport budget: one client command and one
 Gateway terminal timeline event per operation. Settings additionally updates
@@ -186,17 +193,70 @@ validates the rest of the MLP/3 event, normalizes only those known fields for a
 new bounded recovery event, and never re-executes or silently deletes the
 historical command.
 Creating a session with `providerSessionId` adopts that existing provider
-conversation; the first message sent from the preview is carried as the create
-command's initial prompt. A provider session already managed by an active
-Malink session opens that session instead of creating a duplicate.
+conversation. Current clients settle `session.create` first, then submit the
+first locally persisted message as an independent `prompt.submit` command. This
+keeps session creation and Agent execution as two separately recoverable command
+identities. The optional create-command `initialPrompt` remains accepted only as
+a compatibility path for already-installed clients. A provider session already
+managed by an active Malink session opens that session instead of creating a
+duplicate.
 
-Malink has one removal action: archive. It removes a session from the managed
-session projection but retains its metadata tombstone and never invokes a
-provider-level delete. Archived sessions are not restored in place; if the
-provider still lists the conversation, users continue it from Provider
-History, producing a new Malink session identity. Pre-release `delete`
-requests are normalized to archive and `restore` is rejected for compatibility;
-neither redacts Matrix or provider history.
+Provider continuation uses one auxiliary history room per restored Malink
+session. During `session.create`, the Gateway reads the provider transcript once
+and stores an immutable local snapshot plus its digest; it does not copy the
+whole transcript into Matrix. The session projection carries the auxiliary room
+binding, snapshot ID, `reverse_append_v1` ordering, and materialized frontier.
+When an explicit older-history load reaches that frontier, the client sends
+`provider.history.materialize` in the project room. The Gateway writes a bounded
+page from newest toward oldest as signed, application-encrypted
+`provider.history.message` events, then writes
+`provider.history.page.committed`. Message roles preserve the provider-side
+speaker identity. Stable logical IDs and frontier preconditions make retries
+idempotent. Existing pages come from Matrix/local projection; later page loads
+continue from the Gateway snapshot and do not repeat the provider RPC. Normal
+continued conversation remains chronologically ordered in the project thread.
+
+## Turn lifecycle and delivery boundary
+
+One turn uses the existing bounded MLP/3 lifecycle:
+
+- `turn.queued` means the signed command is in the session lane and the Gateway
+  may be preparing the provider;
+- `turn.started` is emitted at most once, after the provider emits its first
+  turn event, so clients no longer present provider startup as active work;
+- `turn.completed` or `turn.failed` is the only terminal transition. A stopped
+  turn completes with `outcome: cancelled` under the original prompt command
+  identity, and the separate `turn.cancel` command receives a matching terminal
+  result only after that original turn has settled.
+
+An ordinary Agent turn is not failed merely because a fixed wall-clock duration
+has elapsed. The provider result or an authenticated `turn.cancel` owns its
+terminal transition; bounded provider startup, interrupt and cleanup waits are
+local runtime safeguards. Agent-driven Gateway maintenance uses an independent,
+configurable safety deadline. This execution-policy change does not alter MLP/3
+wire schemas or require a protocol-version change.
+
+The execution terminal is durable once semantic output and the terminal event
+have been staged in the Gateway's local outboxes and command journal. It does
+not wait for every staged assistant/tool event to receive a physical Matrix
+event ID. Matrix 429 backoff and retry therefore remain delivery state instead
+of keeping the Agent runtime falsely active. Stable logical IDs, outbox
+ordering, and client projection make delayed delivery safe; no status polling,
+heartbeat, or per-provider startup event is added.
+
+Malink has one session-removal action: archive. The command name and accepted
+legacy lifecycle values remain wire-compatible, but successful archive emits
+`session.lifecycle(state=deleted)`, redacts the Matrix thread, retires the
+session's auxiliary history room, removes local snapshot/scratch data, and
+deletes the persisted Malink session record. It never invokes provider-level
+delete or removes the project working directory. If the provider still lists
+the conversation, users continue it from Provider History under a new Malink
+session identity. Before destructive Matrix cleanup begins, the Gateway
+durably records an internal `archived` cleanup checkpoint; startup completes
+any interrupted cleanup. Upgrade startup treats tombstones produced by older
+versions the same way, while leaving existing active sessions untouched.
+Pre-release `delete` requests are normalized to archive and `restore` is
+rejected for compatibility.
 
 Browser notification enrollment also uses this path. A web device sends
 `notification.subscribe` or `notification.unsubscribe` as a signed,
@@ -222,12 +282,11 @@ Gateway release control uses three workspace commands:
 All three require the `gateway.update` pairing grant. This grant is not an
 arbitrary code-install capability: the remote command contains no URL or key,
 and the local supervisor accepts only manifests signed by its pinned release
-signer. Results use `gateway.update.status` and are also carried in subsequent
-uncaused `gateway.update.status` events so every authorized client converges
-from one shared node publication after the Gateway restart. Reusing the existing
-event type is wire-compatible; the absence of `causationCommandId` identifies
-the shared observation. It is emitted on supervisor phase changes and as a
-sparse heartbeat; clients do not poll it in the background.
+signer. Results use `gateway.update.status`. Supervisor phase changes may also
+produce one uncaused `gateway.update.status` event so active clients converge on
+the semantic update state. An unchanged Gateway emits no heartbeat. Visible,
+network-connected clients use the causation-bearing command reply for current
+liveness and stop probing immediately when hidden or disconnected.
 
 ## Current state and recovery
 
@@ -254,11 +313,11 @@ cursor and closes that gap in a coalesced background worker. The current
 pointer and fully paginated thread directory provide a cache-cold baseline;
 thread relations do not poll for recent state. Process death resumes the
 durable inbox, gap queue, and outbox and never manufactures a replacement
-command. A published command first performs bounded timeline recovery; only if
-no terminal result is found does it issue the exact-content reconciliation
-probe described above. The UI exposes the saved command ID and stage, explains
-whether Matrix or the Gateway is unavailable, and offers explicit check,
-reconnect, and diagnostic actions.
+command. Published commands remain attached to SDK timeline delivery. Only an
+explicit foreground recovery action may issue the exact-content reconciliation
+probe described above and read one bounded compatibility page. The UI exposes
+the saved command ID and stage, explains whether Matrix or the Gateway is
+unavailable, and offers explicit check, reconnect, and diagnostic actions.
 
 Offline clients show their last verified encrypted local projection and
 history. They do not report Connected or release new commands until the Matrix
@@ -362,8 +421,9 @@ Traffic scales with visible business activity:
 - zero extra events for artifact stat display; one confirmed artifact command
   and one higher-version assistant replacement, with media 429 retries kept
   off-timeline;
-- one canonical queued projection and one terminal event for a prompt; there is
-  no separate durable `turn.started` transition;
+- one canonical queued projection, at most one existing `turn.started` event,
+  and one terminal event for a prompt; provider-internal startup phases and
+  delivery retries create no additional timeline events;
 - one bounded tool-group snapshot when current work first becomes visible, at
   most one coalesced progressive replacement per ten-second window while its
   visible state changes, and one terminal snapshot when the group completes;
@@ -377,16 +437,14 @@ Traffic scales with visible business activity:
   Gateway bootstrap control route when that semantic document changes, rather
   than one copy per project room.
 
-There is no per-device fan-out for ordinary conversation output, heartbeat
-state, focus refresh, reconnect RPC, session-directory page rewrite, or manual
-checkpoint publication. One node heartbeat is shared by all clients and uses
-outbox supersession so an undelivered older heartbeat is replaced rather than
-queued behind its successor. Gateway invitation reconciliation reuses membership
+There is no per-device fan-out for ordinary conversation output, background
+liveness, focus refresh, reconnect RPC, session-directory page rewrite, or
+manual checkpoint publication. Gateway invitation reconciliation reuses membership
 from `/sync`; it does not poll every device in every project on a timer.
 Identical signed snapshot pointers and root-signed
 Workspace control documents are durably recognized across process restart; an
-unchanged Gateway restart performs zero semantic snapshot rewrites and then
-publishes one shared node heartbeat. Gateway and client outboxes honor Matrix
+unchanged Gateway restart performs zero semantic snapshot or liveness writes.
+Gateway and client outboxes honor Matrix
 `retry_after` and stable transaction IDs. The Gateway also carries the observed
 account refill interval forward to pace later room writes, so homeserver rate
 limits affect latency rather than forming a repeated-429 feedback loop.

@@ -25,7 +25,8 @@ services:
     environment:
       SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
     secrets:
-      - malink_account_password
+      - gateway_account_password
+      - client_account_password
     volumes:
       - ./data:/data
     ports:
@@ -40,8 +41,10 @@ services:
 secrets:
   postgres_password:
     file: ./secrets/postgres-password
-  malink_account_password:
-    file: ./secrets/malink-account-password
+  gateway_account_password:
+    file: ./secrets/gateway-account-password
+  client_account_password:
+    file: ./secrets/client-account-password
 
 volumes:
   matrix-postgres:

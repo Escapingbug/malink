@@ -65,6 +65,7 @@ interface CachedCodexModelCatalog {
     models: ModelEntry[]
     nextRefreshAt: number
     refreshPromise?: Promise<ModelEntry[]>
+    listeners: Set<() => void>
 }
 
 const modelCatalogCache = new Map<string, CachedCodexModelCatalog>()
@@ -138,6 +139,12 @@ export class CodexProvider extends AcpProvider {
         return cached.models.map(model => ({ ...model }))
     }
 
+    onAvailableModelsRefreshed(listener: () => void): () => void {
+        const cached = this.cachedModelCatalog()
+        cached.listeners.add(listener)
+        return () => { cached.listeners.delete(listener) }
+    }
+
     async refreshAvailableModels(): Promise<ModelEntry[]> {
         const cached = this.cachedModelCatalog()
         if (cached.refreshPromise) return cached.refreshPromise
@@ -152,6 +159,7 @@ export class CodexProvider extends AcpProvider {
             const models = parseCodexModels(stdout)
             cached.models = models
             cached.nextRefreshAt = Date.now() + CODEX_MODELS_REFRESH_MS
+            notifyModelCatalogListeners(cached.listeners, 'codex')
             return models.map(model => ({ ...model }))
         }).catch(error => {
             const message = error instanceof Error ? error.message : String(error)
@@ -167,10 +175,21 @@ export class CodexProvider extends AcpProvider {
     private cachedModelCatalog(): CachedCodexModelCatalog {
         let cached = modelCatalogCache.get(this.modelCatalogKey)
         if (!cached) {
-            cached = { models: [], nextRefreshAt: 0 }
+            cached = { models: [], nextRefreshAt: 0, listeners: new Set() }
             modelCatalogCache.set(this.modelCatalogKey, cached)
         }
         return cached
+    }
+}
+
+function notifyModelCatalogListeners(listeners: ReadonlySet<() => void>, provider: string): void {
+    for (const listener of [...listeners]) {
+        try {
+            listener()
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            console.error(`[${provider}] Model catalog listener failed: ${message}`)
+        }
     }
 }
 

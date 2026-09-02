@@ -81,6 +81,39 @@ describe("ToolActivityCard", () => {
     expect(html).toContain("1 failed · Running");
     expect(html).toContain("phase-failed");
   });
+
+  it("settles a stale running command after the turn succeeds", () => {
+    const html = renderToStaticMarkup(
+      createElement(ToolActivityCard, {
+        defaultExpanded: true,
+        terminalOutcome: "succeeded",
+        group: group([
+          tool("command-1", "Bash", "execute", "updated", "echo ready"),
+        ]),
+      }),
+    );
+
+    expect(html).toContain("Activity completed");
+    expect(html).toContain("1 command completed");
+    expect(html).toContain('aria-label="Completed"');
+    expect(html).not.toContain("Command running");
+    expect(html).not.toContain('aria-label="Running"');
+  });
+
+  it("settles a stale running command as failed after a failed turn", () => {
+    const html = renderToStaticMarkup(
+      createElement(ToolActivityCard, {
+        terminalOutcome: "failed",
+        group: group([
+          tool("command-1", "Bash", "execute", "started", "echo ready"),
+        ]),
+      }),
+    );
+
+    expect(html).toContain("tool-activity-card is-complete has-error");
+    expect(html).toContain("Command failed");
+    expect(html).toContain('aria-label="1 failed"');
+  });
 });
 
 function group(

@@ -14,10 +14,22 @@ import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MatrixMlp3NativeProjectionTest {
+    @Test
+    fun `semantic validation rejects a structurally valid but incompatible cache`() {
+        val incompatible = buildJsonObject {
+            put("schemaVersion", 14)
+        }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            validateMatrixMlp3ProjectionState(incompatible)
+        }
+    }
+
     @Test
     fun `authoritative Workspace Directory distinguishes active and removed projects`() {
         val projection = projection()
@@ -150,8 +162,107 @@ class MatrixMlp3NativeProjectionTest {
         sessions = projection.snapshot()!!.getValue("sessions").jsonArray
         assertEquals(listOf("Session B"), sessions.map { sessionTitle(it.jsonObject) })
         assertNull(projection.threadRootEventId("session-a"))
-        assertEquals("deleted", projection.sessionLifecycle("session-a"))
+        assertNull(projection.sessionLifecycle("session-a"))
         assertEquals("\$root-b", projection.threadRootEventId("session-b"))
+    }
+
+    @Test
+    fun `provider history room pages retain speaker order and durable frontier`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        val binding = buildJsonObject {
+            put("roomId", "!history:example.org")
+            put("snapshotId", "snapshot-1")
+            put("ordering", "reverse_append_v1")
+        }
+        projection.applyGatewayEvent(
+            sessionReady(
+                "session-a",
+                stateVersion = 1,
+                title = "Recovered",
+                updatedAt = 100,
+                providerHistory = binding,
+            ),
+            "\$root-a",
+            "\$root-a",
+        )
+
+        val committed = projection.applyGatewayEvent(
+            event(
+                eventId = "history-page-0",
+                projectId = "project-1",
+                sessionId = "session-a",
+                payload = buildJsonObject {
+                    put("type", "provider.history.page.committed")
+                    put("snapshotId", "snapshot-1")
+                    put("pageIndex", 0)
+                    put("previousFrontier", 0)
+                    put("frontier", 1)
+                    put("messageCount", 1)
+                    put("hasMore", false)
+                    put("digest", "A".repeat(43))
+                },
+            ),
+            "\$history-page-0",
+            null,
+        )
+        assertTrue(committed.messages.isEmpty())
+        assertEquals(setOf("!history:example.org"), projection.providerHistoryRoomIds())
+        assertFalse(projection.providerHistoryHasMore("session-a"))
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        val secondPart = restored.applyGatewayEvent(
+            event(
+                eventId = "history-message-2-part-1",
+                projectId = "project-1",
+                sessionId = "session-a",
+                payload = buildJsonObject {
+                    put("type", "provider.history.message")
+                    put("snapshotId", "snapshot-1")
+                    put("sourceMessageId", "provider-message-2")
+                    put("sourceOrdinal", 2)
+                    put("role", "assistant")
+                    put("body", "answer")
+                    put("pageIndex", 0)
+                    put("partIndex", 1)
+                    put("partCount", 2)
+                },
+            ),
+            "\$history-message-2-part-1",
+            null,
+        )
+        assertTrue(secondPart.messages.isEmpty())
+
+        val historical = restored.applyGatewayEvent(
+            event(
+                eventId = "history-message-2-part-0",
+                projectId = "project-1",
+                sessionId = "session-a",
+                payload = buildJsonObject {
+                    put("type", "provider.history.message")
+                    put("snapshotId", "snapshot-1")
+                    put("sourceMessageId", "provider-message-2")
+                    put("sourceOrdinal", 2)
+                    put("role", "assistant")
+                    put("body", "Earlier ")
+                    put("pageIndex", 0)
+                    put("partIndex", 0)
+                    put("partCount", 2)
+                },
+            ),
+            "\$history-message-2-part-0",
+            null,
+        ).messages.single()
+        assertEquals("Earlier answer", historical.text)
+        assertEquals(true, historical.historical)
+        assertEquals(ClientMessageKind.AGENT, historical.kind)
+        assertEquals("5", historical.semantic?.get("providerHistoryOrder")?.jsonPrimitive?.content)
+        assertEquals(binding, restored.providerHistory("session-a"))
+        assertFalse(restored.providerHistoryHasMore("session-a"))
     }
 
     @Test
@@ -301,6 +412,7 @@ class MatrixMlp3NativeProjectionTest {
             "materialized",
             result.terminal?.result?.jsonObject?.get("status")?.jsonPrimitive?.content,
         )
+        assertNull(result.taskNotification)
     }
 
     @Test
@@ -567,6 +679,184 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `startup tail recovery targets active turns and applies their verified terminal`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$root-a",
+            "\$root-a",
+        )
+        projection.applyGatewayEvent(turn("started", 2, "working"), "\$started-a", "\$root-a")
+
+        assertEquals(
+            listOf(MatrixMlp3SessionTailRecoveryTarget(
+                sessionId = "session-a",
+                projectId = "project-1",
+                threadRootEventId = "\$root-a",
+                activeTurnId = "turn-1",
+                stateVersion = 2,
+            )),
+            projection.activeSessionTailRecoveryTargets(64),
+        )
+
+        val result = projection.reconcileSessionTerminal(
+            event = turn("completed", 3, "idle"),
+            threadRootHint = "\$root-a",
+            expectedSessionId = "session-a",
+            expectedTurnId = "turn-1",
+        )
+
+        assertTrue(result.changed)
+        assertEquals("turn-1", result.terminal?.commandId)
+        assertTrue(projection.activeSessionTailRecoveryTargets(64).isEmpty())
+        val completed = projection.snapshot()!!.getValue("sessions").jsonArray.single().jsonObject
+        assertEquals("idle", completed.getValue("status").jsonPrimitive.content)
+        assertFalse("active_turn_id" in completed)
+    }
+
+    @Test
+    fun `startup tail recovery cannot regress a newer active session`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$root-a",
+            "\$root-a",
+        )
+        projection.applyGatewayEvent(turn("started", 4, "working"), "\$started-a", "\$root-a")
+
+        val result = projection.reconcileSessionTerminal(
+            event = turn("completed", 3, "idle"),
+            threadRootHint = "\$root-a",
+            expectedSessionId = "session-a",
+            expectedTurnId = "turn-1",
+        )
+
+        assertFalse(result.changed)
+        assertNull(result.terminal)
+        val running = projection.snapshot()!!.getValue("sessions").jsonArray.single().jsonObject
+        assertEquals("running", running.getValue("status").jsonPrimitive.content)
+        assertEquals(4L, running.getValue("state_version").jsonPrimitive.content.toLong())
+    }
+
+    @Test
+    fun `every authenticated turn terminal exposes one device independent notification`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$root-a",
+            "\$root-a",
+        )
+        projection.applyGatewayEvent(
+            assistant(
+                "assistant-final-1",
+                "message-final-1",
+                "Implemented the requested fix.",
+                commandId = "turn-1",
+                final = true,
+            ),
+            "\$assistant-final-1",
+            "\$root-a",
+        )
+        val event = turn("completed", 2, "idle")
+
+        val first = projection.applyGatewayEvent(event, "\$completed-a", "\$root-a")
+        val duplicate = projection.applyGatewayEvent(event, "\$completed-a-replay", "\$root-a")
+
+        assertEquals("turn-completed-2", first.taskNotification?.eventId)
+        assertEquals("turn-1", first.taskNotification?.commandId)
+        assertEquals("succeeded", first.taskNotification?.outcome)
+        assertEquals("session-a", first.taskNotification?.sessionId)
+        assertEquals("Implemented the requested fix.", first.taskNotification?.body)
+        assertNull(duplicate.taskNotification)
+    }
+
+    @Test
+    fun `final message notification preview survives durable projection restore`() {
+        val original = projection()
+        original.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        original.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$root-a",
+            "\$root-a",
+        )
+        original.applyGatewayEvent(
+            assistant(
+                "assistant-final-restart",
+                "message-final-restart",
+                "Restart-safe final response.",
+                commandId = "turn-1",
+                final = true,
+            ),
+            "\$assistant-final-restart",
+            "\$root-a",
+        )
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = original.durableState(),
+        )
+        val terminal = restored.applyGatewayEvent(
+            turn("completed", 2, "idle"),
+            "\$completed-after-restart",
+            "\$root-a",
+        )
+
+        assertEquals("Restart-safe final response.", terminal.taskNotification?.body)
+    }
+
+    @Test
+    fun `tool summaries never become the completed task notification body`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$root-a",
+            "\$root-a",
+        )
+        projection.applyGatewayEvent(
+            assistantWithToolGroup(commandId = "turn-1", final = true),
+            "\$tool-summary",
+            "\$root-a",
+        )
+
+        val terminal = projection.applyGatewayEvent(
+            turn("completed", 2, "idle"),
+            "\$completed-after-tool",
+            "\$root-a",
+        )
+
+        assertNull(terminal.taskNotification?.body)
+    }
+
+    @Test
+    fun `failed turn exposes a failed task notification`() {
+        val result = projection().applyGatewayEvent(
+            event(
+                eventId = "turn-failed-1",
+                projectId = "project-1",
+                sessionId = "session-a",
+                causationCommandId = "remote-command-1",
+                payload = buildJsonObject {
+                    put("type", "turn.failed")
+                    put("turnId", "turn-1")
+                    put("code", "provider_failed")
+                    put("message", "The provider failed.")
+                },
+            ),
+            "\$failed-a",
+            "\$root-a",
+        )
+
+        assertEquals("failed", result.taskNotification?.outcome)
+        assertEquals("remote-command-1", result.taskNotification?.commandId)
+        assertEquals("The provider failed.", result.taskNotification?.body)
+    }
+
+    @Test
     fun `a thread directory latest event can discover a session without its ready event`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
@@ -601,6 +891,13 @@ class MatrixMlp3NativeProjectionTest {
             projection.snapshot()!!
                 .getValue("native_client_releases").jsonArray.single().jsonObject
                 .getValue("versionCode").jsonPrimitive.content.toLong(),
+        )
+        assertEquals(
+            "true",
+            projection.snapshot()!!
+                .getValue("capabilities").jsonObject
+                .getValue("providers").jsonArray.single().jsonObject
+                .getValue("can_materialize_history").jsonPrimitive.content,
         )
 
         val restored = MatrixMlp3NativeProjection(
@@ -1127,6 +1424,21 @@ class MatrixMlp3NativeProjectionTest {
                         })
                     })
                 })
+                put("providers", buildJsonArray {
+                    add(buildJsonObject {
+                        put("id", "codex")
+                        put("name", "Codex")
+                        put("models", buildJsonArray {
+                            add(buildJsonObject {
+                                put("id", model)
+                                put("name", model)
+                            })
+                        })
+                        put("can_list_sessions", true)
+                        put("can_inspect_sessions", true)
+                        put("can_materialize_history", true)
+                    })
+                })
                 put("permission_modes", buildJsonArray {
                     add(buildJsonObject { put("id", "default"); put("name", "Default") })
                 })
@@ -1150,6 +1462,7 @@ class MatrixMlp3NativeProjectionTest {
         scope: String = "project",
         cwd: String = "/workspace/project",
         projectId: String = "project-1",
+        providerHistory: JsonObject? = null,
     ) = event(
         eventId = "ready-$sessionId-$stateVersion",
         projectId = projectId,
@@ -1163,6 +1476,8 @@ class MatrixMlp3NativeProjectionTest {
                 JsonObject(it + mapOf(
                     "scope" to kotlinx.serialization.json.JsonPrimitive(scope),
                     "cwd" to kotlinx.serialization.json.JsonPrimitive(cwd),
+                ) + if (providerHistory == null) emptyMap() else mapOf(
+                    "providerHistory" to providerHistory,
                 ))
             })
         },
@@ -1230,6 +1545,7 @@ class MatrixMlp3NativeProjectionTest {
         causationCommandId = "delete-$sessionId",
         payload = buildJsonObject {
             put("type", "session.lifecycle")
+            put("state", lifecycle)
             put("projection", sessionProjection(stateVersion, "Newest A", lifecycle, "idle", 600))
         },
     )
@@ -1239,10 +1555,13 @@ class MatrixMlp3NativeProjectionTest {
         messageId: String,
         body: String,
         version: Int = 1,
+        commandId: String? = null,
+        final: Boolean = false,
     ) = event(
         eventId = eventId,
         projectId = "project-1",
         sessionId = "session-a",
+        causationCommandId = commandId,
         payload = buildJsonObject {
             put("type", "assistant.message")
             put("messageId", messageId)
@@ -1250,13 +1569,18 @@ class MatrixMlp3NativeProjectionTest {
             put("partIndex", 0)
             put("format", "markdown")
             put("body", body)
+            put("final", final)
         },
     )
 
-    private fun assistantWithToolGroup() = event(
+    private fun assistantWithToolGroup(
+        commandId: String? = null,
+        final: Boolean = false,
+    ) = event(
         eventId = "tool-message-event-1",
         projectId = "project-1",
         sessionId = "session-a",
+        causationCommandId = commandId,
         payload = buildJsonObject {
             put("type", "assistant.message")
             put("messageId", "tool-message-1")
@@ -1264,6 +1588,7 @@ class MatrixMlp3NativeProjectionTest {
             put("partIndex", 0)
             put("format", "plain")
             put("body", "Read file")
+            put("final", final)
             put("ui", buildJsonObject {
                 put("kind", "tool_group")
                 put("version", 1)

@@ -14,6 +14,7 @@ import {
   type NativeClientRelease,
   type PairingOperation,
   type ProviderCommand,
+  type ProviderHistoryMessage,
   type ProviderSessionEntry,
   type GatewayEnrollmentPending,
   type GatewayUpdateStatus,
@@ -46,10 +47,11 @@ import {
   type MatrixGatewayClient,
 } from './client'
 import {
-  FileMlp3CommandJournal,
+  type Mlp3CommandJournal,
   type Mlp3CommandJournalRecord,
   type Mlp3CommandTerminal,
 } from './fileMlp3CommandJournal'
+import { SqliteMlp3CommandJournal } from './sqliteMlp3CommandJournal'
 import {
   FileMatrixEventInbox,
   matrixEventInboxKey,
@@ -59,6 +61,7 @@ import {
   type PersistedMlp3Project,
   type PersistedMlp3Session,
 } from './fileMlp3RuntimeState'
+import { FileProviderHistorySnapshotStore } from './fileProviderHistorySnapshotStore'
 import {
   MatrixMlp3CommandAuthorizer,
   canApprovePrivilegedExecution,
@@ -78,7 +81,10 @@ import type {
   PrivilegedExecutionInput,
   PrivilegedExecutionResult,
 } from '@/privilege'
-import type { SendFileCommandResult } from '@/runtime/semanticSessionRuntime'
+import type {
+  SemanticTurnResult,
+  SendFileCommandResult,
+} from '@/runtime/semanticSessionRuntime'
 import {
   FileGatewayWebPushService,
   type GatewayWebPushService,
@@ -89,6 +95,12 @@ import {
   boundedProviderSessionInspection,
   providerSessionsPage,
 } from './providerHistoryTransport'
+import {
+  providerHistoryDigest,
+  providerHistoryIdentity,
+  providerHistoryPage,
+  splitProviderHistoryMessage,
+} from './providerHistoryMaterialization'
 
 interface Mlp3SessionRuntime {
   record: PersistedMlp3Session
@@ -96,7 +108,17 @@ interface Mlp3SessionRuntime {
   session: TopicSession
   capabilityProvider: AgentProvider | null
   activity: { phase: Mlp3SessionProjection['activity'] }
-  activeTurnId: string | null
+  activeTurn: Mlp3ActiveTurn | null
+}
+
+interface Mlp3ActiveTurn {
+  turnId: string
+  abortController: AbortController
+  cancelRequested: boolean
+  executionStarted: boolean
+  terminalOutcome: 'succeeded' | 'cancelled' | null
+  settled: Promise<void>
+  settle(): void
 }
 
 interface V3ProjectRuntime {
@@ -117,6 +139,9 @@ interface ScheduledPromptCommand {
   agentDispatchStarted: boolean
   cancellation?: Promise<void>
 }
+
+const DEFAULT_CONTROL_COMMAND_EXECUTION_TIMEOUT_MS = 60_000
+const DEFAULT_GATEWAY_UPDATE_EXECUTION_TIMEOUT_MS = 2 * 60 * 60_000
 
 export interface MatrixMlp3GatewayDependencies {
   client?: MatrixGatewayClient
@@ -164,6 +189,7 @@ export interface MatrixMlp3GatewayDependencies {
   assertDirectoryAccess?: (input: {
     cwd: string
     operation: 'session.create' | 'prompt.submit' | 'provider.history'
+    signal?: AbortSignal
   }) => Promise<void>
   createProject?: (input: {
     sourceRoom: MatrixGatewayRoomConfig
@@ -179,6 +205,10 @@ export interface MatrixMlp3GatewayDependencies {
     alreadyExisted: boolean
   }>
   onProjectCreated?: (room: MatrixGatewayRoomConfig) => Promise<void>
+  /** Makes a data-only history room visible to dynamic device authorization. */
+  onProviderHistoryRoomAvailable?: (roomId: string) => void | Promise<void>
+  /** Removes a retired history room from dynamic Matrix sync/authorization. */
+  onProviderHistoryRoomDeleted?: (roomId: string) => void | Promise<void>
   updateProjectMetadata?: (input: {
     sourceRoom: MatrixGatewayRoomConfig
     requestedByDeviceId: string
@@ -261,7 +291,7 @@ export interface PublishNativeClientReleaseResult {
 export class MatrixMlp3GatewayRunner {
   private readonly client: MatrixGatewayClient
   private readonly inbox: FileMatrixEventInbox
-  private readonly journal: FileMlp3CommandJournal
+  private readonly journal: Mlp3CommandJournal
   private readonly runtimeState: FileMlp3RuntimeStateStore
   private readonly nativeClientReleases: FileNativeClientReleaseStore
   private readonly artifacts: FileMlp3ArtifactStore
@@ -274,6 +304,7 @@ export class MatrixMlp3GatewayRunner {
   private readonly scheduledPromptCommands = new Map<string, ScheduledPromptCommand>()
   private readonly activeCommands = new Map<string, Promise<void>>()
   private readonly executionTasks = new Set<Promise<void>>()
+  private readonly expiredCommandExecutions = new Set<string>()
   private readonly terminalDeliveriesInFlight = new Set<string>()
   private readonly queuedInboxEvents = new Set<string>()
   private eventChain: Promise<void> = Promise.resolve()
@@ -287,10 +318,14 @@ export class MatrixMlp3GatewayRunner {
   }>()
   private publishedClientReleases: NativeClientRelease[] = []
   private readonly runtimeEpoch = randomUUID()
-  private gatewayNodeStatusTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly providerHistorySnapshots: FileProviderHistorySnapshotStore
   private gatewayNodeStatusFingerprint: string | null = null
   private gatewayNodeStatusLastPublishedAt = 0
   private gatewayNodeStatusControlRoomId: string | null | undefined
+  private readonly modelCatalogUnsubscribers: Array<() => void> = []
+  private modelCapabilityPublicationPending = false
+  private modelCapabilityPublicationScheduled = false
+  private modelCapabilityPublicationEnabled = false
 
   constructor(
     private readonly config: MatrixGatewayConfig,
@@ -303,7 +338,10 @@ export class MatrixMlp3GatewayRunner {
       `${config.replayLedgerPath}.v3-matrix-inbox.json`,
       config.startupEventQueueLimit ?? 10_000,
     )
-    this.journal = new FileMlp3CommandJournal(`${config.replayLedgerPath}.v3-commands.jsonl`)
+    this.journal = new SqliteMlp3CommandJournal(
+      `${config.replayLedgerPath}.v3-commands.sqlite`,
+      `${config.replayLedgerPath}.v3-commands.jsonl`,
+    )
     this.runtimeState = new FileMlp3RuntimeStateStore(
       `${config.replayLedgerPath}.v3-runtime-state.json`,
       config.gatewayId,
@@ -316,6 +354,10 @@ export class MatrixMlp3GatewayRunner {
       `${config.replayLedgerPath}.v3-artifacts.json`,
       config.gatewayId,
       { onLog: dependencies.onLog },
+    )
+    this.providerHistorySnapshots = new FileProviderHistorySnapshotStore(
+      `${config.replayLedgerPath}.v3-provider-history-snapshots.json`,
+      config.gatewayId,
     )
     this.authorizer = new MatrixMlp3CommandAuthorizer(config.gatewayId, this.journal)
     this.content = new GatewayMlp3ContentLayer(
@@ -401,10 +443,12 @@ export class MatrixMlp3GatewayRunner {
       await this.runtimeState.initialize(this.config.rooms)
       await this.nativeClientReleases.initialize()
       await this.artifacts.initialize()
+      await this.providerHistorySnapshots.initialize()
       this.publishedClientReleases = await this.nativeClientReleases.releases()
       await this.content.initialize()
       await this.createProjectRuntimes()
-      for (const record of await this.journal.terminalByOperation('project.delete')) {
+      await this.registerProviderHistoryRooms()
+      for (const record of await this.journal.terminalProjectDeletions()) {
         if (record.terminal?.outcome !== 'succeeded') continue
         const project = this.projectForRecord(record)
         if (project) project.deletingCommandId = record.command.commandId
@@ -415,22 +459,26 @@ export class MatrixMlp3GatewayRunner {
       await this.client.start()
       await this.client.waitUntilReady(this.config.connection.initialSyncTimeoutMs)
       await this.client.pinTrustedDevices?.(this.config.trustedDevices)
+      this.subscribeModelCatalogRefreshes()
       for (const project of this.projects.values()) {
         await this.client.assertRoomEncrypted(project.config.roomId)
-        await this.content.provisionProject(project.config, this.client)
+        await this.content.provisionProject(project.config, this.client, false)
         if (project.deletingCommandId) continue
-        await this.prepareSessionThreads(project)
+        await this.cleanupLegacyArchivedSessions(project)
+        void this.prepareSessionThreads(project).catch(error => {
+          this.log(`[mlp3/matrix] session thread convergence deferred: ${formatError(error)}`)
+        })
         await this.publishSessionRecovery(project)
-        await this.publishWorkspaceSnapshot(project)
-        await this.publishProjectSnapshot(project)
+        await this.publishWorkspaceSnapshot(project, false)
+        await this.publishProjectSnapshot(project, false)
+        await this.provisionProviderHistoryRooms(project)
       }
       this.state = 'running'
-      this.scheduleGatewayNodeStatusObservation(
-        Math.min(1_000, this.gatewayNodeStatusHeartbeatIntervalMs()),
-      )
       await this.recoverJournal()
       await this.drainInbox()
       await this.eventChain
+      this.modelCapabilityPublicationEnabled = true
+      this.scheduleModelCapabilityPublication()
     } catch (error) {
       await this.cleanup()
       this.state = 'stopped'
@@ -470,23 +518,39 @@ export class MatrixMlp3GatewayRunner {
     runtimeEpoch: string
     activeTurns: number
     activeCommands: number
+    expiredCommandExecutions: number
+    unfinishedCommands: number
+    oldestUnfinishedCommandAgeMs: number | null
+    pendingOutboxDeliveries: number
+    oldestPendingOutboxDeliveryAgeMs: number | null
+    outboxWalBytes: number
     pendingInboxEvents: number
     quarantinedInboxEvents: number
     matrixReady: boolean | null
     lastMatrixSyncAt: number | null
   }> {
     const inbox = await this.inbox.counts()
+    const unfinished = await this.journal.unfinished()
+    const outbox = this.content.outboxHealth(this.now())
     const matrix = this.client.getSyncHealth?.()
     let activeTurns = 0
     for (const project of this.projects.values()) {
       for (const runtime of project.sessions.values()) {
-        if (runtime.activeTurnId !== null) activeTurns += 1
+        if (runtime.activeTurn !== null) activeTurns += 1
       }
     }
     return {
       runtimeEpoch: this.runtimeEpoch,
       activeTurns,
       activeCommands: this.activeCommands.size,
+      expiredCommandExecutions: this.expiredCommandExecutions.size,
+      unfinishedCommands: unfinished.length,
+      oldestUnfinishedCommandAgeMs: unfinished.length === 0
+        ? null
+        : Math.max(0, this.now() - Math.min(...unfinished.map(record => record.acceptedAt))),
+      pendingOutboxDeliveries: outbox.pending,
+      oldestPendingOutboxDeliveryAgeMs: outbox.oldestPendingAgeMs,
+      outboxWalBytes: outbox.walBytes,
       pendingInboxEvents: inbox.pending,
       quarantinedInboxEvents: inbox.quarantined,
       matrixReady: matrix?.ready ?? null,
@@ -536,6 +600,122 @@ export class MatrixMlp3GatewayRunner {
       await this.publishWorkspaceSnapshot(project)
       await this.publishProjectSnapshot(project)
     }
+    for (const record of project.project.sessions) {
+      if (!record.providerHistory) continue
+      await this.provisionProviderHistoryRoom(project, record, deviceId)
+    }
+  }
+
+  private async registerProviderHistoryRooms(): Promise<void> {
+    for (const project of this.projects.values()) {
+      for (const record of project.project.sessions) {
+        const binding = record.providerHistory
+        if (!binding) continue
+        this.content.authorizeAuxiliaryRoom(binding.roomId, project.config.roomId)
+        await this.dependencies.onProviderHistoryRoomAvailable?.(binding.roomId)
+      }
+    }
+  }
+
+  private async provisionProviderHistoryRooms(project: V3ProjectRuntime): Promise<void> {
+    for (const record of project.project.sessions) {
+      if (record.providerHistory) await this.provisionProviderHistoryRoom(project, record)
+    }
+  }
+
+  private async ensureProviderHistoryRoom(
+    project: V3ProjectRuntime,
+    record: PersistedMlp3Session,
+    historyId: string,
+  ): Promise<string> {
+    if (!this.client.ensureProviderHistoryRoom) {
+      throw new Error('Matrix transport cannot provision Provider History rooms')
+    }
+    const devices = await this.trustedDevicesForProject(project)
+    const result = await this.client.ensureProviderHistoryRoom({
+      aliasLocalpart: providerHistoryRoomAliasLocalpart(
+        this.config.gatewayId,
+        this.config.gatewayNodeId,
+        historyId,
+      ),
+      inviteUserIds: [...new Set(devices.map(device => device.matrixUserId))],
+      marker: {
+        kind: 'malink.provider_history.provisioning',
+        version: 1,
+        workspaceId: this.config.gatewayId,
+        gatewayNodeId: this.config.gatewayNodeId,
+        projectId: project.project.projectId,
+        historyId,
+      },
+    })
+    try {
+      this.content.authorizeAuxiliaryRoom(result.roomId, project.config.roomId)
+      await this.dependencies.onProviderHistoryRoomAvailable?.(result.roomId)
+      await this.client.assertRoomEncrypted(result.roomId)
+      for (const userId of new Set(devices.map(device => device.matrixUserId))) {
+        await this.client.ensureRoomInvitation?.(result.roomId, userId)
+      }
+      const room = this.providerHistoryRoomConfig(project, record, result.roomId)
+      await this.content.provisionProject(room, this.client)
+      return result.roomId
+    } catch (error) {
+      await this.retireProviderHistoryRoom(result.roomId).catch(cleanupError => {
+        this.log(
+          `[mlp3/matrix] failed Provider History room rollback for ${result.roomId}: `
+          + formatError(cleanupError),
+        )
+      })
+      throw error
+    }
+  }
+
+  private async provisionProviderHistoryRoom(
+    project: V3ProjectRuntime,
+    record: PersistedMlp3Session,
+    onlyDeviceId?: string,
+  ): Promise<void> {
+    const binding = record.providerHistory
+    if (!binding) return
+    const devices = await this.trustedDevicesForProject(project)
+    this.content.authorizeAuxiliaryRoom(binding.roomId, project.config.roomId)
+    await this.dependencies.onProviderHistoryRoomAvailable?.(binding.roomId)
+    await this.client.assertRoomEncrypted(binding.roomId)
+    for (const userId of new Set(devices.map(device => device.matrixUserId))) {
+      await this.client.ensureRoomInvitation?.(binding.roomId, userId)
+    }
+    const room = this.providerHistoryRoomConfig(project, record)
+    if (onlyDeviceId) {
+      await this.content.provisionPairingDevice(room, onlyDeviceId, this.client)
+    } else {
+      await this.content.provisionProject(room, this.client)
+    }
+  }
+
+  private providerHistoryRoomConfig(
+    project: V3ProjectRuntime,
+    record: PersistedMlp3Session,
+    roomId = record.providerHistory?.roomId,
+  ): MatrixGatewayRoomConfig {
+    if (!roomId) throw new Error(`Session ${record.id} has no Provider History room`)
+    return {
+      ...project.config,
+      roomId,
+      conversationId: record.id,
+      projectId: project.project.projectId,
+      cwd: record.cwd,
+      providerName: record.provider,
+    }
+  }
+
+  private async trustedDevicesForProject(
+    project: V3ProjectRuntime,
+  ): Promise<readonly import('./config').MatrixGatewayTrustedDevice[]> {
+    const devices = await this.dependencies.listTrustedDevices?.() ?? this.config.trustedDevices
+    const now = this.now()
+    return devices.filter(device =>
+      device.allowedRoomIds.includes(project.config.roomId)
+      && device.certificateExpiresAt > now
+    )
   }
 
   publishNativeClientRelease(
@@ -674,7 +854,20 @@ export class MatrixMlp3GatewayRunner {
       })
     }
     if (record.status === 'terminal') {
-      if (!record.terminalDeliveryEventId) this.scheduleTerminalRedelivery(project, record)
+      if (!record.terminalDeliveryEventId) {
+        // Publishing reconciliation can overlap the original terminal
+        // delivery. Re-read the journal after that await instead of deciding
+        // from the claim-time snapshot, otherwise a just-confirmed delivery
+        // can be queued a second time.
+        const currentRecord = await this.journal.get(record.command) ?? record
+        if (
+          currentRecord.status === 'terminal'
+          && !currentRecord.terminalDeliveryEventId
+          && !this.terminalDeliveriesInFlight.has(commandKey(currentRecord.command))
+        ) {
+          this.scheduleTerminalRedelivery(project, currentRecord)
+        }
+      }
       return
     }
     if (project.deletingCommandId) {
@@ -775,10 +968,12 @@ export class MatrixMlp3GatewayRunner {
         if (await waitForScheduledPromptCancellation(scheduledPrompt)) return
         await this.journal.markDispatched(command, this.now())
         if (await waitForScheduledPromptCancellation(scheduledPrompt)) return
-        await this.execute(project, journalRecord)
+        await this.executeWithDeadline(project, journalRecord)
       } catch (error) {
         this.log(`[mlp3/matrix] command ${command.commandId} failed: ${formatError(error)}`)
-        await this.failCommand(project, command, error)
+        await this.failCommand(project, command, error, {
+          allowExpiredExecution: error instanceof GatewayCommandExecutionTimeoutError,
+        })
       }
     }).finally(() => {
       this.executionTasks.delete(task)
@@ -808,17 +1003,63 @@ export class MatrixMlp3GatewayRunner {
     return task
   }
 
-  private async execute(
+  private async executeWithDeadline(
     project: V3ProjectRuntime,
     journalRecord: Mlp3CommandJournalRecord,
   ): Promise<void> {
     const command = journalRecord.command
+    const activeKey = commandKey(command)
+    const abortController = new AbortController()
+    const execution = this.execute(project, journalRecord, abortController.signal)
+    const timeoutMs = command.operation === 'prompt.submit'
+      || (command.operation === 'session.create' && command.payload.initialPrompt !== undefined)
+      ? null
+      : command.operation === 'gateway.update.stage'
+        ? this.config.gatewayUpdateExecutionTimeoutMs
+          ?? DEFAULT_GATEWAY_UPDATE_EXECUTION_TIMEOUT_MS
+        : this.config.commandExecutionTimeoutMs
+          ?? DEFAULT_CONTROL_COMMAND_EXECUTION_TIMEOUT_MS
+    // An Agent turn has no useful wall-clock upper bound: a healthy coding
+    // task can keep producing progress for hours. Its provider result or an
+    // authenticated turn.cancel owns the terminal transition. Provider
+    // startup, cancellation, cleanup and delivery retain their own bounded
+    // waits, while non-Agent controls and maintenance updates remain guarded.
+    if (timeoutMs === null) {
+      await execution
+      return
+    }
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        const error = new GatewayCommandExecutionTimeoutError(command.operation, timeoutMs)
+        this.expiredCommandExecutions.add(activeKey)
+        abortController.abort(error)
+        reject(error)
+      }, timeoutMs)
+    })
+    void execution.then(
+      () => this.expiredCommandExecutions.delete(activeKey),
+      () => this.expiredCommandExecutions.delete(activeKey),
+    )
+    try {
+      await Promise.race([execution, deadline])
+    } finally {
+      if (timeout) clearTimeout(timeout)
+    }
+  }
+
+  private async execute(
+    project: V3ProjectRuntime,
+    journalRecord: Mlp3CommandJournalRecord,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const command = journalRecord.command
     switch (command.operation) {
       case 'session.create':
-        await this.createSession(project, command, journalRecord.matrixEventId)
+        await this.createSession(project, command, journalRecord.matrixEventId, signal)
         return
       case 'prompt.submit':
-        await this.executePrompt(project, command)
+        await this.executePrompt(project, command, signal)
         return
       case 'turn.cancel':
         await this.cancelTurn(project, command)
@@ -850,6 +1091,9 @@ export class MatrixMlp3GatewayRunner {
       case 'provider.session.inspect':
         await this.inspectProviderSession(project, command)
         return
+      case 'provider.history.materialize':
+        await this.materializeProviderHistory(project, command)
+        return
       case 'device.invitation.create':
         await this.createInvitation(project, command)
         return
@@ -869,7 +1113,7 @@ export class MatrixMlp3GatewayRunner {
         await this.unsubscribeNotifications(project, command)
         return
       case 'gateway.update.stage':
-        await this.stageGatewayUpdate(project, command, journalRecord.matrixEventId)
+        await this.stageGatewayUpdate(project, command, journalRecord.matrixEventId, signal)
         return
       case 'gateway.update.apply':
         await this.applyGatewayUpdate(project, command)
@@ -884,6 +1128,7 @@ export class MatrixMlp3GatewayRunner {
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'gateway.update.stage'>,
     rootEventId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (!rootEventId) throw new Error('Gateway update command lost its Matrix thread root')
     const supervisor = this.requireGatewayUpdateSupervisor()
@@ -915,6 +1160,7 @@ export class MatrixMlp3GatewayRunner {
                 command.commandId,
                 instruction.releaseId,
               ),
+              signal,
             },
           )
         } catch (error) {
@@ -1004,6 +1250,7 @@ export class MatrixMlp3GatewayRunner {
       reasoningEffort: project.project.reasoningEffort,
       permissionMode: 'bypassPermissions',
       providerSessionId: null,
+      providerHistory: null,
       extensions: [],
       extensionRevision: 1,
       inheritedFromProjectExtensionRevision: null,
@@ -1125,7 +1372,7 @@ export class MatrixMlp3GatewayRunner {
     let count = 0
     for (const project of this.projects.values()) {
       for (const runtime of project.sessions.values()) {
-        if (runtime.activeTurnId !== null) count += 1
+        if (runtime.activeTurn !== null) count += 1
       }
     }
     return count
@@ -1181,7 +1428,10 @@ export class MatrixMlp3GatewayRunner {
     const cancellations: Promise<unknown>[] = []
     for (const project of this.projects.values()) {
       for (const runtime of project.sessions.values()) {
-        if (runtime.activeTurnId === null) continue
+        if (runtime.activeTurn === null) continue
+        if (runtime.activeTurn.terminalOutcome !== null) continue
+        runtime.activeTurn.cancelRequested = true
+        runtime.activeTurn.abortController.abort()
         cancellations.push(runtime.session.dispatch({
           kind: 'cancel',
           reason: 'replace',
@@ -1201,41 +1451,17 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private async publishGatewayUpdateStatus(): Promise<void> {
-    await this.publishGatewayNodeStatus(true).catch(error => {
+    await this.publishGatewayNodeStatus().catch(error => {
       this.log(`[mlp3/matrix] Gateway node status publication failed: ${formatError(error)}`)
     })
   }
 
   /**
-   * Observe the local supervisor frequently but publish to Matrix only when
-   * its semantic status changes or one shared heartbeat becomes due. Client
-   * count and project count therefore do not multiply status traffic.
+   * Publish only a semantic supervisor transition. Gateway liveness is checked
+   * by visible clients through the existing signed gateway.update.status
+   * command; an idle Gateway never creates periodic Matrix traffic.
    */
-  private scheduleGatewayNodeStatusObservation(delayMs: number): void {
-    if (this.gatewayNodeStatusTimer !== null) clearTimeout(this.gatewayNodeStatusTimer)
-    if (this.state !== 'running') return
-    this.gatewayNodeStatusTimer = setTimeout(() => {
-      this.gatewayNodeStatusTimer = null
-      const observe = this.eventChain.then(() => this.publishGatewayNodeStatus(false))
-      this.eventChain = observe.then(() => undefined, error => {
-        this.log(`[mlp3/matrix] Gateway node status observation failed: ${formatError(error)}`)
-      })
-      void observe.catch(() => undefined).finally(() => {
-        this.scheduleGatewayNodeStatusObservation(this.gatewayNodeStatusObservationIntervalMs())
-      })
-    }, delayMs)
-    this.gatewayNodeStatusTimer.unref?.()
-  }
-
-  private gatewayNodeStatusHeartbeatIntervalMs(): number {
-    return this.config.gatewayHeartbeatIntervalMs ?? 5 * 60_000
-  }
-
-  private gatewayNodeStatusObservationIntervalMs(): number {
-    return Math.min(2_000, Math.max(250, this.gatewayNodeStatusHeartbeatIntervalMs() / 4))
-  }
-
-  private async publishGatewayNodeStatus(force: boolean): Promise<void> {
+  private async publishGatewayNodeStatus(): Promise<void> {
     if (this.state !== 'running') return
     const update = await this.dependencies.gatewayUpdateSupervisor?.status().catch(error => {
       this.log(`[mlp3/matrix] Gateway update status unavailable: ${formatError(error)}`)
@@ -1243,12 +1469,8 @@ export class MatrixMlp3GatewayRunner {
     })
     if (!update) return
     const fingerprint = canonicalJson(update as JsonValue)
+    if (fingerprint === this.gatewayNodeStatusFingerprint) return
     const now = this.now()
-    if (
-      !force
-      && fingerprint === this.gatewayNodeStatusFingerprint
-      && now - this.gatewayNodeStatusLastPublishedAt < this.gatewayNodeStatusHeartbeatIntervalMs()
-    ) return
     const project = await this.gatewayNodeStatusProject()
     if (!project) return
     const observedAt = Math.max(now, this.gatewayNodeStatusLastPublishedAt + 1)
@@ -1264,9 +1486,8 @@ export class MatrixMlp3GatewayRunner {
       projectId: project.project.projectId,
       occurredAt: observedAt,
       payload: {
-        // Reuse the existing compatible event shape. The absence of a
-        // causationCommandId distinguishes this shared observation from a
-        // manual gateway.update.status command result.
+        // The absence of a causationCommandId distinguishes this shared
+        // semantic transition from an on-demand liveness reply.
         type: 'gateway.update.status',
         status: update,
       },
@@ -1337,7 +1558,9 @@ export class MatrixMlp3GatewayRunner {
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'session.create'>,
     rootEventId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
+    assertCommandExecutionActive(signal)
     if (!command.sessionId) throw new Error('Session create command is missing its session ID')
     if (!rootEventId) throw new Error('Session create command lost its Matrix thread root')
     const existing = project.project.sessions.find(session => session.id === command.sessionId)
@@ -1382,9 +1605,11 @@ export class MatrixMlp3GatewayRunner {
       await this.dependencies.assertDirectoryAccess?.({
         cwd,
         operation: 'session.create',
+        signal,
       })
     }
     if (scope === 'scratch') await mkdir(cwd, { recursive: true, mode: 0o700 })
+    assertCommandExecutionActive(signal)
     const record: PersistedMlp3Session = {
       id: command.sessionId,
       scope,
@@ -1403,6 +1628,7 @@ export class MatrixMlp3GatewayRunner {
       reasoningEffort: settings.reasoningEffort,
       permissionMode: settings.permissionMode,
       providerSessionId: command.payload.providerSessionId ?? null,
+      providerHistory: null,
       extensions: this.extensions.normalizeBindings(
         command.payload.extensions ?? project.project.defaultExtensions,
       ),
@@ -1412,17 +1638,38 @@ export class MatrixMlp3GatewayRunner {
         : null,
       availableCommands: [],
     }
-    project.project.sessions.push(record)
     let runtime: Mlp3SessionRuntime | null = null
-    try {
-      runtime = this.createSessionRuntime(project, record)
-      project.sessions.set(record.id, runtime)
-      await this.persist(project)
-    } catch (error) {
+    let persisted = false
+    const rollback = async (): Promise<void> => {
       project.sessions.delete(record.id)
       project.project.sessions = project.project.sessions.filter(candidate => candidate !== record)
       if (runtime) await this.destroySessionRuntime(runtime, 'delete').catch(() => undefined)
+      runtime = null
       if (scope === 'scratch') await this.removeScratchSessionDirectory(record).catch(() => undefined)
+      await this.deleteProviderHistoryStorage(record).catch(cleanupError => {
+        this.log(
+          `[mlp3/matrix] failed Provider History session rollback for ${record.id}: `
+          + formatError(cleanupError),
+        )
+      })
+      if (persisted) {
+        await this.persist(project).catch(persistError => {
+          this.log(`[mlp3/matrix] session rollback persistence failed: ${formatError(persistError)}`)
+        })
+      }
+    }
+    try {
+      if (record.providerSessionId) {
+        await this.prepareRecoveredProviderHistory(project, record, signal)
+      }
+      project.project.sessions.push(record)
+      runtime = this.createSessionRuntime(project, record)
+      project.sessions.set(record.id, runtime)
+      await this.persist(project)
+      persisted = true
+      assertCommandExecutionActive(signal)
+    } catch (error) {
+      await rollback()
       throw error
     }
     const ready = this.eventFor(project, record, command, 'session-ready', {
@@ -1440,16 +1687,28 @@ export class MatrixMlp3GatewayRunner {
       extensionBindings: record.extensions,
     })
     if (!command.payload.initialPrompt) {
-      await this.settleAndDeliver(project, command, ready, 'succeeded')
+      let terminalClaimed: boolean
+      try {
+        terminalClaimed = await this.settleAndDeliver(project, command, ready, 'succeeded')
+      } catch (error) {
+        await rollback()
+        throw error
+      }
+      if (!terminalClaimed) {
+        await rollback()
+        assertCommandExecutionActive(signal)
+        throw new Error('Session creation lost its execution lease before terminal settlement')
+      }
       return
     }
     await this.emitBestEffort(project, record, ready)
-    await this.runPrompt(project, runtime, command, command.payload.initialPrompt)
+    await this.runPrompt(project, runtime, command, command.payload.initialPrompt, { signal })
   }
 
   private async executePrompt(
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'prompt.submit'>,
+    signal?: AbortSignal,
   ): Promise<void> {
     const runtime = this.requireActiveSession(project, command.sessionId)
     if (runtime.record.title === 'New session') {
@@ -1457,7 +1716,7 @@ export class MatrixMlp3GatewayRunner {
         || command.payload.attachments?.[0]?.name
         || 'New session'
     }
-    await this.runPrompt(project, runtime, command, command.payload)
+    await this.runPrompt(project, runtime, command, command.payload, { signal })
   }
 
   private async runPrompt(
@@ -1465,8 +1724,9 @@ export class MatrixMlp3GatewayRunner {
     runtime: Mlp3SessionRuntime,
     command: Mlp3Command,
     prompt: { text: string; attachments?: import('@malink/protocol').MalinkAttachment[] },
-    options: { settleCommand?: boolean; childTurnId?: string } = {},
+    options: { settleCommand?: boolean; childTurnId?: string; signal?: AbortSignal } = {},
   ): Promise<void> {
+    assertCommandExecutionActive(options.signal)
     if (options.childTurnId && options.settleCommand !== false) {
       throw new Error('A child Agent turn cannot settle its parent command')
     }
@@ -1483,8 +1743,10 @@ export class MatrixMlp3GatewayRunner {
       await this.dependencies.assertDirectoryAccess?.({
         cwd: runtime.record.cwd,
         operation: 'prompt.submit',
+        signal: options.signal,
       })
     }
+    assertCommandExecutionActive(options.signal)
     if (await this.waitForPromptCancellation(project, eventCommand)) return
     this.transition(runtime, 'queued')
     await this.persist(project)
@@ -1504,76 +1766,85 @@ export class MatrixMlp3GatewayRunner {
       },
     ))
     if (await this.waitForPromptCancellation(project, eventCommand)) return
-    this.transition(runtime, 'working')
-    await this.persist(project)
+    const richInput = await materializePromptInput(
+      prompt,
+      this.client,
+      `${this.config.replayLedgerPath}.v3-attachments`,
+    )
+    assertCommandExecutionActive(options.signal)
     if (await this.waitForPromptCancellation(project, eventCommand)) return
-    runtime.port.setCausationCommandId(eventCommand.commandId)
-    runtime.activeTurnId = eventCommand.commandId
-    let dispatchFailure: { error: unknown } | null = null
-    try {
-      const richInput = await materializePromptInput(
-        prompt,
-        this.client,
-        `${this.config.replayLedgerPath}.v3-attachments`,
-      )
-      if (await this.waitForPromptCancellation(project, eventCommand)) return
-      await this.emitBestEffort(project, runtime.record, this.eventFor(
-        project,
-        runtime.record,
-        eventCommand,
-        'turn-started',
-        {
-          type: 'turn.started',
-          turnId: eventCommand.commandId,
-          projection: projection(runtime.record, runtime.activity.phase, this.extensions),
-        },
-      ))
-      if (!this.beginPromptAgentDispatch(project, eventCommand)) {
-        await this.waitForPromptCancellation(project, eventCommand)
-        return
-      }
-      await runtime.session.dispatch({
-        kind: 'user_message',
-        text: prompt.text,
-        richInput,
-        source: 'channel',
-        user: { id: command.deviceId, username: command.deviceId },
-      })
-    } catch (error) {
-      dispatchFailure = { error }
-    } finally {
-      const causalDelivery = runtime.port.causalDeliveryBarrier(eventCommand.commandId)
-      runtime.port.setCausationCommandId(null)
-      runtime.activeTurnId = null
-      try {
-        // The terminal event is deliberately not staged until the newest
-        // version of every assistant/tool message in this turn is physically
-        // accepted by Matrix. This prevents urgent turn.completed delivery
-        // from overtaking the final answer under account-wide backpressure.
-        await causalDelivery
-      } catch (deliveryError) {
-        if (dispatchFailure) {
-          throw new AggregateError(
-            [dispatchFailure.error, deliveryError],
-            'Agent execution and causal Matrix delivery both failed',
-          )
-        }
-        throw deliveryError
-      }
+    if (!this.beginPromptAgentDispatch(project, eventCommand)) {
+      await this.waitForPromptCancellation(project, eventCommand)
+      return
     }
-    if (dispatchFailure) throw dispatchFailure.error
-    runtime.record.providerSessionId = runtime.session.sessionRecord.conversationId
-    this.transition(runtime, 'idle')
-    await this.persist(project)
-    const completed = this.eventFor(project, runtime.record, eventCommand, 'turn-completed', {
-      type: 'turn.completed',
-      turnId: eventCommand.commandId,
-      outcome: 'succeeded',
-      projection: terminalProjection(runtime.record, runtime.activity.phase, this.extensions),
-    })
-    if (options.settleCommand === false) await this.emitBestEffort(project, runtime.record, completed)
-    else await this.settleAndDeliver(project, command, completed, 'succeeded')
-    this.log(`[mlp3/matrix] turn ${command.commandId} completed`)
+    const activeTurn = createActiveTurn(eventCommand.commandId)
+    const abortActiveTurn = (): void => activeTurn.abortController.abort(options.signal?.reason)
+    if (options.signal?.aborted) abortActiveTurn()
+    else options.signal?.addEventListener('abort', abortActiveTurn, { once: true })
+    runtime.activeTurn = activeTurn
+    runtime.port.setCausationCommandId(eventCommand.commandId)
+    try {
+      let dispatchResult: unknown
+      try {
+        dispatchResult = await runtime.session.dispatch({
+          kind: 'user_message',
+          text: prompt.text,
+          richInput,
+          source: 'channel',
+          user: { id: command.deviceId, username: command.deviceId },
+          cancellationSignal: activeTurn.abortController.signal,
+          onExecutionStarted: async () => {
+            if (activeTurn.executionStarted || activeTurn.cancelRequested) return
+            activeTurn.executionStarted = true
+            this.transition(runtime, 'working')
+            await this.persist(project)
+            await this.emitBestEffort(project, runtime.record, this.eventFor(
+              project,
+              runtime.record,
+              eventCommand,
+              'turn-started',
+              {
+                type: 'turn.started',
+                turnId: eventCommand.commandId,
+                projection: projection(runtime.record, runtime.activity.phase, this.extensions),
+              },
+            ))
+          },
+        })
+      } catch (error) {
+        if (!activeTurn.cancelRequested) throw error
+        dispatchResult = { status: 'cancelled' } satisfies SemanticTurnResult
+      }
+      const result = readSemanticTurnResult(dispatchResult)
+      const cancelled = activeTurn.cancelRequested || result.status === 'cancelled'
+      if (result.status === 'failed' && !cancelled) {
+        throw new Error(result.message ?? 'Agent execution failed')
+      }
+      activeTurn.terminalOutcome = cancelled ? 'cancelled' : 'succeeded'
+      runtime.record.providerSessionId = runtime.session.sessionRecord.conversationId
+      this.transition(runtime, 'idle')
+      await this.persist(project)
+      const completed = this.eventFor(project, runtime.record, eventCommand, 'turn-completed', {
+        type: 'turn.completed',
+        turnId: eventCommand.commandId,
+        outcome: cancelled ? 'cancelled' : 'succeeded',
+        projection: terminalProjection(runtime.record, runtime.activity.phase, this.extensions),
+      })
+      if (options.settleCommand === false) {
+        await this.emitBestEffort(project, runtime.record, completed)
+        if (cancelled) throw new Error('Agent turn was cancelled')
+      } else {
+        await this.settleAndDeliver(project, command, completed, 'succeeded')
+      }
+      this.log(
+        `[mlp3/matrix] turn ${command.commandId} ${cancelled ? 'cancelled' : 'completed'}`,
+      )
+    } finally {
+      options.signal?.removeEventListener('abort', abortActiveTurn)
+      runtime.port.setCausationCommandId(null)
+      if (runtime.activeTurn === activeTurn) runtime.activeTurn = null
+      activeTurn.settle()
+    }
   }
 
   private async cancelTurn(
@@ -1592,7 +1863,8 @@ export class MatrixMlp3GatewayRunner {
       this.log(`[mlp3/matrix] queued turn ${command.payload.turnId} cancelled before dispatch`)
       return
     }
-    if (runtime.activeTurnId === null) {
+    const activeTurn = runtime.activeTurn
+    if (activeTurn === null) {
       if (runtime.activity.phase !== 'idle') {
         this.transition(runtime, 'idle')
         await this.persist(project)
@@ -1607,22 +1879,26 @@ export class MatrixMlp3GatewayRunner {
       this.log(`[mlp3/matrix] turn ${command.payload.turnId} was already inactive; converged cancel`)
       return
     }
-    if (runtime.activeTurnId !== command.payload.turnId) {
+    if (activeTurn.turnId !== command.payload.turnId) {
       throw new Error(`Turn ${command.payload.turnId} is not active`)
     }
-    await runtime.session.dispatch({
-      kind: 'cancel',
-      reason: 'user',
-      source: 'channel',
-      user: { id: command.deviceId, username: command.deviceId },
-    })
-    this.transition(runtime, 'idle')
-    await this.persist(project)
+    if (activeTurn.terminalOutcome === null) {
+      activeTurn.cancelRequested = true
+      activeTurn.abortController.abort()
+      await runtime.session.dispatch({
+        kind: 'cancel',
+        reason: 'user',
+        source: 'channel',
+        user: { id: command.deviceId, username: command.deviceId },
+      })
+    }
+    await activeTurn.settled
+    const outcome = activeTurn.terminalOutcome ?? 'cancelled'
     const completed = this.eventFor(project, runtime.record, command, 'turn-cancelled', {
       type: 'turn.completed',
       turnId: command.payload.turnId,
-      outcome: 'cancelled',
-      projection: terminalProjection(runtime.record, runtime.activity.phase, this.extensions),
+      outcome,
+      projection: terminalProjection(runtime.record, 'idle', this.extensions),
     })
     await this.settleAndDeliver(project, command, completed, 'succeeded')
   }
@@ -1655,11 +1931,7 @@ export class MatrixMlp3GatewayRunner {
     runtime: Mlp3SessionRuntime,
     command: Mlp3CommandOf<'prompt.submit'>,
   ): Promise<void> {
-    if (runtime.activeTurnId === command.commandId) {
-      runtime.activeTurnId = null
-      this.transition(runtime, 'idle')
-      await this.persist(project)
-    } else if (runtime.activeTurnId === null && runtime.activity.phase !== 'idle') {
+    if (runtime.activeTurn === null && runtime.activity.phase !== 'idle') {
       this.transition(runtime, 'idle')
       await this.persist(project)
     }
@@ -1878,35 +2150,53 @@ export class MatrixMlp3GatewayRunner {
     const record = project.project.sessions.find(candidate => candidate.id === sessionId)
     if (!record) throw new Error(`Unknown Malink session ${sessionId}`)
     if (command.payload.state === 'active' && record.lifecycle !== 'active') {
-      throw new Error('Archived sessions cannot be restored; continue them from Provider History')
+      throw new Error('Deleted sessions cannot be restored; continue them from Provider History')
     }
-    // Legacy delete commands are compatibility aliases for Malink archive.
-    // Provider-owned history is never deleted here.
-    const target = command.payload.state === 'active' ? 'active' : 'archived'
-    const alreadyApplied = record.lifecycle === target
-    if (!alreadyApplied) {
-      if (target === 'active') {
-        record.lifecycle = 'active'
-        const runtime = this.createSessionRuntime(project, record)
-        project.sessions.set(record.id, runtime)
-      } else {
-        await this.assertMaintenanceSessionCanBeArchived(record.id)
-        const active = project.sessions.get(record.id)
-        if (active) {
-          await this.destroySessionRuntime(active, 'archive')
-          project.sessions.delete(record.id)
-        }
-        record.lifecycle = target
-      }
-      record.updatedAt = this.now()
-      record.stateVersion += 1
+    if (command.payload.state === 'active') {
+      const lifecycle = this.eventFor(project, record, command, 'session-lifecycle', {
+        type: 'session.lifecycle',
+        projection: terminalProjection(record, 'idle', this.extensions),
+        state: 'active',
+        alreadyApplied: true,
+      })
+      await this.settleAndDeliver(project, command, lifecycle, 'succeeded')
+      return
+    }
+    await this.assertMaintenanceSessionCanBeArchived(record.id)
+    const active = project.sessions.get(record.id)
+    if (active) {
+      record.providerSessionId = active.session.sessionRecord.conversationId
+      await this.destroySessionRuntime(active, 'archive')
+      project.sessions.delete(record.id)
+    }
+    const previousLifecycle = record.lifecycle
+    const previousUpdatedAt = record.updatedAt
+    const previousStateVersion = record.stateVersion
+    record.lifecycle = 'archived'
+    record.updatedAt = this.now()
+    record.stateVersion += 1
+    try {
       await this.persist(project)
+    } catch (error) {
+      record.lifecycle = previousLifecycle
+      record.updatedAt = previousUpdatedAt
+      record.stateVersion = previousStateVersion
+      if (active) project.sessions.set(record.id, this.createSessionRuntime(project, record))
+      throw error
     }
+    // `archived` is an internal migration/cleanup checkpoint, not a retained
+    // product lifecycle. If the process stops after this point, startup cleanup
+    // finishes the idempotent Matrix redaction before dropping the record.
+    await this.deleteSessionStorage(project, record)
+    record.lifecycle = 'deleted'
+    record.updatedAt = this.now()
+    record.stateVersion += 1
+    project.project.sessions = project.project.sessions.filter(candidate => candidate.id !== record.id)
+    await this.persist(project)
     const lifecycle = this.eventFor(project, record, command, 'session-lifecycle', {
       type: 'session.lifecycle',
       projection: terminalProjection(record, 'idle', this.extensions),
-      state: target,
-      ...(alreadyApplied ? { alreadyApplied: true } : {}),
+      state: 'deleted',
     })
     await this.settleAndDeliver(project, command, lifecycle, 'succeeded')
   }
@@ -1946,6 +2236,15 @@ export class MatrixMlp3GatewayRunner {
     const requestingDevice = trustedDevices?.find(device => device.deviceId === command.deviceId)
     if (trustedDevices && !requestingDevice) {
       throw new Error(`Device ${command.deviceId} is no longer authorized`)
+    }
+    if (
+      this.config.clientMatrixUserId
+      && requestingDevice
+      && requestingDevice.matrixUserId !== this.config.clientMatrixUserId
+    ) {
+      throw new Error(
+        'This legacy Matrix account cannot invite new devices; use a device on the Workspace client account',
+      )
     }
     const invitation = await this.dependencies.createDeviceInvitation({
       requestedByDeviceId: command.deviceId,
@@ -2112,8 +2411,8 @@ export class MatrixMlp3GatewayRunner {
     if (!this.dependencies.validateProjectDeletion || !this.dependencies.deleteProject) {
       throw new Error('This Gateway host does not support project deletion')
     }
-    if ([...project.sessions.values()].some(runtime => runtime.activeTurnId !== null)) {
-      throw new Error('Wait for active project turns to finish before deleting this project')
+    if (project.project.sessions.length > 0) {
+      throw new Error('Delete every Malink session before deleting this project')
     }
     await this.dependencies.validateProjectDeletion({
       sourceRoom: project.config,
@@ -2272,19 +2571,217 @@ export class MatrixMlp3GatewayRunner {
     }
   }
 
+  private async prepareRecoveredProviderHistory(
+    project: V3ProjectRuntime,
+    record: PersistedMlp3Session,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const providerSessionId = record.providerSessionId
+    if (!providerSessionId) return
+    assertCommandExecutionActive(signal)
+    await this.dependencies.assertDirectoryAccess?.({
+      cwd: record.cwd,
+      operation: 'provider.history',
+      signal,
+    })
+    const provider = this.providerForHistory(project, record)
+    try {
+      if (!provider.getSessionHistory) {
+        throw new Error(`Provider ${record.provider} cannot materialize session history`)
+      }
+      provider.prepareWorkingDirectory?.(record.cwd)
+      const history = await provider.getSessionHistory(providerSessionId, record.cwd)
+      assertCommandExecutionActive(signal)
+      const messages = normalizeProviderHistoryMessages(history.messages)
+      const identity = providerHistoryIdentity({
+        workspaceId: this.config.gatewayId,
+        projectId: project.project.projectId,
+        sessionId: record.id,
+        providerSessionId,
+        messages,
+      })
+      const roomId = await this.ensureProviderHistoryRoom(project, record, identity.historyId)
+      record.providerHistory = {
+        roomId,
+        historyId: identity.historyId,
+        snapshotId: identity.snapshotId,
+        materializedFrontier: 0,
+        nextPageIndex: 0,
+        totalMessages: messages.length,
+      }
+      await this.providerHistorySnapshots.put({
+        sessionId: record.id,
+        provider: record.provider,
+        providerSessionId,
+        snapshotId: identity.snapshotId,
+        title: (history.title.trim() || record.title).slice(0, 512),
+        createdAt: this.now(),
+        messages,
+      })
+      if (record.title === 'New session' && history.title.trim()) {
+        record.title = history.title.trim().slice(0, 512)
+      }
+    } finally {
+      await provider.destroy?.().catch(error => {
+        this.log(`[mlp3/matrix] provider history snapshot cleanup failed: ${formatError(error)}`)
+      })
+    }
+  }
+
+  private providerForHistory(
+    project: V3ProjectRuntime,
+    record: PersistedMlp3Session,
+  ): AgentProvider {
+    const effectiveRoom: MatrixGatewayRoomConfig = {
+      ...project.config,
+      cwd: record.cwd,
+      providerName: record.provider,
+      ...(record.model ? { model: record.model } : { model: undefined }),
+    }
+    const provider = this.dependencies.providerFactory?.(effectiveRoom, record)
+      ?? createProviderInstance(record.provider)
+    if (!provider) throw new Error(`Provider ${record.provider} is not configured`)
+    return provider
+  }
+
+  private async materializeProviderHistory(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'provider.history.materialize'>,
+  ): Promise<void> {
+    const sessionId = command.sessionId
+    if (!sessionId) throw new Error('Provider History command is missing its session ID')
+    const record = project.project.sessions.find(candidate => candidate.id === sessionId)
+    if (!record || record.lifecycle === 'deleted') {
+      throw new Error(`Unknown Malink session ${sessionId}`)
+    }
+    const binding = record.providerHistory
+    if (!binding) throw new Error(`Session ${sessionId} has no Provider History room`)
+    if (command.payload.expectedFrontier > binding.materializedFrontier) {
+      throw new Error(
+        `Provider History frontier conflict: expected ${command.payload.expectedFrontier}, `
+        + `current ${binding.materializedFrontier}`,
+      )
+    }
+    await this.provisionProviderHistoryRoom(project, record)
+    const snapshot = await this.providerHistorySnapshots.get(sessionId)
+    if (!snapshot || snapshot.snapshotId !== binding.snapshotId) {
+      throw new Error(`Provider History snapshot ${binding.snapshotId} is unavailable`)
+    }
+    const previousFrontier = binding.materializedFrontier
+    const alreadyMaterialized = command.payload.expectedFrontier < binding.materializedFrontier
+      || binding.materializedFrontier >= snapshot.messages.length
+    if (!alreadyMaterialized) {
+      const page = providerHistoryPage(
+        snapshot.messages,
+        binding.materializedFrontier,
+        command.payload.limit,
+      )
+      const room = this.providerHistoryRoomConfig(project, record)
+      for (const entry of page) {
+        const parts = splitProviderHistoryMessage(entry.message.text)
+        for (const [partIndex, body] of parts.entries()) {
+          const event: Mlp3Event = {
+            kind: 'malink.event',
+            version: 3,
+            eventId: providerHistoryEventId(
+              binding.historyId,
+              binding.snapshotId,
+              `message:${entry.sourceOrdinal}:${partIndex}`,
+              entry.sourceOrdinal,
+            ),
+            workspaceId: this.config.gatewayId,
+            projectId: project.project.projectId,
+            sessionId,
+            occurredAt: this.now(),
+            payload: {
+              type: 'provider.history.message',
+              snapshotId: binding.snapshotId,
+              sourceMessageId: entry.message.id,
+              sourceOrdinal: entry.sourceOrdinal,
+              role: entry.message.role,
+              body,
+              pageIndex: binding.nextPageIndex,
+              ...(parts.length > 1 ? { partIndex, partCount: parts.length } : {}),
+            },
+          }
+          await this.content.queueEvent(room, event, this.client, { priority: 'bulk' })
+        }
+      }
+      const nextFrontier = binding.materializedFrontier + page.length
+      const hasMore = nextFrontier < snapshot.messages.length
+      const commit: Mlp3Event = {
+        kind: 'malink.event',
+        version: 3,
+        eventId: providerHistoryEventId(
+          binding.historyId,
+          binding.snapshotId,
+          `page:${binding.nextPageIndex}:${binding.materializedFrontier}:${nextFrontier}`,
+          nextFrontier,
+        ),
+        workspaceId: this.config.gatewayId,
+        projectId: project.project.projectId,
+        sessionId,
+        occurredAt: this.now(),
+        payload: {
+          type: 'provider.history.page.committed',
+          snapshotId: binding.snapshotId,
+          pageIndex: binding.nextPageIndex,
+          previousFrontier: binding.materializedFrontier,
+          frontier: nextFrontier,
+          messageCount: page.length,
+          hasMore,
+          digest: providerHistoryDigest(page.map(entry => entry.message)),
+        },
+      }
+      const committed = await this.content.enqueueEvent(
+        room,
+        commit,
+        this.client,
+        { priority: 'bulk' },
+      )
+      // The project-room terminal event is urgent and may otherwise overtake
+      // bulk history traffic. Confirm the page commit only after Matrix has
+      // accepted every earlier event in this room's ordered delivery lane.
+      await committed.confirmation
+      binding.materializedFrontier = nextFrontier
+      binding.nextPageIndex += 1
+      await this.persist(project)
+    }
+    const hasMore = binding.materializedFrontier < snapshot.messages.length
+    const payload = {
+      type: 'provider.history.materialized' as const,
+      historyRoomId: binding.roomId,
+      snapshotId: binding.snapshotId,
+      previousFrontier,
+      frontier: binding.materializedFrontier,
+      hasMore,
+      ...(alreadyMaterialized ? { alreadyMaterialized: true } : {}),
+    }
+    await this.settleAndDeliver(
+      project,
+      command,
+      this.eventFor(project, record, command, 'provider-history-materialized', payload),
+      'succeeded',
+      payload,
+    )
+  }
+
   private async failCommand(
     project: V3ProjectRuntime,
     command: Mlp3Command,
     error: unknown,
+    options: { allowExpiredExecution?: boolean } = {},
   ): Promise<void> {
     const runtime = command.sessionId ? project.sessions.get(command.sessionId) : undefined
     const failure = commandFailure(error)
     let payload: Mlp3EventPayload
     if (command.operation === 'prompt.submit' && runtime) {
       this.transition(runtime, 'failed')
-      await this.persist(project).catch(persistError => {
+      const persistFailureProjection = this.persist(project).catch(persistError => {
         this.log(`[mlp3/matrix] failed projection persistence failed: ${formatError(persistError)}`)
       })
+      if (options.allowExpiredExecution) void persistFailureProjection
+      else await persistFailureProjection
       payload = {
         type: 'turn.failed',
         turnId: command.commandId,
@@ -2302,7 +2799,7 @@ export class MatrixMlp3GatewayRunner {
       }
     }
     const event = this.eventFor(project, runtime?.record, command, 'command-failed', payload)
-    await this.settleAndDeliver(project, command, event, 'failed').catch(deliveryError => {
+    await this.settleAndDeliver(project, command, event, 'failed', undefined, options).catch(deliveryError => {
       this.log(`[mlp3/matrix] failed command result delivery failed: ${formatError(deliveryError)}`)
     })
   }
@@ -2333,9 +2830,17 @@ export class MatrixMlp3GatewayRunner {
     event: Mlp3Event,
     outcome: Mlp3CommandTerminal['outcome'],
     result?: JsonValue,
-    options: { publishProjectPointer?: boolean; waitForConfirmation?: boolean } = {},
-  ): Promise<void> {
+    options: {
+      publishProjectPointer?: boolean
+      waitForConfirmation?: boolean
+      allowExpiredExecution?: boolean
+    } = {},
+  ): Promise<boolean> {
     const terminalKey = commandKey(command)
+    if (this.expiredCommandExecutions.has(terminalKey) && !options.allowExpiredExecution) {
+      this.log(`[mlp3/matrix] ignored late terminal for expired command ${command.commandId}`)
+      return false
+    }
     await this.journal.settle(command, {
       outcome,
       eventId: event.eventId,
@@ -2373,6 +2878,7 @@ export class MatrixMlp3GatewayRunner {
       // reinterpret a transport failure as an execution failure.
       this.log(`[mlp3/matrix] terminal delivery queued: ${formatError(error)}`)
     }
+    return true
   }
 
   private async completeTerminalDelivery(
@@ -2391,7 +2897,7 @@ export class MatrixMlp3GatewayRunner {
       )
     }
     await this.journal.markTerminalDelivered(command, matrixEventId, this.now())
-    if (command.operation === 'project.delete') {
+    if (command.operation === 'project.delete' && event.payload.type === 'project.deleted') {
       await this.finalizeProjectDeletion(project, command)
     }
   }
@@ -2489,7 +2995,7 @@ export class MatrixMlp3GatewayRunner {
         })
       }
     }
-    for (const record of await this.journal.terminalByOperation('project.delete')) {
+    for (const record of await this.journal.terminalProjectDeletions()) {
       if (
         record.terminal?.outcome !== 'succeeded'
         || record.terminalDeliveryEventId === undefined
@@ -2785,7 +3291,7 @@ export class MatrixMlp3GatewayRunner {
       session,
       capabilityProvider,
       activity,
-      activeTurnId: null,
+      activeTurn: null,
     }
     return runtime
   }
@@ -2887,7 +3393,10 @@ export class MatrixMlp3GatewayRunner {
     await rm(expected, { recursive: true, force: true })
   }
 
-  private async publishProjectSnapshot(project: V3ProjectRuntime): Promise<void> {
+  private async publishProjectSnapshot(
+    project: V3ProjectRuntime,
+    waitForDelivery = true,
+  ): Promise<void> {
     // A brand-new Gateway must be able to reach the pairing-ready state before
     // any recipient exists. Pairing's onProvisioned hook calls
     // provisionCurrentState() after the first certificate is committed, which
@@ -2906,8 +3415,20 @@ export class MatrixMlp3GatewayRunner {
         ...this.projectSnapshot(project),
       },
     }
-    const result = await this.content.sendEvent(project.config, event, this.client)
-    await this.content.publishProjectPointer(project.config, event, result.eventId, this.client)
+    if (waitForDelivery) {
+      const result = await this.content.sendEvent(project.config, event, this.client)
+      await this.content.publishProjectPointer(project.config, event, result.eventId, this.client)
+      return
+    }
+    const queued = await this.content.enqueueEvent(project.config, event, this.client)
+    void queued.confirmation.then(result => this.content.publishProjectPointer(
+      project.config,
+      event,
+      result.eventId,
+      this.client,
+    )).catch(error => {
+      this.log(`[mlp3/matrix] project snapshot delivery deferred: ${formatError(error)}`)
+    })
   }
 
   private projectSnapshot(project: V3ProjectRuntime) {
@@ -2959,7 +3480,10 @@ export class MatrixMlp3GatewayRunner {
     }
   }
 
-  private async publishWorkspaceSnapshot(project: V3ProjectRuntime): Promise<void> {
+  private async publishWorkspaceSnapshot(
+    project: V3ProjectRuntime,
+    waitForDelivery = true,
+  ): Promise<void> {
     if (!await this.content.hasActiveDevices(project.config.roomId)) return
     const capabilities = this.discoverCapabilities(project)
     const pendingGatewayEnrollments = [
@@ -3013,13 +3537,25 @@ export class MatrixMlp3GatewayRunner {
         snapshotVersion: project.project.capabilitySnapshotVersion,
       },
     }
-    const result = await this.content.sendEvent(project.config, event, this.client)
-    await this.content.publishWorkspacePointer(
+    if (waitForDelivery) {
+      const result = await this.content.sendEvent(project.config, event, this.client)
+      await this.content.publishWorkspacePointer(
+        project.config,
+        event,
+        result.eventId,
+        this.client,
+      )
+      return
+    }
+    const queued = await this.content.enqueueEvent(project.config, event, this.client)
+    void queued.confirmation.then(result => this.content.publishWorkspacePointer(
       project.config,
       event,
       result.eventId,
       this.client,
-    )
+    )).catch(error => {
+      this.log(`[mlp3/matrix] workspace snapshot delivery deferred: ${formatError(error)}`)
+    })
   }
 
   private discoverCapabilities(project: V3ProjectRuntime): MatrixGatewayCapabilities {
@@ -3051,6 +3587,8 @@ export class MatrixMlp3GatewayRunner {
           models: providerName === project.project.provider ? models : mapModels(providerName),
           can_list_sessions: typeof provider.listSessions === 'function',
           can_inspect_sessions: typeof provider.getSessionHistory === 'function',
+          can_materialize_history: typeof provider.getSessionHistory === 'function'
+            && typeof this.client.ensureProviderHistoryRoom === 'function',
         }
       })
     } catch (error) {
@@ -3104,12 +3642,119 @@ export class MatrixMlp3GatewayRunner {
     })
   }
 
+  private subscribeModelCatalogRefreshes(): void {
+    for (const providerName of listProviders()) {
+      const provider = getProvider(providerName)
+      if (!provider?.onAvailableModelsRefreshed) continue
+      try {
+        this.modelCatalogUnsubscribers.push(provider.onAvailableModelsRefreshed(() => {
+          this.modelCapabilityPublicationPending = true
+          this.scheduleModelCapabilityPublication()
+        }))
+      } catch (error) {
+        this.log(
+          `[mlp3/matrix] model catalog subscription failed for ${providerName}: `
+          + formatError(error),
+        )
+      }
+    }
+  }
+
+  private scheduleModelCapabilityPublication(): void {
+    if (
+      !this.modelCapabilityPublicationPending
+      || !this.modelCapabilityPublicationEnabled
+      || this.modelCapabilityPublicationScheduled
+      || this.state !== 'running'
+    ) return
+    this.modelCapabilityPublicationScheduled = true
+    const operation = this.eventChain.then(async () => {
+      if (this.state !== 'running') return
+      this.modelCapabilityPublicationPending = false
+      for (const project of this.projects.values()) {
+        await this.publishWorkspaceSnapshot(project)
+      }
+    }).catch(error => {
+      this.log(`[mlp3/matrix] refreshed model capabilities could not be published: ${formatError(error)}`)
+    }).finally(() => {
+      this.modelCapabilityPublicationScheduled = false
+      this.scheduleModelCapabilityPublication()
+    })
+    this.eventChain = operation.then(() => undefined, () => undefined)
+  }
+
   private async prepareSessionThreads(project: V3ProjectRuntime): Promise<void> {
     if (!this.client.prepareRoomThread) return
     for (const record of project.project.sessions) {
-      if (record.lifecycle === 'deleted') continue
+      if (record.lifecycle !== 'active') continue
       await this.client.prepareRoomThread(project.config.roomId, record.threadRootEventId)
     }
+  }
+
+  private async cleanupLegacyArchivedSessions(project: V3ProjectRuntime): Promise<void> {
+    const legacy = project.project.sessions.filter(record => record.lifecycle !== 'active')
+    for (const record of legacy) {
+      try {
+        await this.deleteSessionStorage(project, record)
+        record.lifecycle = 'deleted'
+        record.updatedAt = this.now()
+        record.stateVersion += 1
+        project.project.sessions = project.project.sessions.filter(candidate => candidate.id !== record.id)
+        await this.persist(project)
+        const event: Mlp3Event = {
+          kind: 'malink.event',
+          version: 3,
+          eventId: logicalArchivedSessionCleanupEventId(
+            this.config.gatewayId,
+            project.project.projectId,
+            record.id,
+          ),
+          workspaceId: this.config.gatewayId,
+          projectId: project.project.projectId,
+          sessionId: record.id,
+          occurredAt: record.updatedAt,
+          payload: {
+            type: 'session.lifecycle',
+            projection: terminalProjection(record, 'idle', this.extensions),
+            state: 'deleted',
+          },
+        }
+        await this.content.queueEvent(project.config, event, this.client, { priority: 'urgent' })
+      } catch (error) {
+        // Keep the legacy tombstone as the durable retry authority. A later
+        // Gateway start, or project deletion precondition, will retry it.
+        this.log(
+          `[mlp3/matrix] archived session cleanup deferred for ${record.id}: ${formatError(error)}`,
+        )
+      }
+    }
+  }
+
+  private async deleteSessionStorage(
+    project: V3ProjectRuntime,
+    record: PersistedMlp3Session,
+  ): Promise<void> {
+    if (!this.client.deleteRoomThread || !this.client.retireRoom) {
+      throw new Error('Matrix transport cannot delete archived session data')
+    }
+    await this.client.deleteRoomThread(project.config.roomId, record.threadRootEventId)
+    await this.deleteProviderHistoryStorage(record)
+    if (record.scope === 'scratch') await this.removeScratchSessionDirectory(record)
+  }
+
+  private async deleteProviderHistoryStorage(record: PersistedMlp3Session): Promise<void> {
+    if (!record.providerHistory) return
+    await this.retireProviderHistoryRoom(record.providerHistory.roomId)
+    await this.providerHistorySnapshots.delete(record.id)
+  }
+
+  private async retireProviderHistoryRoom(roomId: string): Promise<void> {
+    if (!this.client.retireRoom) {
+      throw new Error('Matrix transport cannot retire Provider History rooms')
+    }
+    await this.client.retireRoom(roomId)
+    await this.content.forgetRoom(roomId)
+    await this.dependencies.onProviderHistoryRoomDeleted?.(roomId)
   }
 
   private observeRelationHint(
@@ -3149,6 +3794,11 @@ export class MatrixMlp3GatewayRunner {
     if (!this.dependencies.deleteProject) {
       throw new Error('This Gateway host does not support project deletion')
     }
+    if (!this.client.retireRoom) {
+      throw new Error('Matrix transport cannot delete project rooms')
+    }
+    await this.client.retireRoom(project.config.roomId)
+    await this.content.forgetRoom(project.config.roomId)
     await this.dependencies.deleteProject({
       sourceRoom: project.config,
       requestedByDeviceId: command.deviceId,
@@ -3175,9 +3825,14 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private async cleanup(): Promise<void> {
-    if (this.gatewayNodeStatusTimer !== null) {
-      clearTimeout(this.gatewayNodeStatusTimer)
-      this.gatewayNodeStatusTimer = null
+    this.modelCapabilityPublicationEnabled = false
+    this.modelCapabilityPublicationPending = false
+    for (const unsubscribeModelCatalog of this.modelCatalogUnsubscribers.splice(0)) {
+      try {
+        unsubscribeModelCatalog()
+      } catch (error) {
+        this.log(`[mlp3/matrix] model catalog unsubscribe failed: ${formatError(error)}`)
+      }
     }
     this.content.stopRetries()
     this.webPush.stop()
@@ -3198,6 +3853,9 @@ export class MatrixMlp3GatewayRunner {
         })
       }
     }
+    await this.journal.close().catch(error => {
+      this.log(`[mlp3/matrix] command journal close failed: ${formatError(error)}`)
+    })
   }
 
   private now(): number {
@@ -3247,6 +3905,15 @@ function projection(
     stateVersion: record.stateVersion,
     extensions: extensions.summaries(record.extensions),
     extensionRevision: record.extensionRevision,
+    ...(record.providerHistory
+      ? {
+          providerHistory: {
+            roomId: record.providerHistory.roomId,
+            snapshotId: record.providerHistory.snapshotId,
+            ordering: 'reverse_append_v1' as const,
+          },
+        }
+      : {}),
   }
 }
 
@@ -3371,6 +4038,46 @@ function promptScheduleKey(
   return `${project.config.roomId}\0${sessionId}\0${commandId}`
 }
 
+function createActiveTurn(turnId: string): Mlp3ActiveTurn {
+  let resolveSettled!: () => void
+  let settled = false
+  const settledPromise = new Promise<void>(resolve => {
+    resolveSettled = resolve
+  })
+  return {
+    turnId,
+    abortController: new AbortController(),
+    cancelRequested: false,
+    executionStarted: false,
+    terminalOutcome: null,
+    settled: settledPromise,
+    settle() {
+      if (settled) return
+      settled = true
+      resolveSettled()
+    },
+  }
+}
+
+function readSemanticTurnResult(value: unknown): SemanticTurnResult {
+  if (value === undefined || value === null) return { status: 'succeeded' }
+  if (typeof value !== 'object') {
+    return { status: 'failed', message: 'Session runtime returned an invalid turn result' }
+  }
+  const result = value as { status?: unknown; message?: unknown }
+  if (
+    result.status !== 'succeeded'
+    && result.status !== 'cancelled'
+    && result.status !== 'failed'
+  ) {
+    return { status: 'failed', message: 'Session runtime returned an invalid turn result' }
+  }
+  return {
+    status: result.status,
+    ...(typeof result.message === 'string' ? { message: result.message } : {}),
+  }
+}
+
 async function waitForScheduledPromptCancellation(
   scheduled: ScheduledPromptCommand | undefined,
 ): Promise<boolean> {
@@ -3427,6 +4134,16 @@ function logicalSessionRecoveryEventId(
     .update(
       `malink-v3-session-recovery\0${workspaceId}\0${projectId}\0${sessionId}\0${stateVersion}`,
     )
+    .digest('base64url')
+}
+
+function logicalArchivedSessionCleanupEventId(
+  workspaceId: string,
+  projectId: string,
+  sessionId: string,
+): string {
+  return createHash('sha256')
+    .update(`malink-v3-archived-session-cleanup\0${workspaceId}\0${projectId}\0${sessionId}`)
     .digest('base64url')
 }
 
@@ -3488,13 +4205,55 @@ function providerHistoryRecoveryEventId(command: Mlp3Command): string {
     .digest('base64url')
 }
 
+function providerHistoryRoomAliasLocalpart(
+  workspaceId: string,
+  gatewayNodeId: string,
+  historyId: string,
+): string {
+  const digest = createHash('sha256')
+    .update(`malink-provider-history-room\0${workspaceId}\0${gatewayNodeId}\0${historyId}`)
+    .digest('hex')
+    .slice(0, 40)
+  return `malink-history-${digest}`
+}
+
+function providerHistoryEventId(
+  historyId: string,
+  snapshotId: string,
+  kind: string,
+  sourceOrdinal: number,
+): string {
+  return createHash('sha256')
+    .update(
+      `malink-provider-history-event\0${historyId}\0${snapshotId}\0${kind}\0${sourceOrdinal}`,
+    )
+    .digest('base64url')
+}
+
+function normalizeProviderHistoryMessages(
+  messages: readonly ProviderHistoryMessage[],
+): ProviderHistoryMessage[] {
+  const seen = new Map<string, number>()
+  return messages.map((message, index) => {
+    const base = message.id.slice(0, 220) || `message-${index + 1}`
+    const occurrence = seen.get(base) ?? 0
+    seen.set(base, occurrence + 1)
+    return {
+      id: occurrence === 0 ? base : `${base}#${occurrence + 1}`,
+      role: message.role,
+      text: message.text,
+    }
+  })
+}
+
 function reconciledCommandOutcome(
   terminal: Mlp3CommandTerminal,
 ): 'succeeded' | 'failed' | 'cancelled' | 'rejected' | 'interrupted' {
-  return terminal.event?.payload.type === 'turn.completed'
+  return terminal.reconciledOutcome
+    ?? (terminal.event?.payload.type === 'turn.completed'
       && terminal.event.payload.outcome === 'cancelled'
-    ? 'cancelled'
-    : terminal.outcome
+      ? 'cancelled'
+      : terminal.outcome)
 }
 
 function reconciledCommandError(
@@ -3515,7 +4274,7 @@ function reconciledCommandError(
       ?? (outcome === 'interrupted'
         ? 'The Gateway restarted after dispatch. The command was not executed again.'
         : 'The Gateway recorded this command as failed.'),
-    retryable: outcome === 'interrupted',
+    retryable: terminal.retryable ?? outcome === 'interrupted',
   }
 }
 
@@ -3574,6 +4333,23 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+class GatewayCommandExecutionTimeoutError extends Error {
+  readonly commandCode = 'gateway_execution_timeout'
+  readonly retryable = true
+
+  constructor(operation: string, timeoutMs: number) {
+    super(`Gateway ${operation} execution timed out after ${timeoutMs}ms`)
+    this.name = 'GatewayCommandExecutionTimeoutError'
+  }
+}
+
+function assertCommandExecutionActive(signal?: AbortSignal): void {
+  if (!signal?.aborted) return
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error('Gateway command execution was aborted')
 }
 
 function commandFailure(error: unknown): { code: string; retryable: boolean } {

@@ -378,7 +378,8 @@ describe('Integration: ACP -> Semantic Adapter -> Projector -> Telegram Renderin
             expect(outbox.edits.length).toBeGreaterThan(0)
             const message = outbox.edits[outbox.edits.length - 1].message.text
             expect(message).toContain('npm run typecheck')
-            expect(message).not.toContain('<b>Terminal</b>')
+            expect(message).toContain('<b>Terminal</b>')
+            expect(message).not.toContain('Bash')
         })
 
         it('should render Cursor ACP terminal string command when rawInput arrives in a later update', async () => {
@@ -412,7 +413,8 @@ describe('Integration: ACP -> Semantic Adapter -> Projector -> Telegram Renderin
             expect(outbox.edits.length).toBe(1)
             const message = outbox.edits[0].message.text
             expect(message).toContain('npm test')
-            expect(message).not.toContain('<b>Terminal</b>')
+            expect(message).toContain('<b>Terminal</b>')
+            expect(message).not.toContain('Bash')
         })
 
         it('should render Cursor ACP grep query when provider uses query field in a later update', async () => {

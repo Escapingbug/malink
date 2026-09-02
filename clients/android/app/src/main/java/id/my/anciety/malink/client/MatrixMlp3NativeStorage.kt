@@ -32,6 +32,14 @@ internal data class MatrixMlp3InboxRecord(
     val errorCode: String? = null,
 )
 
+internal data class MatrixMlp3TaskNotification(
+    val eventId: String,
+    val commandId: String,
+    val outcome: String,
+    val sessionId: String?,
+    val body: String? = null,
+)
+
 internal enum class MatrixMlp3InboxProjectionStep {
     ADVANCED,
     DEFERRED,
@@ -254,8 +262,15 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
     }
 }
 
-/** Durable key grant; unlike a timeline key bundle, this state is re-readable. */
-internal class AtomicEncryptedMatrixMlp3ProjectKeyStore internal constructor(
+/**
+ * Durable local-notification outbox for authenticated task terminal events.
+ *
+ * Matrix may replay a timeline event after reconnect or process death. Pending
+ * records retry a notification callback that failed before Android accepted
+ * it, while delivered event IDs prevent the same logical terminal from
+ * alerting again.
+ */
+internal class AtomicEncryptedMatrixMlp3TaskNotificationStore internal constructor(
     private val blob: MatrixMlp3BlobStore,
     private val cipher: SecretCipher,
     scope: String,
@@ -263,33 +278,253 @@ internal class AtomicEncryptedMatrixMlp3ProjectKeyStore internal constructor(
     constructor(file: File, cipher: SecretCipher, scope: String) :
         this(AtomicFileMatrixMlp3BlobStore(file), cipher, scope)
 
+    private data class State(
+        val pending: List<MatrixMlp3TaskNotification>,
+        val deliveredEventIds: List<String>,
+    )
+
+    private val associatedData = "malink.matrix-v3-task-notifications.v1\u0000$scope".toByteArray()
+    private var state = load()
+
+    @Synchronized
+    fun enqueue(value: MatrixMlp3TaskNotification): Boolean {
+        validate(value)
+        if (
+            state.pending.any { it.eventId == value.eventId } ||
+            value.eventId in state.deliveredEventIds
+        ) return false
+        require(state.pending.size < MAX_PENDING) {
+            "The MLP/3 task notification outbox is full."
+        }
+        replaceState(state.copy(pending = state.pending + value))
+        return true
+    }
+
+    @Synchronized
+    fun pending(): List<MatrixMlp3TaskNotification> = state.pending
+
+    @Synchronized
+    fun delivered(eventId: String) {
+        val pending = state.pending.filterNot { it.eventId == eventId }
+        if (pending.size == state.pending.size) return
+        val delivered = (state.deliveredEventIds + eventId).takeLast(MAX_DELIVERED)
+        replaceState(State(pending, delivered))
+    }
+
+    @Synchronized
+    fun validateStoredState() {
+        load()
+    }
+
+    @Synchronized
+    fun migrateStoredState() {
+        save()
+    }
+
+    @Synchronized
+    fun clear() {
+        state = State(emptyList(), emptyList())
+        blob.delete()
+    }
+
+    private fun load(): State {
+        val encrypted = blob.read() ?: return State(emptyList(), emptyList())
+        val plaintext = try {
+            val envelope = SecretEnvelope.decode(encrypted)
+            try {
+                cipher.decrypt(envelope, associatedData)
+            } finally {
+                envelope.iv.fill(0)
+                envelope.ciphertext.fill(0)
+            }
+        } finally {
+            encrypted.fill(0)
+        }
+        return try {
+            require(plaintext.size <= MAX_STORE_BYTES)
+            val root = Json.parseToJsonElement(plaintext.toString(Charsets.UTF_8)).jsonObject
+            require(root.keys == setOf("schemaVersion", "pending", "deliveredEventIds"))
+            val schemaVersion = root.requiredLong("schemaVersion")
+            require(schemaVersion == 1L || schemaVersion == 2L)
+            val pending = (root["pending"] as? JsonArray)?.map { item ->
+                val value = item as? JsonObject
+                    ?: throw IllegalArgumentException("The task notification record is invalid.")
+                val expectedKeys = mutableSetOf(
+                    "eventId", "commandId", "outcome", "sessionId",
+                )
+                if (schemaVersion >= 2L) expectedKeys += "body"
+                require(value.keys == expectedKeys)
+                MatrixMlp3TaskNotification(
+                    eventId = value.requiredString("eventId", 256),
+                    commandId = value.requiredString("commandId", 256),
+                    outcome = value.requiredString("outcome", 32),
+                    sessionId = value.optionalString("sessionId", 256),
+                    body = if (schemaVersion >= 2L) {
+                        value.optionalString("body", MAX_NOTIFICATION_BODY_BYTES)
+                    } else {
+                        null
+                    },
+                ).also(::validate)
+            } ?: throw IllegalArgumentException("The task notification outbox is invalid.")
+            val delivered = (root["deliveredEventIds"] as? JsonArray)?.map { item ->
+                item.jsonPrimitive.content.also {
+                    require(it.isNotBlank() && it.length <= 256) {
+                        "The delivered task notification ID is invalid."
+                    }
+                }
+            } ?: throw IllegalArgumentException("The task notification ledger is invalid.")
+            require(pending.size <= MAX_PENDING)
+            require(delivered.size <= MAX_DELIVERED)
+            require(pending.map { it.eventId }.distinct().size == pending.size)
+            require(delivered.distinct().size == delivered.size)
+            require(pending.none { it.eventId in delivered })
+            State(pending, delivered)
+        } finally {
+            plaintext.fill(0)
+        }
+    }
+
+    private fun save() {
+        if (state.pending.isEmpty() && state.deliveredEventIds.isEmpty()) {
+            blob.delete()
+            return
+        }
+        val plaintext = CanonicalJson.bytes(buildJsonObject {
+            put("schemaVersion", 2)
+            put("pending", buildJsonArray {
+                state.pending.forEach { value ->
+                    add(buildJsonObject {
+                        put("eventId", value.eventId)
+                        put("commandId", value.commandId)
+                        put("outcome", value.outcome)
+                        if (value.sessionId == null) put("sessionId", kotlinx.serialization.json.JsonNull)
+                        else put("sessionId", value.sessionId)
+                        if (value.body == null) put("body", kotlinx.serialization.json.JsonNull)
+                        else put("body", value.body)
+                    })
+                }
+            })
+            put("deliveredEventIds", buildJsonArray {
+                state.deliveredEventIds.forEach { add(JsonPrimitive(it)) }
+            })
+        })
+        require(plaintext.size <= MAX_STORE_BYTES)
+        val encrypted = try {
+            val envelope = cipher.encrypt(plaintext, associatedData)
+            try {
+                SecretEnvelope.encode(envelope)
+            } finally {
+                envelope.iv.fill(0)
+                envelope.ciphertext.fill(0)
+            }
+        } finally {
+            plaintext.fill(0)
+        }
+        try {
+            blob.write(encrypted)
+        } finally {
+            encrypted.fill(0)
+        }
+    }
+
+    private fun replaceState(next: State) {
+        val previous = state
+        state = next
+        try {
+            save()
+        } catch (error: Exception) {
+            state = previous
+            throw error
+        }
+    }
+
+    private fun validate(value: MatrixMlp3TaskNotification) {
+        require(value.eventId.isNotBlank() && value.eventId.length <= 256)
+        require(value.commandId.isNotBlank() && value.commandId.length <= 256)
+        require(value.outcome in setOf("succeeded", "failed", "cancelled"))
+        require(value.sessionId == null || value.sessionId.isNotBlank() && value.sessionId.length <= 256)
+        require(
+            value.body == null ||
+                value.body.isNotBlank() &&
+                value.body.length <= MAX_NOTIFICATION_BODY_CHARS &&
+                value.body.toByteArray().size <= MAX_NOTIFICATION_BODY_BYTES
+        )
+    }
+
+    private companion object {
+        const val MAX_PENDING = 10_000
+        const val MAX_DELIVERED = 10_000
+        const val MAX_STORE_BYTES = 4 * 1024 * 1024
+        const val MAX_NOTIFICATION_BODY_CHARS = 2_048
+        const val MAX_NOTIFICATION_BODY_BYTES = MAX_NOTIFICATION_BODY_CHARS * 4
+    }
+}
+
+/** Durable key grant; unlike a timeline key bundle, this state is re-readable. */
+internal class AtomicEncryptedMatrixMlp3ProjectKeyStore internal constructor(
+    private val blob: MatrixMlp3BlobStore,
+    private val cipher: SecretCipher,
+    scope: String,
+) {
+    private data class ProjectRoomKey(val projectId: String, val roomId: String)
+
+    constructor(file: File, cipher: SecretCipher, scope: String) :
+        this(AtomicFileMatrixMlp3BlobStore(file), cipher, scope)
+
     private val associatedData = "malink.matrix-v3-project-keys.v1\u0000$scope".toByteArray()
-    private var grants: MutableMap<String, MatrixMlp3ProjectKeyGrant> = load().toMutableMap()
+    private var grants: MutableMap<ProjectRoomKey, MatrixMlp3ProjectKeyGrant> =
+        load().toMutableMap()
 
     @Synchronized
     fun value(): MatrixMlp3ProjectKeyGrant? = grants.values.singleOrNull()?.deepCopy()
 
     @Synchronized
-    fun value(projectId: String): MatrixMlp3ProjectKeyGrant? = grants[projectId]?.deepCopy()
+    fun valueForRoom(
+        roomId: String,
+        projectId: String? = null,
+    ): MatrixMlp3ProjectKeyGrant? = grants.values.singleOrNull {
+        it.roomId == roomId && (projectId == null || it.projectId == projectId)
+    }?.deepCopy()
+
+    @Synchronized
+    fun valueForProject(
+        projectId: String,
+        excludedRoomIds: Set<String> = emptySet(),
+    ): MatrixMlp3ProjectKeyGrant? {
+        val matching = grants.values.filter {
+            it.projectId == projectId && it.roomId !in excludedRoomIds
+        }
+        require(matching.size <= 1) { "The MLP/3 project has more than one primary room key." }
+        return matching.singleOrNull()?.deepCopy()
+    }
 
     @Synchronized
     fun values(): List<MatrixMlp3ProjectKeyGrant> = grants.values.map { it.deepCopy() }
+
+    @Synchronized
+    fun singleProjectId(): String? = grants.values.map { it.projectId }.distinct().singleOrNull()
 
     @Synchronized
     fun isNotEmpty(): Boolean = grants.isNotEmpty()
 
     @Synchronized
     fun save(value: MatrixMlp3ProjectKeyGrant) {
-        grants.remove(value.projectId)?.wipe()
-        grants[value.projectId] = value.deepCopy()
+        val key = value.storageKey()
+        grants.remove(key)?.wipe()
+        grants[key] = value.deepCopy()
         persist()
     }
 
     @Synchronized
     fun retain(projectIds: Set<String>) {
-        val removed = grants.keys.filter { it !in projectIds }
+        val removed = grants.filterValues { it.projectId !in projectIds }.keys
         if (removed.isEmpty()) return
-        removed.forEach { projectId -> grants.remove(projectId)?.wipe() }
+        removed.forEach { key -> grants.remove(key)?.wipe() }
+        persist()
+    }
+
+    @Synchronized
+    fun migrateStoredState() {
         persist()
     }
 
@@ -305,7 +540,7 @@ internal class AtomicEncryptedMatrixMlp3ProjectKeyStore internal constructor(
         blob.delete()
     }
 
-    private fun load(): Map<String, MatrixMlp3ProjectKeyGrant> {
+    private fun load(): Map<ProjectRoomKey, MatrixMlp3ProjectKeyGrant> {
         val encrypted = blob.read() ?: return emptyMap()
         val plaintext = try {
             val envelope = SecretEnvelope.decode(encrypted)
@@ -323,15 +558,16 @@ internal class AtomicEncryptedMatrixMlp3ProjectKeyStore internal constructor(
             val root = Json.parseToJsonElement(plaintext.toString(Charsets.UTF_8)).jsonObject
             if (root["schemaVersion"]?.jsonPrimitive?.longOrNull == 1L) {
                 val grant = decodeGrant(root)
-                mapOf(grant.projectId to grant)
+                mapOf(grant.storageKey() to grant)
             } else {
                 require(root.keys == setOf("schemaVersion", "grants"))
-                require(root.requiredLong("schemaVersion") == 2L)
+                require(root.requiredLong("schemaVersion") in 2L..4L)
                 val decoded = (root["grants"] as? JsonArray).orEmpty().map { item ->
                     decodeGrant(item.jsonObject)
                 }
-                require(decoded.size <= 256 && decoded.map { it.projectId }.distinct().size == decoded.size)
-                decoded.associateBy(MatrixMlp3ProjectKeyGrant::projectId)
+                require(decoded.size <= 512)
+                require(decoded.map { it.storageKey() }.distinct().size == decoded.size)
+                decoded.associateBy { it.storageKey() }
             }
         } finally {
             plaintext.fill(0)
@@ -341,9 +577,12 @@ internal class AtomicEncryptedMatrixMlp3ProjectKeyStore internal constructor(
     private fun persist() {
         if (grants.isEmpty()) return blob.delete()
         val plaintext = CanonicalJson.bytes(buildJsonObject {
-            put("schemaVersion", 2)
+            put("schemaVersion", 4)
             put("grants", buildJsonArray {
-                grants.values.sortedBy(MatrixMlp3ProjectKeyGrant::projectId)
+                grants.values.sortedWith(compareBy(
+                    MatrixMlp3ProjectKeyGrant::roomId,
+                    MatrixMlp3ProjectKeyGrant::projectId,
+                ))
                     .forEach { add(encodeGrant(it)) }
             })
         })
@@ -414,6 +653,8 @@ internal class AtomicEncryptedMatrixMlp3ProjectKeyStore internal constructor(
             keys = keys,
         )
     }
+
+    private fun MatrixMlp3ProjectKeyGrant.storageKey() = ProjectRoomKey(projectId, roomId)
 
     private companion object {
         const val MAX_BYTES = 1024 * 1024

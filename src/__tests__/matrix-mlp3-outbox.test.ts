@@ -180,4 +180,53 @@ describe('FileMatrixMlp3Outbox', () => {
       { deliveryId: legacy[3]!.deliveryId, priority: 'bulk', supersession: { version: 2 } },
     ])
   })
+
+  it('atomically compacts completed ciphertext while preserving tombstones and latest state', async () => {
+    const path = join(await mkdtemp(join(tmpdir(), 'malink-v3-outbox-')), 'outbox.jsonl')
+    const outbox = new FileMatrixMlp3Outbox(path, {
+      compactAfterBytes: Number.MAX_SAFE_INTEGER,
+      compactAfterEntries: 4,
+    })
+    await outbox.initialize()
+    const completed = Array.from({ length: 12 }, (_, index) => outbox.createEvent({
+      roomId: '!project:example.org',
+      transactionId: `completed-${index}`,
+      content: { body: `secret-ciphertext-${index}` },
+      createdAt: index + 1,
+    }))
+    for (const [index, delivery] of completed.entries()) {
+      await outbox.stage(delivery)
+      await outbox.markDelivered(delivery.deliveryId, `$event-${index}`, 100 + index)
+    }
+    const state = outbox.createState({
+      roomId: '!project:example.org',
+      eventType: 'io.malink.project.current.v3',
+      stateKey: 'project-1',
+      content: { eventId: '$latest' },
+      createdAt: 200,
+    })
+    await outbox.stage(state)
+    await outbox.markDelivered(state.deliveryId, '$state', 201)
+
+    const encoded = await readFile(path, 'utf8')
+    expect(encoded).not.toContain('secret-ciphertext')
+    expect(encoded).toContain('$latest')
+    expect(outbox.health(300)).toMatchObject({
+      pending: 0,
+      terminalTombstones: 13,
+      oldestPendingAgeMs: null,
+    })
+
+    const recovered = new FileMatrixMlp3Outbox(path)
+    await recovered.initialize()
+    expect(recovered.pending()).toEqual([])
+    expect(recovered.deliveredEventId(completed[0]!.deliveryId)).toBe('$event-0')
+    expect(recovered.latestState(
+      '!project:example.org',
+      'io.malink.project.current.v3',
+      'project-1',
+    )).toMatchObject({ deliveryId: state.deliveryId, content: { eventId: '$latest' } })
+    await recovered.stage(completed[0]!)
+    expect(recovered.pending()).toEqual([])
+  })
 })

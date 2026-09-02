@@ -695,6 +695,71 @@ class MatrixThreadHistoryClient(
     }
 }
 
+/** Pages a data-only Provider History room in physical append order. */
+class MatrixProviderHistoryClient(
+    private val transport: MatrixApplicationReadTransport =
+        RestrictedHttpsMatrixApplicationReadTransport(),
+) {
+    suspend fun page(
+        session: StoredMatrixSession,
+        roomId: String,
+        from: String?,
+        limit: Int,
+    ): MatrixThreadHistoryBatch {
+        require(from == null || (from.isNotBlank() && from.length <= 4_096))
+        require(limit in 1..500)
+        val homeserver = MatrixIdentifiers.normalizeHomeserver(session.homeserverUrl)
+        val binding = session.roomBindings
+            .map(MatrixIdentifiers::validateRoomBinding)
+            .singleOrNull { it.roomId == roomId }
+            ?: throw IllegalArgumentException("Unknown Provider History room: $roomId")
+        val query = buildList {
+            add("dir=f")
+            add("limit=${minOf(limit, MAX_PAGE_EVENTS)}")
+            if (from != null) add("from=${encode(from)}")
+        }.joinToString("&")
+        val response = transport.getJson(
+            URI(
+                "$homeserver/_matrix/client/v3/rooms/${encode(binding.roomId)}/messages?$query",
+            ),
+            session.accessToken,
+        )
+        return try {
+            if (response.status !in 200..299) {
+                throw MatrixApplicationReadException(response.status, parseMatrixRetryAfterMs(response.body))
+            }
+            val root = runCatching {
+                Json.parseToJsonElement(response.body.toString(Charsets.UTF_8)) as? JsonObject
+            }.getOrNull() ?: throw MatrixApplicationControlPayloadException(
+                "Provider History response is not an object.",
+            )
+            val events = root["chunk"]
+                .let { it as? JsonArray }
+                .orEmpty()
+                .mapNotNull { it as? JsonObject }
+                .filter { event ->
+                    event["sender"]?.jsonPrimitive?.contentOrNull == binding.gatewayUserId &&
+                        isMalinkApplicationControlEvent(event.toString())
+                }
+                .mapNotNull { event -> matrixApplicationEvent(binding.roomId, event) }
+            val nextBatch = root["end"]
+                .let { it as? JsonPrimitive }
+                ?.contentOrNull
+                ?.takeIf { it.isNotBlank() && it.length <= 4_096 }
+            MatrixThreadHistoryBatch(events, nextBatch)
+        } finally {
+            response.body.fill(0)
+        }
+    }
+
+    private fun encode(value: String): String =
+        URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
+
+    private companion object {
+        const val MAX_PAGE_EVENTS = 500
+    }
+}
+
 private fun matrixApplicationEvent(roomId: String, event: JsonObject): MatrixDecryptedEvent? {
     val eventId = (event["event_id"] as? JsonPrimitive)?.contentOrNull
         ?.takeIf { it.isNotBlank() && it.length <= 512 }

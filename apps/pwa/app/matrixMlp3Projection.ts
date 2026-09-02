@@ -21,7 +21,7 @@ import {
   gatewayUpdateStatusSchema,
 } from "@malink/protocol";
 
-export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 7 as const;
+export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 8 as const;
 
 export type V3ProjectedSession = Mlp3SessionProjection & {
   sessionId: string;
@@ -50,6 +50,31 @@ export type V3ProjectedMessage = {
   originDeviceId?: string;
   payload?: Mlp3Event["payload"];
   resolvedActionId?: string;
+};
+
+export type V3ProjectedProviderHistoryMessage = {
+  logicalId: string;
+  physicalEventId: string;
+  sessionId: string;
+  snapshotId: string;
+  sourceOrdinal: number;
+  sender: "user" | "agent" | "system";
+  body: string;
+  pageIndex?: number;
+  partIndex?: number;
+  partCount?: number;
+  payload: Extract<Mlp3Event["payload"], { type: "provider.history.message" }>;
+};
+
+export type V3ProjectedProviderHistoryPage = {
+  sessionId: string;
+  snapshotId: string;
+  pageIndex: number;
+  previousFrontier: number;
+  frontier: number;
+  messageCount: number;
+  hasMore: boolean;
+  digest: string;
 };
 
 export type V3ProjectedInboxFile = {
@@ -104,6 +129,8 @@ export type MatrixMlp3ProjectionState = {
   project: V3ProjectProjection | null;
   sessions: V3ProjectedSession[];
   messages: V3ProjectedMessage[];
+  providerHistoryMessages: V3ProjectedProviderHistoryMessage[];
+  providerHistoryPages: V3ProjectedProviderHistoryPage[];
   inboxFiles: V3ProjectedInboxFile[];
   completions: Mlp3CommandCompletion[];
   gatewayUpdateObservation: GatewayUpdateObservation | null;
@@ -119,6 +146,8 @@ export type MatrixMlp3ProjectionState = {
 export class MatrixMlp3Projection {
   readonly sessions = new Map<string, V3ProjectedSession>();
   readonly messages = new Map<string, V3ProjectedMessage>();
+  readonly providerHistoryMessages = new Map<string, V3ProjectedProviderHistoryMessage>();
+  readonly providerHistoryPages = new Map<string, V3ProjectedProviderHistoryPage>();
   readonly inboxFiles = new Map<string, V3ProjectedInboxFile>();
   readonly completions = new Map<string, Mlp3CommandCompletion>();
   gatewayUpdateObservation: GatewayUpdateObservation | null = null;
@@ -131,6 +160,8 @@ export class MatrixMlp3Projection {
     this.project = null;
     this.sessions.clear();
     this.messages.clear();
+    this.providerHistoryMessages.clear();
+    this.providerHistoryPages.clear();
     this.inboxFiles.clear();
     this.completions.clear();
     this.gatewayUpdateObservation = null;
@@ -144,6 +175,8 @@ export class MatrixMlp3Projection {
       project: this.project,
       sessions: [...this.sessions.values()],
       messages: [...this.messages.values()],
+      providerHistoryMessages: [...this.providerHistoryMessages.values()],
+      providerHistoryPages: [...this.providerHistoryPages.values()],
       inboxFiles: [...this.inboxFiles.values()],
       completions: [...this.completions.values()],
       gatewayUpdateObservation: this.gatewayUpdateObservation,
@@ -158,6 +191,12 @@ export class MatrixMlp3Projection {
     this.project = state.project;
     for (const session of state.sessions) this.sessions.set(session.sessionId, session);
     for (const message of state.messages) this.messages.set(message.logicalId, message);
+    for (const message of state.providerHistoryMessages) {
+      this.providerHistoryMessages.set(message.logicalId, message);
+    }
+    for (const page of state.providerHistoryPages) {
+      this.providerHistoryPages.set(providerHistoryPageKey(page.snapshotId, page.pageIndex), page);
+    }
     for (const file of state.inboxFiles) this.inboxFiles.set(file.fileId, file);
     for (const completion of state.completions) {
       this.completions.set(completion.commandId, completion);
@@ -342,6 +381,40 @@ export class MatrixMlp3Projection {
       });
       return true;
     }
+    if (payload.type === "provider.history.message" && event.sessionId) {
+      const partIndex = payload.partIndex ?? 0;
+      const logicalId = `provider-history:${payload.snapshotId}:${payload.sourceOrdinal}:${partIndex}`;
+      this.providerHistoryMessages.set(logicalId, {
+        logicalId,
+        physicalEventId,
+        sessionId: event.sessionId,
+        snapshotId: payload.snapshotId,
+        sourceOrdinal: payload.sourceOrdinal,
+        sender: payload.role === "user" ? "user" : "agent",
+        body: payload.body,
+        pageIndex: payload.pageIndex,
+        ...(payload.partIndex === undefined ? {} : { partIndex: payload.partIndex }),
+        ...(payload.partCount === undefined ? {} : { partCount: payload.partCount }),
+        payload,
+      });
+      return true;
+    }
+    if (payload.type === "provider.history.page.committed" && event.sessionId) {
+      this.providerHistoryPages.set(
+        providerHistoryPageKey(payload.snapshotId, payload.pageIndex),
+        {
+          sessionId: event.sessionId,
+          snapshotId: payload.snapshotId,
+          pageIndex: payload.pageIndex,
+          previousFrontier: payload.previousFrontier,
+          frontier: payload.frontier,
+          messageCount: payload.messageCount,
+          hasMore: payload.hasMore,
+          digest: payload.digest,
+        },
+      );
+      return true;
+    }
     if (payload.type === "gateway.update.status" && this.workspace) {
       if ((this.gatewayUpdateObservation?.observedAt ?? -1) < event.occurredAt) {
         this.gatewayUpdateObservation = {
@@ -356,6 +429,18 @@ export class MatrixMlp3Projection {
     }
     if (event.sessionId && "projection" in payload) {
       this.applySessionProjection(event, payload.projection, threadRootHint);
+    }
+    if (payload.type === "session.lifecycle" && payload.state === "deleted" && event.sessionId) {
+      this.sessions.delete(event.sessionId);
+      for (const [logicalId, message] of this.messages) {
+        if (message.sessionId === event.sessionId) this.messages.delete(logicalId);
+      }
+      for (const [logicalId, message] of this.providerHistoryMessages) {
+        if (message.sessionId === event.sessionId) this.providerHistoryMessages.delete(logicalId);
+      }
+      for (const [pageId, page] of this.providerHistoryPages) {
+        if (page.sessionId === event.sessionId) this.providerHistoryPages.delete(pageId);
+      }
     }
     if (payload.type === "session.ready" && event.sessionId && event.projectId) {
       const current = this.sessions.get(event.sessionId);
@@ -537,6 +622,50 @@ export class MatrixMlp3Projection {
       );
   }
 
+  sessionProviderHistoryMessages(
+    sessionId: string,
+    snapshotId: string,
+  ): V3ProjectedProviderHistoryMessage[] {
+    const completePages = completeProviderHistoryPageIndexes(
+      [...this.providerHistoryMessages.values()],
+      [...this.providerHistoryPages.values()],
+      sessionId,
+      snapshotId,
+    );
+    return [...this.providerHistoryMessages.values()]
+      .filter(message =>
+        message.sessionId === sessionId
+        && message.snapshotId === snapshotId
+        && (message.pageIndex === undefined || completePages.has(message.pageIndex))
+      )
+      .sort((left, right) =>
+        left.sourceOrdinal - right.sourceOrdinal
+        || (left.partIndex ?? 0) - (right.partIndex ?? 0)
+        || left.logicalId.localeCompare(right.logicalId),
+      );
+  }
+
+  providerHistoryState(
+    sessionId: string,
+    snapshotId: string,
+  ): V3ProjectedProviderHistoryPage | undefined {
+    const completePages = completeProviderHistoryPageIndexes(
+      [...this.providerHistoryMessages.values()],
+      [...this.providerHistoryPages.values()],
+      sessionId,
+      snapshotId,
+    );
+    return [...this.providerHistoryPages.values()]
+      .filter(page =>
+        page.sessionId === sessionId
+        && page.snapshotId === snapshotId
+        && completePages.has(page.pageIndex)
+      )
+      .sort((left, right) =>
+        right.frontier - left.frontier || right.pageIndex - left.pageIndex
+      )[0];
+  }
+
   visibleSessions(): V3ProjectedSession[] {
     return [...this.sessions.values()]
       .filter(session => session.lifecycle === "active")
@@ -657,6 +786,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
     && value?.version !== 5
     && value?.version !== 6
     && value?.version !== 7
+    && value?.version !== 8
   ) {
     throw new Error("Unsupported MLP/3 projection version.");
   }
@@ -697,6 +827,55 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
     ) throw new Error("The MLP/3 message projection is invalid.");
     return structuredClone(message) as V3ProjectedMessage;
   });
+  const providerHistoryMessages = value.version >= 8
+    ? boundedArray(value.providerHistoryMessages, "provider history messages").map(messageValue => {
+        const message = record(messageValue);
+        if (
+          !message
+          || !text(message.logicalId)
+          || typeof message.physicalEventId !== "string"
+          || !text(message.sessionId)
+          || !text(message.snapshotId)
+          || !integer(message.sourceOrdinal)
+          || !["user", "agent", "system"].includes(String(message.sender))
+          || typeof message.body !== "string"
+        ) throw new Error("The Provider History message projection is invalid.");
+        const parsed = mlp3EventSchema.parse({
+          kind: "malink.event",
+          version: 3,
+          eventId: "projection-validation",
+          workspaceId: "projection-validation",
+          projectId: "projection-validation",
+          sessionId: message.sessionId,
+          occurredAt: 0,
+          payload: message.payload,
+        }).payload;
+        if (parsed.type !== "provider.history.message") {
+          throw new Error("The Provider History message payload is invalid.");
+        }
+        return {
+          ...structuredClone(message),
+          payload: parsed,
+        } as V3ProjectedProviderHistoryMessage;
+      })
+    : [];
+  const providerHistoryPages = value.version >= 8
+    ? boundedArray(value.providerHistoryPages, "provider history pages").map(pageValue => {
+        const page = record(pageValue);
+        if (
+          !page
+          || !text(page.sessionId)
+          || !text(page.snapshotId)
+          || !integer(page.pageIndex)
+          || !integer(page.previousFrontier)
+          || !integer(page.frontier)
+          || !integer(page.messageCount)
+          || typeof page.hasMore !== "boolean"
+          || !text(page.digest)
+        ) throw new Error("The Provider History page projection is invalid.");
+        return structuredClone(page) as V3ProjectedProviderHistoryPage;
+      })
+    : [];
   const inboxFiles = value.version >= 3
     ? boundedArray(value.inboxFiles, "inbox files").map(fileValue => {
         const file = record(fileValue);
@@ -769,6 +948,14 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
     : validateWorkspaceProjection(value.workspace);
   requireUnique(sessions.map(session => session.sessionId), "session");
   requireUnique(messages.map(message => message.logicalId), "message");
+  requireUnique(
+    providerHistoryMessages.map(message => message.logicalId),
+    "provider history message",
+  );
+  requireUnique(
+    providerHistoryPages.map(page => providerHistoryPageKey(page.snapshotId, page.pageIndex)),
+    "provider history page",
+  );
   requireUnique(inboxFiles.map(file => file.fileId), "inbox file");
   requireUnique(completions.map(completion => completion.commandId), "completion");
   requireUnique(seenLogicalEvents, "logical event");
@@ -794,6 +981,8 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
     project,
     sessions,
     messages,
+    providerHistoryMessages,
+    providerHistoryPages,
     inboxFiles,
     completions,
     gatewayUpdateObservation,
@@ -803,6 +992,45 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
 
 function isActiveSessionActivity(activity: Mlp3SessionProjection["activity"]): boolean {
   return activity === "queued" || activity === "working" || activity === "attention";
+}
+
+function providerHistoryPageKey(snapshotId: string, pageIndex: number): string {
+  return `${snapshotId}\0${pageIndex}`;
+}
+
+function completeProviderHistoryPageIndexes(
+  messages: readonly V3ProjectedProviderHistoryMessage[],
+  pages: readonly V3ProjectedProviderHistoryPage[],
+  sessionId: string,
+  snapshotId: string,
+): Set<number> {
+  const complete = new Set<number>();
+  for (const page of pages) {
+    if (page.sessionId !== sessionId || page.snapshotId !== snapshotId) continue;
+    const pageMessages = messages.filter(message =>
+      message.sessionId === sessionId
+      && message.snapshotId === snapshotId
+      && message.pageIndex === page.pageIndex
+    );
+    const groups = new Map<number, V3ProjectedProviderHistoryMessage[]>();
+    for (const message of pageMessages) {
+      const group = groups.get(message.sourceOrdinal) ?? [];
+      group.push(message);
+      groups.set(message.sourceOrdinal, group);
+    }
+    if (groups.size !== page.messageCount) continue;
+    const allMessagesComplete = [...groups.values()].every(group => {
+      const expectedPartCount = group[0]?.partCount ?? 1;
+      if (group.length !== expectedPartCount) return false;
+      const indexes = group
+        .map(message => message.partIndex ?? 0)
+        .sort((left, right) => left - right);
+      return group.every(message => (message.partCount ?? 1) === expectedPartCount)
+        && indexes.every((index, expected) => index === expected);
+    });
+    if (allMessagesComplete) complete.add(page.pageIndex);
+  }
+  return complete;
 }
 
 function validateWorkspaceProjection(input: unknown): V3WorkspaceProjection {

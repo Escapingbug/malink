@@ -80,6 +80,7 @@ enum class PairingOperation(val wireName: String) {
     PROJECT_SETTINGS("project.settings"),
     PROVIDER_SESSIONS_LIST("provider.sessions.list"),
     PROVIDER_SESSION_INSPECT("provider.session.inspect"),
+    PROVIDER_HISTORY_MATERIALIZE("provider.history.materialize"),
     SESSION_ARCHIVE("session.archive"),
     SESSION_RESTORE("session.restore"),
     SESSION_DELETE("session.delete"),

@@ -83,10 +83,10 @@ class BridgeProtocolTest {
                         [
                           {"name":"background.foreground-service","versions":[1]},
                           {"name":"trust.native","versions":[1]},
-                          {"name":"commands.durable","versions":[1,2,3,4]},
+                          {"name":"commands.durable","versions":[1,2,3,4,5]},
                           {"name":"commands.journal-reconciliation","versions":[1]},
                           {"name":"commands.orphan-retirement","versions":[1]},
-                          {"name":"history.page","versions":[1,2]},
+                          {"name":"history.page","versions":[1,2,3]},
                           {"name":"client.diagnostics","versions":[1]}
                         ]
                     """.trimIndent(),
@@ -113,12 +113,12 @@ class BridgeProtocolTest {
                 .getValue("version").jsonPrimitive.int,
         )
         assertEquals(
-            4,
+            5,
             capabilities.getValue("commands.durable").jsonObject
                 .getValue("version").jsonPrimitive.int,
         )
         assertEquals(
-            2,
+            3,
             capabilities.getValue("history.page").jsonObject
                 .getValue("version").jsonPrimitive.int,
         )
@@ -327,7 +327,7 @@ class BridgeProtocolTest {
             optionalCapabilities = """
                 [
                   {"name":"background.foreground-service","versions":[1]},
-                  {"name":"matrix.session-bootstrap","versions":[1]}
+                  {"name":"matrix.session-bootstrap","versions":[3]}
                 ]
             """.trimIndent(),
         )
@@ -350,8 +350,10 @@ class BridgeProtocolTest {
             successResult(first).getValue("session").jsonObject
                 .getValue("matrixDeviceId").jsonPrimitive.content,
         )
-        assertFalse(
-            successResult(first).getValue("session").jsonObject.containsKey("roomBindings"),
+        assertEquals(
+            1,
+            successResult(first).getValue("session").jsonObject
+                .getValue("roomBindings").jsonArray.size,
         )
 
         val conflict = failure(dispatch(
@@ -365,18 +367,18 @@ class BridgeProtocolTest {
     }
 
     @Test
-    fun `session discovery is v2 gated and returns only public routing metadata`() {
+    fun `session discovery is v3 gated and returns only public routing metadata`() {
         val runtime = FakeRuntime()
         val dispatcher = BridgeDispatcher(runtime, BRIDGE_SESSION_ID)
         val capabilities = successResult(dispatch(
             dispatcher,
             helloRequest(
                 optionalCapabilities =
-                    """[{"name":"matrix.session-bootstrap","versions":[2,1]}]""",
+                    """[{"name":"matrix.session-bootstrap","versions":[3,2,1]}]""",
             ),
         )).getValue("capabilities").jsonObject
         assertEquals(
-            2,
+            3,
             capabilities.getValue("matrix.session-bootstrap").jsonObject
                 .getValue("version").jsonPrimitive.int,
         )
@@ -389,17 +391,17 @@ class BridgeProtocolTest {
         assertEquals(2, result.getValue("roomBindings").jsonArray.size)
         assertFalse(result.toString().contains("accessToken", ignoreCase = true))
 
-        val v1Dispatcher = BridgeDispatcher(runtime, "bridge-v1")
+        val v2Dispatcher = BridgeDispatcher(runtime, "bridge-v2")
         successResult(dispatch(
-            v1Dispatcher,
+            v2Dispatcher,
             helloRequest(
                 optionalCapabilities =
-                    """[{"name":"matrix.session-bootstrap","versions":[1]}]""",
-            ).replace(BRIDGE_SESSION_ID, "bridge-v1"),
+                    """[{"name":"matrix.session-bootstrap","versions":[2,1]}]""",
+            ).replace(BRIDGE_SESSION_ID, "bridge-v2"),
         ))
         val rejected = failure(dispatch(
-            v1Dispatcher,
-            """{"jsonrpc":"2.0","id":"session-v1","method":"malink.client.session","params":{"context":{"bridgeSessionId":"bridge-v1"}}}""",
+            v2Dispatcher,
+            """{"jsonrpc":"2.0","id":"session-v2","method":"malink.client.session","params":{"context":{"bridgeSessionId":"bridge-v2"}}}""",
         ))
         assertEquals(
             "CAPABILITY_UNAVAILABLE",

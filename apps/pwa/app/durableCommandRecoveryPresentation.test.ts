@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  DURABLE_COMMAND_BACKGROUND_RECOVERY_MISSING_MESSAGE,
   durableCommandRecoveryNeedsAttention,
   durableCommandRecoveryPresentation,
+  durableCommandRecoveryResolutionPresentation,
 } from "./durableCommandRecoveryPresentation";
 
 describe("durableCommandRecoveryPresentation", () => {
@@ -118,23 +120,59 @@ describe("durableCommandRecoveryPresentation", () => {
     expect(presentation.primaryLabel).toBe("Open APK releases");
   });
 
-  it("moves an unanswered journal check into automatic background recovery", () => {
-    const presentation = durableCommandRecoveryPresentation({
-      state: "accepted",
-      connectionStatus: "connected",
-      gatewayAvailable: true,
-      journalReconciliationAvailable: true,
-      lastCheck: {
-        status: "no-response",
-        checkedAt: 1_788_000_000_000,
+  it("gives a safe next step when the saved recovery command disappeared", () => {
+    expect(DURABLE_COMMAND_BACKGROUND_RECOVERY_MISSING_MESSAGE).toContain(
+      "no longer has the saved command",
+    );
+    expect(DURABLE_COMMAND_BACKGROUND_RECOVERY_MISSING_MESSAGE).toContain(
+      "Check whether the intended action already took effect",
+    );
+    expect(DURABLE_COMMAND_BACKGROUND_RECOVERY_MISSING_MESSAGE).toContain(
+      "before trying it again",
+    );
+  });
+
+  it("reports a verified successful recovery", () => {
+    const presentation = durableCommandRecoveryResolutionPresentation({
+      outcome: "succeeded",
+    });
+
+    expect(presentation).toEqual({
+      severity: "success",
+      message:
+        "Background recovery finished. Malink received and verified the Gateway's signed final result. The previous action completed successfully.",
+      autoDismissMs: 8_000,
+    });
+  });
+
+  it("keeps a recovered action failure visible with the Gateway detail", () => {
+    const presentation = durableCommandRecoveryResolutionPresentation({
+      outcome: "failed",
+      error: {
+        code: "provider_failed",
+        message: "The provider rejected the request.",
+        retryable: false,
       },
     });
 
-    expect(presentation.title).toBe("Recovery continues in the background");
-    expect(presentation.primaryAction).toBeNull();
-    expect(presentation.primaryLabel).toBeUndefined();
-    expect(presentation.detail).toContain("No action is required");
-    expect(presentation.detail).toContain("same saved command identity");
-    expect(presentation.detail).toContain("cannot submit the action twice");
+    expect(presentation).toEqual({
+      severity: "error",
+      message:
+        "Background recovery finished. Malink received and verified the Gateway's signed final result. The previous action failed: The provider rejected the request.",
+      autoDismissMs: null,
+    });
+  });
+
+  it("reports a verified cancellation without presenting it as a failure", () => {
+    const presentation = durableCommandRecoveryResolutionPresentation({
+      outcome: "cancelled",
+    });
+
+    expect(presentation).toEqual({
+      severity: "info",
+      message:
+        "Background recovery finished. Malink received and verified the Gateway's signed final result. The previous action was cancelled.",
+      autoDismissMs: 8_000,
+    });
   });
 });

@@ -99,6 +99,18 @@ interface MarkdownLocalLink {
   imageSyntax: boolean
 }
 
+interface LocalArtifactCandidate {
+  canonicalPath: string
+  metadata: Omit<MalinkArtifactReference, 'id'>
+  imageSyntax: boolean
+  links: MarkdownLocalLink[]
+}
+
+interface MarkdownReplacement {
+  length: number
+  text: string
+}
+
 export class FileMlp3ArtifactStore {
   private readonly file: AtomicJsonFile<ArtifactStoreState>
   private mediaUploadTail: Promise<void> = Promise.resolve()
@@ -137,42 +149,63 @@ export class FileMlp3ArtifactStore {
     try {
       canonicalCwd = await realpath(context.cwd)
     } catch {
-      return { message, references: [] }
+      return {
+        message: rewriteUnavailableLocalLinks(message, matches),
+        references: [],
+      }
     }
 
-    const candidates: Array<{
-      link: MarkdownLocalLink
-      canonicalPath: string
-      metadata: Omit<MalinkArtifactReference, 'id'>
-      imageSyntax: boolean
-    }> = []
+    const candidates = new Map<string, LocalArtifactCandidate>()
+    const replacementByIndex = new Map<number, MarkdownReplacement>()
     const availableReferenceSlots = Math.max(
       0,
       MAX_ARTIFACT_REFERENCES_PER_MESSAGE - (message.attachments?.length ?? 0),
     )
     for (const link of matches) {
-      if (candidates.length >= availableReferenceSlots) break
       const destination = link.destination
       if (!destination || destination.startsWith(MALINK_ARTIFACT_SCHEME)) continue
+      if (!isPotentialLocalArtifactDestination(destination)) continue
       const canonicalPath = await resolveLocalArtifactPath(destination, canonicalCwd)
-      if (!canonicalPath || !isPathInside(canonicalCwd, canonicalPath)) continue
+      if (!canonicalPath || !isPathInside(canonicalCwd, canonicalPath)) {
+        replacementByIndex.set(link.index, unavailableLocalLinkReplacement(link))
+        continue
+      }
       const metadata = await artifactMetadata(canonicalPath, canonicalCwd, link.imageSyntax)
-      if (!metadata) continue
-      candidates.push({
-        link,
+      if (!metadata) {
+        replacementByIndex.set(link.index, unavailableLocalLinkReplacement(link))
+        continue
+      }
+      const candidateKey = `${canonicalPath}\0${metadata.kind}`
+      const existingCandidate = candidates.get(candidateKey)
+      if (existingCandidate) {
+        existingCandidate.links.push(link)
+        continue
+      }
+      if (candidates.size >= availableReferenceSlots) {
+        replacementByIndex.set(link.index, unavailableLocalLinkReplacement(link))
+        continue
+      }
+      candidates.set(candidateKey, {
         canonicalPath,
         metadata,
         imageSyntax: link.imageSyntax,
+        links: [link],
       })
     }
-    if (candidates.length === 0) return { message, references: [] }
+    if (candidates.size === 0) {
+      if (replacementByIndex.size === 0) return { message, references: [] }
+      return {
+        message: { ...message, text: rewriteMarkdown(message.text, matches, replacementByIndex) },
+        references: [],
+      }
+    }
 
     const messageKey = artifactMessageKey(context.sessionId, messageId)
     const registered = await this.file.transaction(
       () => defaultState(this.workspaceId),
       state => {
         validateState(state, this.workspaceId)
-        const result = candidates.map(candidate => {
+        const result = [...candidates.values()].map(candidate => {
           const existing = Object.values(state.references).find(reference =>
             reference.logicalMessageId === messageId
             && reference.context.sessionId === context.sessionId
@@ -196,18 +229,18 @@ export class FileMlp3ArtifactStore {
       },
     )
 
-    const replacementByIndex = new Map<number, { length: number; text: string }>()
     const references: MalinkArtifactReference[] = []
     const attachments: ChannelAttachment[] = [...(message.attachments ?? [])]
     let inlineCount = 0
     let inlineBytes = 0
     for (const { candidate, metadata } of registered) {
-      const label = candidate.link.label || metadata.name
-      replacementByIndex.set(candidate.link.index, {
-        length: candidate.link.length,
-        text: `${candidate.imageSyntax ? '!' : ''}[${label}](${MALINK_ARTIFACT_SCHEME}${metadata.id})`,
-      })
-      if (references.some(reference => reference.id === metadata.id)) continue
+      for (const link of candidate.links) {
+        const label = link.label || metadata.name
+        replacementByIndex.set(link.index, {
+          length: link.length,
+          text: `${link.imageSyntax ? '!' : ''}[${label}](${MALINK_ARTIFACT_SCHEME}${metadata.id})`,
+        })
+      }
       references.push(metadata)
       if (
         candidate.imageSyntax
@@ -228,19 +261,10 @@ export class FileMlp3ArtifactStore {
       }
     }
 
-    let rewritten = ''
-    let cursor = 0
-    for (const link of matches) {
-      const replacement = replacementByIndex.get(link.index)
-      if (!replacement) continue
-      rewritten += message.text.slice(cursor, link.index) + replacement.text
-      cursor = link.index + replacement.length
-    }
-    rewritten += message.text.slice(cursor)
     return {
       message: {
         ...message,
-        text: rewritten,
+        text: rewriteMarkdown(message.text, matches, replacementByIndex),
         ...(attachments.length > 0 ? { attachments } : {}),
       },
       references,
@@ -530,6 +554,57 @@ function markdownLocalLinks(markdown: string): MarkdownLocalLink[] {
   }
   visit(root)
   return links.sort((left, right) => left.index - right.index)
+}
+
+function rewriteUnavailableLocalLinks(
+  message: ChannelMessage,
+  links: MarkdownLocalLink[],
+): ChannelMessage {
+  const replacements = new Map<number, MarkdownReplacement>()
+  for (const link of links) {
+    if (isPotentialLocalArtifactDestination(link.destination)) {
+      replacements.set(link.index, unavailableLocalLinkReplacement(link))
+    }
+  }
+  if (replacements.size === 0) return message
+  return { ...message, text: rewriteMarkdown(message.text, links, replacements) }
+}
+
+function rewriteMarkdown(
+  markdown: string,
+  links: MarkdownLocalLink[],
+  replacements: Map<number, MarkdownReplacement>,
+): string {
+  let rewritten = ''
+  let cursor = 0
+  for (const link of links) {
+    const replacement = replacements.get(link.index)
+    if (!replacement) continue
+    rewritten += markdown.slice(cursor, link.index) + replacement.text
+    cursor = link.index + replacement.length
+  }
+  return rewritten + markdown.slice(cursor)
+}
+
+function unavailableLocalLinkReplacement(link: MarkdownLocalLink): MarkdownReplacement {
+  return {
+    length: link.length,
+    text: `${link.label || 'Local file'} *(local file reference unavailable)*`,
+  }
+}
+
+function isPotentialLocalArtifactDestination(destinationInput: string): boolean {
+  let destination: string
+  try {
+    destination = decodeURIComponent(destinationInput)
+  } catch {
+    destination = destinationInput
+  }
+  if (!destination || destination.startsWith('#') || destination.startsWith('?')) return false
+  if (destination.startsWith('//')) return false
+  if (/^[a-z]:[\\/]/iu.test(destination)) return true
+  const scheme = /^([a-z][a-z0-9+.-]*):/iu.exec(destination)?.[1]?.toLowerCase()
+  return !scheme || scheme === 'file'
 }
 
 async function resolveLocalArtifactPath(destinationInput: string, cwd: string): Promise<string | null> {

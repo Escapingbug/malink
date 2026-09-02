@@ -92,10 +92,13 @@ The original `invite-gateway` bearer command remains an offline recovery tool.
 Its output contains the Workspace private identity and must never be posted to
 Matrix, a public URL, logs, or chat.
 
-Gateway nodes currently use the same Workspace-owned Matrix user account with
-distinct Matrix device IDs. This lets a newly joined node publish the signed
-directory into existing private project rooms immediately; client Matrix users
-remain separate and are invited from their portable Workspace grants.
+Gateway nodes use one Workspace-owned Gateway Matrix user with distinct Matrix
+device IDs. All PWA and Android client devices use a second, fixed
+Workspace-owned client Matrix user, again with one Matrix device ID per physical
+client. Gateway and client users must be distinct. This lets read receipts and
+future account-data state converge naturally across the owner's client devices
+without making Matrix an RPC database; Malink authorization still comes only
+from signed application certificates and grants.
 On first startup or `invite-gateway`, active certificates created before
 portable grants existed are migrated in place with identical operations and
 expiry, so existing clients do not need to pair again.
@@ -112,7 +115,7 @@ PWA or Android native service
   -> durable signed/encrypted MLP/3 command event
   -> Matrix project-room timeline
   -> MatrixMlp3GatewayRunner
-  -> durable command journal / authorization
+  -> local SQLite command journal / authorization
   -> TopicSession -> SemanticSessionRuntime -> AgentProvider
   -> ConversationEvent
   -> signed/encrypted MLP/3 Gateway event
@@ -130,7 +133,8 @@ by a currently certified device and accepted by the Gateway journal can do so.
 ```text
 Gateway workspace
   └─ project room <-> projectId <-> fixed Gateway working directory
-       └─ session root <-> m.thread <-> TopicSession
+       └─ active session root <-> m.thread <-> TopicSession
+            └─ optional recovered-history room (non-execution, reverse append)
 ```
 
 Project display names need not be unique, but project IDs and room bindings are.
@@ -153,9 +157,47 @@ their existing cwd-only identity.
 Every active session owns its own `TopicSession`, `SemanticSessionRuntime`, and
 provider instance. Sessions may execute concurrently. Selecting a conversation
 is client-local view state and never suspends another session or mutates a
-Gateway-wide “current session”. Archive releases runtime resources while
-retaining metadata; restore recreates them; delete writes an authenticated
-tombstone but does not claim to erase Matrix or provider-retained history.
+Gateway-wide “current session”. Archive is the destructive Malink-session
+boundary: it releases runtime resources, redacts the project-room thread,
+retires any recovered-history room, and removes the persisted session record.
+It never deletes the fixed project working directory or the provider-owned
+conversation. A later continuation is a new Malink session restored through
+Provider History. During upgrade, non-active records written by the old
+tombstone model are cleanup checkpoints: startup performs the same Matrix
+cleanup and then removes those records. Existing active sessions are unchanged.
+
+Restoring a provider conversation snapshots its transcript once on the Gateway
+and provisions one application-encrypted auxiliary history room for that new
+Malink session. The snapshot itself stays local; it is not fully copied to
+Matrix. When the user asks for older history that is not already present, the
+client sends `provider.history.materialize` through the normal project room.
+The Gateway appends one bounded page to the auxiliary room in reverse source
+order, followed by a signed page-commit event. Stable page/frontier identities
+make retries idempotent, so revisiting an existing page reads Matrix/local cache
+and does not call the provider again. New prompts and Agent output continue in
+the ordinary project-room thread, preserving its normal chronological order.
+
+A project may be deleted only after no Malink-managed session records remain.
+Deletion retires the project room from ordinary clients (membership/aliases,
+leave and forget) and removes the Gateway route, while preserving the working
+directory and provider-owned conversations. Standard Matrix APIs redact room
+content but do not guarantee homeserver database purging; deployments that
+require physical purge must apply their homeserver's administrator policy.
+
+Turn lifecycle is split at durable ownership boundaries. The Gateway command
+journal owns execution-once and the original prompt terminal;
+`SemanticSessionRuntime` owns the internal `starting -> querying -> canceling ->
+finalizing` transitions and returns one semantic outcome; the Matrix outbox owns
+physical delivery and 429 retry after events have been staged. Provider startup
+and cleanup are bounded locally. An ordinary Agent turn has no arbitrary total
+wall-clock deadline: it ends when the provider returns or an authenticated
+`turn.cancel` is processed. This prevents a healthy, progressing coding task
+from being misclassified as stuck after a fixed number of minutes. A stuck
+iterator cannot keep a cancelled or already-terminal turn active forever, and
+physical Matrix confirmation is never part of the Agent execution critical
+section. Agent-driven Gateway maintenance retains a separate two-hour safety
+deadline. These are local implementation states, not new MLP events or a
+protocol-version boundary.
 
 Sensitive fields—including paths, prompts, Agent output, tool arguments,
 provider session IDs, credentials, and execution grants—remain inside Malink
@@ -224,17 +266,14 @@ unverified commands produce no application event.
 12. MLP/1 and MLP/2 application events are neither emitted nor parsed by
     production Gateway, PWA, or APK entry points. There is no negotiated data
     downgrade.
-13. Gateway liveness and update progress are shared observations, not Matrix
-    RPC polling. Each node publishes one signed, application-encrypted
-    `gateway.update.status` event without a `causationCommandId` on a single
-    authorized project route when its supervisor phase changes and at a sparse
-    heartbeat interval. This reuses the existing compatible event shape rather
-    than introducing a new protocol type. Pending heartbeats supersede older
-    ones in the Gateway outbox. Every PWA and Android client consumes the same
-    projection; adding clients or opening UI surfaces creates no additional
-    status writes. Causation-bearing status events remain results of explicit
-    update operations; the `gateway.update.status` command itself is a
-    deduplicated manual compatibility check only.
+13. Gateway liveness is foreground demand, while update progress is semantic
+    state. An idle Gateway emits no periodic Matrix heartbeat. A visible,
+    network-connected client sends the existing signed, application-encrypted
+    `gateway.update.status` observation at most once per minute; entering the
+    background or losing Matrix connectivity cancels that schedule. Any newer
+    verified Gateway event is also liveness proof and defers the next probe.
+    Supervisor phase changes may still publish one compatible uncaused status
+    observation so other active clients converge without polling.
 
 The normative wire and recovery rules are in
 [`malink-protocol.md`](malink-protocol.md).
@@ -281,6 +320,20 @@ backgrounded. It owns:
 - exactly-once command reconciliation across process death;
 - notification emission when an Agent task reaches a user-relevant result;
 - versioned store migrations before connection starts.
+
+Task notification eligibility is derived from authenticated `turn.completed`
+and `turn.failed` events, never from membership in the Android device's local
+command outbox. This keeps cross-device completion visible in the background.
+For successful turns, the native projection retains a bounded preview of the
+latest authenticated, final, non-tool `assistant.message` under the same turn
+identity and attaches it to the terminal notification. Failed turns use their
+authenticated error message. The preview remains in encrypted device-local
+state; Android's private notification carries a generic public lock-screen
+version.
+An encrypted device-local notification outbox persists pending terminals and
+delivered logical event IDs so Matrix replay, recovery, and process restart do
+not intentionally alert twice. Explicit history pagination updates projection
+only and does not emit notifications.
 
 Native application releases are discovered from a bounded static Alpha channel
 manifest under the user-selected UI service. The immutable APK may be stored
@@ -360,7 +413,7 @@ same signed attachment model.
 
 ## Delivery and recovery ownership
 
-- Gateway command journal: deduplication and execution outcome.
+- Gateway SQLite command journal: local deduplication and execution outcome.
 - Gateway raw Matrix inbox: cursor-commit barrier before authorization and execution.
 - Gateway Matrix outbox: exact content, ordering, retry-after, transaction ID.
 - Client durable command outbox: intent and Matrix-send reconciliation.
@@ -385,45 +438,58 @@ background and cannot hold an already-authoritative primary project in
 `Connecting`.
 
 Client recovery has strict priority lanes. Live SDK timeline delivery is the
-highest-priority lane and cannot wait behind historical repair. Exact-command
-Gateway journal reconciliation is the normal durable recovery lane. Legacy SDK
-timeline pagination is a best-effort, globally single-instance lane: callers do
-not queue behind an active scan, and each explicit recovery advances at most
-one small page. Multiple unfinished commands therefore cannot form a pagination
-storm or starve a newly delivered signed terminal event.
+normal durable lane and cannot wait behind historical repair. Exact-command
+Gateway journal reconciliation is an explicit, one-shot foreground repair.
+Legacy SDK timeline pagination is a best-effort, globally single-instance lane:
+callers do not queue behind an active scan, and each explicit recovery advances
+at most one small page. Multiple unfinished commands therefore cannot form a
+pagination storm or starve a newly delivered signed terminal event.
 
 No layer substitutes for another. In particular, increasing an in-memory event
 window or publishing a manual checkpoint is not a recovery strategy. An
 already-published command may only be sent again as an explicit reconciliation
 probe: exact signed/encrypted content, the same logical command ID, and a fresh
 Matrix transport transaction ID. Clients keep one probe in flight and back off
-subsequent attempts. The Gateway command journal—not Matrix send success—then
+subsequent foreground attempts; no native background loop owns this state. The
+Gateway command journal—not Matrix send success—then
 answers with one idempotent signed `command.reconciled` event for the current
 recorded state. This additive
 event remains MLP/3 because older peers safely ignore it and current peers keep
 their existing terminal-event fallback; protocol versions are compatibility
 boundaries rather than semantic revision counters.
 
+The command journal is local Gateway state; it is not uploaded or synchronized
+as a database. On the first SQLite-capable startup, the previous JSONL journal
+is validated and imported in one transaction. Its path and SHA-256 digest are
+then recorded in SQLite, and the JSONL remains byte-for-byte immutable as
+historical authority. Later startups query indexed SQLite rows rather than
+replaying the JSONL or scanning completed history; recovery cost follows the
+number of unfinished and undelivered commands. Exact terminal events remain
+stored until Matrix confirms delivery; delivered records retain only
+reconciliation metadata (and the project-deletion authority needed at
+startup). This changes neither MLP/3 wire content nor Matrix/client
+synchronization.
+
 Recovery presentation follows the same ownership boundary. A primary UI action
 is rendered only when it can change the blocking state at its owning layer. An
 older Android host that cannot query the Gateway journal must offer the Android
 update path, not another Matrix-history scan. An offline Gateway is described
-as an external prerequisite and is retried automatically; the client does not
-present a no-op “check again” button. Release discovery, Workspace projection,
+as an external prerequisite; reconnecting Matrix resumes queued or
+transport-uncertain sends, while published commands await SDK delivery. Release discovery, Workspace projection,
 and Gateway liveness remain separate visible states, so a missing prerequisite
 never hides the Gateway software panel or masquerades as another layer's retry.
 The signed Gateway Directory establishes stable node identity and project
-ownership, but it is not a presence service. Each Gateway publishes one shared,
-short-lived signed observation per `gatewayNodeId`; clients expire that proof
-locally and do not create per-device polling traffic. A manual compatibility
-check remains bounded and deduplicated when no current observation exists.
+ownership, but it is not a presence service. Visible connected clients issue a
+bounded, deduplicated signed status check per `gatewayNodeId`; background and
+offline clients issue none, and newer verified Gateway activity defers the next
+check.
 Liveness remains
 presentation evidence only; it neither authorizes execution nor prevents a
 durable command from waiting for its owning Gateway to return.
 If a bounded journal check receives no signed reply, the client records the
-check time separately from the command's unchanged durable timestamp, moves
-the notice out of the foreground automatically, and keeps same-identity
-recovery running in the background. A no-reply timeout is not a durable command
+check time separately from the command's unchanged durable timestamp and moves
+the notice out of the foreground automatically. A future foreground check may
+reuse that identity after backoff; background recovery does not run. A no-reply timeout is not a durable command
 failure and must not require a user cleanup action. It also cannot authorize
 automatic retirement: MLP/3 commands deliberately have no clock-expiry gate,
 so a temporarily offline Gateway may still execute the accepted identity when
@@ -431,23 +497,22 @@ it returns. Local orphan retirement remains a diagnostic escape hatch that
 creates an idempotency tombstone; it is not a normal product recovery path and
 must not be presented as the action that resolves a no-reply notice.
 
-Native command recovery continues without an attached WebView. On startup it
-resumes queued sends, same-identity uncertain sends, and Gateway-journal
-reconciliation for already-published commands. Every nonterminal record must
-therefore converge to one of three states: a verified signed terminal, an
-explicitly retryable external prerequisite, or safe retirement with an
-idempotency tombstone. Safe retirement is limited to evidence that cannot hide
-an accepted mutation: a deterministic local envelope failure, an
-authoritatively removed project route, or an already-authoritative matching
-session lifecycle. Retirement does not manufacture a successful terminal or
-claim that the retired command caused the projected state.
+Native command recovery continues without an attached WebView only while a
+Matrix send is queued or its transport result is uncertain. Once Matrix has
+accepted a command, the SDK timeline owns normal progress and terminal
+delivery; the native service does not poll the Gateway journal or scan history
+on a background timer. A foreground caller may request one bounded
+reconciliation for an explicitly unresolved command. Safe retirement remains
+limited to evidence that cannot hide an accepted mutation: a deterministic
+local envelope failure, an authoritatively removed project route, or an
+already-authoritative matching session lifecycle.
 
 Read-only `gateway.update.status` commands are observations rather than
 mutations. An unfinished probe may be shared briefly by overlapping callers,
 but after two minutes it is tombstoned and a fresh observation identity is
 created; process restart retires all unfinished probes. Recovery presentation
 stays silent while this automatic classification is running. The PWA surfaces
-only a classified actionable failure, tracks background recovery by stable
+only a classified actionable failure, tracks foreground recovery by stable
 command ID rather than mutable retry timestamps, and re-reads the native
 outbox after a bounded wait so a record retired behind the WebView disappears
 from the current page as well as the next startup snapshot.
@@ -478,11 +543,11 @@ current build ID and supervised-update capability in the root-signed Gateway
 Directory. A manually deployed PWA may discover one exact signed Gateway
 release, but discovery is presentation-only: it lists every node that is
 current, outdated, manual-only, or unrouted and waits for explicit user
-confirmation. Before enabling the per-node update action, the client requires
-a recent signed, uncaused `gateway.update.status` observation or newer signed
-activity from that node. The explicit `gateway.update.status` command is the
-legacy/manual fallback, not the routine observation path; other
-causation-bearing status events remain update-operation results. Matrix
+    confirmation. Before enabling the per-node update action, a visible client
+    requires a recent signed `gateway.update.status` reply or newer signed
+    activity from that node. The check runs only while the client is visible and
+    Matrix is connected; other causation-bearing status events remain
+    update-operation results. Matrix
 connectivity alone is never presented as proof that the Gateway process is
 online. When an authenticated update request arrives, the supervisor refreshes
 a monotonically versioned channel document, verifies it against the locally

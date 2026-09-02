@@ -29,6 +29,8 @@ export interface MatrixGatewayConnectionConfig {
     userId: string
     deviceId: string
     initialSyncTimeoutMs?: number
+    /** Total retry budget for one Matrix request before durable callers take over. */
+    requestRetryBudgetMs?: number
 }
 
 export interface MatrixGatewayRoomConfig {
@@ -43,6 +45,7 @@ export interface MatrixGatewayRoomConfig {
     providerName: string
     model?: string
     verboseLevel?: 0 | 1 | 2
+    /** Provider/runtime setting retained for compatibility; not an MLP command deadline. */
     timeoutSeconds?: number
     providerSettings?: Record<string, unknown>
 }
@@ -83,6 +86,8 @@ export interface MatrixGatewayConfig {
     gatewayId: string
     /** Stable identity of this exact Gateway computer inside the Workspace. */
     gatewayNodeId: string
+    /** Fixed Workspace-owned Matrix user for every client device. */
+    clientMatrixUserId?: string
     connection: MatrixGatewayConnectionConfig
     crypto: MatrixGatewayCryptoConfig
     rooms: MatrixGatewayRoomConfig[]
@@ -90,8 +95,12 @@ export interface MatrixGatewayConfig {
     replayLedgerPath: string
     applicationSecurity: MatrixGatewayApplicationSecurityConfig
     startupEventQueueLimit?: number
-    /** Publishes one shared signed node heartbeat; defaults to 60 seconds. */
-    gatewayHeartbeatIntervalMs?: number
+    /** Deadline for bounded control commands. Agent turns end only by result or cancellation. */
+    commandExecutionTimeoutMs?: number
+    /** Independent deadline for one Agent-driven Gateway update; defaults to two hours. */
+    gatewayUpdateExecutionTimeoutMs?: number
+    /** Periodic repair cadence for root-signed Workspace control state. */
+    workspaceControlIntervalMs?: number
     webPush?: {
         /** Contact URI included in VAPID JWTs. Defaults to Malink's notification address. */
         subject?: string
@@ -103,10 +112,23 @@ export interface MatrixGatewayConfig {
 export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
     requireText(config.gatewayId, 'gatewayId')
     requireText(config.gatewayNodeId, 'gatewayNodeId')
+    if (config.clientMatrixUserId !== undefined) {
+        requireMatrixUserId(config.clientMatrixUserId, 'clientMatrixUserId')
+    }
     requireText(config.connection.baseUrl, 'connection.baseUrl')
     requireText(config.connection.accessToken, 'connection.accessToken')
     requireText(config.connection.userId, 'connection.userId')
     requireText(config.connection.deviceId, 'connection.deviceId')
+    if (
+        config.connection.requestRetryBudgetMs !== undefined
+        && (
+            !Number.isFinite(config.connection.requestRetryBudgetMs)
+            || config.connection.requestRetryBudgetMs < 1_000
+            || config.connection.requestRetryBudgetMs > 10 * 60_000
+        )
+    ) {
+        throw new Error('connection.requestRetryBudgetMs must be between 1000 and 600000')
+    }
     if (config.crypto.backend === 'node-sqlite') {
         requireText(config.crypto.storagePath, 'crypto.storagePath')
         requireText(config.crypto.syncTokenPath, 'crypto.syncTokenPath')
@@ -163,6 +185,16 @@ export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
         if (room.projectName !== undefined) requireText(room.projectName, 'room.projectName')
         requireText(room.cwd, 'room.cwd')
         requireText(room.providerName, 'room.providerName')
+        if (
+            room.timeoutSeconds !== undefined
+            && (
+                !Number.isFinite(room.timeoutSeconds)
+                || room.timeoutSeconds < 1
+                || room.timeoutSeconds > 24 * 60 * 60
+            )
+        ) {
+            throw new Error('room.timeoutSeconds must be between 1 and 86400')
+        }
     }
     for (const device of config.trustedDevices) {
         requireText(device.deviceId, 'trustedDevice.deviceId')
@@ -194,13 +226,33 @@ export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
         throw new Error('startupEventQueueLimit must be at least 1')
     }
     if (
-        config.gatewayHeartbeatIntervalMs !== undefined
+        config.commandExecutionTimeoutMs !== undefined
         && (
-            !Number.isFinite(config.gatewayHeartbeatIntervalMs)
-            || config.gatewayHeartbeatIntervalMs <= 0
+            !Number.isFinite(config.commandExecutionTimeoutMs)
+            || config.commandExecutionTimeoutMs < 1_000
+            || config.commandExecutionTimeoutMs > 60 * 60_000
         )
     ) {
-        throw new Error('gatewayHeartbeatIntervalMs must be positive')
+        throw new Error('commandExecutionTimeoutMs must be between 1000 and 3600000')
+    }
+    if (
+        config.gatewayUpdateExecutionTimeoutMs !== undefined
+        && (
+            !Number.isFinite(config.gatewayUpdateExecutionTimeoutMs)
+            || config.gatewayUpdateExecutionTimeoutMs < 1_000
+            || config.gatewayUpdateExecutionTimeoutMs > 24 * 60 * 60_000
+        )
+    ) {
+        throw new Error('gatewayUpdateExecutionTimeoutMs must be between 1000 and 86400000')
+    }
+    if (
+        config.workspaceControlIntervalMs !== undefined
+        && (
+            !Number.isFinite(config.workspaceControlIntervalMs)
+            || config.workspaceControlIntervalMs <= 0
+        )
+    ) {
+        throw new Error('workspaceControlIntervalMs must be positive')
     }
     if (config.webPush?.statePath !== undefined) {
         requireText(config.webPush.statePath, 'webPush.statePath')
@@ -216,6 +268,13 @@ export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
 function requireText(value: unknown, name: string): asserts value is string {
     if (typeof value !== 'string' || !value.trim()) {
         throw new Error(`${name} must not be empty`)
+    }
+}
+
+function requireMatrixUserId(value: string, name: string): void {
+    requireText(value, name)
+    if (!/^@[^:\s]+:[^\s]+$/u.test(value)) {
+        throw new Error(`${name} must be a full Matrix user ID`)
     }
 }
 

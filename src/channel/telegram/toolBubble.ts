@@ -13,6 +13,11 @@ export interface ToolBubbleState {
 
 const TOOL_NAME_ALIASES: Record<string, string> = {
     bash: 'Bash',
+    terminal: 'Terminal',
+    shell: 'Shell',
+    command: 'Command',
+    run_command: 'Command',
+    execute: 'Execute',
     read: 'Read',
     'read file': 'Read',
     read_file: 'Read',
@@ -27,11 +32,13 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
     write_file: 'Write',
     glob: 'Glob',
     grep: 'Grep',
+    search: 'Search',
     agent: 'Agent',
     websearch: 'WebSearch',
     web_search: 'WebSearch',
     webfetch: 'WebFetch',
     web_fetch: 'WebFetch',
+    fetch: 'Fetch',
     todowrite: 'TodoWrite',
     exitplanmode: 'ExitPlanMode',
     exit_plan_mode: 'ExitPlanMode',
@@ -96,6 +103,15 @@ function renderToolHeader(
             if (!cmd) return '💻 <b>Bash</b>'
             return `💻 <code>$ ${escapeHtml(cmd)}</code>`
         }
+        case 'Terminal':
+        case 'Shell':
+        case 'Command':
+        case 'Execute': {
+            const label = displayTitle || name
+            const cmd = (input as any)?.command as string | undefined
+            if (!cmd) return `💻 <b>${escapeHtml(label)}</b>`
+            return `💻 <b>${escapeHtml(label)}</b>: <code>$ ${escapeHtml(cmd)}</code>`
+        }
         case 'Read': {
             const filePath = getFilePath()
             const displayPath = displayTitle || filePath
@@ -123,6 +139,12 @@ function renderToolHeader(
             if (isEmptyInput) return '🔍 <b>Grep</b>'
             return `🔍 <b>Grep</b>: <code>${escapeHtml(String((input as any)?.pattern || ''))}</code>`
         }
+        case 'Search': {
+            const label = displayTitle || 'Search'
+            const term = (input as any)?.query || (input as any)?.pattern || (input as any)?.regex || (input as any)?.glob
+            if (!term) return `🔍 <b>${escapeHtml(label)}</b>`
+            return `🔍 <b>${escapeHtml(label)}</b>: <code>${escapeHtml(String(term))}</code>`
+        }
         case 'Agent': {
             const desc = (input as any)?.description || (input as any)?.prompt?.slice(0, 100) || ''
             const displayDesc = displayTitle || desc
@@ -136,6 +158,12 @@ function renderToolHeader(
         case 'WebFetch': {
             if (isEmptyInput) return '🌐 <b>Fetch</b>'
             return `🌐 <b>Fetch</b>: <code>${escapeHtml(String((input as any)?.url || ''))}</code>`
+        }
+        case 'Fetch': {
+            const label = displayTitle || 'Fetch'
+            const url = (input as any)?.url
+            if (!url) return `🌐 <b>${escapeHtml(label)}</b>`
+            return `🌐 <b>${escapeHtml(label)}</b>: <code>${escapeHtml(String(url))}</code>`
         }
         case 'TodoWrite': {
             const todos = (input as any)?.todos as Array<{ content: string; status: string }> | undefined
@@ -213,7 +241,7 @@ function getContentFilePaths(content: ToolBubbleState['content']): string[] {
 }
 
 function renderSafeToolSummary(name: string, output: string, isError: boolean): string | null {
-    if (name === 'Glob' || name === 'Grep') {
+    if (name === 'Glob' || name === 'Grep' || name === 'Search') {
         const summary = output.trim()
         if (/^\d+ (matches|match|files|file)( \(truncated\))?$/.test(summary)) {
             return `${isError ? '❌' : '✅'} ${escapeHtml(summary)}`

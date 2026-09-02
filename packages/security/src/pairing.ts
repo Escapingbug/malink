@@ -485,11 +485,21 @@ export async function verifyPairingResponse(
     }
   }
   if (signed.response.gatewayDirectory !== undefined) {
-    await verifyWorkspaceGatewayDirectory(
+    const directory = await verifyWorkspaceGatewayDirectory(
       signed.response.gatewayDirectory,
       gatewayKey,
       { workspaceId: offer.offer.gatewayId },
     )
+    if (
+      directory.clientMatrixUserId !== undefined
+      && directory.clientMatrixUserId
+        !== signed.response.certificate.certificate.deviceTransport.userId
+    ) {
+      throw new SecurityError(
+        'binding_mismatch',
+        'Pairing certificate does not use the Workspace client Matrix account',
+      )
+    }
   }
   return signed.response
 }
