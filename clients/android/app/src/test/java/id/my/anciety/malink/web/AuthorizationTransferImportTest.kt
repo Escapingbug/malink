@@ -4,10 +4,31 @@ import java.io.ByteArrayInputStream
 import java.util.Base64
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AuthorizationTransferImportTest {
+    @Test
+    fun `accepts the Malink MIME type or authorization file display name`() {
+        assertTrue(acceptsAuthorizationTransferFile(null, AUTHORIZATION_TRANSFER_MIME_TYPE))
+        assertTrue(
+            acceptsAuthorizationTransferFile(
+                "workspace.MALINK-AUTH",
+                "application/octet-stream",
+            ),
+        )
+        assertFalse(acceptsAuthorizationTransferFile(null, "application/octet-stream"))
+        assertFalse(acceptsAuthorizationTransferFile("workspace.json", "application/json"))
+        assertFalse(
+            acceptsAuthorizationTransferFile(
+                "workspace.malink-auth.txt",
+                "application/octet-stream",
+            ),
+        )
+    }
+
     @Test
     fun `reads and encodes a bounded authorization file`() {
         val contents = "{\"kind\":\"malink.authorization-transfer\"}\n".toByteArray()

@@ -6,7 +6,20 @@ import java.util.Base64
 
 internal const val AUTHORIZATION_TRANSFER_MIME_TYPE =
     "application/vnd.malink.authorization+json"
+internal const val AUTHORIZATION_TRANSFER_FILE_EXTENSION = ".malink-auth"
 internal const val MAX_AUTHORIZATION_TRANSFER_BYTES = 128 * 1024
+
+/**
+ * Content providers such as Telegram can retain the display name while exposing
+ * an unknown extension as a generic MIME type. The manifest accepts those
+ * documents for discovery; reject unrelated files before reading their body.
+ */
+internal fun acceptsAuthorizationTransferFile(
+    displayName: String?,
+    mediaType: String?,
+): Boolean =
+    mediaType.equals(AUTHORIZATION_TRANSFER_MIME_TYPE, ignoreCase = true) ||
+        displayName?.lowercase()?.endsWith(AUTHORIZATION_TRANSFER_FILE_EXTENSION) == true
 
 internal fun readAuthorizationTransfer(input: InputStream): ByteArray {
     val output = ByteArrayOutputStream()

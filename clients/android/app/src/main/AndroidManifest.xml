@@ -37,30 +37,38 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <intent-filter>
+            <intent-filter android:label="@string/open_authorization_file">
                 <action android:name="android.intent.action.VIEW" />
 
                 <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
 
                 <data
                     android:mimeType="application/vnd.malink.authorization+json"
                     android:scheme="content" />
             </intent-filter>
-            <intent-filter>
+            <!--
+                Document providers commonly expose unknown extensions as */* or
+                application/octet-stream, and their content URI path need not contain
+                the display name. Accept content documents for discovery, then enforce
+                the Malink MIME type or .malink-auth display name in MainActivity before
+                reading the bounded payload.
+            -->
+            <intent-filter android:label="@string/open_authorization_file">
                 <action android:name="android.intent.action.VIEW" />
 
                 <category android:name="android.intent.category.DEFAULT" />
 
                 <data
-                    android:pathPattern=".*\.malink-auth"
+                    android:mimeType="*/*"
                     android:scheme="content" />
             </intent-filter>
-            <intent-filter>
+            <intent-filter android:label="@string/open_authorization_file">
                 <action android:name="android.intent.action.SEND" />
 
                 <category android:name="android.intent.category.DEFAULT" />
 
-                <data android:mimeType="application/vnd.malink.authorization+json" />
+                <data android:mimeType="*/*" />
             </intent-filter>
             <meta-data
                 android:name="android.app.shortcuts"

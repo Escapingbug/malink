@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Malink</string>
+    <string name="open_authorization_file">Open Malink authorization file</string>
     <string name="notification_channel_name">Malink connection</string>
     <string name="notification_channel_description">Persistent native Matrix connection</string>
     <string name="notification_title">Malink native is running</string>

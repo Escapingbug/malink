@@ -18,6 +18,7 @@ import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
@@ -1095,6 +1096,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun importAuthorizationTransfer(intent: Intent) {
+        val declaredMediaType = intent.type
         val uri = when (intent.action) {
             Intent.ACTION_VIEW -> intent.data
             Intent.ACTION_SEND -> IntentCompat.getParcelableExtra(
@@ -1121,6 +1123,17 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val result = runCatching {
                 withContext(Dispatchers.IO) {
+                    val mediaType = declaredMediaType ?: contentResolver.getType(uri)
+                    val displayName = if (
+                        mediaType.equals(AUTHORIZATION_TRANSFER_MIME_TYPE, ignoreCase = true)
+                    ) {
+                        null
+                    } else {
+                        authorizationTransferDisplayName(uri)
+                    }
+                    require(acceptsAuthorizationTransferFile(displayName, mediaType)) {
+                        "This is not a Malink authorization file."
+                    }
                     val contents = contentResolver.openInputStream(uri)?.use {
                         readAuthorizationTransfer(it)
                     } ?: throw IllegalArgumentException(
@@ -1149,6 +1162,18 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    private fun authorizationTransferDisplayName(uri: Uri): String? =
+        contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (nameIndex >= 0 && cursor.moveToFirst()) cursor.getString(nameIndex) else null
+        }
 
     private fun installNativeUpdate() {
         val manager = updateManager
