@@ -238,6 +238,7 @@ export function parseGatewayAgentUpdateArguments(
   const mirrorBaseUrls: string[] = []
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!
+    if (argument === '--') continue
     if (!argument.startsWith('--')) throw new Error(`Unexpected argument: ${argument}`)
     const value = argv[index + 1]
     if (!value || value.startsWith('--')) throw new Error(`Missing value for ${argument}`)

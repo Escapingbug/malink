@@ -144,7 +144,7 @@ export function pwaIndexedDbCatalog(
       stateClass: "rebuildable-projection",
       schemaVersion: MATRIX_MLP3_READ_MODEL_SCHEMA_VERSION,
       legacySchemaVersion: 1,
-      migrationFromVersions: new Set([2, 3]),
+      migrationFromVersions: new Set([2, 3, 4]),
       migrate: () => migrateMatrixMlp3ReadModel(factory),
       validate: () => ensureMatrixMlp3ReadModelDatabase(factory),
       reset: () => resetMatrixMlp3ReadModel(factory),

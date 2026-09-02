@@ -76,6 +76,19 @@ describe('Gateway Agent update publisher', () => {
     })
   })
 
+  it('accepts the package-manager argument separator', () => {
+    expect(parseGatewayAgentUpdateArguments([
+      '--',
+      '--commit', '12b086dc33867a4a4205d4d1938b694d7634a020',
+      '--prompt-file', '/tmp/PROMPT.md',
+      '--private-key', '/tmp/release-key.json',
+    ])).toMatchObject({
+      commit: '12b086dc33867a4a4205d4d1938b694d7634a020',
+      promptFile: '/tmp/PROMPT.md',
+      privateKeyFile: '/tmp/release-key.json',
+    })
+  })
+
   it('publishes an immutable signed Prompt and a replaceable latest pointer', async () => {
     const root = await temporaryDirectory()
     const keys = await generateDeviceKeyPair()

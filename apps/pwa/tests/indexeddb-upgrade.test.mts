@@ -7,7 +7,10 @@ import {
   runPwaIndexedDbUpgrade,
   type PwaIndexedDbCatalogEntry,
 } from "../app/indexedDbUpgrade.ts";
-import { prepareMatrixMlp3ProjectionForReplay } from "../app/IndexedDbMatrixMlp3ClientStore.ts";
+import {
+  MATRIX_MLP3_READ_MODEL_SCHEMA_VERSION,
+  prepareMatrixMlp3ProjectionForReplay,
+} from "../app/IndexedDbMatrixMlp3ClientStore.ts";
 
 class MemoryStorage implements Storage {
   readonly values = new Map<string, string>();
@@ -143,6 +146,7 @@ test("a registered projection migration preserves the read model", async () => {
 });
 
 test("the MLP/3 repair migration preserves sessions while reopening bounded event replay", () => {
+  assert.equal(MATRIX_MLP3_READ_MODEL_SCHEMA_VERSION, 5);
   const state = {
     version: 9,
     sessions: [

@@ -31,8 +31,14 @@ import {
 } from '@malink/security'
 import { createGatewayForwardOnlyBackup } from '../src/ops/gatewayForwardOnlyBackup.js'
 import { activateMacosGatewayRelease } from '../src/ops/macosGatewayRelease.js'
+import { GatewayAdminClient } from '../src/gateway/admin/client.js'
+import type { GatewayAdminStatus } from '../src/gateway/admin/types.js'
 import { GatewayUpdateSupervisorClient } from '../src/ops/gatewayUpdateSupervisorServer.js'
 import { GATEWAY_STATE_CATALOG } from '../src/gateway/matrix/stateUpgradeCatalog.js'
+
+const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60_000
+const DEFAULT_IDLE_SAMPLE_INTERVAL_MS = 1_000
+const DEFAULT_IDLE_STABLE_SAMPLES = 3
 
 /**
  * Local, external bootstrap for a Gateway release that changes protected state.
@@ -71,6 +77,14 @@ export async function runMacosGatewayForwardUpdate(): Promise<void> {
   const previousTarget = await readlink(join(installRoot, 'current'))
   let backupPath: string | undefined
 
+  await waitForGatewayForwardUpdateIdle({
+    adminSocketPath: resolve(requiredArgument('admin-socket')),
+    ...(currentBuildId ? { expectedBuildId: currentBuildId } : {}),
+    timeoutMs: optionalNumberArgument('idle-timeout-ms') ?? DEFAULT_IDLE_TIMEOUT_MS,
+    syncFreshnessMs: optionalNumberArgument('sync-freshness-ms') ?? 45_000,
+  })
+  process.stdout.write('Gateway remained fully idle and Matrix-synchronized; starting activation.\n')
+
   await activateMacosGatewayRelease({
     releaseDirectory,
     installRoot,
@@ -104,6 +118,127 @@ export async function runMacosGatewayForwardUpdate(): Promise<void> {
     `Matrix Gateway ${targetBuildId} is healthy; the new supervisor records the release as committed.\n`
     + `Forward-only backup retained at ${backupPath ?? '(unavailable)'}.\n`,
   )
+}
+
+export interface GatewayForwardUpdateIdleOptions {
+  adminSocketPath: string
+  expectedBuildId?: string
+  timeoutMs?: number
+  syncFreshnessMs?: number
+  stableSamples?: number
+  sampleIntervalMs?: number
+}
+
+export interface GatewayForwardUpdateIdleDependencies {
+  status?: () => Promise<GatewayAdminStatus>
+  now?: () => number
+  sleep?: (milliseconds: number) => Promise<void>
+}
+
+/**
+ * Re-checks quiescence after the slow candidate verification and staging work.
+ * The stable runtime identity requirement prevents samples from straddling an
+ * unrelated Gateway restart. Activation follows immediately after this gate,
+ * and SIGTERM closes the Gateway's command execution gate before shutdown.
+ */
+export async function waitForGatewayForwardUpdateIdle(
+  options: GatewayForwardUpdateIdleOptions,
+  dependencies: GatewayForwardUpdateIdleDependencies = {},
+): Promise<GatewayAdminStatus> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
+  const syncFreshnessMs = options.syncFreshnessMs ?? 45_000
+  const stableSamples = options.stableSamples ?? DEFAULT_IDLE_STABLE_SAMPLES
+  const sampleIntervalMs = options.sampleIntervalMs ?? DEFAULT_IDLE_SAMPLE_INTERVAL_MS
+  for (const [name, value, minimum] of [
+    ['timeout', timeoutMs, 0],
+    ['sync freshness', syncFreshnessMs, 0],
+    ['stable samples', stableSamples, 1],
+    ['sample interval', sampleIntervalMs, 0],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < minimum) {
+      throw new Error(`Gateway forward-update ${name} is invalid`)
+    }
+  }
+  const now = dependencies.now ?? Date.now
+  const sleep = dependencies.sleep ?? (milliseconds =>
+    new Promise(resolveDelay => setTimeout(resolveDelay, milliseconds)))
+  const readStatus = dependencies.status ?? (() => new GatewayAdminClient({
+    socketPath: options.adminSocketPath,
+    timeoutMs: 5_000,
+  }).status())
+  const deadline = now() + timeoutMs
+  let consecutive = 0
+  let runtimeIdentity: string | null = null
+  let lastReason = 'Gateway status was not sampled'
+
+  while (true) {
+    let status: GatewayAdminStatus | null = null
+    try {
+      status = await readStatus()
+    } catch (error) {
+      consecutive = 0
+      runtimeIdentity = null
+      lastReason = formatError(error)
+    }
+    if (status) {
+      if (options.expectedBuildId && status.buildId !== options.expectedBuildId) {
+        throw new Error(
+          `Gateway build changed to ${status.buildId ?? '(missing)'} while waiting; `
+          + `expected ${options.expectedBuildId}`,
+        )
+      }
+      const reason = gatewayForwardUpdateBusyReason(status, now(), syncFreshnessMs)
+      const identity = `${status.pid}\0${status.runtimeEpoch ?? ''}`
+      if (reason === null) {
+        if (identity !== runtimeIdentity) {
+          runtimeIdentity = identity
+          consecutive = 1
+        } else {
+          consecutive += 1
+        }
+        if (consecutive >= stableSamples) return status
+        lastReason = `Gateway idle sample ${consecutive}/${stableSamples}`
+      } else {
+        consecutive = 0
+        runtimeIdentity = identity
+        lastReason = reason
+      }
+    }
+    if (now() >= deadline) {
+      throw new Error(
+        `Gateway did not reach a stable idle checkpoint within ${timeoutMs}ms: ${lastReason}`,
+      )
+    }
+    await sleep(Math.min(sampleIntervalMs, Math.max(0, deadline - now())))
+  }
+}
+
+function gatewayForwardUpdateBusyReason(
+  status: GatewayAdminStatus,
+  now: number,
+  syncFreshnessMs: number,
+): string | null {
+  if (status.state !== 'running') return `Gateway reported ${status.state}`
+  if (!status.runtimeEpoch) return 'Gateway runtime epoch diagnostics are unavailable'
+  for (const [label, value] of [
+    ['active Agent turns', status.activeTurns],
+    ['active commands', status.activeCommands],
+    ['unfinished journal commands', status.unfinishedCommands],
+    ['pending Matrix outbox deliveries', status.pendingOutboxDeliveries],
+    ['pending Matrix inbox events', status.pendingInboxEvents],
+  ] as const) {
+    if (typeof value !== 'number') return `${label} diagnostics are unavailable`
+    if (value !== 0) return `${label}: ${value}`
+  }
+  if (status.matrixReady !== true) return 'Gateway Matrix synchronization is not ready'
+  if (typeof status.lastMatrixSyncAt !== 'number') {
+    return 'Gateway Matrix synchronization timestamp is unavailable'
+  }
+  const syncAgeMs = Math.max(0, now - status.lastMatrixSyncAt)
+  if (syncAgeMs > syncFreshnessMs) {
+    return `Gateway Matrix synchronization is stale by ${syncAgeMs}ms`
+  }
+  return null
 }
 
 async function stagePreparedRelease(

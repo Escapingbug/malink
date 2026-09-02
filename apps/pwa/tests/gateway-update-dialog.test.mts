@@ -255,6 +255,7 @@ test("explains the external maintenance path for a protected-state release", () 
   }));
 
   assert.match(html, /Complete update on Gateway Mac/);
+  assert.match(html, /<details[^>]*open=""/);
   assert.match(html, /stopped before staging or migration/);
   assert.match(html, /Let every active Agent task finish/);
   assert.match(html, /make and verify an offline backup/);

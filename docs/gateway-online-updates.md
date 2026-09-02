@@ -215,6 +215,15 @@ pnpm forward-update:matrix-gateway:macos -- \
   --supervisor-service-label io.malink.gateway-update-supervisor
 ```
 
+Candidate verification and staging can take several minutes. Immediately
+after that slow work, the external updater samples the owner-only Gateway
+status again and requires three consecutive observations of the same runtime
+with no active turns, active commands, unfinished journal commands, pending
+inbox events, or pending outbox deliveries, plus fresh Matrix synchronization.
+It waits up to 15 minutes by default; use `--idle-timeout-ms` to extend that
+window. If the Gateway does not reach this checkpoint, the command stops before
+shutdown, backup, state migration, or release activation.
+
 The command verifies the Prompt against the signer pinned at
 `<install-root>/release-signer.json`, derives the target release/build IDs from
 that signed object, verifies that the current checkout is the exact clean signed

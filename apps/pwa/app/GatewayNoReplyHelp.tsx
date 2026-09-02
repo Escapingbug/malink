@@ -78,8 +78,15 @@ export function GatewayUpdateFailureHelp({
 }) {
   const repairRequired = status.phase === "repair_required";
   const externalRequired = recovery.kind === "external";
+  const [expanded, setExpanded] = React.useState(
+    repairRequired || externalRequired,
+  );
   return (
-    <details className="gateway-no-reply-help gateway-update-failure-help">
+    <details
+      className="gateway-no-reply-help gateway-update-failure-help"
+      open={expanded}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+    >
       <summary>
         {repairRequired
           ? "Repair this Gateway"

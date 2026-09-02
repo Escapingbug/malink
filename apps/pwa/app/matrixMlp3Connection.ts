@@ -87,6 +87,7 @@ const MATRIX_HISTORY_REQUEST_TIMEOUT_MS = 30_000;
 const INITIAL_SYNC_LIMIT = 32;
 const CATCHUP_PRESENTATION_LIMIT_PER_SESSION = 30;
 const MAX_TRACKED_SESSION_READ_RECEIPTS = 5_000;
+const MATRIX_ACTIVE_SESSION_TAIL_RECOVERY_LIMIT = 64;
 
 type ProjectionDeliveryMode = MessageDeliveryMode | "hydrate";
 
@@ -533,6 +534,7 @@ export async function connectMatrixMlp3(
         await replayThreadDirectory(
           route.roomId,
           event => ingestSecondaryEvent(context, event),
+          routeProtocol,
         );
       }
       await checkpointMatrixSync([routeProtocol]);
@@ -1079,7 +1081,7 @@ export async function connectMatrixMlp3(
     if (!currentRoom || !protocol) return;
     for (const event of currentRoom.getLiveTimeline().getEvents()) enqueue(event);
     if (await protocol.requiresThreadDirectoryRecovery(savedMatrixSyncToken)) {
-      await replayThreadDirectory(config.roomId, ingestEvent);
+      await replayThreadDirectory(config.roomId, ingestEvent, protocol);
     }
     await inboundChain;
   };
@@ -1087,9 +1089,11 @@ export async function connectMatrixMlp3(
   const replayThreadDirectory = async (
     roomId: string,
     ingest: (event: MatrixEvent) => Promise<void>,
+    target: MatrixMlp3ProtocolClient,
   ): Promise<void> => {
     let from: string | null = null;
     const seenTokens = new Set<string>();
+    let complete = false;
     for (let pageIndex = 0; pageIndex < 1_000; pageIndex += 1) {
       const page = await client.createThreadListMessagesRequest(
         roomId,
@@ -1112,14 +1116,59 @@ export async function connectMatrixMlp3(
         }
       }
       const next = typeof page.end === "string" && page.end ? page.end : null;
-      if (!next) return;
+      if (!next) {
+        complete = true;
+        break;
+      }
       if (seenTokens.has(next)) {
         throw new Error("The Matrix thread directory repeated a pagination token.");
       }
       seenTokens.add(next);
       from = next;
     }
-    throw new Error("The Matrix thread directory exceeded the 100,000-session safety limit.");
+    if (!complete) {
+      throw new Error("The Matrix thread directory exceeded the 100,000-session safety limit.");
+    }
+
+    // A thread-list response is allowed to expose only the root and one
+    // latest-event summary. Older browser projections can therefore retain a
+    // stale working state when that summary is absent or incomplete. Repair
+    // only sessions that still look active after the bounded directory pass;
+    // a genuinely running turn remains active because no newer terminal event
+    // exists in its recent authenticated thread tail.
+    type RawMatrixEvent = Parameters<ReturnType<MatrixClient["getEventMapper"]>>[0];
+    const mapEvent = client.getEventMapper();
+    for (const recovery of matrixActiveSessionTailRecoveryTargets(
+      target.projection.sessions.values(),
+    )) {
+      const path = [
+        "/rooms/",
+        encodeURIComponent(roomId),
+        "/relations/",
+        encodeURIComponent(recovery.threadRootEventId),
+        "/",
+        encodeURIComponent(sdk.RelationType.Thread),
+      ].join("");
+      const page = await client.http.authedRequest<{ chunk: RawMatrixEvent[] }>(
+        "GET" as Parameters<MatrixClient["http"]["authedRequest"]>[0],
+        path,
+        {
+          dir: sdk.Direction.Backward,
+          limit: MATRIX_ACTIVE_SESSION_TAIL_RECOVERY_LIMIT,
+          recurse: true,
+        },
+        undefined,
+        {
+          prefix: ClientPrefix.V1,
+          localTimeoutMs: MATRIX_HISTORY_REQUEST_TIMEOUT_MS,
+        },
+      );
+      for (const rawEvent of page.chunk) {
+        await ingest(mapEvent({ ...rawEvent, room_id: rawEvent.room_id ?? roomId }));
+        const current = target.projection.sessions.get(recovery.sessionId);
+        if (current && !isMatrixSessionActivityActive(current.activity)) break;
+      }
+    }
   };
 
   const checkpointMatrixSync = (
@@ -2150,6 +2199,30 @@ function latestThreadEvent(input: unknown): Record<string, unknown> | null {
   const relations = asRecord(unsigned?.["m.relations"]);
   const thread = asRecord(relations?.["m.thread"]);
   return asRecord(thread?.latest_event);
+}
+
+export function matrixActiveSessionTailRecoveryTargets(
+  sessions: Iterable<V3ProjectedSession>,
+): Array<{ sessionId: string; threadRootEventId: string }> {
+  return [...sessions]
+    .filter(session =>
+      session.lifecycle === "active"
+      && isMatrixSessionActivityActive(session.activity)
+      && Boolean(session.threadRootEventId)
+    )
+    .sort((left, right) =>
+      left.updatedAt - right.updatedAt || left.sessionId.localeCompare(right.sessionId)
+    )
+    .map(session => ({
+      sessionId: session.sessionId,
+      threadRootEventId: session.threadRootEventId,
+    }));
+}
+
+function isMatrixSessionActivityActive(
+  activity: V3ProjectedSession["activity"],
+): boolean {
+  return activity === "queued" || activity === "working" || activity === "attention";
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
