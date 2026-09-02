@@ -427,7 +427,7 @@ describe('GatewayMlp3ContentLayer', () => {
     expect(retryAttempts).toBe(2)
   })
 
-  it('supersedes stale tool snapshots and delivers terminal control ahead of bulk backlog', async () => {
+  it('delivers the final response before terminal control while superseding bulk backlog', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-v3-content-'))
     const gateway = await generateDeviceKeyPair()
     const phone = await generateDeviceKeyPair()
@@ -537,6 +537,25 @@ describe('GatewayMlp3ContentLayer', () => {
       if (version < 50) void queued.confirmation.catch(() => undefined)
       latest = queued
     }
+    const finalResponse = await layer.enqueueEvent(room, {
+      kind: 'malink.event',
+      version: 3,
+      eventId: 'assistant-final',
+      workspaceId: 'workspace-1',
+      projectId: gatewayProjectIdentity(room.cwd).id,
+      sessionId: 'session-1',
+      causationCommandId: 'command-1',
+      occurredAt: 52,
+      payload: {
+        type: 'assistant.message',
+        messageId: 'final-response',
+        messageVersion: 1,
+        body: 'The final response used by the task notification.',
+        format: 'plain',
+        final: true,
+        projection,
+      },
+    }, transport)
     const terminal = await layer.enqueueEvent(room, {
       kind: 'malink.event',
       version: 3,
@@ -544,6 +563,7 @@ describe('GatewayMlp3ContentLayer', () => {
       workspaceId: 'workspace-1',
       projectId: gatewayProjectIdentity(room.cwd).id,
       sessionId: 'session-1',
+      causationCommandId: 'command-1',
       occurredAt: 3,
       payload: {
         type: 'turn.completed',
@@ -554,6 +574,7 @@ describe('GatewayMlp3ContentLayer', () => {
     }, transport)
     release()
 
+    await expect(finalResponse.confirmation).resolves.toEqual({ eventId: '$assistant-final' })
     await expect(terminal.confirmation).resolves.toEqual({ eventId: '$turn-terminal' })
     await expect(latest.confirmation).resolves.toEqual({ eventId: '$bulk-latest' })
     // Forty-eight intermediate progress snapshots never reach Matrix. This is
@@ -561,6 +582,7 @@ describe('GatewayMlp3ContentLayer', () => {
     // into minutes of obsolete timeline traffic under homeserver backpressure.
     expect(deliveryOrder).toEqual([
       'bulk-old',
+      'assistant-final',
       'turn-terminal',
       ...olderControlIds,
       'bulk-latest',

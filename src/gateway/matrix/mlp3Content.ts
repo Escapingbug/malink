@@ -912,7 +912,12 @@ function eventDeliveryMetadata(event: Mlp3Event): MatrixMlp3DeliveryMetadata {
   if (payload.type === 'assistant.message') {
     const ui = asRecord(payload.ui)
     return {
-      priority: ui?.kind === 'tool_group' ? 'bulk' : 'normal',
+      // A terminal command result is urgent. Its final assistant response must
+      // use the same priority so the scheduler preserves their enqueue order
+      // instead of letting turn.completed overtake the notification preview.
+      priority: ui?.kind === 'tool_group'
+        ? 'bulk'
+        : payload.final && event.causationCommandId ? 'urgent' : 'normal',
       ...(event.sessionId
         ? {
             supersession: {
