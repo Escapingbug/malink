@@ -1,8 +1,9 @@
 import type { SignedWorkspaceGatewayDirectory } from "@malink/protocol";
 
-// A Gateway publishes one shared heartbeat every 60 seconds. Allow one missed
-// delivery under Matrix backpressure before presenting the proof as stale.
+// Background heartbeats are intentionally sparse. The visible client performs
+// an immediate signed check when this short proof window has expired.
 export const GATEWAY_ONLINE_PROOF_WINDOW_MS = 150_000;
+export const GATEWAY_AUTOMATIC_PROBE_MIN_INTERVAL_MS = GATEWAY_ONLINE_PROOF_WINDOW_MS;
 // Matrix delivery, Gateway journal execution, and the signed reply are each
 // asynchronous. Keep the UI deadline above the native HTTP send timeout so a
 // healthy but delayed round trip is not reported as a Gateway fault.
@@ -48,6 +49,23 @@ export type GatewayNoReplyPresentation = {
   persistent: boolean;
   retryLabel: string;
 };
+
+export function gatewayNodeNeedsForegroundProbe(input: {
+  value: GatewayNodeLiveness | undefined;
+  now: number;
+  lastAutomaticProbeAt: number | undefined;
+}): boolean {
+  const value = input.value;
+  if (value?.state === "checking" || value?.state === "unavailable") return false;
+  if (
+    input.lastAutomaticProbeAt !== undefined &&
+    input.now - input.lastAutomaticProbeAt < GATEWAY_AUTOMATIC_PROBE_MIN_INTERVAL_MS
+  ) {
+    return false;
+  }
+  return value?.lastVerifiedAt === undefined ||
+    input.now - value.lastVerifiedAt > GATEWAY_ONLINE_PROOF_WINDOW_MS;
+}
 
 export function gatewayNoReplyPresentation(input: {
   gatewayLabel: string;

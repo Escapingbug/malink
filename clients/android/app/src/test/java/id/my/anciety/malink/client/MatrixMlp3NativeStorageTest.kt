@@ -217,6 +217,27 @@ class MatrixMlp3NativeStorageTest {
         assertEquals(AtomicEncryptedMatrixMlp3ProjectionStore.MAX_BYTES, error.maximumBytes)
     }
 
+    @Test
+    fun `lightweight liveness checkpoint is encrypted and round trips independently`() {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val projection = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 1 },
+        )
+        val store = AtomicEncryptedMatrixMlp3LivenessStore(
+            blob,
+            JvmAesGcmCipher(),
+            "account-a",
+        )
+
+        val size = store.save(projection.livenessState())
+
+        assertTrue(size < 1024)
+        assertEquals(projection.livenessState(), store.load())
+        store.validateStoredState()
+        assertFalse(blob.bytes!!.toString(Charsets.UTF_8).contains("gatewayUpdateStatus"))
+    }
+
     private fun event(eventId: String, rawJson: String) = MatrixDecryptedEvent(
         roomId = "!room:example.org",
         eventId = eventId,

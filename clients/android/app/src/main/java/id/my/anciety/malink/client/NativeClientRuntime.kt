@@ -28,6 +28,7 @@ import id.my.anciety.malink.client.events.CommandOutcome
 import id.my.anciety.malink.client.events.CommandState
 import id.my.anciety.malink.client.events.CommandView
 import id.my.anciety.malink.client.events.EncryptedAtomicClientEventPersistence
+import id.my.anciety.malink.client.events.SegmentedEncryptedClientEventPersistence
 import id.my.anciety.malink.client.events.ClientEventStateCodec
 import id.my.anciety.malink.client.events.ForegroundServiceState
 import id.my.anciety.malink.client.events.HistoryPage
@@ -176,7 +177,7 @@ class NativeClientRuntime(
         diagnostics,
         now,
     ).begin(BuildConfig.NATIVE_BUILD_ID)
-    private val eventPersistence = EncryptedAtomicClientEventPersistence(
+    private val legacyEventPersistence = EncryptedAtomicClientEventPersistence(
         files.events,
         cipher,
         deviceId,
@@ -192,6 +193,18 @@ class NativeClientRuntime(
                     }
                 }
             },
+            reset = persistence::clear,
+        )
+    }
+    private val eventPersistence = SegmentedEncryptedClientEventPersistence(
+        files.clientEventSegments,
+        cipher,
+        deviceId,
+        legacyEventPersistence,
+    ).also { persistence ->
+        stateUpgrade.recoverRebuildable(
+            "client-event-segments",
+            validate = persistence::validateStoredState,
             reset = persistence::clear,
         )
     }
@@ -231,6 +244,17 @@ class NativeClientRuntime(
     ).also {
         stateUpgrade.recoverRebuildable(
             "matrix-v3-projection",
+            validate = it::validateStoredState,
+            reset = it::clear,
+        )
+    }
+    private val matrixMlp3LivenessStore = AtomicEncryptedMatrixMlp3LivenessStore(
+        files.matrixMlp3Liveness,
+        cipher,
+        deviceId,
+    ).also {
+        stateUpgrade.recoverRebuildable(
+            "matrix-v3-liveness",
             validate = it::validateStoredState,
             reset = it::clear,
         )
@@ -344,7 +368,9 @@ class NativeClientRuntime(
         gatewayId = { trust?.gatewayId ?: "gateway" },
         activeDeviceCount = { trust?.response?.response?.activeDeviceCount ?: 1 },
         initialState = matrixMlp3ProjectionStore.load(),
-    )
+    ).also { projection ->
+        matrixMlp3LivenessStore.load()?.let(projection::applyLivenessState)
+    }
 
     private val eventHub = ClientEventHub(
         eventPersistence,
@@ -1167,6 +1193,7 @@ class NativeClientRuntime(
             matrixMlp3Inbox.clear()
             matrixMlp3Projection.clear()
             matrixMlp3ProjectionStore.clear()
+            matrixMlp3LivenessStore.clear()
             matrixMlp3CommandContent.clear()
             pairingStore.clear()
             outbox.clear()
@@ -2335,7 +2362,11 @@ class NativeClientRuntime(
             }
         }
         result.terminal?.let(::recordMatrixMlp3Terminal)
-        commitMatrixMlp3Projection("gateway_event")
+        when {
+            !result.changed -> Unit
+            result.livenessOnly -> commitMatrixMlp3Liveness("gateway_observation")
+            else -> commitMatrixMlp3Projection("gateway_event")
+        }
         return true
     }
 
@@ -2498,18 +2529,27 @@ class NativeClientRuntime(
         )
     }
 
-    private fun acceptMatrixMlp3GatewayState(snapshot: JsonObject) {
+    private fun acceptMatrixMlp3GatewayState(snapshot: JsonObject, transient: Boolean = false) {
         if (snapshot.toString().toByteArray().size > MAX_BRIDGE_EVENT_PAYLOAD_BYTES) return
         val changed = gatewayState != snapshot
         val synchronizedBefore = gatewayStateSynchronized
         gatewayState = snapshot
         gatewayStateSynchronized = trust != null && matrixMlp3ProjectKeys.values().isNotEmpty()
         if (changed) {
-            eventHub.publish(
-                ClientEventType.GATEWAY_STATE_CHANGED,
-                snapshot,
-                refreshedSnapshot(),
-            )
+            val publicSnapshot = refreshedSnapshot()
+            if (transient) {
+                eventHub.publishTransient(
+                    ClientEventType.GATEWAY_STATE_CHANGED,
+                    snapshot,
+                    publicSnapshot,
+                )
+            } else {
+                eventHub.publish(
+                    ClientEventType.GATEWAY_STATE_CHANGED,
+                    snapshot,
+                    publicSnapshot,
+                )
+            }
         }
         if (!changed && synchronizedBefore == gatewayStateSynchronized) return
         schedulePendingCommandRecoveries(immediate = true)
@@ -2599,6 +2639,42 @@ class NativeClientRuntime(
             diagnostics,
             reason,
         )
+    }
+
+    private fun commitMatrixMlp3Liveness(reason: String) {
+        val persisted = runCatching {
+            matrixMlp3LivenessStore.save(matrixMlp3Projection.livenessState())
+        }.onFailure { error ->
+            diagnostics.record(
+                "matrix.v3_liveness.cache_write_failed",
+                mapOf(
+                    "reason" to reason,
+                    "error" to error.javaClass.simpleName.take(160),
+                ),
+            )
+        }.isSuccess
+        if (!persisted) {
+            // Matrix remains the replay authority; a cache failure must not
+            // quarantine an already authenticated observation.
+            diagnostics.record("matrix.v3_liveness.cache_rebuildable")
+        }
+        val liveness = matrixMlp3Projection.livenessSnapshot()
+        val current = gatewayState
+        val snapshot = if (current == null) {
+            matrixMlp3Projection.snapshot()
+        } else {
+            JsonObject(current.toMutableMap().apply {
+                val currentUpdatedAt = current.long("updated_at") ?: 0L
+                val observedAt = liveness.long("updated_at") ?: 0L
+                put("updated_at", JsonPrimitive(maxOf(currentUpdatedAt, observedAt)))
+                liveness["gateway_update"]?.let { put("gateway_update", it) }
+                put(
+                    "gateway_node_statuses",
+                    liveness.getValue("gateway_node_statuses"),
+                )
+            })
+        }
+        snapshot?.let { acceptMatrixMlp3GatewayState(it, transient = true) }
     }
 
 

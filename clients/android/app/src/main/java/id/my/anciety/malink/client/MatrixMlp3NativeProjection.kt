@@ -37,6 +37,8 @@ internal data class MatrixMlp3NativeProjectionResult(
     val progressedCommandId: String? = null,
     val terminal: MatrixMlp3NativeTerminal? = null,
     val changed: Boolean = false,
+    /** The change only advances rebuildable Gateway liveness metadata. */
+    val livenessOnly: Boolean = false,
 )
 
 internal data class MatrixMlp3DurableProjection(
@@ -133,8 +135,8 @@ internal class MatrixMlp3NativeProjection(
         linkedMapOf<String, GatewayUpdateObservation>()
     private val sessions = linkedMapOf<String, Session>()
     private val inboxFiles = linkedMapOf<String, InboxFile>()
-    private val seenEvents = mutableSetOf<String>()
-    private val seenCommands = mutableSetOf<String>()
+    private val seenEvents = linkedSetOf<String>()
+    private val seenCommands = linkedSetOf<String>()
     private val assistantMessageVersions = linkedMapOf<AssistantMessageKey, Long>()
 
     init {
@@ -150,7 +152,7 @@ internal class MatrixMlp3NativeProjection(
         val commandId = command.requiredString("commandId", 256)
         val deviceId = command.requiredString("deviceId", 256)
         val certificateId = command.requiredString("certificateId", 256)
-        if (!seenCommands.add("$deviceId\u0000$certificateId\u0000$commandId")) {
+        if (!seenCommands.addBounded("$deviceId\u0000$certificateId\u0000$commandId")) {
             return MatrixMlp3NativeProjectionResult()
         }
         val operation = command.requiredString("operation", 128)
@@ -256,7 +258,7 @@ internal class MatrixMlp3NativeProjection(
                 ) {
                     return MatrixMlp3NativeProjectionResult()
                 }
-                seenEvents.add(eventId)
+                seenEvents.addBounded(eventId)
                 workspacePendingGatewayEnrollmentsByProject[capabilityProjectId] =
                     pendingGatewayEnrollments
                 gatewayUpdateStatus = incomingGatewayUpdate
@@ -273,7 +275,7 @@ internal class MatrixMlp3NativeProjection(
             payload.requiredString("gatewayKeyId", 256)
             val capabilities = payload.requiredObject("capabilities")
             validateCapabilities(capabilities)
-            seenEvents.add(eventId)
+            seenEvents.addBounded(eventId)
             workspacePendingGatewayEnrollmentsByProject[capabilityProjectId] =
                 pendingGatewayEnrollments
             gatewayUpdateStatus = incomingGatewayUpdate
@@ -286,12 +288,17 @@ internal class MatrixMlp3NativeProjection(
         }
 
         if (type == "gateway.update.status") {
-            if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
+            val sharedObservation = causation == null && projectId != null
+            if (!sharedObservation && !seenEvents.addBounded(eventId)) {
+                return MatrixMlp3NativeProjectionResult()
+            }
             val status = payload.requiredObject("status")
             validateGatewayUpdateStatus(status)
             val currentUpdatedAt = gatewayUpdateStatus?.requiredLong("updatedAt") ?: -1
             val incomingUpdatedAt = status.requiredLong("updatedAt")
-            if (incomingUpdatedAt >= currentUpdatedAt) gatewayUpdateStatus = status
+            val updateStatusChanged = incomingUpdatedAt >= currentUpdatedAt &&
+                gatewayUpdateStatus != status
+            if (updateStatusChanged) gatewayUpdateStatus = status
             val currentObservation = projectId?.let(gatewayUpdateObservationsByProject::get)
             val observationChanged = projectId != null &&
                 (currentObservation == null || occurredAt > currentObservation.observedAt)
@@ -301,11 +308,12 @@ internal class MatrixMlp3NativeProjection(
             }
             return MatrixMlp3NativeProjectionResult(
                 terminal = terminal(type, event, payload, causation, sessionId),
-                changed = incomingUpdatedAt >= currentUpdatedAt || observationChanged,
+                changed = updateStatusChanged || observationChanged,
+                livenessOnly = sharedObservation && (updateStatusChanged || observationChanged),
             )
         }
 
-        if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
+        if (!seenEvents.addBounded(eventId)) return MatrixMlp3NativeProjectionResult()
 
         if (type == "project.deleted" && projectId != null) {
             projects.remove(projectId)
@@ -597,6 +605,19 @@ internal class MatrixMlp3NativeProjection(
         }
     }
 
+    /** Small public-state delta used by the high-frequency heartbeat path. */
+    @Synchronized
+    fun livenessSnapshot(): JsonObject = buildJsonObject {
+        val latestObservation = gatewayUpdateObservationsByProject.values
+            .maxOfOrNull(GatewayUpdateObservation::observedAt) ?: 0L
+        put(
+            "updated_at",
+            maxOf(gatewayUpdateStatus?.requiredLong("updatedAt") ?: 0L, latestObservation),
+        )
+        gatewayUpdateStatus?.let { put("gateway_update", it) }
+        put("gateway_node_statuses", gatewayNodeStatuses())
+    }
+
     private fun publicProject(project: Project): JsonObject = buildJsonObject {
         put("project_id", project.id)
         put("project_name", project.name)
@@ -749,6 +770,67 @@ internal class MatrixMlp3NativeProjection(
 
     @Synchronized
     fun durableState(): JsonObject = durableProjection().value
+
+    /**
+     * Small, independently encrypted checkpoint for high-frequency Gateway
+     * observations. It is rebuildable from Matrix and deliberately excludes
+     * sessions, transcript deduplication and command state.
+     */
+    @Synchronized
+    fun livenessState(): JsonObject = buildJsonObject {
+        put("schemaVersion", 1)
+        put("gatewayUpdateStatus", gatewayUpdateStatus ?: JsonNull)
+        put("gatewayUpdateObservationsByProject", buildJsonObject {
+            gatewayUpdateObservationsByProject.entries.sortedBy { it.key }
+                .forEach { (projectId, observation) ->
+                    put(projectId, buildJsonObject {
+                        put("observedAt", observation.observedAt)
+                        put("status", observation.status)
+                    })
+                }
+        })
+    }
+
+    /** Overlays only observations newer than the full projection checkpoint. */
+    @Synchronized
+    fun applyLivenessState(value: JsonObject) {
+        require(value.keys == setOf(
+            "schemaVersion",
+            "gatewayUpdateStatus",
+            "gatewayUpdateObservationsByProject",
+        )) { "The MLP/3 liveness projection shape is invalid." }
+        require(value.requiredLong("schemaVersion") == 1L) {
+            "Unsupported MLP/3 liveness projection version."
+        }
+        val incomingStatus = (value["gatewayUpdateStatus"] as? JsonObject)
+            ?.also(::validateGatewayUpdateStatus)
+        if (
+            incomingStatus != null &&
+            incomingStatus.requiredLong("updatedAt") >=
+            (gatewayUpdateStatus?.requiredLong("updatedAt") ?: -1L)
+        ) {
+            gatewayUpdateStatus = incomingStatus
+        }
+        val observations = value.requiredObject("gatewayUpdateObservationsByProject")
+        require(observations.size <= 256)
+        observations.entries.forEach { (projectId, element) ->
+            require(projectId.isNotBlank() && projectId.length <= 256)
+            val observation = element as? JsonObject
+                ?: throw IllegalArgumentException("The Gateway liveness observation is invalid.")
+            observation.requireKeys(
+                setOf("observedAt", "status"),
+                emptySet(),
+                "Gateway liveness observation",
+            )
+            val observedAt = observation.requiredLong("observedAt").also { require(it >= 0) }
+            val status = observation.requiredObject("status").also(::validateGatewayUpdateStatus)
+            val current = gatewayUpdateObservationsByProject[projectId]
+            if (current == null || observedAt > current.observedAt) {
+                gatewayUpdateObservationsByProject[projectId] =
+                    GatewayUpdateObservation(observedAt, status)
+            }
+        }
+    }
 
     /**
      * The projection is a rebuildable Matrix materialized view, not an
@@ -1146,10 +1228,10 @@ internal class MatrixMlp3NativeProjection(
             }
         }
         (value["seenEvents"] as? JsonArray).orEmpty().takeLast(MAX_SEEN_IDS).forEach {
-            seenEvents += it.jsonPrimitive.content
+            seenEvents.addBounded(it.jsonPrimitive.content)
         }
         (value["seenCommands"] as? JsonArray).orEmpty().takeLast(MAX_SEEN_IDS).forEach {
-            seenCommands += it.jsonPrimitive.content
+            seenCommands.addBounded(it.jsonPrimitive.content)
         }
         if (schemaVersion >= 5L) {
             (value["assistantMessageVersions"] as? JsonArray)
@@ -1876,4 +1958,13 @@ private fun validatePendingGatewayEnrollments(values: JsonArray) {
         enrollmentId
     }
     require(ids.distinct().size == ids.size)
+}
+
+private fun LinkedHashSet<String>.addBounded(value: String): Boolean {
+    if (!add(value)) return false
+    while (size > 10_000) iterator().run {
+        next()
+        remove()
+    }
+    return true
 }

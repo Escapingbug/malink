@@ -30,6 +30,16 @@ interface ClientEventPersistence {
     fun clear()
 }
 
+internal interface StructuredClientEventPersistence {
+    fun loadState(): PersistedClientEventState?
+
+    @Throws(ClientEventStateTooLargeException::class)
+    fun saveState(value: PersistedClientEventState, maximumPlaintextBytes: Int)
+}
+
+internal class ClientEventStateTooLargeException :
+    IllegalArgumentException("Client event state exceeds its encrypted byte budget.")
+
 class InMemoryClientEventPersistence(initial: ByteArray? = null) : ClientEventPersistence {
     private var bytes = initial?.copyOf()
 
@@ -110,7 +120,12 @@ class EncryptedAtomicClientEventPersistence(
     override fun clear() = atomicFile.delete()
 }
 
-internal data class StoredClientEvent(val sequence: Long, val event: ClientEvent)
+internal data class StoredClientEvent(
+    val sequence: Long,
+    val event: ClientEvent,
+    /** False for process-lifecycle delivery that must never leak into a later save. */
+    val durable: Boolean = true,
+)
 
 internal data class StoredHistoryMessage(
     val sequence: Long,

@@ -76,6 +76,11 @@ internal val NATIVE_STATE_CATALOG = listOf(
         1,
     ),
     NativeStateCatalogEntry(
+        "client-event-segments",
+        NativePersistedStateClass.REBUILDABLE_PROJECTION,
+        1,
+    ),
+    NativeStateCatalogEntry(
         "attachment-transfer-scratch",
         NativePersistedStateClass.REBUILDABLE_PROJECTION,
         1,
@@ -84,6 +89,11 @@ internal val NATIVE_STATE_CATALOG = listOf(
         "matrix-v3-projection",
         NativePersistedStateClass.REBUILDABLE_PROJECTION,
         4,
+    ),
+    NativeStateCatalogEntry(
+        "matrix-v3-liveness",
+        NativePersistedStateClass.REBUILDABLE_PROJECTION,
+        1,
     ),
     NativeStateCatalogEntry(
         "native-update-cache",

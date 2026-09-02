@@ -499,6 +499,83 @@ internal class AtomicEncryptedMatrixMlp3ProjectionStore internal constructor(
     }
 }
 
+/**
+ * Tiny rebuildable checkpoint for frequently advancing Gateway observations.
+ * Keeping it separate prevents every heartbeat from encrypting and syncing the
+ * full multi-session projection.
+ */
+internal class AtomicEncryptedMatrixMlp3LivenessStore internal constructor(
+    private val blob: MatrixMlp3BlobStore,
+    private val cipher: SecretCipher,
+    scope: String,
+) {
+    constructor(file: File, cipher: SecretCipher, scope: String) :
+        this(AtomicFileMatrixMlp3BlobStore(file), cipher, scope)
+
+    private val associatedData = "malink.matrix-v3-liveness.v1\u0000$scope".toByteArray()
+
+    @Synchronized
+    fun load(): JsonObject? {
+        val encrypted = blob.read() ?: return null
+        val plaintext = try {
+            val envelope = SecretEnvelope.decode(encrypted)
+            try {
+                cipher.decrypt(envelope, associatedData)
+            } finally {
+                envelope.iv.fill(0)
+                envelope.ciphertext.fill(0)
+            }
+        } finally {
+            encrypted.fill(0)
+        }
+        return try {
+            require(plaintext.size <= MAX_BYTES) { "The MLP/3 liveness cache is too large." }
+            Json.parseToJsonElement(plaintext.toString(Charsets.UTF_8)).jsonObject
+        } finally {
+            plaintext.fill(0)
+        }
+    }
+
+    @Synchronized
+    fun save(value: JsonObject): Int {
+        val plaintext = CanonicalJson.bytes(value)
+        require(plaintext.size <= MAX_BYTES) { "The MLP/3 liveness cache is too large." }
+        val size = plaintext.size
+        val encrypted = try {
+            val envelope = cipher.encrypt(plaintext, associatedData)
+            try {
+                SecretEnvelope.encode(envelope)
+            } finally {
+                envelope.iv.fill(0)
+                envelope.ciphertext.fill(0)
+            }
+        } finally {
+            plaintext.fill(0)
+        }
+        try {
+            blob.write(encrypted)
+        } finally {
+            encrypted.fill(0)
+        }
+        return size
+    }
+
+    @Synchronized
+    fun validateStoredState() {
+        load()?.let { value ->
+            MatrixMlp3NativeProjection({ "validation" }, { 1 })
+                .applyLivenessState(value)
+        }
+    }
+
+    @Synchronized
+    fun clear() = blob.delete()
+
+    private companion object {
+        const val MAX_BYTES = 256 * 1024
+    }
+}
+
 internal class MatrixMlp3ProjectionTooLargeException(
     val actualBytes: Int,
     val maximumBytes: Int,

@@ -104,7 +104,10 @@ class ClientEventHub(
 
     private val lock = Any()
     private val subscriptions = linkedMapOf<String, Subscription>()
+    private val structuredPersistence = persistence as? StructuredClientEventPersistence
     private var state: PersistedClientEventState
+    private var durableHeadSequence = 0L
+    private var durableHeadCursor = ""
 
     init {
         require(maxReplayEvents in 1..10_000)
@@ -113,8 +116,11 @@ class ClientEventHub(
         require(maxHistoryMessagesPerSession in 1..maxHistoryMessages)
         require(maxPersistedStateBytes in 4 * 1024..3 * 1024 * 1024)
         require(deliveryBatchSize in 1..100)
-        val bytes = persistence.load()
-        state = if (bytes == null) {
+        val structuredState = structuredPersistence?.loadState()
+        val bytes = if (structuredPersistence == null) persistence.load() else null
+        state = if (structuredState != null) {
+            normalize(structuredState)
+        } else if (bytes == null) {
             val cursor = nextUniqueCursor(emptySet())
             persist(
                 PersistedClientEventState(
@@ -188,7 +194,7 @@ class ClientEventHub(
                 type = type,
                 payload = payload,
             )
-            val events = (state.events + StoredClientEvent(nextSequence, event))
+            val events = (state.events + StoredClientEvent(nextSequence, event, durable))
                 .takeLast(maxReplayEvents)
             val baseSnapshot = snapshot ?: state.snapshot
             val updated = state.copy(
@@ -603,19 +609,50 @@ class ClientEventHub(
     )
 
     private fun persist(value: PersistedClientEventState): PersistedClientEventState {
-        var candidate = value.copy(history = value.history.sortedWith(HISTORY_ORDER))
+        val durableEvents = value.events.filter(StoredClientEvent::durable)
+        val removedTransient = durableEvents.size != value.events.size
+        val durableHead = durableEvents.lastOrNull()
+        var candidate = value.copy(
+            headSequence = if (removedTransient) {
+                durableHead?.sequence ?: durableHeadSequence
+            } else {
+                value.headSequence
+            },
+            headCursor = if (removedTransient) {
+                durableHead?.event?.cursor ?: durableHeadCursor.ifEmpty { value.headCursor }
+            } else {
+                value.headCursor
+            },
+            events = durableEvents,
+            history = value.history.sortedWith(HISTORY_ORDER),
+        )
+        candidate = candidate.copy(snapshot = candidate.snapshot.copy(cursor = candidate.headCursor))
         while (true) {
-            val bytes = ClientEventStateCodec.encode(candidate)
-            val fits = bytes.size <= maxPersistedStateBytes
-            if (fits) {
+            val fits = if (structuredPersistence == null) {
+                val bytes = ClientEventStateCodec.encode(candidate)
                 try {
-                    persistence.save(bytes)
+                    if (bytes.size <= maxPersistedStateBytes) {
+                        persistence.save(bytes)
+                        true
+                    } else {
+                        false
+                    }
                 } finally {
                     bytes.fill(0)
                 }
+            } else {
+                try {
+                    structuredPersistence.saveState(candidate, maxPersistedStateBytes)
+                    true
+                } catch (_: ClientEventStateTooLargeException) {
+                    false
+                }
+            }
+            if (fits) {
+                durableHeadSequence = candidate.headSequence
+                durableHeadCursor = candidate.headCursor
                 return candidate
             }
-            bytes.fill(0)
 
             val oldestEvent = candidate.events.firstOrNull()
             val oldestHistory = candidate.history.firstOrNull()

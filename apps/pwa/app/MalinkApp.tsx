@@ -277,6 +277,7 @@ import { deriveGatewayLiveness } from "./gatewayLiveness";
 import {
   GATEWAY_LIVE_STATUS_TIMEOUT_MS,
   GATEWAY_ONLINE_PROOF_WINDOW_MS,
+  gatewayNodeNeedsForegroundProbe,
   gatewayNodeLivenessAfterProbeTimeout,
   gatewayNodeLivenessPresentation,
   gatewayNodeLivenessSummary,
@@ -1769,6 +1770,7 @@ function MalinkAppRuntime() {
   );
   const gatewayNodeLivenessRef = useRef<Record<string, GatewayNodeLiveness>>({});
   const gatewayNodeProbeFlightsRef = useRef(new Set<string>());
+  const gatewayNodeAutomaticProbeAtRef = useRef<Record<string, number>>({});
   const executeGatewayUpdateRef = useRef<(
     payload: Extract<CommandPayload, { operation: `gateway.update.${string}` }>,
     targetProjectId: string,
@@ -3529,6 +3531,36 @@ function MalinkAppRuntime() {
     // client-originated Matrix command is needed to observe them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gatewayState?.gatewayNodeStatuses, gatewayUpdateReleaseKey]);
+
+  useEffect(() => {
+    if (connectionStatus !== "connected" || gatewayNodeProbeTargets.length === 0) return;
+    const probeExpiredNodes = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      for (const target of gatewayNodeProbeTargets) {
+        if (!target.canProbe || !target.targetProjectId) continue;
+        if (!gatewayNodeNeedsForegroundProbe({
+          value: gatewayNodeLivenessRef.current[target.gatewayNodeId],
+          now,
+          lastAutomaticProbeAt:
+            gatewayNodeAutomaticProbeAtRef.current[target.gatewayNodeId],
+        })) continue;
+        gatewayNodeAutomaticProbeAtRef.current[target.gatewayNodeId] = now;
+        void probeGatewayNodeLiveness(target);
+      }
+    };
+    probeExpiredNodes();
+    const onVisibilityChange = () => probeExpiredNodes();
+    const timer = window.setInterval(probeExpiredNodes, 30_000);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+    // The probe function intentionally reads current runtime refs. Restarting
+    // this effect for render-local helper identities would duplicate commands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionStatus, gatewayNodeProbeTargets]);
 
   useEffect(() => {
     if (connectionStatus !== "connected") return;

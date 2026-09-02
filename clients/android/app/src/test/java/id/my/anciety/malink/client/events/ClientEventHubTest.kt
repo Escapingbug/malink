@@ -304,6 +304,30 @@ class ClientEventHubTest {
     }
 
     @Test
+    fun `a later durable event does not accidentally persist an earlier transient event`() {
+        val persistence = CountingPersistence()
+        val hub = hub(persistence = persistence)
+        val transient = hub.publishTransient(
+            ClientEventType.STATUS_CHANGED,
+            JsonPrimitive("connecting"),
+        )
+        val durable = hub.publish(
+            ClientEventType.STATUS_CHANGED,
+            JsonPrimitive("ready"),
+        )
+
+        val stored = persistence.load()!!.let { bytes ->
+            try {
+                ClientEventStateCodec.decode(bytes)
+            } finally {
+                bytes.fill(0)
+            }
+        }
+        assertEquals(listOf(durable), stored.events.map { it.event })
+        assertTrue(stored.events.none { it.event.eventId == transient.eventId })
+    }
+
+    @Test
     fun `late gateway history is ordered by timestamp with sequence tie break`() {
         val hub = hub()
         hub.upsertMessage("session-1", message("newest", 300), occurredAt = 300)

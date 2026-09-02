@@ -29,6 +29,7 @@ class NativeRuntimeFiles(context: Context, deviceScope: String) {
         check(isDirectory || mkdirs()) { "Native client storage could not be created." }
     }
     val events = File(root, "events.enc")
+    val clientEventSegments = File(root, "client-event-segments")
     val commands = File(root, "commands.enc")
     // These filenames shipped before MLP received its standalone name. They
     // are durable storage identifiers and must remain stable across upgrades.
@@ -40,6 +41,7 @@ class NativeRuntimeFiles(context: Context, deviceScope: String) {
     val matrixMlp3ProjectKeys = File(root, "matrix-v3-project-keys.enc")
     val matrixMlp3Inbox = File(root, "matrix-v3-inbox.enc")
     val matrixMlp3Projection = File(root, "matrix-v3-projection.enc")
+    val matrixMlp3Liveness = File(root, "matrix-v3-liveness.enc")
     val pairing = File(root, "pairing-transaction.enc")
     val stateManifest = File(root, "state-manifest.json")
     val transfers = File(root, "transfers").apply {
@@ -74,10 +76,17 @@ class NativeRuntimeFiles(context: Context, deviceScope: String) {
             matrixMlp3ProjectKeys,
             matrixMlp3Inbox,
             matrixMlp3Projection,
+            matrixMlp3Liveness,
             pairing,
             stateManifest,
         ).forEach { file ->
             AtomicFile(file).delete()
+        }
+        clientEventSegments.listFiles().orEmpty().forEach { entry ->
+            check(entry.deleteRecursively()) { "Client event segment could not be cleared." }
+        }
+        check(!clientEventSegments.exists() || clientEventSegments.delete()) {
+            "Client event segment directory could not be cleared."
         }
         clearTransferScratch()
     }

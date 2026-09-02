@@ -740,7 +740,7 @@ class MatrixMlp3NativeProjectionTest {
                 })
             })
         })
-        projection.applyGatewayEvent(
+        val observation = projection.applyGatewayEvent(
             event(
                 eventId = "gateway-update-observation-1",
                 projectId = "project-1",
@@ -758,6 +758,8 @@ class MatrixMlp3NativeProjectionTest {
             "\$gateway-update-observation",
             null,
         )
+        assertTrue(observation.changed)
+        assertTrue(observation.livenessOnly)
 
         val restored = MatrixMlp3NativeProjection(
             gatewayId = { "gateway-1" },
@@ -772,6 +774,77 @@ class MatrixMlp3NativeProjectionTest {
             "committed",
             status.getValue("update").jsonObject.getValue("phase").jsonPrimitive.content,
         )
+    }
+
+    @Test
+    fun `lightweight Gateway observation overlays an older full projection`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyWorkspaceGatewayDirectory(buildJsonObject {
+            put("directory", buildJsonObject {
+                put("revision", 1)
+                put("gateways", buildJsonArray {
+                    add(buildJsonObject {
+                        put("gatewayNodeId", "gateway-node-1")
+                        put("projects", buildJsonArray {
+                            add(buildJsonObject { put("projectId", "project-1") })
+                        })
+                    })
+                })
+            })
+        })
+        val fullCheckpoint = projection.durableState()
+        projection.applyGatewayEvent(
+            event(
+                eventId = "gateway-heartbeat-newer",
+                projectId = "project-1",
+                payload = buildJsonObject {
+                    put("type", "gateway.update.status")
+                    put("status", buildJsonObject {
+                        put("version", 1)
+                        put("phase", "committed")
+                        put("currentBuildId", "build-2")
+                        put("targetBuildId", "build-2")
+                        put("updatedAt", 29)
+                    })
+                },
+            ),
+            "\$gateway-heartbeat-newer",
+            null,
+        )
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = fullCheckpoint,
+        ).also { it.applyLivenessState(projection.livenessState()) }
+
+        assertEquals(
+            1000L,
+            restored.snapshot()!!.getValue("gateway_node_statuses").jsonObject
+                .getValue("gateway-node-1").jsonObject
+                .getValue("observedAt").jsonPrimitive.content.toLong(),
+        )
+    }
+
+    @Test
+    fun `command deduplication remains bounded during a long process lifetime`() {
+        val projection = projection()
+        repeat(10_050) { index ->
+            projection.applyOwnCommand(
+                buildJsonObject {
+                    put("commandId", "command-$index")
+                    put("deviceId", "device-1")
+                    put("certificateId", "certificate-1")
+                    put("operation", "noop")
+                    put("payload", buildJsonObject {})
+                },
+                "\$command-$index",
+                index.toLong(),
+            )
+        }
+
+        assertEquals(10_000, projection.durableProjection().totalSeenCommands)
     }
 
     @Test

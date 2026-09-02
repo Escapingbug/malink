@@ -1228,7 +1228,7 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private gatewayNodeStatusHeartbeatIntervalMs(): number {
-    return this.config.gatewayHeartbeatIntervalMs ?? 60_000
+    return this.config.gatewayHeartbeatIntervalMs ?? 5 * 60_000
   }
 
   private gatewayNodeStatusObservationIntervalMs(): number {

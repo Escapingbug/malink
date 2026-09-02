@@ -568,7 +568,7 @@ const config: MatrixGatewayConfig = {
     },
     gatewayHeartbeatIntervalMs: positiveDurationFromEnvironment(
         'MALINK_MATRIX_GATEWAY_HEARTBEAT_INTERVAL_MS',
-        60_000,
+        5 * 60_000,
     ),
 }
 runner = new MatrixMlp3GatewayRunner(config, {
@@ -846,7 +846,7 @@ const workspaceControlTimer = setInterval(() => {
     void synchronizeWorkspaceControl(publishLocalWorkspaceDirectory).catch(error => {
         process.stderr.write(`[workspace-control] synchronization failed: ${formatError(error)}\n`)
     })
-}, config.gatewayHeartbeatIntervalMs ?? 60_000)
+}, config.gatewayHeartbeatIntervalMs ?? 5 * 60_000)
 const adminServer = await startGatewayAdminServer({
     socketPath: adminSocketPath,
     gatewayId: identity.gatewayId,
