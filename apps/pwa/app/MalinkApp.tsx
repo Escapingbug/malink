@@ -446,7 +446,7 @@ import {
 } from "./selectedSessionState";
 import {
   CommandRevisionConflictError,
-  clearMatrixConfig,
+  clearAllMatrixConfigs,
   getOrCreateDeviceIdentity,
   loadMatrixConfig,
   normalizeHomeserver,
@@ -460,7 +460,7 @@ import {
 } from "./matrix";
 import {
   clearPendingPairing,
-  clearTrustedGateway,
+  clearAllTrustedGateways,
   createDeviceInvitationLink,
   decodeDeviceInvitationLink,
   inspectPairingLink,
@@ -6688,20 +6688,13 @@ function MalinkAppRuntime() {
       forgetPendingSessionCreate(queuedSessionCreate.commandId);
       clearPendingSessionCreateUi();
     }
-    const removedGatewayId = matrixConfig.gatewayNodeId || matrixConfig.gatewayId || undefined;
-    clearMatrixConfig(removedGatewayId);
+    clearAllMatrixConfigs();
     clearGatewayUiCache(window.localStorage);
     clearPendingPairing();
-    clearTrustedGateway(removedGatewayId);
+    clearAllTrustedGateways();
     setMatrixConfig(emptyMatrixConfig);
     setTrustedGateway(null);
-    setSavedGateways((current) =>
-      removedGatewayId
-        ? current.filter((gateway) =>
-            (gateway.gatewayNodeId ?? gateway.gatewayId) !== removedGatewayId
-          )
-        : current,
-    );
+    setSavedGateways([]);
     setActiveDeviceCount(null);
     setGatewayRevision(null);
     gatewayStateRef.current = null;

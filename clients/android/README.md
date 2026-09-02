@@ -59,8 +59,13 @@ one identity from being driven by both transports.
   **Sign out of Android app** remains visible in settings as the account-removal
   boundary shared with the browser client. It requires an explicit confirmation,
   logs the Matrix device out while online, and only then wipes local credentials.
-  A failed remote logout fails closed and retains the local identity so
-  revocation cannot be falsely reported as complete.
+  Account sign-out clears every local Gateway route for that shared account,
+  while removing one Gateway remains a separate node-scoped operation. Android
+  keeps the hosted setup screen visible after revocation instead of presenting
+  the ordinary **Reconnect** action. A durable native setup marker also clears
+  stale hosted-Web account state after an interrupted sign-out. A failed remote
+  logout fails closed and retains the local identity so revocation cannot be
+  falsely reported as complete.
 
 Android's explicit force-stop remains a platform override: no application can
 restart itself until the user opens it again.

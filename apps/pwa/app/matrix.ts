@@ -431,6 +431,19 @@ export function clearMatrixConfig(gatewayId?: string): void {
   }
 }
 
+/**
+ * Removes the complete local Matrix account registry for this client.
+ *
+ * A Workspace account can have one saved route per Gateway. Account sign-out
+ * must not call `clearMatrixConfig`, which intentionally removes only one
+ * route and activates the next one.
+ */
+export function clearAllMatrixConfigs(): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.removeItem(MATRIX_CONFIG_STORAGE_KEY);
+  localStorage.removeItem(MATRIX_CONFIG_PROFILES_STORAGE_KEY);
+}
+
 function readMatrixConfigProfiles(): MatrixConfigProfiles {
   migrateLegacyMatrixConfig();
   const value = localStorage.getItem(MATRIX_CONFIG_PROFILES_STORAGE_KEY);
