@@ -363,7 +363,7 @@ class MalinkConnectionService : Service() {
 
         suspend fun bootstrap(input: MatrixBootstrap): Pair<PublicMatrixSession, ClientSnapshot> {
             check(foregroundStarted) { "The persistent native runtime is not active." }
-            return withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
                 val runtime = awaitClientRuntime()
                 // Service startup schedules runtime restoration asynchronously.
                 // A freshly opened WebView may submit bootstrap before that job
@@ -371,6 +371,8 @@ class MalinkConnectionService : Service() {
                 runtime.start()
                 runtime.bootstrap(input)
             }
+            preferences.accountSetupRequired = false
+            return result
         }
 
         suspend fun rejoin(
@@ -378,11 +380,13 @@ class MalinkConnectionService : Service() {
             pairingLink: String,
         ): Pair<PublicMatrixSession, ClientSnapshot> {
             check(foregroundStarted) { "The persistent native runtime is not active." }
-            return withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
                 val runtime = awaitClientRuntime()
                 runtime.start()
                 runtime.rejoinWorkspace(input, pairingLink)
             }
+            preferences.accountSetupRequired = false
+            return result
         }
 
         suspend fun completePairing(
@@ -399,6 +403,9 @@ class MalinkConnectionService : Service() {
                     awaitClientRuntime().disconnect(revoke = mode == "revoke")
                 }
                 withContext(Dispatchers.Main.immediate) {
+                    if (mode == "revoke") {
+                        preferences.accountSetupRequired = true
+                    }
                     preferences.restoreEnabled = false
                     ServiceCompat.stopForeground(
                         this@MalinkConnectionService,

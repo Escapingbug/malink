@@ -730,6 +730,13 @@ export function clearTrustedGateway(gatewayId?: string): void {
   }
 }
 
+/** Clears every Gateway certificate cached for the signed-out client account. */
+export function clearAllTrustedGateways(): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.removeItem(PAIRING_TRUST_STORAGE_KEY);
+  localStorage.removeItem(PAIRING_TRUST_PROFILES_STORAGE_KEY);
+}
+
 function readTrustedGatewayProfiles(): TrustedGatewayProfiles {
   migrateLegacyTrustedGateway();
   const value = localStorage.getItem(PAIRING_TRUST_PROFILES_STORAGE_KEY);

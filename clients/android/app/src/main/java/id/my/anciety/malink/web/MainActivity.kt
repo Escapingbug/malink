@@ -32,6 +32,7 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
+import android.webkit.WebStorage
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -237,6 +238,9 @@ class MainActivity : ComponentActivity() {
             }
         })
         handleIntent(intent)
+        if (ServicePreferenceStore(this).accountSetupRequired) {
+            clearHostedAccountStateAfterSignOut()
+        }
         showWebHost()
         ensureHostBound()
     }
@@ -1274,6 +1278,16 @@ class MainActivity : ComponentActivity() {
     private suspend fun awaitServiceBinder(): MalinkConnectionService.LocalBinder =
         serviceBinder ?: withTimeout(SERVICE_BIND_TIMEOUT_MS) { serviceBinderReady.await() }
 
+    private fun clearHostedAccountStateAfterSignOut() {
+        WebStorage.getInstance().deleteAllData()
+        CookieManager.getInstance().apply {
+            removeAllCookies(null)
+            flush()
+        }
+        webView?.clearHistory()
+        diagnostics.record("activity.account_signout_web_state_cleared")
+    }
+
     private inner class ActivityBridgeRuntime : BridgeRuntime {
         override val runtimeVersion: String = BuildConfig.VERSION_NAME
         override val runtimeBuild: String = BuildConfig.NATIVE_BUILD_ID
@@ -1319,13 +1333,41 @@ class MainActivity : ComponentActivity() {
 
         override suspend fun bootstrap(
             input: MatrixBootstrap,
-        ): Pair<PublicMatrixSession, ClientSnapshot> = awaitServiceBinder().bootstrap(input)
+        ): Pair<PublicMatrixSession, ClientSnapshot> =
+            accountSetupBinder().bootstrap(input)
 
         override suspend fun rejoin(
             input: MatrixBootstrap,
             pairingLink: String,
         ): Pair<PublicMatrixSession, ClientSnapshot> =
-            awaitServiceBinder().rejoin(input, pairingLink)
+            accountSetupBinder().rejoin(input, pairingLink)
+
+        private suspend fun accountSetupBinder(): MalinkConnectionService.LocalBinder {
+            serviceBinder?.let { return it }
+            withContext(Dispatchers.Main.immediate) {
+                if (!notificationsAvailable()) {
+                    pendingForegroundStart = true
+                    webView?.post { showNotificationGate() }
+                    throw BridgeRuntimeFailure(
+                        BridgeError.INVALID_STATE,
+                        "A visible persistent notification must be allowed before signing in.",
+                        userAction = "open_app",
+                    )
+                }
+                if (!persistentPowerAvailable()) {
+                    pendingForegroundStart = true
+                    webView?.post { showPowerGate() }
+                    throw BridgeRuntimeFailure(
+                        BridgeError.INVALID_STATE,
+                        "Allow Malink to stay active while the screen is off before signing in.",
+                        userAction = "open_app",
+                    )
+                }
+                MalinkConnectionService.startFromUser(this@MainActivity)
+                bindHostOnly()
+            }
+            return awaitServiceBinder()
+        }
 
         override suspend fun publicMatrixSession(): PublicMatrixSession? =
             client().publicMatrixSession()
@@ -1368,8 +1410,16 @@ class MainActivity : ComponentActivity() {
                 serviceBinder = null
                 serviceBound = false
                 bindingRequested = false
+                serviceBinderReady = CompletableDeferred()
                 pendingForegroundStart = false
-                webView?.post { showDisconnectedPage() }
+                when (nativeDisconnectPresentation(mode)) {
+                    NativeDisconnectPresentation.STOPPED ->
+                        webView?.post { showDisconnectedPage() }
+                    NativeDisconnectPresentation.ACCOUNT_SETUP -> {
+                        clearHostedAccountStateAfterSignOut()
+                        diagnostics.record("activity.account_signout_ready_for_setup")
+                    }
+                }
             }
             return snapshot
         }

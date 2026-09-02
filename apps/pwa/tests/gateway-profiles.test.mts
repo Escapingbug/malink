@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   MATRIX_CONFIG_PROFILES_STORAGE_KEY,
   MATRIX_CONFIG_STORAGE_KEY,
+  clearAllMatrixConfigs,
   clearMatrixConfig,
   loadMatrixConfig,
   saveMatrixConfig,
@@ -13,6 +14,7 @@ import {
   PAIRING_TRUST_PROFILES_STORAGE_KEY,
   PAIRING_TRUST_STORAGE_KEY,
   activeTrustedGatewayId,
+  clearAllTrustedGateways,
   clearTrustedGateway,
   saveTrustedGateway,
   selectTrustedGateway,
@@ -73,4 +75,25 @@ test("Gateway trust selects and removes one profile without deleting others", ()
   assert.equal(activeTrustedGatewayId(), "two");
   const registry = JSON.parse(storage.getItem(PAIRING_TRUST_PROFILES_STORAGE_KEY)!);
   assert.deepEqual(Object.keys(registry.gateways), ["two"]);
+});
+
+test("account sign-out clears every Gateway route and trust profile", () => {
+  const storage = new MemoryStorage();
+  Object.assign(globalThis, { localStorage: storage });
+  saveMatrixConfig(config("one"));
+  saveMatrixConfig(config("two"));
+  saveTrustedGateway(trust("one"));
+  saveTrustedGateway(trust("two"));
+
+  clearAllMatrixConfigs();
+  clearAllTrustedGateways();
+
+  assert.equal(loadMatrixConfig(), null);
+  assert.equal(loadMatrixConfig("one"), null);
+  assert.equal(loadMatrixConfig("two"), null);
+  assert.equal(activeTrustedGatewayId(), null);
+  assert.equal(storage.getItem(MATRIX_CONFIG_STORAGE_KEY), null);
+  assert.equal(storage.getItem(MATRIX_CONFIG_PROFILES_STORAGE_KEY), null);
+  assert.equal(storage.getItem(PAIRING_TRUST_STORAGE_KEY), null);
+  assert.equal(storage.getItem(PAIRING_TRUST_PROFILES_STORAGE_KEY), null);
 });
