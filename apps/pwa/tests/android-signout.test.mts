@@ -78,3 +78,9 @@ test("does not expose the retired automatic Matrix account upgrade", () => {
   assert.doesNotMatch(settings, /Rejoin with invitation/u);
   assert.doesNotMatch(app, /clientMatrixAccountUpgrade/u);
 });
+
+test("does not report an already removed native account as unchanged", () => {
+  const app = readFileSync(new URL("../app/MalinkApp.tsx", import.meta.url), "utf8");
+  assert.match(app, /nativeAccountRemoved = client\.runtime === "native"/u);
+  assert.match(app, /Android has signed out, but this page could not finish resetting/u);
+});

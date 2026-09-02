@@ -3,6 +3,7 @@ import test from 'node:test'
 import { generateTotp } from '@malink/security'
 import {
   enrollPrivilegeTotp,
+  forgetPrivilegeTotp,
   hasPrivilegeTotp,
   unlockPrivilegeTotp,
   type PrivilegeTotpEnvironment,
@@ -42,6 +43,15 @@ test('fingerprint PRF encrypts the TOTP key and unlocks the current code', async
   const unlockedCode = await unlockPrivilegeTotp('gateway-1', environment)
   assert.equal(unlockedCode, enrolledCode)
   assert.equal(getCalls, 1)
+})
+
+test('forgets the encrypted TOTP profile without WebAuthn or PRF access', () => {
+  const storage = new MemoryStorage()
+  storage.setItem('ignored', 'encrypted-profile')
+
+  forgetPrivilegeTotp('gateway-1', { storage })
+
+  assert.equal(storage.value, null)
 })
 
 function fakeCredential(prfOutput: Uint8Array): PublicKeyCredential {

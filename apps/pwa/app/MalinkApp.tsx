@@ -6694,13 +6694,16 @@ function MalinkAppRuntime() {
   async function signOutCurrentDevice(): Promise<void> {
     if (deviceSignOutBusy) return;
     const client = malinkClientRef.current;
+    let nativeAccountRemoved = false;
     setDeviceSignOutBusy(true);
     setDeviceSignOutError(null);
     try {
       if (client) {
         await client.signOut();
+        nativeAccountRemoved = client.runtime === "native";
       } else {
         const nativeSignOut = await signOutNativeMatrixSessionIfAvailable();
+        nativeAccountRemoved = nativeSignOut;
         if (!nativeSignOut) {
           await tryLogoutMatrixSession(matrixConfig);
         }
@@ -6709,11 +6712,32 @@ function MalinkAppRuntime() {
         malinkClientRef.current = null;
       }
       if (matrixConfig.gatewayId) {
-        forgetPrivilegeTotp(matrixConfig.gatewayId);
+        try {
+          forgetPrivilegeTotp(matrixConfig.gatewayId);
+        } catch (error) {
+          showUiNotice(
+            "account-signout:totp-cleanup",
+            "connection",
+            "warning",
+            `The account was removed, but its obsolete local approval record could not be cleared: ${formatUiError(error)}`,
+            8_000,
+          );
+        }
       }
       setForgetDialogOpen(false);
       forgetMatrixConfig();
     } catch (error) {
+      if (nativeAccountRemoved) {
+        setForgetDialogOpen(false);
+        setDeviceSignOutError(null);
+        connectionStatusRef.current = "offline";
+        setConnectionStatus("offline");
+        setConnectionError(
+          "Android has signed out, but this page could not finish resetting its old display. Close and reopen Malink. " +
+            `If the old account still appears, export diagnostics. Details: ${formatUiError(error)}`,
+        );
+        return;
+      }
       setDeviceSignOutError(
         "Malink could not remove this device’s protected local account, so it kept the setup unchanged. Export diagnostics, then retry. " +
           `Details: ${formatUiError(error)}`,

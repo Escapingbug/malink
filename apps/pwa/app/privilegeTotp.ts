@@ -148,7 +148,7 @@ export async function unlockPrivilegeTotp(
 
 export function forgetPrivilegeTotp(
   gatewayId: string,
-  environment: PrivilegeTotpEnvironment = browserEnvironment(),
+  environment: Pick<PrivilegeTotpEnvironment, 'storage'> = browserStorageEnvironment(),
 ): void {
   environment.storage.removeItem(storageKey(gatewayId))
 }
@@ -279,6 +279,13 @@ function browserEnvironment(): PrivilegeTotpEnvironment {
     storage: window.localStorage,
     now: Date.now,
   }
+}
+
+function browserStorageEnvironment(): Pick<PrivilegeTotpEnvironment, 'storage'> {
+  if (typeof window === 'undefined') {
+    throw new Error('Browser local storage is unavailable')
+  }
+  return { storage: window.localStorage }
 }
 
 function randomBytes(crypto: Crypto, length: number): Uint8Array {
