@@ -129,6 +129,9 @@ Bridge protocol version 1 currently implements:
 - `matrix.session-bootstrap` v3 (v2 added credential-free discovery of an
   existing native-owned Matrix session; v3 removes arbitrary password
   bootstrap and accepts only a one-time login token from a device invitation)
+- optional `matrix.account-rejoin` v1 (verifies a canonical Workspace
+  invitation, replaces only the native Matrix account, and preserves the
+  Malink device identity, trust, command state, and local projection)
 - `client.update` v1 (`status`/`install`, plus the additive idempotent
   `check` operation; Web clients fall back when a pre-extension v1 APK returns
   `METHOD_NOT_FOUND`)

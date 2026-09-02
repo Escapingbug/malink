@@ -453,6 +453,79 @@ class NativeClientRuntime(
             session to snapshot()
         }
 
+    /**
+     * Rejoins the Workspace client account without replacing the Malink
+     * application identity or its recoverable projection. The invitation is
+     * verified against the pinned Gateway before the old Matrix login is
+     * revoked, and any unfinished command blocks the account change.
+     */
+    suspend fun rejoinWorkspace(
+        input: MatrixBootstrap,
+        pairingLink: String,
+    ): Pair<PublicMatrixSession, ClientSnapshot> {
+        val offer = PairingCodec.decodePairingLink(pairingLink)
+        PairingSecurity.verifyOffer(offer, now = now())
+        val previousSession = mutex.withLock {
+            val activeTrust = trust
+                ?: throw NativeTrustRequiredException("Pair the Gateway before rejoining the Workspace account.")
+            val currentSession = matrix.publicSession()
+                ?: throw IllegalStateException("The current Matrix session is unavailable.")
+            check(currentSession.userId != input.expectedUserId) {
+                "This device already uses the Workspace Matrix account."
+            }
+            val targetUserId = workspaceClientMatrixUserId(activeTrust)
+                ?: throw IllegalStateException(
+                    "The signed Workspace account has not synchronized yet. Reconnect and retry.",
+                )
+            require(input.expectedUserId == targetUserId) {
+                "The invitation does not sign in to the Workspace client Matrix account."
+            }
+            MatrixSessionRepairPolicy.requireWorkspaceOffer(
+                activeTrust,
+                offer,
+                matrixMlp3Projection.workspaceGatewayDirectory()
+                    ?: activeTrust.response.response.gatewayDirectory,
+            )
+            requireRejoinRoute(offer, input)
+            val unfinished = outbox.list().filterNot { it.state.isTerminal }
+            check(unfinished.isEmpty()) {
+                "Finish or retire the ${unfinished.size} pending local action(s) before rejoining the Workspace account."
+            }
+            pendingPairing?.let { current ->
+                check(current.offer == offer && current.request == null) {
+                    "Finish or cancel the current pairing transaction before rejoining the Workspace account."
+                }
+            }
+            pairingStore.save(PersistedPairingTransaction(offer, null, null))
+            clearPreTrustEvents()
+            pendingPairing = PendingPairing(offer, repairingSession = true)
+            schedulePendingPairingExpiry()
+            pairingStorageBlocked = false
+            gatewayStateSynchronized = false
+            refreshSnapshot(publishLifecycle = true)
+            currentSession
+        }
+        val session = try {
+            matrix.replaceSession(input)
+        } catch (error: Exception) {
+            mutex.withLock {
+                val restored = matrix.publicSession()
+                if (restored?.userId == previousSession.userId) {
+                    pairingStore.clear()
+                    pendingPairing = null
+                    cancelPendingPairingExpiry()
+                    clearPreTrustEvents()
+                }
+                refreshSnapshot(publishLifecycle = true)
+            }
+            throw error
+        }
+        return mutex.withLock {
+            refreshSnapshot(publishLifecycle = true)
+            session to snapshot()
+        }
+    }
+
     fun snapshot(): ClientSnapshot = eventHub.snapshot()
 
     suspend fun markSessionRead(
@@ -724,7 +797,11 @@ class NativeClientRuntime(
             check(MatrixSessionRepairPolicy.required(activeTrust, matrix.publicSession())) {
                 "Disconnect the current Gateway before pairing another one."
             }
-            MatrixSessionRepairPolicy.requirePinnedOffer(activeTrust, offer)
+            if (workspaceAccountRejoinInProgress(activeTrust)) {
+                requireCurrentWorkspaceOffer(activeTrust, offer)
+            } else {
+                MatrixSessionRepairPolicy.requirePinnedOffer(activeTrust, offer)
+            }
         }
         pendingPairing?.let { current ->
             if (current.offer == offer) {
@@ -843,7 +920,11 @@ class NativeClientRuntime(
             val transport = transportIdentity ?: readyTransport
             assertOfferRoute(pending.offer)
             trust?.takeIf { pending.repairingSession }?.let { activeTrust ->
-                MatrixSessionRepairPolicy.requirePinnedOffer(activeTrust, pending.offer)
+                if (workspaceAccountRejoinInProgress(activeTrust)) {
+                    requireCurrentWorkspaceOffer(activeTrust, pending.offer)
+                } else {
+                    MatrixSessionRepairPolicy.requirePinnedOffer(activeTrust, pending.offer)
+                }
                 if (MatrixSessionRepairPolicy.required(activeTrust, session)) {
                     MatrixSessionRepairPolicy.requireReplacement(
                         activeTrust,
@@ -3207,6 +3288,46 @@ class NativeClientRuntime(
         require(route.userId == binding.gatewayUserId)
         require(route.deviceId == binding.gatewayDeviceId)
         require(route.ed25519 == binding.gatewayDeviceEd25519)
+    }
+
+    private fun requireRejoinRoute(offer: SignedPairingOffer, input: MatrixBootstrap) {
+        val route = offer.offer.gatewayTransport
+        val binding = input.roomBinding
+        require(offer.offer.gatewayId == binding.gatewayId)
+        require(MatrixIdentifiers.normalizeHomeserver(route.homeserver) ==
+            MatrixIdentifiers.normalizeHomeserver(input.homeserver))
+        require(route.roomId == binding.roomId)
+        require(route.userId == binding.gatewayUserId)
+        require(route.deviceId == binding.gatewayDeviceId)
+        require(route.ed25519 == binding.gatewayDeviceEd25519)
+    }
+
+    private fun requireCurrentWorkspaceOffer(
+        activeTrust: GatewayTrust,
+        offer: SignedPairingOffer,
+    ) {
+        MatrixSessionRepairPolicy.requireWorkspaceOffer(
+            activeTrust,
+            offer,
+            matrixMlp3Projection.workspaceGatewayDirectory()
+                ?: activeTrust.response.response.gatewayDirectory,
+        )
+    }
+
+    private fun workspaceAccountRejoinInProgress(activeTrust: GatewayTrust): Boolean {
+        val targetUserId = workspaceClientMatrixUserId(activeTrust) ?: return false
+        val sessionUserId = matrix.publicSession()?.userId ?: return false
+        return sessionUserId == targetUserId &&
+            activeTrust.certificate.deviceTransport.userId != targetUserId
+    }
+
+    private fun workspaceClientMatrixUserId(activeTrust: GatewayTrust): String? {
+        val signedDirectory = matrixMlp3Projection.workspaceGatewayDirectory()
+            ?: activeTrust.response.response.gatewayDirectory
+            ?: return null
+        return (signedDirectory.requiredObject("directory")["clientMatrixUserId"] as? JsonPrimitive)
+            ?.takeIf(JsonPrimitive::isString)
+            ?.content
     }
 
     private fun assertPairingRequestRoute(

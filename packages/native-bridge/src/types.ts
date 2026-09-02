@@ -563,6 +563,7 @@ export const REQUEST_METHODS = [
   "malink.client.start",
   "malink.client.session",
   "malink.client.bootstrap",
+  "malink.client.rejoin",
   "malink.matrix.loginToken",
   "malink.client.snapshot",
   "malink.client.disconnect",
@@ -601,6 +602,7 @@ export type RequestMethod = (typeof REQUEST_METHODS)[number];
 export const MUTATION_METHODS = [
   "malink.client.start",
   "malink.client.bootstrap",
+  "malink.client.rejoin",
   "malink.matrix.loginToken",
   "malink.client.disconnect",
   "malink.update.check",
@@ -643,6 +645,16 @@ export type BridgeMethodParams = {
   "malink.client.bootstrap": IdempotentMutationParams & {
     homeserver: string;
     /** Single-use secret: never log it or persist it in an idempotency record. */
+    oneTimeLoginToken: string;
+    expectedUserId: string;
+    deviceName: string;
+    roomBinding: MatrixRoomBinding;
+  };
+  "malink.client.rejoin": IdempotentMutationParams & {
+    /** Signed pairing offer approved by the already pinned Gateway. */
+    pairingLink: string;
+    homeserver: string;
+    /** Single-use secret issued by an existing device on the Workspace account. */
     oneTimeLoginToken: string;
     expectedUserId: string;
     deviceName: string;
@@ -733,6 +745,7 @@ export type BridgeMethodResults = {
   "malink.client.start": ClientStartResult;
   "malink.client.session": ClientSessionResult;
   "malink.client.bootstrap": ClientBootstrapResult;
+  "malink.client.rejoin": ClientBootstrapResult;
   "malink.matrix.loginToken": MatrixLoginTokenResult;
   "malink.client.snapshot": ClientSnapshot;
   "malink.client.disconnect": ClientDisconnectResult;

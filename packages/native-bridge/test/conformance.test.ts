@@ -271,6 +271,58 @@ describe("native bridge JSON-RPC conformance", () => {
     ).toThrow(/unknown field: password/);
   });
 
+  it("parses an additive account rejoin without exposing Matrix credentials", () => {
+    const roomBinding = {
+      roomId: "!room:matrix.example",
+      gatewayId: "workspace-1",
+      conversationId: "conversation-1",
+      gatewayUserId: "@gateway:matrix.example",
+      gatewayDeviceId: "GATEWAYDEVICE",
+      gatewayDeviceEd25519: "a".repeat(43),
+    };
+    const parsed = parseRpcRequest(request("malink.client.rejoin", {
+      context,
+      idempotencyKey,
+      pairingLink: "malink://pair?data=signed-offer",
+      homeserver: "https://matrix.example",
+      oneTimeLoginToken: "one-time-login-token",
+      expectedUserId: "@workspace-client:matrix.example",
+      deviceName: "Pixel 10",
+      roomBinding,
+    }));
+    expect(parsed.method).toBe("malink.client.rejoin");
+    expect(isMutationMethod(parsed.method)).toBe(true);
+
+    const result = parseMethodRpcResponse(
+      "malink.client.rejoin",
+      response({
+        deviceId: "native-device-1",
+        session: {
+          homeserver: "https://matrix.example",
+          userId: "@workspace-client:matrix.example",
+          matrixDeviceId: "ANDROID-REJOINED",
+          roomBinding,
+        },
+        snapshot: snapshot(),
+      }),
+    );
+    expect("result" in result && result.result.session.userId)
+      .toBe("@workspace-client:matrix.example");
+    expect(JSON.stringify(result)).not.toContain("one-time-login-token");
+
+    expect(() => parseRpcRequest(request("malink.client.rejoin", {
+      context,
+      idempotencyKey,
+      pairingLink: "malink://pair?data=signed-offer",
+      homeserver: "https://matrix.example",
+      oneTimeLoginToken: "one-time-login-token",
+      expectedUserId: "@workspace-client:matrix.example",
+      deviceName: "Pixel 10",
+      roomBinding,
+      accessToken: "must-never-cross-the-bridge",
+    }))).toThrow(/unknown field: accessToken/);
+  });
+
   it("issues a bounded one-time Matrix token for a completed invitation", () => {
     const parsed = parseRpcRequest(request("malink.matrix.loginToken", {
       context,

@@ -54,7 +54,7 @@ export const OFFICIAL_ANDROID_RELEASES_URL =
 export type ClientMatrixAccountUpgradeNotice = {
   currentUserId: string;
   targetUserId: string;
-  mode: "notice-only";
+  mode: "rejoin";
 };
 
 type Props = {
@@ -69,6 +69,7 @@ type Props = {
   savedGateways: MalinkPublicTrust[];
   gatewayDirectory: SignedWorkspaceGatewayDirectory | null;
   clientMatrixAccountUpgrade: ClientMatrixAccountUpgradeNotice | null;
+  clientMatrixAccountRejoinPending: boolean;
   pairingBusy: boolean;
   deviceInvitation: GeneratedDeviceInvitation | null;
   invitationBusy: boolean;
@@ -99,6 +100,7 @@ type Props = {
   copyPageLinkBusy: boolean;
   onChange(config: MatrixConnectionConfig): void;
   onPairingLink(link: string): void;
+  onAccountRejoinLink(link: string): void;
   onClearPairing(): void;
   onConfirmPairing(): void;
   onClose(): void;
@@ -145,6 +147,7 @@ function MatrixSettingsDialog({
   savedGateways,
   gatewayDirectory,
   clientMatrixAccountUpgrade,
+  clientMatrixAccountRejoinPending,
   repairReason,
   pairingBusy,
   deviceInvitation,
@@ -176,6 +179,7 @@ function MatrixSettingsDialog({
   copyPageLinkBusy,
   onChange,
   onPairingLink,
+  onAccountRejoinLink,
   onClearPairing,
   onConfirmPairing,
   onClose,
@@ -206,6 +210,11 @@ function MatrixSettingsDialog({
   const effectiveRepairReason = repairReason ?? manualRepairReason;
   const repairRequired = effectiveRepairReason !== null;
   const [addingGateway, setAddingGateway] = useState(false);
+  const [clientMatrixAccountRejoinRequested, setClientMatrixAccountRejoinRequested] =
+    useState(false);
+  const clientMatrixAccountRejoinOpen =
+    clientMatrixAccountRejoinPending ||
+    (clientMatrixAccountUpgrade !== null && clientMatrixAccountRejoinRequested);
   const [editingGatewayNodeId, setEditingGatewayNodeId] = useState<string | null>(null);
   const [gatewayNameDraft, setGatewayNameDraft] = useState("");
   const [diagnosticExportStatus, setDiagnosticExportStatus] = useState<
@@ -681,7 +690,7 @@ function MatrixSettingsDialog({
           </section>
         )}
 
-        {clientMatrixAccountUpgrade && (
+        {clientMatrixAccountUpgrade && !clientMatrixAccountRejoinOpen && (
           <section className="connection-recovery-panel" role="alert">
             <div>
               <span className="connection-recovery-mark" aria-hidden="true">!</span>
@@ -689,18 +698,29 @@ function MatrixSettingsDialog({
                 <strong>Matrix account upgrade available</strong>
                 <p>
                   This device still uses the legacy account {clientMatrixAccountUpgrade.currentUserId}.
-                  It can continue working while Malink prepares a safe move to the Workspace account.
+                  To move it safely, create an Add another device invitation on
+                  a client already using the Workspace account, then open that
+                  invitation here.
                 </p>
                 <small>
-                  Target account: {clientMatrixAccountUpgrade.targetUserId}. No account,
-                  authorization, queued command, or local history has been changed.
+                  Target account: {clientMatrixAccountUpgrade.targetUserId}. The
+                  Workspace remains in Matrix, and Malink keeps this device’s
+                  identity and recoverable local history while it rejoins.
                 </small>
               </span>
             </div>
             <div className="connection-recovery-actions">
-              <span className="connection-recovery-disabled-action">
-                Upgrade after migration review
-              </span>
+              <button
+                type="button"
+                className="connect-button"
+                disabled={busy}
+                onClick={() => {
+                  setAddingGateway(false);
+                  setClientMatrixAccountRejoinRequested(true);
+                }}
+              >
+                Rejoin with invitation
+              </button>
               <button type="button" onClick={onClose}>Later</button>
             </div>
           </section>
@@ -722,18 +742,32 @@ function MatrixSettingsDialog({
           />
         )}
 
-        {!addingGateway && <PairingWizard
+        {!addingGateway &&
+          (!clientMatrixAccountUpgrade || clientMatrixAccountRejoinOpen) &&
+          <PairingWizard
           preview={pairingPreview}
           trustedGateway={trustedGateway}
           repairReason={effectiveRepairReason}
           busy={pairingBusy}
           progressDetail={connectionDetail}
-          canConfirm={Boolean(config.accessToken)}
+          canConfirm={clientMatrixAccountRejoinPending || Boolean(config.accessToken)}
           deviceInvitation={deviceInvitation}
           invitationBusy={invitationBusy}
           invitationError={invitationError}
           invitationReauthRequired={invitationReauthRequired}
-          onLink={onPairingLink}
+          accountRejoin={
+            clientMatrixAccountRejoinPending
+              ? clientMatrixAccountUpgrade
+              : null
+          }
+          accountRejoinRequested={
+            clientMatrixAccountRejoinOpen || clientMatrixAccountRejoinPending
+          }
+          onLink={
+            clientMatrixAccountRejoinOpen
+              ? onAccountRejoinLink
+              : onPairingLink
+          }
           onClear={() => {
             setAddingGateway(false);
             onClearPairing();
@@ -741,7 +775,7 @@ function MatrixSettingsDialog({
           onConfirm={onConfirmPairing}
           onCreateInvitation={onCreateInvitation}
           onClearInvitation={onClearInvitation}
-        />}
+          />}
 
         {(needsAccount || trustedGateway) && (
           <details className="connection-details" open={needsAccount}>

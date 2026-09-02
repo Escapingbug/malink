@@ -42,6 +42,11 @@ type Props = {
   invitationBusy: boolean;
   invitationError: string | null;
   invitationReauthRequired: boolean;
+  accountRejoin?: {
+    currentUserId: string;
+    targetUserId: string;
+  } | null;
+  accountRejoinRequested?: boolean;
   onLink(link: string): void;
   onClear(): void;
   onConfirm(): void;
@@ -60,6 +65,8 @@ export function PairingWizard({
   invitationBusy,
   invitationError,
   invitationReauthRequired,
+  accountRejoin = null,
+  accountRejoinRequested = false,
   onLink,
   onClear,
   onConfirm,
@@ -114,7 +121,12 @@ export function PairingWizard({
   const qrDataUrl =
     qrCode.link === deviceInvitation?.link ? qrCode.dataUrl : "";
 
-  if (trustedGateway && !preview && !repairRequired) {
+  if (
+    trustedGateway &&
+    !preview &&
+    !repairRequired &&
+    !accountRejoinRequested
+  ) {
     return (
       <div className="device-invitation-flow">
         <section className="paired-gateway-card" aria-label="Connected computer">
@@ -311,23 +323,46 @@ export function PairingWizard({
             G
           </span>
           <div>
-            <span className="paired-label">Computer found</span>
+            <span className="paired-label">
+              {accountRejoin ? "Workspace invitation ready" : "Computer found"}
+            </span>
             <strong>{preview.gatewayName}</strong>
-            <small>Secure connection ready</small>
+            <small>
+              {accountRejoin
+                ? "Ready to move this device to the shared Workspace account"
+                : "Secure connection ready"}
+            </small>
           </div>
           <button className="text-button" onClick={onClear} disabled={busy}>
             Change
           </button>
         </div>
 
-        <div className="verification-panel">
-          <span>Invitation code</span>
-          <strong>{preview.verificationCode}</strong>
-          <small>
-            Expires {formatExpiry(preview.expiresAt)}. Confirm that it matches
-            the request shown on your computer.
-          </small>
-        </div>
+        {accountRejoin ? (
+          <div className="connection-repair-notice" role="status">
+            <strong>Move this device to the Workspace account</strong>
+            <p>
+              Malink will sign this device out of {accountRejoin.currentUserId},
+              but only after it verifies the signed Workspace and Gateway
+              route. It will then sign in as {accountRejoin.targetUserId} and
+              renew this same Malink device’s authorization. Server Workspace
+              content and this device’s recoverable local history stay intact.
+            </p>
+            <p>
+              If sign-in is interrupted, request a new invitation and retry;
+              do not clear the app’s data.
+            </p>
+          </div>
+        ) : (
+          <div className="verification-panel">
+            <span>Invitation code</span>
+            <strong>{preview.verificationCode}</strong>
+            <small>
+              Expires {formatExpiry(preview.expiresAt)}. Confirm that it matches
+              the request shown on your computer.
+            </small>
+          </div>
+        )}
 
         <button
           className="pair-confirm-button"
@@ -335,10 +370,14 @@ export function PairingWizard({
           disabled={busy || !canConfirm}
         >
           {busy
-            ? <BusyActionLabel>Connecting this device…</BusyActionLabel>
+            ? <BusyActionLabel>
+                {accountRejoin ? "Rejoining Workspace…" : "Connecting this device…"}
+              </BusyActionLabel>
             : !canConfirm
               ? "Sign in below to continue"
-            : `Connect to ${preview.gatewayName}`}
+            : accountRejoin
+              ? "Sign out and rejoin Workspace"
+              : `Connect to ${preview.gatewayName}`}
         </button>
         {busy && (
           <p className="pairing-scan-status" role="status">
@@ -352,6 +391,16 @@ export function PairingWizard({
 
   return (
     <section className="pairing-start">
+      {accountRejoinRequested && (
+        <div className="connection-repair-notice" role="status">
+          <strong>Use an invitation from the Workspace account</strong>
+          <p>
+            On a device already signed in as the target Workspace account,
+            choose Add another device. Scan or paste that one-time invitation
+            below. Malink will verify it before changing this device’s account.
+          </p>
+        </div>
+      )}
       {repairRequired && trustedGateway && (
         <div className="connection-repair-notice" role="status">
           {repairReason === "project-authorization" ? (
@@ -389,25 +438,35 @@ export function PairingWizard({
         </span>
         <div>
           <h3>
-            {repairReason === "project-authorization"
+            {accountRejoinRequested
+              ? "Rejoin the Workspace account"
+              : repairReason === "project-authorization"
               ? "Use a new authorization invitation"
               : repairRequired
                 ? "Get a repair invitation"
                 : "Connect to your computer"}
           </h3>
           <p>
-            Open Malink on another connected device and choose Add another
-            device. Then scan its QR code or paste the one-time invitation
-            shown there.
+            {accountRejoinRequested
+              ? "The invitation must be created by a device already using the target Workspace account."
+              : "Open Malink on another connected device and choose Add another device. Then scan its QR code or paste the one-time invitation shown there."}
           </p>
         </div>
       </div>
 
       <label className="pairing-link-field">
-        <span>One-time pairing link</span>
+        <span>
+          {accountRejoinRequested
+            ? "One-time device invitation"
+            : "One-time pairing link"}
+        </span>
         <textarea
           value={link}
-          placeholder="malink://pair?data=…"
+          placeholder={
+            accountRejoinRequested
+              ? "https://…/#invite=…"
+              : "malink://pair?data=…"
+          }
           rows={3}
           spellCheck={false}
           disabled={busy || pasteBusy || imageScanBusy}
