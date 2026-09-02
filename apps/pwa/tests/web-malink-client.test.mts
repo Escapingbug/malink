@@ -136,6 +136,33 @@ test("keeps UI disposal distinct from an explicit web disconnect", async () => {
   assert.equal(disconnectedStops, 1);
 });
 
+test("revokes the browser Matrix login before stopping local transport", async () => {
+  const originalFetch = globalThis.fetch;
+  let request: { url: string; authorization: string | null } | null = null;
+  let stops = 0;
+  globalThis.fetch = async (input, init) => {
+    request = {
+      url: String(input),
+      authorization: new Headers(init?.headers).get("authorization"),
+    };
+    return new Response(null, { status: 200 });
+  };
+  try {
+    await new WebMalinkClient(
+      fakeTransport(() => stops += 1),
+      config,
+    ).signOut();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(request, {
+    url: "https://matrix.example.test/_matrix/client/v3/logout",
+    authorization: "Bearer token",
+  });
+  assert.equal(stops, 1);
+});
+
 test("forwards project-qualified history routes to the browser transport", async () => {
   const calls: string[] = [];
   const transport = fakeTransport(() => {});

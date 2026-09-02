@@ -1759,6 +1759,8 @@ function MalinkAppRuntime() {
     useState<ProviderHistoryLoadState | null>(null);
   const [providerHistoryError, setProviderHistoryError] = useState<string | null>(null);
   const [forgetDialogOpen, setForgetDialogOpen] = useState(false);
+  const [deviceSignOutBusy, setDeviceSignOutBusy] = useState(false);
+  const [deviceSignOutError, setDeviceSignOutError] = useState<string | null>(null);
   const [newSessionBusy, setNewSessionBusy] = useState(false);
   const [newProjectBusy, setNewProjectBusy] = useState(false);
   const [projectSettingsBusy, setProjectSettingsBusy] = useState(false);
@@ -2655,20 +2657,6 @@ function MalinkAppRuntime() {
         return owner.gatewayNodeId === projectSettingsGateway.gatewayNodeId;
       }).length > 1
     : false;
-  const workspaceGatewayCount = gatewayState?.gatewayDirectory?.directory.gateways.length
-    ?? (trustedGateway ? 1 : 0);
-  const onlyWorkspaceGateway = gatewayState?.gatewayDirectory?.directory.gateways[0];
-  const workspaceGatewayTitle = workspaceGatewayCount > 1
-    ? `${workspaceGatewayCount} Gateways`
-    : onlyWorkspaceGateway
-      ? gatewayProjectOwner(
-          onlyWorkspaceGateway.gatewayNodeId,
-          onlyWorkspaceGateway.gatewayName,
-          onlyWorkspaceGateway.computerName,
-        ).label
-      : trustedGateway
-        ? fallbackProjectGateway.label
-      : "Connect a computer";
   const activeCapabilities = activeWorkspace?.capabilities ?? gatewayState?.capabilities;
   const canCreateAnySession = allWorkspaceProjects
     .filter(project => projectMatchesGatewayFilter(
@@ -6745,6 +6733,37 @@ function MalinkAppRuntime() {
       });
     }
     setSettingsOpen(true);
+  }
+
+  async function signOutCurrentDevice(): Promise<void> {
+    if (deviceSignOutBusy) return;
+    const client = malinkClientRef.current;
+    if (!client) {
+      setDeviceSignOutError(
+        "Reconnect this device before signing out. Matrix must confirm that this device was revoked before Malink removes its local account data.",
+      );
+      return;
+    }
+    setDeviceSignOutBusy(true);
+    setDeviceSignOutError(null);
+    try {
+      await client.signOut();
+      if (malinkClientRef.current === client) {
+        malinkClientRef.current = null;
+      }
+      if (matrixConfig.gatewayId) {
+        forgetPrivilegeTotp(matrixConfig.gatewayId);
+      }
+      setForgetDialogOpen(false);
+      forgetMatrixConfig();
+    } catch (error) {
+      setDeviceSignOutError(
+        "Malink could not complete Matrix sign-out, so it kept this device’s account and local data unchanged. Reconnect to Matrix, then try again. " +
+          `Details: ${formatUiError(error)}`,
+      );
+    } finally {
+      setDeviceSignOutBusy(false);
+    }
   }
 
   async function openPairingLink(link: string) {
@@ -14050,6 +14069,7 @@ function MalinkAppRuntime() {
         nativeUpdateBusy={nativeUpdateActionBusy}
         nativeUpdateRequestBusy={nativeUpdateBusy}
         diagnosticExportBusy={diagnosticExportBusy}
+        signOutBusy={deviceSignOutBusy}
         nativeRuntime={nativeRuntime}
         webPushState={webPushState}
         webPushBusy={webPushBusy}
@@ -14073,7 +14093,10 @@ function MalinkAppRuntime() {
         }}
         onClose={() => setSettingsOpen(false)}
         onDisconnect={() => disconnectClient()}
-        onForget={() => setForgetDialogOpen(true)}
+        onForget={() => {
+          setDeviceSignOutError(null);
+          setForgetDialogOpen(true);
+        }}
         onCreateInvitation={(password) =>
           void createDeviceInvitation(password)
         }
@@ -14129,10 +14152,32 @@ function MalinkAppRuntime() {
 
       <GatewayForgetDialog
         open={forgetDialogOpen}
-        gatewayName={trustedGateway ? workspaceGatewayTitle : null}
-        busy={false}
-        onClose={() => setForgetDialogOpen(false)}
+        deviceKind={
+          matrixConfig.homeserver.trim() &&
+          matrixConfig.userId.trim() &&
+          matrixConfig.accessToken.trim() &&
+          matrixConfig.roomId.trim()
+            ? injectedNativeBridgePort()
+              ? "android"
+              : "browser"
+            : null
+        }
+        busy={deviceSignOutBusy}
+        error={deviceSignOutError}
+        onClose={() => {
+          setDeviceSignOutError(null);
+          setForgetDialogOpen(false);
+        }}
         onConfirm={() => {
+          if (
+            matrixConfig.homeserver.trim() &&
+            matrixConfig.userId.trim() &&
+            matrixConfig.accessToken.trim() &&
+            matrixConfig.roomId.trim()
+          ) {
+            void signOutCurrentDevice();
+            return;
+          }
           if (matrixConfig.gatewayId) {
             forgetPrivilegeTotp(matrixConfig.gatewayId);
           }

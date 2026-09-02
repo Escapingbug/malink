@@ -7,6 +7,7 @@ import type {
 } from "@malink/protocol";
 import type { CommandCompletion } from "../../commandLifecycle";
 import {
+  logoutMatrixSession,
   requestMatrixLoginToken,
   type MatrixLoginTokenResult,
 } from "../../matrixAuth";
@@ -190,6 +191,11 @@ export class WebMalinkClient implements MalinkClient {
   }
 
   async disconnect(): Promise<void> {
+    this.transport.stop();
+  }
+
+  async signOut(): Promise<void> {
+    await logoutMatrixSession(this.config);
     this.transport.stop();
   }
 

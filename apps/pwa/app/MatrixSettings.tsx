@@ -98,6 +98,7 @@ type Props = {
   webPushState: WebPushNotificationState;
   webPushBusy: boolean;
   copyPageLinkBusy: boolean;
+  signOutBusy: boolean;
   onChange(config: MatrixConnectionConfig): void;
   onPairingLink(link: string): void;
   onAccountRejoinLink(link: string): void;
@@ -177,6 +178,7 @@ function MatrixSettingsDialog({
   webPushState,
   webPushBusy,
   copyPageLinkBusy,
+  signOutBusy,
   onChange,
   onPairingLink,
   onAccountRejoinLink,
@@ -247,7 +249,8 @@ function MatrixSettingsDialog({
     webPushBusy ||
     nativeUpdateRequestBusy ||
     diagnosticExportBusy ||
-    copyPageLinkBusy;
+    copyPageLinkBusy ||
+    signOutBusy;
   const busy =
     status === "connecting" ||
     status === "securing" ||
@@ -1012,26 +1015,17 @@ function MatrixSettingsDialog({
           </div>
         </section>
 
-        <section className="settings-danger-zone settings-danger-zone-standalone">
-          <span>
-            <strong>
-              {trustedGateway ? "Remove this computer" : "Reset local setup"}
-            </strong>
-            <small>
-              {trustedGateway
-                ? "Remove this computer and its saved authorization from this device."
-                : "Clear incomplete connection data stored on this device."}
-            </small>
-          </span>
-          <button
-            type="button"
-            className="forget-button"
-            onClick={onForget}
-            disabled={busy}
-          >
-            {trustedGateway ? "Remove computer" : "Clear local setup"}
-          </button>
-        </section>
+        <DeviceRemovalSettings
+          deviceKind={
+            hasSavedConnection
+              ? nativeHostDetected
+                ? "android"
+                : "browser"
+              : null
+          }
+          busy={busy}
+          onRemove={onForget}
+        />
         </div>
 
         {connected && (
@@ -1052,6 +1046,49 @@ function MatrixSettingsDialog({
         )}
       </section>
     </div>
+  );
+}
+
+export function DeviceRemovalSettings({
+  deviceKind,
+  busy,
+  onRemove,
+}: {
+  deviceKind: "android" | "browser" | null;
+  busy: boolean;
+  onRemove(): void;
+}) {
+  return (
+    <section className="settings-danger-zone settings-danger-zone-standalone">
+      <span>
+        <strong>
+          {deviceKind === "android"
+            ? "Sign out of Android app"
+            : deviceKind === "browser"
+              ? "Sign out of this browser"
+              : "Reset local setup"}
+        </strong>
+        <small>
+          {deviceKind === "android"
+            ? "Revoke this Android device’s Matrix login, then remove its local Malink authorization and cached history."
+            : deviceKind === "browser"
+              ? "Revoke this browser’s Matrix login, then remove its local Malink authorization and cached history."
+              : "Clear incomplete connection data stored on this device."}
+        </small>
+      </span>
+      <button
+        type="button"
+        className="forget-button"
+        onClick={onRemove}
+        disabled={busy}
+      >
+        {deviceKind
+          ? busy
+            ? "Signing out…"
+            : "Sign out"
+          : "Clear local setup"}
+      </button>
+    </section>
   );
 }
 
