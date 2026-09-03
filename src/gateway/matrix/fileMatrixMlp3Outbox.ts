@@ -343,14 +343,24 @@ export class FileMatrixMlp3Outbox {
     eventType: string,
     stateKey: string,
   ): MatrixMlp3StateDelivery | undefined {
-    const matching = [...this.deliveries.values()].filter(
-      (delivery): delivery is MatrixMlp3StateDelivery =>
-        delivery.kind === 'state'
-        && delivery.roomId === roomId
-        && delivery.eventType === eventType
-        && delivery.stateKey === stateKey,
-    )
-    const latest = matching.sort((left, right) => right.createdAt - left.createdAt)[0]
+    let latest: MatrixMlp3StateDelivery | undefined
+    for (const delivery of this.deliveries.values()) {
+      if (
+        delivery.kind !== 'state'
+        || delivery.roomId !== roomId
+        || delivery.eventType !== eventType
+        || delivery.stateKey !== stateKey
+      ) continue
+      // A superseded state remains in the delivery catalog as a durable
+      // tombstone, but it is not an authoritative retry target. Returning it
+      // here makes callers retry an ID that the outbox can never deliver.
+      // Equal timestamps are possible when two state publications race in the
+      // same millisecond; Map iteration follows WAL insertion order, so >=
+      // deliberately selects the later surviving entry.
+      const terminal = this.terminal.get(delivery.deliveryId)
+      if (!this.pendingEntries.has(delivery.deliveryId) && !terminal?.eventId) continue
+      if (!latest || delivery.createdAt >= latest.createdAt) latest = delivery
+    }
     return latest ? structuredClone(latest) : undefined
   }
 

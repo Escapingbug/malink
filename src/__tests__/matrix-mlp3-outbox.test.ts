@@ -40,6 +40,43 @@ describe('FileMatrixMlp3Outbox', () => {
     expect(outbox.pending().map(value => value.deliveryId)).not.toContain(oldState.deliveryId)
   })
 
+  it('never returns a superseded equal-timestamp state as the retry authority', async () => {
+    const path = join(await mkdtemp(join(tmpdir(), 'malink-v3-outbox-')), 'outbox.jsonl')
+    const first = new FileMatrixMlp3Outbox(path)
+    await first.initialize()
+    const oldState = first.createState({
+      roomId: '!project:example.org',
+      eventType: 'io.malink.workspace.current.v3',
+      stateKey: 'workspace-1',
+      content: { eventId: '$old' },
+      createdAt: 1,
+    })
+    const newState = first.createState({
+      roomId: '!project:example.org',
+      eventType: 'io.malink.workspace.current.v3',
+      stateKey: 'workspace-1',
+      content: { eventId: '$new' },
+      createdAt: 1,
+    })
+    await first.stage(oldState)
+    expect(await first.stage(newState)).toEqual([oldState.deliveryId])
+    await first.markDelivered(newState.deliveryId, '$state-event', 2)
+
+    expect(first.latestState(
+      '!project:example.org',
+      'io.malink.workspace.current.v3',
+      'workspace-1',
+    )).toMatchObject({ deliveryId: newState.deliveryId, content: { eventId: '$new' } })
+
+    const recovered = new FileMatrixMlp3Outbox(path)
+    await recovered.initialize()
+    expect(recovered.latestState(
+      '!project:example.org',
+      'io.malink.workspace.current.v3',
+      'workspace-1',
+    )).toMatchObject({ deliveryId: newState.deliveryId, content: { eventId: '$new' } })
+  })
+
   it('restores an undelivered encrypted event across restart', async () => {
     const path = join(await mkdtemp(join(tmpdir(), 'malink-v3-outbox-')), 'outbox.jsonl')
     const first = new FileMatrixMlp3Outbox(path)
