@@ -397,6 +397,7 @@ import {
   advanceNativeAppUpdate,
   bootstrapNativeMatrixSessionIfAvailable,
   createMalinkClient,
+  exportNativeDiagnosticsIfAvailable,
   isNativeManagedMatrixConfig,
   nativeMatrixSessionConfig,
   signOutNativeMatrixSessionIfAvailable,
@@ -7992,6 +7993,16 @@ function MalinkAppRuntime() {
             "This APK cannot open the Android diagnostic share sheet. Update the APK and try again.",
           );
         }
+        showUiNotice(
+          "diagnostics:exported",
+          "update",
+          "success",
+          "Android opened the diagnostic share sheet. Choose where to save or send the report.",
+          8_000,
+        );
+        return true;
+      }
+      if (await exportNativeDiagnosticsIfAvailable()) {
         showUiNotice(
           "diagnostics:exported",
           "update",

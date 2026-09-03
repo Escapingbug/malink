@@ -106,6 +106,7 @@ class MatrixConnectionRuntime(
     private var reconnectFailures = 0
     @Volatile
     private var sdkTimelineReady = false
+    private val initialSessionRestore = MatrixSessionRestoreBarrier()
 
     val status: MatrixRuntimeStatus
         get() = stateMachine.status
@@ -123,9 +124,17 @@ class MatrixConnectionRuntime(
                 mutex.withLock {
                     restorePersistedSessionLocked()
                     accept(MatrixRuntimeEvent.Start(secrets != null, networkAvailable))
+                    // Session discovery depends only on the encrypted local
+                    // record. Do not make the WebView wait for Matrix network
+                    // sync or SDK crypto startup before it can recover routing.
+                    initialSessionRestore.complete()
                     if (secrets != null && networkAvailable) runCatching { connectLocked() }
                 }
+            } catch (error: CancellationException) {
+                initialSessionRestore.cancel(error)
+                throw error
             } catch (error: Exception) {
+                initialSessionRestore.fail(error)
                 diagnostics.record("matrix.recovery.failure", errorAttributes(error))
                 accept(
                     MatrixRuntimeEvent.Failed("matrix_recovery_blocked", blocked = true),
@@ -321,6 +330,11 @@ class MatrixConnectionRuntime(
     }
 
     fun publicSession(): PublicMatrixSession? = secrets?.session?.toPublic()
+
+    suspend fun awaitPublicSessionRestored(): PublicMatrixSession? {
+        initialSessionRestore.await()
+        return publicSession()
+    }
 
     suspend fun updateRoomBindings(bindings: List<MatrixRoomBinding>): PublicMatrixSession {
         val normalized = bindings.map(MatrixIdentifiers::validateRoomBinding)

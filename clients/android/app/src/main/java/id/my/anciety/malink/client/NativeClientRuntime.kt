@@ -507,7 +507,15 @@ class NativeClientRuntime(
         }
     }
 
-    fun publicMatrixSession(): PublicMatrixSession? = matrix.publicSession()
+    /**
+     * Session discovery is allowed to wait for the initial encrypted-store
+     * restore. Returning null during that bounded local startup window made the
+     * hosted UI misclassify an intact account as missing. The existing bridge
+     * schema remains unchanged: null now means restoration completed and no
+     * session exists.
+     */
+    suspend fun publicMatrixSession(): PublicMatrixSession? =
+        matrix.awaitPublicSessionRestored()
 
     fun trustState(): PublicTrustState = publicTrust()
 

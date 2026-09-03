@@ -30,6 +30,7 @@ interface NativeMatrixPort {
     fun setObserver(observer: NativeMatrixObserver?)
     fun start()
     fun publicSession(): PublicMatrixSession?
+    suspend fun awaitPublicSessionRestored(): PublicMatrixSession? = publicSession()
     suspend fun updateRoomBindings(bindings: List<MatrixRoomBinding>): PublicMatrixSession =
         throw UnsupportedOperationException("Workspace multi-room routing is unavailable.")
     suspend fun bootstrap(input: MatrixBootstrap): PublicMatrixSession
@@ -118,6 +119,8 @@ class MatrixNativePort(context: Context) : NativeMatrixPort {
 
     override fun start() = runtime.start()
     override fun publicSession(): PublicMatrixSession? = runtime.publicSession()
+    override suspend fun awaitPublicSessionRestored(): PublicMatrixSession? =
+        runtime.awaitPublicSessionRestored()
     override suspend fun updateRoomBindings(bindings: List<MatrixRoomBinding>): PublicMatrixSession =
         runtime.updateRoomBindings(bindings)
     override suspend fun bootstrap(input: MatrixBootstrap): PublicMatrixSession = runtime.bootstrap(input)

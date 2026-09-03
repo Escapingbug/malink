@@ -903,8 +903,12 @@ function MatrixSettingsDialog({
               {diagnosticExportStatus && (
                 <small role="status">
                   {diagnosticExportStatus === "started"
-                    ? "Diagnostic report download started."
-                    : "The diagnostic report could not be downloaded."}
+                    ? nativeHostDetected
+                      ? "Android diagnostic share sheet opened."
+                      : "Diagnostic report download started."
+                    : nativeHostDetected
+                      ? "The Android diagnostic share sheet could not be opened."
+                      : "The diagnostic report could not be downloaded."}
                 </small>
               )}
             </span>

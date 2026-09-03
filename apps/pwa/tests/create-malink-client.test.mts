@@ -14,6 +14,7 @@ import {
   advanceNativeAppUpdate,
   bootstrapNativeMatrixSessionIfAvailable,
   createMalinkClient,
+  exportNativeDiagnosticsIfAvailable,
   nativeRuntimeInfo,
   nativeMatrixSessionConfig,
   signOutNativeMatrixSessionIfAvailable,
@@ -346,6 +347,26 @@ test("can remove a native account without constructing the ordinary client", asy
   assert.equal(port.onmessage, null);
 });
 
+test("opens native diagnostics without constructing the ordinary client", async () => {
+  const port = new DiagnosticsPort();
+  assert.equal(await exportNativeDiagnosticsIfAvailable({
+    nativePort: () => port,
+    createBridge: (nativePort) => new NativeRpcBridge(nativePort),
+  }), true);
+  assert.deepEqual(port.methods, [
+    "malink.bridge.hello",
+    "malink.diagnostics.export",
+  ]);
+  assert.equal(port.onmessage, null);
+});
+
+test("leaves browser diagnostics available when no native host exists", async () => {
+  assert.equal(await exportNativeDiagnosticsIfAvailable({
+    nativePort: () => null,
+    createBridge: (nativePort) => new NativeRpcBridge(nativePort),
+  }), false);
+});
+
 test("recovers an existing native session without exporting credentials", async () => {
   const port = new SessionPort(true);
   const session = await resumeNativeMatrixSessionIfAvailable({
@@ -547,6 +568,34 @@ class SessionPort implements NativeBridgePort {
         data: JSON.stringify({ jsonrpc: "2.0", id: request.id, result }),
       });
     });
+  }
+}
+
+class DiagnosticsPort implements NativeBridgePort {
+  onmessage: NativeBridgePort["onmessage"] = null;
+  methods: string[] = [];
+
+  postMessage(message: string): void {
+    const request = JSON.parse(message) as { id: string; method: string };
+    this.methods.push(request.method);
+    const result = request.method === "malink.bridge.hello"
+      ? {
+          protocolVersion: 1,
+          bridgeSessionId: "bridge-diagnostics-1",
+          native: {
+            runtimeVersion: "1.1.0",
+            runtimeBuild: "android-diagnostics",
+            platform: "android",
+          },
+          capabilities: { "client.diagnostics": { version: 1 } },
+          limits: NATIVE_BRIDGE_LIMITS,
+        }
+      : request.method === "malink.diagnostics.export"
+        ? { status: "share_opened", filename: "malink-native-diagnostics.txt" }
+        : assert.fail(`Unexpected native method: ${request.method}`);
+    queueMicrotask(() => this.onmessage?.({
+      data: JSON.stringify({ jsonrpc: "2.0", id: request.id, result }),
+    }));
   }
 }
 

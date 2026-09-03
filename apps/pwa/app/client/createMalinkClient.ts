@@ -200,6 +200,35 @@ export async function advanceNativeAppUpdate(
 }
 
 /**
+ * Keeps Android diagnostics available when the ordinary Malink client cannot
+ * be constructed. A broken connection is the most important time for this
+ * support surface, so it owns a short-lived bridge lease just like the native
+ * updater instead of depending on Matrix or Gateway readiness.
+ */
+export async function exportNativeDiagnosticsIfAvailable(
+  dependencies: Pick<
+    CreateMalinkClientDependencies,
+    "nativePort" | "createBridge"
+  > = defaultDependencies,
+): Promise<boolean> {
+  const port = dependencies.nativePort();
+  if (!port) return false;
+  const bridge = await dependencies.createBridge(port);
+  try {
+    await bridge.hello({
+      webBuild: MALINK_BUILD_VERSION,
+      requiredCapabilities: [{ name: "client.diagnostics", versions: [1] }],
+    });
+    const result = await bridge.request("malink.diagnostics.export", {
+      context: bridge.context(),
+    });
+    return result.status === "share_opened";
+  } finally {
+    bridge.close();
+  }
+}
+
+/**
  * Consumes a one-time Matrix login token in native code only when the host
  * implements the complete durable Malink runtime. A partial/older host leaves
  * the token untouched so the browser implementation may consume it instead.
