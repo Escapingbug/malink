@@ -176,6 +176,11 @@ export interface MatrixMlp3GatewayDependencies {
     commandId: string
     enrollmentId: string
   }) => Promise<{ gatewayNodeId: string; gatewayName: string }>
+  cancelGatewayEnrollment?: (input: {
+    requestedByDeviceId: string
+    commandId: string
+    enrollmentId: string
+  }) => Promise<{ gatewayNodeId: string; gatewayName: string }>
   updateGatewayProfile?: (input: {
     requestedByDeviceId: string
     commandId: string
@@ -1126,6 +1131,9 @@ export class MatrixMlp3GatewayRunner {
         return
       case 'gateway.enrollment.approve':
         await this.approveGatewayEnrollment(project, command)
+        return
+      case 'gateway.enrollment.cancel':
+        await this.cancelGatewayEnrollment(project, command)
         return
       case 'gateway.profile.update':
         await this.updateGatewayProfile(project, command)
@@ -2338,6 +2346,28 @@ export class MatrixMlp3GatewayRunner {
       gatewayName: approved.gatewayName,
     })
     await this.settleAndDeliver(project, command, event, 'succeeded', approved)
+    await this.syncState()
+  }
+
+  private async cancelGatewayEnrollment(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.enrollment.cancel'>,
+  ): Promise<void> {
+    if (!this.dependencies.cancelGatewayEnrollment) {
+      throw new Error('This Gateway host does not support Gateway enrollment cancellation')
+    }
+    const cancelled = await this.dependencies.cancelGatewayEnrollment({
+      requestedByDeviceId: command.deviceId,
+      commandId: command.commandId,
+      enrollmentId: command.payload.enrollmentId,
+    })
+    const event = this.eventFor(project, undefined, command, 'gateway-enrollment-cancelled', {
+      type: 'gateway.enrollment.cancelled',
+      enrollmentId: command.payload.enrollmentId,
+      gatewayNodeId: cancelled.gatewayNodeId,
+      gatewayName: cancelled.gatewayName,
+    })
+    await this.settleAndDeliver(project, command, event, 'succeeded', cancelled)
     await this.syncState()
   }
 

@@ -23,6 +23,7 @@ export function GatewayEnrollmentPanel({
   error,
   onCreate,
   onApprove,
+  onCancel,
   onClear,
 }: {
   invitation: GeneratedGatewayEnrollment | null;
@@ -32,6 +33,7 @@ export function GatewayEnrollmentPanel({
   error: string | null;
   onCreate(): void;
   onApprove(enrollmentId: string, approverProjectId?: string): void;
+  onCancel(request: GatewayEnrollmentPending): void;
   onClear(): void;
 }) {
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
@@ -51,17 +53,19 @@ export function GatewayEnrollmentPanel({
         <button type="button" disabled={operationBusy} onClick={onClear}>Close</button>
       </header>
 
-      {!invitation && pending.length === 0 && (
+      {!invitation && (
         <div className="gateway-enrollment-empty">
           <p>
-            Create a one-time setup command, run it on the new Gateway, then
-            approve the matching verification code here. No Workspace key or
-            existing Gateway credential needs to be copied.
+            {pending.length > 0
+              ? "You can review the requests below or create a separate setup link for another Gateway."
+              : "Create a one-time setup command, run it on the new Gateway, then approve the matching verification code here. No Workspace key or existing Gateway credential needs to be copied."}
           </p>
           <button type="button" className="connect-button" disabled={operationBusy} onClick={onCreate}>
             {busy?.kind === "create"
               ? <BusyActionLabel>Creating setup link…</BusyActionLabel>
-              : "Create Gateway setup link"}
+              : pending.length > 0
+                ? "Create another Gateway setup link"
+                : "Create Gateway setup link"}
           </button>
         </div>
       )}
@@ -129,16 +133,25 @@ export function GatewayEnrollmentPanel({
             {approved
               ? <small role="status">Waiting for Gateway Host…</small>
               : (
-                <button
-                  type="button"
-                  className="connect-button"
-                  disabled={operationBusy}
-                  onClick={() => onApprove(request.enrollmentId, request.approverProjectId)}
-                >
-                  {approvingThisRequest
-                    ? <BusyActionLabel>Sending approval…</BusyActionLabel>
-                    : "Approve Gateway"}
-                </button>
+                <div className="pairing-actions">
+                  <button
+                    type="button"
+                    className="connect-button"
+                    disabled={operationBusy}
+                    onClick={() => onApprove(request.enrollmentId, request.approverProjectId)}
+                  >
+                    {approvingThisRequest
+                      ? <BusyActionLabel>Sending approval…</BusyActionLabel>
+                      : "Approve Gateway"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={operationBusy}
+                    onClick={() => onCancel(request)}
+                  >
+                    Abandon request
+                  </button>
+                </div>
               )}
           </article>
         );

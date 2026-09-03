@@ -735,6 +735,28 @@ runner = new MatrixMlp3GatewayRunner(config, {
             gatewayName: approved.gatewayName,
         }
     },
+    cancelGatewayEnrollment: async ({ requestedByDeviceId, enrollmentId }) => {
+        const cancelled = await gatewayEnrollmentCoordinator.cancel(
+            enrollmentId,
+            Date.now(),
+        )
+        if (!client.setApplicationRoomState) {
+            throw new Error('Matrix transport cannot publish Gateway enrollment responses')
+        }
+        await client.setApplicationRoomState({
+            roomId: currentTransport.roomId,
+            eventType: MLP3_MATRIX_GATEWAY_ENROLLMENT_RESPONSE_EVENT_TYPE,
+            stateKey: enrollmentId,
+            content: cancelled.response,
+        })
+        process.stdout.write(
+            `Device ${requestedByDeviceId} cancelled Gateway ${cancelled.gatewayName} enrollment.\n`,
+        )
+        return {
+            gatewayNodeId: cancelled.gatewayNodeId,
+            gatewayName: cancelled.gatewayName,
+        }
+    },
     updateGatewayProfile: async input => {
         if (input.gatewayNodeId !== identity.gatewayNodeId) {
             throw new Error(

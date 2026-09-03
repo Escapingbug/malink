@@ -415,6 +415,16 @@ Matrix-ready. A completed enrollment can resume only that final step with
 `malink gateway activate-host --gateway-data-dir PATH`; it does not require a
 new invitation or another approval.
 
+`gateway.enrollment.cancel` is an additive MLP/3 administration operation for a
+persisted pending request. The issuer marks the request cancelled idempotently,
+publishes a sealed cancellation through the existing enrollment-response state
+event, and republishes the Workspace snapshot. The enrolling node verifies and
+opens that response, deletes its one-shot request key, and exits without a
+Workspace grant. The initiating client records a local dismissal immediately,
+so an offline issuer or stale Matrix snapshot never blocks another setup link;
+the signed `expiresAt` remains the bounded fallback. Approved enrollments cannot
+be cancelled through this operation and must use normal Gateway retirement.
+
 All Gateway nodes share the Workspace authorization identity but retain unique
 node IDs, Matrix device IDs, project rooms, working directories, and runtime
 lifecycle. Clients verify one portable Workspace grant and consume the signed

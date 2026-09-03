@@ -42,7 +42,7 @@ export function gatewayEnrollmentApprovalDeadline(invitationExpiresAt: number): 
 
 interface EnrollmentRecord {
   invitation: SignedGatewayEnrollmentInvitation
-  status: 'open' | 'pending' | 'approved'
+  status: 'open' | 'pending' | 'approved' | 'cancelled'
   request?: SignedGatewayEnrollmentRequest
   response?: GatewayEnrollmentResponse
 }
@@ -122,7 +122,7 @@ export class FileGatewayEnrollmentCoordinator {
         validateState(state, this.identity.workspaceId)
         const changed = prune(state, now)
         const record = state.enrollments[signed.request.enrollmentId]
-        if (!record || record.status === 'approved') {
+        if (!record || !['open', 'pending'].includes(record.status)) {
           throw new Error('Gateway enrollment invitation is unknown or no longer open')
         }
         if (record.request && canonicalJson(record.request) !== canonicalJson(signed)) {
@@ -158,7 +158,7 @@ export class FileGatewayEnrollmentCoordinator {
         validateState(state, this.identity.workspaceId)
         prune(state, now)
         const record = state.enrollments[request.enrollmentId]
-        if (!record || record.status === 'approved') {
+        if (!record || !['open', 'pending'].includes(record.status)) {
           throw new Error('Gateway enrollment invitation is unknown or no longer open')
         }
         if (record.request && canonicalJson(record.request) !== canonicalJson(signed)) {
@@ -221,6 +221,9 @@ export class FileGatewayEnrollmentCoordinator {
         const changed = prune(state, now)
         const record = state.enrollments[enrollmentId]
         if (!record?.request) throw new Error('Gateway enrollment request is not pending')
+        if (record.status === 'cancelled') {
+          throw new Error('Gateway enrollment request was cancelled')
+        }
         if (record.response) {
           return {
             result: {
@@ -275,11 +278,118 @@ export class FileGatewayEnrollmentCoordinator {
         validateState(state, this.identity.workspaceId)
         const record = state.enrollments[enrollmentId]
         if (!record?.request) throw new Error('Gateway enrollment request is not pending')
+        if (record.status === 'cancelled') {
+          throw new Error('Gateway enrollment request was cancelled')
+        }
         if (record.response) {
           return { result: gatewayEnrollmentResponseSchema.parse(record.response), changed: false }
         }
         record.response = response
         record.status = 'approved'
+        return { result: response, changed: true }
+      },
+    )
+    return {
+      response: committed,
+      gatewayNodeId: request.gatewayNodeId,
+      gatewayName: request.gatewayName,
+    }
+  }
+
+  async cancel(
+    enrollmentId: string,
+    now = Date.now(),
+  ): Promise<{
+    response: GatewayEnrollmentResponse
+    gatewayNodeId: string
+    gatewayName: string
+  }> {
+    const snapshot = await this.file.transaction<{
+      request: GatewayEnrollmentRequest
+      invitationExpiresAt: number
+      response?: GatewayEnrollmentResponse
+    }>(
+      () => initialState(this.identity.workspaceId),
+      state => {
+        validateState(state, this.identity.workspaceId)
+        const changed = prune(state, now)
+        const record = state.enrollments[enrollmentId]
+        if (!record?.request) throw new Error('Gateway enrollment request is not pending')
+        if (record.status === 'approved') {
+          throw new Error('Gateway enrollment was already approved and cannot be cancelled')
+        }
+        if (record.status === 'cancelled' && record.response) {
+          return {
+            result: {
+              request: structuredClone(record.request.request),
+              invitationExpiresAt: record.invitation.invitation.expiresAt,
+              response: gatewayEnrollmentResponseSchema.parse(record.response),
+            },
+            changed,
+          }
+        }
+        if (record.status !== 'pending') {
+          throw new Error('Gateway enrollment request is not pending')
+        }
+        return {
+          result: {
+            request: structuredClone(record.request.request),
+            invitationExpiresAt: record.invitation.invitation.expiresAt,
+          },
+          changed,
+        }
+      },
+    )
+    const request = snapshot.request
+    if (snapshot.response) {
+      return {
+        response: snapshot.response,
+        gatewayNodeId: request.gatewayNodeId,
+        gatewayName: request.gatewayName,
+      }
+    }
+    const lifetimeMs = gatewayEnrollmentApprovalDeadline(snapshot.invitationExpiresAt) - now
+    const sealedCancellation = await sealSecureEnvelope({
+      gatewayId: this.identity.workspaceId,
+      conversationId: enrollmentId,
+      direction: 'gateway_to_device',
+      senderDeviceId: this.identity.gatewayNodeId,
+      recipientDeviceId: request.gatewayNodeId,
+      senderKeyId: this.identity.keys.keyId,
+      recipientKeyId: request.gatewayKey.keyId,
+      plaintext: { kind: 'gateway_join_cancelled', cancelledAt: now },
+      senderPrivateKey: this.identity.keys.privateKey,
+      recipientPublicKey: request.gatewayKey.publicKey,
+      now,
+      lifetimeMs,
+    })
+    const response = gatewayEnrollmentResponseSchema.parse({
+      kind: 'malink.gateway.enrollment-response',
+      version: 1,
+      enrollmentId,
+      workspaceId: this.identity.workspaceId,
+      gatewayNodeId: request.gatewayNodeId,
+      sealedInvitation: sealedCancellation,
+      issuedAt: now,
+      expiresAt: now + lifetimeMs,
+    })
+    const committed = await this.file.transaction(
+      () => initialState(this.identity.workspaceId),
+      state => {
+        validateState(state, this.identity.workspaceId)
+        const record = state.enrollments[enrollmentId]
+        if (!record?.request) throw new Error('Gateway enrollment request is not pending')
+        if (record.status === 'approved') {
+          throw new Error('Gateway enrollment was already approved and cannot be cancelled')
+        }
+        if (record.status === 'cancelled' && record.response) {
+          return { result: gatewayEnrollmentResponseSchema.parse(record.response), changed: false }
+        }
+        if (record.status !== 'pending') {
+          throw new Error('Gateway enrollment request is not pending')
+        }
+        record.response = response
+        record.status = 'cancelled'
         return { result: response, changed: true }
       },
     )
@@ -335,7 +445,7 @@ function validateState(state: EnrollmentState, workspaceId: string): void {
     const invitation = signedGatewayEnrollmentInvitationSchema.parse(record.invitation)
     if (
       id !== invitation.invitation.enrollmentId
-      || !['open', 'pending', 'approved'].includes(record.status)
+      || !['open', 'pending', 'approved', 'cancelled'].includes(record.status)
       || (record.request && record.request.request.enrollmentId !== id)
       || (record.response && record.response.enrollmentId !== id)
     ) throw new TypeError('Gateway enrollment record is invalid')

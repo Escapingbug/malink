@@ -907,6 +907,15 @@ function toMlp3Command(
           enrollmentId: payload.enrollmentId,
         },
       };
+    case "gateway.enrollment.cancel":
+      return {
+        ...common,
+        operation: "gateway.enrollment.cancel",
+        payload: {
+          operation: "gateway.enrollment.cancel",
+          enrollmentId: payload.enrollmentId,
+        },
+      };
     case "gateway.profile.update":
       return {
         ...common,

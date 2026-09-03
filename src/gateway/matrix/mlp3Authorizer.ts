@@ -48,6 +48,7 @@ const CURRENT_WORKSPACE_MEMBER_OPERATIONS = [
   'device.invitation.create',
   'gateway.enrollment.invitation.create',
   'gateway.enrollment.approve',
+  'gateway.enrollment.cancel',
   'gateway.profile.update',
   'gateway.retire',
   'notification.subscribe',
@@ -164,6 +165,7 @@ function v3AllowedOperations(
         result.add('device.invitation.create')
         result.add('gateway.enrollment.invitation.create')
         result.add('gateway.enrollment.approve')
+        result.add('gateway.enrollment.cancel')
         result.add('gateway.profile.update')
         result.add('gateway.retire')
         break

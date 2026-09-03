@@ -1488,6 +1488,7 @@ function parseCommandOperation(input: unknown): CommandPayload["operation"] | un
     case "device.invite":
     case "gateway.enrollment.invite":
     case "gateway.enrollment.approve":
+    case "gateway.enrollment.cancel":
     case "gateway.profile.update":
     case "gateway.retire":
     case "gateway.update.stage":

@@ -386,6 +386,12 @@ const gatewayEnrollmentApprovePayloadSchema = z
     enrollmentId: opaqueId,
   })
   .strict()
+const gatewayEnrollmentCancelPayloadSchema = z
+  .object({
+    operation: z.literal('gateway.enrollment.cancel'),
+    enrollmentId: opaqueId,
+  })
+  .strict()
 const gatewayProfileUpdatePayloadSchema = z
   .object({
     operation: z.literal('gateway.profile.update'),
@@ -497,6 +503,7 @@ export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   deviceInvitationPayloadSchema,
   gatewayEnrollmentInvitationPayloadSchema,
   gatewayEnrollmentApprovePayloadSchema,
+  gatewayEnrollmentCancelPayloadSchema,
   gatewayProfileUpdatePayloadSchema,
   gatewayRetirePayloadSchema,
   notificationSubscribePayloadSchema,
@@ -617,6 +624,13 @@ export const mlp3CommandSchema = z.union([
     sessionId: opaqueId.optional(),
     operation: z.literal('gateway.enrollment.approve'),
     payload: gatewayEnrollmentApprovePayloadSchema,
+  }).strict(),
+  z.object({
+    ...commandCommon,
+    projectId: opaqueId.optional(),
+    sessionId: opaqueId.optional(),
+    operation: z.literal('gateway.enrollment.cancel'),
+    payload: gatewayEnrollmentCancelPayloadSchema,
   }).strict(),
   z.object({
     ...projectCommandCommon,
@@ -1072,6 +1086,14 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
   z
     .object({
       type: z.literal('gateway.enrollment.approved'),
+      enrollmentId: opaqueId,
+      gatewayNodeId: opaqueId,
+      gatewayName: z.string().min(1).max(128),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('gateway.enrollment.cancelled'),
       enrollmentId: opaqueId,
       gatewayNodeId: opaqueId,
       gatewayName: z.string().min(1).max(128),

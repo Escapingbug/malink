@@ -24,6 +24,7 @@ import {
   type MalinkAttachment,
   type MalinkArtifactReference,
   type CommandPayload,
+  type GatewayEnrollmentPending,
   type GatewayUpdateStatus,
   type ProviderHistoryMessage,
   type ProviderSessionEntry,
@@ -75,6 +76,8 @@ import type { GatewayEnrollmentBusyState } from "./GatewayEnrollmentPanel";
 import {
   activeGatewayEnrollmentRequests,
   nextGatewayEnrollmentExpiry,
+  readBrowserGatewayEnrollmentDismissals,
+  writeBrowserGatewayEnrollmentDismissals,
 } from "./gatewayEnrollmentRequests";
 import { waitForUiCommit } from "./uiScheduling";
 import { hasPairingRoute, pairingRouteFromUrl } from "./pairingRoute";
@@ -1704,6 +1707,9 @@ function MalinkAppRuntime() {
   const [gatewayRelease, setGatewayRelease] = useState(MALINK_GATEWAY_RELEASE);
   const [approvedGatewayEnrollmentIds, setApprovedGatewayEnrollmentIds] =
     useState<Set<string>>(() => new Set());
+  const [dismissedGatewayEnrollments, setDismissedGatewayEnrollments] = useState(
+    () => readBrowserGatewayEnrollmentDismissals(Date.now()),
+  );
   const [gatewayEnrollmentNow, setGatewayEnrollmentNow] = useState(() => Date.now());
   const gatewayEnrollmentExpiry = useMemo(() => nextGatewayEnrollmentExpiry(
     gatewayState?.pendingGatewayEnrollments ?? [],
@@ -1718,9 +1724,11 @@ function MalinkAppRuntime() {
     return activeGatewayEnrollmentRequests(
       gatewayState?.pendingGatewayEnrollments ?? [],
       joinedGatewayNodeIds,
+      new Set(dismissedGatewayEnrollments.keys()),
       gatewayEnrollmentNow,
     );
   }, [
+    dismissedGatewayEnrollments,
     gatewayEnrollmentNow,
     gatewayState?.gatewayDirectory,
     gatewayState?.pendingGatewayEnrollments,
@@ -7268,6 +7276,68 @@ function MalinkAppRuntime() {
         await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
       }
       setGatewayEnrollmentBusy(null);
+    }
+  }
+
+  async function cancelGatewayEnrollment(
+    request: GatewayEnrollmentPending,
+  ): Promise<void> {
+    setDismissedGatewayEnrollments((current) => {
+      const next = new Map(current);
+      next.set(request.enrollmentId, request.expiresAt);
+      writeBrowserGatewayEnrollmentDismissals(next);
+      return next;
+    });
+    setGatewayEnrollmentError(null);
+    setGatewayEnrollmentNow(Date.now());
+    showUiNotice(
+      `gateway-enrollment-cancel:${request.enrollmentId}`,
+      "connection",
+      "success",
+      `Stopped waiting for ${request.gatewayName}. You can create another Gateway setup link now.`,
+      8_000,
+    );
+
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand({
+        operation: "gateway.enrollment.cancel",
+        enrollmentId: request.enrollmentId,
+      }, request.approverProjectId, {
+        autoRetryRevisionConflict: true,
+        propagateFailure: true,
+      });
+      if (!sent) {
+        throw new Error("The connected client could not send the Gateway cancellation.");
+      }
+      commandId = sent.commandId;
+      const completion = await waitForCommandCompletion(
+        sent.completion,
+        DEVICE_INVITATION_RESULT_TIMEOUT_MS,
+      );
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message
+            ?? "The connected Gateway could not confirm the cancellation.",
+        );
+      }
+    } catch (error) {
+      const detail = formatUiError(error);
+      setGatewayEnrollmentError(
+        `This request no longer blocks this client. The Gateway did not confirm cancellation: ${detail}`,
+      );
+      showUiNotice(
+        `gateway-enrollment-cancel:${request.enrollmentId}`,
+        "connection",
+        "warning",
+        "The request is hidden locally and will expire safely, but the Gateway did not confirm cancellation.",
+        12_000,
+      );
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
     }
   }
 
@@ -14172,6 +14242,9 @@ function MalinkAppRuntime() {
         onApproveGatewayEnrollment={(enrollmentId, approverProjectId) =>
           void approveGatewayEnrollment(enrollmentId, approverProjectId)
         }
+        onCancelGatewayEnrollment={(request) => {
+          void cancelGatewayEnrollment(request);
+        }}
         onClearGatewayEnrollment={() => {
           setGatewayEnrollmentInvitation(null);
           setGatewayEnrollmentError(null);
@@ -14642,6 +14715,8 @@ function describeConflictedAction(payload: CommandPayload): string {
       return "The Gateway setup-link request";
     case "gateway.enrollment.approve":
       return "The Gateway approval request";
+    case "gateway.enrollment.cancel":
+      return "The Gateway enrollment cancellation";
     case "gateway.profile.update":
       return "The Gateway name update";
     case "gateway.update.stage":
@@ -14679,6 +14754,8 @@ function nativeCommandReviewTitle(
       return "A Gateway setup link needs review";
     case "gateway.enrollment.approve":
       return "A Gateway approval needs review";
+    case "gateway.enrollment.cancel":
+      return "A Gateway cancellation needs review";
     case "gateway.profile.update":
       return "A Gateway name change needs review";
     default:
@@ -14713,6 +14790,8 @@ function nativeCommandReviewDescription(
         return "Gateway setup link";
       case "gateway.enrollment.approve":
         return "Gateway approval";
+      case "gateway.enrollment.cancel":
+        return "Gateway cancellation";
       case "gateway.profile.update":
         return "Gateway name change";
       default:

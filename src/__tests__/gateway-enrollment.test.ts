@@ -134,6 +134,81 @@ describe('Gateway enrollment rendezvous', () => {
     expect(await coordinator.pending(approved.response.expiresAt)).toEqual([])
   })
 
+  it('cancels a pending request idempotently and notifies the waiting Gateway', async () => {
+    const now = 1_800_000_000_000
+    const directory = await mkdtemp(join(tmpdir(), 'malink-gateway-enrollment-cancel-'))
+    const identity = await new FileGatewayIdentityStore(
+      join(directory, 'gateway-identity.json'),
+    ).loadOrCreate('workspace-cancel', now)
+    const coordinator = new FileGatewayEnrollmentCoordinator(
+      join(directory, 'gateway-enrollments.json'),
+      identity,
+    )
+    const created = await coordinator.createInvitation({
+      homeserver: 'https://matrix.example.org',
+      roomId: '!project:example.org',
+      userId: '@gateway:example.org',
+      deviceId: 'OLDGATEWAY',
+      ed25519: 'old-gateway-ed25519-key',
+    }, {
+      homeserver: 'https://matrix.example.org',
+      userId: '@gateway:example.org',
+      loginToken: 'one-time-login-token',
+      expiresAt: now + 120_000,
+    }, now, 120_000)
+    const invitation = await verifyGatewayEnrollmentInvitation(
+      decodeGatewayEnrollmentInvitationLink(created.link),
+      now,
+    )
+    const requestKeys = await generateDeviceKeyPair()
+    const request = await signGatewayEnrollmentRequest({
+      kind: 'malink.gateway.enrollment-request',
+      version: 1,
+      enrollmentId: invitation.enrollmentId,
+      workspaceId: invitation.workspaceId,
+      gatewayNodeId: 'cancelled-gateway-node',
+      gatewayName: 'Cancelled Gateway',
+      gatewayKey: await exportPairingPublicKey(requestKeys.publicKey),
+      challenge: invitation.challenge,
+      issuedAt: now + 1,
+      expiresAt: now + 119_000,
+    }, requestKeys.privateKey, requestKeys.keyId)
+    await coordinator.registerRequest(request, now + 1)
+
+    const cancelled = await coordinator.cancel(invitation.enrollmentId, now + 2)
+    const repeated = await coordinator.cancel(invitation.enrollmentId, now + 3)
+    expect(repeated).toEqual(cancelled)
+    expect(await coordinator.pending(now + 3)).toEqual([])
+    await expect(coordinator.approve(
+      invitation.enrollmentId,
+      'unused-after-cancellation',
+      now + 3,
+    )).rejects.toThrow(/was cancelled/u)
+    await expect(coordinator.registerRequest(request, now + 3)).rejects.toThrow(
+      /unknown or no longer open/u,
+    )
+
+    const opened = await openSecureEnvelope(cancelled.response.sealedInvitation, {
+      recipientPrivateKey: requestKeys.privateKey,
+      senderPublicKey: identity.keys.publicKey,
+      expected: {
+        gatewayId: identity.workspaceId,
+        conversationId: invitation.enrollmentId,
+        direction: 'gateway_to_device',
+        senderDeviceId: identity.gatewayNodeId,
+        recipientDeviceId: request.request.gatewayNodeId,
+        senderKeyId: identity.keys.keyId,
+        recipientKeyId: requestKeys.keyId,
+      },
+      replayStore: new InMemoryReplayStore(),
+      now: now + 3,
+    })
+    expect(opened.plaintext).toEqual({
+      kind: 'gateway_join_cancelled',
+      cancelledAt: now + 2,
+    })
+  })
+
   it('rejects a request that does not carry the invitation challenge', async () => {
     const now = 1_800_000_000_000
     const directory = await mkdtemp(join(tmpdir(), 'malink-gateway-enrollment-reject-'))

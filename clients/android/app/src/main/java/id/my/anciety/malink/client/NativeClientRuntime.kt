@@ -2146,6 +2146,18 @@ class NativeClientRuntime(
                     )
                 }
             }
+            "gateway.enrollment.cancel" -> {
+                v3Operation = "gateway.enrollment.cancel"
+                v3SessionId = null
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    put(
+                        "enrollmentId",
+                        raw.string("enrollmentId")
+                            ?: throw IllegalArgumentException("Gateway enrollment ID is missing."),
+                    )
+                }
+            }
             "gateway.profile.update" -> {
                 v3Operation = operation
                 v3SessionId = null

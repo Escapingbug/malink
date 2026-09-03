@@ -120,6 +120,31 @@ describe('MatrixMlp3CommandAuthorizer', () => {
       claim: { kind: 'accepted' },
     })
 
+    const cancelEnrollmentCommand = await signMlp3Command({
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'gateway-enrollment-cancel-command-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      deviceId: 'device-1',
+      certificateId: 'certificate-1',
+      createdAt: 2,
+      operation: 'gateway.enrollment.cancel',
+      payload: {
+        operation: 'gateway.enrollment.cancel',
+        enrollmentId: 'enrollment-1',
+      },
+    }, keys.privateKey, keys.keyId)
+    await expect(authorizer.authorize(
+      cancelEnrollmentCommand,
+      policy,
+      '!project:example.org',
+      'project-1',
+    )).resolves.toMatchObject({
+      command: { operation: 'gateway.enrollment.cancel' },
+      claim: { kind: 'accepted' },
+    })
+
     const artifactCommand = await signMlp3Command({
       kind: 'malink.command',
       version: 3,

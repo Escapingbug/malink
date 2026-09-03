@@ -8,6 +8,45 @@ import {
 import { matrixGatewayCapabilitiesSchema } from '../src/matrix-native.js'
 
 describe('Malink Protocol v3 (MLP/3)', () => {
+  it('adds Gateway enrollment cancellation without changing the protocol version', () => {
+    const command = mlp3CommandSchema.parse({
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'gateway-enrollment-cancel-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      deviceId: 'device-1',
+      certificateId: 'certificate-1',
+      createdAt: 1,
+      operation: 'gateway.enrollment.cancel',
+      payload: {
+        operation: 'gateway.enrollment.cancel',
+        enrollmentId: 'enrollment-1',
+      },
+    })
+    expect(command).toMatchObject({
+      version: 3,
+      operation: 'gateway.enrollment.cancel',
+      payload: { enrollmentId: 'enrollment-1' },
+    })
+
+    expect(mlp3EventSchema.parse({
+      kind: 'malink.event',
+      version: 3,
+      eventId: 'gateway-enrollment-cancelled-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      causationCommandId: command.commandId,
+      occurredAt: 2,
+      payload: {
+        type: 'gateway.enrollment.cancelled',
+        enrollmentId: 'enrollment-1',
+        gatewayNodeId: 'gateway-node-1',
+        gatewayName: 'Office Gateway',
+      },
+    }).payload).toMatchObject({ type: 'gateway.enrollment.cancelled' })
+  })
+
   it('carries an explicit true-only confirmation for forward-only Gateway updates', () => {
     const common = {
       kind: 'malink.command' as const,

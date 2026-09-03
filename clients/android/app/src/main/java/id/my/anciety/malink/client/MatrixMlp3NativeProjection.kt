@@ -2173,6 +2173,15 @@ internal class MatrixMlp3NativeProjection(
                     put("gatewayName", payload.requiredString("gatewayName", 128))
                 },
             )
+            "gateway.enrollment.cancelled" -> MatrixMlp3NativeTerminal(
+                commandId,
+                "succeeded",
+                sessionId,
+                result = buildJsonObject {
+                    put("gatewayNodeId", payload.requiredString("gatewayNodeId", 512))
+                    put("gatewayName", payload.requiredString("gatewayName", 128))
+                },
+            )
             "gateway.profile.updated" -> MatrixMlp3NativeTerminal(
                 commandId,
                 "succeeded",

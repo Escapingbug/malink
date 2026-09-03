@@ -1213,6 +1213,7 @@ function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
     case "device.invitation.created":
     case "gateway.enrollment.invitation.created":
     case "gateway.enrollment.approved":
+    case "gateway.enrollment.cancelled":
     case "gateway.profile.updated":
     case "gateway.retired":
     case "notification.subscription.changed":

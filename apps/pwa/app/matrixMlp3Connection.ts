@@ -2011,6 +2011,13 @@ export function toLegacyCompletion(
               gatewayName: payload.gatewayName,
             },
           }
+      : payload.type === "gateway.enrollment.cancelled"
+        ? {
+            result: {
+              gatewayNodeId: payload.gatewayNodeId,
+              gatewayName: payload.gatewayName,
+            },
+          }
       : payload.type === "gateway.profile.updated"
         ? {
             result: {

@@ -324,6 +324,13 @@ export async function joinWorkspaceThroughGatewayEnrollment(input: {
       now: now(),
     })
     const plaintext = record(opened.plaintext)
+    if (plaintext?.kind === 'gateway_join_cancelled') {
+      await removePrivateState(requestStatePath)
+      throw new Error(
+        'Gateway setup was cancelled from an existing Malink client. '
+        + 'Create a new setup link to try again.',
+      )
+    }
     if (plaintext?.kind !== 'gateway_join' || typeof plaintext.link !== 'string') {
       throw new Error('Gateway enrollment approval did not contain a Workspace grant')
     }

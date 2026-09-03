@@ -60,7 +60,9 @@ Adding a trusted Gateway is normally an in-product enrollment:
 3. Every authorized client receives the pending request inside the encrypted
    Workspace snapshot. The user compares the six-digit verification code shown
    by the client and the new node, then sends `gateway.enrollment.approve` to
-   the Gateway node that issued the setup link.
+   the Gateway node that issued the setup link. A user may instead abandon the
+   request immediately: the client stops presenting it as a blocker and sends
+   the idempotent `gateway.enrollment.cancel` operation to that same issuer.
 4. Approval seals the high-authority `malink://gateway-join` material directly
    to the temporary key from that request and publishes the sealed response
    through Matrix. Matrix never receives the Workspace private identity in
@@ -76,6 +78,7 @@ Adding a trusted Gateway is normally an in-product enrollment:
    Authorized clients are invited to new rooms, verify the directory signature,
    join automatically, and add the route to their existing Matrix session. No
    Gateway switch is exposed to the user.
+
 7. If a node cannot be restored, an ordinary client can choose **Continue
    without this computer** from that computer's Workspace settings card. The
    client routes one preconditioned `gateway.retire` command through a project
@@ -85,6 +88,12 @@ Adding a trusted Gateway is normally an in-product enrollment:
    this loss of Workspace visibility; a timeout or liveness probe never retires
    a node automatically. `malink gateway remove-gateway` remains the local
    operator fallback when the product UI itself is unavailable.
+
+A pending enrollment is never a Workspace-wide creation lock. Clients may
+create another setup link while requests are pending, and signed request expiry
+is sufficient to hide stale Matrix projections even when the issuer Gateway is
+offline. A cancellation is also sealed to the enrolling node's temporary key,
+so its waiting command exits without receiving Workspace authority.
 
 The private Malink Synapse deployment enables `login_via_existing_session`
 without an additional UIAA round trip for this owner-authorized operation. On

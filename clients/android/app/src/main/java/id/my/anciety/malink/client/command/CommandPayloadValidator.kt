@@ -27,6 +27,7 @@ enum class CommandOperation(val wireName: String) {
     DEVICE_INVITE("device.invite"),
     GATEWAY_ENROLLMENT_INVITE("gateway.enrollment.invite"),
     GATEWAY_ENROLLMENT_APPROVE("gateway.enrollment.approve"),
+    GATEWAY_ENROLLMENT_CANCEL("gateway.enrollment.cancel"),
     GATEWAY_PROFILE_UPDATE("gateway.profile.update"),
     GATEWAY_RETIRE("gateway.retire"),
     GATEWAY_UPDATE_STAGE("gateway.update.stage"),
@@ -254,6 +255,13 @@ data class GatewayEnrollmentApproveCommandPayload(
     override val sessionId: String? = null
 }
 
+data class GatewayEnrollmentCancelCommandPayload(
+    val enrollmentId: String,
+) : ValidatedCommandPayload {
+    override val operation = CommandOperation.GATEWAY_ENROLLMENT_CANCEL
+    override val sessionId: String? = null
+}
+
 data class GatewayProfileUpdateCommandPayload(
     val gatewayNodeId: String,
     val gatewayName: String,
@@ -315,6 +323,7 @@ object CommandPayloadValidator {
             CommandOperation.DEVICE_INVITE -> validateDeviceInvite(value)
             CommandOperation.GATEWAY_ENROLLMENT_INVITE -> validateGatewayEnrollmentInvite(value)
             CommandOperation.GATEWAY_ENROLLMENT_APPROVE -> validateGatewayEnrollmentApprove(value)
+            CommandOperation.GATEWAY_ENROLLMENT_CANCEL -> validateGatewayEnrollmentCancel(value)
             CommandOperation.GATEWAY_PROFILE_UPDATE -> validateGatewayProfileUpdate(value)
             CommandOperation.GATEWAY_RETIRE -> validateGatewayRetire(value)
             CommandOperation.GATEWAY_UPDATE_STAGE,
@@ -578,6 +587,11 @@ object CommandPayloadValidator {
         return GatewayEnrollmentApproveCommandPayload(value.requiredOpaqueId("enrollmentId"))
     }
 
+    private fun validateGatewayEnrollmentCancel(value: JsonObject): GatewayEnrollmentCancelCommandPayload {
+        value.requireExactKeys(setOf("operation", "enrollmentId"))
+        return GatewayEnrollmentCancelCommandPayload(value.requiredOpaqueId("enrollmentId"))
+    }
+
     private fun validateGatewayProfileUpdate(value: JsonObject): GatewayProfileUpdateCommandPayload {
         value.requireExactKeys(setOf("operation", "gatewayNodeId", "gatewayName"))
         return GatewayProfileUpdateCommandPayload(
@@ -827,6 +841,7 @@ internal fun requiredCertificateOperation(operation: CommandOperation): PairingO
         CommandOperation.PROJECT_DELETE -> PairingOperation.PROJECT_SETTINGS
         CommandOperation.GATEWAY_ENROLLMENT_INVITE,
         CommandOperation.GATEWAY_ENROLLMENT_APPROVE,
+        CommandOperation.GATEWAY_ENROLLMENT_CANCEL,
         CommandOperation.GATEWAY_PROFILE_UPDATE,
         CommandOperation.GATEWAY_RETIRE,
         -> PairingOperation.DEVICE_INVITE

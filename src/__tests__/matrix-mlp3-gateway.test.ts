@@ -861,6 +861,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     const deletedProjects: string[] = []
     const gatewayProfileUpdates: string[] = []
     const gatewayRetirements: string[] = []
+    const gatewayEnrollmentCancellations: string[] = []
     const gatewayLogs: string[] = []
     const filesystemAccessChecks: Array<{
       cwd: string
@@ -975,6 +976,15 @@ describe('MatrixMlp3GatewayRunner', () => {
           gatewayNodeId: input.gatewayNodeId,
           gatewayName: input.gatewayName,
           computerName: 'alice-macbook',
+        }
+      },
+      cancelGatewayEnrollment: async input => {
+        gatewayEnrollmentCancellations.push(
+          `${input.requestedByDeviceId}:${input.enrollmentId}`,
+        )
+        return {
+          gatewayNodeId: 'gateway-node-pending',
+          gatewayName: 'Pending Gateway',
         }
       },
       retireWorkspaceGateway: async input => {
@@ -1357,6 +1367,29 @@ describe('MatrixMlp3GatewayRunner', () => {
       roomId: '!created-project:example.org',
     })
     expect(projectCreatedHooks).toBe(1)
+
+    await send({
+      ...base,
+      commandId: 'gateway-enrollment-cancel-1',
+      operation: 'gateway.enrollment.cancel',
+      payload: {
+        operation: 'gateway.enrollment.cancel',
+        enrollmentId: 'enrollment-pending-1',
+      },
+    }, '$gateway-enrollment-cancel-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'gateway-enrollment-cancel-1'))
+    expect(gatewayEnrollmentCancellations).toEqual([
+      'phone-1:enrollment-pending-1',
+    ])
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'gateway-enrollment-cancel-1'
+    )?.payload).toMatchObject({
+      type: 'gateway.enrollment.cancelled',
+      enrollmentId: 'enrollment-pending-1',
+      gatewayNodeId: 'gateway-node-pending',
+      gatewayName: 'Pending Gateway',
+    })
 
     await send({
       ...base,

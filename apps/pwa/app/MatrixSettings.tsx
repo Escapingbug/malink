@@ -107,6 +107,7 @@ type Props = {
   onSaveInvitationQr(filename: string, dataBase64: string): Promise<boolean>;
   onCreateGatewayEnrollment(): void;
   onApproveGatewayEnrollment(enrollmentId: string, approverProjectId?: string): void;
+  onCancelGatewayEnrollment(request: GatewayEnrollmentPending): void;
   onClearGatewayEnrollment(): void;
   onRenameGateway(
     gatewayNodeId: string,
@@ -192,6 +193,7 @@ function MatrixSettingsDialog({
   onSaveInvitationQr,
   onCreateGatewayEnrollment,
   onApproveGatewayEnrollment,
+  onCancelGatewayEnrollment,
   onClearGatewayEnrollment,
   onRenameGateway,
   onRetireGateway,
@@ -476,7 +478,7 @@ function MatrixSettingsDialog({
                 {addingGateway
                   ? "Close"
                   : pendingGatewayEnrollments.length > 0
-                    ? `Review request (${pendingGatewayEnrollments.length})`
+                    ? `Review or add (${pendingGatewayEnrollments.length})`
                     : "Add Gateway"}
               </button>
             </header>
@@ -743,6 +745,7 @@ function MatrixSettingsDialog({
             error={gatewayEnrollmentError}
             onCreate={onCreateGatewayEnrollment}
             onApprove={onApproveGatewayEnrollment}
+            onCancel={onCancelGatewayEnrollment}
             onClear={() => {
               setAddingGateway(false);
               onClearGatewayEnrollment();

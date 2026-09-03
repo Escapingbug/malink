@@ -142,6 +142,13 @@ test("creates Gateway enrollment commands under the existing device-invite autho
     operation: "gateway.enrollment.approve",
     enrollmentId: "enrollment-1",
   });
+  assert.deepEqual(commandPayloadSchema.parse({
+    operation: "gateway.enrollment.cancel",
+    enrollmentId: "enrollment-1",
+  }), {
+    operation: "gateway.enrollment.cancel",
+    enrollmentId: "enrollment-1",
+  });
 });
 
 test("creates a targeted Gateway profile update", () => {

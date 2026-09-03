@@ -96,6 +96,10 @@ class CommandPayloadValidatorTest {
                 put("enrollmentId", "enrollment-1")
             },
             buildJsonObject {
+                put("operation", "gateway.enrollment.cancel")
+                put("enrollmentId", "enrollment-1")
+            },
+            buildJsonObject {
                 put("operation", "gateway.profile.update")
                 put("gatewayNodeId", "gateway-node-1")
                 put("gatewayName", "Office Mac")

@@ -396,6 +396,12 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('gateway.enrollment.cancel'),
+      enrollmentId: opaqueId,
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('gateway.profile.update'),
       gatewayNodeId: opaqueId,
       gatewayName: z.string().trim().min(1).max(128),
@@ -460,6 +466,7 @@ export const commandSchema = z
       'device.invite',
       'gateway.enrollment.invite',
       'gateway.enrollment.approve',
+      'gateway.enrollment.cancel',
       'gateway.profile.update',
       'gateway.retire',
       'gateway.update.stage',
