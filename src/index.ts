@@ -745,6 +745,9 @@ async function handleGatewayCommand(
         console.log(`Active devices: ${status.activeDeviceCount}`)
         if (status.clientMatrixUserId) {
             console.log(`Client Matrix account: ${status.clientMatrixUserId}`)
+            if (status.clientMatrixLoginStatus) {
+                console.log(`New client invitations: ${status.clientMatrixLoginStatus}`)
+            }
             console.log(
                 `Legacy client devices: ${status.legacyClientDeviceCount ?? 0} `
                 + `(${status.clientMatrixIdentityStatus ?? 'unknown'})`,

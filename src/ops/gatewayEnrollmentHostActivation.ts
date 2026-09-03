@@ -63,6 +63,7 @@ export async function activateEnrolledGatewayHost(
   const adminSocketPath = join(dataDirectory, 'admin.sock')
   await requireFile(join(dataDirectory, 'gateway-identity.json'), 'Gateway identity')
   await requireFile(fixturePath, 'Gateway Matrix configuration')
+  const gatewayLoginUser = await enrolledGatewayLoginUser(dataDirectory, fixturePath)
   if ((dependencies.platform ?? process.platform) !== 'darwin') {
     return {
       state: 'manual',
@@ -120,6 +121,7 @@ export async function activateEnrolledGatewayHost(
     MALINK_MATRIX_DATA_DIR: dataDirectory,
     MALINK_MATRIX_FIXTURE: fixturePath,
     MALINK_GATEWAY_ADMIN_SOCKET: adminSocketPath,
+    MALINK_MATRIX_GATEWAY_USER: gatewayLoginUser,
   })
   const nextSupervisorPlist = originalSupervisorPlist
     ? setPlistEnvironmentStrings(originalSupervisorPlist, {
@@ -367,6 +369,71 @@ async function requireFile(path: string, label: string): Promise<void> {
   })
   if (!metadata.isFile()) throw new Error(`${label} is not a regular file: ${path}`)
   await access(path, constants.R_OK)
+}
+
+async function enrolledGatewayLoginUser(
+  dataDirectory: string,
+  fixturePath: string,
+): Promise<string> {
+  const sessionPath = join(dataDirectory, 'matrix-session.json')
+  await requireFile(sessionPath, 'Gateway Matrix session')
+  let fixture: unknown
+  let session: unknown
+  try {
+    [fixture, session] = await Promise.all([
+      readFile(fixturePath, 'utf8').then(value => JSON.parse(value) as unknown),
+      readFile(sessionPath, 'utf8').then(value => JSON.parse(value) as unknown),
+    ])
+  } catch (error) {
+    throw new Error('Could not read the enrolled Gateway Matrix identity', {
+      cause: error,
+    })
+  }
+  const fixtureRecord = asRecord(fixture)
+  const fixtureGateway = asRecord(fixtureRecord?.gateway)
+  const sessionRecord = asRecord(session)
+  const gatewayUserId = optionalString(fixtureGateway?.userId)
+  const sessionUserId = optionalString(sessionRecord?.user_id)
+  const loginUser = optionalString(sessionRecord?.loginUser)
+  const fixtureHomeserver = normalizedOrigin(fixtureRecord?.homeserver)
+  const sessionHomeserver = normalizedOrigin(sessionRecord?.homeserver)
+  if (
+    sessionRecord?.version !== 1
+    || !gatewayUserId
+    || !sessionUserId
+    || sessionUserId !== gatewayUserId
+    || !loginUser
+    || loginUser.length > 512
+    || /\s/u.test(loginUser)
+    || !fixtureHomeserver
+    || sessionHomeserver !== fixtureHomeserver
+  ) {
+    throw new Error(
+      'The enrolled Gateway Matrix session does not match its enrollment configuration',
+    )
+  }
+  return loginUser
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() === value && value
+    ? value
+    : undefined
+}
+
+function normalizedOrigin(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  try {
+    return new URL(value).origin
+  } catch {
+    return undefined
+  }
 }
 
 async function atomicWrite(path: string, content: string): Promise<void> {

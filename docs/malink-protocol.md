@@ -415,6 +415,13 @@ Matrix-ready. A completed enrollment can resume only that final step with
 `malink gateway activate-host --gateway-data-dir PATH`; it does not require a
 new invitation or another approval.
 
+The signed Workspace directory, rather than an optional local PWA credential,
+defines the fixed client Matrix identity after enrollment. Portable device
+grants imported with the approval are sufficient to start serving existing
+authorized clients. If the Host has no matching PWA credential, it disables
+only the creation of client invitations that require a one-time Matrix login;
+it MUST NOT fail Gateway activation or adopt a mismatched credential identity.
+
 `gateway.enrollment.cancel` is an additive MLP/3 administration operation for a
 persisted pending request. The issuer marks the request cancelled idempotently,
 publishes a sealed cancellation through the existing enrollment-response state

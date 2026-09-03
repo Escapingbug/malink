@@ -153,6 +153,15 @@ The local Matrix host recognizes:
   homeserver requires it;
 - `MALINK_PWA_URL` as the CLI default invitation destination.
 
+An enrolled Gateway obtains its fixed client Matrix identity from the signed
+Workspace directory. `MALINK_PWA_LOGIN_FILE` is therefore optional when
+portable grants already authorize existing devices. If it is missing or names
+a different account, the Gateway remains online but reports new-client Matrix
+login as `unavailable` or `identity-mismatch`; invitations requested with
+`--matrix-login required` fail closed until the matching credential is
+installed. A brand-new Workspace with neither a signed client identity nor a
+local credential still fails closed.
+
 For example:
 
 ```sh

@@ -49,12 +49,17 @@ export interface GatewayAdminServerOptions {
   gatewayId: string
   gatewayNodeId: string
   clientMatrixUserId?: string
+  clientMatrixLoginStatus?: import('@/gateway/pairing').ClientMatrixLoginStatus
   getGatewayName: () => string
   getComputerName?: () => string
   renameGateway?: (gatewayName: string) => Promise<void>
   coordinator: DeviceInvitationCoordinator
   pairingService: GatewayPairingService
   registry: FileTrustedDeviceRegistry
+  getAuthorizedDeviceMatrixIdentities?: () => Promise<readonly {
+    deviceId: string
+    matrixUserId: string
+  }[]>
   getGatewayState: () => string
   buildId?: string
   getGatewayDiagnostics?: () => Promise<{
@@ -461,15 +466,24 @@ async function statusResponse(
   now: number,
 ): Promise<GatewayAdminStatus> {
   await options.registry.pruneOffers(now)
-  const [activeDevices, offers] = await Promise.all([
+  const [activeDevices, offers, workspaceDeviceIdentities] = await Promise.all([
     options.registry.listActive(now),
     options.registry.listOffers(now),
+    options.getAuthorizedDeviceMatrixIdentities?.(),
   ])
+  const authorizedDeviceIdentities = workspaceDeviceIdentities
+    ? [...new Map(workspaceDeviceIdentities.map(device => [
+        device.deviceId,
+        device,
+      ])).values()]
+    : activeDevices.map(record => ({
+        deviceId: record.certificate.certificate.deviceId,
+        matrixUserId: record.certificate.certificate.deviceTransport.userId,
+      }))
   const diagnostics = await options.getGatewayDiagnostics?.()
   const legacyClientDeviceCount = options.clientMatrixUserId
-    ? activeDevices.filter(record =>
-        record.certificate.certificate.deviceTransport.userId
-          !== options.clientMatrixUserId,
+    ? authorizedDeviceIdentities.filter(device =>
+        device.matrixUserId !== options.clientMatrixUserId,
       ).length
     : undefined
   return {
@@ -483,10 +497,13 @@ async function statusResponse(
     state: options.getGatewayState(),
     pid: process.pid,
     startedAt,
-    activeDeviceCount: activeDevices.length,
+    activeDeviceCount: authorizedDeviceIdentities.length,
     ...(options.clientMatrixUserId
       ? {
           clientMatrixUserId: options.clientMatrixUserId,
+          ...(options.clientMatrixLoginStatus
+            ? { clientMatrixLoginStatus: options.clientMatrixLoginStatus }
+            : {}),
           legacyClientDeviceCount: legacyClientDeviceCount ?? 0,
           clientMatrixIdentityStatus:
             legacyClientDeviceCount === 0

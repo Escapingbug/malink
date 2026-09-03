@@ -110,6 +110,15 @@ Activation refuses to replace a Host that still reports active turns, active
 commands, or unfinished commands. Let that work finish and repeat the same
 activation command; the enrolled identity and project room are reused.
 
+The enrolled Matrix session and signed Workspace directory are authoritative
+for the Gateway account and fixed client identity. Activation updates a stale
+LaunchAgent Gateway username from that enrolled session. A missing or
+mismatched `MALINK_PWA_LOGIN_FILE` does not block an enrolled Gateway that
+already imported portable device grants: the Gateway comes online for those
+authorized devices and reports new-client Matrix login as unavailable. Only
+creating a new client invitation that embeds a Matrix login remains disabled
+until a credential for the signed client identity is installed.
+
 At runtime, project creation, project-scoped session creation, prompts, and
 provider-history operations run a killable child-process preflight. A TCC stall
 is terminated after the configured deadline instead of blocking the Gateway's

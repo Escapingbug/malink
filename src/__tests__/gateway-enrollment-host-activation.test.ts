@@ -44,6 +44,7 @@ describe('Gateway enrollment Host activation', () => {
     expect(gatewayPlist).toContain(`<string>${fixture.dataDirectory}</string>`)
     expect(gatewayPlist).toContain(`<string>${fixture.fixturePath}</string>`)
     expect(gatewayPlist).toContain(`<string>${join(fixture.dataDirectory, 'admin.sock')}</string>`)
+    expect(gatewayPlist).toContain(`<string>${fixture.gatewayLoginUser}</string>`)
     const supervisorPlist = await readFile(fixture.supervisorLaunchAgent, 'utf8')
     expect(supervisorPlist).toContain(`<string>${fixture.dataDirectory}</string>`)
     expect(supervisorPlist).toContain(`<string>${join(fixture.dataDirectory, 'admin.sock')}</string>`)
@@ -68,6 +69,32 @@ describe('Gateway enrollment Host activation', () => {
       activeTurns: 1,
       unfinishedCommands: 1,
     })))).rejects.toThrow(/existing Gateway Host is still working/u)
+
+    expect(await readFile(fixture.gatewayLaunchAgent, 'utf8')).toBe(originalGatewayPlist)
+    expect(launchctl).not.toHaveBeenCalled()
+  })
+
+  it('rejects an enrolled Matrix session that does not match its fixture', async () => {
+    const fixture = await activationFixture()
+    const originalGatewayPlist = await readFile(fixture.gatewayLaunchAgent, 'utf8')
+    const launchctl = vi.fn(async () => undefined)
+    await writeFile(join(fixture.dataDirectory, 'matrix-session.json'), JSON.stringify({
+      version: 1,
+      homeserver: 'https://matrix.example',
+      loginUser: 'other_gateway',
+      user_id: '@other_gateway:matrix.example',
+      access_token: 'tampered-session',
+      device_id: 'OTHER_GATEWAY',
+    }))
+
+    await expect(activateEnrolledGatewayHost({
+      dataDirectory: fixture.dataDirectory,
+      fixturePath: fixture.fixturePath,
+      gatewayNodeId: fixture.gatewayNodeId,
+    }, dependencies(fixture.homeDirectory, launchctl, async () =>
+      gatewayStatus('previous-node')))).rejects.toThrow(
+      /session does not match its enrollment configuration/u,
+    )
 
     expect(await readFile(fixture.gatewayLaunchAgent, 'utf8')).toBe(originalGatewayPlist)
     expect(launchctl).not.toHaveBeenCalled()
@@ -136,6 +163,7 @@ async function activationFixture(): Promise<{
   previousDataDirectory: string
   fixturePath: string
   gatewayNodeId: string
+  gatewayLoginUser: string
   gatewayLaunchAgent: string
   supervisorLaunchAgent: string
 }> {
@@ -146,12 +174,24 @@ async function activationFixture(): Promise<{
   const previousDataDirectory = join(homeDirectory, '.config', 'malink', 'gateway-data')
   const fixturePath = join(dataDirectory, 'matrix-fixture.json')
   const gatewayNodeId = 'enrolled-gateway-node'
+  const gatewayLoginUser = 'enrolled_gateway'
   const gatewayLaunchAgent = join(launchAgents, 'com.malink.matrix-gateway.plist')
   const supervisorLaunchAgent = join(launchAgents, 'io.malink.gateway-update-supervisor.plist')
   await mkdir(dataDirectory, { recursive: true })
   await mkdir(launchAgents, { recursive: true })
   await writeFile(join(dataDirectory, 'gateway-identity.json'), '{}')
-  await writeFile(fixturePath, '{}')
+  await writeFile(fixturePath, JSON.stringify({
+    homeserver: 'https://matrix.example',
+    gateway: { userId: '@enrolled_gateway:matrix.example' },
+  }))
+  await writeFile(join(dataDirectory, 'matrix-session.json'), JSON.stringify({
+    version: 1,
+    homeserver: 'https://matrix.example',
+    loginUser: gatewayLoginUser,
+    user_id: '@enrolled_gateway:matrix.example',
+    access_token: 'secret-not-read-by-activation',
+    device_id: 'ENROLLED_GATEWAY',
+  }))
   await writeFile(gatewayLaunchAgent, plist(
     'com.malink.matrix-gateway',
     '/release/ops/matrix-local-gateway.js',
@@ -174,6 +214,7 @@ async function activationFixture(): Promise<{
     previousDataDirectory,
     fixturePath,
     gatewayNodeId,
+    gatewayLoginUser,
     gatewayLaunchAgent,
     supervisorLaunchAgent,
   }

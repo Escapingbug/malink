@@ -8,6 +8,7 @@ import {
   type PrivilegedExecutionResult,
 } from '@/privilege'
 import type { AgentEvent } from '@/providers/types'
+import type { ClientMatrixLoginStatus } from '@/gateway/pairing'
 
 export const createInvitationRequestSchema = z
   .object({
@@ -188,6 +189,7 @@ export interface GatewayAdminStatus {
   startedAt: number
   activeDeviceCount: number
   clientMatrixUserId?: string
+  clientMatrixLoginStatus?: ClientMatrixLoginStatus
   legacyClientDeviceCount?: number
   clientMatrixIdentityStatus?: 'converged' | 'migration-required'
   openInvitationCount: number

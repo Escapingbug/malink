@@ -36,6 +36,7 @@ import {
     GATEWAY_ENROLLMENT_APPROVAL_LIFETIME_MS,
     createGatewayJoinInvitation,
     gatewayNodeShortId,
+    resolveGatewayClientBootstrap,
 } from '../src/gateway/pairing/index.js'
 import {
     assertGatewayAdminSocketUnclaimed,
@@ -186,6 +187,24 @@ const client = new MatrixNodeSdkGatewayClient({
 const registry = new FileTrustedDeviceRegistry(
     join(dataDirectory, 'trusted-devices.json'),
 )
+const workspaceDirectory = new FileWorkspaceGatewayDirectory(
+    join(dataDirectory, 'workspace-gateways.json'),
+    identity,
+)
+const workspaceAuthorization = new FileWorkspaceDeviceAuthorization(
+    join(dataDirectory, 'workspace-device-authorization.json'),
+    identity,
+)
+const active = await registry.listActive()
+for (const record of active) {
+    const grant = await ensurePortableWorkspaceGrant(
+        identity,
+        registry,
+        record.certificate.certificate.deviceId,
+    )
+    await workspaceAuthorization.mergeGrant(grant)
+}
+const workspaceAuthorizedGrants = await workspaceAuthorization.activeGrants()
 const pwaLoginPath = process.env.MALINK_PWA_LOGIN_FILE
     ?? join(dirname(dataDirectory), 'pwa-login.json')
 const pwaLoginTokenIssuer = new FileMatrixLoginTokenIssuer({
@@ -193,16 +212,38 @@ const pwaLoginTokenIssuer = new FileMatrixLoginTokenIssuer({
     readPassword: async () => process.env.MALINK_MATRIX_CLIENT_PASSWORD
         ?? await readPasswordFile(process.env.MALINK_MATRIX_CLIENT_PASSWORD_FILE),
 })
-const clientMatrixUserId = await pwaLoginTokenIssuer.userId()
-if (!clientMatrixUserId) {
-    throw new Error(
-        `The fixed client Matrix credential is unavailable at ${pwaLoginPath}. `
-        + 'Malink does not permit arbitrary client-account sign-in.',
-    )
-}
+const storedWorkspaceDirectory = await workspaceDirectory.load()
+const credentialClientMatrixUserId = await pwaLoginTokenIssuer.userId()
+const clientBootstrap = resolveGatewayClientBootstrap({
+    directoryClientMatrixUserId:
+        storedWorkspaceDirectory?.directory.clientMatrixUserId,
+    credentialClientMatrixUserId,
+    localActiveDeviceCount: active.length,
+    workspaceAuthorizedDeviceCount: workspaceAuthorizedGrants.length,
+})
+const { clientMatrixUserId } = clientBootstrap
 if (clientMatrixUserId === login.user_id) {
     throw new Error(
         'The Gateway Matrix account and Workspace client Matrix account must be distinct',
+    )
+}
+await workspaceDirectory.setClientMatrixUserId(clientMatrixUserId)
+const invitationMatrixLoginTokenIssuer =
+    clientBootstrap.clientMatrixLoginStatus === 'ready'
+        ? pwaLoginTokenIssuer
+        : undefined
+if (clientBootstrap.clientMatrixLoginStatus === 'unavailable') {
+    process.stderr.write(
+        `[client-matrix-login] No local credential is available for ${clientMatrixUserId}; `
+        + 'the Gateway will serve authorized devices, but cannot include Matrix login '
+        + 'in new client invitations.\n',
+    )
+} else if (clientBootstrap.clientMatrixLoginStatus === 'identity-mismatch') {
+    process.stderr.write(
+        `[client-matrix-login] Ignoring the local credential for `
+        + `${credentialClientMatrixUserId ?? '(unknown)'} because the signed Workspace `
+        + `directory requires ${clientMatrixUserId}; the Gateway will serve authorized `
+        + 'devices, but cannot include Matrix login in new client invitations.\n',
     )
 }
 const pwaAppUrl = process.env.MALINK_PWA_URL?.trim()
@@ -234,11 +275,6 @@ const currentTransport = {
     deviceId: login.device_id,
     ed25519: ownKeys.ed25519,
 }
-const workspaceDirectory = new FileWorkspaceGatewayDirectory(
-    join(dataDirectory, 'workspace-gateways.json'),
-    identity,
-)
-await workspaceDirectory.setClientMatrixUserId(clientMatrixUserId)
 const workspaceStatePublicationCache = new FileMatrixStatePublicationCache(
     join(dataDirectory, 'workspace-state-publications.json'),
 )
@@ -255,6 +291,14 @@ const projectCatalog = new FileGatewayProjectCatalog(
 await projectCatalog.initialize([configuredRootRoom])
 const configuredRooms = await projectCatalog.list()
 for (const room of configuredRooms) await client.assertRoomEncrypted(room.roomId)
+const localRoomIds = configuredRooms.map(room => room.roomId)
+const portableTrustedDevices = async () =>
+    (await workspaceAuthorization.activeGrants()).map(grant =>
+        trustedDeviceFromWorkspaceGrant(grant, localRoomIds))
+const trustedDevices = deduplicateTrustedDevices([
+    ...active.map(record => trustedDeviceFromRecord(record, localRoomIds)),
+    ...await portableTrustedDevices(),
+])
 
 async function publishLocalWorkspaceDirectory(): Promise<void> {
     const rooms = await projectCatalog.list()
@@ -276,10 +320,6 @@ async function publishLocalWorkspaceDirectory(): Promise<void> {
 }
 
 await publishLocalWorkspaceDirectory()
-const workspaceAuthorization = new FileWorkspaceDeviceAuthorization(
-    join(dataDirectory, 'workspace-device-authorization.json'),
-    identity,
-)
 const gatewayEnrollmentCoordinator = new FileGatewayEnrollmentCoordinator(
     join(dataDirectory, 'gateway-enrollments.json'),
     identity,
@@ -296,7 +336,9 @@ const invitationCoordinator = new DeviceInvitationCoordinator(
     {
         gatewayName: () => gatewayProfile.gatewayName,
         gatewayTransport: () => currentTransport,
-        matrixLoginTokenIssuer: pwaLoginTokenIssuer,
+        ...(invitationMatrixLoginTokenIssuer
+            ? { matrixLoginTokenIssuer: invitationMatrixLoginTokenIssuer }
+            : {}),
         onAudit: event => {
             if (event.action === 'created') {
                 process.stdout.write(
@@ -313,21 +355,12 @@ const invitationCoordinator = new DeviceInvitationCoordinator(
     },
 )
 
-const active = await registry.listActive()
-for (const record of active) {
-    const grant = await ensurePortableWorkspaceGrant(
-        identity,
-        registry,
-        record.certificate.certificate.deviceId,
-    )
-    await workspaceAuthorization.mergeGrant(grant)
-}
 let startupPairing: {
     link: string
     expiresAt: number
     verificationCode: string
 } | null = null
-if (active.length === 0) {
+if (clientBootstrap.requiresStartupPairing) {
     if (!pwaAppUrl) {
         throw new Error(
             'MALINK_PWA_URL is required for the first fixed-account device invitation',
@@ -347,8 +380,8 @@ if (active.length === 0) {
         verificationCode: created.verificationCode,
     }
 } else {
-    const legacyClientCount = active.filter(record =>
-        record.certificate.certificate.deviceTransport.userId !== clientMatrixUserId,
+    const legacyClientCount = trustedDevices.filter(device =>
+        device.matrixUserId !== clientMatrixUserId,
     ).length
     if (legacyClientCount > 0) {
         process.stderr.write(
@@ -399,15 +432,7 @@ if (active.length === 0) {
     }
 }
 
-const localRoomIds = configuredRooms.map(room => room.roomId)
 const providerHistoryRoomIds = new Set<string>()
-const portableTrustedDevices = async () =>
-    (await workspaceAuthorization.activeGrants()).map(grant =>
-        trustedDeviceFromWorkspaceGrant(grant, localRoomIds))
-const trustedDevices = deduplicateTrustedDevices([
-    ...active.map(record => trustedDeviceFromRecord(record, localRoomIds)),
-    ...await portableTrustedDevices(),
-])
 let runner: MatrixMlp3GatewayRunner | null = null
 let requestWorkspaceShutdown: ((failure: Error) => void) | null = null
 let workspaceControlChain = Promise.resolve()
@@ -989,6 +1014,7 @@ const adminServer = await startGatewayAdminServer({
     gatewayId: identity.gatewayId,
     gatewayNodeId: identity.gatewayNodeId,
     clientMatrixUserId,
+    clientMatrixLoginStatus: clientBootstrap.clientMatrixLoginStatus,
     getGatewayName: () => gatewayProfile.gatewayName,
     getComputerName: () => gatewayProfile.computerName,
     renameGateway: async gatewayName => {
@@ -998,6 +1024,17 @@ const adminServer = await startGatewayAdminServer({
     coordinator: invitationCoordinator,
     pairingService,
     registry,
+    getAuthorizedDeviceMatrixIdentities: async () => {
+        const devices = deduplicateTrustedDevices([
+            ...(await registry.listActive()).map(record =>
+                trustedDeviceFromRecord(record, localRoomIds)),
+            ...await portableTrustedDevices(),
+        ])
+        return devices.map(device => ({
+            deviceId: device.deviceId,
+            matrixUserId: device.matrixUserId,
+        }))
+    },
     getGatewayState: () => runner?.getState() ?? 'starting',
     buildId: gatewayBuildId,
     getGatewayDiagnostics: () => runner!.healthSnapshot(),
