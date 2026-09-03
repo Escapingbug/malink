@@ -4,7 +4,11 @@ import type { SignedWorkspaceGatewayDirectory } from "@malink/protocol";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { GatewayRecoveryCard } from "../app/MatrixSettings.tsx";
-import { workspaceGatewayRepairPlan } from "../app/workspaceGatewayRepair.ts";
+import {
+  GATEWAY_RETIRE_MINIMUM_BUILD,
+  gatewayBuildSupportsWorkspaceRetirement,
+  workspaceGatewayRepairPlan,
+} from "../app/workspaceGatewayRepair.ts";
 
 function directory(): SignedWorkspaceGatewayDirectory {
   const key = {
@@ -31,6 +35,7 @@ function directory(): SignedWorkspaceGatewayDirectory {
           gatewayNodeId: "gateway-a",
           workspaceId: "workspace-1",
           gatewayName: "Laptop",
+          buildId: GATEWAY_RETIRE_MINIMUM_BUILD,
           transport: {
             homeserver: "https://matrix.example",
             roomId: "!a:example",
@@ -49,6 +54,7 @@ function directory(): SignedWorkspaceGatewayDirectory {
           gatewayNodeId: "gateway-b",
           workspaceId: "workspace-1",
           gatewayName: "Desktop",
+          buildId: "gateway-2026.09.03-061645Z-8b2afef",
           transport: {
             homeserver: "https://matrix.example",
             roomId: "!c:example",
@@ -88,7 +94,47 @@ test("routes retirement through another Gateway with a verified project", () => 
     availableProjectIds: [],
     unavailableProjectIds: ["project-c"],
     retirementAuthorityProjectId: "project-a",
+    retirementBlocker: null,
   });
+});
+
+test("recognizes only the first compatible or a later timestamped Gateway build", () => {
+  assert.equal(gatewayBuildSupportsWorkspaceRetirement(undefined), false);
+  assert.equal(gatewayBuildSupportsWorkspaceRetirement("development"), false);
+  assert.equal(
+    gatewayBuildSupportsWorkspaceRetirement("gateway-2026.09.03-061645Z-8b2afef"),
+    false,
+  );
+  assert.equal(
+    gatewayBuildSupportsWorkspaceRetirement(GATEWAY_RETIRE_MINIMUM_BUILD),
+    true,
+  );
+  assert.equal(
+    gatewayBuildSupportsWorkspaceRetirement("gateway-2026.09.04-000001Z-abcdef0"),
+    true,
+  );
+});
+
+test("requires an online legacy Gateway to update before it becomes a removal authority", () => {
+  const value = directory();
+  value.directory.gateways[0]!.buildId = "gateway-2026.09.03-061645Z-8b2afef";
+  const plan = workspaceGatewayRepairPlan(
+    value,
+    new Set(["project-a", "project-b"]),
+    new Set(["gateway-a"]),
+  );
+
+  assert.deepEqual(
+    plan?.nodes.find(node => node.gatewayNodeId === "gateway-b"),
+    {
+      gatewayNodeId: "gateway-b",
+      projectIds: ["project-c"],
+      availableProjectIds: [],
+      unavailableProjectIds: ["project-c"],
+      retirementAuthorityProjectId: null,
+      retirementBlocker: "gateway_update_required",
+    },
+  );
 });
 
 test("never routes retirement through the target Gateway itself", () => {
@@ -125,10 +171,12 @@ test("offers ordinary-user restore and removal paths for an unavailable computer
     projectCount: 2,
     unavailableProjectCount: 2,
     authorityProjectId: "project-a",
+    retirementBlocker: null,
     busy: false,
     retiring: false,
     error: null,
     onAdd() {},
+    onReviewGatewayUpdates() {},
     async onRetire() {},
   }));
 
@@ -146,14 +194,38 @@ test("explains the safety prerequisite when no other computer can sign removal",
     projectCount: 2,
     unavailableProjectCount: 2,
     authorityProjectId: null,
+    retirementBlocker: "gateway_online_required",
     busy: false,
     retiring: false,
     error: null,
     onAdd() {},
+    onReviewGatewayUpdates() {},
     async onRetire() {},
   }));
 
   assert.match(html, /Another connected computer is required/);
+  assert.match(html, /Continue without this computer[^<]*<\/button>/);
+  assert.match(html, /disabled=""/);
+});
+
+test("offers the effective Gateway update action instead of a removal that cannot finish", () => {
+  const html = renderToStaticMarkup(createElement(GatewayRecoveryCard, {
+    gatewayNodeId: "gateway-b",
+    gatewayLabel: "Desktop",
+    projectCount: 2,
+    unavailableProjectCount: 2,
+    authorityProjectId: null,
+    retirementBlocker: "gateway_update_required",
+    busy: false,
+    retiring: false,
+    error: null,
+    onAdd() {},
+    onReviewGatewayUpdates() {},
+    async onRetire() {},
+  }));
+
+  assert.match(html, /Gateway version cannot safely complete this removal/);
+  assert.match(html, /Review Gateway updates/);
   assert.match(html, /Continue without this computer[^<]*<\/button>/);
   assert.match(html, /disabled=""/);
 });

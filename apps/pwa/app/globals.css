@@ -6769,11 +6769,19 @@ select:focus-visible {
 }
 
 .gateway-repair-card > em,
+.gateway-repair-update-required > em,
 .gateway-retirement-confirmation > em {
   color: #9c4d58;
   font-size: 9px;
   font-style: normal;
   line-height: 1.45;
+}
+
+.gateway-repair-update-required {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
 }
 
 .gateway-repair-actions,
@@ -6785,6 +6793,7 @@ select:focus-visible {
 }
 
 .gateway-repair-actions button,
+.gateway-repair-update-required button,
 .gateway-retirement-confirmation button {
   min-height: 32px;
   padding: 0 10px;

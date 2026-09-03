@@ -135,6 +135,7 @@ import {
 } from "./buildInfo";
 import { discoverLatestGatewayAgentUpdate } from "./gatewayAgentUpdateDiscovery";
 import { uncertainCommandRecoveryPresentation } from "./uncertainCommandRecoveryPresentation";
+import { gatewayBuildSupportsWorkspaceRetirement } from "./workspaceGatewayRepair";
 import {
   collidingGatewayMaintenanceSessionIds,
   gatewayMaintenanceSessionCanBeArchived,
@@ -7290,6 +7291,13 @@ function MalinkAppRuntime() {
     }
     if (!authority) {
       const detail = "Connect another Workspace computer before removing this one.";
+      setGatewayRetirementError({ gatewayNodeId, detail });
+      throw new Error(detail);
+    }
+    if (!gatewayBuildSupportsWorkspaceRetirement(authority.buildId)) {
+      const detail =
+        `Update ${authority.gatewayName} before removing this computer. ` +
+        "Its current Gateway version cannot return a verified result for this action.";
       setGatewayRetirementError({ gatewayNodeId, detail });
       throw new Error(detail);
     }

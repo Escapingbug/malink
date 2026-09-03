@@ -576,12 +576,14 @@ function MatrixSettingsDialog({
                         projectCount={gateway.projectCount}
                         unavailableProjectCount={repairNode.unavailableProjectIds.length}
                         authorityProjectId={repairNode.retirementAuthorityProjectId}
+                        retirementBlocker={repairNode.retirementBlocker}
                         busy={busy || gatewayRetirementBusy !== null}
                         retiring={gatewayRetirementBusy === gatewayProfileId}
                         error={gatewayRetirementError?.gatewayNodeId === gatewayProfileId
                           ? gatewayRetirementError.detail
                           : null}
                         onAdd={() => setAddingGateway(true)}
+                        onReviewGatewayUpdates={onReviewGatewayUpdates}
                         onRetire={onRetireGateway}
                       />
                     )}
@@ -1046,10 +1048,12 @@ export function GatewayRecoveryCard({
   projectCount,
   unavailableProjectCount,
   authorityProjectId,
+  retirementBlocker,
   busy,
   retiring,
   error,
   onAdd,
+  onReviewGatewayUpdates,
   onRetire,
 }: {
   gatewayNodeId: string;
@@ -1057,10 +1061,12 @@ export function GatewayRecoveryCard({
   projectCount: number;
   unavailableProjectCount: number;
   authorityProjectId: string | null;
+  retirementBlocker: "gateway_update_required" | "gateway_online_required" | null;
   busy: boolean;
   retiring: boolean;
   error: string | null;
   onAdd(): void;
+  onReviewGatewayUpdates(): void;
   onRetire(gatewayNodeId: string, authorityProjectId: string): Promise<void>;
 }) {
   const [confirming, setConfirming] = useState(false);
@@ -1089,13 +1095,27 @@ export function GatewayRecoveryCard({
           disabled={busy || !authorityProjectId}
           title={authorityProjectId
             ? `Permanently retire ${gatewayLabel}`
-            : "Connect another Workspace computer before removing this one"}
+            : retirementBlocker === "gateway_update_required"
+              ? "Update another online Gateway before removing this computer"
+              : "Connect another Workspace computer before removing this one"}
           onClick={() => setConfirming(true)}
         >
           Continue without this computer…
         </button>
       </div>
-      {!authorityProjectId && (
+      {retirementBlocker === "gateway_update_required" && (
+        <div className="gateway-repair-update-required">
+          <em>
+            Another computer is online, but its Gateway version cannot safely complete
+            this removal. Update that Gateway first; Malink will then make this action
+            available.
+          </em>
+          <button type="button" disabled={busy} onClick={onReviewGatewayUpdates}>
+            Review Gateway updates
+          </button>
+        </div>
+      )}
+      {retirementBlocker === "gateway_online_required" && (
         <em>
           Another connected computer is required before Malink can safely remove this
           unavailable one.

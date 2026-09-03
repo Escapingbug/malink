@@ -5,6 +5,7 @@ import id.my.anciety.malink.BuildConfig
 import id.my.anciety.malink.client.command.CommandCompletion as DurableCompletion
 import id.my.anciety.malink.client.command.CommandAuthorizationPolicy
 import id.my.anciety.malink.client.command.CommandPayloadValidator
+import id.my.anciety.malink.client.command.GatewayRetireCommandPayload
 import id.my.anciety.malink.client.command.CommandOutcome as DurableOutcome
 import id.my.anciety.malink.client.command.CommandOperation
 import id.my.anciety.malink.client.command.CommandReceipt as DurableReceipt
@@ -1130,6 +1131,13 @@ class NativeClientRuntime(
                 validatedPayload,
                 activeTrust.certificate.allowedOperations,
             )
+            if (validatedPayload is GatewayRetireCommandPayload) {
+                requireGatewayRetirementAuthorityCompatible(
+                    signedDirectory = matrixMlp3Projection.workspaceGatewayDirectory(),
+                    authorityProjectId = projectId,
+                    retiredGatewayNodeId = validatedPayload.gatewayNodeId,
+                )
+            }
             val existingStatusProbeIds = if (
                 validatedPayload.operation == CommandOperation.GATEWAY_UPDATE_STATUS
             ) {

@@ -288,6 +288,16 @@ second confirmation before the client sends `apply` with
 Multiple nodes are
 updated as separate, concurrent node-local operations; one node's maintenance
 Agent never disables another node's action.
+
+Additive Gateway operations also remain mixed-version safe. A client must not
+route `gateway.retire` through a Gateway build older than
+`gateway-2026.09.03-081840Z-44d8e8a`: those releases cannot parse the operation
+and therefore reject it before the command journal can produce a signed terminal
+result. The recovery UI keeps removal disabled, identifies the required Gateway
+update, and opens the existing per-node update flow. A removal already accepted
+by Matrix remains one durable command identity; after the authority Gateway is
+updated, normal journal reconciliation completes that same action rather than
+submitting a second retirement.
 The current client persists that explicit update intent before sending `stage`.
 If it is closed between the two old wire commands, it resumes only that exact
 project/node/release from `staged` after reconnecting. Pre-existing staged
