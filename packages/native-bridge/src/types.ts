@@ -1,5 +1,8 @@
 export const NATIVE_BRIDGE_PROTOCOL_VERSION = 1 as const;
 
+/** QR exports are intentionally much smaller than the bridge RPC envelope. */
+export const NATIVE_IMAGE_SAVE_MAX_BYTES = 256 * 1024;
+
 export const NATIVE_BRIDGE_LIMITS = Object.freeze({
   maxRpcBytes: 512 * 1024,
   maxEventBatchBytes: 256 * 1024,
@@ -116,6 +119,7 @@ export type CapabilityName =
   | "client.update"
   | "client.pwa-source"
   | "client.diagnostics"
+  | "client.image-save"
   | "background.foreground-service";
 
 export type CapabilityRequest = {
@@ -558,6 +562,11 @@ export type DiagnosticsExportResult = {
   filename: string;
 };
 
+export type ImageSaveResult = {
+  status: "saved";
+  filename: string;
+};
+
 export const REQUEST_METHODS = [
   "malink.bridge.hello",
   "malink.client.start",
@@ -571,6 +580,7 @@ export const REQUEST_METHODS = [
   "malink.update.check",
   "malink.update.install",
   "malink.diagnostics.export",
+  "malink.image.save",
   "malink.events.subscribe",
   "malink.events.activate",
   "malink.events.ack",
@@ -607,6 +617,7 @@ export const MUTATION_METHODS = [
   "malink.client.disconnect",
   "malink.update.check",
   "malink.update.install",
+  "malink.image.save",
   "malink.command.send",
   "malink.command.cancel",
   "malink.command.recover",
@@ -674,6 +685,11 @@ export type BridgeMethodParams = {
   "malink.update.check": IdempotentMutationParams;
   "malink.update.install": IdempotentMutationParams;
   "malink.diagnostics.export": ContextParams;
+  "malink.image.save": IdempotentMutationParams & {
+    filename: string;
+    mimeType: "image/png";
+    dataBase64: string;
+  };
   "malink.events.subscribe": EventsSubscribeParams;
   "malink.events.activate": EventsActivateParams;
   "malink.events.ack": EventsAckParams;
@@ -753,6 +769,7 @@ export type BridgeMethodResults = {
   "malink.update.check": NativeUpdateStatus;
   "malink.update.install": NativeUpdateStatus;
   "malink.diagnostics.export": DiagnosticsExportResult;
+  "malink.image.save": ImageSaveResult;
   "malink.events.subscribe": EventsSubscribeResult;
   "malink.events.activate": EventsCursorResult;
   "malink.events.ack": EventsCursorResult;

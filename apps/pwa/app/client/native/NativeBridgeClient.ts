@@ -66,6 +66,7 @@ export const OPTIONAL_NATIVE_CAPABILITIES = [
   "client.update",
   "client.pwa-source",
   "client.diagnostics",
+  "client.image-save",
 ] as const;
 
 export function nativeCapabilityVersions(
@@ -261,6 +262,20 @@ export class NativeBridgeClient implements MalinkClient {
     if (!this.helloResult.capabilities["client.diagnostics"]) return false;
     await this.bridge.request("malink.diagnostics.export", {
       context: this.bridge.context(),
+    });
+    return true;
+  }
+
+  async savePngImage(filename: string, dataBase64: string): Promise<boolean> {
+    if (this.helloResult.capabilities["client.image-save"]?.version !== 1) {
+      return false;
+    }
+    await this.bridge.request("malink.image.save", {
+      context: this.bridge.context(),
+      idempotencyKey: crypto.randomUUID(),
+      filename,
+      mimeType: "image/png",
+      dataBase64,
     });
     return true;
   }

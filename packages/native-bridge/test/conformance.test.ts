@@ -727,6 +727,46 @@ describe("native bridge JSON-RPC conformance", () => {
     }))).toThrow(/share_opened/);
   });
 
+  it("strictly validates idempotent native PNG saving", () => {
+    const parsed = parseRpcRequest(request("malink.image.save", {
+      context,
+      idempotencyKey,
+      filename: "malink-invitation-qr-20260903T100000Z.png",
+      mimeType: "image/png",
+      dataBase64: "iVBORw0KGgo=",
+    }));
+    expect(parsed.method).toBe("malink.image.save");
+    expect(isMutationMethod(parsed.method)).toBe(true);
+
+    const result = parseMethodRpcResponse("malink.image.save", response({
+      status: "saved",
+      filename: "malink-invitation-qr-20260903T100000Z.png",
+    }));
+    expect("result" in result && result.result.status).toBe("saved");
+
+    expect(() => parseRpcRequest(request("malink.image.save", {
+      context,
+      idempotencyKey,
+      filename: "../invitation.png",
+      mimeType: "image/png",
+      dataBase64: "iVBORw0KGgo=",
+    }))).toThrow(/safe PNG filename/);
+    expect(() => parseRpcRequest(request("malink.image.save", {
+      context,
+      idempotencyKey,
+      filename: "invitation.png",
+      mimeType: "image/jpeg",
+      dataBase64: "iVBORw0KGgo=",
+    }))).toThrow(/image\/png/);
+    expect(() => parseRpcRequest(request("malink.image.save", {
+      context,
+      idempotencyKey,
+      filename: "invitation.png",
+      mimeType: "image/png",
+      dataBase64: "bm90LWEtcG5n",
+    }))).toThrow(/bounded PNG/);
+  });
+
   it("strictly validates replay subscription and activation cursors", () => {
     const subscribe = parseRpcRequest(request("malink.events.subscribe", {
       context,

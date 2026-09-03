@@ -1254,6 +1254,65 @@ test("opens the Android diagnostic share surface when negotiated", async () => {
   client.dispose();
 });
 
+test("saves invitation QR PNGs through the negotiated Android image surface", async () => {
+  const port = new RuntimePort();
+  const client = await createTestClient(port);
+
+  assert.equal(
+    await client.savePngImage(
+      "malink-invitation-qr-20260903T100000Z.png",
+      "iVBORw0KGgo=",
+    ),
+    true,
+  );
+  const request = port.requests.find(candidate => candidate.method === "malink.image.save");
+  assert.deepEqual(request?.params, {
+    context: { bridgeSessionId: "bridge-session-native-1" },
+    idempotencyKey:
+      (request?.params as BridgeMethodParams["malink.image.save"] | undefined)
+        ?.idempotencyKey,
+    filename: "malink-invitation-qr-20260903T100000Z.png",
+    mimeType: "image/png",
+    dataBase64: "iVBORw0KGgo=",
+  });
+  assert.match(
+    (request?.params as BridgeMethodParams["malink.image.save"]).idempotencyKey,
+    /^[0-9a-f-]{36}$/,
+  );
+  client.dispose();
+});
+
+test("does not send an image request to an APK without the optional save capability", async () => {
+  const port = new RuntimePort();
+  const bridge = await acquireNativeRpcBridge(port);
+  const hello = await bridge.hello({
+    webBuild: "test-build",
+    requiredCapabilities: [],
+    optionalCapabilities: [
+      ...REQUIRED_NATIVE_CAPABILITIES,
+      ...OPTIONAL_NATIVE_CAPABILITIES,
+    ].map((name) => ({ name, versions: nativeCapabilityVersions(name) })),
+  });
+  const capabilities = { ...hello.capabilities };
+  delete capabilities["client.image-save"];
+  const client = new NativeBridgeClient(
+    bridge,
+    { ...hello, capabilities },
+    { onMessage() {}, onStatus() {} },
+  );
+  await client.ready;
+
+  assert.equal(
+    await client.savePngImage("malink-invitation-qr.png", "iVBORw0KGgo="),
+    false,
+  );
+  assert.equal(
+    port.requests.some(candidate => candidate.method === "malink.image.save"),
+    false,
+  );
+  client.dispose();
+});
+
 async function createTestClient(
   port: RuntimePort,
   onReview: (review: MalinkCommandReview | null) => void = () => {},
@@ -1369,6 +1428,10 @@ function responseFor(request: Request): unknown {
         status: "share_opened",
         filename: "malink-native-diagnostics.txt",
       };
+    case "malink.image.save": {
+      const params = request.params as BridgeMethodParams["malink.image.save"];
+      return { status: "saved", filename: params.filename };
+    }
     case "malink.client.disconnect": {
       const params = request.params as BridgeMethodParams["malink.client.disconnect"];
       return { mode: params.mode, snapshot: snapshot() };

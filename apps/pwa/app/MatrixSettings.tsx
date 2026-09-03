@@ -104,6 +104,7 @@ type Props = {
   onForget(): void;
   onCreateInvitation(password?: string): void;
   onClearInvitation(): void;
+  onSaveInvitationQr(filename: string, dataBase64: string): Promise<boolean>;
   onCreateGatewayEnrollment(): void;
   onApproveGatewayEnrollment(enrollmentId: string, approverProjectId?: string): void;
   onClearGatewayEnrollment(): void;
@@ -188,6 +189,7 @@ function MatrixSettingsDialog({
   onForget,
   onCreateInvitation,
   onClearInvitation,
+  onSaveInvitationQr,
   onCreateGatewayEnrollment,
   onApproveGatewayEnrollment,
   onClearGatewayEnrollment,
@@ -767,6 +769,7 @@ function MatrixSettingsDialog({
           onConfirm={onConfirmPairing}
           onCreateInvitation={onCreateInvitation}
           onClearInvitation={onClearInvitation}
+          onSaveQrCode={onSaveInvitationQr}
           />}
 
         {(needsAccount || trustedGateway) && (

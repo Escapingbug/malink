@@ -8021,6 +8021,21 @@ function MalinkAppRuntime() {
     return flight;
   }
 
+  async function saveInvitationQr(
+    filename: string,
+    dataBase64: string,
+  ): Promise<boolean> {
+    const connection = malinkClientRef.current;
+    if (connection?.runtime !== "native") return false;
+    if (!connection.savePngImage ||
+        !(await connection.savePngImage(filename, dataBase64))) {
+      throw new Error(
+        "This APK cannot save QR codes yet. Update the Android app, then try again.",
+      );
+    }
+    return true;
+  }
+
   async function performConnectionDiagnosticsExport(): Promise<boolean> {
     try {
       const report = createConnectionDiagnostics({
@@ -14105,6 +14120,7 @@ function MalinkAppRuntime() {
           setInvitationReauthRequired(false);
           setInvitationError(null);
         }}
+        onSaveInvitationQr={saveInvitationQr}
         onCreateGatewayEnrollment={() => void createGatewayEnrollment()}
         onApproveGatewayEnrollment={(enrollmentId, approverProjectId) =>
           void approveGatewayEnrollment(enrollmentId, approverProjectId)

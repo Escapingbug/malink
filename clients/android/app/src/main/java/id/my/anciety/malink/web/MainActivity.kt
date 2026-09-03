@@ -7,17 +7,21 @@ import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.IBinder
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.text.InputType
@@ -1298,6 +1302,64 @@ class MainActivity : ComponentActivity() {
         return report.name
     }
 
+    private fun savePngImageToPictures(filename: String, bytes: ByteArray): String {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (
+            bounds.outMimeType != "image/png" ||
+            bounds.outWidth !in 1..MAX_SAVED_QR_DIMENSION ||
+            bounds.outHeight !in 1..MAX_SAVED_QR_DIMENSION
+        ) {
+            throw BridgeRuntimeFailure(
+                BridgeError.INVALID_PARAMS,
+                "The QR image is not a valid bounded PNG.",
+            )
+        }
+        val resolver = contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, filename)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+            put(
+                MediaStore.Images.Media.RELATIVE_PATH,
+                "${Environment.DIRECTORY_PICTURES}/Malink",
+            )
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(
+            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+            values,
+        ) ?: throw BridgeRuntimeFailure(
+            BridgeError.NATIVE_INTERNAL,
+            "Android could not create the QR image in Pictures/Malink.",
+            retryable = true,
+        )
+        return try {
+            resolver.openOutputStream(uri, "w")?.use { output ->
+                output.write(bytes)
+                output.flush()
+            } ?: throw BridgeRuntimeFailure(
+                BridgeError.NATIVE_INTERNAL,
+                "Android could not write the QR image to Pictures/Malink.",
+                retryable = true,
+            )
+            val committed = ContentValues().apply {
+                put(MediaStore.Images.Media.IS_PENDING, 0)
+            }
+            if (resolver.update(uri, committed, null, null) <= 0) {
+                throw BridgeRuntimeFailure(
+                    BridgeError.NATIVE_INTERNAL,
+                    "Android could not finish saving the QR image.",
+                    retryable = true,
+                )
+            }
+            diagnostics.record("image.qr_saved", mapOf("filename" to filename))
+            filename
+        } catch (error: Throwable) {
+            runCatching { resolver.delete(uri, null, null) }
+            throw error
+        }
+    }
+
     private fun showRecoveryPage(detail: String) {
         showContent(messageView(
             title = "Malink is temporarily unavailable",
@@ -1547,6 +1609,9 @@ class MainActivity : ComponentActivity() {
         override suspend fun exportDiagnostics(): String =
             withContext(Dispatchers.Main.immediate) { shareDiagnostics() }
 
+        override suspend fun savePngImage(filename: String, bytes: ByteArray): String =
+            withContext(Dispatchers.IO) { savePngImageToPictures(filename, bytes) }
+
         private fun requireNativeUpdateManager(): NativeUpdateManager =
             updateManager ?: throw BridgeRuntimeFailure(
                 BridgeError.NATIVE_INTERNAL,
@@ -1587,6 +1652,7 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val KEY_NOTIFICATION_REQUESTED = "notification-permission-requested"
         private const val SERVICE_BIND_TIMEOUT_MS = 10_000L
+        private const val MAX_SAVED_QR_DIMENSION = 2_048
         const val ACTION_EXPORT_DIAGNOSTICS =
             "id.my.anciety.malink.action.EXPORT_DIAGNOSTICS"
         const val ACTION_STATIC_SERVICE_SETTINGS =

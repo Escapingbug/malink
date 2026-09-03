@@ -33,6 +33,10 @@ import {
   readClipboardTextWithTimeout,
   writeClipboardTextWithTimeout,
 } from "./uiClipboard";
+import {
+  downloadInvitationQrPng,
+  invitationQrPng,
+} from "./invitationQrExport";
 
 type Props = {
   preview: PairingPreview | null;
@@ -50,6 +54,7 @@ type Props = {
   onConfirm(): void;
   onCreateInvitation(password?: string): void;
   onClearInvitation(): void;
+  onSaveQrCode?(filename: string, dataBase64: string): Promise<boolean>;
 };
 
 export function PairingWizard({
@@ -68,6 +73,7 @@ export function PairingWizard({
   onConfirm,
   onCreateInvitation,
   onClearInvitation,
+  onSaveQrCode,
 }: Props) {
   const repairRequired = repairReason !== null;
   const [link, setLink] = useState("");
@@ -77,7 +83,7 @@ export function PairingWizard({
   const [qrCode, setQrCode] = useState({ link: "", dataUrl: "" });
   const [qrErrorLink, setQrErrorLink] = useState("");
   const [shareStatus, setShareStatus] = useState<string | null>(null);
-  const [shareBusy, setShareBusy] = useState<"copy" | "share" | null>(null);
+  const [shareBusy, setShareBusy] = useState<"copy" | "share" | "save" | null>(null);
   const [pasteBusy, setPasteBusy] = useState(false);
   const [imageScanBusy, setImageScanBusy] = useState(false);
   const [imageScanError, setImageScanError] = useState<string | null>(null);
@@ -309,6 +315,40 @@ export function PairingWizard({
               >
                 Export authorization file
               </button>
+              {qrDataUrl && (
+                <button
+                  type="button"
+                  className="paste-button"
+                  disabled={shareBusy !== null}
+                  onClick={() => {
+                    setShareStatus(null);
+                    setShareBusy("save");
+                    void (async () => {
+                      const image = invitationQrPng(qrDataUrl);
+                      const savedNatively = await onSaveQrCode?.(
+                        image.filename,
+                        image.dataBase64,
+                      ) ?? false;
+                      if (savedNatively) {
+                        setShareStatus("QR code saved to Pictures/Malink.");
+                        return;
+                      }
+                      downloadInvitationQrPng(image);
+                      setShareStatus("QR code download started.");
+                    })()
+                      .catch((error) => {
+                        setShareStatus(
+                          error instanceof Error ? error.message : String(error),
+                        );
+                      })
+                      .finally(() => setShareBusy(null));
+                  }}
+                >
+                  {shareBusy === "save"
+                    ? <BusyActionLabel>Saving QR code…</BusyActionLabel>
+                    : "Save QR code"}
+                </button>
+              )}
               <button
                 type="button"
                 className="continue-link-button"

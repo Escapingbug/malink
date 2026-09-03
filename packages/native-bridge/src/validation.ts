@@ -2,6 +2,7 @@ import { BridgeProtocolError } from "./errors.js";
 import {
   MUTATION_METHODS,
   NATIVE_BRIDGE_LIMITS,
+  NATIVE_IMAGE_SAVE_MAX_BYTES,
   REQUEST_METHODS,
   type CapabilityRequest,
   type ClientDisconnectResult,
@@ -21,6 +22,7 @@ import {
   type HelloParams,
   type HelloResult,
   type HistoryPageResult,
+  type ImageSaveResult,
   type JsonObject,
   type JsonValue,
   type MatrixRoomBinding,
@@ -47,6 +49,9 @@ const UUID_PATTERN =
 const RPC_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
 const BASE64URL_SHA256_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]*$/;
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const MAX_NATIVE_IMAGE_SAVE_BASE64_LENGTH =
+  Math.ceil(NATIVE_IMAGE_SAVE_MAX_BYTES / 3) * 4;
 const MATRIX_USER_ID_PATTERN = /^@[^:\s]+:[^:\s]+$/;
 const MATRIX_ROOM_ID_PATTERN = /^![^:\s]+:[^\s]+$/;
 const MATRIX_ED25519_PATTERN = /^[A-Za-z0-9+/]{43}=?$/;
@@ -442,6 +447,9 @@ function parseMethodResult<M extends RequestMethod>(
       break;
     case "malink.diagnostics.export":
       result = parseDiagnosticsExportResult(input);
+      break;
+    case "malink.image.save":
+      result = parseImageSaveResult(input);
       break;
     case "malink.events.subscribe":
       result = parseEventsSubscribeResult(input);
@@ -1396,6 +1404,17 @@ function parseDiagnosticsExportResult(input: unknown): DiagnosticsExportResult {
   };
 }
 
+function parseImageSaveResult(input: unknown): ImageSaveResult {
+  const value = strictObject(input, ["status", "filename"], "image save result");
+  if (value.status !== "saved") {
+    invalidParams("image save status must be saved.");
+  }
+  return {
+    status: "saved",
+    filename: pngFilename(value.filename, "image filename"),
+  };
+}
+
 function parseLiteralResult(
   input: unknown,
   flag: "unsubscribed" | "released" | "retired" | "aborted" | "closed" | "cancelled",
@@ -1560,6 +1579,15 @@ function parseMethodParams(method: RequestMethod, input: unknown): JsonObject {
     case "malink.update.status":
     case "malink.diagnostics.export":
       return paramsWithContext(input, []);
+    case "malink.image.save": {
+      const params = mutationParams(input, ["filename", "mimeType", "dataBase64"]);
+      pngFilename(params.filename, "filename");
+      if (params.mimeType !== "image/png") {
+        invalidParams("mimeType must be image/png.");
+      }
+      pngImageBase64(params.dataBase64);
+      return params;
+    }
     case "malink.update.check":
     case "malink.update.install":
       return mutationParams(input, []);
@@ -1934,6 +1962,31 @@ function requiredString(
     invalidParams(`${label} must be a valid string.`);
   }
   return input;
+}
+
+function pngFilename(input: unknown, label: string): string {
+  const value = requiredString(input, label, 128);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.png$/u.test(value)) {
+    invalidParams(`${label} must be a safe PNG filename.`);
+  }
+  return value;
+}
+
+function pngImageBase64(input: unknown): string {
+  const value = requiredString(
+    input,
+    "dataBase64",
+    MAX_NATIVE_IMAGE_SAVE_BASE64_LENGTH,
+  );
+  if (!BASE64_PATTERN.test(value) || !value.startsWith("iVBORw0KGgo")) {
+    invalidParams("dataBase64 must be a bounded PNG image.");
+  }
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  const decodedBytes = (value.length / 4) * 3 - padding;
+  if (decodedBytes > NATIVE_IMAGE_SAVE_MAX_BYTES) {
+    invalidParams("PNG image exceeds the native save limit.");
+  }
+  return value;
 }
 
 function requiredUuid(input: unknown, label: string): string {

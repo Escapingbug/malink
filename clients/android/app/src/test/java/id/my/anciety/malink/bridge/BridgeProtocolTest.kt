@@ -88,7 +88,8 @@ class BridgeProtocolTest {
                           {"name":"commands.journal-reconciliation","versions":[1]},
                           {"name":"commands.orphan-retirement","versions":[1]},
                           {"name":"history.page","versions":[1,2,3]},
-                          {"name":"client.diagnostics","versions":[1]}
+                          {"name":"client.diagnostics","versions":[1]},
+                          {"name":"client.image-save","versions":[1]}
                         ]
                     """.trimIndent(),
                 ),
@@ -105,6 +106,7 @@ class BridgeProtocolTest {
                 "commands.orphan-retirement",
                 "history.page",
                 "client.diagnostics",
+                "client.image-save",
             ),
             capabilities.keys,
         )
@@ -154,6 +156,43 @@ class BridgeProtocolTest {
             response.getValue("filename").jsonPrimitive.content,
         )
         assertEquals(1, runtime.diagnosticExports)
+    }
+
+    @Test
+    fun `saves one bounded PNG through the negotiated image surface`() {
+        val runtime = FakeRuntime()
+        val dispatcher = BridgeDispatcher(runtime, BRIDGE_SESSION_ID)
+        dispatch(
+            dispatcher,
+            helloRequest(
+                optionalCapabilities =
+                    """[{"name":"client.image-save","versions":[1]}]""",
+            ),
+        )
+        val request = """
+            {
+              "jsonrpc":"2.0",
+              "id":"image-save-1",
+              "method":"malink.image.save",
+              "params":{
+                "context":{"bridgeSessionId":"$BRIDGE_SESSION_ID"},
+                "idempotencyKey":"00000000-0000-4000-8000-000000000099",
+                "filename":"malink-invitation-qr-20260903T100000Z.png",
+                "mimeType":"image/png",
+                "dataBase64":"iVBORw0KGgo="
+              }
+            }
+        """.trimIndent()
+
+        val response = successResult(dispatch(dispatcher, request))
+        assertEquals("saved", response.getValue("status").jsonPrimitive.content)
+        assertEquals(
+            "malink-invitation-qr-20260903T100000Z.png",
+            response.getValue("filename").jsonPrimitive.content,
+        )
+        successResult(dispatch(dispatcher, request))
+        assertEquals(1, runtime.savedPngImages.size)
+        assertEquals(8, runtime.savedPngImages.single().second)
     }
 
     @Test
@@ -663,6 +702,7 @@ class BridgeProtocolTest {
         var loginTokenIssues = 0
         var updateChecks = 0
         var diagnosticExports = 0
+        val savedPngImages = mutableListOf<Pair<String, Int>>()
         val loginTokenInputs = mutableListOf<Pair<String, String?>>()
         val disconnects = mutableListOf<String>()
         private var active = true
@@ -694,6 +734,11 @@ class BridgeProtocolTest {
         override suspend fun exportDiagnostics(): String {
             diagnosticExports += 1
             return "malink-native-diagnostics.txt"
+        }
+
+        override suspend fun savePngImage(filename: String, bytes: ByteArray): String {
+            savedPngImages += filename to bytes.size
+            return filename
         }
 
         override suspend fun bootstrap(

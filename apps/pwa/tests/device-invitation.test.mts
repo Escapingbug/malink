@@ -18,6 +18,10 @@ import {
   pairingLinkFromDeviceInvitation,
 } from "../app/pairing.ts";
 import { DeviceInvitationLifecycle } from "../app/deviceInvitationLifecycle.ts";
+import {
+  downloadInvitationQrPng,
+  invitationQrPng,
+} from "../app/invitationQrExport.ts";
 
 test("combines one signed Gateway offer and one-time Matrix login into a fragment link", async () => {
   const offer = await signedOffer();
@@ -48,6 +52,47 @@ test("combines one signed Gateway offer and one-time Matrix login into a fragmen
   assert.match(
     await QRCode.toDataURL(generated.link, { errorCorrectionLevel: "L" }),
     /^data:image\/png;base64,/,
+  );
+});
+
+test("prepares a bounded QR PNG for Android saving or browser download", () => {
+  const image = invitationQrPng(
+    "data:image/png;base64,iVBORw0KGgo=",
+    Date.parse("2026-09-03T10:00:00.000Z"),
+  );
+  assert.deepEqual(image, {
+    filename: "malink-invitation-qr-20260903T100000Z.png",
+    dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+    dataBase64: "iVBORw0KGgo=",
+  });
+
+  let appended = false;
+  let clicked = false;
+  let removed = false;
+  const anchor = {
+    href: "",
+    download: "",
+    hidden: false,
+    click() { clicked = true; },
+    remove() { removed = true; },
+  };
+  downloadInvitationQrPng(image, {
+    createElement() { return anchor; },
+    body: { append(node: unknown) { appended = node === anchor; } },
+  } as never);
+  assert.equal(anchor.href, image.dataUrl);
+  assert.equal(anchor.download, image.filename);
+  assert.equal(appended, true);
+  assert.equal(clicked, true);
+  assert.equal(removed, true);
+
+  assert.throws(
+    () => invitationQrPng("data:image/jpeg;base64,iVBORw0KGgo="),
+    /not a PNG/,
+  );
+  assert.throws(
+    () => invitationQrPng("data:image/png;base64,bm90LWEtcG5n"),
+    /invalid/,
   );
 });
 

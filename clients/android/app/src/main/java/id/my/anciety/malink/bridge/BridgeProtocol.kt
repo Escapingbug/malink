@@ -2,6 +2,7 @@ package id.my.anciety.malink.bridge
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.util.Base64
 import java.util.UUID
 import id.my.anciety.malink.client.NativeClientRuntime
 import id.my.anciety.malink.client.NativePairingRejectedException
@@ -144,6 +145,7 @@ object BridgeProtocol {
         "malink.update.check",
         "malink.update.install",
         "malink.diagnostics.export",
+        "malink.image.save",
         "malink.events.subscribe",
         "malink.events.activate",
         "malink.events.ack",
@@ -351,6 +353,13 @@ interface BridgeRuntime {
         userAction = "update_native",
     )
 
+    suspend fun savePngImage(filename: String, bytes: ByteArray): String =
+        throw BridgeRuntimeFailure(
+            BridgeError.CAPABILITY_UNAVAILABLE,
+            "Native image saving is unavailable.",
+            userAction = "update_native",
+        )
+
     suspend fun markSessionRead(sessionId: String, projectId: String?): SessionReadUpdate =
         client().markSessionRead(sessionId, projectId)
 }
@@ -527,6 +536,38 @@ class BridgeDispatcher(
                 buildJsonObject {
                     put("status", "share_opened")
                     put("filename", runtime.exportDiagnostics())
+                }
+            }
+            "malink.image.save" -> {
+                requireImageSaveCapability()
+                requireContext(
+                    request.params,
+                    mutation = true,
+                    requiredExtra = setOf("filename", "mimeType", "dataBase64"),
+                )
+                mutationResult(request) {
+                    val filename = requiredPngFilename(request.params, "filename")
+                    if (requiredString(request.params, "mimeType", 32) != "image/png") {
+                        invalidParams("mimeType must be image/png.")
+                    }
+                    val encoded = requiredString(
+                        request.params,
+                        "dataBase64",
+                        MAX_IMAGE_SAVE_BASE64_CHARACTERS,
+                    )
+                    val bytes = runCatching { Base64.getDecoder().decode(encoded) }
+                        .getOrElse { invalidParams("dataBase64 must be valid base64.") }
+                    try {
+                        if (bytes.size > MAX_IMAGE_SAVE_BYTES || !bytes.hasPngSignature()) {
+                            invalidParams("dataBase64 must be a bounded PNG image.")
+                        }
+                        buildJsonObject {
+                            put("status", "saved")
+                            put("filename", runtime.savePngImage(filename, bytes))
+                        }
+                    } finally {
+                        bytes.fill(0)
+                    }
                 }
             }
             "malink.events.subscribe" -> {
@@ -1385,6 +1426,15 @@ class BridgeDispatcher(
         ?.takeIf { it.isNotEmpty() && it.length <= maxLength }
         ?: invalidParams("$key must be a valid string.")
 
+    private fun requiredPngFilename(value: JsonObject, key: String): String =
+        requiredString(value, key, 128).takeIf(PNG_FILENAME_PATTERN::matches)
+            ?: invalidParams("$key must be a safe PNG filename.")
+
+    private fun ByteArray.hasPngSignature(): Boolean =
+        size >= PNG_SIGNATURE.size && PNG_SIGNATURE.indices.all { index ->
+            this[index] == PNG_SIGNATURE[index]
+        }
+
     private fun requiredStringAllowEmpty(
         value: JsonObject,
         key: String,
@@ -1488,6 +1538,16 @@ class BridgeDispatcher(
         }
     }
 
+    private fun requireImageSaveCapability() {
+        if (NATIVE_IMAGE_SAVE_CAPABILITY !in negotiatedCapabilities) {
+            throw BridgeDispatchException(
+                BridgeError.CAPABILITY_UNAVAILABLE,
+                "Native image saving was not negotiated.",
+                userAction = "update_native",
+            )
+        }
+    }
+
     private fun requireCommandOrphanRetirementCapability() {
         if (COMMAND_ORPHAN_RETIREMENT_CAPABILITY !in negotiatedCapabilities) {
             throw BridgeDispatchException(
@@ -1526,6 +1586,7 @@ class BridgeDispatcher(
         const val NATIVE_UPDATE_CAPABILITY = "client.update"
         const val PWA_SOURCE_CAPABILITY = "client.pwa-source"
         const val NATIVE_DIAGNOSTICS_CAPABILITY = "client.diagnostics"
+        const val NATIVE_IMAGE_SAVE_CAPABILITY = "client.image-save"
         const val SESSION_READ_RECEIPTS_CAPABILITY = "session.read-receipts"
         val SUPPORTED_CAPABILITIES = setOf(
             "client.lifecycle",
@@ -1544,6 +1605,7 @@ class BridgeDispatcher(
             NATIVE_UPDATE_CAPABILITY,
             PWA_SOURCE_CAPABILITY,
             NATIVE_DIAGNOSTICS_CAPABILITY,
+            NATIVE_IMAGE_SAVE_CAPABILITY,
             SESSION_READ_RECEIPTS_CAPABILITY,
         )
         fun supportedCapabilityVersions(name: String): Set<Int> = when {
@@ -1556,6 +1618,12 @@ class BridgeDispatcher(
         const val MAX_IDEMPOTENCY_RECORDS = 128
         const val MAX_RPC_RESULT_BYTES = 480 * 1024
         const val MAX_EVENT_BATCH_BYTES = 256 * 1024
+        const val MAX_IMAGE_SAVE_BYTES = 256 * 1024
+        const val MAX_IMAGE_SAVE_BASE64_CHARACTERS = ((MAX_IMAGE_SAVE_BYTES + 2) / 3) * 4
+        val PNG_FILENAME_PATTERN = Regex("^[A-Za-z0-9][A-Za-z0-9._-]*\\.png$")
+        val PNG_SIGNATURE = byteArrayOf(
+            0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        )
         val UUID_PATTERN = Regex(
             "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             RegexOption.IGNORE_CASE,
