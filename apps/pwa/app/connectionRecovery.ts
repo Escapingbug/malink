@@ -8,6 +8,7 @@ export type ConnectionRecoveryDisposition =
 
 const REAUTHORIZE_DETAILS = new Set([
   "matrix_login_rejected",
+  "matrix_room_join_failed",
   "matrix_project_authorization_repair_required",
   "matrix_session_repair_required",
 ]);

@@ -59,6 +59,27 @@ test("authorization failures do not offer a retry that cannot repair them", () =
   assert.equal(recovery?.secondary, undefined);
 });
 
+test("an unusable invited room directs setup to a fresh authorization file", () => {
+  const presentation = deriveConnectionPresentation(
+    "error",
+    "matrix_room_join_failed",
+  );
+  assert.equal(presentation.title, "Workspace access failed");
+  assert.match(presentation.detail, /fresh authorization file/i);
+  assert.equal(
+    connectionRecoveryDisposition("matrix_room_join_failed"),
+    "reauthorize",
+  );
+  assert.equal(
+    deriveConnectionRecoveryPlan({
+      status: "error",
+      detail: "matrix_room_join_failed",
+      hasSavedConnection: true,
+    })?.primary.action,
+    "new-invitation",
+  );
+});
+
 test("maps native progress codes to calm user-facing copy while retaining diagnostics", () => {
   const presentation = deriveConnectionPresentation(
     "connecting",
@@ -200,6 +221,7 @@ test("only authorization, compatibility, and integrity failures interrupt the us
 test("recovery plans use real recovery as the primary action", () => {
   const cases = [
     ["matrix_session_repair_required", "new-invitation"],
+    ["matrix_room_join_failed", "new-invitation"],
     ["matrix_native_runtime_unavailable", "reload-app"],
     ["matrix_native_runtime_outdated", "update-native-app"],
     ["matrix_sync_service_build_failed", "update-native-app"],

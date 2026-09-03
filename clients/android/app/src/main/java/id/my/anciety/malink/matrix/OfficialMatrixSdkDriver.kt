@@ -18,6 +18,7 @@ import org.matrix.rustcomponents.sdk.ClientSessionDelegate
 import org.matrix.rustcomponents.sdk.CrossProcessLockConfig
 import org.matrix.rustcomponents.sdk.EventOrTransactionId
 import org.matrix.rustcomponents.sdk.MediaSource
+import org.matrix.rustcomponents.sdk.Membership
 import org.matrix.rustcomponents.sdk.Room
 import org.matrix.rustcomponents.sdk.RoomListService
 import org.matrix.rustcomponents.sdk.RoomListServiceState
@@ -112,6 +113,23 @@ internal fun shouldDeliverMatrixSdkTimelineEvent(
         (malinkApplicationEventKind(rawJson) == "workspace_gateway_directory" ||
             sender == binding.gatewayUserId)
     return pairing || application
+}
+
+internal enum class MatrixBoundRoomMembershipAction {
+    READY,
+    JOIN,
+    REJECT,
+}
+
+internal fun matrixBoundRoomMembershipAction(
+    membership: Membership,
+): MatrixBoundRoomMembershipAction = when (membership) {
+    Membership.JOINED -> MatrixBoundRoomMembershipAction.READY
+    Membership.INVITED -> MatrixBoundRoomMembershipAction.JOIN
+    Membership.LEFT,
+    Membership.KNOCKED,
+    Membership.BANNED,
+    -> MatrixBoundRoomMembershipAction.REJECT
 }
 
 internal class MatrixTimelineEventDeduplicator(
@@ -337,8 +355,20 @@ class OfficialMatrixSdkDriver(
         ensurePairingChannel()
         val room = awaitBoundRoom()
         check(room.isEncrypted()) { "Refusing to send Malink data to an unencrypted Matrix room." }
-        room.discardRoomKey()
-        room.sendRaw("m.room.message", contentJson)
+        // Matrix rotates and shares an outbound Megolm session automatically
+        // when required. Forcing a discard here was a debugging operation in
+        // the SDK, made every durable retry create fresh crypto traffic, and
+        // could fail before a newly joined device had its first outbound
+        // session. The signed pairing identity remains unchanged across
+        // transport retries; use the SDK's normal encrypted send path.
+        try {
+            room.sendRaw("m.room.message", contentJson)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            diagnostics.record("matrix.pairing_message.send_failure", errorAttributes(error))
+            throw error
+        }
     }
 
     override suspend fun closePairingChannel() {
@@ -600,6 +630,9 @@ class OfficialMatrixSdkDriver(
                 )
             }
             if (active.get() && client === expectedClient) {
+                ensureBoundRoomsJoined(expectedClient)
+            }
+            if (active.get() && client === expectedClient) {
                 openApplicationTimelines(expectedClient)
                 syncedBoundRoomReady.complete(Unit)
                 diagnostics.record(
@@ -610,6 +643,63 @@ class OfficialMatrixSdkDriver(
             return syncedBoundRoomReady.isCompleted
         } finally {
             firstSyncFinalizing.set(false)
+        }
+    }
+
+    /**
+     * An invited room already has an SDK Room object, but message sends fail
+     * immediately until the current account joins it. Browser Matrix performs
+     * the same transition before opening its application transport. Keep the
+     * native readiness barrier closed until every root-authorized room is
+     * joined, so pairing cannot start on an unusable Room handle.
+     */
+    private suspend fun ensureBoundRoomsJoined(expectedClient: Client) {
+        for (binding in activeSession.roomBindings) {
+            try {
+                withTimeout(BOUND_ROOM_JOIN_TIMEOUT_MS) {
+                    var joinSubmitted = false
+                    while (active.get() && client === expectedClient) {
+                        val room = expectedClient.getRoom(binding.roomId)
+                            ?: throw IllegalStateException(
+                                "The authorized Matrix room disappeared during setup.",
+                            )
+                        when (matrixBoundRoomMembershipAction(room.membership())) {
+                            MatrixBoundRoomMembershipAction.READY -> return@withTimeout
+                            MatrixBoundRoomMembershipAction.JOIN -> {
+                                if (!joinSubmitted) {
+                                    diagnostics.record("matrix.bound_room.joining")
+                                    room.join()
+                                    joinSubmitted = true
+                                }
+                            }
+                            MatrixBoundRoomMembershipAction.REJECT ->
+                                throw MatrixBoundRoomMembershipException(
+                                    retryable = false,
+                                    message = "The Matrix account is not invited to the authorized Workspace room.",
+                                )
+                        }
+                        delay(BOUND_ROOM_POLL_INTERVAL_MS)
+                    }
+                }
+            } catch (_: TimeoutCancellationException) {
+                throw MatrixBoundRoomMembershipException(
+                    retryable = true,
+                    message = "Joining the authorized Workspace room timed out.",
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: MatrixBoundRoomMembershipException) {
+                throw error
+            } catch (error: Exception) {
+                throw MatrixBoundRoomMembershipException(
+                    retryable = true,
+                    message = "The Matrix account could not join the authorized Workspace room.",
+                    cause = error,
+                )
+            }
+            if (active.get() && client === expectedClient) {
+                diagnostics.record("matrix.bound_room.joined")
+            }
         }
     }
 
@@ -651,6 +741,7 @@ class OfficialMatrixSdkDriver(
         const val MAX_APPLICATION_TIMELINE_PAGE_SIZE = 128
         const val E2EE_INITIALIZATION_TIMEOUT_MS = 45_000L
         const val BOUND_ROOM_READY_TIMEOUT_MS = 30_000L
+        const val BOUND_ROOM_JOIN_TIMEOUT_MS = 45_000L
         const val BOUND_ROOM_POLL_INTERVAL_MS = 100L
     }
 

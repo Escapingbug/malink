@@ -11,11 +11,21 @@ internal data class MatrixRuntimeFailureDecision(
 internal class MatrixSyncServiceBuildException(cause: Throwable) :
     IllegalStateException("The Matrix sync service configuration is invalid.", cause)
 
+internal class MatrixBoundRoomMembershipException(
+    val retryable: Boolean,
+    message: String,
+    cause: Throwable? = null,
+) : IllegalStateException(message, cause)
+
 internal object MatrixRuntimeFailurePolicy {
     fun decide(error: Throwable): MatrixRuntimeFailureDecision = when (error) {
         is MatrixSyncServiceBuildException -> MatrixRuntimeFailureDecision(
             detailCode = "matrix_sync_service_build_failed",
             blocked = true,
+        )
+        is MatrixBoundRoomMembershipException -> MatrixRuntimeFailureDecision(
+            detailCode = "matrix_room_join_failed",
+            blocked = !error.retryable,
         )
         is InternalException -> MatrixRuntimeFailureDecision(
             detailCode = "matrix_sdk_internal_failure",

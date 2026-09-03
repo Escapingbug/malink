@@ -8,6 +8,21 @@ import org.matrix.rustcomponents.sdk.InternalException
 
 class MatrixRuntimeFailurePolicyTest {
     @Test
+    fun `authorized room membership failures preserve retry semantics`() {
+        val retryable = MatrixRuntimeFailurePolicy.decide(
+            MatrixBoundRoomMembershipException(true, "temporary"),
+        )
+        val rejected = MatrixRuntimeFailurePolicy.decide(
+            MatrixBoundRoomMembershipException(false, "not invited"),
+        )
+
+        assertFalse(retryable.blocked)
+        assertEquals("matrix_room_join_failed", retryable.detailCode)
+        assertTrue(rejected.blocked)
+        assertEquals("matrix_room_join_failed", rejected.detailCode)
+    }
+
+    @Test
     fun `sync service build failures are blocked instead of retried`() {
         val decision = MatrixRuntimeFailurePolicy.decide(
             MatrixSyncServiceBuildException(IllegalArgumentException("invalid connection id")),

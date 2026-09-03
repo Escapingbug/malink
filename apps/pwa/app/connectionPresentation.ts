@@ -127,6 +127,11 @@ const NATIVE_DETAIL_COPY: Readonly<Record<string, DetailCopy>> = {
     title: "Sign-in failed",
     detail: "Add this device again with a new invitation.",
   },
+  matrix_room_join_failed: {
+    title: "Workspace access failed",
+    detail:
+      "This Matrix account could not join the authorized Workspace room. Create a fresh authorization file on a connected device and open it here.",
+  },
   matrix_recovery_blocked: {
     title: "Restoring connection",
     detail:
@@ -248,6 +253,7 @@ const INVITATION_RECOVERY_DETAILS = new Set([
   "matrix_session_repair_required",
   "matrix_project_authorization_repair_required",
   "matrix_login_rejected",
+  "matrix_room_join_failed",
 ]);
 
 const UPDATE_RECOVERY_DETAILS = new Set([

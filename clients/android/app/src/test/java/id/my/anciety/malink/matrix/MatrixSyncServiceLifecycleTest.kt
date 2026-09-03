@@ -5,9 +5,28 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.matrix.rustcomponents.sdk.RoomListServiceState
+import org.matrix.rustcomponents.sdk.Membership
 import org.matrix.rustcomponents.sdk.SyncServiceState
 
 class MatrixSyncServiceLifecycleTest {
+    @Test
+    fun `native readiness joins invited rooms and rejects unusable memberships`() {
+        assertEquals(
+            MatrixBoundRoomMembershipAction.READY,
+            matrixBoundRoomMembershipAction(Membership.JOINED),
+        )
+        assertEquals(
+            MatrixBoundRoomMembershipAction.JOIN,
+            matrixBoundRoomMembershipAction(Membership.INVITED),
+        )
+        listOf(Membership.LEFT, Membership.KNOCKED, Membership.BANNED).forEach { membership ->
+            assertEquals(
+                MatrixBoundRoomMembershipAction.REJECT,
+                matrixBoundRoomMembershipAction(membership),
+            )
+        }
+    }
+
     @Test
     fun `room list setup and running publish sync progress`() {
         var readyCount = 0
