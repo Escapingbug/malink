@@ -381,16 +381,20 @@ class MatrixConnectionRuntime(
         }
     }
 
-    suspend fun refreshApplicationProjection() {
+    suspend fun refreshApplicationProjection(
+        roomIds: Set<String>? = null,
+        includeThreadDirectory: Boolean = true,
+    ) {
         val session = secrets?.session
             ?: throw MatrixOfflineException("The Matrix session is unavailable.")
-        val accepted = refreshApplicationProjectionBaseline(session)
-        val threads = refreshThreadDirectory(session)
+        val accepted = refreshApplicationProjectionBaseline(session, roomIds)
+        val threads = if (includeThreadDirectory) refreshThreadDirectory(session) else 0
         diagnostics.record(
             "matrix.application_state.refreshed",
             mapOf(
                 "accepted" to accepted.toString(),
                 "threads" to threads.toString(),
+                "rooms" to (roomIds?.size ?: session.roomBindings.size).toString(),
             ),
         )
     }
@@ -806,11 +810,14 @@ class MatrixConnectionRuntime(
         }
     }
 
-    private suspend fun refreshApplicationProjectionBaseline(session: StoredMatrixSession): Int {
+    private suspend fun refreshApplicationProjectionBaseline(
+        session: StoredMatrixSession,
+        roomIds: Set<String>? = null,
+    ): Int {
         // Live events come only from the SDK timeline. A cold projection reads
         // current bounded MLP/3 Room State on demand; this request never polls
         // and owns no independent Matrix sync cursor.
-        val batch = applicationRoomStateClient.currentMlp3(session)
+        val batch = applicationRoomStateClient.currentMlp3(session, roomIds)
         val processed = processMatrixApplicationEventBatch(
             events = batch.events,
             onEvent = onDecryptedEvent,

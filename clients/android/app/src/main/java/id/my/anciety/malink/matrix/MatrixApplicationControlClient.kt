@@ -356,10 +356,21 @@ class MatrixApplicationRoomStateClient(
         RestrictedHttpsMatrixApplicationReadTransport(),
 ) {
     /** Reads the bounded MLP/3 Room State used to rebuild a cold local projection. */
-    suspend fun currentMlp3(session: StoredMatrixSession): MatrixApplicationRoomStateBatch {
+    suspend fun currentMlp3(
+        session: StoredMatrixSession,
+        roomIds: Set<String>? = null,
+    ): MatrixApplicationRoomStateBatch {
         val homeserver = MatrixIdentifiers.normalizeHomeserver(session.homeserverUrl)
-        val events = session.roomBindings.flatMap { rawBinding ->
-            val binding = MatrixIdentifiers.validateRoomBinding(rawBinding)
+        val bindings = session.roomBindings.map(MatrixIdentifiers::validateRoomBinding)
+        val selectedBindings = if (roomIds == null) {
+            bindings
+        } else {
+            require(roomIds.all { roomId -> bindings.any { it.roomId == roomId } }) {
+                "Unknown Matrix project room requested for projection recovery."
+            }
+            bindings.filter { it.roomId in roomIds }
+        }
+        val events = selectedBindings.flatMap { binding ->
             val response = transport.getJson(
                 URI("$homeserver/_matrix/client/v3/rooms/${encode(binding.roomId)}/state"),
                 session.accessToken,

@@ -331,6 +331,27 @@ class MatrixApplicationControlClientTest {
     }
 
     @Test
+    fun `incomplete Workspace recovery reads only the requested project rooms`() = runBlocking {
+        val endpoints = mutableListOf<URI>()
+        val client = MatrixApplicationRoomStateClient(
+            MatrixApplicationReadTransport { target, _ ->
+                endpoints += target
+                MatrixHttpResponse(200, "[]".toByteArray())
+            },
+        )
+
+        val batch = client.currentMlp3(
+            multiRoomSession(),
+            setOf("!room-b:example.org"),
+        )
+
+        assertEquals(0, batch.candidateEventCount)
+        assertEquals(1, endpoints.size)
+        assertTrue(endpoints.single().rawPath.contains("%21room-b%3Aexample.org"))
+        assertFalse(endpoints.single().rawPath.contains("%21room%3Aexample.org/state"))
+    }
+
+    @Test
     fun `command can target the second Gateway project room`() = runBlocking {
         lateinit var endpoint: URI
         val responseBody = """{"event_id":"${'$'}second-room"}""".toByteArray()

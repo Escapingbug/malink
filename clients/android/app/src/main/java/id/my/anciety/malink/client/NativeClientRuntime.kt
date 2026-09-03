@@ -1420,9 +1420,7 @@ class NativeClientRuntime(
     override fun onTransportReady(identity: MatrixTransportIdentity) {
         transportIdentity = identity
         pairingTransportIdentityReady.complete(identity)
-        gatewayStateSynchronized = trust != null &&
-            matrixMlp3ProjectKeys.isNotEmpty() &&
-            matrixMlp3Projection.snapshot() != null
+        gatewayStateSynchronized = trust != null && workspaceProjectionProgress().hasUsableProject
         refreshSnapshot(publishLifecycle = true)
         if (trust != null) {
             scheduleWorkspaceDirectoryConvergence()
@@ -2263,23 +2261,25 @@ class NativeClientRuntime(
             }
             authoritativeStateRefreshJob = scope.launch {
                 var completedAttempts = 0
+                var targetRoomIds: Set<String>? = null
+                var threadDirectoryAttempted = false
                 while (
                     isActive &&
-                    trust != null &&
-                    completedAttempts < MAX_AUTHORITATIVE_STATE_REFRESH_ATTEMPTS
+                    trust != null
                 ) {
                     if (trust == null) break
                     var refreshed = false
                     runCatching {
-                        // Repair known active turns first. The complete Matrix
-                        // Room State and thread-directory baseline may take
-                        // minutes on a large multi-Gateway workspace, while
-                        // each known session tail is one bounded read.
-                        reconcileActiveSessionTails()
-                        matrix.refreshApplicationProjection()
-                        // A cold projection can discover additional sessions
-                        // only during the directory refresh.
-                        reconcileActiveSessionTails()
+                        // Current Room State owns project completeness. Retry
+                        // only rooms whose signed project/capability snapshots
+                        // are still absent; thread discovery is a separate
+                        // one-shot recovery lane and must not multiply Matrix
+                        // reads when one project is temporarily incomplete.
+                        matrix.refreshApplicationProjection(
+                            roomIds = targetRoomIds,
+                            includeThreadDirectory = false,
+                        )
+                        mutex.withLock { replayMatrixMlp3InboxLocked() }
                     }
                         .onSuccess {
                             refreshed = true
@@ -2291,30 +2291,49 @@ class NativeClientRuntime(
                                 mapOf("error" to diagnosticErrorName(error)),
                             )
                         }
-                    if (
-                        (gatewayStateSynchronized && refreshed) ||
-                        trust == null
-                    ) break
-                    completedAttempts += 1
-                    val delayMs = authoritativeStateRefreshRetryDelayMs(completedAttempts)
-                    if (delayMs == null) {
-                        diagnostics.record(
-                            "matrix.v3_projection.refresh_exhausted",
-                            mapOf("attempt" to completedAttempts.toString()),
-                        )
+                    if (!threadDirectoryAttempted) {
+                        threadDirectoryAttempted = true
+                        runCatching {
+                            reconcileActiveSessionTails()
+                            matrix.refreshThreadDirectory()
+                            reconcileActiveSessionTails()
+                        }.onFailure { error ->
+                            diagnostics.record(
+                                "matrix.v3_projection.thread_refresh_failure",
+                                mapOf("error" to diagnosticErrorName(error)),
+                            )
+                        }
+                    }
+                    val progress = mutex.withLock { workspaceProjectionProgress() }
+                    diagnostics.record(
+                        "matrix.v3_projection.progress",
+                        mapOf(
+                            "expected" to (progress.expectedProjectIds?.size ?: 0).toString(),
+                            "keyed" to progress.keyedProjectIds.size.toString(),
+                            "projected" to progress.projectedProjectIds.size.toString(),
+                            "loaded" to progress.loadedProjectIds.size.toString(),
+                            "missing" to progress.missingProjectIds.size.toString(),
+                        ),
+                    )
+                    if (progress.complete && refreshed) {
+                        diagnostics.record("matrix.v3_projection.converged")
                         break
                     }
+                    if (trust == null) break
+                    completedAttempts += 1
+                    val delayMs = authoritativeStateRefreshRetryDelayMs(completedAttempts)
+                    targetRoomIds = mutex.withLock {
+                        workspaceProjectRoomIds(progress.missingProjectIds)
+                    }.ifEmpty { null }
                     diagnostics.record(
                         "matrix.v3_projection.refresh_retry_scheduled",
                         mapOf(
                             "attempt" to (completedAttempts - 1).toString(),
+                            "rooms" to (targetRoomIds?.size ?: 0).toString(),
                             "transport_ready" to matrix.commandTransportReady.toString(),
                         ),
                     )
                     delay(delayMs)
-                }
-                if (gatewayStateSynchronized) {
-                    diagnostics.record("matrix.v3_projection.converged")
                 }
             }
         }
@@ -2842,9 +2861,7 @@ class NativeClientRuntime(
                     if (bindingsChanged) {
                         matrix.updateRoomBindings(next)
                     }
-                    if (bindingsChanged || !gatewayStateSynchronized) {
-                        matrix.refreshApplicationProjection()
-                    }
+                    startMatrixMlp3ProjectionRefresh()
                 }
                 if (result.isSuccess) return@launch
                 diagnostics.record(
@@ -2937,7 +2954,7 @@ class NativeClientRuntime(
         val changed = gatewayState != snapshot
         val synchronizedBefore = gatewayStateSynchronized
         gatewayState = snapshot
-        gatewayStateSynchronized = trust != null && matrixMlp3ProjectKeys.values().isNotEmpty()
+        gatewayStateSynchronized = trust != null && workspaceProjectionProgress().hasUsableProject
         if (changed) {
             eventHub.publish(
                 ClientEventType.GATEWAY_STATE_CHANGED,
@@ -2948,6 +2965,54 @@ class NativeClientRuntime(
         if (!changed && synchronizedBefore == gatewayStateSynchronized) return
         schedulePendingCommandRecoveries(immediate = true)
         refreshSnapshot(publishLifecycle = true)
+    }
+
+    private fun workspaceProjectionProgress(): MatrixMlp3WorkspaceProjectionProgress {
+        val directory = matrixMlp3Projection.workspaceGatewayDirectory()
+            ?: trust?.response?.response?.gatewayDirectory
+        return matrixMlp3WorkspaceProjectionProgress(
+            expectedProjectIds = directory?.let(::workspaceDirectoryProjectIds),
+            keyedProjectIds = matrixMlp3ProjectKeys.projectIds(),
+            projectedProjectIds = matrixMlp3Projection.projectedProjectIds(),
+            capabilityProjectIds = matrixMlp3Projection
+                .projectedWorkspaceCapabilityProjectIds(),
+        )
+    }
+
+    private fun workspaceDirectoryProjectIds(signedDirectory: JsonObject): Set<String> {
+        val gateways = signedDirectory.requiredObject("directory")["gateways"] as? JsonArray
+            ?: throw IllegalArgumentException("Gateway Directory gateways are invalid.")
+        return gateways.flatMapTo(linkedSetOf()) { gatewayElement ->
+            val gateway = gatewayElement as? JsonObject
+                ?: throw IllegalArgumentException("Gateway Directory entry is invalid.")
+            val projects = gateway["projects"] as? JsonArray ?: JsonArray(emptyList())
+            projects.map { projectElement ->
+                (projectElement as? JsonObject)
+                    ?.requiredOpaqueId("projectId")
+                    ?: throw IllegalArgumentException("Workspace project route is invalid.")
+            }
+        }
+    }
+
+    private fun workspaceProjectRoomIds(projectIds: Set<String>): Set<String> {
+        if (projectIds.isEmpty()) return emptySet()
+        val signedDirectory = matrixMlp3Projection.workspaceGatewayDirectory()
+            ?: trust?.response?.response?.gatewayDirectory
+            ?: return emptySet()
+        val gateways = signedDirectory.requiredObject("directory")["gateways"] as? JsonArray
+            ?: throw IllegalArgumentException("Gateway Directory gateways are invalid.")
+        return gateways.flatMapTo(linkedSetOf()) { gatewayElement ->
+            val gateway = gatewayElement as? JsonObject
+                ?: throw IllegalArgumentException("Gateway Directory entry is invalid.")
+            val projects = gateway["projects"] as? JsonArray ?: JsonArray(emptyList())
+            projects.mapNotNull { projectElement ->
+                val project = projectElement as? JsonObject
+                    ?: throw IllegalArgumentException("Workspace project route is invalid.")
+                project.requiredOpaqueId("projectId")
+                    .takeIf(projectIds::contains)
+                    ?.let { project.requiredOpaqueId("roomId") }
+            }
+        }
     }
 
     private suspend fun replayMatrixMlp3InboxLocked() {
@@ -3775,10 +3840,16 @@ internal fun authoritativeStateRefreshDelayMs(completedAttempts: Int): Long {
     }
 }
 
-internal fun authoritativeStateRefreshRetryDelayMs(completedAttempts: Int): Long? {
+internal fun authoritativeStateRefreshRetryDelayMs(completedAttempts: Int): Long {
     require(completedAttempts > 0)
-    if (completedAttempts >= MAX_AUTHORITATIVE_STATE_REFRESH_ATTEMPTS) return null
-    return authoritativeStateRefreshDelayMs(completedAttempts - 1)
+    return when (completedAttempts) {
+        1 -> 1_000L
+        2 -> 2_000L
+        3 -> 5_000L
+        4 -> 10_000L
+        5 -> 30_000L
+        else -> 60_000L
+    }
 }
 
 internal fun pairingRequestRetryDelayMs(completedRetries: Int): Long {
@@ -3906,7 +3977,6 @@ internal suspend fun awaitPublishedCommandReconciliation(
 private const val PAIRING_RECOVERY_WINDOW_MS = 366L * 24 * 60 * 60_000
 private const val PAIRING_TRANSPORT_READY_TIMEOUT_MS = 60_000L
 private const val MAX_PAIRING_EXPIRY_SLEEP_MS = 24L * 60 * 60_000
-private const val MAX_AUTHORITATIVE_STATE_REFRESH_ATTEMPTS = 6
 private const val MAX_ACTIVE_SESSION_TAIL_RECOVERY_TARGETS = 64
 private const val SESSION_TAIL_RECOVERY_EVENT_LIMIT = 32
 private const val MAX_SESSION_TAIL_REQUEST_ATTEMPTS = 2

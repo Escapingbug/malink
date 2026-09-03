@@ -74,7 +74,10 @@ interface NativeMatrixPort {
     suspend fun fetchApplicationEvent(eventId: String, roomId: String): MatrixDecryptedEvent =
         throw UnsupportedOperationException("Workspace multi-room recovery is unavailable.")
     suspend fun refreshThreadDirectory(): Int = 0
-    suspend fun refreshApplicationProjection()
+    suspend fun refreshApplicationProjection(
+        roomIds: Set<String>? = null,
+        includeThreadDirectory: Boolean = true,
+    )
     suspend fun sendPrivateReadReceipt(
         roomId: String,
         threadRootEventId: String,
@@ -161,7 +164,10 @@ class MatrixNativePort(context: Context) : NativeMatrixPort {
     override suspend fun fetchApplicationEvent(eventId: String, roomId: String): MatrixDecryptedEvent =
         runtime.fetchApplicationEvent(eventId, roomId)
     override suspend fun refreshThreadDirectory(): Int = runtime.refreshThreadDirectory()
-    override suspend fun refreshApplicationProjection() = runtime.refreshApplicationProjection()
+    override suspend fun refreshApplicationProjection(
+        roomIds: Set<String>?,
+        includeThreadDirectory: Boolean,
+    ) = runtime.refreshApplicationProjection(roomIds, includeThreadDirectory)
     override suspend fun sendPrivateReadReceipt(
         roomId: String,
         threadRootEventId: String,

@@ -1,7 +1,6 @@
 package id.my.anciety.malink.client
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 class NativeClientPowerPolicyTest {
@@ -23,12 +22,13 @@ class NativeClientPowerPolicyTest {
     }
 
     @Test
-    fun `authoritative projection recovery stops after six attempts`() {
+    fun `authoritative projection recovery settles to one retry per minute`() {
         assertEquals(1_000L, authoritativeStateRefreshRetryDelayMs(1))
         assertEquals(2_000L, authoritativeStateRefreshRetryDelayMs(2))
         assertEquals(5_000L, authoritativeStateRefreshRetryDelayMs(3))
         assertEquals(10_000L, authoritativeStateRefreshRetryDelayMs(4))
         assertEquals(30_000L, authoritativeStateRefreshRetryDelayMs(5))
-        assertNull(authoritativeStateRefreshRetryDelayMs(6))
+        assertEquals(60_000L, authoritativeStateRefreshRetryDelayMs(6))
+        assertEquals(60_000L, authoritativeStateRefreshRetryDelayMs(100))
     }
 }

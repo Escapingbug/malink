@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { V3ProjectedSession } from "../app/matrixMlp3Projection.ts";
-import { matrixActiveSessionTailRecoveryTargets } from "../app/matrixMlp3Connection.ts";
+import {
+  matrixActiveSessionTailRecoveryTargets,
+  workspaceRouteRecoveryDelayMs,
+} from "../app/matrixMlp3Connection.ts";
 
 test("repairs only active session projections from recent Matrix thread tails", () => {
   const sessions = [
@@ -15,6 +18,14 @@ test("repairs only active session projections from recent Matrix thread tails", 
     { sessionId: "working-old", threadRootEventId: "$working-old" },
     { sessionId: "working-new", threadRootEventId: "$working-new" },
   ]);
+});
+
+test("retries incomplete Workspace routes with bounded backoff", () => {
+  assert.deepEqual(
+    [0, 1, 2, 3, 4, 5, 100].map(workspaceRouteRecoveryDelayMs),
+    [1_000, 2_000, 5_000, 10_000, 30_000, 60_000, 60_000],
+  );
+  assert.throws(() => workspaceRouteRecoveryDelayMs(-1), TypeError);
 });
 
 function session(

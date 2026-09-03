@@ -41,6 +41,39 @@ internal data class MatrixMlp3NativeProjectionResult(
     val changed: Boolean = false,
 )
 
+internal data class MatrixMlp3WorkspaceProjectionProgress(
+    val expectedProjectIds: Set<String>?,
+    val keyedProjectIds: Set<String>,
+    val projectedProjectIds: Set<String>,
+    val capabilityProjectIds: Set<String>,
+) {
+    val loadedProjectIds: Set<String> = when (expectedProjectIds) {
+        null -> keyedProjectIds intersect projectedProjectIds intersect capabilityProjectIds
+        else -> expectedProjectIds intersect keyedProjectIds intersect
+            projectedProjectIds intersect capabilityProjectIds
+    }
+    val missingProjectIds: Set<String> = expectedProjectIds
+        ?.minus(loadedProjectIds)
+        .orEmpty()
+    val complete: Boolean = when (expectedProjectIds) {
+        null -> loadedProjectIds.isNotEmpty()
+        else -> expectedProjectIds.isNotEmpty() && missingProjectIds.isEmpty()
+    }
+    val hasUsableProject: Boolean = (keyedProjectIds intersect projectedProjectIds).isNotEmpty()
+}
+
+internal fun matrixMlp3WorkspaceProjectionProgress(
+    expectedProjectIds: Set<String>?,
+    keyedProjectIds: Set<String>,
+    projectedProjectIds: Set<String>,
+    capabilityProjectIds: Set<String>,
+): MatrixMlp3WorkspaceProjectionProgress = MatrixMlp3WorkspaceProjectionProgress(
+    expectedProjectIds = expectedProjectIds?.toSet(),
+    keyedProjectIds = keyedProjectIds.toSet(),
+    projectedProjectIds = projectedProjectIds.toSet(),
+    capabilityProjectIds = capabilityProjectIds.toSet(),
+)
+
 internal data class MatrixMlp3SessionTailRecoveryTarget(
     val sessionId: String,
     val projectId: String,
@@ -1095,6 +1128,12 @@ internal class MatrixMlp3NativeProjection(
 
     @Synchronized
     fun workspaceGatewayDirectory(): JsonObject? = workspaceGatewayDirectory
+
+    @Synchronized
+    fun projectedProjectIds(): Set<String> = projects.keys.toSet()
+
+    @Synchronized
+    fun projectedWorkspaceCapabilityProjectIds(): Set<String> = projectCapabilities.keys.toSet()
 
     /** Null means no authoritative multi-Gateway directory has been projected yet. */
     @Synchronized

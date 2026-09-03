@@ -338,6 +338,7 @@ class MatrixMlp3NativeStorageTest {
 
         AtomicEncryptedMatrixMlp3ProjectKeyStore(blob, cipher, "account-a").apply {
             assertEquals(2, values().size)
+            assertEquals(setOf("project-old", "project-current"), projectIds())
             assertEquals(
                 first.activeKeyId,
                 valueForRoom(first.roomId, first.projectId)?.activeKeyId,

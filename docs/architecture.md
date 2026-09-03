@@ -451,6 +451,17 @@ cursor. Additional Workspace project rooms converge independently in the
 background and cannot hold an already-authoritative primary project in
 `Connecting`.
 
+Workspace projection completeness is measured against the complete signed
+Gateway Directory. Every listed project must have its addressed project key,
+current `project.snapshot`, and current per-project `workspace.snapshot` before
+the recovery lane reports convergence. One usable project is enough for that
+project's command path, but is never evidence that the other Gateway routes are
+restored. Android retries only the missing project rooms, backs off to one
+read-only attempt per minute, and runs thread-directory recovery outside that
+retry loop. Browser recovery likewise isolates each project failure and retries
+only incomplete routes, so one unavailable room cannot prevent later projects
+from loading.
+
 Client recovery has strict priority lanes. Live SDK timeline delivery is the
 normal durable lane and cannot wait behind historical repair. Exact-command
 Gateway journal reconciliation is an explicit, one-shot foreground repair.

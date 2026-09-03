@@ -502,6 +502,9 @@ internal class AtomicEncryptedMatrixMlp3ProjectKeyStore internal constructor(
     fun values(): List<MatrixMlp3ProjectKeyGrant> = grants.values.map { it.deepCopy() }
 
     @Synchronized
+    fun projectIds(): Set<String> = grants.values.mapTo(linkedSetOf()) { it.projectId }
+
+    @Synchronized
     fun singleProjectId(): String? = grants.values.map { it.projectId }.distinct().singleOrNull()
 
     @Synchronized

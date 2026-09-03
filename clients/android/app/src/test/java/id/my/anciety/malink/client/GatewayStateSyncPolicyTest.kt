@@ -23,6 +23,43 @@ import org.junit.Test
 
 class GatewayStateSyncPolicyTest {
     @Test
+    fun `Workspace projection converges only when every directory project is usable`() {
+        val partial = matrixMlp3WorkspaceProjectionProgress(
+            expectedProjectIds = setOf("project-a", "project-b"),
+            keyedProjectIds = setOf("project-a", "project-b"),
+            projectedProjectIds = setOf("project-a"),
+            capabilityProjectIds = setOf("project-a", "project-b"),
+        )
+
+        assertEquals(true, partial.hasUsableProject)
+        assertEquals(false, partial.complete)
+        assertEquals(setOf("project-a"), partial.loadedProjectIds)
+        assertEquals(setOf("project-b"), partial.missingProjectIds)
+
+        val complete = matrixMlp3WorkspaceProjectionProgress(
+            expectedProjectIds = setOf("project-a", "project-b"),
+            keyedProjectIds = setOf("project-a", "project-b"),
+            projectedProjectIds = setOf("project-a", "project-b"),
+            capabilityProjectIds = setOf("project-a", "project-b"),
+        )
+        assertEquals(true, complete.complete)
+        assertEquals(emptySet<String>(), complete.missingProjectIds)
+    }
+
+    @Test
+    fun `legacy single-project projection remains usable before a directory arrives`() {
+        val progress = matrixMlp3WorkspaceProjectionProgress(
+            expectedProjectIds = null,
+            keyedProjectIds = setOf("project-a"),
+            projectedProjectIds = setOf("project-a"),
+            capabilityProjectIds = setOf("project-a"),
+        )
+
+        assertEquals(true, progress.complete)
+        assertEquals(true, progress.hasUsableProject)
+    }
+
+    @Test
     fun `authoritative session lifecycle safely resolves matching mutations`() {
         assertEquals(
             true,

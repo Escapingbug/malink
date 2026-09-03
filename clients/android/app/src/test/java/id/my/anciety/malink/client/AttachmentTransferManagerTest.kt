@@ -117,7 +117,10 @@ class AttachmentTransferManagerTest {
             contentJson: String,
             transactionId: String,
         ): String = "\$test-event"
-        override suspend fun refreshApplicationProjection() = Unit
+        override suspend fun refreshApplicationProjection(
+            roomIds: Set<String>?,
+            includeThreadDirectory: Boolean,
+        ) = Unit
         override suspend fun uploadMedia(mimeType: String, bytes: ByteArray): String {
             if (failUpload) throw IllegalStateException("upload unavailable")
             media = bytes.copyOf()

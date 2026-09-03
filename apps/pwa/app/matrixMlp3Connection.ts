@@ -161,7 +161,11 @@ export async function connectMatrixMlp3(
   const readiness = new MatrixMlp3Readiness(Boolean(trust));
   let authoritativeProjectionPrepared = false;
   let cachedProjectionPublished = false;
-  let reconcileWorkspaceRoutes = () => undefined;
+  let reconcileWorkspaceRoutes: (force?: boolean) => void = () => undefined;
+  let workspaceRouteRecoveryFailures = 0;
+  let workspaceRouteRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  let workspaceRouteReconciliationRunning = false;
+  let workspaceRouteReconciliationRequested = false;
   const deliveredMessages = new Map<string, { version: number; physicalEventId: string }>();
   const emittedCompletions = new Set<string>();
   const deliveredHistory = new Map<string, Set<string>>();
@@ -554,24 +558,35 @@ export async function connectMatrixMlp3(
     const operation = (async () => {
       const context = secondaryProtocols.get(targetProjectId);
       if (!context || !trust) return;
+      const failures: unknown[] = [];
       for (const [eventType, stateKey] of [
         [MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE, config.gatewayId],
         [MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE, targetProjectId],
       ] as const) {
-        const content = await client.getStateEvent(context.route.roomId, eventType, stateKey);
-        const pointer = await verifyMlp3Pointer(content, trust.gatewayKey.publicKey);
-        if (pointer.workspaceId !== config.gatewayId || pointer.projectId !== targetProjectId ||
-            pointer.roomId !== context.route.roomId || pointer.gatewayKeyId !== trust.gatewayKey.keyId) {
-          throw new Error("The MLP/3 pointer is bound to another Workspace project.");
+        try {
+          const content = await client.getStateEvent(context.route.roomId, eventType, stateKey);
+          const pointer = await verifyMlp3Pointer(content, trust.gatewayKey.publicKey);
+          if (pointer.workspaceId !== config.gatewayId || pointer.projectId !== targetProjectId ||
+              pointer.roomId !== context.route.roomId || pointer.gatewayKeyId !== trust.gatewayKey.keyId) {
+            throw new Error("The MLP/3 pointer is bound to another Workspace project.");
+          }
+          const raw = await client.fetchRoomEvent(context.route.roomId, pointer.eventId);
+          await ingestSecondaryEvent(context, new sdk.MatrixEvent(raw));
+        } catch (error) {
+          failures.push(error);
         }
-        const raw = await client.fetchRoomEvent(context.route.roomId, pointer.eventId);
-        await ingestSecondaryEvent(context, new sdk.MatrixEvent(raw));
       }
       for (const event of context.room.getLiveTimeline().getEvents()) {
         await ingestSecondaryEvent(context, event);
       }
       await context.protocol.retryPending();
       publishProjection(deliveryMode, [context.protocol]);
+      if (failures.length > 0) {
+        throw new Error(
+          `${failures.length} current project snapshot${failures.length === 1 ? "" : "s"} ` +
+          "could not be recovered.",
+        );
+      }
     })();
     activeSecondaryRecoveries.add(operation);
     const finish = () => {
@@ -742,7 +757,12 @@ export async function connectMatrixMlp3(
     config.workspaceRoutes = workspaceRoutesFromTrust(trust);
     handlers.onTrustUpdated?.(trust);
     publishProjection("live");
-    reconcileWorkspaceRoutes();
+    workspaceRouteRecoveryFailures = 0;
+    if (workspaceRouteRecoveryTimer !== null) {
+      clearTimeout(workspaceRouteRecoveryTimer);
+      workspaceRouteRecoveryTimer = null;
+    }
+    reconcileWorkspaceRoutes(true);
   };
 
   const recoverWorkspaceDirectoryState = async (): Promise<void> => {
@@ -758,33 +778,90 @@ export async function connectMatrixMlp3(
     }
   };
 
-  let routeReconciliationChain = Promise.resolve();
-  reconcileWorkspaceRoutes = () => {
+  const scheduleWorkspaceRouteRecovery = () => {
+    if (stopped || workspaceRouteRecoveryTimer !== null) return;
+    const delayMs = workspaceRouteRecoveryDelayMs(workspaceRouteRecoveryFailures);
+    workspaceRouteRecoveryFailures += 1;
+    workspaceRouteRecoveryTimer = setTimeout(() => {
+      workspaceRouteRecoveryTimer = null;
+      reconcileWorkspaceRoutes();
+    }, delayMs);
+  };
+  reconcileWorkspaceRoutes = (force = false) => {
     if (!trust || stopped) return;
-    const activeProtocols = activeWorkspaceProtocols();
-    const trustedRoutes = workspaceRoutesFromTrust(trust);
-    const discovered = workspaceRoutesFromProtocols(activeProtocols);
-    const routes = trustedRoutes.length > 0
-      ? trustedRoutes
-      : discovered.length > 0 ? discovered : config.workspaceRoutes ?? [];
-    routeReconciliationChain = routeReconciliationChain.then(async () => {
-      const desired = new Map(routes
-        .filter(route => route.roomId !== config.roomId)
-        .map(route => [route.projectId, route]));
-      for (const [secondaryProjectId, context] of secondaryProtocols) {
-        const next = desired.get(secondaryProjectId);
-        if (next?.roomId === context.route.roomId) continue;
-        context.room.off(sdk.RoomStateEvent.Events, onRoomState);
-        secondaryProtocols.delete(secondaryProjectId);
-        for (const [commandId, owner] of commandProjects) {
-          if (owner === context.protocol) commandProjects.delete(commandId);
+    // Ordinary projection changes must not bypass a pending retry and turn
+    // unrelated Agent traffic into repeated Matrix state reads. A fresh
+    // signed directory is the only event that forces the retry window open.
+    if (workspaceRouteRecoveryTimer !== null && !force) return;
+    workspaceRouteReconciliationRequested = true;
+    if (workspaceRouteReconciliationRunning) return;
+    workspaceRouteReconciliationRunning = true;
+    void (async () => {
+      while (workspaceRouteReconciliationRequested && trust && !stopped) {
+        workspaceRouteReconciliationRequested = false;
+        const activeProtocols = activeWorkspaceProtocols();
+        const trustedRoutes = workspaceRoutesFromTrust(trust);
+        const discovered = workspaceRoutesFromProtocols(activeProtocols);
+        const routes = trustedRoutes.length > 0
+          ? trustedRoutes
+          : discovered.length > 0 ? discovered : config.workspaceRoutes ?? [];
+        const desired = new Map(routes
+          .filter(route => route.roomId !== config.roomId)
+          .map(route => [route.projectId, route]));
+        for (const [secondaryProjectId, context] of secondaryProtocols) {
+          const next = desired.get(secondaryProjectId);
+          if (next?.roomId === context.route.roomId) continue;
+          context.room.off(sdk.RoomStateEvent.Events, onRoomState);
+          secondaryProtocols.delete(secondaryProjectId);
+          for (const [commandId, owner] of commandProjects) {
+            if (owner === context.protocol) commandProjects.delete(commandId);
+          }
+        }
+        const failures: unknown[] = [];
+        for (const route of desired.values()) {
+          try {
+            const current = secondaryProtocols.get(route.projectId);
+            if (current) {
+              if (!current.protocol.projection.project || !current.protocol.projection.workspace) {
+                await recoverSecondaryProject(route.projectId, "hydrate");
+              }
+            } else {
+              await createSecondaryProtocol(route);
+            }
+          } catch (error) {
+            failures.push(error);
+            console.error(
+              `[mlp3/matrix] Workspace project ${route.projectId} could not be reconciled`,
+              error,
+            );
+          }
+        }
+        if (failures.length > 0) {
+          // Projection callbacks raised by this failed attempt must not cause
+          // an immediate duplicate read. The bounded timer is the sole retry
+          // authority until a new external projection change arrives.
+          workspaceRouteReconciliationRequested = false;
+          scheduleWorkspaceRouteRecovery();
+          return;
+        } else {
+          workspaceRouteRecoveryFailures = 0;
+          if (workspaceRouteRecoveryTimer !== null) {
+            clearTimeout(workspaceRouteRecoveryTimer);
+            workspaceRouteRecoveryTimer = null;
+          }
         }
       }
-      for (const route of desired.values()) await createSecondaryProtocol(route);
-    }).catch(error => {
+    })().catch(error => {
       // One unavailable project route must not downgrade every other Gateway
       // and project after the primary command path is authoritative.
       console.error("[mlp3/matrix] a Workspace project route could not be reconciled", error);
+      workspaceRouteReconciliationRequested = false;
+      scheduleWorkspaceRouteRecovery();
+    }).finally(() => {
+      workspaceRouteReconciliationRunning = false;
+      if (workspaceRouteReconciliationRequested && !workspaceRouteRecoveryTimer) {
+        reconcileWorkspaceRoutes();
+      }
     });
   };
 
@@ -1274,7 +1351,7 @@ export async function connectMatrixMlp3(
     await recoverAuthoritativeState("hydrate");
     await recoverWorkspaceDirectoryState();
     completeReady();
-    reconcileWorkspaceRoutes();
+    reconcileWorkspaceRoutes(true);
   });
   void initialRecovery.catch(error => {
     reportRecoveryFailure("The current MLP/3 state could not be recovered", error);
@@ -1342,7 +1419,7 @@ export async function connectMatrixMlp3(
       await recoverAuthoritativeState("hydrate");
       await recoverWorkspaceDirectoryState();
       completeReady();
-      reconcileWorkspaceRoutes();
+      reconcileWorkspaceRoutes(true);
     } catch (error) {
       reportRecoveryFailure("The paired Gateway state could not be recovered", error);
       throw error;
@@ -1742,6 +1819,11 @@ export async function connectMatrixMlp3(
     stop() {
       if (stopped) return;
       stopped = true;
+      if (workspaceRouteRecoveryTimer !== null) {
+        clearTimeout(workspaceRouteRecoveryTimer);
+        workspaceRouteRecoveryTimer = null;
+      }
+      workspaceRouteReconciliationRequested = false;
       client.off(sdk.ClientEvent.Event, onMatrixEvent);
       client.off(sdk.RoomEvent.Receipt, onReceipt);
       room?.off(sdk.RoomStateEvent.Events, onRoomState);
@@ -1754,6 +1836,13 @@ export async function connectMatrixMlp3(
       void flushAndReleaseMatrixSyncStore(syncDatabase, syncStore, cryptoLock);
     },
   };
+}
+
+export function workspaceRouteRecoveryDelayMs(completedFailures: number): number {
+  if (!Number.isInteger(completedFailures) || completedFailures < 0) {
+    throw new TypeError("Workspace route recovery failure count must be a non-negative integer.");
+  }
+  return [1_000, 2_000, 5_000, 10_000, 30_000][completedFailures] ?? 60_000;
 }
 
 async function sendMatrixMlp3ApplicationEvent(

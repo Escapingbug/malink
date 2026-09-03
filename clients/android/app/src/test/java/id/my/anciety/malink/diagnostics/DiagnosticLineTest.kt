@@ -119,6 +119,27 @@ class DiagnosticLineTest {
     }
 
     @Test
+    fun `Workspace projection diagnostics expose only aggregate completeness`() {
+        assertEquals(
+            "2026-08-04T12:00:00Z matrix.v3_projection.progress " +
+                "expected=6 keyed=6 loaded=4 missing=2 projected=4 rooms=2 threads=0",
+            DiagnosticLine.encode(
+                "2026-08-04T12:00:00Z",
+                "matrix.v3_projection.progress",
+                mapOf(
+                    "expected" to "6",
+                    "keyed" to "6",
+                    "projected" to "4",
+                    "loaded" to "4",
+                    "missing" to "2",
+                    "rooms" to "2",
+                    "threads" to "0",
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun `outbox migration diagnostics retain only schema and aggregate quarantine count`() {
         assertEquals(
             "2026-08-04T12:00:00Z command.outbox.migrated quarantined=1 schema=2",
