@@ -248,8 +248,11 @@ export async function joinWorkspaceThroughGatewayEnrollment(input: {
   let unsubscribeResponse: (() => void) | undefined
   const responsePromise = new Promise<unknown>((resolve, reject) => {
     responseTimeout = setTimeout(() => {
-      reject(new Error('Gateway enrollment approval expired before it was received'))
-    }, Math.max(1, gatewayEnrollmentApprovalDeadline(invitation.expiresAt) - now()))
+      reject(new Error(
+        'Gateway setup request expired before approval. Create a new setup link and run it again; '
+        + 'an approval already sent through Matrix remains recoverable for a limited time.',
+      ))
+    }, gatewayEnrollmentInteractiveWaitMs(invitation.expiresAt, now()))
     unsubscribeResponse = client.onRoomEvent(event => {
       if (
         event.encrypted
@@ -354,6 +357,21 @@ export async function joinWorkspaceThroughGatewayEnrollment(input: {
     unsubscribeResponse?.()
     await client.stop().catch(() => undefined)
   }
+}
+
+export function gatewayEnrollmentInteractiveWaitMs(
+  invitationExpiresAt: number,
+  now: number,
+): number {
+  if (!Number.isSafeInteger(invitationExpiresAt) || !Number.isSafeInteger(now)) {
+    throw new TypeError('Gateway enrollment wait deadline is invalid')
+  }
+  // The authority cannot issue a new approval after the signed request expires.
+  // Stop the interactive command at that boundary so the operator can start a
+  // replacement. The persisted private request remains available until
+  // gatewayEnrollmentApprovalDeadline() for recovery of an approval that was
+  // already published but arrived late through Matrix.
+  return Math.max(1, invitationExpiresAt - now)
 }
 
 export async function resolveGatewayEnrollmentLink(

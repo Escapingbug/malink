@@ -19,6 +19,7 @@ import {
   decodeGatewayEnrollmentInvitationLink,
   gatewayEnrollmentApprovalDeadline,
 } from '@/gateway/pairing'
+import { gatewayEnrollmentInteractiveWaitMs } from '@/gateway/pairing/gatewayEnrollmentClient'
 
 describe('Gateway enrollment rendezvous', () => {
   it('keeps a bounded approval recovery window after setup-link expiry', () => {
@@ -29,6 +30,17 @@ describe('Gateway enrollment rendezvous', () => {
     )
     expect(() => gatewayEnrollmentApprovalDeadline(Number.MAX_SAFE_INTEGER)).toThrow(
       /expiry is invalid/u,
+    )
+  })
+
+  it('ends the interactive request at expiry while retaining late-response recovery', () => {
+    const now = 1_800_000_000_000
+    const invitationExpiresAt = now + 45_000
+
+    expect(gatewayEnrollmentInteractiveWaitMs(invitationExpiresAt, now)).toBe(45_000)
+    expect(gatewayEnrollmentInteractiveWaitMs(invitationExpiresAt, invitationExpiresAt)).toBe(1)
+    expect(gatewayEnrollmentApprovalDeadline(invitationExpiresAt)).toBeGreaterThan(
+      invitationExpiresAt,
     )
   })
 

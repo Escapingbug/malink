@@ -72,6 +72,10 @@ import {
 import { ConnectionOnboarding } from "./ConnectionOnboarding";
 import { MalinkMark } from "./MalinkMark";
 import type { GatewayEnrollmentBusyState } from "./GatewayEnrollmentPanel";
+import {
+  activeGatewayEnrollmentRequests,
+  nextGatewayEnrollmentExpiry,
+} from "./gatewayEnrollmentRequests";
 import { waitForUiCommit } from "./uiScheduling";
 import { hasPairingRoute, pairingRouteFromUrl } from "./pairingRoute";
 import { parseAuthorizationTransferFragment } from "./authorizationTransfer";
@@ -1700,16 +1704,27 @@ function MalinkAppRuntime() {
   const [gatewayRelease, setGatewayRelease] = useState(MALINK_GATEWAY_RELEASE);
   const [approvedGatewayEnrollmentIds, setApprovedGatewayEnrollmentIds] =
     useState<Set<string>>(() => new Set());
+  const [gatewayEnrollmentNow, setGatewayEnrollmentNow] = useState(() => Date.now());
+  const gatewayEnrollmentExpiry = useMemo(() => nextGatewayEnrollmentExpiry(
+    gatewayState?.pendingGatewayEnrollments ?? [],
+    gatewayEnrollmentNow,
+  ), [gatewayEnrollmentNow, gatewayState?.pendingGatewayEnrollments]);
   const pendingGatewayEnrollments = useMemo(() => {
     const joinedGatewayNodeIds = new Set(
       gatewayState?.gatewayDirectory?.directory.gateways.map(
         (gateway) => gateway.gatewayNodeId,
       ) ?? [],
     );
-    return (gatewayState?.pendingGatewayEnrollments ?? []).filter(
-      (enrollment) => !joinedGatewayNodeIds.has(enrollment.gatewayNodeId),
+    return activeGatewayEnrollmentRequests(
+      gatewayState?.pendingGatewayEnrollments ?? [],
+      joinedGatewayNodeIds,
+      gatewayEnrollmentNow,
     );
-  }, [gatewayState?.gatewayDirectory, gatewayState?.pendingGatewayEnrollments]);
+  }, [
+    gatewayEnrollmentNow,
+    gatewayState?.gatewayDirectory,
+    gatewayState?.pendingGatewayEnrollments,
+  ]);
   const visibleApprovedGatewayEnrollmentIds = useMemo(() => {
     const visibleEnrollmentIds = new Set(
       pendingGatewayEnrollments.map((enrollment) => enrollment.enrollmentId),
@@ -3734,6 +3749,38 @@ function MalinkAppRuntime() {
       document.removeEventListener("visibilitychange", reconcile);
     };
   }, [gatewayNodeProbeTargets.length]);
+
+  useEffect(() => {
+    if (gatewayEnrollmentExpiry === null) return;
+    const delay = Math.max(0, gatewayEnrollmentExpiry - Date.now()) + 25;
+    const timer = window.setTimeout(() => {
+      setGatewayEnrollmentNow(Date.now());
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [gatewayEnrollmentExpiry]);
+
+  useEffect(() => {
+    if (!gatewayEnrollmentInvitation) return;
+    const invitation = gatewayEnrollmentInvitation;
+    const expire = () => {
+      setGatewayEnrollmentInvitation((current) =>
+        current?.link === invitation.link && current.expiresAt === invitation.expiresAt
+          ? null
+          : current
+      );
+      setGatewayEnrollmentError(
+        "The previous Gateway setup link expired. Create a new link; the old request will not block it.",
+      );
+      setGatewayEnrollmentNow(Date.now());
+    };
+    const delay = invitation.expiresAt - Date.now();
+    if (delay <= 0) {
+      expire();
+      return;
+    }
+    const timer = window.setTimeout(expire, delay + 25);
+    return () => window.clearTimeout(timer);
+  }, [gatewayEnrollmentInvitation]);
 
   useEffect(() => {
     connectionStatusRef.current = connectionStatus;
