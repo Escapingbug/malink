@@ -38,7 +38,7 @@ export function GatewayEnrollmentPanel({
   const [copyBusy, setCopyBusy] = useState(false);
   const operationBusy = busy !== null;
   const command = invitation
-    ? `malink gateway join '${invitation.link}' --gateway-data-dir ~/.malink/gateway`
+    ? `malink gateway join '${invitation.link}' --gateway-data-dir ~/.malink/gateway --activate-host`
     : "";
 
   return (
@@ -121,23 +121,25 @@ export function GatewayEnrollmentPanel({
               </strong>
               <small>
                 {approved
-                  ? "Waiting for this Gateway to finish setup. You can safely send the approval again."
+                  ? "Approval was delivered. The new computer is starting Malink Gateway Host; sending it again will not help."
                   : "Confirm this code is also shown on the new Gateway"}
               </small>
               <code>{request.verificationCode}</code>
             </span>
-            <button
-              type="button"
-              className="connect-button"
-              disabled={operationBusy}
-              onClick={() => onApprove(request.enrollmentId, request.approverProjectId)}
-            >
-              {approvingThisRequest
-                ? <BusyActionLabel>Sending approval…</BusyActionLabel>
-                : approved
-                  ? "Send approval again"
-                  : "Approve Gateway"}
-            </button>
+            {approved
+              ? <small role="status">Waiting for Gateway Host…</small>
+              : (
+                <button
+                  type="button"
+                  className="connect-button"
+                  disabled={operationBusy}
+                  onClick={() => onApprove(request.enrollmentId, request.approverProjectId)}
+                >
+                  {approvingThisRequest
+                    ? <BusyActionLabel>Sending approval…</BusyActionLabel>
+                    : "Approve Gateway"}
+                </button>
+              )}
           </article>
         );
       })}

@@ -402,6 +402,19 @@ rendezvous room, creates one encrypted project room, and then deletes the
 one-shot recovery material. Interrupted installation resumes the same request
 and MUST NOT create a second project room.
 
+An approval response is durable Matrix state. Once it has been published,
+clients MUST stop presenting that request as an approvable action; repeating
+approval cannot repair a local Host activation failure. Enrollment is complete
+only after the new Gateway Host starts from that exact data directory,
+publishes its signed Workspace directory entry, and proves live Matrix health.
+On macOS, `malink gateway join ... --activate-host` atomically switches the
+installed Gateway and update-supervisor LaunchAgents to the enrolled directory.
+It preserves the former data directory, refuses to interrupt active work, and
+restores the previous LaunchAgent configuration if the new node does not become
+Matrix-ready. A completed enrollment can resume only that final step with
+`malink gateway activate-host --gateway-data-dir PATH`; it does not require a
+new invitation or another approval.
+
 All Gateway nodes share the Workspace authorization identity but retain unique
 node IDs, Matrix device IDs, project rooms, working directories, and runtime
 lifecycle. Clients verify one portable Workspace grant and consume the signed

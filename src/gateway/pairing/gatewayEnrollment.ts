@@ -179,10 +179,13 @@ export class FileGatewayEnrollmentCoordinator {
         validateState(state, this.identity.workspaceId)
         const changed = prune(state, now)
         const pending = Object.values(state.enrollments)
-          .filter(record => record.request && (record.status === 'pending' || record.status === 'approved'))
+          // Approval is a durable Matrix state response, not another action
+          // for clients to repeat. Once it exists, remove the request from
+          // actionable snapshots while the new Gateway completes activation.
+          .filter(record => record.request && record.status === 'pending')
           .map(record => ({
             request: structuredClone(record.request!.request),
-            expiresAt: record.response?.expiresAt ?? record.request!.request.expiresAt,
+            expiresAt: record.request!.request.expiresAt,
           }))
         return { result: pending, changed }
       },

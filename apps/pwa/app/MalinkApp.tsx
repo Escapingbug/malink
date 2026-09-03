@@ -7210,8 +7210,8 @@ function MalinkAppRuntime() {
         `gateway-enrollment:${enrollmentId}`,
         "connection",
         "success",
-        "Gateway approved. It will appear here automatically after its first sync.",
-        6_000,
+        "Approval delivered. The new computer is activating Malink Gateway Host; it will appear after Matrix-ready health is confirmed.",
+        12_000,
       );
     } catch (error) {
       setGatewayEnrollmentError(formatUiError(error));

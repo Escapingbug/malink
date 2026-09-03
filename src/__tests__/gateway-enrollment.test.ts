@@ -112,13 +112,7 @@ describe('Gateway enrollment rendezvous', () => {
       now: created.expiresAt + 1,
     })
     expect(opened.plaintext).toEqual({ kind: 'gateway_join', link: bearer.link })
-    expect(await coordinator.pending(created.expiresAt + 1)).toEqual([
-      expect.objectContaining({
-        enrollmentId: invitation.enrollmentId,
-        gatewayNodeId,
-        expiresAt: approved.response.expiresAt,
-      }),
-    ])
+    expect(await coordinator.pending(created.expiresAt + 1)).toEqual([])
     const repeated = await coordinator.approve(
       invitation.enrollmentId,
       'unused-after-idempotent-approval',

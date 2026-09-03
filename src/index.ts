@@ -28,6 +28,7 @@ import {
     installPrivilegeHelper,
     UnixSocketPrivilegeExecutor,
 } from './privilege/index'
+import { activateEnrolledGatewayHost } from './ops/gatewayEnrollmentHostActivation'
 import {
     DEFAULT_WATCHDOG_INTERVAL_MS,
     DEFAULT_WATCHDOG_MAX_RESTARTS,
@@ -90,6 +91,9 @@ async function main() {
             'privilege-approval': { type: 'boolean', default: false },
             'gateway-data-dir': { type: 'string' },
             'gateway-name': { type: 'string' },
+            'activate-host': { type: 'boolean', default: false },
+            'gateway-launch-agent': { type: 'string' },
+            'supervisor-launch-agent': { type: 'string' },
             'allow-executable': { type: 'string', multiple: true },
             'allow-arbitrary-root-executables': { type: 'boolean', default: false },
             'target-uid': { type: 'string' },
@@ -498,6 +502,8 @@ async function handleGatewayCommand(
       [--authorization-file PATH] [--json]
   malink gateway invite-gateway --gateway-data-dir PATH
   malink gateway join <invitation-link> --gateway-data-dir PATH [--gateway-name NAME]
+      [--activate-host]
+  malink gateway activate-host --gateway-data-dir PATH
   malink gateway rename <name> [--socket PATH] [--json]
   malink gateway remove-gateway <gateway-node-id> --gateway-data-dir PATH
   malink gateway devices [--socket PATH] [--json]
@@ -639,7 +645,19 @@ async function handleGatewayCommand(
             console.log(`Gateway node ID: ${joined.gatewayNodeId}`)
             console.log(`Created encrypted project room: ${joined.projectRoomId}`)
             console.log(`Gateway configuration: ${joined.fixturePath}`)
-            console.log('Start the Gateway with MALINK_MATRIX_DATA_DIR set to this data directory.')
+            if (values['activate-host']) {
+                await activateGatewayHost({
+                    dataDirectory,
+                    fixturePath: joined.fixturePath,
+                    gatewayNodeId: joined.gatewayNodeId,
+                    values,
+                })
+            } else {
+                console.log(
+                    'Start the Gateway with MALINK_MATRIX_DATA_DIR set to this data directory, '
+                    + 'or run `malink gateway activate-host --gateway-data-dir PATH`.',
+                )
+            }
             return
         }
         const identityStore = new FileGatewayIdentityStore(
@@ -669,6 +687,20 @@ async function handleGatewayCommand(
         }
         console.log(`Joined Workspace ${joined.identity.workspaceId}.`)
         console.log(`Gateway node ID: ${joined.identity.gatewayNodeId}`)
+        return
+    }
+
+    if (subcommand === 'activate-host') {
+        const dataDirectory = gatewayDataDirectory(values)
+        const identity = await new FileGatewayIdentityStore(
+            join(dataDirectory, 'gateway-identity.json'),
+        ).loadExisting()
+        await activateGatewayHost({
+            dataDirectory,
+            fixturePath: join(dataDirectory, 'matrix-fixture.json'),
+            gatewayNodeId: identity.gatewayNodeId,
+            values,
+        })
         return
     }
 
@@ -894,6 +926,33 @@ async function handleGatewayCommand(
     throw new Error(
         'Usage: malink gateway [status | invite | devices | send-file <path> | cancel <offer> | revoke <device>]',
     )
+}
+
+async function activateGatewayHost(input: {
+    dataDirectory: string
+    fixturePath: string
+    gatewayNodeId: string
+    values: Record<string, unknown>
+}): Promise<void> {
+    const result = await activateEnrolledGatewayHost({
+        dataDirectory: input.dataDirectory,
+        fixturePath: input.fixturePath,
+        gatewayNodeId: input.gatewayNodeId,
+        ...(stringOption(input.values['gateway-launch-agent'])
+            ? { gatewayLaunchAgentPath: stringOption(input.values['gateway-launch-agent'])! }
+            : {}),
+        ...(stringOption(input.values['supervisor-launch-agent'])
+            ? { supervisorLaunchAgentPath: stringOption(input.values['supervisor-launch-agent'])! }
+            : {}),
+    })
+    if (result.state !== 'activated') {
+        throw new Error(
+            `Gateway enrollment is complete, but the Gateway Host was not started: ${result.detail} `
+            + `Keep ${result.dataDirectory} intact and configure the local Gateway service to use it.`,
+        )
+    }
+    console.log(`Gateway Host is Matrix-ready as node ${input.gatewayNodeId}.`)
+    console.log(`Gateway data directory: ${result.dataDirectory}`)
 }
 
 function gatewayDataDirectory(values: Record<string, unknown>): string {
