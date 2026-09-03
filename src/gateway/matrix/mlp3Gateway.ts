@@ -182,6 +182,17 @@ export interface MatrixMlp3GatewayDependencies {
     gatewayNodeId: string
     gatewayName: string
   }) => Promise<{ gatewayNodeId: string; gatewayName: string; computerName: string }>
+  retireWorkspaceGateway?: (input: {
+    requestedByDeviceId: string
+    commandId: string
+    gatewayNodeId: string
+    expectedDirectoryRevision: number
+    expectedGatewayKeyId: string
+  }) => Promise<{
+    gatewayNodeId: string
+    removedProjectCount: number
+    directoryRevision: number
+  }>
   pendingGatewayEnrollments?: () => Promise<readonly GatewayEnrollmentPending[]>
   privilegeExecutor?: PrivilegeExecutor
   webPushService?: GatewayWebPushService
@@ -945,6 +956,8 @@ export class MatrixMlp3GatewayRunner {
       ? `${this.config.gatewayId}\0project-create`
       : command.operation === 'gateway.profile.update'
       ? `${this.config.gatewayId}\0gateway-profile`
+      : command.operation === 'gateway.retire'
+      ? `${this.config.gatewayId}\0gateway-directory`
       : command.operation === 'project.delete'
       ? `${this.config.gatewayId}\0project-delete`
       : command.operation === 'project.update'
@@ -1116,6 +1129,9 @@ export class MatrixMlp3GatewayRunner {
         return
       case 'gateway.profile.update':
         await this.updateGatewayProfile(project, command)
+        return
+      case 'gateway.retire':
+        await this.retireWorkspaceGateway(project, command)
         return
       case 'notification.subscribe':
         await this.subscribeNotifications(project, command)
@@ -2347,6 +2363,37 @@ export class MatrixMlp3GatewayRunner {
       }),
       'succeeded',
       updated,
+    )
+  }
+
+  private async retireWorkspaceGateway(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.retire'>,
+  ): Promise<void> {
+    if (!this.dependencies.retireWorkspaceGateway) {
+      throw new Error('This Gateway host does not support Workspace Gateway retirement')
+    }
+    if (command.payload.gatewayNodeId === this.config.gatewayNodeId) {
+      throw new Error(
+        'A Gateway cannot retire itself; send this action through another online Gateway',
+      )
+    }
+    const retired = await this.dependencies.retireWorkspaceGateway({
+      requestedByDeviceId: command.deviceId,
+      commandId: command.commandId,
+      gatewayNodeId: command.payload.gatewayNodeId,
+      expectedDirectoryRevision: command.payload.expectedDirectoryRevision,
+      expectedGatewayKeyId: command.payload.expectedGatewayKeyId,
+    })
+    await this.settleAndDeliver(
+      project,
+      command,
+      this.eventFor(project, undefined, command, 'gateway-retired', {
+        type: 'gateway.retired',
+        ...retired,
+      }),
+      'succeeded',
+      retired,
     )
   }
 

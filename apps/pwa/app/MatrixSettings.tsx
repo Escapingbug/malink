@@ -47,6 +47,7 @@ import {
   type GatewayNodeLiveness,
 } from "./gatewayNodeLiveness";
 import { GatewayNoReplyHelp } from "./GatewayNoReplyHelp";
+import { workspaceGatewayRepairPlan } from "./workspaceGatewayRepair";
 
 export const OFFICIAL_ANDROID_RELEASES_URL =
   "https://github.com/Escapingbug/malink/releases";
@@ -62,6 +63,7 @@ type Props = {
   trustedGateway: MalinkPublicTrust | null;
   savedGateways: MalinkPublicTrust[];
   gatewayDirectory: SignedWorkspaceGatewayDirectory | null;
+  availableProjectIds: readonly string[];
   pairingBusy: boolean;
   deviceInvitation: GeneratedDeviceInvitation | null;
   invitationBusy: boolean;
@@ -74,6 +76,8 @@ type Props = {
   gatewayEnrollmentError: string | null;
   gatewayProfileBusy: string | null;
   gatewayProfileError: string | null;
+  gatewayRetirementBusy: string | null;
+  gatewayRetirementError: { gatewayNodeId: string; detail: string } | null;
   gatewayNodeLivenessById: Readonly<Record<string, GatewayNodeLiveness>>;
   gatewayLivenessNow: number;
   gatewayRelease: GatewayReleaseBuild | null;
@@ -108,6 +112,10 @@ type Props = {
     gatewayName: string,
     targetProjectId: string,
   ): Promise<void>;
+  onRetireGateway(
+    gatewayNodeId: string,
+    authorityProjectId: string,
+  ): Promise<void>;
   onCheckGatewayLiveness(gatewayNodeId: string): void;
   onReviewGatewayUpdates(): void;
   onRetryGatewayUpdateDiscovery(): void;
@@ -138,6 +146,7 @@ function MatrixSettingsDialog({
   trustedGateway,
   savedGateways,
   gatewayDirectory,
+  availableProjectIds,
   repairReason,
   pairingBusy,
   deviceInvitation,
@@ -151,6 +160,8 @@ function MatrixSettingsDialog({
   gatewayEnrollmentError,
   gatewayProfileBusy,
   gatewayProfileError,
+  gatewayRetirementBusy,
+  gatewayRetirementError,
   gatewayNodeLivenessById,
   gatewayLivenessNow,
   gatewayRelease,
@@ -181,6 +192,7 @@ function MatrixSettingsDialog({
   onApproveGatewayEnrollment,
   onClearGatewayEnrollment,
   onRenameGateway,
+  onRetireGateway,
   onCheckGatewayLiveness,
   onReviewGatewayUpdates,
   onRetryGatewayUpdateDiscovery,
@@ -233,6 +245,7 @@ function MatrixSettingsDialog({
     nativeUpdateRequestBusy ||
     diagnosticExportBusy ||
     copyPageLinkBusy ||
+    gatewayRetirementBusy !== null ||
     signOutBusy;
   const busy =
     status === "connecting" ||
@@ -247,6 +260,20 @@ function MatrixSettingsDialog({
       config.accessToken.trim() &&
       config.roomId.trim(),
   );
+  const availableProjectIdSet = new Set(availableProjectIds);
+  const onlineGatewayNodeIds = new Set(
+    (gatewayDirectory?.directory.gateways ?? [])
+      .filter(gateway => gatewayNodeLivenessPresentation(
+        gatewayNodeLivenessById[gateway.gatewayNodeId],
+        gatewayLivenessNow,
+      ).state === "online")
+      .map(gateway => gateway.gatewayNodeId),
+  );
+  const workspaceRepair = workspaceGatewayRepairPlan(
+    gatewayDirectory,
+    availableProjectIdSet,
+    onlineGatewayNodeIds,
+  );
   const directoryGatewayProfiles = (gatewayDirectory?.directory.gateways ?? []).map(
     gateway => ({
       gatewayId: gateway.workspaceId,
@@ -255,7 +282,10 @@ function MatrixSettingsDialog({
       computerName: gateway.computerName,
       buildId: gateway.buildId,
       onlineUpdate: gateway.onlineUpdate === true,
-      targetProjectId: gateway.projects?.[0]?.projectId,
+      targetProjectId: gateway.projects?.find(project =>
+        availableProjectIdSet.has(project.projectId)
+      )?.projectId,
+      projectCount: gateway.projects?.length ?? 0,
     }),
   );
   const savedGatewayProfiles = (savedGateways.length > 0
@@ -270,6 +300,7 @@ function MatrixSettingsDialog({
         buildId: undefined as string | undefined,
         onlineUpdate: false,
         targetProjectId: undefined as string | undefined,
+        projectCount: 0,
       }));
   const gatewayProfiles = directoryGatewayProfiles.length > 0
     ? directoryGatewayProfiles
@@ -289,7 +320,9 @@ function MatrixSettingsDialog({
         ? "Repair the current connection before adding another Gateway"
         : status !== "connected"
           ? "Reconnect the current Gateway before adding another Gateway"
-          : `${gatewayProfiles.length} available to every authorized client`;
+          : workspaceRepair && workspaceRepair.unavailableProjects > 0
+            ? `${workspaceRepair.availableProjects} of ${workspaceRepair.totalProjects} projects available; finish recovery from the affected computer card below`
+            : `${gatewayProfiles.length} available to every authorized client`;
   const recoveryPlan = deriveConnectionRecoveryPlan({
     status,
     detail: connectionDetail,
@@ -455,6 +488,9 @@ function MatrixSettingsDialog({
                 );
                 const editing = editingGatewayNodeId === gatewayProfileId;
                 const targetProjectId = gateway.targetProjectId;
+                const repairNode = workspaceRepair?.nodes.find(
+                  node => node.gatewayNodeId === gatewayProfileId,
+                );
                 const liveCheckAvailable = gateway.onlineUpdate && Boolean(targetProjectId);
                 const livenessValue: GatewayNodeLiveness = liveCheckAvailable
                   ? gatewayNodeLivenessById[gatewayProfileId] ?? { state: "unknown" }
@@ -486,7 +522,8 @@ function MatrixSettingsDialog({
                       <span className="gateway-profile-identity">
                         <strong>{gatewayIdentity.label}</strong>
                         <small title={gatewayProfileId}>
-                          {gatewayIdentity.computerName}
+                          {gatewayIdentity.computerName} · {gateway.projectCount}{" "}
+                          {gateway.projectCount === 1 ? "project" : "projects"}
                         </small>
                       </span>
                       <span
@@ -529,6 +566,23 @@ function MatrixSettingsDialog({
                         consecutiveNoReplies={livenessValue.consecutiveNoReplies}
                         onExportDiagnostics={onExportDiagnostics}
                         diagnosticExportBusy={diagnosticExportBusy}
+                      />
+                    )}
+                    {(Boolean(repairNode?.unavailableProjectIds.length) ||
+                      livenessValue.state === "unreachable") && repairNode && (
+                      <GatewayRecoveryCard
+                        gatewayNodeId={gatewayProfileId}
+                        gatewayLabel={gatewayIdentity.label}
+                        projectCount={gateway.projectCount}
+                        unavailableProjectCount={repairNode.unavailableProjectIds.length}
+                        authorityProjectId={repairNode.retirementAuthorityProjectId}
+                        busy={busy || gatewayRetirementBusy !== null}
+                        retiring={gatewayRetirementBusy === gatewayProfileId}
+                        error={gatewayRetirementError?.gatewayNodeId === gatewayProfileId
+                          ? gatewayRetirementError.detail
+                          : null}
+                        onAdd={() => setAddingGateway(true)}
+                        onRetire={onRetireGateway}
                       />
                     )}
                     {editing && (
@@ -983,6 +1037,101 @@ function MatrixSettingsDialog({
         )}
       </section>
     </div>
+  );
+}
+
+export function GatewayRecoveryCard({
+  gatewayNodeId,
+  gatewayLabel,
+  projectCount,
+  unavailableProjectCount,
+  authorityProjectId,
+  busy,
+  retiring,
+  error,
+  onAdd,
+  onRetire,
+}: {
+  gatewayNodeId: string;
+  gatewayLabel: string;
+  projectCount: number;
+  unavailableProjectCount: number;
+  authorityProjectId: string | null;
+  busy: boolean;
+  retiring: boolean;
+  error: string | null;
+  onAdd(): void;
+  onRetire(gatewayNodeId: string, authorityProjectId: string): Promise<void>;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <section className="gateway-repair-card" aria-live="polite">
+      <span>
+        <strong>
+          {unavailableProjectCount > 0
+            ? `${unavailableProjectCount} ${
+              unavailableProjectCount === 1 ? "project is" : "projects are"
+            } unavailable`
+            : "This computer needs attention"}
+        </strong>
+        <small>
+          Start Malink on this computer to restore it automatically. If it can no longer
+          reconnect, add the computer again or continue without its unavailable projects.
+        </small>
+      </span>
+      <div className="gateway-repair-actions">
+        <button type="button" disabled={busy} onClick={onAdd}>
+          Add this computer again
+        </button>
+        <button
+          type="button"
+          className="gateway-retire-button"
+          disabled={busy || !authorityProjectId}
+          title={authorityProjectId
+            ? `Permanently retire ${gatewayLabel}`
+            : "Connect another Workspace computer before removing this one"}
+          onClick={() => setConfirming(true)}
+        >
+          Continue without this computer…
+        </button>
+      </div>
+      {!authorityProjectId && (
+        <em>
+          Another connected computer is required before Malink can safely remove this
+          unavailable one.
+        </em>
+      )}
+      {confirming && (
+        <div className="gateway-retirement-confirmation" role="alert">
+          <strong>Continue without {gatewayLabel}?</strong>
+          <p>
+            Malink will remove its {projectCount} {projectCount === 1 ? "project" : "projects"}
+            {" "}and related conversations from every client. Files on that computer are not
+            deleted. You can add the computer again later, but unavailable Malink history may not
+            return.
+          </p>
+          <span>
+            <button type="button" disabled={retiring} onClick={() => setConfirming(false)}>
+              Keep Gateway
+            </button>
+            <button
+              type="button"
+              className="danger-confirm-button"
+              disabled={busy || !authorityProjectId}
+              onClick={() => {
+                if (!authorityProjectId) return;
+                void onRetire(gatewayNodeId, authorityProjectId)
+                  .then(() => setConfirming(false))
+                  .catch(() => undefined);
+              }}
+            >
+              {retiring ? "Removing…" : "Remove computer and continue"}
+            </button>
+          </span>
+          {error && <em role="alert">{error}</em>}
+        </div>
+      )}
+    </section>
   );
 }
 

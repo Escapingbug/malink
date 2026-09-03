@@ -209,6 +209,10 @@ export class FileWorkspaceGatewayDirectory {
   async remove(
     gatewayNodeId: string,
     now = Date.now(),
+    expected: {
+      directoryRevision: number
+      gatewayKeyId: string
+    } | undefined = undefined,
   ): Promise<SignedWorkspaceGatewayDirectory> {
     if (!gatewayNodeId || gatewayNodeId.length > 512) {
       throw new TypeError('Gateway node ID is invalid')
@@ -229,8 +233,20 @@ export class FileWorkspaceGatewayDirectory {
             changed: false,
           }
         }
-        if (!state.gateways[gatewayNodeId]) {
+        const gateway = state.gateways[gatewayNodeId]
+        if (!gateway) {
           throw new Error(`Unknown Workspace Gateway node: ${gatewayNodeId}`)
+        }
+        if (expected && state.revision !== expected.directoryRevision) {
+          throw new Error(
+            `Workspace Gateway directory changed from revision `
+            + `${expected.directoryRevision} to ${state.revision}; review the target again`,
+          )
+        }
+        if (expected && gateway.publicKey.keyId !== expected.gatewayKeyId) {
+          throw new Error(
+            'The target Gateway identity changed; review the replacement before retiring it',
+          )
         }
         delete state.gateways[gatewayNodeId]
         removed.add(gatewayNodeId)

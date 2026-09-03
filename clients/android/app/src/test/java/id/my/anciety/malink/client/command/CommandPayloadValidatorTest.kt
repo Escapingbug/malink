@@ -101,6 +101,12 @@ class CommandPayloadValidatorTest {
                 put("gatewayName", "Office Mac")
             },
             buildJsonObject {
+                put("operation", "gateway.retire")
+                put("gatewayNodeId", "gateway-node-old")
+                put("expectedDirectoryRevision", 7)
+                put("expectedGatewayKeyId", "a".repeat(43))
+            },
+            buildJsonObject {
                 put("operation", "gateway.update.stage")
                 put("releaseId", "release-2")
             },

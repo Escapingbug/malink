@@ -532,6 +532,49 @@ describe('Malink Protocol v3 (MLP/3)', () => {
     }).payload).toMatchObject({ computerName: 'alice-macbook' })
   })
 
+  it('models a preconditioned Gateway retirement without a protocol version bump', () => {
+    const command = mlp3CommandSchema.parse({
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'gateway-retire-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      deviceId: 'device-1',
+      certificateId: 'certificate-1',
+      createdAt: 1,
+      operation: 'gateway.retire',
+      payload: {
+        operation: 'gateway.retire',
+        gatewayNodeId: 'gateway-node-old',
+        expectedDirectoryRevision: 7,
+        expectedGatewayKeyId: 'a'.repeat(43),
+      },
+    })
+    expect(command.version).toBe(3)
+    expect(command.payload).toMatchObject({
+      gatewayNodeId: 'gateway-node-old',
+      expectedDirectoryRevision: 7,
+    })
+    expect(mlp3EventSchema.parse({
+      kind: 'malink.event',
+      version: 3,
+      eventId: 'gateway-retired-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      occurredAt: 2,
+      causationCommandId: command.commandId,
+      payload: {
+        type: 'gateway.retired',
+        gatewayNodeId: 'gateway-node-old',
+        removedProjectCount: 1,
+        directoryRevision: 8,
+      },
+    }).payload).toMatchObject({
+      type: 'gateway.retired',
+      removedProjectCount: 1,
+    })
+  })
+
   it('models extension-owned views and project defaults without implementation-specific fields', () => {
     const command = mlp3CommandSchema.parse({
       kind: 'malink.command',

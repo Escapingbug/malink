@@ -403,6 +403,14 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('gateway.retire'),
+      gatewayNodeId: opaqueId,
+      expectedDirectoryRevision: z.number().int().nonnegative(),
+      expectedGatewayKeyId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('gateway.update.stage'),
       releaseId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u),
     })
@@ -453,6 +461,7 @@ export const commandSchema = z
       'gateway.enrollment.invite',
       'gateway.enrollment.approve',
       'gateway.profile.update',
+      'gateway.retire',
       'gateway.update.stage',
       'gateway.update.apply',
       'gateway.update.status',

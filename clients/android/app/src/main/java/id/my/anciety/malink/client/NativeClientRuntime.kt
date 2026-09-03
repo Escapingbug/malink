@@ -2155,6 +2155,28 @@ class NativeClientRuntime(
                     )
                 }
             }
+            "gateway.retire" -> {
+                v3Operation = operation
+                v3SessionId = null
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    put(
+                        "gatewayNodeId",
+                        raw.string("gatewayNodeId")
+                            ?: throw IllegalArgumentException("Gateway node ID is missing."),
+                    )
+                    put(
+                        "expectedDirectoryRevision",
+                        raw.long("expectedDirectoryRevision")
+                            ?: throw IllegalArgumentException("Workspace directory revision is missing."),
+                    )
+                    put(
+                        "expectedGatewayKeyId",
+                        raw.string("expectedGatewayKeyId")
+                            ?: throw IllegalArgumentException("Gateway key ID is missing."),
+                    )
+                }
+            }
             "gateway.update.stage" -> {
                 v3Operation = operation
                 v3SessionId = null

@@ -2183,6 +2183,22 @@ internal class MatrixMlp3NativeProjection(
                     put("computerName", payload.requiredString("computerName", 128))
                 },
             )
+            "gateway.retired" -> MatrixMlp3NativeTerminal(
+                commandId,
+                "succeeded",
+                sessionId,
+                result = buildJsonObject {
+                    put("gatewayNodeId", payload.requiredString("gatewayNodeId", 512))
+                    val removedProjectCount = payload.requiredLong("removedProjectCount")
+                    require(removedProjectCount in 0..256) {
+                        "Gateway retirement project count is invalid."
+                    }
+                    put("removedProjectCount", removedProjectCount)
+                    val directoryRevision = payload.requiredLong("directoryRevision")
+                    require(directoryRevision >= 0) { "Gateway directory revision is invalid." }
+                    put("directoryRevision", directoryRevision)
+                },
+            )
             "gateway.update.status" -> payload.requiredObject("status")
                 .takeUnless { it.requiredString("phase", 64) == "waiting_for_idle" }
                 ?.let { status ->

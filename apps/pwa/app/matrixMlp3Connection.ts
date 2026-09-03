@@ -2019,6 +2019,8 @@ export function toLegacyCompletion(
               computerName: payload.computerName,
             },
           }
+      : payload.type === "gateway.retired"
+        ? { result: payload }
       : payload.type === "project.created"
         ? { result: payload }
       : payload.type === "gateway.update.status"

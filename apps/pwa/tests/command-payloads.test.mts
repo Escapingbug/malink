@@ -161,6 +161,26 @@ test("creates a targeted Gateway profile update", () => {
   }));
 });
 
+test("creates a preconditioned Gateway retirement", () => {
+  assert.deepEqual(commandPayloadSchema.parse({
+    operation: "gateway.retire",
+    gatewayNodeId: "gateway-node-old",
+    expectedDirectoryRevision: 7,
+    expectedGatewayKeyId: "a".repeat(43),
+  }), {
+    operation: "gateway.retire",
+    gatewayNodeId: "gateway-node-old",
+    expectedDirectoryRevision: 7,
+    expectedGatewayKeyId: "a".repeat(43),
+  });
+  assert.throws(() => commandPayloadSchema.parse({
+    operation: "gateway.retire",
+    gatewayNodeId: "gateway-node-old",
+    expectedDirectoryRevision: 7,
+    expectedGatewayKeyId: "short",
+  }));
+});
+
 test("provider is fixed after session creation", () => {
   assert.throws(() => commandPayloadSchema.parse({
     operation: "session.settings",

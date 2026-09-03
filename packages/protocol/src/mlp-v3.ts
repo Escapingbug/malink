@@ -393,6 +393,14 @@ const gatewayProfileUpdatePayloadSchema = z
     gatewayName: z.string().trim().min(1).max(128),
   })
   .strict()
+const gatewayRetirePayloadSchema = z
+  .object({
+    operation: z.literal('gateway.retire'),
+    gatewayNodeId: opaqueId,
+    expectedDirectoryRevision: z.number().int().nonnegative(),
+    expectedGatewayKeyId: base64Url.length(43),
+  })
+  .strict()
 const projectCreatePayloadSchema = z
   .object({
     operation: z.literal('project.create'),
@@ -490,6 +498,7 @@ export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   gatewayEnrollmentInvitationPayloadSchema,
   gatewayEnrollmentApprovePayloadSchema,
   gatewayProfileUpdatePayloadSchema,
+  gatewayRetirePayloadSchema,
   notificationSubscribePayloadSchema,
   notificationUnsubscribePayloadSchema,
   gatewayUpdateStagePayloadSchema,
@@ -614,6 +623,12 @@ export const mlp3CommandSchema = z.union([
     sessionId: z.undefined().optional(),
     operation: z.literal('gateway.profile.update'),
     payload: gatewayProfileUpdatePayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('gateway.retire'),
+    payload: gatewayRetirePayloadSchema,
   }).strict(),
   z.object({
     ...projectCommandCommon,
@@ -1068,6 +1083,14 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       gatewayNodeId: opaqueId,
       gatewayName: z.string().min(1).max(128),
       computerName: z.string().min(1).max(128),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('gateway.retired'),
+      gatewayNodeId: opaqueId,
+      removedProjectCount: z.number().int().nonnegative().max(256),
+      directoryRevision: z.number().int().nonnegative(),
     })
     .strict(),
   z

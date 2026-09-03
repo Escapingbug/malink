@@ -917,6 +917,17 @@ function toMlp3Command(
           gatewayName: payload.gatewayName,
         },
       };
+    case "gateway.retire":
+      return {
+        ...common,
+        operation: "gateway.retire",
+        payload: {
+          operation: "gateway.retire",
+          gatewayNodeId: payload.gatewayNodeId,
+          expectedDirectoryRevision: payload.expectedDirectoryRevision,
+          expectedGatewayKeyId: payload.expectedGatewayKeyId,
+        },
+      };
     case "gateway.update.stage":
       return {
         ...common,

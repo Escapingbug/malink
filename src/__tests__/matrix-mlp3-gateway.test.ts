@@ -860,6 +860,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     const validatedProjectDeletions: string[] = []
     const deletedProjects: string[] = []
     const gatewayProfileUpdates: string[] = []
+    const gatewayRetirements: string[] = []
     const gatewayLogs: string[] = []
     const filesystemAccessChecks: Array<{
       cwd: string
@@ -974,6 +975,16 @@ describe('MatrixMlp3GatewayRunner', () => {
           gatewayNodeId: input.gatewayNodeId,
           gatewayName: input.gatewayName,
           computerName: 'alice-macbook',
+        }
+      },
+      retireWorkspaceGateway: async input => {
+        gatewayRetirements.push(
+          `${input.gatewayNodeId}:${input.expectedDirectoryRevision}:${input.expectedGatewayKeyId}`,
+        )
+        return {
+          gatewayNodeId: input.gatewayNodeId,
+          removedProjectCount: 2,
+          directoryRevision: input.expectedDirectoryRevision + 1,
         }
       },
       sessionExtensionRegistry: new SessionExtensionRegistry([extensionProvider]),
@@ -1367,6 +1378,52 @@ describe('MatrixMlp3GatewayRunner', () => {
       gatewayNodeId: 'gateway-node-1',
       gatewayName: 'Office Mac',
       computerName: 'alice-macbook',
+    })
+
+    await send({
+      ...base,
+      commandId: 'gateway-retire-1',
+      operation: 'gateway.retire',
+      payload: {
+        operation: 'gateway.retire',
+        gatewayNodeId: 'gateway-node-old',
+        expectedDirectoryRevision: 7,
+        expectedGatewayKeyId: 'r'.repeat(43),
+      },
+    }, '$gateway-retire-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'gateway-retire-1'))
+    expect(gatewayRetirements).toEqual([
+      `gateway-node-old:7:${'r'.repeat(43)}`,
+    ])
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'gateway-retire-1'
+    )?.payload).toMatchObject({
+      type: 'gateway.retired',
+      gatewayNodeId: 'gateway-node-old',
+      removedProjectCount: 2,
+      directoryRevision: 8,
+    })
+
+    await send({
+      ...base,
+      commandId: 'gateway-retire-self-1',
+      operation: 'gateway.retire',
+      payload: {
+        operation: 'gateway.retire',
+        gatewayNodeId: 'gateway-node-1',
+        expectedDirectoryRevision: 8,
+        expectedGatewayKeyId: 'r'.repeat(43),
+      },
+    }, '$gateway-retire-self-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'gateway-retire-self-1'))
+    expect(gatewayRetirements).toHaveLength(1)
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'gateway-retire-self-1'
+    )?.payload).toMatchObject({
+      type: 'command.rejected',
+      code: 'execution_failed',
     })
 
     await send({

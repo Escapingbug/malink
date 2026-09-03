@@ -353,7 +353,6 @@ import {
 import {
   preserveProjectsDuringRecovery,
   workspaceProjectRecovery,
-  workspaceProjectRecoveryPresentation,
   type WorkspaceProjectRecovery,
 } from "./workspaceProjectRecovery";
 import {
@@ -1673,6 +1672,11 @@ function MalinkAppRuntime() {
   const [gatewayEnrollmentError, setGatewayEnrollmentError] = useState<string | null>(null);
   const [gatewayProfileBusy, setGatewayProfileBusy] = useState<string | null>(null);
   const [gatewayProfileError, setGatewayProfileError] = useState<string | null>(null);
+  const [gatewayRetirementBusy, setGatewayRetirementBusy] = useState<string | null>(null);
+  const [gatewayRetirementError, setGatewayRetirementError] = useState<{
+    gatewayNodeId: string;
+    detail: string;
+  } | null>(null);
   const [gatewayUpdateDialogOpen, setGatewayUpdateDialogOpen] = useState(false);
   const [dismissedGatewayUpdateNoticeKey, setDismissedGatewayUpdateNoticeKey] =
     useState<string | null>(null);
@@ -7266,6 +7270,72 @@ function MalinkAppRuntime() {
     }
   }
 
+  async function retireWorkspaceGateway(
+    gatewayNodeId: string,
+    authorityProjectId: string,
+  ): Promise<void> {
+    if (gatewayRetirementBusy) return;
+    const directory = gatewayStateRef.current?.gatewayDirectory;
+    const target = directory?.directory.gateways.find(
+      gateway => gateway.gatewayNodeId === gatewayNodeId,
+    );
+    const authority = directory?.directory.gateways.find(gateway =>
+      gateway.gatewayNodeId !== gatewayNodeId &&
+      (gateway.projects ?? []).some(project => project.projectId === authorityProjectId)
+    );
+    if (!directory || !target) {
+      const detail = "This computer is no longer listed. Malink will refresh the Workspace automatically.";
+      setGatewayRetirementError({ gatewayNodeId, detail });
+      throw new Error(detail);
+    }
+    if (!authority) {
+      const detail = "Connect another Workspace computer before removing this one.";
+      setGatewayRetirementError({ gatewayNodeId, detail });
+      throw new Error(detail);
+    }
+    setGatewayRetirementBusy(gatewayNodeId);
+    setGatewayRetirementError(null);
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand({
+        operation: "gateway.retire",
+        gatewayNodeId,
+        expectedDirectoryRevision: directory.directory.revision,
+        expectedGatewayKeyId: target.publicKey.keyId,
+      }, authorityProjectId, {
+        autoRetryRevisionConflict: false,
+        propagateFailure: true,
+      });
+      if (!sent) {
+        throw new Error("Malink could not submit this computer removal.");
+      }
+      commandId = sent.commandId;
+      const completion = await waitForCommandCompletion(sent.completion, 60_000);
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message ?? "This computer could not be removed.",
+        );
+      }
+      showUiNotice(
+        `gateway-retired:${gatewayNodeId}`,
+        "connection",
+        "success",
+        `${target.gatewayName} was removed. Its unavailable projects will disappear from every client automatically.`,
+        8_000,
+      );
+    } catch (error) {
+      const detail = formatUiError(error);
+      setGatewayRetirementError({ gatewayNodeId, detail });
+      throw error;
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+      setGatewayRetirementBusy(null);
+    }
+  }
+
   function setGatewayUpdateNodeRuntime(
     gatewayNodeId: string,
     update: (current: GatewayUpdateNodeRuntime) => GatewayUpdateNodeRuntime,
@@ -11628,6 +11698,25 @@ function MalinkAppRuntime() {
       }],
     });
   }
+  if (workspaceProjectRecoveryState) {
+    const missingCount = workspaceProjectRecoveryState.missingProjectIds.length;
+    const affectedComputers = workspaceProjectRecoveryState.waitingGateways
+      .map(gateway => gateway.label)
+      .join(", ");
+    notificationCenterItems.push({
+      key: `state:workspace-projects:${workspaceProjectRecoveryState.missingProjectIds.join(",")}`,
+      severity: "warning",
+      title: `${missingCount} Workspace ${missingCount === 1 ? "project is" : "projects are"} unavailable`,
+      detail: affectedComputers
+        ? `Projects from ${affectedComputers} have not been restored. Available projects still work; resolve the unavailable computer from settings.`
+        : "Available projects still work. Open settings to finish restoring or remove unavailable content.",
+      actions: [{
+        label: "Resolve",
+        primary: true,
+        onClick: closeNotificationsThen(() => setSettingsOpen(true)),
+      }],
+    });
+  }
 
   const settingsErrors = [
     ["device-invitation", "Device invitation needs attention", invitationError],
@@ -11720,9 +11809,6 @@ function MalinkAppRuntime() {
         : undefined,
     });
   }
-  const workspaceProjectRecoveryCopy = workspaceProjectRecoveryState
-    ? workspaceProjectRecoveryPresentation(workspaceProjectRecoveryState)
-    : null;
   const notificationCount = notificationCenterItems.length;
 
   return (
@@ -12039,28 +12125,6 @@ function MalinkAppRuntime() {
         />
 
         <div className="session-list">
-          {workspaceProjectRecoveryState && (
-            <section
-              className={`workspace-project-recovery ${
-                workspaceProjectRecoveryCopy?.waitingForGateway ? "waiting-for-gateway" : ""
-              }`}
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-            >
-              {workspaceProjectRecoveryCopy?.waitingForGateway ? (
-                <span className="workspace-project-recovery-waiting" aria-hidden="true">!</span>
-              ) : (
-                <span className="workspace-project-recovery-spinner" aria-hidden="true" />
-              )}
-              <span>
-                <strong>{workspaceProjectRecoveryCopy?.title}</strong>
-                <small>
-                  {workspaceProjectRecoveryCopy?.detail}
-                </small>
-              </span>
-            </section>
-          )}
           {optimisticSession && projectMatchesGatewayFilter(
             activeGatewayFilter,
             optimisticSession.input.projectId ?? gatewayState?.workspace.projectId ?? "",
@@ -13961,6 +14025,11 @@ function MalinkAppRuntime() {
         trustedGateway={trustedGateway}
         savedGateways={savedGateways}
         gatewayDirectory={gatewayState?.gatewayDirectory ?? null}
+        availableProjectIds={allWorkspaceProjects
+          .map(project => project.projectId)
+          .filter(projectId =>
+            !workspaceProjectRecoveryState?.missingProjectIds.includes(projectId)
+          )}
         pairingBusy={pairingBusy}
         deviceInvitation={deviceInvitation}
         invitationBusy={invitationBusy}
@@ -13973,6 +14042,8 @@ function MalinkAppRuntime() {
         gatewayEnrollmentError={gatewayEnrollmentError}
         gatewayProfileBusy={gatewayProfileBusy}
         gatewayProfileError={gatewayProfileError}
+        gatewayRetirementBusy={gatewayRetirementBusy}
+        gatewayRetirementError={gatewayRetirementError}
         gatewayNodeLivenessById={gatewayNodeLivenessById}
         gatewayLivenessNow={gatewayLivenessNow}
         gatewayRelease={gatewayRelease}
@@ -14035,6 +14106,7 @@ function MalinkAppRuntime() {
           setGatewayEnrollmentError(null);
         }}
         onRenameGateway={renameGateway}
+        onRetireGateway={retireWorkspaceGateway}
         onCheckGatewayLiveness={(gatewayNodeId) => {
           const target = gatewayNodeProbeTargetsById.get(gatewayNodeId);
           if (target) void probeGatewayNodeLiveness(target);

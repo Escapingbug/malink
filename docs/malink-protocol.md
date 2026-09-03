@@ -178,6 +178,18 @@ and Gateway outboxes retry the same command/event transaction IDs under Matrix
 429 responses; retries never split an operation into more semantic messages or
 fan out snapshots across every project room.
 
+`gateway.retire` is the user-confirmed Workspace fallback for a computer that
+cannot be restored. A client sends it through a verified project owned by a
+different Gateway and includes the target `gatewayNodeId`, the exact signed
+directory revision, and the observed Gateway key ID. The receiving Gateway must
+reject self-retirement and stale preconditions. Success writes the signed
+directory tombstone before returning one constant-size `gateway.retired`
+terminal event with only the node ID, removed-project count, and revision;
+clients then remove projects absent from the new directory from their local
+projection. Matrix presence, a liveness timeout, and local UI state can never
+authorize this mutation. This is an additive MLP/3 operation, not a wire-version
+change.
+
 Provider-owned history is a separate surface. `provider.sessions.list` lists
 the sessions still retained by a configured provider and
 `provider.session.inspect` returns a bounded read-only transcript preview.

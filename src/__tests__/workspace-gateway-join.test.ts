@@ -264,7 +264,35 @@ describe('Workspace Gateway join', () => {
     }, 1_800_000_000_004)
     await firstDirectory.merge(both)
 
-    const removed = await firstDirectory.remove('gateway-node-b', 1_800_000_000_005)
+    const current = await firstDirectory.load()
+    const target = current?.directory.gateways.find(gateway =>
+      gateway.gatewayNodeId === 'gateway-node-b')
+    expect(current).toBeDefined()
+    expect(target).toBeDefined()
+    await expect(firstDirectory.remove(
+      'gateway-node-b',
+      1_800_000_000_005,
+      {
+        directoryRevision: current!.directory.revision - 1,
+        gatewayKeyId: target!.publicKey.keyId,
+      },
+    )).rejects.toThrow(/directory changed/)
+    await expect(firstDirectory.remove(
+      'gateway-node-b',
+      1_800_000_000_005,
+      {
+        directoryRevision: current!.directory.revision,
+        gatewayKeyId: 'x'.repeat(43),
+      },
+    )).rejects.toThrow(/identity changed/)
+    const removed = await firstDirectory.remove(
+      'gateway-node-b',
+      1_800_000_000_005,
+      {
+        directoryRevision: current!.directory.revision,
+        gatewayKeyId: target!.publicKey.keyId,
+      },
+    )
     const propagated = await secondDirectory.merge(removed)
 
     expect(propagated.directory.gateways.map(value => value.gatewayNodeId)).toEqual([

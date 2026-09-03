@@ -76,10 +76,15 @@ Adding a trusted Gateway is normally an in-product enrollment:
    Authorized clients are invited to new rooms, verify the directory signature,
    join automatically, and add the route to their existing Matrix session. No
    Gateway switch is exposed to the user.
-7. To retire a node, run
-   `malink gateway remove-gateway NODE_ID --gateway-data-dir PATH` on another
-   active node. The signed tombstone removes its project routes from every
-   client; the retired process stops when it observes the directory update.
+7. If a node cannot be restored, an ordinary client can choose **Continue
+   without this computer** from that computer's Workspace settings card. The
+   client routes one preconditioned `gateway.retire` command through a project
+   owned by another online node. That node signs a directory tombstone, which
+   removes the unavailable node's project and conversation routes from every
+   client without deleting files on the retired computer. The user must confirm
+   this loss of Workspace visibility; a timeout or liveness probe never retires
+   a node automatically. `malink gateway remove-gateway` remains the local
+   operator fallback when the product UI itself is unavailable.
 
 The private Malink Synapse deployment enables `login_via_existing_session`
 without an additional UIAA round trip for this owner-authorized operation. On
@@ -511,6 +516,15 @@ check.
 Liveness remains
 presentation evidence only; it neither authorizes execution nor prevents a
 durable command from waiting for its owning Gateway to return.
+When a directory route stays unavailable, its computer card offers two
+product-level outcomes after bounded automatic recovery: add that computer
+again, or explicitly continue without it. The second action must travel through
+another verified online Gateway and carry the exact directory revision and
+target identity observed at confirmation time. A successful signed tombstone
+causes all clients to drop the removed routes automatically, so no client-side
+"stop tracking" cleanup is required. The action is additive within MLP/3 and
+does not justify a protocol-version bump because older implementations already
+fail closed on an unknown operation.
 If a bounded journal check receives no signed reply, the client records the
 check time separately from the command's unchanged durable timestamp and moves
 the notice out of the foreground automatically. A future foreground check may

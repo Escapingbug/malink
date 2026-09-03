@@ -1214,6 +1214,7 @@ function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
     case "gateway.enrollment.invitation.created":
     case "gateway.enrollment.approved":
     case "gateway.profile.updated":
+    case "gateway.retired":
     case "notification.subscription.changed":
     case "provider.sessions.listed":
     case "provider.session.inspected":

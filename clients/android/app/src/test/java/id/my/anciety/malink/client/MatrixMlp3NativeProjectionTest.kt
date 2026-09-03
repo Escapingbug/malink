@@ -1007,6 +1007,42 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `Gateway retirement is a bounded terminal command result`() {
+        val projection = projection()
+        val applied = projection.applyGatewayEvent(
+            event(
+                eventId = "gateway-retired-1",
+                projectId = "project-1",
+                causationCommandId = "gateway-retire-command-1",
+                payload = buildJsonObject {
+                    put("type", "gateway.retired")
+                    put("gatewayNodeId", "gateway-node-old")
+                    put("removedProjectCount", 2)
+                    put("directoryRevision", 8)
+                },
+            ),
+            "\$gateway-retired",
+            null,
+        )
+
+        assertEquals("gateway-retire-command-1", applied.terminal?.commandId)
+        assertEquals("succeeded", applied.terminal?.outcome)
+        assertEquals(
+            "gateway-node-old",
+            applied.terminal?.result?.jsonObject?.get("gatewayNodeId")?.jsonPrimitive?.content,
+        )
+        assertEquals(
+            2,
+            applied.terminal?.result?.jsonObject?.get("removedProjectCount")
+                ?.jsonPrimitive?.content?.toInt(),
+        )
+        assertEquals(
+            "8",
+            applied.terminal?.result?.jsonObject?.get("directoryRevision")?.jsonPrimitive?.content,
+        )
+    }
+
+    @Test
     fun `waiting for idle Gateway update progress is not a command terminal`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)

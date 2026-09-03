@@ -919,69 +919,6 @@ select:focus-visible {
   margin-bottom: 8px;
 }
 
-.workspace-project-recovery {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin: 1px 13px 9px;
-  padding: 9px 10px;
-  border: 1px solid rgb(107 89 211 / 16%);
-  border-radius: 10px;
-  background: var(--violet-soft);
-  color: #554a99;
-}
-
-.workspace-project-recovery > span:last-child {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.workspace-project-recovery strong {
-  font-size: 10px;
-  font-weight: 760;
-}
-
-.workspace-project-recovery small {
-  color: #6f688f;
-  font-size: 8px;
-  line-height: 1.35;
-}
-
-.workspace-project-recovery-spinner {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 auto;
-  border: 2px solid rgb(107 89 211 / 22%);
-  border-top-color: #6b59d3;
-  border-radius: 50%;
-  animation: session-create-spin 700ms linear infinite;
-}
-
-.workspace-project-recovery.waiting-for-gateway {
-  border-color: rgb(178 125 24 / 20%);
-  background: #fff8e8;
-  color: #79540e;
-}
-
-.workspace-project-recovery.waiting-for-gateway small {
-  color: #806a42;
-}
-
-.workspace-project-recovery-waiting {
-  display: grid;
-  width: 16px;
-  height: 16px;
-  flex: 0 0 auto;
-  place-items: center;
-  border-radius: 50%;
-  background: #e4a72d;
-  color: #fff;
-  font-size: 10px;
-  font-weight: 800;
-}
-
 .project-session-heading {
   display: flex;
   align-items: center;
@@ -6803,6 +6740,88 @@ select:focus-visible {
 
 .gateway-profile-card > .gateway-no-reply-help {
   grid-column: 1 / -1;
+}
+
+.gateway-repair-card {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 9px;
+  padding: 11px;
+  border: 1px solid #ead8ad;
+  border-radius: 10px;
+  background: #fffcf5;
+}
+
+.gateway-repair-card > span {
+  display: grid;
+  gap: 3px;
+}
+
+.gateway-repair-card strong {
+  color: #76581e;
+  font-size: 11px;
+}
+
+.gateway-repair-card small {
+  color: #756d5f;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.gateway-repair-card > em,
+.gateway-retirement-confirmation > em {
+  color: #9c4d58;
+  font-size: 9px;
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.gateway-repair-actions,
+.gateway-retirement-confirmation > span {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.gateway-repair-actions button,
+.gateway-retirement-confirmation button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #dfdfe7;
+  border-radius: 8px;
+  background: white;
+  color: #60697a;
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.gateway-repair-actions .gateway-retire-button,
+.gateway-retirement-confirmation .danger-confirm-button {
+  border-color: #e6bdc3;
+  color: #a43e4c;
+}
+
+.gateway-retirement-confirmation {
+  display: grid;
+  gap: 8px;
+  padding-top: 9px;
+  border-top: 1px solid #eadfc7;
+}
+
+.gateway-retirement-confirmation > strong {
+  color: #943946;
+}
+
+.gateway-retirement-confirmation p {
+  margin: 0;
+  color: #73666a;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.gateway-retirement-confirmation .danger-confirm-button {
+  background: #fff7f8;
 }
 
 .gateway-profile-rename label,

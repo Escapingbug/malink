@@ -28,6 +28,7 @@ enum class CommandOperation(val wireName: String) {
     GATEWAY_ENROLLMENT_INVITE("gateway.enrollment.invite"),
     GATEWAY_ENROLLMENT_APPROVE("gateway.enrollment.approve"),
     GATEWAY_PROFILE_UPDATE("gateway.profile.update"),
+    GATEWAY_RETIRE("gateway.retire"),
     GATEWAY_UPDATE_STAGE("gateway.update.stage"),
     GATEWAY_UPDATE_APPLY("gateway.update.apply"),
     GATEWAY_UPDATE_STATUS("gateway.update.status"),
@@ -261,6 +262,15 @@ data class GatewayProfileUpdateCommandPayload(
     override val sessionId: String? = null
 }
 
+data class GatewayRetireCommandPayload(
+    val gatewayNodeId: String,
+    val expectedDirectoryRevision: Long,
+    val expectedGatewayKeyId: String,
+) : ValidatedCommandPayload {
+    override val operation = CommandOperation.GATEWAY_RETIRE
+    override val sessionId: String? = null
+}
+
 data class GatewayUpdateCommandPayload(
     override val operation: CommandOperation,
     val releaseId: String?,
@@ -306,6 +316,7 @@ object CommandPayloadValidator {
             CommandOperation.GATEWAY_ENROLLMENT_INVITE -> validateGatewayEnrollmentInvite(value)
             CommandOperation.GATEWAY_ENROLLMENT_APPROVE -> validateGatewayEnrollmentApprove(value)
             CommandOperation.GATEWAY_PROFILE_UPDATE -> validateGatewayProfileUpdate(value)
+            CommandOperation.GATEWAY_RETIRE -> validateGatewayRetire(value)
             CommandOperation.GATEWAY_UPDATE_STAGE,
             CommandOperation.GATEWAY_UPDATE_APPLY,
             CommandOperation.GATEWAY_UPDATE_STATUS,
@@ -577,6 +588,28 @@ object CommandPayloadValidator {
         )
     }
 
+    private fun validateGatewayRetire(value: JsonObject): GatewayRetireCommandPayload {
+        value.requireExactKeys(
+            setOf(
+                "operation",
+                "gatewayNodeId",
+                "expectedDirectoryRevision",
+                "expectedGatewayKeyId",
+            ),
+        )
+        val expectedDirectoryRevision = value.requiredLong("expectedDirectoryRevision")
+        require(expectedDirectoryRevision >= 0) { "Workspace directory revision is invalid." }
+        val expectedGatewayKeyId = value.requiredString("expectedGatewayKeyId", 43)
+        require(expectedGatewayKeyId.length == 43 && BASE64_URL.matches(expectedGatewayKeyId)) {
+            "Gateway key ID is invalid."
+        }
+        return GatewayRetireCommandPayload(
+            gatewayNodeId = value.requiredOpaqueId("gatewayNodeId"),
+            expectedDirectoryRevision = expectedDirectoryRevision,
+            expectedGatewayKeyId = expectedGatewayKeyId,
+        )
+    }
+
     private fun validateGatewayUpdate(
         value: JsonObject,
         operation: CommandOperation,
@@ -795,6 +828,7 @@ internal fun requiredCertificateOperation(operation: CommandOperation): PairingO
         CommandOperation.GATEWAY_ENROLLMENT_INVITE,
         CommandOperation.GATEWAY_ENROLLMENT_APPROVE,
         CommandOperation.GATEWAY_PROFILE_UPDATE,
+        CommandOperation.GATEWAY_RETIRE,
         -> PairingOperation.DEVICE_INVITE
         CommandOperation.GATEWAY_UPDATE_STAGE,
         CommandOperation.GATEWAY_UPDATE_APPLY,

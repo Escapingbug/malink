@@ -753,6 +753,59 @@ runner = new MatrixMlp3GatewayRunner(config, {
             computerName: gatewayProfile.computerName,
         }
     },
+    retireWorkspaceGateway: async input => {
+        let retired: {
+            gatewayNodeId: string
+            removedProjectCount: number
+            directoryRevision: number
+        } | undefined
+        try {
+            await synchronizeWorkspaceControl(async () => {
+                const current = await workspaceDirectory.load()
+                if (!current) throw new Error('Workspace Gateway directory is unavailable')
+                const descriptor = current.directory.gateways.find(
+                    gateway => gateway.gatewayNodeId === input.gatewayNodeId,
+                )
+                const alreadyRemoved = current.directory.removedGatewayNodeIds?.includes(
+                    input.gatewayNodeId,
+                ) === true
+                if (!descriptor && !alreadyRemoved) {
+                    throw new Error(`Unknown Workspace Gateway node: ${input.gatewayNodeId}`)
+                }
+                const directory = await workspaceDirectory.remove(
+                    input.gatewayNodeId,
+                    Date.now(),
+                    descriptor
+                        ? {
+                            directoryRevision: input.expectedDirectoryRevision,
+                            gatewayKeyId: input.expectedGatewayKeyId,
+                        }
+                        : undefined,
+                )
+                retired = {
+                    gatewayNodeId: input.gatewayNodeId,
+                    removedProjectCount: descriptor?.projects?.length ?? 0,
+                    directoryRevision: directory.directory.revision,
+                }
+            })
+        } catch (error) {
+            // The signed local tombstone is authoritative once committed. A
+            // temporary Matrix publication failure must not reinterpret that
+            // durable retirement as a failed business mutation; the periodic
+            // Workspace control sync will republish the same directory.
+            if (!retired) throw error
+            process.stderr.write(
+                `[workspace-control] Gateway retirement publication deferred: ${formatError(error)}\n`,
+            )
+        }
+        process.stdout.write(
+            `Device ${input.requestedByDeviceId} retired Gateway ${input.gatewayNodeId}.\n`,
+        )
+        if (!retired) {
+            throw new Error('Gateway retirement finished without a signed directory result')
+        }
+        return retired
+    },
     pendingGatewayEnrollments: () => gatewayEnrollmentCoordinator.pending(),
     workspaceGatewayDirectory: () => workspaceDirectory.load(),
     createProject: async input => {
