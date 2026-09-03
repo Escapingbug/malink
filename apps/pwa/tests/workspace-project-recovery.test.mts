@@ -4,6 +4,7 @@ import type { GatewayStateSnapshot } from "../app/gatewayState.ts";
 import {
   preserveProjectsDuringRecovery,
   workspaceProjectRecovery,
+  workspaceProjectRecoveryPresentation,
 } from "../app/workspaceProjectRecovery.ts";
 
 const capabilities: GatewayStateSnapshot["capabilities"] = {
@@ -111,6 +112,12 @@ test("reports progress against every project in the signed directory", () => {
       loaded: 1,
       total: 3,
       missingProjectIds: ["project-b", "project-c"],
+      waitingGateways: [{
+        gatewayNodeId: "gateway-1",
+        label: "Gateway",
+        loaded: 1,
+        total: 3,
+      }],
     },
   );
   assert.equal(
@@ -120,6 +127,40 @@ test("reports progress against every project in the signed directory", () => {
     )),
     null,
   );
+});
+
+test("explains when another Gateway must authorize the new device", () => {
+  const state = snapshot(["project-a"], ["project-a"]);
+  state.gatewayDirectory!.directory.gateways.push({
+    ...state.gatewayDirectory!.directory.gateways[0]!,
+    gatewayNodeId: "gateway-2",
+    gatewayName: "Mac mini",
+    projects: ["project-b", "project-c"].map(projectId => ({
+      projectId,
+      roomId: `!${projectId}:example.test`,
+      conversationId: `conversation-${projectId}`,
+    })),
+  });
+
+  const recovery = workspaceProjectRecovery(state);
+  assert.ok(recovery);
+  assert.deepEqual(workspaceProjectRecoveryPresentation(recovery), {
+    title: "Waiting for another Workspace computer",
+    detail: "1 of 3 projects available · Start Mac mini and Malink Gateway Host once to authorize this device",
+    waitingForGateway: true,
+  });
+});
+
+test("keeps transient rooms under a loaded Gateway in the refresh phase", () => {
+  const recovery = workspaceProjectRecovery(
+    snapshot(["project-a"], ["project-a", "project-b"]),
+  );
+  assert.ok(recovery);
+  assert.deepEqual(workspaceProjectRecoveryPresentation(recovery), {
+    title: "Refreshing Workspace projects",
+    detail: "1 of 2 available · restoring remaining project rooms",
+    waitingForGateway: false,
+  });
 });
 
 test("preserves missing project rows until their fresh projections arrive", () => {

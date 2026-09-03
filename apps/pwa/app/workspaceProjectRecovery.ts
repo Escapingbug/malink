@@ -8,6 +8,20 @@ export type WorkspaceProjectRecovery = {
   loaded: number;
   total: number;
   missingProjectIds: readonly string[];
+  waitingGateways: readonly WorkspaceProjectRecoveryGateway[];
+};
+
+export type WorkspaceProjectRecoveryGateway = {
+  gatewayNodeId: string;
+  label: string;
+  loaded: number;
+  total: number;
+};
+
+export type WorkspaceProjectRecoveryPresentation = {
+  title: string;
+  detail: string;
+  waitingForGateway: boolean;
 };
 
 /**
@@ -29,10 +43,45 @@ export function workspaceProjectRecovery(
     .sort();
   if (missingProjectIds.length === 0) return null;
 
+  const missing = new Set(missingProjectIds);
+  const waitingGateways = (state.gatewayDirectory?.directory.gateways ?? [])
+    .flatMap(gateway => {
+      const projectIds = (gateway.projects ?? []).map(project => project.projectId);
+      if (!projectIds.some(projectId => missing.has(projectId))) return [];
+      return [{
+        gatewayNodeId: gateway.gatewayNodeId,
+        label: gateway.gatewayName,
+        loaded: projectIds.filter(projectId => loadedProjectIds.has(projectId)).length,
+        total: projectIds.length,
+      }];
+    });
+
   return {
     loaded: expectedProjectIds.size - missingProjectIds.length,
     total: expectedProjectIds.size,
     missingProjectIds,
+    waitingGateways,
+  };
+}
+
+export function workspaceProjectRecoveryPresentation(
+  recovery: WorkspaceProjectRecovery,
+): WorkspaceProjectRecoveryPresentation {
+  const waiting = recovery.waitingGateways.filter(gateway => gateway.loaded === 0);
+  if (waiting.length === 0) {
+    return {
+      title: "Refreshing Workspace projects",
+      detail: `${recovery.loaded} of ${recovery.total} available · restoring remaining project rooms`,
+      waitingForGateway: false,
+    };
+  }
+  const labels = waiting.map(gateway => gateway.label).join(", ");
+  return {
+    title: waiting.length === 1
+      ? "Waiting for another Workspace computer"
+      : "Waiting for other Workspace computers",
+    detail: `${recovery.loaded} of ${recovery.total} projects available · Start ${labels} and Malink Gateway Host once to authorize this device`,
+    waitingForGateway: true,
   };
 }
 

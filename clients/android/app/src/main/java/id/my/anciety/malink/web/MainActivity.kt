@@ -999,9 +999,16 @@ class MainActivity : ComponentActivity() {
                 val intent = if (fileChooserParams.isCaptureEnabled) {
                     createQrCameraIntent()
                 } else {
+                    val mimePolicy = webFileChooserMimePolicy(fileChooserParams.acceptTypes)
                     Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "image/*"
+                        type = mimePolicy.type
+                        if (mimePolicy.acceptedMimeTypes.isNotEmpty()) {
+                            putExtra(
+                                Intent.EXTRA_MIME_TYPES,
+                                mimePolicy.acceptedMimeTypes.toTypedArray(),
+                            )
+                        }
                     }
                 }
                 if (intent == null) {

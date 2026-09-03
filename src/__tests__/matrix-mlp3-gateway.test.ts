@@ -241,6 +241,7 @@ describe('MatrixMlp3GatewayRunner', () => {
   it('keeps legacy archived cleanup off the Gateway startup path', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-v3-archive-migration-'))
     const gatewayKeys = await generateDeviceKeyPair()
+    const phoneKeys = await generateDeviceKeyPair()
     const client = new TestMatrixClient()
     const gatewayLogs: string[] = []
     const roomId = '!archive-migration:example.org'
@@ -265,7 +266,17 @@ describe('MatrixMlp3GatewayRunner', () => {
         cwd: '/archive-migration-repo',
         providerName: 'test',
       }],
-      trustedDevices: [],
+      trustedDevices: [{
+        deviceId: 'phone-1',
+        publicKey: phoneKeys.publicJwk,
+        allowedRoomIds: [roomId],
+        allowedOperations: ['prompt'],
+        matrixUserId: '@phone:example.org',
+        matrixDeviceId: 'PHONE',
+        matrixDeviceKeys: ['matrix-phone-key'],
+        certificateExpiresAt: Date.now() + 60_000,
+        sequenceEpoch: 'certificate-1',
+      }],
       replayLedgerPath,
       applicationSecurity: {
         gatewayDeviceId: 'workspace-archive-migration',
@@ -305,10 +316,43 @@ describe('MatrixMlp3GatewayRunner', () => {
 
     const runner = new MatrixMlp3GatewayRunner(config, {
       client,
-      listTrustedDevices: async () => [],
       onLog: message => gatewayLogs.push(message),
     })
     await runner.start()
+
+    const grantState = [...client.state.values()].find(candidate =>
+      candidate.eventType === MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE
+      && candidate.content.deviceId === 'phone-1'
+    )
+    const grant = mlp3ProjectKeyGrantStateSchema.parse(grantState?.content)
+    const keyGrant = await openMlp3ProjectKeyGrant(grant.sealedGrant, {
+      expected: {
+        grantId: grant.grantId,
+        workspaceId: grant.workspaceId,
+        projectId: grant.projectId,
+        roomId: grant.roomId,
+        deviceId: grant.deviceId,
+        certificateId: grant.certificateId,
+        senderKeyId: grant.sealedGrant.envelope.senderKeyId,
+        recipientKeyId: grant.sealedGrant.envelope.recipientKeyId,
+      },
+      recipientPrivateKey: phoneKeys.privateKey,
+      senderPublicKey: gatewayKeys.publicKey,
+    })
+    const activeKey = keyGrant.keys.find(key => key.keyId === keyGrant.activeKeyId)!
+    await waitFor(async () => (await events(client, activeKey.key, roomId, grant.projectId))
+      .some(event => event.sessionId === 'legacy-archive'))
+    expect((await events(client, activeKey.key, roomId, grant.projectId)).find(event =>
+      event.sessionId === 'legacy-archive'
+    )?.payload).toMatchObject({
+      type: 'session.lifecycle',
+      state: 'archived',
+      projection: {
+        lifecycle: 'archived',
+        activity: 'idle',
+        stateVersion: 2,
+      },
+    })
 
     expect(client.deletedThreads).toEqual([])
     expect((await state.project(roomId)).sessions).toEqual([

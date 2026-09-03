@@ -959,6 +959,29 @@ select:focus-visible {
   animation: session-create-spin 700ms linear infinite;
 }
 
+.workspace-project-recovery.waiting-for-gateway {
+  border-color: rgb(178 125 24 / 20%);
+  background: #fff8e8;
+  color: #79540e;
+}
+
+.workspace-project-recovery.waiting-for-gateway small {
+  color: #806a42;
+}
+
+.workspace-project-recovery-waiting {
+  display: grid;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: #e4a72d;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+}
+
 .project-session-heading {
   display: flex;
   align-items: center;

@@ -3463,8 +3463,27 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private async publishSessionRecovery(project: V3ProjectRuntime): Promise<void> {
-    for (const runtime of project.sessions.values()) {
-      const record = runtime.record
+    for (const record of project.project.sessions) {
+      const payload: Mlp3Event['payload'] = record.lifecycle === 'active'
+        ? {
+            type: 'session.ready',
+            projection: terminalProjection(record, 'idle', this.extensions),
+            provider: record.provider,
+            ...(record.model ? { model: record.model } : {}),
+            ...(record.reasoningEffort ? { reasoningEffort: record.reasoningEffort } : {}),
+            permissionMode: record.permissionMode,
+            extensionBindings: record.extensions,
+          }
+        : {
+            // An interrupted archive can persist its cleanup checkpoint before
+            // the final Matrix deletion event is published. Re-advertise that
+            // authoritative non-active lifecycle on startup so clients never
+            // retain an older working projection while explicit cleanup stays
+            // off the Gateway health path.
+            type: 'session.lifecycle',
+            projection: terminalProjection(record, 'idle', this.extensions),
+            state: record.lifecycle,
+          }
       const event: Mlp3Event = {
         kind: 'malink.event',
         version: 3,
@@ -3478,15 +3497,7 @@ export class MatrixMlp3GatewayRunner {
         projectId: project.project.projectId,
         sessionId: record.id,
         occurredAt: record.updatedAt,
-        payload: {
-          type: 'session.ready',
-          projection: terminalProjection(record, 'idle', this.extensions),
-          provider: record.provider,
-          ...(record.model ? { model: record.model } : {}),
-          ...(record.reasoningEffort ? { reasoningEffort: record.reasoningEffort } : {}),
-          permissionMode: record.permissionMode,
-          extensionBindings: record.extensions,
-        },
+        payload,
       }
       await this.content.queueEvent(project.config, event, this.client, {
         relation: threadRelation(record.threadRootEventId),

@@ -353,6 +353,7 @@ import {
 import {
   preserveProjectsDuringRecovery,
   workspaceProjectRecovery,
+  workspaceProjectRecoveryPresentation,
   type WorkspaceProjectRecovery,
 } from "./workspaceProjectRecovery";
 import {
@@ -11719,6 +11720,9 @@ function MalinkAppRuntime() {
         : undefined,
     });
   }
+  const workspaceProjectRecoveryCopy = workspaceProjectRecoveryState
+    ? workspaceProjectRecoveryPresentation(workspaceProjectRecoveryState)
+    : null;
   const notificationCount = notificationCenterItems.length;
 
   return (
@@ -12037,16 +12041,22 @@ function MalinkAppRuntime() {
         <div className="session-list">
           {workspaceProjectRecoveryState && (
             <section
-              className="workspace-project-recovery"
+              className={`workspace-project-recovery ${
+                workspaceProjectRecoveryCopy?.waitingForGateway ? "waiting-for-gateway" : ""
+              }`}
               role="status"
               aria-live="polite"
               aria-atomic="true"
             >
-              <span className="workspace-project-recovery-spinner" aria-hidden="true" />
+              {workspaceProjectRecoveryCopy?.waitingForGateway ? (
+                <span className="workspace-project-recovery-waiting" aria-hidden="true">!</span>
+              ) : (
+                <span className="workspace-project-recovery-spinner" aria-hidden="true" />
+              )}
               <span>
-                <strong>Refreshing Workspace projects</strong>
+                <strong>{workspaceProjectRecoveryCopy?.title}</strong>
                 <small>
-                  {`${workspaceProjectRecoveryState.loaded} of ${workspaceProjectRecoveryState.total} refreshed · restoring remaining project rooms`}
+                  {workspaceProjectRecoveryCopy?.detail}
                 </small>
               </span>
             </section>
