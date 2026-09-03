@@ -1429,7 +1429,6 @@ class MainActivity : ComponentActivity() {
             accountSetupBinder().bootstrap(input)
 
         private suspend fun accountSetupBinder(): MalinkConnectionService.LocalBinder {
-            serviceBinder?.let { return it }
             withContext(Dispatchers.Main.immediate) {
                 if (!notificationsAvailable()) {
                     pendingForegroundStart = true
@@ -1450,7 +1449,10 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 MalinkConnectionService.startFromUser(this@MainActivity)
-                bindHostOnly()
+                // A sign-out leaves the presentation host bound while disabling
+                // persistent restoration. Do not treat that binder as proof that
+                // the foreground runtime is active; bootstrap owns activation.
+                if (serviceBinder == null) bindHostOnly()
             }
             return awaitServiceBinder()
         }

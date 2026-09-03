@@ -59,4 +59,36 @@ export function formatUserFacingError(error: unknown): string {
   return message.length <= 180 ? message : `${message.slice(0, 179)}…`;
 }
 
+function nativeBridgeUserAction(error: unknown): unknown {
+  if (!error || typeof error !== "object") return undefined;
+  const data = "data" in error ? error.data : undefined;
+  if (!data || typeof data !== "object") return undefined;
+  return "userAction" in data ? data.userAction : undefined;
+}
+
+/**
+ * A native startup gate fails before Matrix receives the one-time login token.
+ * Keep the still-valid authorization file recoverable instead of telling the
+ * user to replace it. Other failures can happen after submission, so they must
+ * not claim that the token is definitely reusable.
+ */
+export function formatDeviceInvitationSignInFailure(error: unknown): string {
+  const detail = formatUserFacingError(error);
+  const localStartupFailure =
+    nativeBridgeUserAction(error) === "open_app" ||
+    /(?:persistent native runtime is not active|visible persistent notification|allow malink to stay active)/iu.test(
+      error instanceof Error ? error.message : typeof error === "string" ? error : "",
+    );
+  if (localStartupFailure) {
+    return (
+      `The one-time sign-in was not submitted: ${detail} ` +
+      "Complete the Android requirement, then open this same authorization file again."
+    );
+  }
+  return (
+    `The one-time sign-in could not be completed: ${detail} ` +
+    "Open this authorization file again to retry. Create a new invitation only if Malink says this one expired or was already used."
+  );
+}
+
 export { GENERIC_ERROR_DETAIL };

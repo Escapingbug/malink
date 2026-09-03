@@ -301,6 +301,7 @@ import {
 } from "./gatewayNodeLiveness";
 import { createConnectionDiagnostics } from "./connectionDiagnostics";
 import {
+  formatDeviceInvitationSignInFailure,
   formatUserFacingError,
   isCommandRecoveryPendingError,
 } from "./userFacingError";
@@ -6875,9 +6876,7 @@ function MalinkAppRuntime() {
           nextConfig,
         );
       } catch (error) {
-        setConnectionError(
-          `The one-time sign-in could not be used: ${formatUiError(error)} Request a new device invitation.`,
-        );
+        setConnectionError(formatDeviceInvitationSignInFailure(error));
       }
     } catch (error) {
       setConnectionError(formatUiError(error));

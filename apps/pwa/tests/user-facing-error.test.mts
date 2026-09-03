@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   GENERIC_ERROR_DETAIL,
+  formatDeviceInvitationSignInFailure,
   formatUserFacingError,
   isCommandRecoveryPendingError,
 } from "../app/userFacingError.ts";
@@ -72,4 +73,25 @@ test("normalizes and bounds user-facing details", () => {
     "The session could not be opened.",
   );
   assert.equal(formatUserFacingError("x".repeat(300)).length, 180);
+});
+
+test("keeps an authorization file reusable when Android startup fails locally", () => {
+  assert.equal(
+    formatDeviceInvitationSignInFailure(
+      Object.assign(
+        new Error("The persistent native runtime is not active."),
+        { data: { userAction: "open_app" } },
+      ),
+    ),
+    "The one-time sign-in was not submitted: The persistent native runtime is not active. Complete the Android requirement, then open this same authorization file again.",
+  );
+});
+
+test("does not promise token reuse after an ambiguous sign-in failure", () => {
+  assert.equal(
+    formatDeviceInvitationSignInFailure(
+      new Error("Matrix sign-in was not accepted."),
+    ),
+    "The one-time sign-in could not be completed: Matrix sign-in was not accepted. Open this authorization file again to retry. Create a new invitation only if Malink says this one expired or was already used.",
+  );
 });
