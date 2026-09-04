@@ -203,6 +203,25 @@ function normalizeToolEvents(events: AgentEvent[], toolCalls: Map<string, ToolCa
     })
 }
 
+function withCurrentSessionModel(
+    models: SessionModelState | null | undefined,
+    modelId: string,
+): SessionModelState | null | undefined {
+    return models ? { ...models, currentModelId: modelId } : models
+}
+
+function withCurrentModelConfig(
+    configOptions: readonly SessionConfigOption[],
+    modelId: string,
+): readonly SessionConfigOption[] {
+    return configOptions.map(option => (
+        option.type === 'select'
+        && (option.category === 'model' || option.id === 'model')
+            ? { ...option, currentValue: modelId }
+            : option
+    ))
+}
+
 function appendErrorFields(lines: string[], error: unknown): void {
     if (!error || typeof error !== 'object') return
     const record = error as Record<string, unknown>
@@ -701,12 +720,19 @@ export class AcpProvider implements AgentProvider {
         model: string | undefined,
         models: SessionModelState | null | undefined,
         configOptions: readonly SessionConfigOption[] = [],
-    ): Promise<void> {
-        if (!model) return
-        if (models?.availableModels.some(candidate => candidate.modelId === model)) {
-            await this.clientManager.setSessionModel({ sessionId, modelId: model })
-            console.error(`[acp:${this.name}] Set model to ${model}`)
-            return
+    ): Promise<string | undefined> {
+        if (!model) return undefined
+        const resolvedModel = this.resolveSessionModelId(model, models, configOptions)
+        if (!resolvedModel) {
+            console.error(
+                `[acp:${this.name}] Selected model ${model} is not compatible with the models advertised by this session; preserving the provider default`,
+            )
+            return undefined
+        }
+        if (models?.availableModels.some(candidate => candidate.modelId === resolvedModel)) {
+            await this.clientManager.setSessionModel({ sessionId, modelId: resolvedModel })
+            console.error(`[acp:${this.name}] Set model to ${resolvedModel}`)
+            return resolvedModel
         }
         const option = configOptions.find(candidate =>
             candidate.category === 'model' || candidate.id === 'model'
@@ -717,9 +743,23 @@ export class AcpProvider implements AgentProvider {
         await this.clientManager.setSessionConfigOption({
             sessionId,
             configId: option.id,
-            value: model,
+            value: resolvedModel,
         })
-        console.error(`[acp:${this.name}] Set model config to ${model}`)
+        console.error(`[acp:${this.name}] Set model config to ${resolvedModel}`)
+        return resolvedModel
+    }
+
+    /**
+     * Resolve a provider-owned model selection against the model ids advertised
+     * by the opened ACP session. Concrete providers may override this when
+     * their discovery CLI and ACP server use different opaque identifiers.
+     */
+    protected resolveSessionModelId(
+        model: string,
+        _models: SessionModelState | null | undefined,
+        _configOptions: readonly SessionConfigOption[],
+    ): string | undefined {
+        return model
     }
 
     async init(): Promise<void> {
@@ -1064,7 +1104,11 @@ export class AcpProvider implements AgentProvider {
                         }
                     }
 
-                    await this.applyProviderModel(sessionId!, config.model, sessionModels, sessionConfigOptions)
+                    const appliedModel = await this.applyProviderModel(sessionId!, config.model, sessionModels, sessionConfigOptions)
+                    if (appliedModel) {
+                        sessionModels = withCurrentSessionModel(sessionModels, appliedModel)
+                        sessionConfigOptions = withCurrentModelConfig(sessionConfigOptions, appliedModel)
+                    }
                     await this.applyProviderConfigOptions(sessionId!, config, sessionConfigOptions)
                 } else {
                     // Attempt to resume or load an existing session (conversationId from
@@ -1102,7 +1146,11 @@ export class AcpProvider implements AgentProvider {
                         // and the next turn can attach the full session-scoped MCP config.
                     }
 
-                    await this.applyProviderModel(sessionId!, config.model, sessionModels, sessionConfigOptions)
+                    const appliedModel = await this.applyProviderModel(sessionId!, config.model, sessionModels, sessionConfigOptions)
+                    if (appliedModel) {
+                        sessionModels = withCurrentSessionModel(sessionModels, appliedModel)
+                        sessionConfigOptions = withCurrentModelConfig(sessionConfigOptions, appliedModel)
+                    }
                     await this.applyProviderConfigOptions(sessionId!, config, sessionConfigOptions)
                 }
 

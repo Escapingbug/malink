@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
-import { AgentProvider, parseAgentModels } from '@/providers/agent'
+import { AgentProvider, parseAgentModels, resolveCursorAcpModelId } from '@/providers/agent'
 import { modelKeyboard, modelProviderDetailKeyboard, modelProviderKeyboard, providerKeyboard } from '@/channel/telegram/keyboard'
 import type { ModelEntry } from '@/providers/provider'
 
@@ -109,6 +109,39 @@ describe('AgentProvider model discovery integration', () => {
         expect(parseAgentModels('Available models\n\nauto - Auto\nTip: use --model <id>\n')).toEqual([
             { id: 'auto', name: 'Auto', provider: 'cursor' },
         ])
+    })
+
+    it('resolves Cursor CLI aliases to the single ACP model in the same family', () => {
+        const available = [
+            'auto-smart[optimize_for=balanced]',
+            'composer-2.5[fast=true]',
+            'gpt-5.4[context=272k,reasoning=medium,fast=false]',
+            'gpt-5.4-mini[reasoning=medium]',
+            'gpt-5.6-sol[context=272k,reasoning=medium,fast=false]',
+            'grok-4.6[effort=high,fast=true]',
+        ]
+
+        expect(resolveCursorAcpModelId('auto', available)).toBe('auto-smart[optimize_for=balanced]')
+        expect(resolveCursorAcpModelId('composer-2.5', available)).toBe('composer-2.5[fast=true]')
+        expect(resolveCursorAcpModelId('gpt-5.6-sol-high', available)).toBe(
+            'gpt-5.6-sol[context=272k,reasoning=medium,fast=false]',
+        )
+        expect(resolveCursorAcpModelId('cursor-grok-4.6-high-fast', available)).toBe(
+            'grok-4.6[effort=high,fast=true]',
+        )
+        expect(resolveCursorAcpModelId('gpt-5.4-mini', available)).toBe(
+            'gpt-5.4-mini[reasoning=medium]',
+        )
+    })
+
+    it('does not guess when Cursor advertises multiple ACP variants for one CLI family', () => {
+        expect(resolveCursorAcpModelId('composer-2.5-fast', [
+            'composer-2.5[fast=true]',
+            'composer-2.5[fast=false]',
+        ])).toBeUndefined()
+        expect(resolveCursorAcpModelId('removed-model', [
+            'composer-2.5[fast=true]',
+        ])).toBeUndefined()
     })
 
     it('does not show unsupported hard-coded model fallbacks when discovery returns no models', () => {

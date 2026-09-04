@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { AcpProvider } from '@/providers/acp'
+import { AgentProvider } from '@/providers/agent'
 import type { AgentEvent } from '@/providers/types'
 
 type SessionResponse = {
     sessionId?: string
     configOptions?: []
-    models?: undefined
+    models?: {
+        currentModelId: string
+        availableModels: Array<{ modelId: string; name: string }>
+    }
 }
 
 type SessionRequest = {
@@ -25,6 +29,7 @@ class RecoveryClientManager {
     resumeSessionCalls = 0
     loadSessionCalls = 0
     promptCalls = 0
+    setSessionModelCalls: Array<{ sessionId: string; modelId: string }> = []
     permissionHandlerCalls = 0
     extensionHandlerCalls = 0
     promptSessionIds: string[] = []
@@ -89,7 +94,10 @@ class RecoveryClientManager {
         return this.loadBehavior(this.loadSessionCalls)
     }
 
-    async setSessionModel(): Promise<Record<string, never>> { return {} }
+    async setSessionModel(params: { sessionId: string; modelId: string }): Promise<Record<string, never>> {
+        this.setSessionModelCalls.push(params)
+        return {}
+    }
     async setSessionConfigOption(): Promise<Record<string, never>> { return {} }
 
     async prompt(params: { sessionId: string }): Promise<{ stopReason: string }> {
@@ -145,6 +153,17 @@ function providerWith(manager: RecoveryClientManager, timeoutMs = 10): AcpProvid
     return providerWithManagers([manager], timeoutMs)
 }
 
+function cursorProviderWith(manager: RecoveryClientManager): AgentProvider {
+    const provider = new AgentProvider({
+        command: 'fake',
+        args: [],
+        modelsReader: async () => '',
+    })
+    ;(provider as any).clientManager = manager
+    ;(provider as any).initialized = true
+    return provider
+}
+
 async function collectEvents(provider: AcpProvider, sessionId: string | null = 'existing-session'): Promise<AgentEvent[]> {
     const handle = provider.startQuery('continue', {
         cwd: '/repo',
@@ -157,6 +176,92 @@ async function collectEvents(provider: AcpProvider, sessionId: string | null = '
 }
 
 describe('AcpProvider session-open recovery', () => {
+    it('maps a Cursor CLI model alias to the ACP session model before the first prompt', async () => {
+        const manager = new RecoveryClientManager()
+        manager.supportsResumeSession = false
+        manager.agentCapabilities = { agentCapabilities: { loadSession: true } }
+        manager.loadBehavior = async () => {
+            throw Object.assign(new Error('Invalid params'), { code: -32602 })
+        }
+        manager.newSessionBehavior = async () => ({
+            sessionId: 'cursor-session',
+            models: {
+                currentModelId: 'auto-smart[optimize_for=balanced]',
+                availableModels: [
+                    { modelId: 'auto-smart[optimize_for=balanced]', name: 'Auto Balance' },
+                    { modelId: 'composer-2.5[fast=true]', name: 'composer-2.5' },
+                ],
+            },
+        })
+        const provider = cursorProviderWith(manager)
+        const handle = provider.startQuery('hello', {
+            cwd: '/repo',
+            model: 'composer-2.5',
+            signal: new AbortController().signal,
+        })
+        const events: AgentEvent[] = []
+        for await (const event of handle.events) events.push(event)
+
+        expect(manager.loadSessionCalls).toBe(1)
+        expect(manager.setSessionModelCalls).toEqual([{
+            sessionId: 'cursor-session',
+            modelId: 'composer-2.5[fast=true]',
+        }])
+        expect(manager.promptSessionIds).toEqual(['cursor-session'])
+        expect(events).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                kind: 'session_init',
+                sessionId: 'cursor-session',
+                controls: expect.arrayContaining([
+                    expect.objectContaining({
+                        id: 'model',
+                        value: 'composer-2.5[fast=true]',
+                    }),
+                ]),
+            }),
+            expect.objectContaining({ kind: 'result', status: 'success' }),
+        ]))
+    })
+
+    it('keeps a fresh Cursor session usable when a stale model cannot be mapped safely', async () => {
+        const manager = new RecoveryClientManager()
+        manager.supportsResumeSession = false
+        manager.agentCapabilities = { agentCapabilities: { loadSession: false } }
+        manager.newSessionBehavior = async () => ({
+            sessionId: 'cursor-session',
+            models: {
+                currentModelId: 'auto-smart[optimize_for=balanced]',
+                availableModels: [
+                    { modelId: 'auto-smart[optimize_for=balanced]', name: 'Auto Balance' },
+                    { modelId: 'composer-2.5[fast=true]', name: 'composer-2.5' },
+                ],
+            },
+        })
+        const provider = cursorProviderWith(manager)
+        const handle = provider.startQuery('hello', {
+            cwd: '/repo',
+            model: 'removed-model',
+            signal: new AbortController().signal,
+        })
+        const events: AgentEvent[] = []
+        for await (const event of handle.events) events.push(event)
+
+        expect(manager.setSessionModelCalls).toEqual([])
+        expect(manager.promptSessionIds).toEqual(['cursor-session'])
+        expect(events).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                kind: 'session_init',
+                controls: expect.arrayContaining([
+                    expect.objectContaining({
+                        id: 'model',
+                        value: 'auto-smart[optimize_for=balanced]',
+                    }),
+                ]),
+            }),
+            expect.objectContaining({ kind: 'result', status: 'success' }),
+        ]))
+    })
+
     it('restarts a wedged ACP process and resumes the same provider session before prompting', async () => {
         const wedgedManager = new RecoveryClientManager()
         const recoveredManager = new RecoveryClientManager()

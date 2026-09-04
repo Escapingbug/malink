@@ -14,6 +14,7 @@ import type { AgentQueryConfig, AgentQueryInput, ModelEntry } from '@/providers/
 import type { AgentEvent } from '@/providers/types'
 import type { PushableAsyncIterable } from '@/utils/PushableAsyncIterable'
 import type { AcpExtensionHandler } from '@/providers/acp/AcpClientManager'
+import type { SessionConfigOption, SessionModelState } from '@agentclientprotocol/sdk'
 import { createCursorAcpExtensionHandler } from './cursorExtensions'
 import { createCursorPermissionHandler } from './cursorPermissions'
 import {
@@ -84,6 +85,35 @@ export class AgentProvider extends AcpProvider {
             ...config,
             permissionHandler: createCursorPermissionHandler(config.permissionHandler, config.cwd),
         })
+    }
+
+    resolveModel(model: string): string | undefined {
+        const normalized = model.trim()
+        return normalized || undefined
+    }
+
+    protected override resolveSessionModelId(
+        model: string,
+        models: SessionModelState | null | undefined,
+        configOptions: readonly SessionConfigOption[],
+    ): string | undefined {
+        const availableModelIds = new Set(
+            models?.availableModels.map(candidate => candidate.modelId) ?? [],
+        )
+        for (const option of configOptions) {
+            if (
+                option.type !== 'select'
+                || (option.category !== 'model' && option.id !== 'model')
+            ) continue
+            for (const candidate of option.options) {
+                if ('value' in candidate) {
+                    availableModelIds.add(candidate.value)
+                    continue
+                }
+                for (const grouped of candidate.options) availableModelIds.add(grouped.value)
+            }
+        }
+        return resolveCursorAcpModelId(model, [...availableModelIds])
     }
 
     getAvailableModels(): ModelEntry[] {
@@ -270,4 +300,41 @@ export function parseAgentModels(stdout: string): ModelEntry[] {
         models.push({ id, name, provider: AGENT_MODEL_PROVIDER })
     }
     return models
+}
+
+/**
+ * Cursor's `agent models` command exposes CLI aliases such as
+ * `composer-2.5` and `gpt-5.6-sol-high`, while `agent acp` advertises opaque
+ * ids such as `composer-2.5[fast=true]`. ACP rejects the CLI aliases with
+ * JSON-RPC -32602, so resolve an alias only when it identifies one advertised
+ * model family unambiguously.
+ */
+export function resolveCursorAcpModelId(
+    requestedModel: string,
+    availableModelIds: readonly string[],
+): string | undefined {
+    const requested = requestedModel.trim()
+    if (!requested) return undefined
+
+    const uniqueIds = [...new Set(availableModelIds.map(id => id.trim()).filter(Boolean))]
+    const exact = uniqueIds.find(id => id === requested)
+    if (exact) return exact
+
+    const comparableRequest = requested.startsWith('cursor-')
+        ? requested.slice('cursor-'.length)
+        : requested
+    const candidates = uniqueIds.flatMap(id => {
+        const bracket = id.indexOf('[')
+        const family = (bracket === -1 ? id : id.slice(0, bracket)).trim()
+        if (!family) return []
+        const matchesFamily = comparableRequest === family
+            || comparableRequest.startsWith(`${family}-`)
+            || (comparableRequest === 'auto' && family.startsWith('auto-'))
+        return matchesFamily ? [{ id, family }] : []
+    })
+    if (candidates.length === 0) return undefined
+
+    const longestFamilyLength = Math.max(...candidates.map(candidate => candidate.family.length))
+    const closest = candidates.filter(candidate => candidate.family.length === longestFamilyLength)
+    return closest.length === 1 ? closest[0].id : undefined
 }
