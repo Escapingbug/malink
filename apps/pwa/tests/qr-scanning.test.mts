@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import QRCode from "qrcode";
+import { INVITATION_QR_IMAGE_WIDTH } from "../app/invitationQrExport.ts";
 import { decodeQrPixels } from "../app/qrDecodeFallback.ts";
 
 test("decodes a dense Malink invitation with the browser fallback", () => {
@@ -20,6 +21,21 @@ test("keeps a representative self-contained fragment invitation scannable", () =
 
   assert.ok(link.length > 500);
   assert.ok(qr.modules.size <= 121);
+  assert.equal(decodeQrPixels(pixels, width, width), link);
+});
+
+test("renders saved self-contained invitations at a fallback-readable resolution", () => {
+  const link =
+    "https://rd.anciety.my.id/#invite=" +
+    Buffer.from("signed-self-contained-invitation".repeat(22)).toString("base64url");
+  const qr = QRCode.create(link, { errorCorrectionLevel: "L" });
+  const { pixels, width } = renderQrPixelsAtWidth(
+    link,
+    INVITATION_QR_IMAGE_WIDTH,
+  );
+
+  assert.ok(qr.modules.size > 100);
+  assert.ok(INVITATION_QR_IMAGE_WIDTH / (qr.modules.size + 8) >= 8);
   assert.equal(decodeQrPixels(pixels, width, width), link);
 });
 
@@ -55,6 +71,38 @@ function renderQrPixels(link: string) {
         moduleX < modules &&
         moduleY < modules &&
         qr.modules.get(moduleX, moduleY);
+      const value = dark ? 0 : 255;
+      const offset = (y * width + x) * 4;
+      pixels[offset] = value;
+      pixels[offset + 1] = value;
+      pixels[offset + 2] = value;
+      pixels[offset + 3] = 255;
+    }
+  }
+
+  return { pixels, width };
+}
+
+function renderQrPixelsAtWidth(link: string, requestedWidth: number) {
+  const qr = QRCode.create(link, { errorCorrectionLevel: "L" });
+  const quietZone = 4;
+  const modules = qr.modules.size;
+  const scale = requestedWidth / (modules + quietZone * 2);
+  const width = Math.floor((modules + quietZone * 2) * scale);
+  const scaledQuietZone = quietZone * scale;
+  const pixels = new Uint8ClampedArray(width * width * 4);
+
+  for (let y = 0; y < width; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const insideQr =
+        x >= scaledQuietZone &&
+        y >= scaledQuietZone &&
+        x < width - scaledQuietZone &&
+        y < width - scaledQuietZone;
+      const dark = insideQr && qr.modules.get(
+        Math.floor((x - scaledQuietZone) / scale),
+        Math.floor((y - scaledQuietZone) / scale),
+      );
       const value = dark ? 0 : 255;
       const offset = (y * width + x) * 4;
       pixels[offset] = value;

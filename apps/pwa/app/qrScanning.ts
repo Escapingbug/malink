@@ -1,6 +1,7 @@
 export const MAX_QR_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_LIVE_SCAN_DIMENSION = 1_200;
 const MAX_IMAGE_SCAN_DIMENSION = 2_048;
+const IMAGE_SCAN_CROP_SCALES = [0.72, 0.5] as const;
 
 export type NativeQrDetector = {
   detect(source: ImageBitmapSource): Promise<Array<{ rawValue: string }>>;
@@ -44,15 +45,8 @@ export async function detectQrFromCanvas(
   canvas: HTMLCanvasElement,
   nativeDetector: NativeQrDetector | null,
 ): Promise<string | null> {
-  if (nativeDetector) {
-    try {
-      const value = (await nativeDetector.detect(canvas))[0]?.rawValue.trim();
-      if (value) return value;
-    } catch {
-      // Native BarcodeDetector support varies by browser and platform. The
-      // local pixel decoder below is the compatibility path.
-    }
-  }
+  const nativeValue = await detectNativeQr(canvas, nativeDetector);
+  if (nativeValue) return nativeValue;
   const context = getCanvasContext(canvas);
   const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
   const { decodeQrPixels } = await import("./qrDecodeFallback");
@@ -71,6 +65,12 @@ export async function decodeQrImageFile(file: File): Promise<string | null> {
   const nativeDetector = createNativeQrDetector();
   const bitmap = await loadImage(file);
   try {
+    const nativeValue = await detectNativeQr(
+      bitmap.source as ImageBitmapSource,
+      nativeDetector,
+    );
+    if (nativeValue) return nativeValue;
+
     drawSource(
       bitmap.source,
       bitmap.width,
@@ -78,9 +78,38 @@ export async function decodeQrImageFile(file: File): Promise<string | null> {
       canvas,
       MAX_IMAGE_SCAN_DIMENSION,
     );
-    return await detectQrFromCanvas(canvas, nativeDetector);
+    const fullImageValue = await detectQrFromCanvas(canvas, null);
+    if (fullImageValue) return fullImageValue;
+
+    for (const cropScale of IMAGE_SCAN_CROP_SCALES) {
+      drawCenteredSource(
+        bitmap.source,
+        bitmap.width,
+        bitmap.height,
+        canvas,
+        MAX_IMAGE_SCAN_DIMENSION,
+        cropScale,
+      );
+      const croppedValue = await detectQrFromCanvas(canvas, null);
+      if (croppedValue) return croppedValue;
+    }
+    return null;
   } finally {
     bitmap.dispose();
+  }
+}
+
+async function detectNativeQr(
+  source: ImageBitmapSource,
+  nativeDetector: NativeQrDetector | null,
+): Promise<string | null> {
+  if (!nativeDetector) return null;
+  try {
+    return (await nativeDetector.detect(source))[0]?.rawValue.trim() || null;
+  } catch {
+    // Native BarcodeDetector support varies by browser and platform. The
+    // local pixel decoder below is the compatibility path.
+    return null;
   }
 }
 
@@ -142,6 +171,36 @@ function drawSource(
   const context = getCanvasContext(canvas);
   context.clearRect(0, 0, canvas.width, canvas.height);
   context.drawImage(source, 0, 0, canvas.width, canvas.height);
+}
+
+function drawCenteredSource(
+  source: CanvasImageSource,
+  sourceWidth: number,
+  sourceHeight: number,
+  canvas: HTMLCanvasElement,
+  maxDimension: number,
+  cropScale: number,
+): void {
+  const cropWidth = Math.max(1, Math.round(sourceWidth * cropScale));
+  const cropHeight = Math.max(1, Math.round(sourceHeight * cropScale));
+  const sourceX = Math.round((sourceWidth - cropWidth) / 2);
+  const sourceY = Math.round((sourceHeight - cropHeight) / 2);
+  const scale = Math.min(1, maxDimension / Math.max(cropWidth, cropHeight));
+  canvas.width = Math.max(1, Math.round(cropWidth * scale));
+  canvas.height = Math.max(1, Math.round(cropHeight * scale));
+  const context = getCanvasContext(canvas);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(
+    source,
+    sourceX,
+    sourceY,
+    cropWidth,
+    cropHeight,
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+  );
 }
 
 function getCanvasContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
