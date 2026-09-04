@@ -20,6 +20,8 @@ import type {
     ProviderSessionHistory,
     SessionEntry,
 } from '@/providers/provider'
+import { providerControls } from '@/providers/controls'
+import { acpSessionControls } from './sessionControls'
 import type { AgentEvent } from '@/providers/types'
 import type { RichMediaPart, RichUserInput } from '@/runtime/semantic'
 import { normalizeUserInput } from '@/runtime/semantic'
@@ -576,6 +578,47 @@ export class AcpProvider implements AgentProvider {
         config: AgentQueryConfig,
         configOptions: readonly SessionConfigOption[] = [],
     ): Promise<void> {
+        const configuredControls = config.providerSettings?.controls
+        const controlValues = configuredControls
+            && typeof configuredControls === 'object'
+            && !Array.isArray(configuredControls)
+            ? configuredControls as Record<string, unknown>
+            : {}
+        for (const option of configOptions) {
+            if (
+                option.category === 'mode'
+                || option.category === 'model'
+                || option.category === 'thought_level'
+                || ['mode', 'model', 'reasoning_effort', 'reasoningEffort'].includes(option.id)
+            ) continue
+            const configured = controlValues[option.id]
+            if (option.type === 'boolean') {
+                if (typeof configured !== 'boolean') continue
+                await this.clientManager.setSessionConfigOption({
+                    sessionId,
+                    configId: option.id,
+                    value: configured,
+                })
+                continue
+            }
+            if (typeof configured !== 'string') continue
+            const supportsValue = option.options.some(candidate =>
+                'value' in candidate
+                    ? candidate.value === configured
+                    : candidate.options.some(grouped => grouped.value === configured)
+            )
+            if (!supportsValue) {
+                throw new Error(
+                    `Provider ${this.name} does not offer ${configured} for control ${option.id}`,
+                )
+            }
+            await this.clientManager.setSessionConfigOption({
+                sessionId,
+                configId: option.id,
+                value: configured,
+            })
+        }
+
         const permissionMode = typeof config.providerSettings?.permissionMode === 'string'
             ? config.providerSettings.permissionMode.trim()
             : ''
@@ -605,28 +648,52 @@ export class AcpProvider implements AgentProvider {
             }
         }
 
+        const providerMode = controlValues.mode
+        if (typeof providerMode === 'string') {
+            const option = configOptions.find(candidate =>
+                candidate.id === 'mode' || candidate.category === 'mode'
+            )
+            if (option?.type === 'select') {
+                const supportsValue = option.options.some(candidate =>
+                    'value' in candidate
+                        ? candidate.value === providerMode
+                        : candidate.options.some(grouped => grouped.value === providerMode)
+                )
+                if (!supportsValue) {
+                    throw new Error(
+                        `Provider ${this.name} does not offer ${providerMode} for control mode`,
+                    )
+                }
+                await this.clientManager.setSessionConfigOption({
+                    sessionId,
+                    configId: option.id,
+                    value: providerMode,
+                })
+            }
+        }
+
         const reasoningEffort = typeof config.providerSettings?.reasoningEffort === 'string'
             ? config.providerSettings.reasoningEffort.trim()
             : ''
-        if (!reasoningEffort) return
-
-        const option = configOptions.find(candidate =>
-            candidate.category === 'thought_level'
-            || candidate.id === 'reasoning_effort'
-            || candidate.id === 'reasoningEffort'
-        )
-        if (!option || option.type !== 'select') {
-            throw new Error(
-                `Provider ${this.name} does not advertise structured reasoning configuration`,
+        if (reasoningEffort) {
+            const option = configOptions.find(candidate =>
+                candidate.category === 'thought_level'
+                || candidate.id === 'reasoning_effort'
+                || candidate.id === 'reasoningEffort'
             )
-        }
+            if (!option || option.type !== 'select') {
+                throw new Error(
+                    `Provider ${this.name} does not advertise structured reasoning configuration`,
+                )
+            }
 
-        await this.clientManager.setSessionConfigOption({
-            sessionId,
-            configId: option.id,
-            value: reasoningEffort,
-        })
-        console.error(`[acp:${this.name}] Set reasoning effort to ${reasoningEffort}`)
+            await this.clientManager.setSessionConfigOption({
+                sessionId,
+                configId: option.id,
+                value: reasoningEffort,
+            })
+            console.error(`[acp:${this.name}] Set reasoning effort to ${reasoningEffort}`)
+        }
     }
 
     private async applyProviderModel(
@@ -1050,6 +1117,7 @@ export class AcpProvider implements AgentProvider {
                         kind: 'session_init',
                         sessionId,
                         cwd: config.cwd,
+                        controls: acpSessionControls(sessionModels, sessionConfigOptions),
                         // Flag: true when a stale conversationId could not be recovered
                         // and a brand-new session was created instead. The bridge can
                         // use this to notify the user that previous context was lost.
@@ -1231,6 +1299,14 @@ export class AcpProvider implements AgentProvider {
     getAvailableModels(): ModelEntry[] {
         // Models are configured at the agent side, not exposed via ACP
         return []
+    }
+
+    getProviderControls() {
+        return providerControls(
+            this.getAvailableModels(),
+            { status: 'ready' },
+            this.getAvailablePermissionModes(),
+        )
     }
 
     getAvailablePermissionModes(): string[] {

@@ -10,6 +10,11 @@ import { createRequire } from 'node:module'
 import { AcpProvider } from '@/providers/acp'
 import type { ModelEntry, ProviderSessionHistory } from '@/providers/provider'
 import {
+    providerControlError,
+    providerControls,
+    type ProviderCatalogState,
+} from '@/providers/controls'
+import {
     CodexHistoryUnavailableError,
     readCodexSessionHistory,
     type CodexSessionHistoryReader,
@@ -65,6 +70,8 @@ interface CachedCodexModelCatalog {
     models: ModelEntry[]
     nextRefreshAt: number
     refreshPromise?: Promise<ModelEntry[]>
+    state: ProviderCatalogState
+    retryTimer?: ReturnType<typeof setTimeout>
     listeners: Set<() => void>
 }
 
@@ -139,6 +146,15 @@ export class CodexProvider extends AcpProvider {
         return cached.models.map(model => ({ ...model }))
     }
 
+    override getProviderControls() {
+        const cached = this.cachedModelCatalog()
+        return providerControls(
+            this.getAvailableModels(),
+            cached.state,
+            this.getAvailablePermissionModes(),
+        )
+    }
+
     onAvailableModelsRefreshed(listener: () => void): () => void {
         const cached = this.cachedModelCatalog()
         cached.listeners.add(listener)
@@ -149,7 +165,15 @@ export class CodexProvider extends AcpProvider {
         const cached = this.cachedModelCatalog()
         if (cached.refreshPromise) return cached.refreshPromise
 
-        cached.nextRefreshAt = Date.now() + CODEX_MODELS_RETRY_MS
+        const startedAt = Date.now()
+        cached.nextRefreshAt = startedAt + CODEX_MODELS_RETRY_MS
+        if (cached.models.length === 0) {
+            cached.state = {
+                status: 'loading',
+                checkedAt: startedAt,
+                deadlineAt: startedAt + CODEX_MODELS_TIMEOUT_MS,
+            }
+        }
         const refresh = this.modelsReader({
             command: this.modelsCommand,
             args: [...this.modelsArgs],
@@ -159,11 +183,24 @@ export class CodexProvider extends AcpProvider {
             const models = parseCodexModels(stdout)
             cached.models = models
             cached.nextRefreshAt = Date.now() + CODEX_MODELS_REFRESH_MS
+            cached.state = { status: 'ready', checkedAt: Date.now() }
+            if (cached.retryTimer) clearTimeout(cached.retryTimer)
+            delete cached.retryTimer
             notifyModelCatalogListeners(cached.listeners, 'codex')
             return models.map(model => ({ ...model }))
         }).catch(error => {
             const message = error instanceof Error ? error.message : String(error)
             console.error(`[codex] Failed to list models: ${message}`)
+            const retryAt = Date.now() + CODEX_MODELS_RETRY_MS
+            cached.nextRefreshAt = retryAt
+            cached.state = {
+                status: cached.models.length > 0 ? 'stale' : 'error',
+                error: providerControlError(error),
+                checkedAt: Date.now(),
+                retryAt,
+            }
+            notifyModelCatalogListeners(cached.listeners, 'codex')
+            scheduleCodexModelCatalogRetry(cached, () => this.refreshAvailableModels())
             return cached.models.map(model => ({ ...model }))
         }).finally(() => {
             delete cached.refreshPromise
@@ -175,11 +212,29 @@ export class CodexProvider extends AcpProvider {
     private cachedModelCatalog(): CachedCodexModelCatalog {
         let cached = modelCatalogCache.get(this.modelCatalogKey)
         if (!cached) {
-            cached = { models: [], nextRefreshAt: 0, listeners: new Set() }
+            cached = {
+                models: [],
+                nextRefreshAt: 0,
+                state: { status: 'loading' },
+                listeners: new Set(),
+            }
             modelCatalogCache.set(this.modelCatalogKey, cached)
         }
         return cached
     }
+}
+
+function scheduleCodexModelCatalogRetry(
+    cached: CachedCodexModelCatalog,
+    refresh: () => Promise<ModelEntry[]>,
+): void {
+    if (cached.retryTimer) return
+    const delay = Math.max(0, cached.nextRefreshAt - Date.now())
+    cached.retryTimer = setTimeout(() => {
+        delete cached.retryTimer
+        void refresh()
+    }, delay)
+    cached.retryTimer.unref()
 }
 
 function notifyModelCatalogListeners(listeners: ReadonlySet<() => void>, provider: string): void {

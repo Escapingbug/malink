@@ -3,6 +3,8 @@
 import { FormEvent, useRef, useState } from "react";
 import type {
   JsonValue,
+  ProviderControl,
+  ProviderControlValues,
   SessionExtensionBinding,
   SessionExtensionDescriptor,
 } from "@malink/protocol";
@@ -13,6 +15,11 @@ import {
   type GatewayWorkspaceState,
 } from "./gatewayState";
 import type { GatewayProjectOwner } from "./projectCatalog";
+import { ProviderControls } from "./ProviderControls";
+import {
+  legacyProviderControls,
+  submittableProviderControlValues,
+} from "./providerControlCompatibility";
 
 export type NewSessionInput = {
   projectId?: string;
@@ -25,6 +32,7 @@ export type NewSessionInput = {
   initialPrompt?: string;
   model?: string;
   reasoningEffort?: string;
+  controls?: ProviderControlValues;
   extensions?: SessionExtensionBinding[];
   setAsProjectDefault?: boolean;
 };
@@ -41,6 +49,7 @@ type Props = {
     id: string;
     name: string;
     models: GatewayModelCapability[];
+    controls?: ProviderControl[];
   }>;
   extensions: SessionExtensionDescriptor[];
   defaultExtensions?: SessionExtensionBinding[];
@@ -91,13 +100,24 @@ function NewSessionDialogContent({
   const extensions = selectedWorkspace.capabilities?.sessionExtensions ?? fallbackExtensions;
   const [provider, setProvider] = useState(selectedWorkspace.provider);
   const providerModels = providers.find(entry => entry.id === provider)?.models ?? models;
-  const [model, setModel] = useState(selectedWorkspace.model ?? "");
-  const [reasoningEffort, setReasoningEffort] = useState(
-    selectedWorkspace.reasoningEffort ??
-      providerModels.find((entry) => entry.id === selectedWorkspace.model)
-        ?.defaultReasoningLevel ??
-      "",
-  );
+  const providerControls = providers.find(entry => entry.id === provider)?.controls
+    ?? (provider === selectedWorkspace.provider
+      ? selectedWorkspace.capabilities?.controls
+      : undefined)
+    ?? legacyProviderControls(
+      providerModels,
+      selectedWorkspace.capabilities?.permissionModes ?? [],
+    );
+  const [controlValues, setControlValues] = useState<ProviderControlValues>(() => ({
+    ...(selectedWorkspace.controlValues ?? {}),
+    ...(selectedWorkspace.model ? { model: selectedWorkspace.model } : {}),
+    ...(selectedWorkspace.reasoningEffort
+      ? { reasoningEffort: selectedWorkspace.reasoningEffort }
+      : {}),
+    ...(selectedWorkspace.permissionMode
+      ? { permissionMode: selectedWorkspace.permissionMode }
+      : {}),
+  }));
   const initialDefaultExtensions = selectedWorkspace.defaultExtensions ?? defaultExtensions;
   const [enabledExtensions, setEnabledExtensions] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(initialDefaultExtensions.map(binding => [binding.id, true])),
@@ -127,7 +147,7 @@ function NewSessionDialogContent({
     ),
   );
   const dialogRef = useRef<HTMLElement>(null);
-  const modelSelectRef = useRef<HTMLSelectElement>(null);
+  const providerSelectRef = useRef<HTMLSelectElement>(null);
 
   const requestClose = () => {
     if (!busy) onClose();
@@ -135,13 +155,10 @@ function NewSessionDialogContent({
   useDialogFocus({
     open,
     containerRef: dialogRef,
-    initialFocusRef: modelSelectRef,
+    initialFocusRef: providerSelectRef,
     escapeDisabled: busy,
     onEscape: requestClose,
   });
-
-  const selectedModel = providerModels.find((entry) => entry.id === model);
-  const reasoningLevels = selectedModel?.supportedReasoningLevels ?? [];
 
   const extensionConfigValid = extensions.every((extension) => {
     if (!enabledExtensions[extension.id]) return true;
@@ -153,31 +170,17 @@ function NewSessionDialogContent({
   });
 
   if (!open) return null;
-  const chooseModel = (next: string) => {
-    setModel(next);
-    const capability = providerModels.find((entry) => entry.id === next);
-    const supported = capability?.supportedReasoningLevels ?? [];
-    if (!supported.some((level) => level.effort === reasoningEffort)) {
-      setReasoningEffort(capability?.defaultReasoningLevel ?? supported[0]?.effort ?? "");
-    }
-  };
   const chooseWorkspace = (next: GatewayWorkspaceState) => {
     const nextCapabilities = next.capabilities;
-    const nextProviders = nextCapabilities?.providers ?? fallbackProviders;
-    const nextModels = nextCapabilities?.models ?? fallbackModels;
     const nextExtensions = nextCapabilities?.sessionExtensions ?? fallbackExtensions;
-    const nextProviderModels = nextProviders.find(
-      entry => entry.id === next.provider,
-    )?.models ?? nextModels;
     setProjectId(next.projectId);
     setProvider(next.provider);
-    setModel(next.model ?? "");
-    setReasoningEffort(
-      next.reasoningEffort ??
-        nextProviderModels.find(entry => entry.id === next.model)
-          ?.defaultReasoningLevel ??
-        "",
-    );
+    setControlValues({
+      ...(next.controlValues ?? {}),
+      ...(next.model ? { model: next.model } : {}),
+      ...(next.reasoningEffort ? { reasoningEffort: next.reasoningEffort } : {}),
+      ...(next.permissionMode ? { permissionMode: next.permissionMode } : {}),
+    });
     setSetAsProjectDefault(false);
     setEnabledExtensions(Object.fromEntries(
       (next.defaultExtensions ?? []).map(binding => [binding.id, true]),
@@ -205,14 +208,22 @@ function NewSessionDialogContent({
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (busy) return;
+    const submittedControls = submittableProviderControlValues(
+      providerControls,
+      "session-create",
+      controlValues,
+    );
     onCreate({
       projectId: selectedWorkspace.projectId,
       scope,
       cwd: selectedWorkspace.cwd,
       projectName: selectedWorkspace.projectName,
       provider,
-      ...(model ? { model } : {}),
-      ...(reasoningEffort ? { reasoningEffort } : {}),
+      controls: submittedControls,
+      ...(typeof submittedControls.model === "string" ? { model: submittedControls.model } : {}),
+      ...(typeof submittedControls.reasoningEffort === "string"
+        ? { reasoningEffort: submittedControls.reasoningEffort }
+        : {}),
       extensions: extensions
         .filter((extension) => enabledExtensions[extension.id])
         .map((extension) => ({
@@ -348,12 +359,25 @@ function NewSessionDialogContent({
             <label>
               <span>Provider</span>
               <select
+                ref={providerSelectRef}
                 value={provider}
                 onChange={(event) => {
                   const nextProvider = event.target.value;
                   setProvider(nextProvider);
-                  setModel("");
-                  setReasoningEffort("");
+                  setControlValues(
+                    nextProvider === selectedWorkspace.provider
+                      ? {
+                          ...(selectedWorkspace.controlValues ?? {}),
+                          ...(selectedWorkspace.model ? { model: selectedWorkspace.model } : {}),
+                          ...(selectedWorkspace.reasoningEffort
+                            ? { reasoningEffort: selectedWorkspace.reasoningEffort }
+                            : {}),
+                          ...(selectedWorkspace.permissionMode
+                            ? { permissionMode: selectedWorkspace.permissionMode }
+                            : {}),
+                        }
+                      : {},
+                  );
                   if (nextProvider !== selectedWorkspace.provider) setSetAsProjectDefault(false);
                 }}
                 disabled={busy || providers.length === 0}
@@ -366,55 +390,15 @@ function NewSessionDialogContent({
                 ))}
               </select>
             </label>
-            <label>
-              <span>Model</span>
-              <select
-                ref={modelSelectRef}
-                value={model}
-                onChange={(event) => chooseModel(event.target.value)}
-                disabled={busy || providerModels.length === 0}
-                aria-describedby={providerModels.length === 0
-                  ? "new-session-model-catalog-note"
-                  : undefined}
-              >
-                {!model && <option value="">Computer default</option>}
-                {providerModels.map((entry) => (
-                  <option key={entry.id} value={entry.id}>
-                    {entry.name}
-                  </option>
-                ))}
-              </select>
-              {providerModels.length === 0 && (
-                <small
-                  id="new-session-model-catalog-note"
-                  className="new-session-model-catalog-note"
-                >
-                  The model list is still syncing or is not exposed by this provider.
-                  This session will use the computer default.
-                </small>
-              )}
-            </label>
-            <label>
-              <span>Reasoning effort</span>
-              <select
-                value={reasoningEffort}
-                onChange={(event) => setReasoningEffort(event.target.value)}
-                disabled={busy || reasoningLevels.length === 0}
-              >
-                {reasoningLevels.length === 0 && (
-                  <option value="">Model default</option>
-                )}
-                {reasoningLevels.map((level) => (
-                  <option key={level.effort} value={level.effort}>
-                    {level.effort}
-                    {level.effort === selectedModel?.defaultReasoningLevel
-                      ? " (default)"
-                      : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
           </div>
+
+          <ProviderControls
+            controls={providerControls}
+            surface="session-create"
+            values={controlValues}
+            disabled={busy}
+            onChange={setControlValues}
+          />
 
           {extensions.length > 0 && (
             <fieldset className="session-extensions">
@@ -508,7 +492,7 @@ function NewSessionDialogContent({
                 disabled={busy}
                 onChange={(event) => setSetAsProjectDefault(event.target.checked)}
               />
-              <span>Use this selection as the project default for model, reasoning, and extensions</span>
+              <span>Use these provider controls and extensions as the project defaults</span>
             </label>
           )}
 

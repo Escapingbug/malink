@@ -143,13 +143,35 @@ Session creation, prompt, cancel, settings, provider-history inspection,
 artifact materialization, and archive use this same path. A create command
 produces an immutable thread root.
 The provider is selected only by `session.create` and is immutable for the
-life of that Malink session. `session.update` may change model and reasoning,
-which the Gateway applies through the provider's structured ACP model/config
-surface rather than manufacturing provider-specific slash commands.
+life of that Malink session. `session.create`, `session.update`, and
+`project.update` may carry a bounded `controls` map whose values are strings or
+booleans. The Gateway accepts only controls advertised by that Provider for the
+corresponding `session-create`, `session-active`, or `project-default` surface.
+When `session.create.controls` is present, it is the complete selection for
+currently editable `session-create` controls; omitted entries use the Provider
+default instead of silently restoring a project override. Controls whose
+discovery is loading or failed continue to inherit the last project value.
+Standard model, reasoning, and permission values retain their legacy fields for
+mixed-version peers; the generic map is authoritative for newly advertised
+controls. The Gateway applies active changes through the provider's structured
+ACP model/config surface rather than manufacturing provider-specific slash
+commands.
 
-`project.update` atomically stores the display name, default model, reasoning,
+`workspace.snapshot.capabilities` may advertise declarative Provider controls
+using the shared `select`, `segmented`, `toggle`, and `text` renderers. A
+Provider MUST omit unsupported controls. Discovery uses separate `loading`,
+`ready`, `stale`, and `error` states: loading includes a deadline, while stale
+and error descriptors include a bounded diagnostic code/message and may include
+sanitized detail and retry timing. Session projections may add or replace
+session-only descriptors after ACP initialization. Clients render only the
+descriptors for the current surface and MUST NOT infer an unsupported model or
+reasoning control from an empty catalog exposed by a current Gateway.
+
+`project.update` atomically stores the display name, Provider control values,
 and extension bindings used by later sessions for the project's default
-provider. Its one signed terminal `project.snapshot` is also the new ordinary
+provider. When its `controls` field is present, it replaces the values of all
+currently editable `project-default` controls while preserving controls whose
+discovery is loading or failed. Its one signed terminal `project.snapshot` is also the new ordinary
 timeline snapshot; the Gateway updates the current-snapshot Room State pointer
 to that same event instead of publishing a duplicate timeline message.
 Provider-native slash commands remain user messages. When ACP publishes

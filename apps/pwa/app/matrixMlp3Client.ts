@@ -731,6 +731,7 @@ function toMlp3Command(
           ...(payload.model ? { model: payload.model } : {}),
           ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
           ...(payload.permissionMode ? { permissionMode: payload.permissionMode } : {}),
+          ...(payload.controls ? { controls: payload.controls } : {}),
           ...(payload.extensions ? { extensions: payload.extensions } : {}),
           ...(payload.initialPrompt
             ? { initialPrompt: { text: payload.initialPrompt } }
@@ -793,6 +794,7 @@ function toMlp3Command(
             ...(payload.model ? { model: payload.model } : {}),
             ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
             ...(payload.permissionMode ? { permissionMode: payload.permissionMode } : {}),
+            ...(payload.controls ? { controls: payload.controls } : {}),
           },
         },
       };
@@ -809,6 +811,7 @@ function toMlp3Command(
             ...(payload.reasoningEffort === undefined
               ? {}
               : { reasoningEffort: payload.reasoningEffort }),
+            ...(payload.controls === undefined ? {} : { controls: payload.controls }),
             ...(payload.defaultExtensions === undefined
               ? {}
               : { defaultExtensions: payload.defaultExtensions }),

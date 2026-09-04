@@ -24,6 +24,177 @@ export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([jsonPrimitive, z.array(jsonValueSchema), z.record(z.string(), jsonValueSchema)]),
 )
 
+export const providerControlIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u)
+
+export const providerControlValueSchema = z.union([
+  z.string().max(4_096),
+  z.boolean(),
+])
+
+export type ProviderControlValue = z.infer<typeof providerControlValueSchema>
+
+export const providerControlValuesSchema = z
+  .record(providerControlIdSchema, providerControlValueSchema)
+  .refine(values => Object.keys(values).length <= 64, 'Provider control values contain too many entries')
+  .refine(
+    values => JSON.stringify(values).length <= 32 * 1024,
+    'Provider control values are too large',
+  )
+
+export type ProviderControlValues = z.infer<typeof providerControlValuesSchema>
+
+export const providerControlSurfaceSchema = z.enum([
+  'project-default',
+  'session-create',
+  'session-active',
+])
+
+export type ProviderControlSurface = z.infer<typeof providerControlSurfaceSchema>
+
+const providerControlConditionSchema = z
+  .object({
+    controlId: providerControlIdSchema,
+    values: z.array(providerControlValueSchema).min(1).max(256),
+  })
+  .strict()
+
+const providerControlOptionSchema = z
+  .object({
+    value: providerControlValueSchema,
+    label: z.string().min(1).max(256),
+    description: z.string().max(2_048).optional(),
+    when: providerControlConditionSchema.optional(),
+    defaults: providerControlValuesSchema.optional(),
+  })
+  .strict()
+
+export const providerControlErrorSchema = z
+  .object({
+    code: z.string().min(1).max(128).regex(/^[a-z][a-z0-9._-]*$/u),
+    message: z.string().min(1).max(2_048),
+    retryable: z.boolean(),
+    detail: z.string().min(1).max(4_096).optional(),
+  })
+  .strict()
+
+export type ProviderControlError = z.infer<typeof providerControlErrorSchema>
+
+export const providerControlSchema = z
+  .object({
+    id: providerControlIdSchema,
+    label: z.string().min(1).max(256),
+    description: z.string().max(2_048).optional(),
+    renderer: z.enum(['select', 'segmented', 'toggle', 'text']),
+    surfaces: z.array(providerControlSurfaceSchema).min(1).max(3),
+    updateEffect: z.enum(['immediate', 'next-turn', 'restart-session']).optional(),
+    status: z.enum(['loading', 'ready', 'stale', 'error']),
+    options: z.array(providerControlOptionSchema).max(256).optional(),
+    value: providerControlValueSchema.optional(),
+    defaultValue: providerControlValueSchema.optional(),
+    error: providerControlErrorSchema.optional(),
+    checkedAt: z.number().int().nonnegative().optional(),
+    deadlineAt: z.number().int().nonnegative().optional(),
+    retryAt: z.number().int().nonnegative().optional(),
+  })
+  .strict()
+  .superRefine((control, context) => {
+    if (new Set(control.surfaces).size !== control.surfaces.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['surfaces'],
+        message: 'Provider control surfaces must be unique',
+      })
+    }
+    if (
+      (control.renderer === 'select' || control.renderer === 'segmented')
+      && control.status === 'ready'
+      && (!control.options || control.options.length === 0)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['options'],
+        message: 'Ready selectable provider controls require options',
+      })
+    }
+    if (control.status === 'loading' && control.deadlineAt === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['deadlineAt'],
+        message: 'Loading provider controls require a deadline',
+      })
+    }
+    const optionValues = new Set<string>()
+    control.options?.forEach((option, index) => {
+      const key = `${typeof option.value}:${String(option.value)}`
+      if (optionValues.has(key)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['options', index, 'value'],
+          message: 'Provider control option values must be unique',
+        })
+      }
+      optionValues.add(key)
+    })
+    if (control.renderer === 'select' || control.renderer === 'segmented') {
+      if (
+        control.defaultValue !== undefined
+        && !control.options?.some(option => option.value === control.defaultValue)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['defaultValue'],
+          message: 'Provider control defaults must match an advertised option',
+        })
+      }
+    }
+    if (
+      control.renderer === 'toggle'
+      && (
+        (control.value !== undefined && typeof control.value !== 'boolean')
+        || (control.defaultValue !== undefined && typeof control.defaultValue !== 'boolean')
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['value'],
+        message: 'Toggle provider controls require boolean values',
+      })
+    }
+    if (
+      control.renderer === 'text'
+      && (
+        (control.value !== undefined && typeof control.value !== 'string')
+        || (control.defaultValue !== undefined && typeof control.defaultValue !== 'string')
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['value'],
+        message: 'Text provider controls require string values',
+      })
+    }
+    if ((control.status === 'error' || control.status === 'stale') && !control.error) {
+      context.addIssue({
+        code: 'custom',
+        path: ['error'],
+        message: 'Failed or stale provider controls require an error',
+      })
+    }
+    if (control.status !== 'error' && control.status !== 'stale' && control.error) {
+      context.addIssue({
+        code: 'custom',
+        path: ['error'],
+        message: 'Only failed or stale provider controls may include an error',
+      })
+    }
+  })
+
+export type ProviderControl = z.infer<typeof providerControlSchema>
+
 const sessionExtensionSettingSchema = z.discriminatedUnion('type', [
   z
     .object({
@@ -268,6 +439,7 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
       permissionMode: z.enum(['default', 'accept_edits', 'plan', 'bypass_permissions']).optional(),
       cwd: z.string().min(1).max(4096).optional(),
       projectName: z.string().min(1).max(256).optional(),
+      controls: providerControlValuesSchema.optional(),
     })
     .strict()
     .refine(
@@ -276,7 +448,8 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
         settings.reasoningEffort !== undefined ||
         settings.permissionMode !== undefined ||
         settings.cwd !== undefined ||
-        settings.projectName !== undefined,
+        settings.projectName !== undefined ||
+        settings.controls !== undefined,
       'At least one session setting is required',
     ),
   z
@@ -292,6 +465,7 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
       reasoningEffort: z.string().min(1).max(64).optional(),
       permissionMode: z.enum(['default', 'accept_edits', 'plan', 'bypass_permissions']).optional(),
       extensions: z.array(sessionExtensionBindingSchema).max(8).optional(),
+      controls: providerControlValuesSchema.optional(),
       initialPrompt: z.string().min(1).max(64 * 1024).optional(),
     })
     .strict()
@@ -324,13 +498,15 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
       model: z.string().min(1).max(256).nullable().optional(),
       reasoningEffort: z.string().min(1).max(64).nullable().optional(),
       defaultExtensions: z.array(sessionExtensionBindingSchema).max(8).optional(),
+      controls: providerControlValuesSchema.optional(),
     })
     .strict()
     .refine(
       settings => settings.name !== undefined
         || settings.model !== undefined
         || settings.reasoningEffort !== undefined
-        || settings.defaultExtensions !== undefined,
+        || settings.defaultExtensions !== undefined
+        || settings.controls !== undefined,
       'At least one project setting is required',
     ),
   z

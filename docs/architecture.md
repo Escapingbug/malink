@@ -176,6 +176,35 @@ Project display names need not be unique, but project IDs and room bindings are.
 A session stores its provider binding, model/reasoning configuration, lifecycle,
 thread root, and immutable project ID. It cannot move between rooms.
 
+### Provider controls
+
+Provider configuration is exposed through declarative control descriptors rather
+than a fixed client-owned list of model, reasoning, or permission widgets. Each
+descriptor has a stable ID, one of the shared renderers (`select`, `segmented`,
+`toggle`, or `text`), and an explicit surface set:
+
+- `project-default` controls the defaults inherited by later sessions.
+- `session-create` is submitted while a new provider session is created.
+- `session-active` can be changed on an existing session; its `updateEffect`
+  states whether the change is immediate, applies to the next turn, or requires
+  a replacement session.
+
+The Provider owns which descriptors it advertises. An unsupported control is
+absent, so clients omit it instead of rendering a disabled “unsupported” row.
+Discovery has separate `loading`, `ready`, `stale`, and `error` states. Loading
+descriptors carry a deadline; failures carry a bounded, sanitized error code and
+diagnostic detail plus retry metadata. This lets a client distinguish an Agent
+executable that cannot be launched from a slow model catalog without depending
+on Gateway logs.
+
+Project and session records persist a generic map of control values. The
+Gateway accepts only values advertised by the selected Provider for the command
+surface and validates conditional options before journaling the command. The
+standard `model`, `reasoningEffort`, and `permissionMode` IDs retain their legacy
+wire fields for mixed-version compatibility. ACP session configuration updates
+are converted to the same descriptor format and remain owned by the ACP
+Provider adapter; clients do not contain provider-specific rendering logic.
+
 The configured room is a bootstrap route, not a fixed project catalog. An
 authorized PWA or Android client creates another project by sending
 `project.create` through any existing route owned by the selected Gateway node.

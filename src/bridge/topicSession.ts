@@ -17,6 +17,7 @@ import type {
     PrivilegedExecutionResult,
 } from '@/privilege'
 import type { ProviderCommand } from '@/providers/types'
+import type { ProviderControl } from '@malink/protocol'
 
 // --- Session metadata factory ---
 
@@ -61,6 +62,10 @@ export interface TopicSessionConfig {
     /** Optional group logger */
     logger?: { group(chatId: number, line: string): void }
     onAvailableCommands?: (commands: ProviderCommand[]) => void
+    onProviderControlsChanged?: (
+        controls: ProviderControl[],
+        update: 'replace' | 'config',
+    ) => Promise<void> | void
 }
 
 export function createTopicSession(options: TopicSessionConfig): TopicSession {
@@ -72,6 +77,7 @@ export function createTopicSession(options: TopicSessionConfig): TopicSession {
         extensions,
         privilegeExecutor,
         onAvailableCommands,
+        onProviderControlsChanged,
     } = options
     const chatId = sessionRecord.groupChatId!
 
@@ -118,6 +124,7 @@ export function createTopicSession(options: TopicSessionConfig): TopicSession {
             sessionRecord.availableCommands = commands
             onAvailableCommands?.(commands)
         },
+        onProviderControlsChanged,
     })
 
     function receiveInput(input: { text: string; username?: string; richInput?: RichUserInput }): void {

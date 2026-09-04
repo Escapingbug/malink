@@ -11,6 +11,7 @@ import type {
     Diff,
     AvailableCommandsUpdate,
 } from '@agentclientprotocol/sdk'
+import { acpSessionControls } from './sessionControls'
 import type { AgentEvent, AgentResultEvent, AgentCommandsUpdateEvent, ToolResultContentBlock } from '@/providers/types'
 import { unwrapToolOutput } from '@/utils/unwrapToolOutput'
 
@@ -342,13 +343,20 @@ export function mapSessionUpdate(update: SessionUpdate, debugLog?: AcpDebugLog):
 
         case 'plan':
         case 'current_mode_update':
-        case 'config_option_update':
         case 'session_info_update':
         case 'usage_update': {
             events.push({
                 kind: 'raw',
                 providerName: 'acp',
                 rawMessage: update,
+            })
+            break
+        }
+
+        case 'config_option_update': {
+            events.push({
+                kind: 'controls_update',
+                controls: acpSessionControls(null, update.configOptions),
             })
             break
         }

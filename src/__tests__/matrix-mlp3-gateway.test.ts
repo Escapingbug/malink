@@ -322,6 +322,8 @@ describe('MatrixMlp3GatewayRunner', () => {
         model: null,
         reasoningEffort: null,
         permissionMode: 'default',
+        controlValues: { permissionMode: 'default' },
+        providerControls: [],
         providerSessionId: 'provider-legacy',
         providerHistory: null,
         archiveCleanup: null,
@@ -974,6 +976,19 @@ describe('MatrixMlp3GatewayRunner', () => {
         supportedReasoningLevels: [{ effort: 'high' }],
       }],
       getAvailablePermissionModes: () => ['default'],
+      getProviderControls: () => [{
+        id: 'verbosity',
+        label: 'Verbosity',
+        renderer: 'select',
+        surfaces: ['project-default', 'session-create', 'session-active'],
+        updateEffect: 'next-turn',
+        status: 'ready',
+        options: [
+          { value: 'concise', label: 'Concise' },
+          { value: 'detailed', label: 'Detailed' },
+        ],
+        defaultValue: 'concise',
+      }],
       listSessions: async () => [{
         sessionId: 'provider-session-1',
         title: 'Provider-owned work',
@@ -1730,6 +1745,7 @@ describe('MatrixMlp3GatewayRunner', () => {
           name: 'Renamed project',
           model: 'model-selectable',
           reasoningEffort: 'high',
+          controls: { verbosity: 'detailed' },
           defaultExtensions: [{ id: 'prefix-transform', config: { prefix: 'SAFE:' } }],
         },
       },
@@ -1744,6 +1760,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       name: 'Renamed project',
       model: 'model-selectable',
       reasoningEffort: 'high',
+      controls: { verbosity: 'detailed' },
     })
     expect(updatedProjectNames).toEqual(['Renamed project'])
     const createA: Mlp3Command = {
@@ -1767,6 +1784,77 @@ describe('MatrixMlp3GatewayRunner', () => {
       id: 'prefix-transform',
       config: { prefix: 'SAFE:' },
     }])
+    const createdSession = (await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'create-a' && event.payload.type === 'session.ready'
+    )
+    expect(createdSession?.payload).toMatchObject({
+      controls: { verbosity: 'detailed' },
+      projection: {
+        controls: [{ id: 'verbosity', value: 'detailed' }],
+      },
+    })
+    await send({
+      ...base,
+      commandId: 'create-provider-defaults',
+      sessionId: 'session-provider-defaults',
+      operation: 'session.create',
+      payload: {
+        operation: 'session.create',
+        title: 'Provider defaults',
+        controls: {},
+      },
+    }, '$root-provider-defaults')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'create-provider-defaults'))
+    const providerDefaultSession = (await events(client, activeKey.key, roomId, projectId)).find(
+      event => event.causationCommandId === 'create-provider-defaults'
+        && event.payload.type === 'session.ready',
+    )?.payload
+    expect(providerDefaultSession).toMatchObject({ type: 'session.ready' })
+    if (providerDefaultSession?.type !== 'session.ready') {
+      throw new Error('Provider-default session was not created')
+    }
+    expect(providerDefaultSession.controls).not.toHaveProperty('verbosity')
+    await send({
+      ...base,
+      commandId: 'session-controls-1',
+      sessionId: 'session-a',
+      operation: 'session.update',
+      payload: {
+        operation: 'session.update',
+        patch: { controls: { verbosity: 'concise' } },
+      },
+    }, '$session-controls-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'session-controls-1'))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'session-controls-1'
+      && event.payload.type === 'session.updated'
+    )?.payload).toMatchObject({
+      projection: { controls: [{ id: 'verbosity', value: 'concise' }] },
+    })
+    await send({
+      ...base,
+      commandId: 'project-controls-clear-1',
+      operation: 'project.update',
+      payload: {
+        operation: 'project.update',
+        patch: { controls: {}, model: null, reasoningEffort: null },
+      },
+    }, '$project-controls-clear-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'project-controls-clear-1'))
+    const clearedProjectControls = (await events(client, activeKey.key, roomId, projectId)).find(
+      event => event.causationCommandId === 'project-controls-clear-1'
+        && event.payload.type === 'project.snapshot',
+    )?.payload
+    expect(clearedProjectControls).toMatchObject({ type: 'project.snapshot' })
+    if (clearedProjectControls?.type !== 'project.snapshot') {
+      throw new Error('Project control defaults were not cleared')
+    }
+    expect(clearedProjectControls.controls).not.toHaveProperty('verbosity')
+    expect(clearedProjectControls).not.toHaveProperty('model')
+    expect(clearedProjectControls).not.toHaveProperty('reasoningEffort')
     await expect(runner.sendSessionFile('session-a', {
       path: generatedImagePath,
       filename: 'generated-image.png',
@@ -2364,6 +2452,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         .slice(0, 40)}`,
       'session-b',
       'session-long-initial-prompt',
+      'session-provider-defaults',
       'session-scratch',
     ].sort())
     expect(recovered.every(event =>
@@ -2388,6 +2477,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     const remainingSessionIds = [
       'session-b',
       'session-long-initial-prompt',
+      'session-provider-defaults',
       'session-scratch',
       gatewayMaintenanceSessionId('gateway-node-1', 'release-2'),
     ]

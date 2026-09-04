@@ -7,6 +7,8 @@ import {
   attachmentSchema,
   artifactReferenceSchema,
   jsonValueSchema,
+  providerControlSchema,
+  providerControlValuesSchema,
   sessionExtensionActionIdSchema,
   sessionExtensionBindingSchema,
   sessionExtensionDescriptorSchema,
@@ -222,6 +224,7 @@ const sessionSettingsPatchSchema = z
       .enum(['default', 'accept_edits', 'plan', 'bypass_permissions'])
       .optional(),
     extensions: z.array(mlp3SessionExtensionBindingSchema).max(8).optional(),
+    controls: providerControlValuesSchema.optional(),
   })
   .strict()
   .refine(value => Object.values(value).some(field => field !== undefined), {
@@ -241,6 +244,7 @@ const sessionCreatePayloadSchema = z
       .enum(['default', 'accept_edits', 'plan', 'bypass_permissions'])
       .optional(),
     extensions: z.array(mlp3SessionExtensionBindingSchema).max(8).optional(),
+    controls: providerControlValuesSchema.optional(),
     initialPrompt: z
       .object({
         text: z.string(),
@@ -425,6 +429,7 @@ const projectUpdatePayloadSchema = z
         model: z.string().min(1).max(256).nullable().optional(),
         reasoningEffort: z.string().min(1).max(64).nullable().optional(),
         defaultExtensions: z.array(mlp3SessionExtensionBindingSchema).max(8).optional(),
+        controls: providerControlValuesSchema.optional(),
       })
       .strict()
       .refine(value => Object.values(value).some(field => field !== undefined), {
@@ -699,6 +704,7 @@ const sessionProjectionSchema = z
     availableCommands: z.array(providerCommandSchema).max(256).optional(),
     extensionRevision: z.number().int().positive().optional(),
     providerHistory: providerHistoryRoomBindingSchema.optional(),
+    controls: z.array(providerControlSchema).max(64).optional(),
   })
   .strict()
 
@@ -732,6 +738,7 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       permissionMode: z.string().min(1).max(128),
       installedExtensions: z.array(sessionExtensionDescriptorSchema).max(64).optional(),
       defaultExtensions: z.array(mlp3SessionExtensionBindingSchema).max(8).optional(),
+      controls: providerControlValuesSchema.optional(),
       extensionDefaultsRevision: z.number().int().positive().optional(),
       snapshotVersion: z.number().int().positive(),
     })
@@ -754,6 +761,7 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       reasoningEffort: z.string().min(1).max(64).optional(),
       permissionMode: z.string().min(1).max(128),
       extensionBindings: z.array(mlp3SessionExtensionBindingSchema).max(8).optional(),
+      controls: providerControlValuesSchema.optional(),
     })
     .strict(),
   z

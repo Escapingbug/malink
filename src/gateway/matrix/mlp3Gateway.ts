@@ -13,6 +13,9 @@ import {
   type MatrixGatewayCapabilities,
   type NativeClientRelease,
   type PairingOperation,
+  type ProviderControl,
+  type ProviderControlValue,
+  type ProviderControlValues,
   type ProviderCommand,
   type ProviderHistoryMessage,
   type ProviderSessionEntry,
@@ -30,6 +33,13 @@ import {
   type ModelEntry,
 } from '@/providers/provider'
 import { createProviderInstance, getProvider, listProviders } from '@/providers/registry'
+import {
+  MODEL_CONTROL_ID,
+  PERMISSION_CONTROL_ID,
+  REASONING_CONTROL_ID,
+  legacyControlValues,
+  providerControls as synthesizedProviderControls,
+} from '@/providers/controls'
 import type { AgentActivityPhase, TopicSession } from '@/bridge/channelPort'
 import { createTopicSession, createTopicSessionRecord } from '@/bridge/topicSession'
 import {
@@ -1295,6 +1305,12 @@ export class MatrixMlp3GatewayRunner {
       model: project.project.model,
       reasoningEffort: project.project.reasoningEffort,
       permissionMode: 'bypassPermissions',
+      controlValues: legacyControlValues({
+        model: project.project.model,
+        reasoningEffort: project.project.reasoningEffort,
+        permissionMode: 'bypassPermissions',
+      }),
+      providerControls: [],
       providerSessionId: null,
       providerHistory: null,
       archiveCleanup: null,
@@ -1631,6 +1647,7 @@ export class MatrixMlp3GatewayRunner {
         ...(existing.reasoningEffort ? { reasoningEffort: existing.reasoningEffort } : {}),
         permissionMode: existing.permissionMode,
         extensionBindings: existing.extensions,
+        controls: existing.controlValues,
       })
       await this.settleAndDeliver(project, command, event, 'succeeded')
       return
@@ -1677,6 +1694,8 @@ export class MatrixMlp3GatewayRunner {
       model: settings.model,
       reasoningEffort: settings.reasoningEffort,
       permissionMode: settings.permissionMode,
+      controlValues: settings.controlValues,
+      providerControls: [],
       providerSessionId: command.payload.providerSessionId ?? null,
       providerHistory: null,
       archiveCleanup: null,
@@ -1736,6 +1755,7 @@ export class MatrixMlp3GatewayRunner {
       ...(record.reasoningEffort ? { reasoningEffort: record.reasoningEffort } : {}),
       permissionMode: record.permissionMode,
       extensionBindings: record.extensions,
+      controls: record.controlValues,
     })
     if (!command.payload.initialPrompt) {
       let terminalClaimed: boolean
@@ -2132,7 +2152,23 @@ export class MatrixMlp3GatewayRunner {
     const catalog = getProvider(provider)
     if (!catalog) throw new Error(`Provider ${provider} is not configured`)
     const availableModels = catalog.getAvailableModels()
-    const requestedModel = patch.model === undefined ? runtime.record.model : patch.model
+    const controlChanges = patch.controls ?? {}
+    const controlValues: ProviderControlValues = {
+      ...runtime.record.controlValues,
+      ...controlChanges,
+    }
+    validateProviderControlChanges(
+      catalog,
+      controlChanges,
+      controlValues,
+      'session-active',
+      runtime.record.providerControls,
+    )
+    const requestedModel = patch.model !== undefined
+      ? patch.model
+      : typeof controlChanges[MODEL_CONTROL_ID] === 'string'
+        ? controlChanges[MODEL_CONTROL_ID]
+        : runtime.record.model
     const selectedModel = requestedModel
       ? availableModels.find(item => item.id === requestedModel || item.name === requestedModel)
       : undefined
@@ -2141,20 +2177,28 @@ export class MatrixMlp3GatewayRunner {
     }
     const model = selectedModel?.id ?? requestedModel ?? null
     const modelChanged = model !== runtime.record.model
-    const reasoningEffort = patch.reasoningEffort === undefined
+    const requestedReasoning = patch.reasoningEffort !== undefined
+      ? patch.reasoningEffort
+      : typeof controlChanges[REASONING_CONTROL_ID] === 'string'
+        ? controlChanges[REASONING_CONTROL_ID]
+        : undefined
+    const reasoningEffort = requestedReasoning === undefined
       ? modelChanged
         ? selectedModel?.defaultReasoningLevel ?? null
         : runtime.record.reasoningEffort
-      : patch.reasoningEffort
+      : requestedReasoning
     if (availableModels.length > 0) validateReasoningEffort(selectedModel, reasoningEffort)
-    const permissionMode = patch.permissionMode ?? runtime.record.permissionMode
+    const permissionMode = patch.permissionMode
+      ?? (typeof controlChanges[PERMISSION_CONTROL_ID] === 'string'
+        ? controlChanges[PERMISSION_CONTROL_ID]
+        : runtime.record.permissionMode)
     if (!isAgentPermissionMode(permissionMode)) {
       throw new Error(`Permission mode ${permissionMode} is not currently available`)
     }
-    if (patch.model !== undefined || modelChanged) {
+    if (patch.model !== undefined || controlChanges[MODEL_CONTROL_ID] !== undefined || modelChanged) {
       await dispatchRuntimeCommand(runtime.session, command, 'model', model ?? '')
     }
-    if (patch.reasoningEffort !== undefined || modelChanged) {
+    if (patch.reasoningEffort !== undefined || controlChanges[REASONING_CONTROL_ID] !== undefined || modelChanged) {
       await dispatchRuntimeCommand(
         runtime.session,
         command,
@@ -2162,13 +2206,28 @@ export class MatrixMlp3GatewayRunner {
         reasoningEffort ?? '',
       )
     }
-    if (patch.permissionMode !== undefined) {
+    if (patch.permissionMode !== undefined || controlChanges[PERMISSION_CONTROL_ID] !== undefined) {
       await dispatchRuntimeCommand(runtime.session, command, 'permissionMode', permissionMode)
+    }
+    for (const [id, value] of Object.entries(controlChanges)) {
+      if ([MODEL_CONTROL_ID, REASONING_CONTROL_ID, PERMISSION_CONTROL_ID].includes(id)) continue
+      await dispatchRuntimeCommand(
+        runtime.session,
+        command,
+        'providerControl',
+        JSON.stringify({ id, value }),
+      )
     }
     runtime.record.title = patch.title ?? runtime.record.title
     runtime.record.model = model
     runtime.record.reasoningEffort = reasoningEffort
     runtime.record.permissionMode = permissionMode
+    runtime.record.controlValues = legacyControlValues({
+      controls: controlValues,
+      model,
+      reasoningEffort,
+      permissionMode,
+    })
     runtime.record.providerSessionId = runtime.session.sessionRecord.conversationId
     if (patch.extensions !== undefined) {
       const bindings = this.extensions.normalizeBindings(patch.extensions)
@@ -2456,6 +2515,27 @@ export class MatrixMlp3GatewayRunner {
     const patch = command.payload.patch
     const catalog = getProvider(project.project.provider)
     const availableModels = catalog?.getAvailableModels() ?? []
+    const advertisedControls = availableProviderControls(catalog)
+    const controlValues: ProviderControlValues = { ...project.project.controlValues }
+    if (patch.controls !== undefined) {
+      for (const control of advertisedControls) {
+        if (
+          control.surfaces.includes('project-default')
+          && (control.status === 'ready' || control.status === 'stale')
+        ) {
+          delete controlValues[control.id]
+        }
+      }
+      Object.assign(controlValues, patch.controls)
+    }
+    if (patch.model === null) delete controlValues[MODEL_CONTROL_ID]
+    if (patch.reasoningEffort === null) delete controlValues[REASONING_CONTROL_ID]
+    validateProviderControlChanges(
+      catalog,
+      patch.controls ?? {},
+      controlValues,
+      'project-default',
+    )
     const name = patch.name?.trim() ?? project.project.name
     let model = project.project.model
     let reasoningEffort = project.project.reasoningEffort
@@ -2464,25 +2544,50 @@ export class MatrixMlp3GatewayRunner {
         model.id === project.project.model || model.name === project.project.model
       )
       : undefined
-    if (patch.model !== undefined) {
-      selectedModel = patch.model
-        ? availableModels.find(model => model.id === patch.model || model.name === patch.model)
+    const requestedModelPatch = patch.model !== undefined
+      ? patch.model
+      : typeof patch.controls?.[MODEL_CONTROL_ID] === 'string'
+        ? patch.controls[MODEL_CONTROL_ID]
         : undefined
-      if (patch.model && availableModels.length > 0 && !selectedModel) {
+    if (requestedModelPatch !== undefined) {
+      selectedModel = requestedModelPatch
+        ? availableModels.find(model => model.id === requestedModelPatch || model.name === requestedModelPatch)
+        : undefined
+      if (requestedModelPatch && availableModels.length > 0 && !selectedModel) {
         throw new Error(
-          `Model ${patch.model} is not available for provider ${project.project.provider}`,
+          `Model ${requestedModelPatch} is not available for provider ${project.project.provider}`,
         )
       }
-      model = selectedModel?.id ?? patch.model
-      if (patch.reasoningEffort === undefined) {
+      model = selectedModel?.id ?? requestedModelPatch
+      if (patch.reasoningEffort === undefined && patch.controls?.[REASONING_CONTROL_ID] === undefined) {
         reasoningEffort = selectedModel?.defaultReasoningLevel ?? null
       }
     }
-    if (patch.reasoningEffort !== undefined) {
+    const requestedReasoningPatch = patch.reasoningEffort !== undefined
+      ? patch.reasoningEffort
+      : typeof patch.controls?.[REASONING_CONTROL_ID] === 'string'
+        ? patch.controls[REASONING_CONTROL_ID]
+        : undefined
+    if (requestedReasoningPatch !== undefined) {
       if (availableModels.length > 0) {
-        validateReasoningEffort(selectedModel, patch.reasoningEffort)
+        validateReasoningEffort(selectedModel, requestedReasoningPatch)
       }
-      reasoningEffort = patch.reasoningEffort
+      reasoningEffort = requestedReasoningPatch
+    }
+    const permissionControl = advertisedControls.find(control =>
+      control.id === PERMISSION_CONTROL_ID
+      && control.surfaces.includes('project-default')
+      && (control.status === 'ready' || control.status === 'stale')
+    )
+    const permissionMode = typeof patch.controls?.[PERMISSION_CONTROL_ID] === 'string'
+      ? patch.controls[PERMISSION_CONTROL_ID]
+      : patch.controls !== undefined
+        && permissionControl
+        && typeof permissionControl.defaultValue === 'string'
+        ? permissionControl.defaultValue
+        : project.project.permissionMode
+    if (!isAgentPermissionMode(permissionMode)) {
+      throw new Error(`Permission mode ${permissionMode} is not currently available`)
     }
     const defaultExtensions = patch.defaultExtensions === undefined
       ? project.project.defaultExtensions
@@ -2501,6 +2606,13 @@ export class MatrixMlp3GatewayRunner {
     project.project.name = name
     project.project.model = model
     project.project.reasoningEffort = reasoningEffort
+    project.project.permissionMode = permissionMode
+    project.project.controlValues = legacyControlValues({
+      controls: controlValues,
+      model,
+      reasoningEffort,
+      permissionMode,
+    })
     project.project.defaultExtensions = defaultExtensions
     if (patch.defaultExtensions !== undefined) project.project.extensionDefaultsRevision += 1
     project.project.snapshotVersion += 1
@@ -3385,6 +3497,7 @@ export class MatrixMlp3GatewayRunner {
         ...(project.config.providerSettings ?? {}),
         ...(record.reasoningEffort ? { reasoningEffort: record.reasoningEffort } : {}),
         permissionMode: record.permissionMode,
+        controls: record.controlValues,
       },
     }
     let session: TopicSession
@@ -3427,6 +3540,31 @@ export class MatrixMlp3GatewayRunner {
         onAvailableCommands: commands => {
           record.availableCommands = commands
         },
+        onProviderControlsChanged: async (controls, update) => {
+          record.providerControls = update === 'replace'
+            ? controls.map(control => structuredClone(control))
+            : replaceSessionConfigControls(record.providerControls, controls)
+          const currentValues = Object.fromEntries(
+            controls.flatMap(control => control.value === undefined
+              ? []
+              : [[control.id, control.value] as const]),
+          )
+          if (typeof currentValues[MODEL_CONTROL_ID] === 'string') {
+            record.model = currentValues[MODEL_CONTROL_ID]
+          }
+          if (typeof currentValues[REASONING_CONTROL_ID] === 'string') {
+            record.reasoningEffort = currentValues[REASONING_CONTROL_ID]
+          }
+          record.controlValues = legacyControlValues({
+            controls: { ...record.controlValues, ...currentValues },
+            model: record.model,
+            reasoningEffort: record.reasoningEffort,
+            permissionMode: record.permissionMode,
+          })
+          record.updatedAt = this.now()
+          record.stateVersion += 1
+          await this.persist(project)
+        },
       })
     }
     runtime = {
@@ -3448,6 +3586,7 @@ export class MatrixMlp3GatewayRunner {
     model: string | null
     reasoningEffort: string | null
     permissionMode: string
+    controlValues: ProviderControlValues
   } {
     const provider = command.payload.provider ?? project.project.provider
     const catalog = getProvider(provider)
@@ -3459,9 +3598,37 @@ export class MatrixMlp3GatewayRunner {
       throw new Error(`Provider ${provider} is not configured`)
     }
     const providerChanged = provider !== project.project.provider
+    const advertisedControls = availableProviderControls(catalog)
+    const controlValues: ProviderControlValues = {
+      ...(providerChanged ? {} : project.project.controlValues),
+    }
+    if (command.payload.controls !== undefined) {
+      for (const control of advertisedControls) {
+        if (
+          control.surfaces.includes('session-create')
+          && (control.status === 'ready' || control.status === 'stale')
+        ) {
+          delete controlValues[control.id]
+        }
+      }
+      Object.assign(controlValues, command.payload.controls)
+    }
+    validateProviderControlChanges(
+      catalog,
+      command.payload.controls ?? {},
+      controlValues,
+      'session-create',
+    )
+    const modelControlEditable = advertisedControls.some(control =>
+      control.id === MODEL_CONTROL_ID
+      && control.surfaces.includes('session-create')
+      && (control.status === 'ready' || control.status === 'stale')
+    )
     const requestedModel = command.payload.model !== undefined
       ? command.payload.model
-      : providerChanged
+      : typeof controlValues[MODEL_CONTROL_ID] === 'string'
+        ? controlValues[MODEL_CONTROL_ID]
+      : providerChanged || (command.payload.controls !== undefined && modelControlEditable)
         ? null
         : project.project.model
     const availableModels = catalog?.getAvailableModels() ?? []
@@ -3479,11 +3646,24 @@ export class MatrixMlp3GatewayRunner {
       && model === project.project.model
     const reasoningEffort = command.payload.reasoningEffort !== undefined
       ? command.payload.reasoningEffort
+      : typeof controlValues[REASONING_CONTROL_ID] === 'string'
+        ? controlValues[REASONING_CONTROL_ID]
       : usesProjectModel
         ? project.project.reasoningEffort
         : selectedModel?.defaultReasoningLevel ?? null
     if (availableModels.length > 0) validateReasoningEffort(selectedModel, reasoningEffort)
-    const permissionMode = command.payload.permissionMode ?? project.project.permissionMode
+    const permissionControl = advertisedControls.find(control =>
+      control.id === PERMISSION_CONTROL_ID
+      && control.surfaces.includes('session-create')
+      && (control.status === 'ready' || control.status === 'stale')
+    )
+    const permissionMode = command.payload.permissionMode
+      ?? (typeof controlValues[PERMISSION_CONTROL_ID] === 'string'
+        ? controlValues[PERMISSION_CONTROL_ID]
+        : command.payload.controls !== undefined
+          && typeof permissionControl?.defaultValue === 'string'
+          ? permissionControl.defaultValue
+          : project.project.permissionMode)
     if (!isAgentPermissionMode(permissionMode)) {
       throw new Error(`Permission mode ${permissionMode} is not currently available`)
     }
@@ -3492,6 +3672,12 @@ export class MatrixMlp3GatewayRunner {
       model,
       reasoningEffort,
       permissionMode,
+      controlValues: legacyControlValues({
+        controls: controlValues,
+        model,
+        reasoningEffort,
+        permissionMode,
+      }),
     }
   }
 
@@ -3585,6 +3771,7 @@ export class MatrixMlp3GatewayRunner {
         ? { reasoningEffort: project.project.reasoningEffort }
         : {}),
       permissionMode: project.project.permissionMode,
+      controls: project.project.controlValues,
       installedExtensions: this.extensions.descriptors(),
       defaultExtensions: project.project.defaultExtensions,
       extensionDefaultsRevision: project.project.extensionDefaultsRevision,
@@ -3715,6 +3902,7 @@ export class MatrixMlp3GatewayRunner {
   private discoverCapabilities(project: V3ProjectRuntime): MatrixGatewayCapabilities {
     let models: MatrixGatewayCapabilities['models'] = []
     let providers: NonNullable<MatrixGatewayCapabilities['providers']> = []
+    let controls: ProviderControl[] = []
     try {
       const mapModels = (providerName: string) =>
         (getProvider(providerName)?.getAvailableModels() ?? []).map(model => ({
@@ -3733,12 +3921,25 @@ export class MatrixMlp3GatewayRunner {
           : {}),
         }))
       models = mapModels(project.project.provider)
+      const mapControls = (providerName: string): ProviderControl[] => {
+        const provider = getProvider(providerName)
+        if (!provider) return []
+        return provider.getProviderControls?.() ?? synthesizedProviderControls(
+          provider.getAvailableModels(),
+          { status: 'ready' },
+          provider.getAvailablePermissionModes(),
+        )
+      }
+      controls = mapControls(project.project.provider)
       providers = listProviders().map(providerName => {
         const provider = getProvider(providerName)!
         return {
           id: providerName,
           name: providerName,
           models: providerName === project.project.provider ? models : mapModels(providerName),
+          controls: providerName === project.project.provider
+            ? controls
+            : mapControls(providerName),
           can_list_sessions: typeof provider.listSessions === 'function',
           can_inspect_sessions: typeof provider.getSessionHistory === 'function',
           can_materialize_history: typeof provider.getSessionHistory === 'function'
@@ -3760,6 +3961,7 @@ export class MatrixMlp3GatewayRunner {
     return matrixGatewayCapabilitiesSchema.parse({
       models,
       providers,
+      controls,
       permission_modes: AGENT_PERMISSION_MODES.map(mode => ({ ...mode })),
       can_create_session: true,
       can_select_session: false,
@@ -4106,6 +4308,88 @@ function isSendFileCommandResult(value: unknown): value is SendFileCommandResult
   return status === 'queued' || status === 'sent' || status === 'failed'
 }
 
+function availableProviderControls(
+  provider: AgentProvider | undefined,
+  additional: readonly ProviderControl[] = [],
+): ProviderControl[] {
+  const advertised = provider
+    ? provider.getProviderControls?.() ?? synthesizedProviderControls(
+        provider.getAvailableModels(),
+        { status: 'ready' },
+        provider.getAvailablePermissionModes(),
+      )
+    : []
+  const controls = new Map<string, ProviderControl>()
+  for (const control of advertised) controls.set(control.id, structuredClone(control))
+  for (const control of additional) controls.set(control.id, structuredClone(control))
+  return [...controls.values()]
+}
+
+function replaceSessionConfigControls(
+  existing: readonly ProviderControl[],
+  changed: readonly ProviderControl[],
+): ProviderControl[] {
+  const replacement = changed.map(control => structuredClone(control))
+  if (replacement.some(control => control.id === MODEL_CONTROL_ID)) return replacement
+  const model = existing.find(control => control.id === MODEL_CONTROL_ID)
+  return model ? [structuredClone(model), ...replacement] : replacement
+}
+
+function sessionProviderControls(record: PersistedMlp3Session): ProviderControl[] {
+  return availableProviderControls(getProvider(record.provider), record.providerControls)
+    .filter(control => control.surfaces.includes('session-active'))
+    .map(control => ({
+      ...control,
+      ...(record.controlValues[control.id] === undefined
+        ? control.defaultValue === undefined
+          ? {}
+          : { value: control.defaultValue }
+        : { value: record.controlValues[control.id] }),
+    }))
+}
+
+function validateProviderControlChanges(
+  provider: AgentProvider | undefined,
+  changes: ProviderControlValues,
+  values: ProviderControlValues,
+  surface: ProviderControl['surfaces'][number],
+  additional: readonly ProviderControl[] = [],
+): void {
+  const controls = new Map(
+    availableProviderControls(provider, additional).map(control => [control.id, control]),
+  )
+  for (const [id, value] of Object.entries(changes)) {
+    const control = controls.get(id)
+    if (!control || !control.surfaces.includes(surface)) {
+      throw new Error(`Provider control ${id} is not available for ${surface}`)
+    }
+    if (control.status === 'loading') {
+      throw new Error(`Provider control ${id} is still loading`)
+    }
+    if (control.status === 'error') {
+      throw new Error(control.error?.message ?? `Provider control ${id} is unavailable`)
+    }
+    if (control.renderer === 'toggle') {
+      if (typeof value !== 'boolean') {
+        throw new Error(`Provider control ${id} requires a boolean value`)
+      }
+      continue
+    }
+    if (typeof value !== 'string') {
+      throw new Error(`Provider control ${id} requires a string value`)
+    }
+    if (control.renderer === 'text') continue
+    const options = (control.options ?? []).filter(option =>
+      !option.when || option.when.values.some(candidate =>
+        candidate === values[option.when!.controlId]
+      )
+    )
+    if (!options.some(option => option.value === value)) {
+      throw new Error(`Value ${String(value)} is not available for provider control ${id}`)
+    }
+  }
+}
+
 function projection(
   record: PersistedMlp3Session,
   activity: Mlp3SessionProjection['activity'],
@@ -4121,6 +4405,7 @@ function projection(
     stateVersion: record.stateVersion,
     extensions: extensions.summaries(record.extensions),
     extensionRevision: record.extensionRevision,
+    controls: sessionProviderControls(record),
     ...(record.providerHistory
       ? {
           providerHistory: {

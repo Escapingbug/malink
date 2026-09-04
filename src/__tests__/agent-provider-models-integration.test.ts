@@ -10,6 +10,10 @@ vi.mock('@/providers/acp', () => ({
         constructor(config: { name: string }) {
             this.name = config.name
         }
+
+        getAvailablePermissionModes() {
+            return ['default', 'acceptEdits', 'bypassPermissions']
+        }
     },
 }))
 
@@ -67,6 +71,38 @@ describe('AgentProvider model discovery integration', () => {
             { id: 'composer-2-fast', name: 'Composer 2 Fast (default)', provider: 'cursor' },
             { id: 'gpt-5.5-medium', name: 'GPT-5.5 1M', provider: 'cursor' },
         ])
+        expect(provider.getProviderControls().find(control => control.id === 'model')).toMatchObject({
+            status: 'ready',
+            options: expect.arrayContaining([{ value: 'auto', label: 'Auto' }]),
+        })
+    })
+
+    it('distinguishes model loading, provider failure, and unsupported empty catalogs', async () => {
+        let rejectModels!: (error: Error) => void
+        const failing = new AgentProvider({
+            modelsReader: () => new Promise<string>((_resolve, reject) => {
+                rejectModels = reject
+            }),
+        })
+        expect(failing.getProviderControls().find(control => control.id === 'model')).toMatchObject({
+            status: 'loading',
+            deadlineAt: expect.any(Number),
+        })
+        rejectModels(Object.assign(new Error('spawn agent ENOENT'), { code: 'ENOENT' }))
+        await failing.refreshAvailableModels()
+        expect(failing.getProviderControls().find(control => control.id === 'model')).toMatchObject({
+            status: 'error',
+            error: {
+                code: 'executable_not_found',
+                detail: 'spawn agent ENOENT',
+                retryable: true,
+            },
+        })
+
+        const unsupported = new AgentProvider({ modelsReader: async () => 'Available models\n' })
+        await unsupported.refreshAvailableModels()
+        expect(unsupported.getProviderControls().some(control => control.id === 'model')).toBe(false)
+        expect(unsupported.getProviderControls().some(control => control.id === 'reasoningEffort')).toBe(false)
     })
 
     it('parses model lines and ignores headings or tips from agent models output', () => {

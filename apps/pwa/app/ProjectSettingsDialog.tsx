@@ -1,14 +1,21 @@
 "use client";
 
 import { FormEvent, useMemo, useRef, useState } from "react";
+import type { ProviderControlValues } from "@malink/protocol";
 import type { GatewayModelCapability, GatewayWorkspaceState } from "./gatewayState";
 import { useDialogFocus } from "./dialogFocus";
 import { BusyActionLabel } from "./OperationProgress";
+import { ProviderControls } from "./ProviderControls";
+import {
+  legacyProviderControls,
+  submittableProviderControlValues,
+} from "./providerControlCompatibility";
 
 export type ProjectSettingsInput = {
   name: string;
-  model: string | null;
-  reasoningEffort: string | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  controls: ProviderControlValues;
 };
 
 type Props = {
@@ -42,17 +49,24 @@ function ProjectSettingsDialogContent({
   onDelete,
 }: Props) {
   const models = project.capabilities?.models ?? fallbackModels;
+  const controls = project.capabilities?.providers.find(
+    provider => provider.id === project.provider,
+  )?.controls
+    ?? project.capabilities?.controls
+    ?? legacyProviderControls(models, project.capabilities?.permissionModes ?? []);
   const [name, setName] = useState(project.projectName);
-  const [model, setModel] = useState(project.model ?? "");
-  const [reasoningEffort, setReasoningEffort] = useState(project.reasoningEffort ?? "");
+  const initialControlValues: ProviderControlValues = {
+    ...(project.controlValues ?? {}),
+    ...(project.model ? { model: project.model } : {}),
+    ...(project.reasoningEffort ? { reasoningEffort: project.reasoningEffort } : {}),
+    ...(project.permissionMode ? { permissionMode: project.permissionMode } : {}),
+  };
+  const [controlValues, setControlValues] = useState(initialControlValues);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const dialogRef = useRef<HTMLElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
-  const selectedModel = models.find(entry => entry.id === model);
-  const reasoningLevels = selectedModel?.supportedReasoningLevels ?? [];
   const changed = name.trim() !== project.projectName
-    || model !== (project.model ?? "")
-    || reasoningEffort !== (project.reasoningEffort ?? "");
+    || JSON.stringify(controlValues) !== JSON.stringify(initialControlValues);
 
   useDialogFocus({
     open,
@@ -76,10 +90,30 @@ function ProjectSettingsDialogContent({
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!busy && changed && name.trim()) {
+      const submittedControls = submittableProviderControlValues(
+        controls,
+        "project-default",
+        controlValues,
+      );
+      const editableIds = new Set(controls
+        .filter(control =>
+          control.surfaces.includes("project-default")
+          && (control.status === "ready" || control.status === "stale")
+        )
+        .map(control => control.id));
       onSave({
         name: name.trim(),
-        model: model || null,
-        reasoningEffort: reasoningEffort || null,
+        ...(editableIds.has("model")
+          ? { model: typeof submittedControls.model === "string" ? submittedControls.model : null }
+          : {}),
+        ...(editableIds.has("reasoningEffort")
+          ? {
+              reasoningEffort: typeof submittedControls.reasoningEffort === "string"
+                ? submittedControls.reasoningEffort
+                : null,
+            }
+          : {}),
+        controls: submittedControls,
       });
     }
   };
@@ -160,37 +194,13 @@ function ProjectSettingsDialogContent({
                 onChange={event => setName(event.target.value)}
               />
             </label>
-            <div className="new-session-grid two-columns">
-              <label>
-                <span>Default model</span>
-                <select
-                  value={model}
-                  disabled={busy || models.length === 0}
-                  onChange={event => {
-                    const next = event.target.value;
-                    const capability = models.find(entry => entry.id === next);
-                    setModel(next);
-                    setReasoningEffort(capability?.defaultReasoningLevel ?? "");
-                  }}
-                >
-                  <option value="">Provider default</option>
-                  {models.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-                </select>
-              </label>
-              <label>
-                <span>Reasoning effort</span>
-                <select
-                  value={reasoningEffort}
-                  disabled={busy || reasoningLevels.length === 0}
-                  onChange={event => setReasoningEffort(event.target.value)}
-                >
-                  <option value="">Model default</option>
-                  {reasoningLevels.map(level => (
-                    <option key={level.effort} value={level.effort}>{level.effort}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
+            <ProviderControls
+              controls={controls}
+              surface="project-default"
+              values={controlValues}
+              disabled={busy}
+              onChange={setControlValues}
+            />
             <small className="project-identity-note">
               One save sends one atomic project command; conversations already created keep their own model.
             </small>

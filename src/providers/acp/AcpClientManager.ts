@@ -364,13 +364,24 @@ export class AcpClientManager {
         })
     }
 
-    async setSessionConfigOption(params: { sessionId: string; configId: string; value: string }): Promise<SetSessionConfigOptionResponse> {
+    async setSessionConfigOption(params: {
+        sessionId: string
+        configId: string
+        value: string | boolean
+    }): Promise<SetSessionConfigOptionResponse> {
         const conn = this.requireConnection()
-        return conn.setSessionConfigOption({
-            sessionId: params.sessionId,
-            configId: params.configId,
-            value: params.value,
-        })
+        return conn.setSessionConfigOption(typeof params.value === 'boolean'
+            ? {
+                sessionId: params.sessionId,
+                configId: params.configId,
+                type: 'boolean',
+                value: params.value,
+            }
+            : {
+                sessionId: params.sessionId,
+                configId: params.configId,
+                value: params.value,
+            })
     }
 
     async cancel(params: Omit<CancelNotification, '_meta'>): Promise<void> {

@@ -1,7 +1,11 @@
 import { AtomicJsonFile } from '@malink/security/node'
 import {
   matrixGatewayCapabilitiesSchema,
+  providerControlSchema,
+  providerControlValuesSchema,
   type MatrixGatewayCapabilities,
+  type ProviderControl,
+  type ProviderControlValues,
   type ProviderCommand,
   type SessionExtensionBinding,
 } from '@malink/protocol'
@@ -43,6 +47,8 @@ export interface PersistedMlp3Session {
   model: string | null
   reasoningEffort: string | null
   permissionMode: string
+  controlValues: ProviderControlValues
+  providerControls: ProviderControl[]
   providerSessionId: string | null
   providerHistory: PersistedProviderHistoryRoom | null
   archiveCleanup: PersistedMlp3SessionArchiveCleanup | null
@@ -61,6 +67,7 @@ export interface PersistedMlp3Project {
   model: string | null
   reasoningEffort: string | null
   permissionMode: string
+  controlValues: ProviderControlValues
   snapshotVersion: number
   capabilitySnapshotVersion: number
   capabilities: MatrixGatewayCapabilities | null
@@ -120,6 +127,10 @@ export class FileMlp3RuntimeStateStore {
             existing.extensionDefaultsRevision = 1
             changed = true
           }
+          if (!existing.controlValues || typeof existing.controlValues !== 'object') {
+            existing.controlValues = legacyControlValues(existing)
+            changed = true
+          }
           if (Array.isArray(existing.sessions)) {
             for (const session of existing.sessions) {
               if (session.scope !== 'project' && session.scope !== 'scratch') {
@@ -140,6 +151,14 @@ export class FileMlp3RuntimeStateStore {
               }
               if (!Array.isArray(session.availableCommands)) {
                 session.availableCommands = []
+                changed = true
+              }
+              if (!session.controlValues || typeof session.controlValues !== 'object') {
+                session.controlValues = legacyControlValues(session)
+                changed = true
+              }
+              if (!Array.isArray(session.providerControls)) {
+                session.providerControls = []
                 changed = true
               }
               if (session.providerHistory === undefined) {
@@ -248,6 +267,15 @@ function defaultProject(room: MatrixGatewayRoomConfig): PersistedMlp3Project {
     permissionMode: typeof room.providerSettings?.permissionMode === 'string'
       ? room.providerSettings.permissionMode
       : 'default',
+    controlValues: legacyControlValues({
+      model: room.model ?? null,
+      reasoningEffort: typeof room.providerSettings?.reasoningEffort === 'string'
+        ? room.providerSettings.reasoningEffort
+        : null,
+      permissionMode: typeof room.providerSettings?.permissionMode === 'string'
+        ? room.providerSettings.permissionMode
+        : 'default',
+    }),
     snapshotVersion: 1,
     capabilitySnapshotVersion: 0,
     capabilities: null,
@@ -284,6 +312,7 @@ function validateProject(project: PersistedMlp3Project, roomId: string): void {
     || !project.name
     || !project.cwd
     || !project.provider
+    || !validProviderControlValues(project.controlValues)
     || !Number.isSafeInteger(project.snapshotVersion)
     || project.snapshotVersion < 1
     || !Number.isSafeInteger(project.capabilitySnapshotVersion)
@@ -318,6 +347,8 @@ function validateProject(project: PersistedMlp3Project, roomId: string): void {
       || !['active', 'archived', 'deleted'].includes(session.lifecycle)
       || !session.provider
       || !session.permissionMode
+      || !validProviderControlValues(session.controlValues)
+      || !Array.isArray(session.providerControls)
       || !Array.isArray(session.extensions)
       || !Number.isSafeInteger(session.extensionRevision)
       || session.extensionRevision < 1
@@ -335,8 +366,25 @@ function validateProject(project: PersistedMlp3Project, roomId: string): void {
     ) {
       throw new Error(`Invalid MLP/3 session ${session.id || '<missing>'} in ${roomId}`)
     }
+    session.providerControls.forEach(control => providerControlSchema.parse(control))
     ids.add(session.id)
   }
+}
+
+function legacyControlValues(value: {
+  model?: string | null
+  reasoningEffort?: string | null
+  permissionMode?: string | null
+}): ProviderControlValues {
+  return {
+    ...(value.model ? { model: value.model } : {}),
+    ...(value.reasoningEffort ? { reasoningEffort: value.reasoningEffort } : {}),
+    ...(value.permissionMode ? { permissionMode: value.permissionMode } : {}),
+  }
+}
+
+function validProviderControlValues(value: unknown): value is ProviderControlValues {
+  return providerControlValuesSchema.safeParse(value).success
 }
 
 function validArchiveCleanup(value: PersistedMlp3SessionArchiveCleanup | null): boolean {

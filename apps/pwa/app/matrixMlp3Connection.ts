@@ -2093,6 +2093,7 @@ function gatewayState(
     : {
         models: [],
         providers: [],
+        controls: [],
         permissionModes: [{ id: "default", name: "Default" }],
         canCreateSession: true,
         canSelectSession: false,
@@ -2139,6 +2140,10 @@ function gatewayState(
       provider: session.provider ?? project?.provider ?? "unknown",
       ...(session.model ? { model: session.model } : {}),
       ...(session.reasoningEffort ? { reasoningEffort: session.reasoningEffort } : {}),
+      ...(session.controls === undefined ? {} : { controls: session.controls }),
+      ...(session.controlValues === undefined
+        ? {}
+        : { controlValues: session.controlValues }),
       ...(session.activeTurnId ? { activeTurnId: session.activeTurnId } : {}),
       extensions: session.extensions ?? [],
       availableCommands: session.availableCommands ?? [],
@@ -2169,6 +2174,7 @@ function gatewayState(
       ...(project?.model ? { model: project.model } : {}),
       ...(project?.reasoningEffort ? { reasoningEffort: project.reasoningEffort } : {}),
       permissionMode: project?.permissionMode ?? "default",
+      controlValues: project?.controlValues ?? {},
       defaultExtensions: project?.defaultExtensions ?? [],
       extensionDefaultsRevision: project?.extensionDefaultsRevision ?? 1,
       capabilities,

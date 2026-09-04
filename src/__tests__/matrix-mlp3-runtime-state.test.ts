@@ -32,6 +32,8 @@ describe('FileMlp3RuntimeStateStore', () => {
         model: null,
         reasoningEffort: null,
         permissionMode: 'default',
+        controlValues: { permissionMode: 'default' },
+        providerControls: [],
         providerSessionId: null,
         providerHistory: null,
         archiveCleanup: null,

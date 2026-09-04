@@ -143,6 +143,7 @@ internal class MatrixMlp3NativeProjection(
         val installedExtensions: JsonArray,
         val defaultExtensions: JsonArray,
         val extensionDefaultsRevision: Long,
+        val controlValues: JsonObject = JsonObject(emptyMap()),
     )
 
     private data class WorkspaceCapabilities(
@@ -172,6 +173,8 @@ internal class MatrixMlp3NativeProjection(
         val availableCommands: JsonArray,
         val providerHistory: JsonObject?,
         val activeTurnId: String? = null,
+        val controlValues: JsonObject = JsonObject(emptyMap()),
+        val controls: JsonArray = JsonArray(emptyList()),
     )
 
     private data class ProviderHistoryPageState(
@@ -280,6 +283,7 @@ internal class MatrixMlp3NativeProjection(
                     extensionRevision = 1,
                     availableCommands = JsonArray(emptyList()),
                     providerHistory = null,
+                    controlValues = payload["controls"] as? JsonObject ?: JsonObject(emptyMap()),
                 )
                 MatrixMlp3NativeProjectionResult(
                     messages = initial?.let {
@@ -444,6 +448,7 @@ internal class MatrixMlp3NativeProjection(
                     extensionDefaultsRevision = payload.optionalLong("extensionDefaultsRevision")
                         ?.takeIf { it > 0 }
                         ?: 1,
+                    controlValues = payload["controls"] as? JsonObject ?: JsonObject(emptyMap()),
                 )
                 return MatrixMlp3NativeProjectionResult(changed = true)
             }
@@ -596,6 +601,10 @@ internal class MatrixMlp3NativeProjection(
                     model = payload.optionalString("model", 256),
                     reasoningEffort = payload.optionalString("reasoningEffort", 64),
                     permissionMode = payload.requiredString("permissionMode", 128),
+                ).copy(
+                    controlValues = payload["controls"] as? JsonObject
+                        ?: current?.controlValues
+                        ?: JsonObject(emptyMap()),
                 )
                 val initial = payload["initialPrompt"] as? JsonObject
                 val rootCommandId = payload.optionalString("rootCommandId", 256)
@@ -816,6 +825,7 @@ internal class MatrixMlp3NativeProjection(
         project.model?.let { put("model", it) }
         project.reasoningEffort?.let { put("reasoning_effort", it) }
         put("permission_mode", project.permissionMode)
+        put("control_values", project.controlValues)
         put("default_extensions", project.defaultExtensions)
         put("extension_defaults_revision", project.extensionDefaultsRevision)
         put(
@@ -1264,7 +1274,7 @@ internal class MatrixMlp3NativeProjection(
             .filter { it.sessionId in retainedSessionIds }
             .takeLast(MAX_TASK_NOTIFICATION_PREVIEWS)
         val value = buildJsonObject {
-            put("schemaVersion", 18)
+            put("schemaVersion", 19)
             put("projectCapabilities", buildJsonArray {
                 projectCapabilities.entries.sortedBy { it.key }.forEach { (projectId, capabilities) ->
                     add(buildJsonObject {
@@ -1301,6 +1311,7 @@ internal class MatrixMlp3NativeProjection(
                         activeProject.model?.let { put("model", it) }
                         activeProject.reasoningEffort?.let { put("reasoningEffort", it) }
                         put("permissionMode", activeProject.permissionMode)
+                        put("controlValues", activeProject.controlValues)
                         put("installedExtensions", activeProject.installedExtensions)
                         put("defaultExtensions", activeProject.defaultExtensions)
                         put("extensionDefaultsRevision", activeProject.extensionDefaultsRevision)
@@ -1325,6 +1336,8 @@ internal class MatrixMlp3NativeProjection(
                         session.model?.let { put("model", it) }
                         session.reasoningEffort?.let { put("reasoningEffort", it) }
                         session.permissionMode?.let { put("permissionMode", it) }
+                        put("controlValues", session.controlValues)
+                        put("controls", session.controls)
                         put("extensionsRef", extensionCatalog.getValue(session.extensions))
                         put("extensionRevision", session.extensionRevision)
                         put(
@@ -1454,7 +1467,7 @@ internal class MatrixMlp3NativeProjection(
 
     private fun restore(value: JsonObject) {
         val schemaVersion = value.requiredLong("schemaVersion")
-        require(schemaVersion in 1L..18L)
+        require(schemaVersion in 1L..19L)
         val legacyWorkspaceCapabilities = if (schemaVersion == 1L || schemaVersion >= 9L) {
             null
         } else {
@@ -1578,6 +1591,7 @@ internal class MatrixMlp3NativeProjection(
                 extensionDefaultsRevision = it.optionalLong("extensionDefaultsRevision")
                     ?.takeIf { version -> version > 0 }
                     ?: 1,
+                controlValues = it["controlValues"] as? JsonObject ?: JsonObject(emptyMap()),
             )
             require(projects.put(restored.id, restored) == null) {
                 "The MLP/3 project projection is duplicated."
@@ -1642,6 +1656,8 @@ internal class MatrixMlp3NativeProjection(
                 model = session.optionalString("model", 256),
                 reasoningEffort = session.optionalString("reasoningEffort", 64),
                 permissionMode = session.optionalString("permissionMode", 128),
+                controlValues = session["controlValues"] as? JsonObject ?: JsonObject(emptyMap()),
+                controls = session["controls"] as? JsonArray ?: JsonArray(emptyList()),
                 extensions = if (schemaVersion >= 13L) {
                     extensionCatalog.requiredCatalogArray(
                         session.requiredLong("extensionsRef"),
@@ -1980,6 +1996,13 @@ internal class MatrixMlp3NativeProjection(
         model = model,
         reasoningEffort = reasoningEffort,
         permissionMode = permissionMode,
+        controls = projection["controls"] as? JsonArray
+            ?: sessions[sessionId]?.controls
+            ?: JsonArray(emptyList()),
+        controlValues = mergeControlValues(
+            sessions[sessionId]?.controlValues ?: JsonObject(emptyMap()),
+            projection["controls"] as? JsonArray,
+        ),
         extensions = projection["extensions"] as? JsonArray
             ?: sessions[sessionId]?.extensions
             ?: JsonArray(emptyList()),
@@ -2419,6 +2442,8 @@ internal class MatrixMlp3NativeProjection(
         session.activeTurnId?.let { put("active_turn_id", it) }
         put("extensions", session.extensions)
         put("available_commands", session.availableCommands)
+        put("control_values", session.controlValues)
+        put("controls", session.controls)
         session.providerHistory?.let { binding ->
             val page = providerHistoryPageStates[session.id]
                 ?.takeIf { it.snapshotId == binding.requiredString("snapshotId", 256) }
@@ -2432,7 +2457,84 @@ internal class MatrixMlp3NativeProjection(
         }
     }
 
+    private fun mergeControlValues(current: JsonObject, controls: JsonArray?): JsonObject {
+        if (controls == null) return current
+        val values = current.toMutableMap()
+        controls.forEach { element ->
+            val control = element as? JsonObject ?: return@forEach
+            val id = control["id"] as? JsonPrimitive ?: return@forEach
+            if (!id.isString) return@forEach
+            val value = control["value"] as? JsonPrimitive ?: return@forEach
+            if (value.isString || value.booleanOrNull != null) values[id.content] = value
+        }
+        return JsonObject(values)
+    }
+
     private fun validateCapabilities(value: JsonObject) {
+        fun validateControls(controls: JsonArray, label: String) {
+            controls.forEach { item ->
+                val control = item as? JsonObject
+                    ?: throw IllegalArgumentException("A $label control must be an object.")
+                control.requireKeys(
+                    setOf("id", "label", "renderer", "surfaces", "status"),
+                    setOf(
+                        "description", "updateEffect", "options", "value", "defaultValue",
+                        "error", "checkedAt", "deadlineAt", "retryAt",
+                    ),
+                    "$label control",
+                )
+                control.requiredString("id", 128)
+                control.requiredString("label", 256)
+                control.optionalString("description", 2_048)
+                control.requiredOneOf("renderer", setOf("select", "segmented", "toggle", "text"))
+                val surfaces = control.requiredArray("surfaces", 3)
+                require(surfaces.isNotEmpty())
+                surfaces.forEach { surface ->
+                    require((surface as? JsonPrimitive)?.content in setOf(
+                        "project-default", "session-create", "session-active",
+                    ))
+                }
+                control.optionalString("updateEffect", 32)?.let {
+                    require(it in setOf("immediate", "next-turn", "restart-session"))
+                }
+                val status = control.requiredOneOf(
+                    "status",
+                    setOf("loading", "ready", "stale", "error"),
+                )
+                val options = control.optionalArray("options", 256).orEmpty()
+                options.forEach { optionValue ->
+                    val option = optionValue as? JsonObject
+                        ?: throw IllegalArgumentException("A $label control option must be an object.")
+                    option.requireKeys(
+                        setOf("value", "label"),
+                        setOf("description", "when", "defaults"),
+                        "$label control option",
+                    )
+                    val optionId = option["value"] as? JsonPrimitive
+                        ?: throw IllegalArgumentException("A $label control option value is invalid.")
+                    require(
+                        (optionId.isString && optionId.content.length <= 4_096)
+                            || optionId.booleanOrNull != null,
+                    )
+                    option.requiredString("label", 256)
+                    option.optionalString("description", 2_048)
+                }
+                if (status == "error" || status == "stale") {
+                    val error = control.requiredObject("error")
+                    error.requireKeys(
+                        setOf("code", "message", "retryable"),
+                        setOf("detail"),
+                        "$label control error",
+                    )
+                    error.requiredString("code", 128)
+                    error.requiredString("message", 2_048)
+                    error.optionalString("detail", 4_096)
+                    error.requiredBoolean("retryable")
+                }
+            }
+            requireUniqueIds(controls, "$label controls")
+        }
+
         fun validateModels(models: JsonArray, label: String) {
             models.forEach { item ->
                 val model = item as? JsonObject
@@ -2470,11 +2572,12 @@ internal class MatrixMlp3NativeProjection(
                 "can_delete_session",
                 "session_extensions",
             ),
-            setOf("web_push", "providers"),
+            setOf("web_push", "providers", "controls"),
             "MLP/3 capabilities",
         )
         val models = value.requiredArray("models", 256)
         validateModels(models, "MLP/3 model capabilities")
+        value.optionalArray("controls", 64)?.let { validateControls(it, "MLP/3") }
 
         val providers = value.optionalArray("providers", 64) ?: JsonArray(emptyList())
         providers.forEach { item ->
@@ -2482,7 +2585,7 @@ internal class MatrixMlp3NativeProjection(
                 ?: throw IllegalArgumentException("A MLP/3 provider capability must be an object.")
             provider.requireKeys(
                 setOf("id", "name", "models", "can_list_sessions", "can_inspect_sessions"),
-                setOf("can_materialize_history"),
+                setOf("can_materialize_history", "controls"),
                 "MLP/3 provider capability",
             )
             provider.requiredString("id", 256)
@@ -2491,6 +2594,9 @@ internal class MatrixMlp3NativeProjection(
                 provider.requiredArray("models", 256),
                 "MLP/3 provider model capabilities",
             )
+            provider.optionalArray("controls", 64)?.let {
+                validateControls(it, "MLP/3 provider")
+            }
             provider.requiredBoolean("can_list_sessions")
             provider.requiredBoolean("can_inspect_sessions")
             if (provider["can_materialize_history"] != null) {

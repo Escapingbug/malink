@@ -1,3 +1,5 @@
+import type { ProviderControl } from '@malink/protocol'
+
 export interface AgentTextEvent {
     kind: 'text'
     text: string
@@ -59,6 +61,13 @@ export interface AgentSessionInitEvent {
     /** True when a stale conversationId could not be recovered and a brand-new
      *  session was created instead of resuming the old one. */
     isNewSession?: boolean
+    /** Provider controls discovered only after the ACP session is open. */
+    controls?: ProviderControl[]
+}
+
+export interface AgentControlsUpdateEvent {
+    kind: 'controls_update'
+    controls: ProviderControl[]
 }
 
 export interface AgentResultEvent {
@@ -95,3 +104,4 @@ export type AgentEvent =
     | AgentResultEvent
     | AgentRawEvent
     | AgentCommandsUpdateEvent
+    | AgentControlsUpdateEvent

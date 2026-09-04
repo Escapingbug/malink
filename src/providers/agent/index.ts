@@ -16,6 +16,11 @@ import type { PushableAsyncIterable } from '@/utils/PushableAsyncIterable'
 import type { AcpExtensionHandler } from '@/providers/acp/AcpClientManager'
 import { createCursorAcpExtensionHandler } from './cursorExtensions'
 import { createCursorPermissionHandler } from './cursorPermissions'
+import {
+    providerControlError,
+    providerControls,
+    type ProviderCatalogState,
+} from '@/providers/controls'
 
 const AGENT_ACP_COMMAND = 'agent'
 const AGENT_ACP_ARGS = ['acp']
@@ -55,6 +60,8 @@ export class AgentProvider extends AcpProvider {
     private modelCatalog: ModelEntry[] = []
     private modelRefreshPromise?: Promise<ModelEntry[]>
     private nextModelRefreshAt = 0
+    private modelCatalogState: ProviderCatalogState = { status: 'loading' }
+    private modelRetryTimer?: ReturnType<typeof setTimeout>
     private readonly modelCatalogListeners = new Set<() => void>()
 
     constructor(options: AgentProviderOptions = {}) {
@@ -89,6 +96,14 @@ export class AgentProvider extends AcpProvider {
         return this.modelCatalog.map(model => ({ ...model }))
     }
 
+    override getProviderControls() {
+        return providerControls(
+            this.getAvailableModels(),
+            this.modelCatalogState,
+            this.getAvailablePermissionModes(),
+        )
+    }
+
     onAvailableModelsRefreshed(listener: () => void): () => void {
         this.modelCatalogListeners.add(listener)
         return () => { this.modelCatalogListeners.delete(listener) }
@@ -96,7 +111,15 @@ export class AgentProvider extends AcpProvider {
 
     async refreshAvailableModels(): Promise<ModelEntry[]> {
         if (this.modelRefreshPromise) return this.modelRefreshPromise
-        this.nextModelRefreshAt = Date.now() + AGENT_MODELS_RETRY_MS
+        const startedAt = Date.now()
+        this.nextModelRefreshAt = startedAt + AGENT_MODELS_RETRY_MS
+        if (this.modelCatalog.length === 0) {
+            this.modelCatalogState = {
+                status: 'loading',
+                checkedAt: startedAt,
+                deadlineAt: startedAt + AGENT_MODELS_TIMEOUT_MS,
+            }
+        }
         const refresh = this.modelsReader({
             command: this.modelsCommand,
             args: [...this.modelsArgs],
@@ -105,17 +128,40 @@ export class AgentProvider extends AcpProvider {
         }).then(output => {
             this.modelCatalog = parseAgentModels(output)
             this.nextModelRefreshAt = Date.now() + AGENT_MODELS_REFRESH_MS
+            this.modelCatalogState = { status: 'ready', checkedAt: Date.now() }
+            if (this.modelRetryTimer) clearTimeout(this.modelRetryTimer)
+            delete this.modelRetryTimer
             this.notifyModelCatalogListeners()
             return this.modelCatalog.map(model => ({ ...model }))
         }).catch(error => {
             const message = error instanceof Error ? error.message : String(error)
             console.error(`[agent] Failed to list models: ${message}`)
+            const retryAt = Date.now() + AGENT_MODELS_RETRY_MS
+            this.nextModelRefreshAt = retryAt
+            this.modelCatalogState = {
+                status: this.modelCatalog.length > 0 ? 'stale' : 'error',
+                error: providerControlError(error),
+                checkedAt: Date.now(),
+                retryAt,
+            }
+            this.notifyModelCatalogListeners()
+            this.scheduleModelCatalogRetry()
             return this.modelCatalog.map(model => ({ ...model }))
         }).finally(() => {
             delete this.modelRefreshPromise
         })
         this.modelRefreshPromise = refresh
         return refresh
+    }
+
+    private scheduleModelCatalogRetry(): void {
+        if (this.modelRetryTimer) return
+        const delay = Math.max(0, this.nextModelRefreshAt - Date.now())
+        this.modelRetryTimer = setTimeout(() => {
+            delete this.modelRetryTimer
+            void this.refreshAvailableModels()
+        }, delay)
+        this.modelRetryTimer.unref()
     }
 
     private notifyModelCatalogListeners(): void {

@@ -28,6 +28,7 @@ import {
   type GatewayUpdateStatus,
   type ProviderHistoryMessage,
   type ProviderSessionEntry,
+  type ProviderControlValues,
 } from "@malink/protocol";
 import type { NativeUpdateStatus } from "@malink/native-bridge";
 import {
@@ -113,6 +114,8 @@ import {
   type GatewayUpdateNodeRuntime,
 } from "./GatewayUpdateDialog";
 import { PrivilegeTotpDialog } from "./PrivilegeTotpDialog";
+import { ProviderControls } from "./ProviderControls";
+import { legacyProviderControls } from "./providerControlCompatibility";
 import {
   enrollPrivilegeTotp,
   forgetPrivilegeTotp,
@@ -507,24 +510,11 @@ type NativeCommandReviewNotice = MalinkCommandReview & {
   busy: boolean;
 };
 
-type SessionSettingsField = "model" | "reasoningEffort" | "permissionMode";
-
 type SessionSettingsUpdate = {
   sessionId: string;
-  field: SessionSettingsField;
-  value: string;
+  label: string;
+  changes: ProviderControlValues;
 };
-
-function sessionSettingsFieldLabel(field: SessionSettingsField): string {
-  switch (field) {
-    case "model":
-      return "Model";
-    case "reasoningEffort":
-      return "Reasoning effort";
-    case "permissionMode":
-      return "Permission mode";
-  }
-}
 
 type SendRealCommandOptions = {
   autoRetryRevisionConflict?: boolean;
@@ -2982,12 +2972,35 @@ function MalinkAppRuntime() {
     : undefined;
   const providerHistoryCapabilities = providerHistoryWorkspace?.capabilities
     ?? (providerHistoryWorkspace ? gatewayState?.capabilities : undefined);
-  const activeProviderModels = activeCapabilities?.providers.find(
+  const activeProviderCapability = activeCapabilities?.providers.find(
     (provider) => provider.id === activeProvider,
-  )?.models ?? activeCapabilities?.models ?? [];
-  const activeModelCapability = activeProviderModels.find(
-    (model) => model.id === activeWorkspace?.model,
   );
+  const activeProviderModels = activeProviderCapability?.models
+    ?? activeCapabilities?.models
+    ?? [];
+  const activeProviderControls = selected?.controls?.length
+    ? selected.controls
+    : activeProviderCapability?.controls !== undefined
+      ? activeProviderCapability.controls
+      : activeCapabilities?.controls !== undefined
+        ? activeCapabilities.controls
+        : legacyProviderControls(
+            activeProviderModels,
+            activeCapabilities?.permissionModes ?? [],
+          );
+  const activeProviderControlValues: ProviderControlValues = {
+    ...(selected?.controlValues ?? {}),
+    ...(selected?.model ? { model: selected.model } : {}),
+    ...(selected?.reasoningEffort
+      ? { reasoningEffort: selected.reasoningEffort }
+      : {}),
+    ...(activeWorkspace?.permissionMode
+      ? { permissionMode: activeWorkspace.permissionMode }
+      : {}),
+    ...(sessionSettingsUpdate && sessionSettingsUpdate.sessionId === selected?.id
+      ? sessionSettingsUpdate.changes
+      : {}),
+  };
 
   function showUiNotice(
     key: string,
@@ -9499,8 +9512,11 @@ function MalinkAppRuntime() {
       const sent = await sendRealCommand({
         operation: "project.settings",
         name: input.name,
-        model: input.model,
-        reasoningEffort: input.reasoningEffort,
+        ...(input.model === undefined ? {} : { model: input.model }),
+        ...(input.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: input.reasoningEffort }),
+        controls: input.controls,
       }, project.projectId, { propagateFailure: true });
       if (!sent) return;
       commandId = sent.commandId;
@@ -9684,8 +9700,11 @@ function MalinkAppRuntime() {
       if (input.setAsProjectDefault) {
         const settingsUpdate = await sendRealCommand({
           operation: "project.settings",
-          model: input.model ?? null,
-          reasoningEffort: input.reasoningEffort ?? null,
+          ...(input.model === undefined ? {} : { model: input.model }),
+          ...(input.reasoningEffort === undefined
+            ? {}
+            : { reasoningEffort: input.reasoningEffort }),
+          controls: input.controls ?? {},
           defaultExtensions: input.extensions ?? [],
         }, input.projectId);
         if (!settingsUpdate || (await settingsUpdate.completion).outcome !== "succeeded") {
@@ -9702,6 +9721,7 @@ function MalinkAppRuntime() {
         ...(input.reasoningEffort
           ? { reasoningEffort: input.reasoningEffort }
           : {}),
+        ...(input.controls ? { controls: input.controls } : {}),
         ...(input.extensions ? { extensions: input.extensions } : {}),
       }, input.projectId);
       if (!sent) {
@@ -11498,27 +11518,19 @@ function MalinkAppRuntime() {
     }
   }
 
-  async function updateSessionSetting(
-    field: SessionSettingsField,
-    value: string,
+  async function updateSessionControls(
+    changes: ProviderControlValues,
+    label: string,
   ): Promise<void> {
     const sessionId = selectedSessionIdRef.current;
     if (!sessionId || sessionSettingsUpdate) return;
-    const update = { sessionId, field, value };
+    const update = { sessionId, changes, label };
     setSessionSettingsUpdate(update);
-    const payload: CommandPayload = field === "model"
-      ? { operation: "session.settings", sessionId, model: value }
-      : field === "reasoningEffort"
-        ? { operation: "session.settings", sessionId, reasoningEffort: value }
-        : {
-            operation: "session.settings",
-            sessionId,
-            permissionMode: value as
-              | "default"
-              | "accept_edits"
-              | "plan"
-              | "bypass_permissions",
-          };
+    const payload: CommandPayload = {
+      operation: "session.settings",
+      sessionId,
+      controls: changes,
+    };
     try {
       const sent = await sendRealCommand(payload, undefined, {
         propagateFailure: true,
@@ -11534,7 +11546,7 @@ function MalinkAppRuntime() {
         "session:settings",
         "composer",
         "success",
-        `${sessionSettingsFieldLabel(field)} updated.`,
+        `${label} updated.`,
         3_000,
       );
     } catch (error) {
@@ -11549,10 +11561,6 @@ function MalinkAppRuntime() {
     }
   }
 
-  const activeSessionSettingsUpdate = sessionSettingsUpdate?.sessionId ===
-      selectedSessionId
-    ? sessionSettingsUpdate
-    : null;
   const settingsUpdateBusy = sessionSettingsUpdate !== null;
   const journalReconciliationAvailable = nativeRuntime === null ||
     nativeRuntime.commandJournalReconciliation === true;
@@ -13759,116 +13767,40 @@ function MalinkAppRuntime() {
                   ))}
                 </div>
               )}
+              {activeProviderControls.length > 0 && (
               <div id="composer-agent-options" className="agent-controls">
-                <label>
-                  <span className="status-spark" />
-                  <select
-                    value={activeSessionSettingsUpdate?.field === "model"
-                      ? activeSessionSettingsUpdate.value
-                      : activeWorkspace?.model ?? ""}
-                    onChange={(event) =>
-                      void updateSessionSetting("model", event.target.value)
+                <span className="status-spark" />
+                <ProviderControls
+                  controls={activeProviderControls}
+                  surface="session-active"
+                  values={activeProviderControlValues}
+                  disabled={!sessionReady || settingsUpdateBusy}
+                  compact
+                  onChange={(nextValues) => {
+                    const changedControls = activeProviderControls.filter(control =>
+                      nextValues[control.id] !== activeProviderControlValues[control.id]
+                      && nextValues[control.id] !== undefined
+                    );
+                    const changes = Object.fromEntries(changedControls.map(control => [
+                      control.id,
+                      nextValues[control.id]!,
+                    ]));
+                    if (changedControls.length > 0) {
+                      void updateSessionControls(
+                        changes,
+                        changedControls.map(control => control.label).join(" and "),
+                      );
                     }
-                    aria-label="Agent model"
-                    disabled={
-                      !sessionReady ||
-                      settingsUpdateBusy ||
-                      activeProviderModels.length === 0
-                    }
-                  >
-                    {!activeWorkspace?.model && (
-                      <option value="">Computer default</option>
-                    )}
-                    {activeProviderModels.map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <span className="control-divider" />
-                <label>
-                  <select
-                    value={
-                      activeSessionSettingsUpdate?.field === "reasoningEffort"
-                        ? activeSessionSettingsUpdate.value
-                        : activeWorkspace?.reasoningEffort ??
-                          activeModelCapability?.defaultReasoningLevel ??
-                          ""
-                    }
-                    onChange={(event) =>
-                      void updateSessionSetting(
-                        "reasoningEffort",
-                        event.target.value,
-                      )
-                    }
-                    aria-label="Reasoning effort"
-                    title="Reasoning effort"
-                    disabled={
-                      !sessionReady ||
-                      settingsUpdateBusy ||
-                      !activeModelCapability ||
-                      activeModelCapability.supportedReasoningLevels.length === 0
-                    }
-                  >
-                    {!activeModelCapability && (
-                      <option value="">Reasoning</option>
-                    )}
-                    {(activeModelCapability?.supportedReasoningLevels ?? []).map(
-                      (level) => (
-                        <option key={level.effort} value={level.effort}>
-                          {level.effort}
-                          {level.effort ===
-                          activeModelCapability?.defaultReasoningLevel
-                            ? " (default)"
-                            : ""}
-                        </option>
-                      ),
-                    )}
-                  </select>
-                </label>
-                {(activeCapabilities?.permissionModes.length ?? 0) >
-                  1 && (
-                  <>
-                    <span className="control-divider" />
-                    <label>
-                      <select
-                        value={activeSessionSettingsUpdate?.field === "permissionMode"
-                          ? activeSessionSettingsUpdate.value
-                          : activeWorkspace?.permissionMode ?? ""}
-                        onChange={(event) =>
-                          void updateSessionSetting(
-                            "permissionMode",
-                            event.target.value,
-                          )
-                        }
-                        aria-label="Permission mode"
-                        title="Permission mode"
-                        disabled={
-                          !sessionReady ||
-                          settingsUpdateBusy ||
-                          activeCapabilities!.permissionModes.length === 0
-                        }
-                      >
-                        {!gatewayState && <option value="">Syncing…</option>}
-                        {(activeCapabilities?.permissionModes ?? []).map(
-                          (mode) => (
-                            <option key={mode.id} value={mode.id}>
-                              {mode.name}
-                            </option>
-                          ),
-                        )}
-                      </select>
-                    </label>
-                  </>
-                )}
+                  }}
+                />
                 {sessionSettingsUpdate && (
                   <span className="agent-setting-status" role="status">
                     <span className="button-spinner" aria-hidden="true" />
-                    Updating {sessionSettingsFieldLabel(sessionSettingsUpdate.field).toLowerCase()}…
+                    Updating {sessionSettingsUpdate.label.toLowerCase()}…
                   </span>
                 )}
               </div>
+              )}
               <div className="composer-submit-actions">
                 {isStreaming && (
                   <button
@@ -14501,6 +14433,8 @@ function optimisticSessionSummary(
     ...(record.input.reasoningEffort
       ? { reasoningEffort: record.input.reasoningEffort }
       : {}),
+    controlValues: record.input.controls ?? {},
+    controls: [],
     extensions: (record.input.extensions ?? []).map((extension) => ({
       id: extension.id,
       name: extension.id,

@@ -1,6 +1,7 @@
 import type { AgentEvent } from './types'
 import type { DecisionRequest, DecisionResponse } from '@/bridge/channelPort'
 import type { RichUserInput } from '@/runtime/semantic'
+import type { ProviderControl } from '@malink/protocol'
 
 export class ProviderNotReadyError extends Error {
     constructor(providerName: string, reason: string) {
@@ -112,6 +113,8 @@ export interface AgentProvider {
     reinit?(): Promise<void>
 
     getAvailableModels(): ModelEntry[]
+    /** Declarative controls supported by this provider. Missing controls are not rendered. */
+    getProviderControls?(): ProviderControl[]
     /**
      * Observe completion of a background model-catalog refresh.
      *

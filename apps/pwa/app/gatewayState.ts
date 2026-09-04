@@ -11,6 +11,10 @@ import {
   ProviderCommand,
   type NativeClientRelease,
   type GatewayUpdateStatus,
+  type ProviderControl,
+  type ProviderControlValues,
+  providerControlSchema,
+  providerControlValuesSchema,
 } from "@malink/protocol";
 
 export type GatewayNodeStatusObservation = {
@@ -55,6 +59,8 @@ export type GatewaySessionSummary = {
   provider: string;
   model?: string;
   reasoningEffort?: string;
+  controls?: ProviderControl[];
+  controlValues?: ProviderControlValues;
   activeTurnId?: string;
   extensions: SessionExtensionSummary[];
   availableCommands: ProviderCommand[];
@@ -83,6 +89,7 @@ export type GatewayWorkspaceState = {
   model?: string;
   reasoningEffort?: string;
   permissionMode: string;
+  controlValues?: ProviderControlValues;
   defaultExtensions?: SessionExtensionBinding[];
   extensionDefaultsRevision?: number;
   /** Capabilities advertised by the Gateway that owns this project. */
@@ -96,7 +103,9 @@ export type GatewayCapabilities = {
     canListSessions: boolean;
     canInspectSessions: boolean;
     canMaterializeHistory?: boolean;
+    controls?: ProviderControl[];
   }>;
+  controls?: ProviderControl[];
   permissionModes: GatewayCapabilityOption[];
   canCreateSession: boolean;
   canSelectSession: boolean;
@@ -306,6 +315,16 @@ export function parseGatewayStateExtension(
       ...(typeof session.reasoning_effort === "string"
         ? { reasoningEffort: session.reasoning_effort }
         : {}),
+      ...(session.controls === undefined
+        ? {}
+        : { controls: parseProviderControls(session.controls) }),
+      ...(session.control_values === undefined
+        ? {}
+        : {
+            controlValues: providerControlValuesSchema.parse(
+              session.control_values,
+            ),
+          }),
       ...(typeof session.active_turn_id === "string"
         ? { activeTurnId: session.active_turn_id }
         : {}),
@@ -346,6 +365,10 @@ export function parseGatewayStateExtension(
       ...(session.reasoningEffort
         ? { reasoningEffort: session.reasoningEffort }
         : {}),
+      ...(session.controls === undefined ? {} : { controls: session.controls }),
+      ...(session.controlValues === undefined
+        ? {}
+        : { controlValues: session.controlValues }),
       ...(session.activeTurnId ? { activeTurnId: session.activeTurnId } : {}),
       extensions: session.extensions,
       availableCommands: session.availableCommands,
@@ -482,12 +505,31 @@ function parseGatewayWorkspaceState(input: unknown): GatewayWorkspaceState {
       ? { reasoningEffort: workspace.reasoning_effort }
       : {}),
     permissionMode: workspace.permission_mode,
+    ...(workspace.control_values === undefined
+      ? {}
+      : {
+          controlValues: providerControlValuesSchema.parse(
+            workspace.control_values,
+          ),
+        }),
     ...(defaultExtensions === undefined ? {} : { defaultExtensions }),
     ...(extensionDefaultsRevision === undefined ? {} : { extensionDefaultsRevision }),
     ...(workspace.capabilities === undefined
       ? {}
       : { capabilities: parseGatewayCapabilities(workspace.capabilities) }),
   };
+}
+
+function parseProviderControls(input: unknown): ProviderControl[] {
+  if (input === undefined) return [];
+  if (!Array.isArray(input) || input.length > 64) {
+    throw new Error("The authenticated Gateway provider controls are malformed.");
+  }
+  const controls = input.map(control => providerControlSchema.parse(control));
+  if (new Set(controls.map(control => control.id)).size !== controls.length) {
+    throw new Error("The authenticated Gateway provider controls contain duplicate IDs.");
+  }
+  return controls;
 }
 
 export function parseGatewayCapabilities(input: unknown): GatewayCapabilities {
@@ -589,6 +631,9 @@ export function parseGatewayCapabilities(input: unknown): GatewayCapabilities {
 
   return {
     models: parseModels(capabilities.models),
+    ...(capabilities.controls === undefined
+      ? {}
+      : { controls: parseProviderControls(capabilities.controls) }),
     providers: Array.isArray(capabilities.providers)
       ? capabilities.providers.map(value => {
           const provider = asRecord(value);
@@ -609,6 +654,9 @@ export function parseGatewayCapabilities(input: unknown): GatewayCapabilities {
             canListSessions: provider.can_list_sessions,
             canInspectSessions: provider.can_inspect_sessions,
             canMaterializeHistory: provider.can_materialize_history === true,
+            ...(provider.controls === undefined
+              ? {}
+              : { controls: parseProviderControls(provider.controls) }),
           };
         })
       : [],
@@ -798,6 +846,7 @@ function gatewayCapabilitiesExtension(
         ...(provider.canMaterializeHistory === undefined
           ? {}
           : { can_materialize_history: provider.canMaterializeHistory }),
+        ...(provider.controls === undefined ? {} : { controls: provider.controls }),
         models: provider.models.map((model) => ({
           id: model.id,
           name: model.name,
@@ -814,6 +863,7 @@ function gatewayCapabilitiesExtension(
         id: mode.id,
         name: mode.name,
       })),
+      ...(capabilities.controls === undefined ? {} : { controls: capabilities.controls }),
       can_create_session: capabilities.canCreateSession,
       can_select_session: capabilities.canSelectSession,
       ...(capabilities.canArchiveSession === undefined
@@ -859,6 +909,7 @@ function gatewayWorkspaceExtension(state: GatewayWorkspaceState): Record<string,
     ...(state.model ? { model: state.model } : {}),
     ...(state.reasoningEffort ? { reasoning_effort: state.reasoningEffort } : {}),
     permission_mode: state.permissionMode,
+    ...(state.controlValues === undefined ? {} : { control_values: state.controlValues }),
     ...(state.defaultExtensions === undefined
       ? {}
       : { default_extensions: state.defaultExtensions }),

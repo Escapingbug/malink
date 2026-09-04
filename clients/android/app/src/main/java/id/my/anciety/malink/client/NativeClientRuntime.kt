@@ -1975,6 +1975,7 @@ class NativeClientRuntime(
                     raw.string("model")?.let { put("model", it) }
                     raw.string("reasoningEffort")?.let { put("reasoningEffort", it) }
                     raw.string("permissionMode")?.let { put("permissionMode", it) }
+                    raw["controls"]?.let { put("controls", it) }
                     raw["extensions"]?.let { put("extensions", it) }
                     raw.string("initialPrompt")?.let { prompt ->
                         put("initialPrompt", buildJsonObject { put("text", prompt) })
@@ -2037,6 +2038,7 @@ class NativeClientRuntime(
                     raw.string("model")?.let { put("model", it) }
                     raw.string("reasoningEffort")?.let { put("reasoningEffort", it) }
                     raw.string("permissionMode")?.let { put("permissionMode", it) }
+                    raw["controls"]?.let { put("controls", it) }
                 }
                 require(patch.isNotEmpty()) {
                     "Project directory changes belong to a Matrix project room in MLP/3."
@@ -2055,6 +2057,7 @@ class NativeClientRuntime(
                         raw.string("name")?.let { put("name", it) }
                         raw["model"]?.let { put("model", it) }
                         raw["reasoningEffort"]?.let { put("reasoningEffort", it) }
+                        raw["controls"]?.let { put("controls", it) }
                         raw["defaultExtensions"]?.let { put("defaultExtensions", it) }
                     })
                 }

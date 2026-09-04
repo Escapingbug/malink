@@ -2,6 +2,7 @@ package id.my.anciety.malink.client.command
 
 import id.my.anciety.malink.security.malink.PairingOperation
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -279,6 +280,33 @@ class CommandPayloadValidatorTest {
                 },
             ) is SessionSettingsCommandPayload,
         )
+    }
+
+    @Test
+    fun `provider controls accept only bounded string and boolean values`() {
+        val parsed = CommandPayloadValidator.validate(buildJsonObject {
+            put("operation", "session.settings")
+            put("sessionId", "session-1")
+            put("controls", buildJsonObject {
+                put("model", "auto")
+                put("planMode", true)
+            })
+        }) as SessionSettingsCommandPayload
+        assertEquals("auto", (parsed.controls?.get("model") as JsonPrimitive).content)
+        assertEquals(true, (parsed.controls?.get("planMode") as JsonPrimitive).booleanOrNull)
+
+        assertInvalid(buildJsonObject {
+            put("operation", "session.create")
+            put("controls", buildJsonObject {
+                put("bad id", "value")
+            })
+        })
+        assertInvalid(buildJsonObject {
+            put("operation", "project.settings")
+            put("controls", buildJsonObject {
+                put("nested", buildJsonObject { put("value", "no") })
+            })
+        })
     }
 
     @Test

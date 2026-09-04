@@ -127,6 +127,7 @@ data class SessionSettingsCommandPayload(
     val model: String?,
     val reasoningEffort: String?,
     val permissionMode: CommandPermissionMode?,
+    val controls: JsonObject?,
     val cwd: String?,
     val projectName: String?,
 ) : ValidatedCommandPayload {
@@ -148,6 +149,7 @@ data class SessionCreateCommandPayload(
     val model: String?,
     val reasoningEffort: String?,
     val permissionMode: CommandPermissionMode?,
+    val controls: JsonObject?,
     val extensions: List<SessionExtensionBindingPayload>,
     val initialPrompt: String?,
 ) : ValidatedCommandPayload {
@@ -164,6 +166,7 @@ data class ProjectSettingsCommandPayload(
     val name: String?,
     val model: String?,
     val reasoningEffort: String?,
+    val controls: JsonObject?,
     val defaultExtensions: List<SessionExtensionBindingPayload>?,
 ) : ValidatedCommandPayload {
     override val operation = CommandOperation.PROJECT_SETTINGS
@@ -398,7 +401,7 @@ object CommandPayloadValidator {
     }
 
     private fun validateSessionSettings(value: JsonObject): SessionSettingsCommandPayload {
-        val settings = setOf("model", "reasoningEffort", "permissionMode", "cwd", "projectName")
+        val settings = setOf("model", "reasoningEffort", "permissionMode", "controls", "cwd", "projectName")
         value.requireExactKeys(required = setOf("operation", "sessionId"), optional = settings)
         require(value.keys.any(settings::contains)) { "At least one session setting is required." }
         return SessionSettingsCommandPayload(
@@ -406,6 +409,7 @@ object CommandPayloadValidator {
             model = value.optionalBoundedString("model", 256),
             reasoningEffort = value.optionalBoundedString("reasoningEffort", 64),
             permissionMode = value.optionalString("permissionMode")?.let(CommandPermissionMode::fromWireName),
+            controls = value.optionalProviderControls("controls"),
             cwd = value.optionalBoundedString("cwd", 4_096),
             projectName = value.optionalBoundedString("projectName", 256),
         )
@@ -424,6 +428,7 @@ object CommandPayloadValidator {
                 "model",
                 "reasoningEffort",
                 "permissionMode",
+                "controls",
                 "extensions",
                 "initialPrompt",
             ),
@@ -446,13 +451,14 @@ object CommandPayloadValidator {
             model = value.optionalBoundedString("model", 256),
             reasoningEffort = value.optionalBoundedString("reasoningEffort", 64),
             permissionMode = value.optionalString("permissionMode")?.let(CommandPermissionMode::fromWireName),
+            controls = value.optionalProviderControls("controls"),
             extensions = extensions,
             initialPrompt = value.optionalBoundedString("initialPrompt", 64 * 1024),
         )
     }
 
     private fun validateProjectSettings(value: JsonObject): ProjectSettingsCommandPayload {
-        val settings = setOf("name", "model", "reasoningEffort", "defaultExtensions")
+        val settings = setOf("name", "model", "reasoningEffort", "controls", "defaultExtensions")
         value.requireExactKeys(
             required = setOf("operation"),
             optional = settings,
@@ -473,6 +479,7 @@ object CommandPayloadValidator {
             },
             model = value.optionalNullableBoundedString("model", 256),
             reasoningEffort = value.optionalNullableBoundedString("reasoningEffort", 64),
+            controls = value.optionalProviderControls("controls"),
             defaultExtensions = defaultExtensions,
         )
     }
@@ -687,6 +694,7 @@ object CommandPayloadValidator {
     private val BASE64_URL = Regex("^[A-Za-z0-9_-]+$")
     private val ACTION_ID = Regex("^[a-z][a-z0-9._-]*$")
     private val RELEASE_ID = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    private val PROVIDER_CONTROL_ID = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     private val TOTP = Regex("^[0-9]{6}$")
 
     private fun isMxcUrl(value: String): Boolean {
@@ -768,6 +776,26 @@ object CommandPayloadValidator {
         return runCatching { getValue(key) as kotlinx.serialization.json.JsonArray }.getOrElse {
             throw IllegalArgumentException("Command field $key must be an array.")
         }
+    }
+
+    private fun JsonObject.optionalProviderControls(key: String): JsonObject? {
+        if (key !in this) return null
+        val controls = get(key) as? JsonObject
+            ?: throw IllegalArgumentException("Command field $key must be an object.")
+        require(controls.size <= 64 && controls.toString().length <= 32 * 1024) {
+            "Command field $key is too large."
+        }
+        controls.forEach { (id, element) ->
+            require(PROVIDER_CONTROL_ID.matches(id)) { "Provider control ID is invalid." }
+            val value = element as? JsonPrimitive
+                ?: throw IllegalArgumentException("Provider control $id has an invalid value.")
+            if (value.isString) {
+                require(value.content.length <= 4_096) { "Provider control $id is too long." }
+            } else {
+                require(value.booleanOrNull != null) { "Provider control $id must be a string or boolean." }
+            }
+        }
+        return controls
     }
 
     private fun JsonObject.requiredBase64Url(key: String, length: Int): String =

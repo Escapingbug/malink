@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { canonicalJson, commandSchema, eventSchema } from '../src/index.js'
+import {
+  canonicalJson,
+  commandPayloadSchema,
+  commandSchema,
+  eventSchema,
+  providerControlSchema,
+} from '../src/index.js'
 
 describe('canonicalJson', () => {
   it('sorts nested object keys deterministically', () => {
@@ -15,6 +21,62 @@ describe('canonicalJson', () => {
 })
 
 describe('protocol schemas', () => {
+  it('models provider controls with explicit loading and diagnostic states', () => {
+    expect(providerControlSchema.parse({
+      id: 'model',
+      label: 'Model',
+      renderer: 'select',
+      surfaces: ['session-create', 'session-active'],
+      status: 'loading',
+      deadlineAt: 1_900_000_000_000,
+    }).status).toBe('loading')
+    expect(providerControlSchema.parse({
+      id: 'model',
+      label: 'Model',
+      renderer: 'select',
+      surfaces: ['session-create'],
+      status: 'error',
+      error: {
+        code: 'executable_not_found',
+        message: 'The provider executable could not be found by the Gateway.',
+        retryable: true,
+        detail: 'spawn agent ENOENT',
+      },
+    }).error?.detail).toBe('spawn agent ENOENT')
+    expect(() => providerControlSchema.parse({
+      id: 'model',
+      label: 'Model',
+      renderer: 'select',
+      surfaces: ['session-create'],
+      status: 'ready',
+      options: [],
+    })).toThrow('require options')
+    expect(() => providerControlSchema.parse({
+      id: 'model',
+      label: 'Model',
+      renderer: 'select',
+      surfaces: ['session-create'],
+      status: 'loading',
+    })).toThrow('require a deadline')
+  })
+
+  it('carries generic provider control values through every settings surface', () => {
+    expect(commandPayloadSchema.parse({
+      operation: 'session.create',
+      provider: 'agent',
+      controls: { model: 'auto', planMode: true },
+    })).toMatchObject({ controls: { model: 'auto', planMode: true } })
+    expect(commandPayloadSchema.parse({
+      operation: 'session.settings',
+      sessionId: 'session-1',
+      controls: { mode: 'agent' },
+    })).toMatchObject({ controls: { mode: 'agent' } })
+    expect(commandPayloadSchema.parse({
+      operation: 'project.settings',
+      controls: { model: 'auto' },
+    })).toMatchObject({ controls: { model: 'auto' } })
+  })
+
   it('accepts only bounded application-encrypted Matrix prompt attachments', () => {
     const attachment = {
       id: 'attachment-1',

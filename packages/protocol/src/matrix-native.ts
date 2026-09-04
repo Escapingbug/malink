@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { signatureSchema } from './schema.js'
+import { providerControlSchema, signatureSchema } from './schema.js'
 import { signedSecureEnvelopeBundleSchema } from './secure-envelope.js'
 
 /** Pre-MLP/3 application envelope retained only for migration/boundary tests. */
@@ -229,12 +229,14 @@ export const matrixGatewayCapabilitiesSchema = z
     providers: z.array(
       matrixCapabilityOptionSchema.safeExtend({
         models: z.array(matrixModelCapabilitySchema).max(256),
+        controls: z.array(providerControlSchema).max(64).optional(),
         can_list_sessions: z.boolean(),
         can_inspect_sessions: z.boolean(),
         can_materialize_history: z.boolean().optional(),
       }).strict(),
     ).max(64).optional(),
     permission_modes: z.array(matrixCapabilityOptionSchema).max(128),
+    controls: z.array(providerControlSchema).max(64).optional(),
     can_create_session: z.boolean(),
     can_select_session: z.boolean(),
     can_archive_session: z.boolean(),
@@ -254,6 +256,7 @@ export const matrixGatewayCapabilitiesSchema = z
       ['models', capabilities.models],
       ['providers', capabilities.providers ?? []],
       ['permission_modes', capabilities.permission_modes],
+      ['controls', capabilities.controls ?? []],
       ['session_extensions', capabilities.session_extensions],
     ] as const) {
       const ids = new Set<string>()
@@ -268,6 +271,19 @@ export const matrixGatewayCapabilitiesSchema = z
         ids.add(value.id)
       })
     }
+    capabilities.providers?.forEach((provider, providerIndex) => {
+      const ids = new Set<string>()
+      provider.controls?.forEach((control, controlIndex) => {
+        if (ids.has(control.id)) {
+          context.addIssue({
+            code: 'custom',
+            path: ['providers', providerIndex, 'controls', controlIndex, 'id'],
+            message: 'Provider control IDs must be unique',
+          })
+        }
+        ids.add(control.id)
+      })
+    })
   })
 
 export type MatrixGatewayCapabilities = z.infer<

@@ -4,7 +4,7 @@ import { access, readFile, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { SessionExtensionView } from '@malink/protocol'
+import type { ProviderControl, SessionExtensionView } from '@malink/protocol'
 import type { ChannelPort, ChannelMessage, SessionStatus } from '@/bridge/channelPort'
 import type { AgentPermissionHandler, AgentProvider, AgentQueryHandle } from '@/providers/provider'
 import type { AgentEvent } from '@/providers/types'
@@ -283,6 +283,10 @@ export interface SemanticSessionRuntimeConfig {
     onModelChanged?: (model: string | null) => void
     onReasoningEffortChanged?: (reasoningEffort: string | null) => void
     onAvailableCommands?: (commands: ProviderCommand[]) => void
+    onProviderControlsChanged?: (
+        controls: ProviderControl[],
+        update: 'replace' | 'config',
+    ) => Promise<void> | void
     destroyTimeoutMs?: number
     extensions?: readonly SessionExtensionInstance[]
     privilegeExecutor?: PrivilegeExecutor
@@ -346,7 +350,10 @@ export class SemanticSessionRuntime {
         // These settings are captured when a turn starts and only affect future
         // turns. Applying them immediately keeps Telegram callbacks from waiting
         // behind a long-running query in the session mailbox.
-        if (input.kind === 'command' && (input.name === 'model' || input.name === 'reasoningEffort')) {
+        if (
+            input.kind === 'command'
+            && ['model', 'reasoningEffort', 'permissionMode', 'providerControl'].includes(input.name)
+        ) {
             return this.handleCommand(input)
         }
 
@@ -789,6 +796,19 @@ export class SemanticSessionRuntime {
                 if (providerEvent.kind === 'commands_update') {
                     this.availableCommands = providerEvent.commands
                     this.config.onAvailableCommands?.(providerEvent.commands)
+                }
+                if (providerEvent.kind === 'session_init' && providerEvent.controls) {
+                    await this.config.onProviderControlsChanged?.(
+                        providerEvent.controls,
+                        'replace',
+                    )
+                }
+                if (providerEvent.kind === 'controls_update') {
+                    await this.config.onProviderControlsChanged?.(
+                        providerEvent.controls,
+                        'config',
+                    )
+                    continue
                 }
                 if (providerEvent.kind === 'tool_use') {
                     this.lastToolName = providerEvent.toolName
@@ -1364,6 +1384,26 @@ export class SemanticSessionRuntime {
                 this.config.onReasoningEffortChanged?.(args || null)
                 this.recordCommand('reasoningEffort', { reasoningEffort: args || null })
                 return
+            case 'providerControl': {
+                const parsed = JSON.parse(args ?? '') as { id?: unknown; value?: unknown }
+                if (
+                    typeof parsed.id !== 'string'
+                    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(parsed.id)
+                    || !['string', 'boolean'].includes(typeof parsed.value)
+                ) {
+                    throw new Error('Provider control update is malformed')
+                }
+                const existing = this.config.providerSettings?.controls
+                const controls = existing && typeof existing === 'object' && !Array.isArray(existing)
+                    ? existing as Record<string, unknown>
+                    : {}
+                this.config.providerSettings = {
+                    ...(this.config.providerSettings ?? {}),
+                    controls: { ...controls, [parsed.id]: parsed.value as string | boolean },
+                }
+                this.recordCommand('providerControl', { id: parsed.id, value: parsed.value })
+                return
+            }
             case 'timeout': {
                 const timeoutSeconds = Number.parseInt(args ?? '', 10)
                 this.config.providerSettings = { ...(this.config.providerSettings ?? {}), timeoutSeconds }

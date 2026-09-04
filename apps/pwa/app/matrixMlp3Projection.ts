@@ -6,6 +6,7 @@ import type {
   NativeClientRelease,
   GatewayEnrollmentPending,
   GatewayUpdateStatus,
+  ProviderControlValues,
   SessionExtensionBinding,
   SessionExtensionDescriptor,
   SignedWorkspaceGatewayDirectory,
@@ -19,9 +20,10 @@ import {
   signedWorkspaceGatewayDirectorySchema,
   gatewayEnrollmentPendingSchema,
   gatewayUpdateStatusSchema,
+  providerControlValuesSchema,
 } from "@malink/protocol";
 
-export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 9 as const;
+export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 10 as const;
 
 export type V3ProjectedSession = Mlp3SessionProjection & {
   sessionId: string;
@@ -36,6 +38,7 @@ export type V3ProjectedSession = Mlp3SessionProjection & {
   model?: string;
   reasoningEffort?: string;
   permissionMode?: string;
+  controlValues?: ProviderControlValues;
   extensionBindings?: SessionExtensionBinding[];
   activeTurnId?: string;
 };
@@ -111,6 +114,7 @@ export type V3ProjectProjection = {
   installedExtensions: SessionExtensionDescriptor[];
   defaultExtensions: SessionExtensionBinding[];
   extensionDefaultsRevision: number;
+  controlValues?: ProviderControlValues;
 };
 
 export type V3WorkspaceProjection = {
@@ -261,6 +265,7 @@ export class MatrixMlp3Projection {
           ...(command.payload.permissionMode
             ? { permissionMode: command.payload.permissionMode }
             : {}),
+          controlValues: structuredClone(command.payload.controls ?? {}),
           extensionBindings: command.payload.extensions ?? [],
           extensions: (command.payload.extensions ?? []).map(binding => ({
             id: binding.id,
@@ -391,6 +396,7 @@ export class MatrixMlp3Projection {
           installedExtensions: payload.installedExtensions ?? [],
           defaultExtensions: payload.defaultExtensions ?? [],
           extensionDefaultsRevision: payload.extensionDefaultsRevision ?? 1,
+          controlValues: structuredClone(payload.controls ?? {}),
         };
       }
       return true;
@@ -483,6 +489,7 @@ export class MatrixMlp3Projection {
           ...(payload.model ? { model: payload.model } : {}),
           ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
           permissionMode: payload.permissionMode,
+          controlValues: structuredClone(payload.controls ?? current?.controlValues ?? {}),
           extensionBindings: payload.extensionBindings ?? current?.extensionBindings ?? [],
           ...(current?.activeTurnId && isActiveSessionActivity(payload.projection.activity)
             ? { activeTurnId: current.activeTurnId }
@@ -726,6 +733,10 @@ export class MatrixMlp3Projection {
       threadRootEventId: current?.threadRootEventId || threadRootHint || "",
       ...current,
       ...next,
+      controlValues: mergeProjectedControlValues(
+        current?.controlValues ?? {},
+        next.controls,
+      ),
       readReceiptEventId: physicalEventId,
     };
     // activeTurnId is transient execution state. A projection at the same or
@@ -821,6 +832,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
     && value?.version !== 7
     && value?.version !== 8
     && value?.version !== 9
+    && value?.version !== 10
   ) {
     throw new Error("Unsupported MLP/3 projection version.");
   }
@@ -844,6 +856,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
       extensionBindings: Array.isArray(session.extensionBindings)
         ? session.extensionBindings.map(binding => sessionExtensionBindingSchema.parse(binding))
         : [],
+      controlValues: providerControlValuesSchema.parse(session.controlValues ?? {}),
     } as V3ProjectedSession;
   });
   const messages = boundedArray(value.messages, "messages").map(messageValue => {
@@ -1157,7 +1170,19 @@ function validateProjectProjection(input: unknown): V3ProjectProjection {
     extensionDefaultsRevision: integer(project.extensionDefaultsRevision, 1)
       ? project.extensionDefaultsRevision
       : 1,
+    controlValues: providerControlValuesSchema.parse(project.controlValues ?? {}),
   } as V3ProjectProjection;
+}
+
+function mergeProjectedControlValues(
+  current: ProviderControlValues,
+  controls: Mlp3SessionProjection["controls"],
+): ProviderControlValues {
+  const values: ProviderControlValues = { ...current };
+  for (const control of controls ?? []) {
+    if (control.value !== undefined) values[control.id] = control.value;
+  }
+  return values;
 }
 
 function boundedArray(value: unknown, name: string): unknown[] {
