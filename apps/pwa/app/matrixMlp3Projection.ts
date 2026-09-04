@@ -22,6 +22,7 @@ import {
   gatewayUpdateStatusSchema,
   providerControlValuesSchema,
 } from "@malink/protocol";
+import { gatewayMaintenanceSessionActivityOutcome } from "./gatewayState";
 
 export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 10 as const;
 
@@ -216,6 +217,8 @@ export class MatrixMlp3Projection {
     // working session. Reconcile from the durable completion on every restore
     // so skipped-version upgrades repair themselves without replaying Matrix.
     for (const sessionId of this.sessions.keys()) this.reconcileCompletedTurn(sessionId);
+    const updateStatus = this.gatewayUpdateObservation?.status ?? this.workspace?.gatewayUpdate;
+    if (updateStatus) this.reconcileGatewayMaintenanceSession(updateStatus);
   }
 
   applyCommand(
@@ -337,6 +340,9 @@ export class MatrixMlp3Projection {
           ...(gatewayDirectory ? { gatewayDirectory } : {}),
           ...(gatewayUpdate ? { gatewayUpdate } : {}),
         };
+        if (gatewayUpdate) {
+          this.reconcileGatewayMaintenanceSession(gatewayUpdate, event.projectId);
+        }
         return true;
       }
       this.seenLogicalEvents.add(event.eventId);
@@ -349,6 +355,9 @@ export class MatrixMlp3Projection {
         ...(payload.gatewayDirectory ? { gatewayDirectory: payload.gatewayDirectory } : {}),
         ...(gatewayUpdate ? { gatewayUpdate } : {}),
       };
+      if (gatewayUpdate) {
+        this.reconcileGatewayMaintenanceSession(gatewayUpdate, event.projectId);
+      }
       return true;
     }
     if (payload.type === "gateway.update.status" && !event.causationCommandId) {
@@ -363,6 +372,7 @@ export class MatrixMlp3Projection {
           gatewayUpdate: structuredClone(payload.status),
         };
       }
+      this.reconcileGatewayMaintenanceSession(payload.status, event.projectId);
       return true;
     }
     if (this.seenLogicalEvents.has(event.eventId)) return false;
@@ -447,16 +457,19 @@ export class MatrixMlp3Projection {
       );
       return true;
     }
-    if (payload.type === "gateway.update.status" && this.workspace) {
+    if (payload.type === "gateway.update.status") {
       if ((this.gatewayUpdateObservation?.observedAt ?? -1) < event.occurredAt) {
         this.gatewayUpdateObservation = {
           observedAt: event.occurredAt,
           status: structuredClone(payload.status),
         };
-        this.workspace = {
-          ...this.workspace,
-          gatewayUpdate: structuredClone(payload.status),
-        };
+        if (this.workspace) {
+          this.workspace = {
+            ...this.workspace,
+            gatewayUpdate: structuredClone(payload.status),
+          };
+        }
+        this.reconcileGatewayMaintenanceSession(payload.status, event.projectId);
       }
     }
     if (event.sessionId && "projection" in payload) {
@@ -744,6 +757,40 @@ export class MatrixMlp3Projection {
     // authoritative recovery boundary after a Gateway/app restart.
     if (!isActiveSessionActivity(next.activity)) delete projected.activeTurnId;
     this.sessions.set(sessionId, projected);
+    const updateStatus = this.gatewayUpdateObservation?.status ?? this.workspace?.gatewayUpdate;
+    if (updateStatus) {
+      this.reconcileGatewayMaintenanceSession(updateStatus, projected.projectId);
+    }
+  }
+
+  private reconcileGatewayMaintenanceSession(
+    status: GatewayUpdateStatus,
+    projectId?: string,
+  ): boolean {
+    const sessionId = status.maintenanceSessionId;
+    if (!sessionId) return false;
+    const outcome = gatewayMaintenanceSessionActivityOutcome(status, sessionId);
+    const current = this.sessions.get(sessionId);
+    if (
+      outcome === null ||
+      !current ||
+      current.lifecycle !== "active" ||
+      (projectId !== undefined && current.projectId !== projectId)
+    ) {
+      return false;
+    }
+    const updatedAt = Math.max(current.updatedAt, status.updatedAt);
+    if (
+      current.activity === outcome &&
+      current.activeTurnId === undefined &&
+      current.updatedAt === updatedAt
+    ) {
+      return false;
+    }
+    const settled = { ...current, activity: outcome, updatedAt };
+    delete settled.activeTurnId;
+    this.sessions.set(sessionId, settled);
+    return true;
   }
 
   private addUserPrompt(

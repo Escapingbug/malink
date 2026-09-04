@@ -517,7 +517,7 @@ function gatewayUpdateProgressStep(phase: GatewayUpdateStatus["phase"]): number 
     case "probation":
       return 4;
     case "committed":
-      return 5;
+      return GATEWAY_UPDATE_STEPS.length;
     case "rolled_back":
     case "failed":
     case "repair_required":

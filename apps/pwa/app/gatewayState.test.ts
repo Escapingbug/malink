@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyGatewayStateProgress,
+  gatewayMaintenanceSessionActivityOutcome,
   isIgnorableGatewayStateReplay,
 } from "./gatewayState";
 
@@ -44,5 +45,36 @@ describe("Gateway state progress", () => {
     expect(isIgnorableGatewayStateReplay("current", "stale")).toBe(true);
     expect(isIgnorableGatewayStateReplay("conflict")).toBe(false);
     expect(isIgnorableGatewayStateReplay("current", "advance")).toBe(false);
+  });
+});
+
+describe("Gateway maintenance session convergence", () => {
+  it("settles only the exact node-scoped session after Agent maintenance", () => {
+    const status = {
+      version: 1 as const,
+      phase: "committed" as const,
+      maintenanceSessionId: "gateway-update-node-office-release-2",
+      currentBuildId: "build-2",
+      targetBuildId: "build-2",
+      updatedAt: 20,
+    };
+    expect(gatewayMaintenanceSessionActivityOutcome(
+      status,
+      "gateway-update-node-office-release-2",
+    )).toBe("idle");
+    expect(gatewayMaintenanceSessionActivityOutcome(
+      status,
+      "gateway-update-node-server-release-2",
+    )).toBeNull();
+  });
+
+  it("does not use ambiguous maintenance IDs from older multi-Gateway releases", () => {
+    expect(gatewayMaintenanceSessionActivityOutcome({
+      version: 1,
+      phase: "committed",
+      maintenanceSessionId: "gateway-update-shared-release-1",
+      currentBuildId: "build-1",
+      updatedAt: 20,
+    }, "gateway-update-shared-release-1")).toBeNull();
   });
 });

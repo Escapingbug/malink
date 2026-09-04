@@ -128,6 +128,7 @@ import {
 } from "./privilegeTotp";
 import {
   gatewayProjectKey,
+  reconcileGatewayMaintenanceSessions,
   type GatewaySessionSummary,
 } from "./gatewayState";
 import {
@@ -6321,7 +6322,9 @@ function MalinkAppRuntime() {
             );
           }
           if (state.gatewayState) {
-            const incomingGatewayState = state.gatewayState;
+            const incomingGatewayState = reconcileGatewayMaintenanceSessions(
+              state.gatewayState,
+            );
             const projectRecovery = workspaceProjectRecovery(incomingGatewayState);
             const nextGatewayState = preserveProjectsDuringRecovery(
               gatewayStateRef.current,
@@ -7838,7 +7841,9 @@ function MalinkAppRuntime() {
         return null;
       }
       const status = gatewayUpdateStatusSchema.parse(completion.result);
-      setGatewayState(current => current ? { ...current, gatewayUpdate: status } : current);
+      setGatewayState(current => current
+        ? reconcileGatewayMaintenanceSessions({ ...current, gatewayUpdate: status })
+        : current);
       setGatewayUpdateNodeRuntime(gatewayNodeId, current => ({
         ...current,
         state: "online",
@@ -8216,7 +8221,9 @@ function MalinkAppRuntime() {
           "The update command was not repeated. Update the Gateway Host manually or export diagnostics if this continues.",
       );
     }
-    setGatewayState((current) => current ? { ...current, gatewayUpdate: status } : current);
+    setGatewayState((current) => current
+      ? reconcileGatewayMaintenanceSessions({ ...current, gatewayUpdate: status })
+      : current);
     return status;
   }
 

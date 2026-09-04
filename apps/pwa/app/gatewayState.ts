@@ -198,6 +198,90 @@ export function isIgnorableGatewayStateReplay(
   );
 }
 
+export type GatewayMaintenanceSessionActivityOutcome = "idle" | "failed";
+
+/**
+ * A signed supervisor status is the durable completion boundary for the exact
+ * node-scoped maintenance session. The session's best-effort turn completion
+ * may arrive later (or be absent after a restart), but it must not leave the
+ * UI claiming that the maintenance Agent is still working.
+ *
+ * Legacy workspace-scoped maintenance IDs are intentionally excluded because
+ * older releases could reuse them on more than one physical Gateway.
+ */
+export function gatewayMaintenanceSessionActivityOutcome(
+  status: GatewayUpdateStatus,
+  sessionId: string,
+): GatewayMaintenanceSessionActivityOutcome | null {
+  if (
+    !status.maintenanceSessionId ||
+    status.maintenanceSessionId !== sessionId ||
+    !sessionId.startsWith("gateway-update-node-")
+  ) {
+    return null;
+  }
+  switch (status.phase) {
+    case "staged":
+    case "waiting_for_idle":
+    case "scheduled":
+    case "activating":
+    case "probation":
+    case "committed":
+    case "rolled_back":
+    case "repair_required":
+      return "idle";
+    case "failed":
+      return "failed";
+    case "idle":
+    case "staging":
+    case "agent_required":
+    case "agent_running":
+    case "agent_validating":
+      return null;
+  }
+}
+
+export function reconcileGatewayMaintenanceSessions(
+  state: GatewayStateSnapshot,
+): GatewayStateSnapshot {
+  const statuses = [
+    ...(state.gatewayUpdate ? [state.gatewayUpdate] : []),
+    ...Object.values(state.gatewayNodeStatuses ?? {}).map(observation => observation.update),
+  ];
+  if (statuses.length === 0) return state;
+  let changed = false;
+  const sessions = state.sessions.map(session => {
+    if (session.status === "archived") return session;
+    const status = statuses.reduce<GatewayUpdateStatus | undefined>((latest, candidate) => {
+      if (gatewayMaintenanceSessionActivityOutcome(candidate, session.id) === null) {
+        return latest;
+      }
+      return !latest || candidate.updatedAt > latest.updatedAt ? candidate : latest;
+    }, undefined);
+    if (!status) return session;
+    const outcome = gatewayMaintenanceSessionActivityOutcome(status, session.id)!;
+    const updatedAt = Math.max(session.updatedAt, status.updatedAt);
+    if (
+      session.status === outcome &&
+      session.activityPhase === outcome &&
+      session.activeTurnId === undefined &&
+      session.updatedAt === updatedAt
+    ) {
+      return session;
+    }
+    changed = true;
+    const settled = { ...session };
+    delete settled.activeTurnId;
+    return {
+      ...settled,
+      status: outcome,
+      activityPhase: outcome,
+      updatedAt,
+    };
+  });
+  return changed ? { ...state, sessions } : state;
+}
+
 export function parseGatewayStateExtension(
   value: unknown,
 ): GatewayStateSnapshot | null {
@@ -388,7 +472,7 @@ export function parseGatewayStateExtension(
     );
   }
 
-  return {
+  return reconcileGatewayMaintenanceSessions({
     stateVersion: extension.state_version,
     revision: extension.revision,
     revisionEpoch: extension.revision_epoch,
@@ -422,7 +506,7 @@ export function parseGatewayStateExtension(
       : {
           gatewayNodeStatuses: parseGatewayNodeStatuses(extension.gateway_node_statuses),
         }),
-  };
+  });
 }
 
 function parseGatewayNodeStatuses(input: unknown): Record<string, GatewayNodeStatusObservation> {

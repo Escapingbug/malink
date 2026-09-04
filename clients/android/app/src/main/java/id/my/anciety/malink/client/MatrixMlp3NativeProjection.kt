@@ -394,7 +394,8 @@ internal class MatrixMlp3NativeProjection(
             validateGatewayUpdateStatus(status)
             val currentUpdatedAt = gatewayUpdateStatus?.requiredLong("updatedAt") ?: -1
             val incomingUpdatedAt = status.requiredLong("updatedAt")
-            if (incomingUpdatedAt >= currentUpdatedAt) gatewayUpdateStatus = status
+            val globalStatusChanged = incomingUpdatedAt >= currentUpdatedAt
+            if (globalStatusChanged) gatewayUpdateStatus = status
             val currentObservation = projectId?.let(gatewayUpdateObservationsByProject::get)
             val observationChanged = projectId != null &&
                 (currentObservation == null || occurredAt > currentObservation.observedAt)
@@ -402,9 +403,14 @@ internal class MatrixMlp3NativeProjection(
                 gatewayUpdateObservationsByProject[projectId] =
                     GatewayUpdateObservation(occurredAt, status)
             }
+            val sessionChanged = if (globalStatusChanged || observationChanged) {
+                reconcileGatewayMaintenanceSession(status, projectId)
+            } else {
+                false
+            }
             return MatrixMlp3NativeProjectionResult(
                 terminal = terminal(type, event, payload, causation, sessionId),
-                changed = incomingUpdatedAt >= currentUpdatedAt || observationChanged,
+                changed = globalStatusChanged || observationChanged || sessionChanged,
             )
         }
 
@@ -1878,6 +1884,10 @@ internal class MatrixMlp3NativeProjection(
                 ) == null) { "A task notification preview is duplicated." }
             }
         }
+        gatewayUpdateObservationsByProject.forEach { (projectId, observation) ->
+            reconcileGatewayMaintenanceSession(observation.status, projectId)
+        }
+        gatewayUpdateStatus?.let { reconcileGatewayMaintenanceSession(it, null) }
     }
 
     private companion object {
@@ -1972,6 +1982,49 @@ internal class MatrixMlp3NativeProjection(
             current?.reasoningEffort,
             current?.permissionMode,
         ).copy(readReceiptEventId = physicalEventId ?: current?.readReceiptEventId)
+        val resolvedProjectId = sessions[sessionId]?.projectId
+        val updateStatus = resolvedProjectId
+            ?.let(gatewayUpdateObservationsByProject::get)
+            ?.status
+            ?: gatewayUpdateStatus
+        updateStatus?.let { reconcileGatewayMaintenanceSession(it, resolvedProjectId) }
+    }
+
+    private fun reconcileGatewayMaintenanceSession(
+        status: JsonObject,
+        projectId: String?,
+    ): Boolean {
+        val sessionId = status.optionalString("maintenanceSessionId", 256) ?: return false
+        if (!sessionId.startsWith("gateway-update-node-")) return false
+        val outcome = when (status.requiredString("phase", 64)) {
+            "failed" -> "failed"
+            "staged",
+            "waiting_for_idle",
+            "scheduled",
+            "activating",
+            "probation",
+            "committed",
+            "rolled_back",
+            "repair_required"
+            -> "idle"
+            else -> return false
+        }
+        val current = sessions[sessionId] ?: return false
+        if (current.lifecycle != "active" || (projectId != null && current.projectId != projectId)) {
+            return false
+        }
+        val updatedAt = maxOf(current.updatedAt, status.requiredLong("updatedAt"))
+        if (
+            current.activity == outcome &&
+            current.activeTurnId == null &&
+            current.updatedAt == updatedAt
+        ) return false
+        sessions[sessionId] = current.copy(
+            activity = outcome,
+            updatedAt = updatedAt,
+            activeTurnId = null,
+        )
+        return true
     }
 
     private fun decodeSession(

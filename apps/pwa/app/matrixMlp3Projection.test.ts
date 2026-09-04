@@ -520,6 +520,94 @@ describe("MatrixMlp3Projection", () => {
     expect(restored.workspace?.gatewayUpdate).toEqual(projection.workspace?.gatewayUpdate);
   });
 
+  it("settles an exact maintenance session from signed update status", () => {
+    const projection = new MatrixMlp3Projection();
+    const maintenanceSessionId = "gateway-update-node-office-release-2";
+    projection.applyCommand({
+      kind: "malink.command",
+      version: 3,
+      commandId: "create-maintenance",
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      sessionId: maintenanceSessionId,
+      deviceId: "device-1",
+      certificateId: "certificate-1",
+      createdAt: 1,
+      operation: "session.create",
+      payload: { operation: "session.create", title: "Gateway update" },
+    }, "$maintenance-root", 1);
+    const workingEvent: Mlp3Event = {
+      kind: "malink.event",
+      version: 3,
+      eventId: "maintenance-working",
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      sessionId: maintenanceSessionId,
+      causationCommandId: "maintenance-turn",
+      occurredAt: 2,
+      payload: {
+        type: "turn.started",
+        turnId: "maintenance-turn",
+        projection: {
+          title: "Gateway update",
+          lifecycle: "active",
+          activity: "working",
+          updatedAt: 2,
+          stateVersion: 2,
+        },
+      },
+    };
+    projection.applyEvent(workingEvent, "$maintenance-working");
+    expect(projection.sessions.get(maintenanceSessionId)).toMatchObject({
+      activity: "working",
+      activeTurnId: "maintenance-turn",
+    });
+
+    projection.applyEvent({
+      kind: "malink.event",
+      version: 3,
+      eventId: "maintenance-staged",
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      occurredAt: 20,
+      payload: {
+        type: "gateway.update.status",
+        status: {
+          version: 1,
+          phase: "staged",
+          releaseId: "release-2",
+          targetBuildId: "build-2",
+          currentBuildId: "build-1",
+          maintenanceSessionId,
+          updatedAt: 20,
+        },
+      },
+    }, "$maintenance-staged");
+    expect(projection.sessions.get(maintenanceSessionId)).toMatchObject({
+      activity: "idle",
+      updatedAt: 20,
+    });
+    expect(projection.sessions.get(maintenanceSessionId)?.activeTurnId).toBeUndefined();
+
+    projection.applyEvent({
+      ...workingEvent,
+      eventId: "maintenance-working-late",
+      occurredAt: 21,
+    }, "$maintenance-working-late");
+    expect(projection.sessions.get(maintenanceSessionId)).toMatchObject({
+      activity: "idle",
+      updatedAt: 20,
+    });
+    expect(projection.sessions.get(maintenanceSessionId)?.activeTurnId).toBeUndefined();
+
+    const restored = new MatrixMlp3Projection();
+    restored.restore(projection.durableState());
+    expect(restored.sessions.get(maintenanceSessionId)).toMatchObject({
+      activity: "idle",
+      updatedAt: 20,
+    });
+  });
+
   it("keeps waiting-for-idle update progress non-terminal until apply is scheduled", () => {
     const projection = new MatrixMlp3Projection();
     projection.applyEvent(workspaceSnapshot(1, "gpt-5.6-sol"), "$workspace");

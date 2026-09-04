@@ -1007,6 +1007,73 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `signed Gateway status settles its exact maintenance session`() {
+        val projection = projection()
+        val maintenanceSessionId = "gateway-update-node-office-release-2"
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady(maintenanceSessionId, 1, "Gateway update", 100),
+            "\$maintenance-root",
+            "\$maintenance-root",
+        )
+        projection.applyGatewayEvent(
+            event(
+                eventId = "maintenance-working",
+                projectId = "project-1",
+                sessionId = maintenanceSessionId,
+                causationCommandId = "maintenance-turn",
+                payload = buildJsonObject {
+                    put("type", "turn.started")
+                    put("turnId", "maintenance-turn")
+                    put(
+                        "projection",
+                        sessionProjection(2, "Gateway update", "active", "working", 200),
+                    )
+                },
+            ),
+            "\$maintenance-working",
+            "\$maintenance-root",
+        )
+        projection.applyGatewayEvent(
+            event(
+                eventId = "maintenance-staged",
+                projectId = "project-1",
+                payload = buildJsonObject {
+                    put("type", "gateway.update.status")
+                    put("status", buildJsonObject {
+                        put("version", 1)
+                        put("phase", "staged")
+                        put("releaseId", "release-2")
+                        put("targetBuildId", "build-2")
+                        put("currentBuildId", "build-1")
+                        put("maintenanceSessionId", maintenanceSessionId)
+                        put("updatedAt", 300)
+                    })
+                },
+            ),
+            "\$maintenance-staged",
+            null,
+        )
+
+        val settled = projection.snapshot()!!
+            .getValue("sessions").jsonArray.single().jsonObject
+        assertEquals("idle", settled.getValue("status").jsonPrimitive.content)
+        assertEquals("idle", settled.getValue("activity_phase").jsonPrimitive.content)
+        assertFalse("active_turn_id" in settled)
+        assertEquals(300L, settled.getValue("updated_at").jsonPrimitive.content.toLong())
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        val restoredSession = restored.snapshot()!!
+            .getValue("sessions").jsonArray.single().jsonObject
+        assertEquals("idle", restoredSession.getValue("activity_phase").jsonPrimitive.content)
+        assertFalse("active_turn_id" in restoredSession)
+    }
+
+    @Test
     fun `Gateway retirement is a bounded terminal command result`() {
         val projection = projection()
         val applied = projection.applyGatewayEvent(

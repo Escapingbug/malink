@@ -483,6 +483,15 @@ that the signed installed build already equals its target while an older state
 still says `agent_running`, `agent_validating`, or `staged`, it atomically
 converges that state to `committed`; the UI then treats the update as installed
 instead of presenting obsolete maintenance cleanup as a blocking error.
+Once the signed supervisor phase reaches `staged` or any later apply/terminal
+phase, clients also settle the exact node-scoped maintenance session locally.
+This is an order-independent projection rule: a delayed or missing best-effort
+`turn.completed` event cannot leave that session labeled `Agent working` after
+the supervisor has proved that Agent preparation ended. A failed preparation is
+shown as failed; successful, rollback, and repair phases stop the activity
+indicator. Archiving remains a separate optional cleanup action and is not used
+as proof that the Agent is still running. The `committed` progress state marks
+all update steps complete rather than leaving the final step active.
 
 The maintenance Agent's session is deterministic per physical Gateway node and
 release: its identity is derived from `gatewayNodeId`, never the shared

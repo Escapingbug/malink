@@ -187,6 +187,38 @@ test("presents a signed supervisor repair failure as an actionable error", () =>
   assert.match(html, /role="alert"/);
 });
 
+test("renders every progress step complete after the signed commit", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [nodes[1]!],
+    runtimeByNode: {
+      "node-server": {
+        state: "online",
+        status: {
+          version: 1,
+          phase: "committed",
+          currentBuildId: release.buildId,
+          targetBuildId: release.buildId,
+          updatedAt: 20,
+        },
+      },
+    },
+    activeGatewayNodeIds: new Set(),
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  assert.equal(html.match(/class="is-complete"/g)?.length, 6);
+  assert.doesNotMatch(html, /class="is-active"/);
+  assert.match(html, /Gateway update complete/);
+});
+
 test("does not offer a useless retry for an unpublished 404 release", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
     open: true,
