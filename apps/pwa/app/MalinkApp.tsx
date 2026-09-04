@@ -170,6 +170,7 @@ import {
   gatewayUpdatePlan as buildGatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
   gatewayUpdateCommandReachedSignedBoundary,
+  gatewayUpdateStatusSupersededByDirectory,
   latestGatewayUpdateStatus,
   gatewayUpdateRequiresForwardOnlyConfirmation,
   gatewayUpdateTarget,
@@ -3973,6 +3974,9 @@ function MalinkAppRuntime() {
   useEffect(() => {
     const statuses = gatewayState?.gatewayNodeStatuses ?? {};
     for (const [gatewayNodeId, status] of Object.entries(statuses)) {
+      const directoryNode = gatewayUpdateDirectoryPlan.find(
+        node => node.gatewayNodeId === gatewayNodeId,
+      );
       // MLP certificates already require usable system clocks. Clamp a future
       // timestamp locally so clock skew cannot extend the online proof window.
       const verifiedAt = Math.min(Date.now(), status.observedAt);
@@ -3988,16 +3992,24 @@ function MalinkAppRuntime() {
         };
       });
       setGatewayUpdateNodeRuntime(gatewayNodeId, current => {
-        const update = latestGatewayUpdateStatus(current.status, status.update);
+        const currentStatus = directoryNode &&
+            gatewayUpdateStatusSupersededByDirectory(directoryNode, current.status)
+          ? undefined
+          : current.status;
+        const incomingStatus = directoryNode &&
+            gatewayUpdateStatusSupersededByDirectory(directoryNode, status.update)
+          ? undefined
+          : status.update;
+        const update = incomingStatus
+          ? latestGatewayUpdateStatus(currentStatus, incomingStatus)
+          : currentStatus;
         if ((current.lastVerifiedAt ?? -1) > verifiedAt) {
           return update === current.status
             ? current
             : {
                 ...current,
                 status: update,
-                ...(update.maintenanceSessionId
-                  ? { maintenanceSessionId: update.maintenanceSessionId }
-                  : {}),
+                maintenanceSessionId: update?.maintenanceSessionId,
                 detail: undefined,
               };
         }
@@ -4008,9 +4020,7 @@ function MalinkAppRuntime() {
           lastVerifiedAt: verifiedAt,
           consecutiveNoReplies: 0,
           status: update,
-          ...(update.maintenanceSessionId
-            ? { maintenanceSessionId: update.maintenanceSessionId }
-            : {}),
+          maintenanceSessionId: update?.maintenanceSessionId,
           detail: undefined,
         };
       });
@@ -4018,7 +4028,11 @@ function MalinkAppRuntime() {
     // Status events are already verified and projected by the transport. No
     // client-originated Matrix command is needed to observe them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gatewayState?.gatewayNodeStatuses, gatewayUpdateReleaseKey]);
+  }, [
+    gatewayState?.gatewayNodeStatuses,
+    gatewayUpdateDirectoryPlan,
+    gatewayUpdateReleaseKey,
+  ]);
 
   useEffect(() => {
     if (connectionStatus !== "connected") return;

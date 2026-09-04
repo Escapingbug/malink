@@ -489,7 +489,12 @@ from two seconds up to thirty seconds rather than continuously producing Matrix
 request/reply pairs. A separate live-status
 probe delay does not overwrite a signed `scheduled`, `activating`, optional
 `probation`, or `committed` result in the UI, and the planned restart silence is
-not presented as a failure. The current client automatically continues a
+not presented as a failure. If a later signed Gateway Directory descriptor
+reports the exact target build of an older non-terminal transaction, clients
+retire that stale presentation automatically. This covers a client that missed
+the final phase while backgrounded and prevents an already-installed prior
+release from blocking a newly published update. It does not manufacture a
+command terminal or alter the supervisor journal. The current client automatically continues a
 `staged` checkpoint only when its persisted user intent matches the exact
 project, node, release, and build. An older staged checkpoint without that
 intent exposes `Continue update`, even if the static release channel has since

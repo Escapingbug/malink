@@ -217,6 +217,24 @@ export function gatewayUpdatePlanNodeWithLiveStatus(input: {
 }
 
 /**
+ * A later signed directory descriptor can prove that an earlier update status
+ * already reached its target build, even when this client missed the final
+ * `committed` observation. This only retires stale presentation state; it does
+ * not manufacture a command result or mutate the Gateway supervisor journal.
+ */
+export function gatewayUpdateStatusSupersededByDirectory(
+  node: GatewayUpdatePlanNode,
+  status: GatewayUpdateStatus | undefined,
+): boolean {
+  return Boolean(
+    status?.targetBuildId &&
+    node.currentBuildId === status.targetBuildId &&
+    node.buildObservedAt !== undefined &&
+    node.buildObservedAt >= status.updatedAt,
+  );
+}
+
+/**
  * Merge supervisor observations for one physical Gateway without allowing a
  * delayed Matrix command result to roll a newer pushed transition backwards.
  * `updatedAt` is produced by the same node-local supervisor; phase order is a

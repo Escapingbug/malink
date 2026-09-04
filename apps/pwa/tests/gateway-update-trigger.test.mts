@@ -11,6 +11,7 @@ import {
   gatewayUpdateCanApplyStaged,
   gatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
+  gatewayUpdateStatusSupersededByDirectory,
   latestGatewayUpdateStatus,
   gatewayUpdateTarget,
   legacyGatewayMaintenanceSessionsByNode,
@@ -485,6 +486,36 @@ test("keeps a newer signed directory build over an older supervisor observation"
 
   assert.equal(node.currentBuildId, "gateway-new");
   assert.equal(node.state, "current");
+});
+
+test("retires an old nonterminal transaction after the directory proves its target installed", () => {
+  const scheduled = {
+    version: 1 as const,
+    phase: "scheduled" as const,
+    releaseId: "release-old",
+    targetBuildId: "gateway-old-target",
+    currentBuildId: "gateway-before",
+    updatedAt: 10,
+  };
+  const installed = {
+    gatewayNodeId: "node-a",
+    gatewayName: "Gateway A",
+    currentBuildId: "gateway-old-target",
+    buildObservedAt: 20,
+    targetProjectId: "project-a",
+    onlineUpdate: true,
+    state: "available" as const,
+  };
+
+  assert.equal(gatewayUpdateStatusSupersededByDirectory(installed, scheduled), true);
+  assert.equal(gatewayUpdateStatusSupersededByDirectory(
+    { ...installed, currentBuildId: "gateway-before" },
+    scheduled,
+  ), false);
+  assert.equal(gatewayUpdateStatusSupersededByDirectory(
+    { ...installed, buildObservedAt: 9 },
+    scheduled,
+  ), false);
 });
 
 test("never lets a delayed update result roll a newer supervisor phase backwards", () => {

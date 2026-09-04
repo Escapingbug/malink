@@ -677,7 +677,9 @@ current, outdated, manual-only, or unrouted and waits for explicit user
     Matrix is connected; other causation-bearing status events remain
     update-operation results. Delayed observations merge monotonically by their
     node-local supervisor timestamp and phase, so an older `scheduled` result
-    cannot replace a newer `committed` result. Matrix
+    cannot replace a newer `committed` result. A later signed node descriptor
+    naming that transaction's exact target build also retires stale client-side
+    progress without fabricating a journal terminal. Matrix
 connectivity alone is never presented as proof that the Gateway process is
 online. When an authenticated update request arrives, the supervisor refreshes
 a monotonically versioned channel document, verifies it against the locally

@@ -6,6 +6,7 @@ import type { GatewayReleaseBuild } from "./buildInfo";
 import { useDialogFocus } from "./dialogFocus";
 import {
   gatewayUpdateRequiresForwardOnlyConfirmation,
+  gatewayUpdateStatusSupersededByDirectory,
   type GatewayUpdatePlanNode,
 } from "./gatewayUpdateTrigger";
 import {
@@ -169,11 +170,16 @@ function GatewayUpdateDialogContent({
               gatewayLabel: owner.label,
               consecutiveNoReplies: runtime.consecutiveNoReplies,
             });
-            const knownUpdateFailure = runtime.status?.phase === "failed" ||
-              runtime.status?.phase === "repair_required" ||
-              runtime.status?.phase === "rolled_back";
+            const signedUpdateStatus = gatewayUpdateStatusForPresentation(
+              runtime.status,
+              release,
+              node,
+            );
+            const knownUpdateFailure = signedUpdateStatus?.phase === "failed" ||
+              signedUpdateStatus?.phase === "repair_required" ||
+              signedUpdateStatus?.phase === "rolled_back";
             const recovery = gatewayUpdateRecoveryAction({
-              status: runtime.status,
+              status: signedUpdateStatus,
               release,
               commandFailure: {
                 code: runtime.commandFailureCode,
@@ -181,15 +187,15 @@ function GatewayUpdateDialogContent({
               },
             });
             const forwardOnlyConfirmation =
-              gatewayUpdateRequiresForwardOnlyConfirmation(runtime.status);
+              gatewayUpdateRequiresForwardOnlyConfirmation(signedUpdateStatus);
             const updateActionAvailable = recovery.kind === "start" ||
               recovery.kind === "continue" || recovery.kind === "retry";
+            const statusWasSuperseded =
+              gatewayUpdateStatusSupersededByDirectory(node, runtime.status);
             const targetInstalled =
-              runtime.status?.currentBuildId === release.buildId && !knownUpdateFailure;
-            const signedUpdateStatus = gatewayUpdateStatusForPresentation(
-              runtime.status,
-              release,
-            );
+              (signedUpdateStatus?.currentBuildId === release.buildId ||
+                (statusWasSuperseded && node.currentBuildId === release.buildId)) &&
+              !knownUpdateFailure;
             const expectedReplyGap = gatewayUpdateExpectsReplyGap(signedUpdateStatus);
             const canRefreshUpdateProgress = Boolean(
               signedUpdateStatus && [
@@ -224,7 +230,8 @@ function GatewayUpdateDialogContent({
             const active = activeGatewayNodeIds.has(node.gatewayNodeId);
             const activeMode = activeGatewayModesByNode[node.gatewayNodeId];
             const requiresLivePreflight =
-              runtime.state !== "online" || runtime.status === undefined;
+              runtime.state !== "online" || runtime.status === undefined ||
+              statusWasSuperseded;
             const forceConfirming = forceConfirmationNodeId === node.gatewayNodeId;
             return (
               <article
@@ -287,10 +294,10 @@ function GatewayUpdateDialogContent({
                     diagnosticExportBusy={diagnosticExportBusy}
                   />
                 )}
-                {runtime.status && knownUpdateFailure && (
+                {signedUpdateStatus && knownUpdateFailure && (
                   <GatewayUpdateFailureHelp
                     gatewayLabel={owner.label}
-                    status={runtime.status}
+                    status={signedUpdateStatus}
                     recovery={recovery}
                     onExportDiagnostics={onExportDiagnostics}
                     diagnosticExportBusy={diagnosticExportBusy}
@@ -310,7 +317,7 @@ function GatewayUpdateDialogContent({
                 )}
 
                 <div className="gateway-update-node-actions">
-                  {!targetInstalled && runtime.maintenanceSessionId &&
+                  {!targetInstalled && !statusWasSuperseded && runtime.maintenanceSessionId &&
                     node.targetProjectId && (
                     <button
                       type="button"
@@ -323,7 +330,7 @@ function GatewayUpdateDialogContent({
                       Open update session
                     </button>
                   )}
-                  {!targetInstalled && runtime.maintenanceSessionId &&
+                  {!targetInstalled && !statusWasSuperseded && runtime.maintenanceSessionId &&
                     !runtime.maintenanceSessionAmbiguous &&
                     runtime.maintenanceSessionArchiveAvailable && (
                     <button
@@ -450,7 +457,7 @@ function GatewayUpdateDialogContent({
                             : "Preparing update…"
                           : requiresLivePreflight
                             ? "Check and update when idle"
-                          : runtime.status?.phase === "staged"
+                          : signedUpdateStatus?.phase === "staged"
                             ? forwardOnlyConfirmation
                               ? "Confirm and install when idle"
                               : "Install when idle"
@@ -625,7 +632,7 @@ function runtimeStateTitle(
   release: GatewayReleaseBuild,
   activeMode?: "when_idle" | "force",
 ): string {
-  const status = gatewayUpdateStatusForPresentation(runtime.status, release);
+  const status = gatewayUpdateStatusForPresentation(runtime.status, release, node);
   if (status?.phase === "repair_required") return "Gateway repair required";
   if (status?.phase === "failed") return "Gateway update failed";
   if (status?.phase === "rolled_back") return "Gateway update rolled back";
@@ -675,7 +682,9 @@ function runtimeStateDetail(
   connected: boolean,
   activeMode?: "when_idle" | "force",
 ): string {
-  const status = gatewayUpdateStatusForPresentation(runtime.status, release);
+  const status = gatewayUpdateStatusForPresentation(runtime.status, release, node);
+  const statusWasSuperseded =
+    gatewayUpdateStatusSupersededByDirectory(node, runtime.status);
   if (status?.phase === "failed" || status?.phase === "repair_required") {
     const failure = status.detail ?? gatewayUpdatePhaseText(status);
     return runtime.state === "online" && runtime.checkedAt
@@ -713,9 +722,9 @@ function runtimeStateDetail(
   }
   if (runtime.state === "unreachable") {
     if (
-      runtime.maintenanceSessionId ||
-      (runtime.status?.releaseId === release.releaseId &&
-        runtime.status.targetBuildId === release.buildId)
+      (runtime.maintenanceSessionId && !statusWasSuperseded) ||
+      (status?.releaseId === release.releaseId &&
+        status.targetBuildId === release.buildId)
     ) {
       return (
         `No signed status reply arrived from ${node.computerName ?? node.gatewayName} within ${GATEWAY_LIVE_STATUS_TIMEOUT_MS / 1_000} seconds. ` +
@@ -782,8 +791,10 @@ function gatewayUpdatePhaseText(status: GatewayUpdateStatus): string {
 function gatewayUpdateStatusForPresentation(
   status: GatewayUpdateStatus | undefined,
   release: GatewayReleaseBuild,
+  node: GatewayUpdatePlanNode,
 ): GatewayUpdateStatus | undefined {
   if (!status || status.phase === "idle") return undefined;
+  if (gatewayUpdateStatusSupersededByDirectory(node, status)) return undefined;
   if (
     status.phase === "committed" &&
     status.currentBuildId !== release.buildId &&

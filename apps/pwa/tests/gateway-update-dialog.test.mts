@@ -726,3 +726,42 @@ test("treats a verified installed build as complete without cleanup warnings", (
   assert.doesNotMatch(html, /Archive old update session/);
   assert.doesNotMatch(html, /Maintenance Agent running/);
 });
+
+test("does not let an installed prior release block the newly published update", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [{
+      ...nodes[0]!,
+      currentBuildId: "gateway-previous-target",
+      buildObservedAt: 20,
+    }],
+    runtimeByNode: {
+      "node-office": {
+        state: "online",
+        maintenanceSessionId: "gateway-update-previous-release",
+        status: {
+          version: 1,
+          phase: "scheduled",
+          releaseId: "release-previous",
+          targetBuildId: "gateway-previous-target",
+          currentBuildId: "gateway-before-previous",
+          updatedAt: 10,
+        },
+      },
+    },
+    activeGatewayNodeIds: new Set(),
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  assert.match(html, /Update available/);
+  assert.match(html, /Check and update when idle/);
+  assert.doesNotMatch(html, /Gateway restart scheduled/);
+  assert.doesNotMatch(html, /Open update session/);
+});
