@@ -9,6 +9,7 @@ import {
   MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
   mlp3CurrentPointerSchema,
   mlp3ProjectKeyGrantStateSchema,
+  type GatewayRestartStatus,
   type Mlp3Command,
   type Mlp3Event,
   type SessionExtensionDescriptor,
@@ -949,6 +950,11 @@ describe('MatrixMlp3GatewayRunner', () => {
     let gatewayAgentShouldSubmit = true
     let gatewayAgentRunningReleaseId: string | null = null
     let gatewayAgentFailedReleaseId: string | null = null
+    let gatewayRestartStatus: GatewayRestartStatus = {
+      version: 1,
+      phase: 'idle',
+      updatedAt: 10,
+    }
     const webPushService: GatewayWebPushService = {
       initialize: async () => undefined,
       publicKey: () => 'B'.repeat(87),
@@ -1292,6 +1298,22 @@ describe('MatrixMlp3GatewayRunner', () => {
             currentBuildId: 'build-1',
             updatedAt: 12,
           }
+        },
+        async restartStatus() {
+          return structuredClone(gatewayRestartStatus)
+        },
+        async scheduleRestart(mode) {
+          gatewayUpdateCalls.push(`restart:${mode}`)
+          gatewayRestartStatus = {
+            version: 1 as const,
+            phase: 'scheduled' as const,
+            restartId: 'restart-1',
+            mode,
+            requestedAt: 20,
+            scheduledAt: 25,
+            updatedAt: 20,
+          }
+          return structuredClone(gatewayRestartStatus)
         },
       },
     })
@@ -2326,6 +2348,58 @@ describe('MatrixMlp3GatewayRunner', () => {
       ))
     expect(client.retiredRooms).toHaveLength(retiredRoomsBeforeFailedRecovery + 1)
     expect(client.retiredRooms.at(-1)).toMatch(/^!history-/u)
+
+    await send({
+      ...base,
+      commandId: 'gateway-restart-status-1',
+      operation: 'gateway.restart.status',
+      payload: { operation: 'gateway.restart.status' },
+    }, '$gateway-restart-status-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'gateway-restart-status-1'
+        && event.payload.type === 'gateway.restart.status'
+      ))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'gateway-restart-status-1'
+    )?.payload).toMatchObject({
+      type: 'gateway.restart.status',
+      status: { phase: 'idle' },
+    })
+
+    await send({
+      ...base,
+      commandId: 'gateway-restart-when-idle-1',
+      operation: 'gateway.restart',
+      payload: { operation: 'gateway.restart', mode: 'when_idle' },
+    }, '$gateway-restart-when-idle-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'gateway-restart-when-idle-1'
+        && event.payload.type === 'gateway.restart.status'
+        && event.payload.status.phase === 'scheduled'
+      ))
+    expect(gatewayUpdateCalls).toContain('restart:when_idle')
+
+    gatewayRestartStatus = {
+      ...gatewayRestartStatus,
+      phase: 'failed',
+      completedAt: 30,
+      detail: 'The local service manager rejected the restart',
+      updatedAt: 30,
+    }
+    await send({
+      ...base,
+      commandId: 'gateway-restart-status-after-failure',
+      operation: 'gateway.restart.status',
+      payload: { operation: 'gateway.restart.status' },
+    }, '$gateway-restart-status-after-failure')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'gateway-restart-status-after-failure'
+        && event.payload.type === 'gateway.restart.status'
+        && event.payload.status.phase === 'failed'
+      ))
 
     await send({
       ...base,

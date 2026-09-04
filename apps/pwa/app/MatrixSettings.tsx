@@ -21,12 +21,15 @@ import type { NativeUpdateStatus } from "@malink/native-bridge";
 import { useDialogFocus } from "./dialogFocus";
 import {
   deriveConnectionRecoveryPlan,
+  deriveConnectionPresentation,
   type ConnectionRecoveryAction,
   type ConnectionRepairReason,
 } from "./connectionPresentation";
 import type { WebPushNotificationState } from "./webPushNotifications";
 import type {
   GatewayEnrollmentPending,
+  GatewayRestartMode,
+  GatewayRestartStatus,
   SignedWorkspaceGatewayDirectory,
 } from "@malink/protocol";
 import {
@@ -52,6 +55,12 @@ import { workspaceGatewayRepairPlan } from "./workspaceGatewayRepair";
 export const OFFICIAL_ANDROID_RELEASES_URL =
   "https://github.com/Escapingbug/malink/releases";
 
+export type GatewayRestartNodeRuntime = {
+  state: "idle" | "requesting" | "waiting" | "restarting" | "ready" | "failed";
+  status?: GatewayRestartStatus;
+  detail?: string;
+};
+
 type Props = {
   open: boolean;
   config: MatrixConnectionConfig;
@@ -60,7 +69,9 @@ type Props = {
   repairReason: ConnectionRepairReason | null;
   error: string | null;
   pairingPreview: PairingPreview | null;
+  pairingCompletion: { gatewayName: string } | null;
   trustedGateway: MalinkPublicTrust | null;
+  activeDeviceCount: number | null;
   savedGateways: MalinkPublicTrust[];
   gatewayDirectory: SignedWorkspaceGatewayDirectory | null;
   availableProjectIds: readonly string[];
@@ -79,6 +90,7 @@ type Props = {
   gatewayRetirementBusy: string | null;
   gatewayRetirementError: { gatewayNodeId: string; detail: string } | null;
   gatewayNodeLivenessById: Readonly<Record<string, GatewayNodeLiveness>>;
+  gatewayRestartRuntimeByNode: Readonly<Record<string, GatewayRestartNodeRuntime>>;
   gatewayLivenessNow: number;
   gatewayRelease: GatewayReleaseBuild | null;
   gatewayUpdateAvailableCount: number;
@@ -99,6 +111,7 @@ type Props = {
   onPairingLink(link: string): void;
   onClearPairing(): void;
   onConfirmPairing(): void;
+  onFinishPairing(): void;
   onClose(): void;
   onDisconnect(): void;
   onForget(): void;
@@ -120,6 +133,11 @@ type Props = {
     authorityProjectId: string,
   ): Promise<void>;
   onCheckGatewayLiveness(gatewayNodeId: string): void;
+  onRestartGateway(
+    gatewayNodeId: string,
+    targetProjectId: string,
+    mode: GatewayRestartMode,
+  ): void;
   onReviewGatewayUpdates(): void;
   onRetryGatewayUpdateDiscovery(): void;
   onReconnectGatewayUpdates(): void;
@@ -146,7 +164,9 @@ function MatrixSettingsDialog({
   connectionDetail,
   error,
   pairingPreview,
+  pairingCompletion,
   trustedGateway,
+  activeDeviceCount,
   savedGateways,
   gatewayDirectory,
   availableProjectIds,
@@ -166,6 +186,7 @@ function MatrixSettingsDialog({
   gatewayRetirementBusy,
   gatewayRetirementError,
   gatewayNodeLivenessById,
+  gatewayRestartRuntimeByNode,
   gatewayLivenessNow,
   gatewayRelease,
   gatewayUpdateAvailableCount,
@@ -186,6 +207,7 @@ function MatrixSettingsDialog({
   onPairingLink,
   onClearPairing,
   onConfirmPairing,
+  onFinishPairing,
   onClose,
   onDisconnect,
   onForget,
@@ -200,6 +222,7 @@ function MatrixSettingsDialog({
   onRenameGateway,
   onRetireGateway,
   onCheckGatewayLiveness,
+  onRestartGateway,
   onReviewGatewayUpdates,
   onRetryGatewayUpdateDiscovery,
   onReconnectGatewayUpdates,
@@ -215,10 +238,14 @@ function MatrixSettingsDialog({
 }: Props) {
   const [manualRepairReason, setManualRepairReason] =
     useState<ConnectionRepairReason | null>(null);
+  const [activeSection, setActiveSection] = useState<
+    "workspace" | "devices" | "computers" | "support"
+  >("workspace");
   const effectiveRepairReason = repairReason ?? manualRepairReason;
   const repairRequired = effectiveRepairReason !== null;
   const [addingGateway, setAddingGateway] = useState(false);
   const [editingGatewayNodeId, setEditingGatewayNodeId] = useState<string | null>(null);
+  const [restartConfirmationNodeId, setRestartConfirmationNodeId] = useState<string | null>(null);
   const [gatewayNameDraft, setGatewayNameDraft] = useState("");
   const [diagnosticExportStatus, setDiagnosticExportStatus] = useState<
     "started" | "failed" | null
@@ -266,6 +293,16 @@ function MatrixSettingsDialog({
       config.accessToken.trim() &&
       config.roomId.trim(),
   );
+  const hasIncompleteLocalSetup = !hasSavedConnection && Boolean(
+    config.homeserver.trim() ||
+      config.userId.trim() ||
+      config.roomId.trim() ||
+      config.gatewayId.trim() ||
+      pairingPreview,
+  );
+  const setupMode =
+    !trustedGateway || repairRequired || Boolean(pairingPreview) || Boolean(pairingCompletion);
+  const connectionPresentation = deriveConnectionPresentation(status, connectionDetail);
   const availableProjectIdSet = new Set(availableProjectIds);
   const onlineGatewayNodeIds = new Set(
     (gatewayDirectory?.directory.gateways ?? [])
@@ -319,16 +356,16 @@ function MatrixSettingsDialog({
     !repairRequired &&
     !pairingPreview;
   const gatewayManagementDetail = !trustedGateway
-    ? "Loading the current Gateway authorization…"
+    ? "Loading Workspace computer authorization…"
     : pairingPreview
-      ? "Finish the current connection setup before adding another Gateway"
+      ? "Finish adding this device before adding another computer"
       : repairRequired
-        ? "Repair the current connection before adding another Gateway"
+        ? "Repair this device before adding another computer"
         : status !== "connected"
-          ? "Reconnect the current Gateway before adding another Gateway"
+          ? "Resume this device's Workspace connection before adding another computer"
           : workspaceRepair && workspaceRepair.unavailableProjects > 0
             ? `${workspaceRepair.availableProjects} of ${workspaceRepair.totalProjects} projects available; finish recovery from the affected computer card below`
-            : `${gatewayProfiles.length} available to every authorized client`;
+            : `${gatewayProfiles.length} ${gatewayProfiles.length === 1 ? "computer" : "computers"} available to every authorized device`;
   const recoveryPlan = deriveConnectionRecoveryPlan({
     status,
     detail: connectionDetail,
@@ -425,14 +462,16 @@ function MatrixSettingsDialog({
         <header>
           <div>
             <span className="eyebrow">
-              {trustedGateway ? "Settings" : "Devices"}
+              {setupMode ? "Secure device setup" : "Workspace settings"}
             </span>
             <h2 id="matrix-settings-title">
-              {repairRequired
+              {pairingCompletion
+                ? "Device added"
+                : repairRequired
                 ? "Repair connection"
-                : trustedGateway
-                  ? "Malink settings"
-                  : "Connect a computer"}
+                : setupMode
+                  ? "Add this device"
+                  : "Manage Malink"}
             </h2>
           </div>
           <button
@@ -446,30 +485,170 @@ function MatrixSettingsDialog({
           </button>
         </header>
 
+        {!setupMode && (
+          <nav className="settings-navigation" aria-label="Settings sections">
+            {([
+              ["workspace", "Workspace"],
+              ["devices", "Devices"],
+              ["computers", "Computers"],
+              ["support", "App & support"],
+            ] as const).map(([section, label]) => (
+              <button
+                key={section}
+                type="button"
+                className={activeSection === section ? "is-active" : ""}
+                aria-current={activeSection === section ? "page" : undefined}
+                onClick={() => {
+                  setAddingGateway(false);
+                  setActiveSection(section);
+                }}
+              >
+                {label}
+                {section === "computers" && gatewayUpdateAvailableCount > 0 && (
+                  <b aria-label={`${gatewayUpdateAvailableCount} updates available`}>
+                    {gatewayUpdateAvailableCount}
+                  </b>
+                )}
+              </button>
+            ))}
+          </nav>
+        )}
+
         <div className="matrix-settings-body">
         <section className="settings-group settings-connection-group">
           <SettingsGroupHeading
-            eyebrow={trustedGateway ? "Connection" : "Secure setup"}
-            title={trustedGateway ? "Devices & connection" : "Connect a device"}
-            detail={trustedGateway
-              ? "Manage approved computers, Gateway access, and this device's connection."
-              : "Approve this device with a one-time invitation from your computer."}
+            eyebrow={setupMode
+              ? "One-time invitation"
+              : activeSection === "workspace"
+                ? "Workspace"
+                : activeSection === "devices"
+                  ? "Authorized access"
+                  : activeSection === "computers"
+                    ? "Agent hosts"
+                    : "This application"}
+            title={setupMode
+              ? pairingCompletion
+                ? "Setup complete"
+                : "Add this device to a Workspace"
+              : activeSection === "workspace"
+                ? "Workspace overview"
+                : activeSection === "devices"
+                  ? "Devices"
+                  : activeSection === "computers"
+                    ? "Workspace computers"
+                    : "Application & support"}
+            detail={setupMode
+              ? "Use an invitation created by an authorized device or Workspace computer."
+              : activeSection === "workspace"
+                ? "See whether this device can sync and which Workspace computers are available."
+                : activeSection === "devices"
+                  ? "Manage this phone or browser and invite another device."
+                  : activeSection === "computers"
+                    ? "Manage the computers that run projects and Agents."
+                    : "Keep this app current and collect diagnostic information when needed."}
           />
 
+          {(setupMode || activeSection === "devices" || activeSection === "computers") && (
           <div className="settings-security-note">
             <span>✓</span>
             <p>
               {addingGateway
-                ? "The setup link only tells the new Gateway where to request access. It joins only after you approve the matching code."
-                : "Scan a one-time code from Malink on your computer. Only devices you approve can see or send messages."}
+                ? "The new computer joins only after you approve its matching verification code."
+                : activeSection === "devices" && !setupMode
+                  ? "Each device receives its own authorization. Adding a device never copies another device's private key."
+                  : "The invitation works once and expires. Confirm its Workspace and verification code before continuing."}
             </p>
           </div>
+          )}
 
-        {showGatewayManagement && (
-          <section className="gateway-profile-list" aria-label="Workspace Gateways">
+        {!setupMode && activeSection === "workspace" && (
+          <div className="workspace-overview" aria-live="polite">
+            <section className={`workspace-health workspace-health-${connectionPresentation.state}`}>
+              <span className="workspace-health-mark" aria-hidden="true">
+                {connectionPresentation.state === "ready" ? "✓" :
+                  connectionPresentation.state === "progress" ? "↻" : "!"}
+              </span>
+              <span>
+                <small>This device</small>
+                <strong>{connectionPresentation.title}</strong>
+                <p>{connectionPresentation.detail}</p>
+              </span>
+              {status !== "connected" && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={onReconnectGatewayUpdates}
+                >
+                  {status === "connecting" || status === "securing" || status === "reconnecting"
+                    ? "Connecting…"
+                    : "Resume connection"}
+                </button>
+              )}
+            </section>
+            <div className="workspace-facts">
+              <button type="button" onClick={() => setActiveSection("devices")}>
+                <small>Authorized devices</small>
+                <strong>{activeDeviceCount ?? "Checking"}</strong>
+                <span>Manage devices</span>
+              </button>
+              <button type="button" onClick={() => setActiveSection("computers")}>
+                <small>Workspace computers</small>
+                <strong>{gatewayProfiles.length}</strong>
+                <span>
+                  {onlineGatewayNodeIds.size} online
+                  {gatewayUpdateAvailableCount > 0
+                    ? ` · ${gatewayUpdateAvailableCount} update${gatewayUpdateAvailableCount === 1 ? "" : "s"}`
+                    : ""}
+                </span>
+              </button>
+              <span>
+                <small>Available projects</small>
+                <strong>{availableProjectIds.length}</strong>
+                <span>Ready on this device</span>
+              </span>
+            </div>
+          </div>
+        )}
+
+        {!setupMode && activeSection === "computers" && (
+          <section className={`computer-software-summary ${gatewaySoftware.attention ? "needs-attention" : ""}`}>
+            <span>
+              <small>Software across Workspace computers</small>
+              <strong>
+                {gatewayUpdateAvailableCount > 0
+                  ? `${gatewayUpdateAvailableCount} update${gatewayUpdateAvailableCount === 1 ? "" : "s"} available`
+                  : gatewayUpdateNodeCount > 0
+                    ? "Computer versions checked"
+                    : "Waiting for computer information"}
+              </strong>
+              <p role={gatewaySoftware.attention ? "alert" : "status"}>
+                {gatewaySoftware.detail}
+              </p>
+            </span>
+            {gatewaySoftware.action && gatewaySoftware.actionLabel && (
+              <button
+                type="button"
+                disabled={gatewayUpdateDiscoveryBusy || busy}
+                onClick={gatewaySoftware.action === "review"
+                  ? onReviewGatewayUpdates
+                  : gatewaySoftware.action === "retry-discovery"
+                    ? onRetryGatewayUpdateDiscovery
+                    : onReconnectGatewayUpdates}
+              >
+                {gatewaySoftware.action === "reconnect" &&
+                (status === "connecting" || status === "securing" || status === "reconnecting")
+                  ? "Connecting…"
+                  : gatewaySoftware.actionLabel}
+              </button>
+            )}
+          </section>
+        )}
+
+        {showGatewayManagement && !setupMode && activeSection === "computers" && (
+          <section className="gateway-profile-list" aria-label="Workspace computers">
             <header>
               <span>
-                <strong>Workspace Gateways</strong>
+                <strong>Workspace computers</strong>
                 <small>{gatewayManagementDetail}</small>
               </span>
               <button
@@ -481,7 +660,7 @@ function MatrixSettingsDialog({
                   ? "Close"
                   : pendingGatewayEnrollments.length > 0
                     ? `Review or add (${pendingGatewayEnrollments.length})`
-                    : "Add Gateway"}
+                    : "Add computer"}
               </button>
             </header>
             <div>
@@ -518,6 +697,17 @@ function MatrixSettingsDialog({
                   gatewayNodeLivenessById[gatewayProfileId]?.lastVerifiedAt,
                   gatewayLivenessNow,
                 );
+                const updateAvailable = Boolean(
+                  gatewayRelease && gateway.buildId && gateway.buildId !== gatewayRelease.buildId,
+                );
+                const restartRuntime = gatewayRestartRuntimeByNode[gatewayProfileId]
+                  ?? { state: "idle" as const };
+                const restartBusy = restartRuntime.state === "requesting" ||
+                  restartRuntime.state === "waiting" ||
+                  restartRuntime.state === "restarting";
+                const restartConfirming = restartConfirmationNodeId === gatewayProfileId;
+                const canRestart = gatewayManagementReady && liveCheckAvailable &&
+                  Boolean(targetProjectId) && liveness.state === "online";
                 return (
                   <div
                     key={gatewayProfileId}
@@ -548,8 +738,129 @@ function MatrixSettingsDialog({
                         <strong>{liveness.label}</strong>
                       </span>
                     </div>
+                    <div className={`gateway-profile-software ${updateAvailable ? "has-update" : ""}`}>
+                      <span>
+                        <small>Gateway software</small>
+                        <strong>
+                          {updateAvailable
+                            ? "Update available"
+                            : gateway.buildId
+                              ? "Up to date"
+                              : "Version not reported"}
+                        </strong>
+                        <small>
+                          {gateway.buildId
+                            ? `Installed build ${gateway.buildId}`
+                            : "Check this computer when it is online."}
+                        </small>
+                      </span>
+                      {(updateAvailable || gatewayUpdateDiscoveryError) && (
+                        <button
+                          type="button"
+                          disabled={busy || !gatewayManagementReady}
+                          onClick={gatewayUpdateDiscoveryError
+                            ? onRetryGatewayUpdateDiscovery
+                            : onReviewGatewayUpdates}
+                        >
+                          {gatewayUpdateDiscoveryBusy
+                            ? "Checking…"
+                            : gatewayUpdateDiscoveryError
+                              ? "Retry update check"
+                              : "Review update"}
+                        </button>
+                      )}
+                    </div>
+                    <div className="gateway-profile-restart">
+                      <span>
+                        <small>Provider changes</small>
+                        <strong>Restart Gateway to load them</strong>
+                        <small>
+                          After adding or changing a Provider on this computer, restart its
+                          Gateway before creating a session with that Provider.
+                        </small>
+                      </span>
+                      {!restartConfirming && (
+                        <button
+                          type="button"
+                          disabled={busy || restartBusy || !canRestart}
+                          title={!gateway.onlineUpdate
+                            ? "Update this Gateway Host before using remote restart."
+                            : !targetProjectId
+                              ? "This Gateway has no synchronized project route."
+                              : liveness.state !== "online"
+                                ? "Check status first so Malink can verify this Gateway is online."
+                                : "Restart this Gateway process"}
+                          onClick={() => setRestartConfirmationNodeId(gatewayProfileId)}
+                        >
+                          {restartRuntime.state === "requesting"
+                            ? "Sending…"
+                            : restartRuntime.state === "waiting"
+                              ? "Waiting for idle…"
+                              : restartRuntime.state === "restarting"
+                                ? "Restarting…"
+                                : restartRuntime.state === "failed"
+                                  ? "Retry restart"
+                                  : restartRuntime.state === "ready"
+                                    ? "Restart again"
+                                    : "Restart Gateway"}
+                        </button>
+                      )}
+                    </div>
+                    {restartConfirming && targetProjectId && (
+                      <div className="gateway-restart-confirmation" role="alert">
+                        <span>
+                          <strong>Restart {gatewayIdentity.label}?</strong>
+                          <small>
+                            New sessions will be unavailable briefly. Waiting for idle preserves
+                            active work; restarting now interrupts active Agent turns.
+                          </small>
+                        </span>
+                        <span>
+                          <button
+                            type="button"
+                            className="connect-button"
+                            disabled={busy || restartBusy}
+                            onClick={() => {
+                              setRestartConfirmationNodeId(null);
+                              onRestartGateway(gatewayProfileId, targetProjectId, "when_idle");
+                            }}
+                          >
+                            Restart when idle
+                          </button>
+                          <button
+                            type="button"
+                            className="danger-button"
+                            disabled={busy || restartBusy}
+                            onClick={() => {
+                              setRestartConfirmationNodeId(null);
+                              onRestartGateway(gatewayProfileId, targetProjectId, "force");
+                            }}
+                          >
+                            Restart now
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy || restartBusy}
+                            onClick={() => setRestartConfirmationNodeId(null)}
+                          >
+                            Cancel
+                          </button>
+                        </span>
+                      </div>
+                    )}
+                    {restartRuntime.state !== "idle" && (
+                      <p
+                        className={`gateway-restart-status gateway-restart-status-${restartRuntime.state}`}
+                        role={restartRuntime.state === "failed" ? "alert" : "status"}
+                        aria-live="polite"
+                      >
+                        <strong>{gatewayRestartStateLabel(restartRuntime.state)}</strong>{" "}
+                        {restartRuntime.detail ?? restartRuntime.status?.detail ??
+                          gatewayRestartStateDetail(restartRuntime.state)}
+                      </p>
+                    )}
                     <details className="gateway-profile-details">
-                      <summary>Gateway details</summary>
+                      <summary>Technical details</summary>
                       <dl>
                         <div>
                           <dt>Build</dt>
@@ -683,7 +994,7 @@ function MatrixSettingsDialog({
                   <div className="gateway-profile-overview">
                     <span className="gateway-device-mark" aria-hidden="true">G</span>
                     <span className="gateway-profile-identity">
-                      <strong>Current Gateway</strong>
+                      <strong>Workspace computer</strong>
                       <small>Loading its saved profile…</small>
                     </span>
                     <span className="gateway-profile-liveness gateway-profile-liveness-checking">
@@ -697,7 +1008,7 @@ function MatrixSettingsDialog({
           </section>
         )}
 
-        {recoveryPlan && !repairRequired && (
+        {recoveryPlan && !repairRequired && (setupMode || activeSection === "workspace") && (
           <section className="connection-recovery-panel" aria-live="polite">
             <div>
               <span className="connection-recovery-mark" aria-hidden="true">!</span>
@@ -738,7 +1049,7 @@ function MatrixSettingsDialog({
           </section>
         )}
 
-        {addingGateway && (
+        {!setupMode && activeSection === "computers" && addingGateway && (
           <GatewayEnrollmentPanel
             invitation={gatewayEnrollmentInvitation}
             pending={pendingGatewayEnrollments}
@@ -755,12 +1066,45 @@ function MatrixSettingsDialog({
           />
         )}
 
-        {!addingGateway && <PairingWizard
+        {!setupMode && activeSection === "devices" && (
+          <section className="current-device-card" aria-live="polite">
+            <span className="current-device-mark" aria-hidden="true">
+              {nativeHostDetected ? "A" : "W"}
+            </span>
+            <span>
+              <small>This device</small>
+              <strong>{nativeHostDetected ? "Android app" : "This browser"}</strong>
+              <p>
+                {status === "connected"
+                  ? "Authorized and synchronizing this Workspace."
+                  : "Authorization is saved; syncing is currently paused or reconnecting."}
+              </p>
+            </span>
+            <span className="current-device-actions">
+              {status === "connected" ? (
+                <button type="button" disabled={busy} onClick={onDisconnect}>
+                  Pause syncing
+                </button>
+              ) : (
+                <button type="button" disabled={busy} onClick={onReconnectGatewayUpdates}>
+                  {status === "connecting" || status === "securing" || status === "reconnecting"
+                    ? "Connecting…"
+                    : "Resume syncing"}
+                </button>
+              )}
+            </span>
+          </section>
+        )}
+
+        {(setupMode || (!addingGateway && activeSection === "devices")) && <PairingWizard
           preview={pairingPreview}
           trustedGateway={trustedGateway}
           repairReason={effectiveRepairReason}
           busy={pairingBusy}
+          connectionStatus={status}
           progressDetail={connectionDetail}
+          error={error}
+          completion={pairingCompletion}
           canConfirm={Boolean(config.accessToken)}
           deviceInvitation={deviceInvitation}
           invitationBusy={invitationBusy}
@@ -772,13 +1116,14 @@ function MatrixSettingsDialog({
             onClearPairing();
           }}
           onConfirm={onConfirmPairing}
+          onFinish={onFinishPairing}
           onCreateInvitation={onCreateInvitation}
           onClearInvitation={onClearInvitation}
           onSaveQrCode={onSaveInvitationQr}
           onExportAuthorizationFile={onExportAuthorizationFile}
           />}
 
-        {(needsAccount || trustedGateway) && (
+        {(needsAccount || (!setupMode && activeSection === "support")) && (
           <details className="connection-details" open={needsAccount}>
             <summary>
               <span>
@@ -788,16 +1133,14 @@ function MatrixSettingsDialog({
                     ? "Sign in once to finish adding this device"
                     : status === "securing"
                       ? "Checking your approved computer"
-                    : connected
-                      ? "Protected and up to date"
-                      : "Saved on this device"}
+                    : "Technical account and channel identifiers"}
                 </small>
               </span>
               <b>
                 {status === "securing"
                   ? "Checking"
                   : connected
-                    ? "Online"
+                    ? "Advanced"
                     : needsAccount
                     ? "Sign in"
                       : "Details"}
@@ -838,7 +1181,7 @@ function MatrixSettingsDialog({
         )}
         </section>
 
-        {(nativeHostDetected || trustedGateway) && (
+        {!setupMode && activeSection === "support" && (
           <section className="settings-group settings-app-group">
             <SettingsGroupHeading
               eyebrow="Application"
@@ -866,44 +1209,10 @@ function MatrixSettingsDialog({
 
             <PwaUpdateSettings state={updateState} onCheck={onCheckForUpdates} />
 
-            <section className="gateway-update-settings" aria-live="polite">
-              <span>
-                <strong>Gateway software</strong>
-                <small role={gatewaySoftware.attention ? "alert" : "status"}>
-                  {gatewaySoftware.detail}
-                </small>
-              </span>
-              {gatewaySoftware.action && gatewaySoftware.actionLabel && (
-                <button
-                  type="button"
-                  disabled={gatewayUpdateDiscoveryBusy || busy}
-                  aria-busy={
-                    gatewayUpdateDiscoveryBusy ||
-                    status === "connecting" ||
-                    status === "securing" ||
-                    status === "reconnecting"
-                  }
-                  onClick={
-                    gatewaySoftware.action === "review"
-                      ? onReviewGatewayUpdates
-                      : gatewaySoftware.action === "retry-discovery"
-                        ? onRetryGatewayUpdateDiscovery
-                        : onReconnectGatewayUpdates
-                  }
-                >
-                  {gatewaySoftware.action === "reconnect" &&
-                  (status === "connecting" ||
-                    status === "securing" ||
-                    status === "reconnecting")
-                    ? "Reconnecting…"
-                    : gatewaySoftware.actionLabel}
-                </button>
-              )}
-            </section>
           </section>
         )}
 
-        {!nativeRuntime && trustedGateway && (
+        {!setupMode && activeSection === "support" && !nativeRuntime && trustedGateway && (
           <section className="settings-group settings-notification-group">
             <SettingsGroupHeading
               eyebrow="Attention"
@@ -939,7 +1248,7 @@ function MatrixSettingsDialog({
           </section>
         )}
 
-        {error && (
+        {error && !setupMode && activeSection === "workspace" && (
           <div className="connection-error" role="alert">
             <strong>
               {pairingPreview && !trustedGateway
@@ -955,6 +1264,7 @@ function MatrixSettingsDialog({
           </div>
         )}
 
+        {!setupMode && activeSection === "support" && (
         <section className="settings-group settings-support-group">
           <SettingsGroupHeading
             eyebrow="Support"
@@ -1016,36 +1326,23 @@ function MatrixSettingsDialog({
             </details>
           </div>
         </section>
-
-        <DeviceRemovalSettings
-          deviceKind={
-            hasSavedConnection
-              ? nativeHostDetected
-                ? "android"
-                : "browser"
-              : null
-          }
-          busy={signOutBusy}
-          onRemove={onForget}
-        />
-        </div>
-
-        {connected && (
-          <footer>
-            <button
-              type="button"
-              className="disconnect-button"
-              onClick={onDisconnect}
-              disabled={busy}
-            >
-              {status === "connecting" ||
-              status === "securing" ||
-              status === "reconnecting"
-                ? "Connection in progress…"
-                : "Disconnect"}
-            </button>
-          </footer>
         )}
+
+        {((!setupMode && activeSection === "devices" && hasSavedConnection) ||
+          (setupMode && hasIncompleteLocalSetup && !pairingCompletion)) && (
+          <DeviceRemovalSettings
+            deviceKind={
+              hasSavedConnection
+                ? nativeHostDetected
+                  ? "android"
+                  : "browser"
+                : null
+            }
+            busy={signOutBusy}
+            onRemove={onForget}
+          />
+        )}
+        </div>
       </section>
     </div>
   );
@@ -1178,17 +1475,17 @@ export function DeviceRemovalSettings({
       <span>
         <strong>
           {deviceKind === "android"
-            ? "Sign out of Android app"
+            ? "Sign out this device"
             : deviceKind === "browser"
-              ? "Sign out of this browser"
-              : "Reset local setup"}
+              ? "Sign out this device"
+              : "Discard incomplete setup"}
         </strong>
         <small>
           {deviceKind === "android"
-            ? "Remove this app’s local Matrix account, Malink authorization, pending commands, and cached history."
+            ? "Remove this Android app’s local account, device authorization, pending commands, and cached history."
             : deviceKind === "browser"
-              ? "Remove this browser’s local Matrix account, Malink authorization, pending commands, and cached history."
-              : "Clear incomplete connection data stored on this device."}
+              ? "Remove this browser’s local account, device authorization, pending commands, and cached history."
+              : "Remove only the unfinished invitation and connection information stored on this device."}
         </small>
       </span>
       <button
@@ -1200,8 +1497,8 @@ export function DeviceRemovalSettings({
         {deviceKind
           ? busy
             ? "Signing out…"
-            : "Sign out"
-          : "Clear local setup"}
+            : "Sign out this device"
+          : "Discard setup"}
       </button>
     </section>
   );
@@ -1435,6 +1732,40 @@ export function nativeUpdateStatusText(state: NativeUpdateStatus | null): string
       return `APK: update check failed (${state.detailCode ?? "unknown_error"}); the current app remains unchanged`;
     case "current":
       return "APK: up to date; static releases are checked automatically";
+  }
+}
+
+function gatewayRestartStateLabel(state: GatewayRestartNodeRuntime["state"]): string {
+  switch (state) {
+    case "requesting":
+      return "Restart requested."
+    case "waiting":
+      return "Waiting for active work."
+    case "restarting":
+      return "Gateway is restarting."
+    case "ready":
+      return "Restart complete."
+    case "failed":
+      return "Restart did not complete."
+    case "idle":
+      return "";
+  }
+}
+
+function gatewayRestartStateDetail(state: GatewayRestartNodeRuntime["state"]): string {
+  switch (state) {
+    case "requesting":
+      return "Sending the signed restart request.";
+    case "waiting":
+      return "Gateway will restart automatically after active Agent turns finish.";
+    case "restarting":
+      return "Waiting for a signed reply from the replacement Gateway process.";
+    case "ready":
+      return "Provider changes are now loaded.";
+    case "failed":
+      return "Check this computer or export diagnostics, then retry.";
+    case "idle":
+      return "";
   }
 }
 

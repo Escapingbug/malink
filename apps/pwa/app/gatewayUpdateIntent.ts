@@ -5,6 +5,7 @@ export type GatewayUpdateIntent = {
   projectId: string;
   releaseId: string;
   buildId: string;
+  mode?: "when_idle" | "force";
   requestedAt: number;
 };
 
@@ -42,6 +43,7 @@ export function readGatewayUpdateIntent(
       !validId(value.projectId) ||
       !validId(value.releaseId) ||
       !validId(value.buildId) ||
+      (value.mode !== undefined && value.mode !== "when_idle" && value.mode !== "force") ||
       typeof value.requestedAt !== "number" ||
       !Number.isFinite(value.requestedAt) ||
       value.requestedAt < 0 ||
@@ -93,6 +95,7 @@ function readGatewayUpdateIntentShape(
     validId(value.projectId) &&
     validId(value.releaseId) &&
     validId(value.buildId) &&
+    (value.mode === undefined || value.mode === "when_idle" || value.mode === "force") &&
     Number.isFinite(value.requestedAt) &&
     value.requestedAt >= 0
     ? value

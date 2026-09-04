@@ -22,7 +22,9 @@ const supervisor = new GatewayUpdateSupervisor({
   updateSocketPath: optionalEnvironment('MALINK_GATEWAY_UPDATE_SOCKET'),
   currentBuildId: process.env.MALINK_GATEWAY_BUILD_ID,
   activationDelayMs: optionalDuration('MALINK_GATEWAY_UPDATE_ACTIVATION_DELAY_MS', 5_000),
+  restartDelayMs: optionalDuration('MALINK_GATEWAY_RESTART_DELAY_MS', 5_000),
   healthTimeoutMs: optionalDuration('MALINK_GATEWAY_UPDATE_HEALTH_TIMEOUT_MS', 180_000),
+  restartHealthTimeoutMs: optionalDuration('MALINK_GATEWAY_RESTART_HEALTH_TIMEOUT_MS', 180_000),
   probationMs: optionalDuration('MALINK_GATEWAY_UPDATE_PROBATION_MS', 60_000),
   syncFreshnessMs: optionalDuration('MALINK_GATEWAY_UPDATE_SYNC_FRESHNESS_MS', 45_000),
   manifestFetchTimeoutMs: optionalDuration(

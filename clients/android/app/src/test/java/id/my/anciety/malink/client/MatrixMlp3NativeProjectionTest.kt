@@ -1102,6 +1102,59 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `Gateway restart progress completes only after it is scheduled`() {
+        val projection = projection()
+        val waiting = projection.applyGatewayEvent(
+            event(
+                eventId = "gateway-restart-waiting-1",
+                projectId = "project-1",
+                causationCommandId = "gateway-restart-1",
+                payload = buildJsonObject {
+                    put("type", "gateway.restart.status")
+                    put("status", buildJsonObject {
+                        put("version", 1)
+                        put("phase", "waiting_for_idle")
+                        put("mode", "when_idle")
+                        put("activeTurns", 1)
+                        put("updatedAt", 20)
+                    })
+                },
+            ),
+            "\$gateway-restart-waiting",
+            null,
+        )
+        assertNull(waiting.terminal)
+
+        val scheduled = projection.applyGatewayEvent(
+            event(
+                eventId = "gateway-restart-scheduled-1",
+                projectId = "project-1",
+                causationCommandId = "gateway-restart-1",
+                payload = buildJsonObject {
+                    put("type", "gateway.restart.status")
+                    put("status", buildJsonObject {
+                        put("version", 1)
+                        put("phase", "scheduled")
+                        put("restartId", "restart-1")
+                        put("mode", "when_idle")
+                        put("requestedAt", 21)
+                        put("scheduledAt", 26)
+                        put("updatedAt", 21)
+                    })
+                },
+            ),
+            "\$gateway-restart-scheduled",
+            null,
+        )
+        assertEquals("gateway-restart-1", scheduled.terminal?.commandId)
+        assertEquals("succeeded", scheduled.terminal?.outcome)
+        assertEquals(
+            "scheduled",
+            scheduled.terminal?.result?.jsonObject?.get("phase")?.jsonPrimitive?.content,
+        )
+    }
+
+    @Test
     fun `shared Gateway update observation survives durable restore`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)

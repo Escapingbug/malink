@@ -20,12 +20,15 @@ import {
   canonicalJson,
   canonicalJsonBytes,
   gatewayUpdateStatusSchema,
+  gatewayRestartStatusSchema,
   signedGatewayAgentUpdateChannelSchema,
   signedGatewayAgentUpdatePromptSchema,
   signedGatewayReleaseManifestSchema,
   type GatewayAgentUpdatePrompt,
   type GatewayReleaseManifest,
   type GatewayUpdateStatus,
+  type GatewayRestartMode,
+  type GatewayRestartStatus,
   type PairingPublicKey,
   type SignedGatewayAgentUpdateChannel,
   type SignedGatewayAgentUpdatePrompt,
@@ -52,6 +55,7 @@ type GatewayActivationMode = 'rollback-safe' | 'forward-only'
 interface GatewayUpdateSupervisorState {
   version: 1
   status: GatewayUpdateStatus
+  restart?: GatewayRestartStatus
   agentChannel?: SignedGatewayAgentUpdateChannel
   staged?: SignedGatewayReleaseManifest
   agentUpdate?: SignedGatewayAgentUpdatePrompt
@@ -104,7 +108,9 @@ export interface GatewayUpdateSupervisorConfig {
   updateSocketPath?: string
   currentBuildId?: string
   activationDelayMs?: number
+  restartDelayMs?: number
   healthTimeoutMs?: number
+  restartHealthTimeoutMs?: number
   probationMs?: number
   syncFreshnessMs?: number
   manifestFetchTimeoutMs?: number
@@ -123,6 +129,7 @@ export interface GatewayUpdateSupervisorDependencies {
   now?: () => number
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>
   activate?: (options: MacosGatewayReleaseOptions) => Promise<void>
+  restartGateway?: () => Promise<void>
   gatewayHealth?: () => Promise<GatewayAdminStatus>
   onCommitted?: () => void | Promise<void>
   backupForwardOnlyState?: typeof createGatewayForwardOnlyBackup
@@ -137,6 +144,8 @@ export class GatewayUpdateSupervisor {
   private readonly stateFile: AtomicJsonFile<GatewayUpdateSupervisorState>
   private timer: ReturnType<typeof setTimeout> | null = null
   private activation: Promise<void> | null = null
+  private restartTimer: ReturnType<typeof setTimeout> | null = null
+  private restartOperation: Promise<void> | null = null
   private requestChain: Promise<void> = Promise.resolve()
 
   constructor(
@@ -197,11 +206,56 @@ export class GatewayUpdateSupervisor {
     const state = await this.readState()
     if (state.status.phase === 'scheduled' && state.scheduledAt !== undefined) {
       this.armActivation(state.scheduledAt)
-      return
-    }
-    if (state.status.phase === 'activating' || state.status.phase === 'probation') {
+    } else if (state.status.phase === 'activating' || state.status.phase === 'probation') {
       await this.recoverInterruptedActivation(state)
     }
+    if (state.restart?.phase === 'scheduled' && state.restart.scheduledAt !== undefined) {
+      this.armRestart(state.restart.scheduledAt)
+    } else if (state.restart?.phase === 'restarting') {
+      const scheduledAt = this.now() + (this.config.restartDelayMs ?? 5_000)
+      await this.writeRestartState(restart => {
+        restart.phase = 'scheduled'
+        restart.scheduledAt = scheduledAt
+        restart.detail = 'The restart supervisor resumed an interrupted restart request'
+        restart.updatedAt = this.now()
+      })
+      this.armRestart(scheduledAt)
+    }
+  }
+
+  async restartStatus(): Promise<GatewayRestartStatus> {
+    const state = await this.readState()
+    return structuredClone(state.restart ?? idleRestartStatus())
+  }
+
+  async scheduleRestart(mode: GatewayRestartMode): Promise<GatewayRestartStatus> {
+    return this.serializeRequest(async () => {
+      const current = await this.readState()
+      if (current.restart?.phase === 'scheduled' || current.restart?.phase === 'restarting') {
+        return structuredClone(current.restart)
+      }
+      if (['scheduled', 'activating', 'probation'].includes(current.status.phase)) {
+        throw new Error(`Cannot restart the Gateway while update is ${current.status.phase}`)
+      }
+      const requestedAt = this.now()
+      const scheduledAt = requestedAt + (this.config.restartDelayMs ?? 5_000)
+      const restartId = randomUUID()
+      const status = await this.writeRestartState(restart => {
+        restart.version = 1
+        restart.phase = 'scheduled'
+        restart.restartId = restartId
+        restart.mode = mode
+        restart.requestedAt = requestedAt
+        restart.scheduledAt = scheduledAt
+        delete restart.startedAt
+        delete restart.completedAt
+        delete restart.activeTurns
+        restart.detail = 'Gateway restart is scheduled; waiting for the signed reply to leave the outbox'
+        restart.updatedAt = requestedAt
+      })
+      this.armRestart(scheduledAt)
+      return status
+    })
   }
 
   async status(): Promise<GatewayUpdateStatus> {
@@ -641,6 +695,12 @@ export class GatewayUpdateSupervisor {
     requireReleaseId(releaseId)
     const stagedState = await this.readState()
     if (
+      stagedState.restart?.phase === 'scheduled'
+      || stagedState.restart?.phase === 'restarting'
+    ) {
+      throw new Error('Cannot apply a Gateway update while a restart is already scheduled')
+    }
+    if (
       stagedState.status.releaseId === releaseId
       && ['scheduled', 'activating', 'probation', 'committed']
         .includes(stagedState.status.phase)
@@ -737,8 +797,97 @@ export class GatewayUpdateSupervisor {
   async stop(): Promise<void> {
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
+    if (this.restartTimer) clearTimeout(this.restartTimer)
+    this.restartTimer = null
     await this.requestChain
     await this.activation
+    await this.restartOperation
+  }
+
+  private armRestart(scheduledAt: number): void {
+    if (this.restartTimer) clearTimeout(this.restartTimer)
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null
+      const operation = this.serializeRequest(() => this.performScheduledRestart())
+      const tracked = operation.catch(error => {
+        this.log(`[gateway-restart] restart failed: ${formatError(error)}`)
+      }).finally(() => {
+        if (this.restartOperation === tracked) this.restartOperation = null
+      })
+      this.restartOperation = tracked
+    }, Math.max(0, scheduledAt - this.now()))
+    this.restartTimer.unref?.()
+  }
+
+  private async performScheduledRestart(): Promise<void> {
+    const state = await this.readState()
+    const restart = state.restart
+    if (!restart || restart.phase !== 'scheduled' || !restart.restartId) return
+    const startedAt = this.now()
+    await this.writeRestartState(current => {
+      if (current.restartId !== restart.restartId || current.phase !== 'scheduled') return
+      current.phase = 'restarting'
+      current.startedAt = startedAt
+      delete current.completedAt
+      current.detail = 'Gateway process is restarting'
+      current.updatedAt = startedAt
+    })
+    try {
+      await (this.dependencies.restartGateway ?? (() => restartGatewayLaunchAgent(
+        this.config.serviceLabel,
+      )))()
+      const health = await this.waitForRestartHealth(startedAt)
+      await this.writeRestartState(current => {
+        if (current.restartId !== restart.restartId) return
+        current.phase = 'ready'
+        current.completedAt = this.now()
+        current.detail = 'Gateway restarted and returned to Matrix-ready health'
+        current.updatedAt = this.now()
+      })
+      this.log(
+        `[gateway-restart] Gateway ${health.gatewayNodeId} restarted as pid ${health.pid}`,
+      )
+    } catch (error) {
+      await this.writeRestartState(current => {
+        if (current.restartId !== restart.restartId) return
+        current.phase = 'failed'
+        current.completedAt = this.now()
+        current.detail = statusDetail(error)
+        current.updatedAt = this.now()
+      })
+      throw error
+    }
+  }
+
+  private async waitForRestartHealth(startedAt: number): Promise<GatewayAdminStatus> {
+    const pollIntervalMs = 500
+    const timeoutMs = this.config.restartHealthTimeoutMs
+      ?? this.config.healthTimeoutMs
+      ?? 180_000
+    const maximumAttempts = Math.max(1, Math.ceil(timeoutMs / pollIntervalMs) + 1)
+    let lastError: unknown = new Error('Gateway has not returned to healthy service')
+    for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+      try {
+        const health = await (this.dependencies.gatewayHealth
+          ? this.dependencies.gatewayHealth()
+          : new GatewayAdminClient({
+              socketPath: this.config.gatewayAdminSocketPath,
+              timeoutMs: 5_000,
+            }).status())
+        if (
+          health.state === 'running'
+          && health.matrixReady === true
+          && health.startedAt >= startedAt
+        ) return health
+        lastError = new Error('The replacement Gateway is not Matrix-ready yet')
+      } catch (error) {
+        lastError = error
+      }
+      if (attempt === maximumAttempts - 1) break
+      const controller = new AbortController()
+      await (this.dependencies.sleep ?? wait)(pollIntervalMs, controller.signal)
+    }
+    throw new Error(`Gateway did not return after restart: ${formatError(lastError)}`)
   }
 
   private armActivation(scheduledAt: number): void {
@@ -1658,6 +1807,20 @@ export class GatewayUpdateSupervisor {
     })
   }
 
+  private writeRestartState(
+    mutate: (status: GatewayRestartStatus) => void,
+  ): Promise<GatewayRestartStatus> {
+    return this.stateFile.transaction(defaultState, state => {
+      validateState(state)
+      const restart = state.restart ?? idleRestartStatus()
+      mutate(restart)
+      gatewayRestartStatusSchema.parse(restart)
+      state.restart = restart
+      validateState(state)
+      return { result: structuredClone(restart), changed: true }
+    })
+  }
+
   private now(): number {
     return this.dependencies.now?.() ?? Date.now()
   }
@@ -2045,12 +2208,18 @@ function defaultState(): GatewayUpdateSupervisorState {
   return {
     version: 1,
     status: { version: 1, phase: 'idle', updatedAt: 0 },
+    restart: idleRestartStatus(),
   }
+}
+
+function idleRestartStatus(): GatewayRestartStatus {
+  return { version: 1, phase: 'idle', updatedAt: 0 }
 }
 
 function validateState(state: GatewayUpdateSupervisorState): void {
   if (state.version !== 1) throw new Error('Unsupported Gateway update supervisor state')
   gatewayUpdateStatusSchema.parse(state.status)
+  if (state.restart) gatewayRestartStatusSchema.parse(state.restart)
   if (state.agentChannel) signedGatewayAgentUpdateChannelSchema.parse(state.agentChannel)
   if (state.staged) signedGatewayReleaseManifestSchema.parse(state.staged)
   if (state.agentUpdate) signedGatewayAgentUpdatePromptSchema.parse(state.agentUpdate)
@@ -2083,6 +2252,29 @@ function validateState(state: GatewayUpdateSupervisorState): void {
   if (state.forwardOnlyBackupPath !== undefined && !state.forwardOnlyBackupPath) {
     throw new Error('Gateway update supervisor backup path is invalid')
   }
+}
+
+function restartGatewayLaunchAgent(serviceLabel: string): Promise<void> {
+  if (!process.getuid) throw new Error('Gateway restart requires a per-user launchd service')
+  const service = `gui/${process.getuid()}/${serviceLabel}`
+  return new Promise((resolveRestart, reject) => {
+    execFile('/bin/launchctl', ['kickstart', '-k', service], {
+      env: {
+        PATH: '/usr/bin:/bin',
+        LANG: process.env.LANG ?? 'C',
+      },
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    }, error => {
+      if (error) {
+        reject(new Error(`Could not restart the Gateway launch service ${service}`, {
+          cause: error,
+        }))
+      } else {
+        resolveRestart()
+      }
+    })
+  })
 }
 
 function gatewayStateActivation(

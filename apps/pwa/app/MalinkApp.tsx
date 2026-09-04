@@ -20,11 +20,14 @@ import {
   encodePairingLink,
   providerHistoryMessageSchema,
   providerSessionEntrySchema,
+  gatewayRestartStatusSchema,
   gatewayUpdateStatusSchema,
   type MalinkAttachment,
   type MalinkArtifactReference,
   type CommandPayload,
   type GatewayEnrollmentPending,
+  type GatewayRestartMode,
+  type GatewayRestartStatus,
   type GatewayUpdateStatus,
   type ProviderHistoryMessage,
   type ProviderSessionEntry,
@@ -70,6 +73,7 @@ import {
   MatrixSettings,
   nativeUpdateStatusText,
   OFFICIAL_ANDROID_RELEASES_URL,
+  type GatewayRestartNodeRuntime,
 } from "./MatrixSettings";
 import { ConnectionOnboarding } from "./ConnectionOnboarding";
 import { MalinkMark } from "./MalinkMark";
@@ -313,6 +317,7 @@ import {
 import { createConnectionDiagnostics } from "./connectionDiagnostics";
 import {
   formatDeviceInvitationSignInFailure,
+  formatPairingFailure,
   formatUserFacingError,
   isCommandRecoveryPendingError,
 } from "./userFacingError";
@@ -670,6 +675,9 @@ const BACKGROUND_HISTORY_SOURCE_TIMEOUT_MS = 65_000;
 const PROJECT_CREATE_RESULT_TIMEOUT_MS = 60_000;
 const PROVIDER_HISTORY_RESULT_TIMEOUT_MS = 60_000;
 const GATEWAY_UPDATE_DISCOVERY_INTERVAL_MS = 15 * 60_000;
+const GATEWAY_RESTART_RECOVERY_TIMEOUT_MS = 3 * 60_000;
+const GATEWAY_RESTART_STATUS_TIMEOUT_MS = 30_000;
+const GATEWAY_RESTART_STATUS_RETRY_MS = 1_500;
 
 type GatewayUpdateProbeRecord = {
   commandId: string;
@@ -685,6 +693,13 @@ class InvitationReauthenticationRequiredError extends Error {
   constructor() {
     super("Matrix reauthentication is required for this invitation.");
     this.name = "InvitationReauthenticationRequiredError";
+  }
+}
+
+class GatewayRestartFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GatewayRestartFailedError";
   }
 }
 
@@ -1609,6 +1624,10 @@ function MalinkAppRuntime() {
   // Pairing is an operation layered on top of an already-connected Matrix
   // sync. A routine "connected" status must not erase its timeout/error.
   const [pairingError, setPairingError] = useState<string | null>(null);
+  const [pairingCompletion, setPairingCompletion] = useState<{
+    gatewayName: string;
+  } | null>(null);
+  const [onboardingNotice, setOnboardingNotice] = useState<"signed-out" | null>(null);
   const [nativeRuntime, setNativeRuntime] =
     useState<MalinkNativeRuntimeInfo | null>(null);
   const [nativeUpdateState, setNativeUpdateState] =
@@ -1688,6 +1707,9 @@ function MalinkAppRuntime() {
   const gatewayArchivePreflightSessionIdsRef = useRef<Set<string>>(new Set());
   const [gatewayNodeLivenessById, setGatewayNodeLivenessById] = useState<
     Record<string, GatewayNodeLiveness>
+  >({});
+  const [gatewayRestartRuntimeByNode, setGatewayRestartRuntimeByNode] = useState<
+    Record<string, GatewayRestartNodeRuntime>
   >({});
   const [gatewayLivenessNow, setGatewayLivenessNow] = useState(() => Date.now());
   const [gatewayUpdateDiscoveryError, setGatewayUpdateDiscoveryError] =
@@ -1850,6 +1872,7 @@ function MalinkAppRuntime() {
   );
   const gatewayNodeLivenessRef = useRef<Record<string, GatewayNodeLiveness>>({});
   const gatewayNodeProbeFlightsRef = useRef(new Set<string>());
+  const gatewayRestartActiveNodeIdsRef = useRef(new Set<string>());
   const executeGatewayUpdateRef = useRef<(
     payload: Extract<CommandPayload, { operation: `gateway.update.${string}` }>,
     targetProjectId: string,
@@ -2571,7 +2594,7 @@ function MalinkAppRuntime() {
       ? gatewayState
         ? "No active session"
         : "Syncing conversations…"
-      : "Connect a computer");
+      : "Add this device");
   const activeProvider =
     selected?.provider ?? gatewayState?.workspace.provider ?? "Agent";
   const selectedProjectWorkspace = selected
@@ -3956,7 +3979,7 @@ function MalinkAppRuntime() {
       const key = `${node.gatewayNodeId}\0${status.updateId ?? status.releaseId}\0${status.updatedAt}`;
       if (gatewayUpdateResumeKeysRef.current.has(key)) continue;
       gatewayUpdateResumeKeysRef.current.add(key);
-      void startGatewayUpdateNode(node).finally(() => {
+      void startGatewayUpdateNode(node, intent.mode ?? "when_idle").finally(() => {
         gatewayUpdateResumeKeysRef.current.delete(key);
       });
     }
@@ -6272,7 +6295,7 @@ function MalinkAppRuntime() {
             ]);
           }
           setActiveDeviceCount(trust?.activeDeviceCount ?? null);
-          if (trust) {
+          if (trust && pairingAbortRef.current === null) {
             setPairingPreview(null);
             setPairingBusy(false);
             setPairingError(null);
@@ -6751,7 +6774,7 @@ function MalinkAppRuntime() {
     setConnectionDetail(null);
   }
 
-  function forgetMatrixConfig() {
+  function forgetMatrixConfig(options: { keepSettingsOpen?: boolean } = {}) {
     const historyScope = historyScopeRef.current;
     pairingAbortRef.current?.abort();
     disconnectClient();
@@ -6777,6 +6800,7 @@ function MalinkAppRuntime() {
     setSelectedSessionId(null);
     setSelectedProjectId(null);
     setPairingPreview(null);
+    setPairingCompletion(null);
     setDeviceInvitation(null);
     setInvitationReauthRequired(false);
     setConnectionError(null);
@@ -6796,7 +6820,7 @@ function MalinkAppRuntime() {
         );
       });
     }
-    setSettingsOpen(true);
+    setSettingsOpen(options.keepSettingsOpen !== false);
   }
 
   async function signOutCurrentDevice(): Promise<void> {
@@ -6833,7 +6857,8 @@ function MalinkAppRuntime() {
         }
       }
       setForgetDialogOpen(false);
-      forgetMatrixConfig();
+      forgetMatrixConfig({ keepSettingsOpen: false });
+      setOnboardingNotice("signed-out");
     } catch (error) {
       if (nativeAccountRemoved) {
         setForgetDialogOpen(false);
@@ -6858,6 +6883,8 @@ function MalinkAppRuntime() {
   async function openPairingLink(link: string) {
     if (pairingBusy) return;
     setPairingBusy(true);
+    setPairingCompletion(null);
+    setOnboardingNotice(null);
     setConnectionError(null);
     setPairingError(null);
     try {
@@ -6887,6 +6914,8 @@ function MalinkAppRuntime() {
   }
 
   async function openDeviceInvitation(link: string) {
+    setPairingCompletion(null);
+    setOnboardingNotice(null);
     setConnectionError(null);
     setPairingError(null);
     try {
@@ -7546,6 +7575,216 @@ function MalinkAppRuntime() {
     return next;
   }
 
+  function setGatewayRestartRuntime(
+    gatewayNodeId: string,
+    update: (current: GatewayRestartNodeRuntime) => GatewayRestartNodeRuntime,
+  ): void {
+    setGatewayRestartRuntimeByNode(current => ({
+      ...current,
+      [gatewayNodeId]: update(current[gatewayNodeId] ?? { state: "idle" }),
+    }));
+  }
+
+  async function restartGatewayNode(
+    gatewayNodeId: string,
+    targetProjectId: string,
+    mode: GatewayRestartMode,
+  ): Promise<void> {
+    if (gatewayRestartActiveNodeIdsRef.current.has(gatewayNodeId)) return;
+    gatewayRestartActiveNodeIdsRef.current.add(gatewayNodeId);
+    let commandId: string | null = null;
+    setGatewayRestartRuntime(gatewayNodeId, () => ({
+      state: "requesting",
+      detail: "Checking that this Gateway supports a signed remote restart.",
+    }));
+    try {
+      const preflight = await readGatewayRestartStatus(targetProjectId).catch(error => {
+        throw new Error(
+          "This Gateway did not confirm remote restart support. Update the Gateway Host or " +
+          `check the computer connection, then try again. ${formatUiError(error)}`,
+        );
+      });
+      if (preflight.phase === "scheduled" || preflight.phase === "restarting") {
+        setGatewayRestartRuntime(gatewayNodeId, () => ({
+          state: "restarting",
+          status: preflight,
+          detail: preflight.detail ?? "A restart is already in progress on this computer.",
+        }));
+        const ready = await waitForGatewayRestart(preflight, targetProjectId, gatewayNodeId);
+        setGatewayRestartRuntime(gatewayNodeId, () => ({
+          state: "ready",
+          status: ready,
+          detail: "Gateway is online again. Provider changes are now loaded.",
+        }));
+      } else {
+        setGatewayRestartRuntime(gatewayNodeId, () => ({
+          state: mode === "when_idle" ? "waiting" : "requesting",
+          detail: mode === "when_idle"
+            ? "The signed request is waiting for active work to finish."
+            : "The signed request will stop active Agent turns before restarting.",
+        }));
+        const sent = await sendRealCommand(
+          { operation: "gateway.restart", mode },
+          targetProjectId,
+          { autoRetryRevisionConflict: true, propagateFailure: true },
+        );
+        if (!sent) {
+          throw new Error("The connected client could not send the Gateway restart request.");
+        }
+        commandId = sent.commandId;
+        const completion = await waitForCommandCompletion(sent.completion, null);
+        if (completion.outcome !== "succeeded") {
+          throw new Error(
+            completion.error?.message ?? "The Gateway did not accept the restart request.",
+          );
+        }
+        const scheduled = gatewayRestartStatusSchema.parse(completion.result);
+        setGatewayRestartRuntime(gatewayNodeId, () => ({
+          state: scheduled.phase === "ready" ? "ready" : scheduled.phase === "failed"
+            ? "failed"
+            : "restarting",
+          status: scheduled,
+          detail: scheduled.phase === "ready"
+            ? "Provider changes are now loaded."
+            : scheduled.detail ?? "Waiting for the replacement Gateway process.",
+        }));
+        if (scheduled.phase === "failed") {
+          throw new Error(scheduled.detail ?? "The Gateway restart failed.");
+        }
+        if (scheduled.phase !== "ready") {
+          updateGatewayNodeLiveness(gatewayNodeId, current => ({
+            ...current,
+            state: "checking",
+            checkedAt: Date.now(),
+            detail: "Gateway restart is in progress.",
+          }));
+          const ready = await waitForGatewayRestart(scheduled, targetProjectId, gatewayNodeId);
+          setGatewayRestartRuntime(gatewayNodeId, () => ({
+            state: "ready",
+            status: ready,
+            detail: "Gateway is online again. Provider changes are now loaded.",
+          }));
+        }
+      }
+      const verifiedAt = Date.now();
+      updateGatewayNodeLiveness(gatewayNodeId, current => ({
+        ...current,
+        state: "online",
+        checkedAt: verifiedAt,
+        lastVerifiedAt: verifiedAt,
+        consecutiveNoReplies: 0,
+        detail: "Gateway restarted and returned a signed ready status.",
+      }));
+      showUiNotice(
+        `gateway-restart:${gatewayNodeId}`,
+        "connection",
+        "success",
+        "Gateway restarted successfully. Provider changes are now available.",
+        8_000,
+      );
+    } catch (error) {
+      const detail = formatUiError(error);
+      setGatewayRestartRuntime(gatewayNodeId, current => ({
+        ...current,
+        state: "failed",
+        detail,
+      }));
+      showUiNotice(
+        `gateway-restart:${gatewayNodeId}`,
+        "connection",
+        "error",
+        `Gateway restart did not complete: ${detail}`,
+      );
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+      gatewayRestartActiveNodeIdsRef.current.delete(gatewayNodeId);
+    }
+  }
+
+  async function waitForGatewayRestart(
+    scheduled: GatewayRestartStatus,
+    targetProjectId: string,
+    gatewayNodeId: string,
+  ): Promise<GatewayRestartStatus> {
+    const deadline = Math.max(Date.now(), scheduled.scheduledAt ?? Date.now())
+      + GATEWAY_RESTART_RECOVERY_TIMEOUT_MS;
+    const initialDelay = Math.max(0, (scheduled.scheduledAt ?? Date.now()) - Date.now() + 500);
+    if (initialDelay > 0) {
+      await new Promise<void>(resolveDelay => window.setTimeout(resolveDelay, initialDelay));
+    }
+    let lastError: unknown = new Error("The replacement Gateway has not replied yet.");
+    while (Date.now() <= deadline) {
+      if (connectionStatusRef.current !== "connected") {
+        await new Promise<void>(resolveDelay =>
+          window.setTimeout(resolveDelay, GATEWAY_RESTART_STATUS_RETRY_MS)
+        );
+        continue;
+      }
+      try {
+        const current = await readGatewayRestartStatus(targetProjectId);
+        if (scheduled.restartId && current.restartId !== scheduled.restartId) {
+          throw new Error("The Gateway reported a different restart request.");
+        }
+        setGatewayRestartRuntime(gatewayNodeId, runtime => ({
+          ...runtime,
+          state: current.phase === "ready" ? "ready" : current.phase === "failed"
+            ? "failed"
+            : "restarting",
+          status: current,
+          detail: current.detail,
+        }));
+        if (current.phase === "ready") return current;
+        if (current.phase === "failed") {
+          throw new GatewayRestartFailedError(
+            current.detail ?? "The Gateway supervisor could not restart the process.",
+          );
+        }
+      } catch (error) {
+        if (error instanceof GatewayRestartFailedError) throw error;
+        lastError = error;
+      }
+      await new Promise<void>(resolveDelay =>
+        window.setTimeout(resolveDelay, GATEWAY_RESTART_STATUS_RETRY_MS)
+      );
+    }
+    throw new Error(
+      `No signed ready reply arrived after the restart. ${formatUiError(lastError)}`,
+    );
+  }
+
+  async function readGatewayRestartStatus(
+    targetProjectId: string,
+  ): Promise<GatewayRestartStatus> {
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand(
+        { operation: "gateway.restart.status" },
+        targetProjectId,
+        { autoRetryRevisionConflict: true, propagateFailure: true },
+      );
+      if (!sent) throw new Error("The connected client could not check Gateway restart status.");
+      commandId = sent.commandId;
+      const completion = await waitForCommandCompletion(
+        sent.completion,
+        GATEWAY_RESTART_STATUS_TIMEOUT_MS,
+      );
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message ?? "The Gateway restart status check failed.",
+        );
+      }
+      return gatewayRestartStatusSchema.parse(completion.result);
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+    }
+  }
+
   async function probeGatewayNodeLiveness(
     target: GatewayNodeLivenessTarget,
   ): Promise<GatewayUpdateStatus | null> {
@@ -7776,7 +8015,10 @@ function MalinkAppRuntime() {
     }
   }
 
-  async function startGatewayUpdateNode(node: GatewayUpdatePlanNode): Promise<void> {
+  async function startGatewayUpdateNode(
+    node: GatewayUpdatePlanNode,
+    mode: "when_idle" | "force" = "when_idle",
+  ): Promise<void> {
     if (!gatewayRelease || gatewayUpdateActiveNodeIdsRef.current.has(node.gatewayNodeId)) return;
     const target = gatewayUpdateTarget(node);
     if (!target || node.state !== "available") return;
@@ -7822,6 +8064,7 @@ function MalinkAppRuntime() {
         gatewayNodeId: node.gatewayNodeId,
         projectId: target.targetProjectId,
         ...intentRelease,
+        mode,
         requestedAt: Date.now(),
       });
       if (!intentPersisted) {
@@ -7850,7 +8093,7 @@ function MalinkAppRuntime() {
         ? await executeGatewayUpdateRef.current({
             operation: "gateway.update.apply",
             releaseId: stagedReleaseId,
-            mode: "when_idle",
+            mode,
             ...(gatewayUpdateRequiresForwardOnlyConfirmation(liveStatus)
               ? { allowForwardOnly: true as const }
               : {}),
@@ -7858,6 +8101,7 @@ function MalinkAppRuntime() {
         : await triggerGatewayUpdate({
             release: gatewayRelease,
             target,
+            mode,
             send: (command, targetProjectId) =>
               executeGatewayUpdateRef.current(command, targetProjectId),
           });
@@ -7881,9 +8125,11 @@ function MalinkAppRuntime() {
         "success",
         status.phase === "committed"
           ? `${node.gatewayName} already runs release ${status.releaseId ?? gatewayRelease.releaseId}.`
+          : gatewayUpdateRequiresForwardOnlyConfirmation(status)
+            ? `${node.gatewayName} prepared the update. Review the protected-data warning, then choose when to install and restart.`
           : ["waiting_for_idle", "scheduled", "activating", "probation"].includes(status.phase)
             ? `${node.gatewayName} scheduled release ${status.releaseId ?? gatewayRelease.releaseId} and will switch after current Agent work finishes.`
-            : `${node.gatewayName} created its maintenance session and will continue automatically.`,
+          : `${node.gatewayName} is preparing the update. Progress remains available from its computer card.`,
         8_000,
       );
     } catch (error) {
@@ -8044,17 +8290,11 @@ function MalinkAppRuntime() {
       setMatrixConfig(configForPairing);
       setPairingPreview(null);
       setPairingError(null);
-      setSettingsOpen(false);
-      showUiNotice(
-        "connection:paired",
-        "session",
-        "success",
-        `${trust.gatewayName} connected.`,
-        5_000,
-      );
+      setPairingCompletion({ gatewayName: trust.gatewayName });
+      setSettingsOpen(true);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
-        setPairingError(formatUiError(error));
+        setPairingError(formatPairingFailure(error, previewOverride.gatewayName));
       }
     } finally {
       if (pairingAbortRef.current === abort) pairingAbortRef.current = null;
@@ -12248,7 +12488,6 @@ function MalinkAppRuntime() {
           onClick={() => setSettingsOpen(true)}
         >
           <ConnectionPathIndicator
-            gatewayLabel={activeProjectGateway.label}
             presentation={connectionPathPresentation}
           />
           <span className="gateway-more" aria-hidden="true">›</span>
@@ -12750,8 +12989,8 @@ function MalinkAppRuntime() {
           })}
           {!trustedGateway && (
             <div className="empty-search connection-list-empty">
-              <strong>Your workspace is ready</strong>
-              <small>Connect a computer to load projects and conversations.</small>
+              <strong>This device is not set up yet</strong>
+              <small>Use a Workspace invitation to load projects and conversations.</small>
             </div>
           )}
           {trustedGateway &&
@@ -12882,7 +13121,14 @@ function MalinkAppRuntime() {
         aria-label={conversationTitle}
       >
         {!trustedGateway && (
-          <ConnectionOnboarding onConnect={() => setSettingsOpen(true)} />
+          <ConnectionOnboarding
+            notice={onboardingNotice}
+            onDismissNotice={() => setOnboardingNotice(null)}
+            onConnect={() => {
+              setOnboardingNotice(null);
+              setSettingsOpen(true);
+            }}
+          />
         )}
         <header className="conversation-header">
           <button
@@ -12909,7 +13155,6 @@ function MalinkAppRuntime() {
                 onClick={() => setSettingsOpen(true)}
               >
                 <ConnectionPathIndicator
-                  gatewayLabel={activeProjectGateway.label}
                   presentation={connectionPathPresentation}
                   variant="compact"
                 />
@@ -13677,8 +13922,8 @@ function MalinkAppRuntime() {
                 gatewayAvailable
                   ? `Message ${activeProvider}…`
                   : trustedGateway
-                    ? "Connect your computer to send messages"
-                    : "Connect a computer to start"
+                    ? "Reconnect a Workspace computer to send messages"
+                    : "Add this device to start"
               }
               aria-label={`Message ${activeProvider}`}
               rows={2}
@@ -14020,7 +14265,7 @@ function MalinkAppRuntime() {
             const target = gatewayNodeProbeTargetsById.get(node.gatewayNodeId);
             if (target) void probeGatewayNodeLiveness(target);
           }}
-          onStart={(node) => void startGatewayUpdateNode(node)}
+          onStart={(node, mode) => void startGatewayUpdateNode(node, mode)}
           onOpenSession={openGatewayUpdateSession}
           onArchiveSession={(node, sessionId) =>
             void archiveGatewayMaintenanceSession(node, sessionId)
@@ -14109,7 +14354,9 @@ function MalinkAppRuntime() {
         repairReason={connectionRepairReason}
         error={pairingError ?? connectionError}
         pairingPreview={pairingPreview}
+        pairingCompletion={pairingCompletion}
         trustedGateway={trustedGateway}
+        activeDeviceCount={activeDeviceCount}
         savedGateways={savedGateways}
         gatewayDirectory={gatewayState?.gatewayDirectory ?? null}
         availableProjectIds={allWorkspaceProjects
@@ -14132,6 +14379,7 @@ function MalinkAppRuntime() {
         gatewayRetirementBusy={gatewayRetirementBusy}
         gatewayRetirementError={gatewayRetirementError}
         gatewayNodeLivenessById={gatewayNodeLivenessById}
+        gatewayRestartRuntimeByNode={gatewayRestartRuntimeByNode}
         gatewayLivenessNow={gatewayLivenessNow}
         gatewayRelease={gatewayRelease}
         gatewayUpdateAvailableCount={gatewayUpdateAvailableCount}
@@ -14157,6 +14405,10 @@ function MalinkAppRuntime() {
           setConnectionError(null);
         }}
         onConfirmPairing={() => void confirmPairing()}
+        onFinishPairing={() => {
+          setPairingCompletion(null);
+          setSettingsOpen(false);
+        }}
         onClose={() => setSettingsOpen(false)}
         onDisconnect={() => disconnectClient()}
         onForget={() => {
@@ -14202,6 +14454,9 @@ function MalinkAppRuntime() {
         onCheckGatewayLiveness={(gatewayNodeId) => {
           const target = gatewayNodeProbeTargetsById.get(gatewayNodeId);
           if (target) void probeGatewayNodeLiveness(target);
+        }}
+        onRestartGateway={(gatewayNodeId, targetProjectId, mode) => {
+          void restartGatewayNode(gatewayNodeId, targetProjectId, mode);
         }}
         onReviewGatewayUpdates={() => {
           setSettingsOpen(false);
@@ -14306,7 +14561,8 @@ function commandNoticeFor(payload: CommandPayload): {
     payload.operation === "device.invite" ||
     payload.operation.startsWith("gateway.enrollment.") ||
     payload.operation.startsWith("gateway.profile.") ||
-    payload.operation.startsWith("gateway.update.")
+    payload.operation.startsWith("gateway.update.") ||
+    payload.operation.startsWith("gateway.restart")
   ) {
     return { key: `pairing:${payload.operation}`, scope: "pairing" };
   }
@@ -14675,6 +14931,10 @@ function describeConflictedAction(payload: CommandPayload): string {
       return "The Gateway update activation request";
     case "gateway.update.status":
       return "The Gateway update status request";
+    case "gateway.restart":
+      return "The Gateway restart request";
+    case "gateway.restart.status":
+      return "The Gateway restart status request";
   }
 }
 

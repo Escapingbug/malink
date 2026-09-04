@@ -63,11 +63,12 @@ test("shows node identity, version need, and signed live status before consent",
     onExportDiagnostics() {},
   }));
 
-  assert.match(html, /Manage Gateway updates/);
+  assert.match(html, /Install Gateway updates/);
   assert.match(html, /Office Mac · studio\.local/);
   assert.match(html, /Update available/);
   assert.match(html, /Online now/);
-  assert.match(html, /Update Gateway/);
+  assert.match(html, /Update when idle/);
+  assert.match(html, /Install and restart now/);
   assert.match(html, /Server/);
   assert.match(html, /Up to date/);
   assert.match(html, /Gateway reply delayed/);
@@ -78,7 +79,7 @@ test("shows node identity, version need, and signed live status before consent",
   assert.doesNotMatch(html, /Recovering the signed reply/);
   assert.match(html, /Legacy Mac/);
   assert.match(html, /Manual update/);
-  assert.match(html, /Requested by this Malink device; executed by the named Gateway/);
+  assert.match(html, /You choose the restart timing/);
 });
 
 test("turns repeated missing replies into actionable Gateway attention", () => {
@@ -311,7 +312,7 @@ test("keeps the panel dismissible while a Gateway maintenance Agent starts", () 
   assert.ok(closeControl);
   assert.doesNotMatch(closeControl, /disabled/);
   assert.match(html, /You can close this panel/);
-  assert.match(html, /continues updating independently in the background/);
+  assert.match(html, /update continues in the background/);
   assert.match(html, />Close<\/button>/);
 });
 
@@ -351,7 +352,7 @@ test("one active Gateway update does not disable another Gateway", () => {
   assert.equal(primaryButtons.length, 2);
   assert.match(primaryButtons[0]!, /disabled/);
   assert.doesNotMatch(primaryButtons[1]!, /disabled/);
-  assert.match(html, /1 Gateway continues updating independently/);
+  assert.match(html, /1 computer continues updating/);
 });
 
 test("opens a legacy maintenance session through its exact project route", () => {
@@ -487,7 +488,7 @@ test("keeps a new release actionable while offering cleanup for an older collisi
 
   assert.match(html, /Archive old update session/);
   assert.match(html, /only this Gateway is affected/);
-  assert.match(html, /Update to new release/);
+  assert.match(html, /Update when idle/);
 });
 
 test("offers installation when the maintenance Agent already staged the target", () => {
@@ -519,8 +520,9 @@ test("offers installation when the maintenance Agent already staged the target",
     onExportDiagnostics() {},
   }));
 
-  assert.match(html, /gateway-staged-arm64.*staged locally and ready to install/);
-  assert.match(html, /Continue update/);
+  assert.match(html, /gateway-staged-arm64.*ready to install/);
+  assert.match(html, /Install when idle/);
+  assert.match(html, /Install and restart now/);
 });
 
 test("requires an explicit second action for a forward-only staged release", () => {
@@ -553,10 +555,10 @@ test("requires an explicit second action for a forward-only staged release", () 
     onExportDiagnostics() {},
   }));
 
-  assert.match(html, /Forward-only update ready/);
-  assert.match(html, /Protected-state update/);
-  assert.match(html, /Confirm forward-only update/);
-  assert.match(html, /does not automatically switch binaries back/);
+  assert.match(html, /Ready · confirmation required/);
+  assert.match(html, /Extra confirmation required/);
+  assert.match(html, /Confirm and install when idle/);
+  assert.match(html, /cannot automatically return to the previous Gateway version/);
 });
 
 test("treats a verified installed build as complete without cleanup warnings", () => {

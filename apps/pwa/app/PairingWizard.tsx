@@ -20,6 +20,7 @@ import {
 import { useDialogFocus } from "./dialogFocus";
 import { BusyActionLabel, OperationProgress } from "./OperationProgress";
 import type { ConnectionRepairReason } from "./connectionPresentation";
+import type { MatrixConnectionStatus } from "./matrix";
 import {
   AUTHORIZATION_TRANSFER_MIME_TYPE,
   canShareAuthorizationTransferFile,
@@ -44,7 +45,10 @@ type Props = {
   trustedGateway: MalinkPublicTrust | null;
   repairReason: ConnectionRepairReason | null;
   busy: boolean;
+  connectionStatus: MatrixConnectionStatus;
   progressDetail?: string | null;
+  error?: string | null;
+  completion?: { gatewayName: string } | null;
   canConfirm: boolean;
   deviceInvitation: GeneratedDeviceInvitation | null;
   invitationBusy: boolean;
@@ -53,6 +57,7 @@ type Props = {
   onLink(link: string): void;
   onClear(): void;
   onConfirm(): void;
+  onFinish(): void;
   onCreateInvitation(password?: string): void;
   onClearInvitation(): void;
   onSaveQrCode?(filename: string, dataBase64: string): Promise<boolean>;
@@ -64,7 +69,10 @@ export function PairingWizard({
   trustedGateway,
   repairReason,
   busy,
+  connectionStatus,
   progressDetail,
+  error,
+  completion,
   canConfirm,
   deviceInvitation,
   invitationBusy,
@@ -73,6 +81,7 @@ export function PairingWizard({
   onLink,
   onClear,
   onConfirm,
+  onFinish,
   onCreateInvitation,
   onClearInvitation,
   onSaveQrCode,
@@ -128,6 +137,37 @@ export function PairingWizard({
   const qrDataUrl =
     qrCode.link === deviceInvitation?.link ? qrCode.dataUrl : "";
   const canShareAuthorizationFile = canShareAuthorizationTransferFile();
+
+  if (completion) {
+    return (
+      <section className="setup-complete" aria-live="polite">
+        <span className="setup-complete-mark" aria-hidden="true">✓</span>
+        <span className="eyebrow">Setup complete</span>
+        <h3>This device is ready</h3>
+        <p>
+          This device has joined the Workspace through {completion.gatewayName}.
+          Projects and conversations are protected and synchronized.
+        </p>
+        <div className="setup-complete-summary">
+          <span>
+            <small>This device</small>
+            <strong>Authorized</strong>
+          </span>
+          <span>
+            <small>Workspace</small>
+            <strong>Connected</strong>
+          </span>
+          <span>
+            <small>Computer</small>
+            <strong>{completion.gatewayName}</strong>
+          </span>
+        </div>
+        <button type="button" className="pair-confirm-button" onClick={onFinish}>
+          Open conversations
+        </button>
+      </section>
+    );
+  }
 
   if (trustedGateway && !preview && !repairRequired) {
     return (
@@ -381,6 +421,12 @@ export function PairingWizard({
   }
 
   if (preview) {
+    const setupStopped = Boolean(error) && !busy;
+    const activeStep = pairingProgressStep(
+      connectionStatus,
+      error ?? progressDetail,
+      busy || setupStopped,
+    );
     return (
       <section className="pairing-confirmation" aria-live="polite">
         <div className="pairing-device">
@@ -406,6 +452,14 @@ export function PairingWizard({
           </small>
         </div>
 
+        <SetupProgress
+          activeStep={activeStep}
+          busy={busy}
+          failed={setupStopped}
+          signedIn={canConfirm}
+          complete={false}
+        />
+
         <button
           className="pair-confirm-button"
           onClick={onConfirm}
@@ -415,13 +469,22 @@ export function PairingWizard({
             ? <BusyActionLabel>Connecting this device…</BusyActionLabel>
             : !canConfirm
               ? "Sign in below to continue"
-              : `Connect to ${preview.gatewayName}`}
+              : error
+                ? "Retry secure setup"
+                : "Add this device"}
         </button>
         {busy && (
           <p className="pairing-scan-status" role="status">
             <OperationProgress />
             {progressDetail?.trim() || "Finishing the connection…"}
           </p>
+        )}
+        {error && !busy && (
+          <div className="setup-failure" role="alert">
+            <strong>Setup needs attention</strong>
+            <p>{error}</p>
+            <small>The invitation and any recoverable request remain on this device.</small>
+          </div>
         )}
       </section>
     );
@@ -470,7 +533,7 @@ export function PairingWizard({
               ? "Use a new authorization invitation"
               : repairRequired
                 ? "Get a repair invitation"
-                : "Connect to your computer"}
+                : "Use a Workspace invitation"}
           </h3>
           <p>
             Open Malink on another connected device and choose Add another
@@ -670,7 +733,80 @@ export function PairingWizard({
           {imageScanError}
         </p>
       )}
+      {error && (
+        <div className="setup-failure" role="alert">
+          <strong>The invitation could not be opened</strong>
+          <p>{error}</p>
+          <small>Check the invitation source, then scan, paste, or import it again.</small>
+        </div>
+      )}
     </section>
+  );
+}
+
+const SETUP_STEPS = [
+  "Invitation verified",
+  "This device signed in",
+  "Protected connection",
+  "Computer authorization",
+  "Workspace synchronized",
+] as const;
+
+export function pairingProgressStep(
+  status: MatrixConnectionStatus,
+  detail: string | null | undefined,
+  busy: boolean,
+): number {
+  // A connected transport only proves that this device can reach the account
+  // service. Gateway authorization and Workspace hydration are separate
+  // pairing outcomes, so the idle preview must never imply they are complete.
+  if (!busy) return 1;
+  const value = detail?.trim() ?? "";
+  if (/workspace.*(?:sync|finish)|gateway state|syncing conversations|hydration/iu.test(value)) return 4;
+  if (/device authoriz|computer authoriz|pairing|gateway|approv|signed response|request/iu.test(value)) return 3;
+  if (/encrypt|identity|keys|protected|secur|background connection/iu.test(value) || status === "securing") return 2;
+  if (/sign|account|login|session|network/iu.test(value)) return 1;
+  if (/invitation/iu.test(value)) return 0;
+  return 2;
+}
+
+function SetupProgress({
+  activeStep,
+  busy,
+  failed,
+  signedIn,
+  complete,
+}: {
+  activeStep: number;
+  busy: boolean;
+  failed: boolean;
+  signedIn: boolean;
+  complete: boolean;
+}) {
+  return (
+    <ol className="setup-progress" aria-label="Device setup progress">
+      {SETUP_STEPS.map((label, index) => {
+        const reached = complete || index < activeStep || (index === 1 && signedIn);
+        const active = busy && index === activeStep;
+        const stopped = failed && index === activeStep;
+        return (
+          <li
+            key={label}
+            className={reached
+              ? "is-complete"
+              : stopped
+                ? "is-error"
+                : active
+                  ? "is-active"
+                  : "is-upcoming"}
+            aria-current={active || stopped ? "step" : undefined}
+          >
+            <span aria-hidden="true">{reached ? "✓" : stopped ? "!" : index + 1}</span>
+            <strong>{label}</strong>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 

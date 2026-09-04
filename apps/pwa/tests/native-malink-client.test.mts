@@ -1202,7 +1202,7 @@ test("recovers structured tool cards from older native agent messages", async ()
   client.dispose();
 });
 
-test("does not expire native Gateway update commands while Agent work is active", async () => {
+test("does not expire native Gateway maintenance commands while Agent work is active", async () => {
   const port = new RuntimePort();
   const client = await createTestClient(port);
   const originalSetTimeout = globalThis.setTimeout;
@@ -1218,6 +1218,11 @@ test("does not expire native Gateway update commands while Agent work is active"
       mode: "when_idle",
     });
     void sent.completion.catch(() => undefined);
+    const restart = await client.send({
+      operation: "gateway.restart",
+      mode: "when_idle",
+    });
+    void restart.completion.catch(() => undefined);
     assert.equal(scheduledDelays.includes(24 * 60 * 60_000), false);
   } finally {
     globalThis.setTimeout = originalSetTimeout;

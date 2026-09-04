@@ -71,19 +71,19 @@ function StatusIcon({
 
 function compactValue(
   segment: ConnectionPathSegment,
-  kind: "matrix" | "gateway",
+  kind: "device" | "computer",
 ): string | null {
   if (segment.tone === "ready") return null;
   if (segment.tone === "progress") {
-    return kind === "matrix" ? "Syncing" : "Checking";
+    return kind === "device" ? "Syncing" : "Checking";
   }
   if (segment.tone === "delayed") return "Delayed";
   if (segment.tone === "offline") return "Offline";
   if (segment.tone === "attention") {
-    return kind === "matrix" ? "Error" : "No response";
+    return kind === "device" ? "Error" : "No response";
   }
   if (segment.tone === "setup") return "Connect";
-  return kind === "matrix" ? "Unknown" : "Can't verify";
+  return kind === "device" ? "Unknown" : "Can't verify";
 }
 
 function StatusItem({
@@ -93,12 +93,12 @@ function StatusItem({
   variant,
 }: {
   fullName: string;
-  kind: "matrix" | "gateway";
+  kind: "device" | "computer";
   segment: ConnectionPathSegment;
   variant: "full" | "compact";
 }) {
   const name = variant === "compact"
-    ? kind === "matrix" ? "Matrix" : "Gateway"
+    ? kind === "device" ? "Device" : "Computer"
     : fullName;
   const value = variant === "compact"
     ? compactValue(segment, kind)
@@ -121,11 +121,9 @@ function StatusItem({
 }
 
 export function ConnectionPathIndicator({
-  gatewayLabel,
   presentation,
   variant = "full",
 }: {
-  gatewayLabel: string;
   presentation: ConnectionPathPresentation;
   variant?: "full" | "compact";
 }) {
@@ -135,16 +133,14 @@ export function ConnectionPathIndicator({
       aria-label={presentation.accessibleLabel}
     >
       <StatusItem
-        fullName="Matrix"
-        kind="matrix"
+        fullName="This device"
+        kind="device"
         segment={presentation.deviceToMatrix}
         variant={variant}
       />
       <StatusItem
-        fullName={
-          gatewayLabel === "Gateway" ? "Gateway" : "Gateway · " + gatewayLabel
-        }
-        kind="gateway"
+        fullName="Computer"
+        kind="computer"
         segment={presentation.matrixToGateway}
         variant={variant}
       />

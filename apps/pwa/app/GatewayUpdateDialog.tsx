@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef } from "react";
+import React, { useRef, useState } from "react";
 import type { GatewayUpdateStatus } from "@malink/protocol";
 import type { GatewayReleaseBuild } from "./buildInfo";
 import { useDialogFocus } from "./dialogFocus";
@@ -52,7 +52,7 @@ type Props = {
   activeGatewayNodeIds: ReadonlySet<string>;
   onClose(): void;
   onProbe(node: GatewayUpdatePlanNode): void;
-  onStart(node: GatewayUpdatePlanNode): void;
+  onStart(node: GatewayUpdatePlanNode, mode: "when_idle" | "force"): void;
   onOpenSession(projectId: string, sessionId: string): void;
   onArchiveSession(node: GatewayUpdatePlanNode, sessionId: string): void;
   onExportDiagnostics(): void;
@@ -79,6 +79,7 @@ function GatewayUpdateDialogContent({
   onExportDiagnostics,
   diagnosticExportBusy = false,
 }: Props) {
+  const [forceConfirmationNodeId, setForceConfirmationNodeId] = useState<string | null>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   useDialogFocus({
@@ -110,12 +111,12 @@ function GatewayUpdateDialogContent({
       >
         <header>
           <div>
-            <span className="eyebrow">Workspace · Gateway software</span>
-            <h2 id="gateway-update-title">Manage Gateway updates</h2>
+            <span className="eyebrow">Workspace computers</span>
+            <h2 id="gateway-update-title">Install Gateway updates</h2>
             <p>
               {availableCount === 0
-                ? "Every reachable Gateway is already current or needs manual attention."
-                : `${availableCount} ${availableCount === 1 ? "Gateway needs" : "Gateways need"} the published release.`}
+                ? "Every reachable computer is current or shows the action it needs."
+                : `${availableCount} ${availableCount === 1 ? "computer has" : "computers have"} an update available.`}
             </p>
           </div>
           <button
@@ -131,17 +132,16 @@ function GatewayUpdateDialogContent({
         <div className="gateway-update-release">
           <span aria-hidden="true">↻</span>
           <span>
-            <small>Published signed release</small>
+            <small>Available release</small>
             <strong>{release.releaseId}</strong>
             <code>{release.buildId}</code>
           </span>
         </div>
 
         <p className="gateway-update-explanation">
-          Each Gateway publishes one shared signed status for every client.
-          One update action creates a visible maintenance session, prepares the
-          release, waits for current work to finish, and activates it. Completed
-          maintenance sessions are archived automatically.
+          Choose when each computer may restart. Malink prepares the release,
+          waits for current Agent work when requested, restarts the Gateway,
+          and verifies that the Workspace reconnects successfully.
         </p>
 
         <div className="gateway-update-node-list">
@@ -183,6 +183,7 @@ function GatewayUpdateDialogContent({
               updateActionAvailable &&
               !activeGatewayNodeIds.has(node.gatewayNodeId);
             const active = activeGatewayNodeIds.has(node.gatewayNodeId);
+            const forceConfirming = forceConfirmationNodeId === node.gatewayNodeId;
             return (
               <article
                 key={node.gatewayNodeId}
@@ -196,6 +197,10 @@ function GatewayUpdateDialogContent({
                   </span>
                   <b>{planStateLabel(node.state)}</b>
                 </div>
+
+                {runtime.status && runtime.status.phase !== "idle" && (
+                  <GatewayUpdateProgress status={runtime.status} />
+                )}
 
                 <div className="gateway-update-builds">
                   <span>
@@ -244,12 +249,13 @@ function GatewayUpdateDialogContent({
                 )}
                 {forwardOnlyConfirmation && (
                   <div className="gateway-no-reply-help gateway-update-failure-help" role="alert">
-                    <strong>Protected-state update</strong>
-                    <p>{recovery.explanation}</p>
+                    <strong>Extra confirmation required</strong>
                     <p>
-                      The old Gateway must not be started against state already opened by the
-                      new release. If activation fails, recovery continues locally from the
-                      verified backup; it does not automatically switch binaries back.
+                      This update changes protected local data and cannot automatically
+                      return to the previous Gateway version.
+                    </p>
+                    <p>
+                      Continue only when you can access this computer directly if recovery is needed.
                     </p>
                   </div>
                 )}
@@ -378,18 +384,64 @@ function GatewayUpdateDialogContent({
                     </button>
                   )}
                   {node.state === "available" && updateActionAvailable && (
-                    <button
-                      type="button"
-                      className="primary-button"
-                      disabled={!canStart}
-                      onClick={() => onStart(node)}
-                    >
-                      {active
-                        ? recovery.busyLabel
-                        : recovery.label}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        disabled={!canStart}
+                        onClick={() => onStart(node, "when_idle")}
+                      >
+                        {active
+                          ? "Updating…"
+                          : runtime.status?.phase === "staged"
+                            ? forwardOnlyConfirmation
+                              ? "Confirm and install when idle"
+                              : "Install when idle"
+                            : recovery.kind === "retry"
+                              ? "Try update again"
+                              : "Update when idle"}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={!canStart}
+                        onClick={() => setForceConfirmationNodeId(node.gatewayNodeId)}
+                      >
+                        Install and restart now…
+                      </button>
+                    </>
                   )}
                 </div>
+                {forceConfirming && (
+                  <div className="gateway-update-force-confirmation" role="alert">
+                    <strong>Restart {owner.label} now?</strong>
+                    <p>
+                      Malink will stop active Agent turns on this computer, finish preparing
+                      the verified update, restart the Gateway, and check that it reconnects.
+                      Queued commands remain saved.
+                    </p>
+                    <span>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setForceConfirmationNodeId(null)}
+                      >
+                        Keep current work running
+                      </button>
+                      <button
+                        type="button"
+                        className="danger-button"
+                        disabled={!canStart}
+                        onClick={() => {
+                          setForceConfirmationNodeId(null);
+                          onStart(node, "force");
+                        }}
+                      >
+                        Stop work and restart
+                      </button>
+                    </span>
+                  </div>
+                )}
               </article>
             );
           })}
@@ -398,8 +450,8 @@ function GatewayUpdateDialogContent({
         <footer>
           <small>
             {activeGatewayNodeIds.size > 0
-              ? `${activeGatewayNodeIds.size} ${activeGatewayNodeIds.size === 1 ? "Gateway continues" : "Gateways continue"} updating independently in the background when this panel closes.`
-              : "Requested by this Malink device; executed by the named Gateway."}
+              ? `${activeGatewayNodeIds.size} ${activeGatewayNodeIds.size === 1 ? "computer continues" : "computers continue"} updating when this panel closes.`
+              : "You choose the restart timing; each computer performs and verifies its own update."}
           </small>
           <button
             type="button"
@@ -412,6 +464,65 @@ function GatewayUpdateDialogContent({
       </section>
     </div>
   );
+}
+
+const GATEWAY_UPDATE_STEPS = [
+  "Preparing",
+  "Ready",
+  "Waiting for work",
+  "Restarting",
+  "Verifying",
+  "Complete",
+] as const;
+
+function GatewayUpdateProgress({ status }: { status: GatewayUpdateStatus }) {
+  const activeStep = gatewayUpdateProgressStep(status.phase);
+  const stopped = status.phase === "failed" ||
+    status.phase === "rolled_back" ||
+    status.phase === "repair_required";
+  return (
+    <ol className={`gateway-update-progress ${stopped ? "is-stopped" : ""}`}>
+      {GATEWAY_UPDATE_STEPS.map((label, index) => (
+        <li
+          key={label}
+          className={index < activeStep
+            ? "is-complete"
+            : index === activeStep
+              ? "is-active"
+              : "is-upcoming"}
+        >
+          <span aria-hidden="true">{index < activeStep ? "✓" : index + 1}</span>
+          <small>{label}</small>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function gatewayUpdateProgressStep(phase: GatewayUpdateStatus["phase"]): number {
+  switch (phase) {
+    case "idle":
+    case "staging":
+    case "agent_required":
+    case "agent_running":
+    case "agent_validating":
+      return 0;
+    case "staged":
+      return 1;
+    case "waiting_for_idle":
+      return 2;
+    case "scheduled":
+    case "activating":
+      return 3;
+    case "probation":
+      return 4;
+    case "committed":
+      return 5;
+    case "rolled_back":
+    case "failed":
+    case "repair_required":
+      return 4;
+  }
 }
 
 function updateStateOrder(state: GatewayUpdatePlanNode["state"]): number {
@@ -452,7 +563,7 @@ function runtimeStateTitle(
     if (runtime.status?.phase === "failed") return "Gateway update failed";
     if (runtime.status?.phase === "rolled_back") return "Gateway update rolled back";
     if (gatewayUpdateRequiresForwardOnlyConfirmation(runtime.status)) {
-      return "Forward-only update ready";
+      return "Ready · confirmation required";
     }
     switch (runtime.status?.phase) {
       case "staging":
@@ -460,7 +571,7 @@ function runtimeStateTitle(
       case "agent_running":
       case "agent_validating":
         return "Preparing Gateway update";
-      case "staged": return "Update ready to install";
+      case "staged": return "Ready to choose restart time";
       case "waiting_for_idle": return "Waiting for current Agent work";
       case "scheduled": return "Gateway restart scheduled";
       case "activating": return "Restarting Gateway for update";
@@ -522,14 +633,14 @@ function runtimeStateDetail(
         : failure;
     }
     if (gatewayUpdateRequiresForwardOnlyConfirmation(runtime.status)) {
-      const detail = runtime.status?.detail ?? "Forward-only update staged.";
+      const detail = "The update is prepared. Confirm the protected-data warning and choose when this computer may restart.";
       return runtime.checkedAt
-        ? `${detail} · replied ${formatCheckedTime(runtime.checkedAt)}`
+        ? `${detail} · checked ${formatCheckedTime(runtime.checkedAt)}`
         : detail;
     }
     const supervisor = runtime.status?.phase === "staged" &&
       runtime.status.targetBuildId !== release.buildId
-      ? `Build ${runtime.status.targetBuildId} is staged locally and ready to install`
+      ? `Another prepared release (${runtime.status.targetBuildId ?? "unknown build"}) is ready to install on this computer`
       : runtime.status?.currentBuildId === release.buildId &&
       !["activating", "probation"].includes(runtime.status.phase)
       ? "Installed build verified"
@@ -562,7 +673,7 @@ function gatewayUpdatePhaseText(status: GatewayUpdateStatus): string {
     case "agent_running":
     case "agent_validating":
       return "Preparing the update in its maintenance session";
-    case "staged": return "Update prepared and ready to continue";
+    case "staged": return "Update prepared; choose when to install and restart";
     case "waiting_for_idle":
       return status.activeTurns
         ? `Waiting for ${status.activeTurns} active Agent ${status.activeTurns === 1 ? "turn" : "turns"} to finish`

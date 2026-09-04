@@ -308,6 +308,29 @@ class DurableCommandOutboxTest {
     }
 
     @Test
+    fun `restart status does not reuse an update status command`() {
+        val fixture = fixture()
+        val update = fixture.outbox.enqueue(
+            UUID.randomUUID().toString(),
+            payload("gateway.update.status"),
+            projectId = "project-a",
+        )
+
+        val restart = fixture.outbox.enqueue(
+            UUID.randomUUID().toString(),
+            payload("gateway.restart.status"),
+            projectId = "project-a",
+        )
+
+        assertNotEquals(update.commandId, restart.commandId)
+        assertNull(fixture.outbox.get(update.commandId))
+        assertEquals(
+            listOf(restart.commandId),
+            fixture.outbox.unfinishedGatewayStatusProbeIds("project-a"),
+        )
+    }
+
+    @Test
     fun `expired Gateway status probe becomes a tombstone and a fresh observation`() {
         val fixture = fixture()
         val firstKey = UUID.randomUUID().toString()

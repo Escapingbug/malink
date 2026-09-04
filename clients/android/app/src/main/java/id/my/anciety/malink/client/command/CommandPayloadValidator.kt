@@ -33,6 +33,8 @@ enum class CommandOperation(val wireName: String) {
     GATEWAY_UPDATE_STAGE("gateway.update.stage"),
     GATEWAY_UPDATE_APPLY("gateway.update.apply"),
     GATEWAY_UPDATE_STATUS("gateway.update.status"),
+    GATEWAY_RESTART("gateway.restart"),
+    GATEWAY_RESTART_STATUS("gateway.restart.status"),
     ;
 
     companion object {
@@ -40,6 +42,10 @@ enum class CommandOperation(val wireName: String) {
             ?: throw IllegalArgumentException("Command operation is invalid.")
     }
 }
+
+internal val CommandOperation.isGatewayStatusProbe: Boolean
+    get() = this == CommandOperation.GATEWAY_UPDATE_STATUS ||
+        this == CommandOperation.GATEWAY_RESTART_STATUS
 
 sealed interface ValidatedCommandPayload {
     val operation: CommandOperation
@@ -299,6 +305,20 @@ data class GatewayUpdateCommandPayload(
     }
 }
 
+data class GatewayRestartCommandPayload(
+    override val operation: CommandOperation,
+    val mode: String?,
+) : ValidatedCommandPayload {
+    override val sessionId: String? = null
+
+    init {
+        require(
+            operation == CommandOperation.GATEWAY_RESTART ||
+                operation == CommandOperation.GATEWAY_RESTART_STATUS,
+        ) { "Gateway restart operation is invalid." }
+    }
+}
+
 object CommandPayloadValidator {
     const val MAX_ATTACHMENT_BYTES = 50L * 1024 * 1024
     const val MAX_ATTACHMENTS = 10
@@ -333,6 +353,9 @@ object CommandPayloadValidator {
             CommandOperation.GATEWAY_UPDATE_APPLY,
             CommandOperation.GATEWAY_UPDATE_STATUS,
             -> validateGatewayUpdate(value, operation)
+            CommandOperation.GATEWAY_RESTART,
+            CommandOperation.GATEWAY_RESTART_STATUS,
+            -> validateGatewayRestart(value, operation)
         }
     }
 
@@ -660,6 +683,22 @@ object CommandPayloadValidator {
         return GatewayUpdateCommandPayload(operation, releaseId, mode, allowForwardOnly)
     }
 
+    private fun validateGatewayRestart(
+        value: JsonObject,
+        operation: CommandOperation,
+    ): GatewayRestartCommandPayload {
+        if (operation == CommandOperation.GATEWAY_RESTART_STATUS) {
+            value.requireExactKeys(setOf("operation"))
+            return GatewayRestartCommandPayload(operation, null)
+        }
+        value.requireExactKeys(required = setOf("operation"), optional = setOf("mode"))
+        val mode = value.optionalBoundedString("mode", 32)
+        require(mode == null || mode == "when_idle" || mode == "force") {
+            "Gateway restart mode is invalid."
+        }
+        return GatewayRestartCommandPayload(operation, mode)
+    }
+
     private fun validateAttachment(element: JsonElement): CommandAttachmentPayload {
         val value = element.asObject("Command attachment")
         value.requireExactKeys(setOf("id", "name", "mimeType", "size", "sha256", "media"))
@@ -876,6 +915,8 @@ internal fun requiredCertificateOperation(operation: CommandOperation): PairingO
         CommandOperation.GATEWAY_UPDATE_STAGE,
         CommandOperation.GATEWAY_UPDATE_APPLY,
         CommandOperation.GATEWAY_UPDATE_STATUS,
+        CommandOperation.GATEWAY_RESTART,
+        CommandOperation.GATEWAY_RESTART_STATUS,
         -> PairingOperation.GATEWAY_UPDATE
         else -> PairingOperation.parse(operation.wireName)
     }

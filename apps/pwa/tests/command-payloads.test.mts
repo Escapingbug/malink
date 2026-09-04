@@ -168,6 +168,25 @@ test("creates a targeted Gateway profile update", () => {
   }));
 });
 
+test("creates explicit safe and forced Gateway restart commands", () => {
+  assert.deepEqual(commandPayloadSchema.parse({
+    operation: "gateway.restart",
+    mode: "when_idle",
+  }), {
+    operation: "gateway.restart",
+    mode: "when_idle",
+  });
+  assert.deepEqual(commandPayloadSchema.parse({
+    operation: "gateway.restart.status",
+  }), {
+    operation: "gateway.restart.status",
+  });
+  assert.throws(() => commandPayloadSchema.parse({
+    operation: "gateway.restart",
+    mode: "unsafe",
+  }));
+});
+
 test("creates a preconditioned Gateway retirement", () => {
   assert.deepEqual(commandPayloadSchema.parse({
     operation: "gateway.retire",

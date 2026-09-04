@@ -408,6 +408,16 @@ internal class MatrixMlp3NativeProjection(
             )
         }
 
+        if (type == "gateway.restart.status") {
+            if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
+            val status = payload.requiredObject("status")
+            validateGatewayRestartStatus(status)
+            return MatrixMlp3NativeProjectionResult(
+                terminal = terminal(type, event, payload, causation, sessionId),
+                changed = true,
+            )
+        }
+
         if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
 
         if (type == "project.deleted" && projectId != null) {
@@ -2241,6 +2251,16 @@ internal class MatrixMlp3NativeProjection(
                         result = status,
                     )
                 }
+            "gateway.restart.status" -> payload.requiredObject("status")
+                .takeUnless { it.requiredString("phase", 64) == "waiting_for_idle" }
+                ?.let { status ->
+                    MatrixMlp3NativeTerminal(
+                        commandId,
+                        "succeeded",
+                        sessionId,
+                        result = status,
+                    )
+                }
             else -> null
         }
     }
@@ -2391,6 +2411,42 @@ internal class MatrixMlp3NativeProjection(
         value.optionalString("maintenanceSessionId", 256)
         require(value.requiredLong("updatedAt") >= 0)
         value.optionalLong("activeTurns")?.let { require(it >= 0) }
+    }
+
+    private fun validateGatewayRestartStatus(value: JsonObject) {
+        value.requireKeys(
+            setOf("version", "phase", "updatedAt"),
+            setOf(
+                "restartId",
+                "mode",
+                "requestedAt",
+                "scheduledAt",
+                "startedAt",
+                "completedAt",
+                "activeTurns",
+                "detail",
+            ),
+            "Gateway restart status",
+        )
+        require(value.requiredLong("version") == 1L)
+        require(value.requiredString("phase", 64) in setOf(
+            "idle",
+            "waiting_for_idle",
+            "scheduled",
+            "restarting",
+            "ready",
+            "failed",
+        ))
+        value.optionalString("restartId", 256)
+        value.optionalString("mode", 32)?.let { mode ->
+            require(mode == "when_idle" || mode == "force")
+        }
+        value.optionalLong("requestedAt")?.let { require(it >= 0) }
+        value.optionalLong("scheduledAt")?.let { require(it >= 0) }
+        value.optionalLong("startedAt")?.let { require(it >= 0) }
+        value.optionalLong("completedAt")?.let { require(it >= 0) }
+        value.optionalLong("activeTurns")?.let { require(it >= 0) }
+        value.optionalString("detail", 4_096)
     }
 
     private fun userMessage(

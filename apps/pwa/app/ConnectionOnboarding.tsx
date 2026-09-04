@@ -1,31 +1,48 @@
 import { MalinkMark } from "./MalinkMark";
 
 type Props = {
+  notice?: "signed-out" | null;
+  onDismissNotice?(): void;
   onConnect(): void;
 };
 
-export function ConnectionOnboarding({ onConnect }: Props) {
+export function ConnectionOnboarding({ notice, onDismissNotice, onConnect }: Props) {
   return (
     <section
       className="connection-onboarding"
       aria-labelledby="connection-onboarding-title"
     >
       <div className="connection-onboarding-card">
+        {notice === "signed-out" && (
+          <div className="onboarding-notice" role="status">
+            <span aria-hidden="true">✓</span>
+            <span>
+              <strong>Signed out on this device</strong>
+              <small>
+                Your Workspace, computers, and server history remain available
+                on your other authorized devices.
+              </small>
+            </span>
+            {onDismissNotice && (
+              <button type="button" aria-label="Dismiss" onClick={onDismissNotice}>×</button>
+            )}
+          </div>
+        )}
         <span className="connection-onboarding-mark" aria-hidden="true">
           <MalinkMark />
         </span>
         <span className="eyebrow">Secure setup</span>
-        <h2 id="connection-onboarding-title">Connect your computer</h2>
+        <h2 id="connection-onboarding-title">Add this device to Malink</h2>
         <p>
-          Use a one-time invitation from your Malink computer or an already
-          approved device. Your messages stay protected end to end.
+          Use a one-time invitation from an authorized device or Workspace
+          computer. Malink will identify the invitation and guide the rest.
         </p>
         <button
           type="button"
           className="connection-onboarding-action"
           onClick={onConnect}
         >
-          Connect a computer
+          Use an invitation
           <span aria-hidden="true">→</span>
         </button>
 
@@ -33,7 +50,7 @@ export function ConnectionOnboarding({ onConnect }: Props) {
           <li>
             <span>1</span>
             <strong>Get an invitation</strong>
-            <small>Open Malink on your computer or another approved device.</small>
+            <small>Open Devices on an authorized device, or Malink on a Workspace computer.</small>
           </li>
           <li>
             <span>2</span>
@@ -42,8 +59,8 @@ export function ConnectionOnboarding({ onConnect }: Props) {
           </li>
           <li>
             <span>3</span>
-            <strong>Verify once</strong>
-            <small>Confirm the matching code before this device is trusted.</small>
+            <strong>Add this device</strong>
+            <small>Confirm the Workspace and matching code, then wait for synchronization.</small>
           </li>
         </ol>
 
