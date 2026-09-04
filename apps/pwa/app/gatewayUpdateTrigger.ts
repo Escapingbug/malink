@@ -9,6 +9,8 @@ export type GatewayUpdatePlanNode = {
   gatewayName: string;
   computerName?: string;
   currentBuildId?: string;
+  /** Signed descriptor time for the advertised build on this exact node. */
+  buildObservedAt?: number;
   targetProjectId?: string;
   onlineUpdate: boolean;
   state: "current" | "available" | "manual" | "unrouted" | "unknown";
@@ -148,6 +150,7 @@ export function gatewayUpdatePlan(input: {
       gatewayName: gateway.gatewayName,
       ...(gateway.computerName ? { computerName: gateway.computerName } : {}),
       ...(gateway.buildId ? { currentBuildId: gateway.buildId } : {}),
+      ...(gateway.buildId ? { buildObservedAt: gateway.issuedAt } : {}),
       ...(route ? { targetProjectId: route.projectId } : {}),
       onlineUpdate: gateway.onlineUpdate === true,
     };
@@ -190,6 +193,13 @@ export function gatewayUpdatePlanNodeWithLiveStatus(input: {
   release: GatewayReleaseBuild;
   status: GatewayUpdateStatus | undefined;
 }): GatewayUpdatePlanNode {
+  if (
+    input.node.buildObservedAt !== undefined &&
+    input.status !== undefined &&
+    input.node.buildObservedAt > input.status.updatedAt
+  ) {
+    return input.node;
+  }
   const currentBuildId = input.status?.currentBuildId;
   if (!currentBuildId) return input.node;
   const state = currentBuildId === input.release.buildId
@@ -204,6 +214,50 @@ export function gatewayUpdatePlanNodeWithLiveStatus(input: {
     currentBuildId,
     state,
   };
+}
+
+/**
+ * Merge supervisor observations for one physical Gateway without allowing a
+ * delayed Matrix command result to roll a newer pushed transition backwards.
+ * `updatedAt` is produced by the same node-local supervisor; phase order is a
+ * deterministic tie-breaker for transitions written in the same millisecond.
+ */
+export function latestGatewayUpdateStatus(
+  current: GatewayUpdateStatus | undefined,
+  incoming: GatewayUpdateStatus,
+): GatewayUpdateStatus {
+  if (!current) return incoming;
+  if (incoming.updatedAt > current.updatedAt) return incoming;
+  if (incoming.updatedAt < current.updatedAt) return current;
+  if (
+    incoming.updateId !== current.updateId ||
+    incoming.releaseId !== current.releaseId
+  ) {
+    return incoming;
+  }
+  return gatewayUpdatePhaseOrder(incoming.phase) >= gatewayUpdatePhaseOrder(current.phase)
+    ? incoming
+    : current;
+}
+
+function gatewayUpdatePhaseOrder(phase: GatewayUpdateStatus["phase"]): number {
+  switch (phase) {
+    case "idle": return 0;
+    case "staging": return 1;
+    case "agent_required": return 2;
+    case "agent_running": return 3;
+    case "agent_validating": return 4;
+    case "staged": return 5;
+    case "waiting_for_idle": return 6;
+    case "scheduled": return 7;
+    case "activating": return 8;
+    case "probation": return 9;
+    case "committed":
+    case "rolled_back":
+    case "failed":
+    case "repair_required":
+      return 10;
+  }
 }
 
 /**

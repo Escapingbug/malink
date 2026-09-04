@@ -170,6 +170,7 @@ import {
   gatewayUpdatePlan as buildGatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
   gatewayUpdateCommandReachedSignedBoundary,
+  latestGatewayUpdateStatus,
   gatewayUpdateRequiresForwardOnlyConfirmation,
   gatewayUpdateTarget,
   legacyGatewayMaintenanceSessionsByNode,
@@ -326,6 +327,7 @@ import {
   gatewayNodeLivenessAfterProbeTimeout,
   gatewayNodeLivenessTargets,
   gatewayProbeRecoveryBackoffMs,
+  gatewayRestartStatusRetryDelayMs,
   type GatewayNodeLiveness,
   type GatewayNodeLivenessTarget,
 } from "./gatewayNodeLiveness";
@@ -693,7 +695,6 @@ const GATEWAY_UPDATE_DISCOVERY_INTERVAL_MS = 15 * 60_000;
 const GATEWAY_UPDATE_SIGNED_BOUNDARY_POLL_MS = 200;
 const GATEWAY_RESTART_RECOVERY_TIMEOUT_MS = 3 * 60_000;
 const GATEWAY_RESTART_STATUS_TIMEOUT_MS = 30_000;
-const GATEWAY_RESTART_STATUS_RETRY_MS = 1_500;
 
 type GatewayUpdateProbeRecord = {
   commandId: string;
@@ -3987,14 +3988,29 @@ function MalinkAppRuntime() {
         };
       });
       setGatewayUpdateNodeRuntime(gatewayNodeId, current => {
-        if ((current.lastVerifiedAt ?? -1) > verifiedAt) return current;
+        const update = latestGatewayUpdateStatus(current.status, status.update);
+        if ((current.lastVerifiedAt ?? -1) > verifiedAt) {
+          return update === current.status
+            ? current
+            : {
+                ...current,
+                status: update,
+                ...(update.maintenanceSessionId
+                  ? { maintenanceSessionId: update.maintenanceSessionId }
+                  : {}),
+                detail: undefined,
+              };
+        }
         return {
           ...current,
           state: "online",
           checkedAt: verifiedAt,
           lastVerifiedAt: verifiedAt,
           consecutiveNoReplies: 0,
-          ...(status.update ? { status: status.update } : {}),
+          status: update,
+          ...(update.maintenanceSessionId
+            ? { maintenanceSessionId: update.maintenanceSessionId }
+            : {}),
           detail: undefined,
         };
       });
@@ -7563,17 +7579,21 @@ function MalinkAppRuntime() {
     gatewayNodeId: string,
     update: (current: GatewayUpdateNodeRuntime) => GatewayUpdateNodeRuntime,
   ): void {
-    setGatewayUpdateRuntimeByNode(current => ({
-      ...current,
-      [gatewayNodeId]: {
-        ...update(
-          current[gatewayNodeId]?.releaseKey === gatewayUpdateReleaseKey
-            ? current[gatewayNodeId]
-            : { state: "unchecked" },
-        ),
-        ...(gatewayUpdateReleaseKey ? { releaseKey: gatewayUpdateReleaseKey } : {}),
-      },
-    }));
+    setGatewayUpdateRuntimeByNode(current => {
+      const values = {
+        ...current,
+        [gatewayNodeId]: {
+          ...update(
+            current[gatewayNodeId]?.releaseKey === gatewayUpdateReleaseKey
+              ? current[gatewayNodeId]
+              : { state: "unchecked" },
+          ),
+          ...(gatewayUpdateReleaseKey ? { releaseKey: gatewayUpdateReleaseKey } : {}),
+        },
+      };
+      gatewayUpdateRuntimeByNodeRef.current = values;
+      return values;
+    });
   }
 
   function observeGatewayUpdateSignedBoundary(
@@ -7807,10 +7827,14 @@ function MalinkAppRuntime() {
       await new Promise<void>(resolveDelay => window.setTimeout(resolveDelay, initialDelay));
     }
     let lastError: unknown = new Error("The replacement Gateway has not replied yet.");
+    let statusAttempts = 0;
     while (Date.now() <= deadline) {
       if (connectionStatusRef.current !== "connected") {
         await new Promise<void>(resolveDelay =>
-          window.setTimeout(resolveDelay, GATEWAY_RESTART_STATUS_RETRY_MS)
+          window.setTimeout(
+            resolveDelay,
+            gatewayRestartStatusRetryDelayMs(statusAttempts),
+          )
         );
         continue;
       }
@@ -7837,8 +7861,10 @@ function MalinkAppRuntime() {
         if (error instanceof GatewayRestartFailedError) throw error;
         lastError = error;
       }
+      const retryDelayMs = gatewayRestartStatusRetryDelayMs(statusAttempts);
+      statusAttempts += 1;
       await new Promise<void>(resolveDelay =>
-        window.setTimeout(resolveDelay, GATEWAY_RESTART_STATUS_RETRY_MS)
+        window.setTimeout(resolveDelay, retryDelayMs)
       );
     }
     throw new Error(
@@ -7937,8 +7963,15 @@ function MalinkAppRuntime() {
         return null;
       }
       const status = gatewayUpdateStatusSchema.parse(completion.result);
+      const mergedStatus = latestGatewayUpdateStatus(
+        gatewayUpdateRuntimeByNodeRef.current[gatewayNodeId]?.status,
+        status,
+      );
       setGatewayState(current => current
-        ? reconcileGatewayMaintenanceSessions({ ...current, gatewayUpdate: status })
+        ? reconcileGatewayMaintenanceSessions({
+            ...current,
+            gatewayUpdate: latestGatewayUpdateStatus(current.gatewayUpdate, mergedStatus),
+          })
         : current);
       setGatewayUpdateNodeRuntime(gatewayNodeId, current => ({
         ...current,
@@ -7946,14 +7979,14 @@ function MalinkAppRuntime() {
         checkedAt,
         lastVerifiedAt: checkedAt,
         consecutiveNoReplies: 0,
-        status,
+        status: latestGatewayUpdateStatus(current.status, mergedStatus),
         maintenanceSessionId:
-          status.releaseId === gatewayRelease?.releaseId
-            ? status.maintenanceSessionId
+          mergedStatus.releaseId === gatewayRelease?.releaseId
+            ? mergedStatus.maintenanceSessionId
             : undefined,
         detail: undefined,
       }));
-      return status;
+      return mergedStatus;
     };
     const releaseProbe = async (completedCommandId: string): Promise<boolean> => {
       const pending = gatewayUpdateProbeCommandsRef.current.get(gatewayNodeId);
@@ -8263,15 +8296,19 @@ function MalinkAppRuntime() {
         : await triggerGatewayUpdate({
             release: gatewayRelease,
             target,
-            mode,
-            send: executeWithSignedBoundary,
-          });
+          mode,
+          send: executeWithSignedBoundary,
+        });
+      const mergedStatus = latestGatewayUpdateStatus(
+        gatewayUpdateRuntimeByNodeRef.current[node.gatewayNodeId]?.status,
+        status,
+      );
       setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
         ...current,
         state: "online",
         checkedAt: Date.now(),
-        status,
-        maintenanceSessionId: status.maintenanceSessionId,
+        status: latestGatewayUpdateStatus(current.status, mergedStatus),
+        maintenanceSessionId: mergedStatus.maintenanceSessionId,
         commandFailureCode: undefined,
         commandFailureRetryable: undefined,
       }));
@@ -8284,12 +8321,12 @@ function MalinkAppRuntime() {
         `gateway-update:${node.gatewayNodeId}`,
         "connection",
         "success",
-        status.phase === "committed"
-          ? `${node.gatewayName} already runs release ${status.releaseId ?? gatewayRelease.releaseId}.`
-          : gatewayUpdateRequiresForwardOnlyConfirmation(status)
+        mergedStatus.phase === "committed"
+          ? `${node.gatewayName} already runs release ${mergedStatus.releaseId ?? gatewayRelease.releaseId}.`
+          : gatewayUpdateRequiresForwardOnlyConfirmation(mergedStatus)
             ? `${node.gatewayName} prepared the update. Review the protected-data warning, then choose when to install and restart.`
-          : ["waiting_for_idle", "scheduled", "activating", "probation"].includes(status.phase)
-            ? `${node.gatewayName} accepted release ${status.releaseId ?? gatewayRelease.releaseId}. The signed supervisor phase will advance automatically; a brief reply gap during restart is expected.`
+          : ["waiting_for_idle", "scheduled", "activating", "probation"].includes(mergedStatus.phase)
+            ? `${node.gatewayName} accepted release ${mergedStatus.releaseId ?? gatewayRelease.releaseId}. The signed supervisor phase will advance automatically; a brief reply gap during restart is expected.`
           : `${node.gatewayName} is preparing the update. Progress remains available from its computer card.`,
         8_000,
       );
@@ -8390,10 +8427,17 @@ function MalinkAppRuntime() {
           "The update command was not repeated. Update the Gateway Host manually or export diagnostics if this continues.",
       );
     }
+    const mergedStatus = latestGatewayUpdateStatus(
+      gatewayStateRef.current?.gatewayUpdate,
+      status,
+    );
     setGatewayState((current) => current
-      ? reconcileGatewayMaintenanceSessions({ ...current, gatewayUpdate: status })
+      ? reconcileGatewayMaintenanceSessions({
+          ...current,
+          gatewayUpdate: latestGatewayUpdateStatus(current.gatewayUpdate, mergedStatus),
+        })
       : current);
-    return status;
+    return mergedStatus;
   }
 
   async function waitForConnectedCommandWindow(timeoutMs = 10_000): Promise<boolean> {

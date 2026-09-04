@@ -360,7 +360,10 @@ unverified commands produce no application event.
     background or losing Matrix connectivity cancels that schedule. Any newer
     verified Gateway event is also liveness proof and defers the next probe.
     Supervisor phase changes may still publish one compatible uncaused status
-    observation so other active clients converge without polling.
+    observation so other clients converge without polling. Android persists and
+    projects those authenticated phase transitions even while its WebView is in
+    the background; UI visibility may suppress probes, but it must never discard
+    semantic update state that has already arrived through Matrix.
 
 The normative wire and recovery rules are in
 [`malink-protocol.md`](malink-protocol.md).
@@ -672,7 +675,9 @@ current, outdated, manual-only, or unrouted and waits for explicit user
     requires a recent signed `gateway.update.status` reply or newer signed
     activity from that node. The check runs only while the client is visible and
     Matrix is connected; other causation-bearing status events remain
-    update-operation results. Matrix
+    update-operation results. Delayed observations merge monotonically by their
+    node-local supervisor timestamp and phase, so an older `scheduled` result
+    cannot replace a newer `committed` result. Matrix
 connectivity alone is never presented as proof that the Gateway process is
 online. When an authenticated update request arrives, the supervisor refreshes
 a monotonically versioned channel document, verifies it against the locally

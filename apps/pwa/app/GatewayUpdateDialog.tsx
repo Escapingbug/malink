@@ -191,6 +191,18 @@ function GatewayUpdateDialogContent({
               release,
             );
             const expectedReplyGap = gatewayUpdateExpectsReplyGap(signedUpdateStatus);
+            const canRefreshUpdateProgress = Boolean(
+              signedUpdateStatus && [
+                "staging",
+                "agent_required",
+                "agent_running",
+                "agent_validating",
+                "waiting_for_idle",
+                "scheduled",
+                "activating",
+                "probation",
+              ].includes(signedUpdateStatus.phase),
+            );
             const showUpdateProgress = Boolean(
               signedUpdateStatus &&
               signedUpdateStatus.phase !== "idle" &&
@@ -235,7 +247,7 @@ function GatewayUpdateDialogContent({
                 <div className="gateway-update-builds">
                   <span>
                     <small>Current build</small>
-                    <code>{runtime.status?.currentBuildId ?? node.currentBuildId ?? "unknown"}</code>
+                    <code>{node.currentBuildId ?? runtime.status?.currentBuildId ?? "unknown"}</code>
                   </span>
                   <span aria-hidden="true">→</span>
                   <span>
@@ -404,7 +416,8 @@ function GatewayUpdateDialogContent({
                       ) : null}
                     </>
                   )}
-                  {canProbe && !active && !signedUpdateStatus && !targetInstalled && (
+                  {canProbe && !active && !targetInstalled &&
+                    (!signedUpdateStatus || canRefreshUpdateProgress) && (
                     <button
                       type="button"
                       className="secondary-button"
@@ -415,9 +428,11 @@ function GatewayUpdateDialogContent({
                     >
                       {runtime.state === "checking"
                         ? "Checking…"
-                        : runtime.state === "unreachable"
-                          ? noReply.retryLabel
-                          : "Check live status"}
+                        : signedUpdateStatus
+                          ? "Refresh update status"
+                          : runtime.state === "unreachable"
+                            ? noReply.retryLabel
+                            : "Check live status"}
                     </button>
                   )}
                   {node.state === "available" && updateActionAvailable && (

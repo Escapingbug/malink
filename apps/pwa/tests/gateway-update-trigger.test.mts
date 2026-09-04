@@ -11,6 +11,7 @@ import {
   gatewayUpdateCanApplyStaged,
   gatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
+  latestGatewayUpdateStatus,
   gatewayUpdateTarget,
   legacyGatewayMaintenanceSessionsByNode,
   recoverAmbiguousGatewayUpdateCompletion,
@@ -433,6 +434,7 @@ test("lets a signed live status correct a stale directory build", () => {
       gatewayNodeId: "node-a",
       gatewayName: "Gateway A",
       currentBuildId: "gateway-new",
+      buildObservedAt: 5,
       targetProjectId: "project-a",
       onlineUpdate: true,
       state: "current",
@@ -453,6 +455,61 @@ test("lets a signed live status correct a stale directory build", () => {
 
   assert.equal(node.currentBuildId, "gateway-old");
   assert.equal(node.state, "available");
+});
+
+test("keeps a newer signed directory build over an older supervisor observation", () => {
+  const node = gatewayUpdatePlanNodeWithLiveStatus({
+    node: {
+      gatewayNodeId: "node-a",
+      gatewayName: "Gateway A",
+      currentBuildId: "gateway-new",
+      buildObservedAt: 20,
+      targetProjectId: "project-a",
+      onlineUpdate: true,
+      state: "current",
+    },
+    release: {
+      releaseId: "release-new",
+      buildId: "gateway-new",
+    },
+    status: {
+      version: 1,
+      phase: "scheduled",
+      updateId: "update-1",
+      releaseId: "release-new",
+      targetBuildId: "gateway-new",
+      currentBuildId: "gateway-old",
+      updatedAt: 10,
+    },
+  });
+
+  assert.equal(node.currentBuildId, "gateway-new");
+  assert.equal(node.state, "current");
+});
+
+test("never lets a delayed update result roll a newer supervisor phase backwards", () => {
+  const committed = {
+    version: 1 as const,
+    phase: "committed" as const,
+    updateId: "update-1",
+    releaseId: "release-new",
+    targetBuildId: "gateway-new",
+    currentBuildId: "gateway-new",
+    updatedAt: 20,
+  };
+  const delayedScheduled = {
+    ...committed,
+    phase: "scheduled" as const,
+    currentBuildId: "gateway-old",
+    updatedAt: 10,
+  };
+
+  assert.equal(latestGatewayUpdateStatus(committed, delayedScheduled), committed);
+  assert.equal(latestGatewayUpdateStatus(delayedScheduled, committed), committed);
+  assert.equal(latestGatewayUpdateStatus(
+    committed,
+    { ...delayedScheduled, updatedAt: 20 },
+  ), committed);
 });
 
 test("archives terminal or deterministic failures but preserves useful retry checkpoints", () => {

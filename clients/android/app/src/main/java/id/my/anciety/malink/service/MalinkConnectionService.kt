@@ -133,7 +133,6 @@ class MalinkConnectionService : Service() {
                 val created = NativeClientRuntime(
                     context = this@MalinkConnectionService,
                     foregroundState = { foregroundStarted to foregroundStarted },
-                    uiForegroundState = { uiForeground },
                     onTaskCompletion = ::onTaskCompletion,
                 )
                 if (!currentCoroutineContext().isActive) {

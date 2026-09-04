@@ -197,7 +197,7 @@ test("presents scheduled restart silence as part of the signed update", () => {
   assert.match(html, /Open update session/);
   assert.doesNotMatch(html, /Gateway reply delayed/);
   assert.doesNotMatch(html, /What should I do\?/);
-  assert.doesNotMatch(html, /Check again/);
+  assert.match(html, /Refresh update status/);
   assert.doesNotMatch(html, /No update was started/);
 });
 

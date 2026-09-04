@@ -146,7 +146,6 @@ class NativeClientRuntime(
     private val identity: MalinkPrivateIdentity = AndroidKeystoreP256Identity(),
     private val cipher: SecretCipher = AndroidKeystoreSecretCipher(),
     private val foregroundState: () -> Pair<Boolean, Boolean>,
-    private val uiForegroundState: () -> Boolean = { true },
     private val onTaskCompletion: (String, DurableCompletion, String?) -> Unit = { _, _, _ -> },
     private val now: () -> Long = System::currentTimeMillis,
 ) : NativeMatrixObserver {
@@ -2720,17 +2719,6 @@ class NativeClientRuntime(
             opened.projectId,
         )
         val protocolPayload = protocolEvent.objectValue("payload")
-        if (!shouldProjectGatewayStatusObservation(
-            protocolPayload.string("type"),
-            protocolEvent.string("causationCommandId"),
-            uiForegroundState(),
-        )) {
-            // Older Gateways may still broadcast uncaused liveness observations.
-            // The raw inbox has already authenticated and durably ordered this
-            // event, but a background APK must not rebuild and fsync the complete
-            // business projection for a status value no UI is currently reading.
-            return true
-        }
         if (protocolPayload.string("type") == "workspace.snapshot") {
             require(protocolPayload.string("gatewayKeyId") == activeTrust.gatewayKey.keyId) {
                 "The MLP/3 workspace snapshot names another Gateway key."
@@ -4192,11 +4180,3 @@ internal fun queuedCommandIds(commands: List<DurableView>): List<String> =
         .sortedBy(DurableView::submittedAt)
         .map(DurableView::commandId)
         .toList()
-
-internal fun shouldProjectGatewayStatusObservation(
-    payloadType: String?,
-    causationCommandId: String?,
-    uiForeground: Boolean,
-): Boolean = payloadType != "gateway.update.status" ||
-    causationCommandId != null ||
-    uiForeground

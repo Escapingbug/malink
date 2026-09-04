@@ -10,6 +10,7 @@ export const GATEWAY_ONLINE_PROOF_WINDOW_MS = 150_000;
 export const GATEWAY_LIVE_STATUS_TIMEOUT_MS = 30_000;
 export const GATEWAY_PROBE_RECOVERY_MIN_BACKOFF_MS = 60_000;
 export const GATEWAY_PROBE_RECOVERY_MAX_BACKOFF_MS = 5 * 60_000;
+export const GATEWAY_RESTART_STATUS_RETRY_MAX_MS = 30_000;
 
 export type GatewayNodeLivenessState =
   | "unknown"
@@ -237,6 +238,20 @@ export function gatewayProbeRecoveryBackoffMs(completedAttempts: number): number
   return Math.min(
     GATEWAY_PROBE_RECOVERY_MAX_BACKOFF_MS,
     GATEWAY_PROBE_RECOVERY_MIN_BACKOFF_MS * (2 ** Math.min(attempts, 3)),
+  );
+}
+
+/**
+ * A supervised restart can legitimately spend minutes waiting for launchd and
+ * Matrix-ready health. Status reads are Matrix commands, so retry them with a
+ * bounded exponential delay instead of generating a request/reply pair every
+ * 1.5 seconds for the whole health window.
+ */
+export function gatewayRestartStatusRetryDelayMs(completedAttempts: number): number {
+  const attempts = Math.max(0, Math.floor(completedAttempts));
+  return Math.min(
+    GATEWAY_RESTART_STATUS_RETRY_MAX_MS,
+    2_000 * (2 ** Math.min(attempts, 4)),
   );
 }
 

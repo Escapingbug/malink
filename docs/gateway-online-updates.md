@@ -312,7 +312,9 @@ coincidentally matching checkpoint.
 The liveness check has a bounded foreground wait. It runs immediately when a
 visible client becomes connected and at most once per minute while visible;
 background, offline, and already-recent signed activity suppress it. The user
-may also choose `Check live status`. If no signed reply arrives within 30 seconds,
+may also choose `Check live status`. During a non-terminal signed update, the
+same per-node control remains available as `Refresh update status`; a stale
+phase must never leave the panel with no useful action. If no signed reply arrives within 30 seconds,
 the first miss is presented as `Gateway reply delayed`: it is a
 warning that may still be caused by wake-up or Matrix latency, not proof of a
 Gateway fault. A second consecutive miss becomes `Gateway needs attention`,
@@ -479,7 +481,12 @@ waiting_for_idle -> scheduled -> activating -> [optional probation] -> committed
 
 The replacement Gateway publishes the signed supervisor state when it starts,
 then emits one event for each real phase change until the transaction is
-terminal. Unchanged state never produces a Matrix event. A separate live-status
+terminal. Android stores and projects each authenticated phase transition even
+while the WebView is backgrounded; background visibility controls active probes,
+not semantic event persistence. Unchanged state never produces a Matrix event.
+During the bounded restart wait, explicit status reads use exponential backoff
+from two seconds up to thirty seconds rather than continuously producing Matrix
+request/reply pairs. A separate live-status
 probe delay does not overwrite a signed `scheduled`, `activating`, optional
 `probation`, or `committed` result in the UI, and the planned restart silence is
 not presented as a failure. The current client automatically continues a

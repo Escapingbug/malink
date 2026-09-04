@@ -418,26 +418,6 @@ class GatewayStateSyncPolicyTest {
         assertEquals(emptyList<String>(), queuedCommandIds(commands))
     }
 
-    @Test
-    fun `background client skips only uncaused Gateway status observations`() {
-        assertEquals(
-            false,
-            shouldProjectGatewayStatusObservation("gateway.update.status", null, false),
-        )
-        assertEquals(
-            true,
-            shouldProjectGatewayStatusObservation("gateway.update.status", "command-1", false),
-        )
-        assertEquals(
-            true,
-            shouldProjectGatewayStatusObservation("gateway.update.status", null, true),
-        )
-        assertEquals(
-            true,
-            shouldProjectGatewayStatusObservation("assistant.message", null, false),
-        )
-    }
-
     private fun command(id: String, sequence: Long, state: CommandState): CommandView {
         val completion = if (state.isTerminal) {
             CommandCompletion(id, sequence, 4, CommandOutcome.SUCCEEDED)
