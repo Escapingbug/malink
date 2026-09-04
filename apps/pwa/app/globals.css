@@ -5442,6 +5442,36 @@ select:focus-visible {
   line-height: 1.45;
 }
 
+.provider-control-select {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.provider-control-select.is-searchable input[type="search"] {
+  width: 100%;
+  min-width: 0;
+}
+
+.provider-control-page-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #818a9d;
+  font-size: 9px;
+}
+
+.provider-control-page-status button {
+  padding: 2px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--violet-dark);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .provider-control-segmented legend {
   margin-bottom: 6px;
   color: #687185;
@@ -5588,7 +5618,8 @@ select:focus-visible {
 }
 
 .provider-controls.is-compact .provider-control select,
-.provider-controls.is-compact .provider-control input[type="text"] {
+.provider-controls.is-compact .provider-control input[type="text"],
+.provider-controls.is-compact .provider-control input[type="search"] {
   max-width: 135px;
   border: 0;
   outline: 0;
@@ -5596,6 +5627,20 @@ select:focus-visible {
   color: #626b7c;
   font-size: 8px;
   font-weight: 600;
+}
+
+.provider-controls.is-compact .provider-control-select {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.provider-controls.is-compact .provider-control-select input[type="search"] {
+  width: 74px;
+}
+
+.provider-controls.is-compact .provider-control-page-status {
+  display: none;
 }
 
 .provider-controls.is-compact .provider-control-diagnostic {

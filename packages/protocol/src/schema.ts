@@ -58,7 +58,7 @@ export type ProviderControlSurface = z.infer<typeof providerControlSurfaceSchema
 const providerControlConditionSchema = z
   .object({
     controlId: providerControlIdSchema,
-    values: z.array(providerControlValueSchema).min(1).max(256),
+    values: z.array(providerControlValueSchema).min(1).max(4_096),
   })
   .strict()
 
@@ -92,7 +92,7 @@ export const providerControlSchema = z
     surfaces: z.array(providerControlSurfaceSchema).min(1).max(3),
     updateEffect: z.enum(['immediate', 'next-turn', 'restart-session']).optional(),
     status: z.enum(['loading', 'ready', 'stale', 'error']),
-    options: z.array(providerControlOptionSchema).max(256).optional(),
+    options: z.array(providerControlOptionSchema).max(4_096).optional(),
     value: providerControlValueSchema.optional(),
     defaultValue: providerControlValueSchema.optional(),
     error: providerControlErrorSchema.optional(),

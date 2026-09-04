@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   MALINK_MATRIX_EXTENSION,
+  MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
   MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
   MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
   mlp3CurrentPointerSchema,
@@ -64,6 +65,7 @@ class TestMatrixClient extends InMemoryMatrixTransport implements MatrixGatewayC
   private readonly listeners = new Set<MatrixGatewayEventListener>()
   readonly deletedThreads: Array<{ roomId: string; threadRootEventId: string }> = []
   readonly retiredRooms: string[] = []
+  readonly roomEncryptionFailures = new Set<string>()
   private readonly timelineGates = new Map<string, {
     started: ReturnType<typeof deferred<void>>
     release: ReturnType<typeof deferred<void>>
@@ -79,7 +81,11 @@ class TestMatrixClient extends InMemoryMatrixTransport implements MatrixGatewayC
   }
   start(): Promise<void> { return Promise.resolve() }
   waitUntilReady(): Promise<void> { return Promise.resolve() }
-  assertRoomEncrypted(): Promise<void> { return Promise.resolve() }
+  assertRoomEncrypted(roomId: string): Promise<void> {
+    return this.roomEncryptionFailures.has(roomId)
+      ? Promise.reject(new Error(`simulated encryption check failure for ${roomId}`))
+      : Promise.resolve()
+  }
   ensureRoomInvitation(): Promise<void> { return Promise.resolve() }
   ensureProviderHistoryRoom(
     request: Parameters<NonNullable<MatrixGatewayClient['ensureProviderHistoryRoom']>>[0],
@@ -741,7 +747,10 @@ describe('MatrixMlp3GatewayRunner', () => {
         if (!refreshQueued) {
           refreshQueued = true
           queueMicrotask(() => {
-            models = [{ id: 'model-ready', name: 'Ready model' }]
+            models = Array.from({ length: 217 }, (_, index) => ({
+              id: `model-${String(index + 1).padStart(3, '0')}`,
+              name: `Ready model ${String(index + 1).padStart(3, '0')}`,
+            }))
             for (const listener of [...listeners]) listener()
           })
         }
@@ -801,6 +810,39 @@ describe('MatrixMlp3GatewayRunner', () => {
     const runner = new MatrixMlp3GatewayRunner(config, { client })
     try {
       await runner.start()
+      const roomBindings = await Promise.all(config.rooms.map(async room => ({
+        roomId: room.roomId,
+        projectId: room.projectId ?? gatewayProjectIdentity(room.cwd, room.projectName).id,
+        key: await projectKeyForRoom(client, room.roomId, phoneKeys.privateKey, gatewayKeys.publicKey),
+      })))
+      await waitFor(async () => {
+        for (const binding of roomBindings) {
+          const catalogEvents = await stateEvents(
+            client,
+            binding.key,
+            binding.roomId,
+            binding.projectId,
+            MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+          )
+          if (!catalogEvents.some(event =>
+            event.payload.type === 'provider.catalog.page'
+            && event.payload.items.some(model => model.id === 'model-217')
+          )) return false
+          if (!catalogEvents.some(event =>
+            event.payload.type === 'provider.catalog.manifest'
+            && event.payload.status === 'ready'
+            && event.payload.itemCount === 217
+          )) return false
+        }
+        return true
+      })
+      const catalogStates = [...client.state.values()].filter(state =>
+        state.eventType === MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE
+      )
+      expect(catalogStates.length).toBeGreaterThanOrEqual(10)
+      expect(catalogStates.every(state =>
+        Buffer.byteLength(JSON.stringify(state.content), 'utf8') <= 40 * 1024
+      )).toBe(true)
       let projects: Array<{
         name: string
         capabilitySnapshotVersion: number
@@ -823,13 +865,13 @@ describe('MatrixMlp3GatewayRunner', () => {
         }
         projects = Object.values(state.projects)
         return projects.length === 2
-          && projects.every(project => project.capabilities.models[0]?.id === 'model-ready')
+          && projects.every(project => project.capabilities.models.length === 0)
       })
       expect(projects.map(project => ({
         name: project.name,
         capabilitySnapshotVersion: project.capabilitySnapshotVersion,
       }))).toEqual([
-        { name: 'First project', capabilitySnapshotVersion: 2 },
+        { name: 'First project', capabilitySnapshotVersion: 1 },
         { name: 'Second project', capabilitySnapshotVersion: 1 },
       ])
     } finally {
@@ -1030,6 +1072,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     }
     const runner = new MatrixMlp3GatewayRunner(config, {
       client,
+      onLog: message => gatewayLogs.push(message),
       onRejected: (_event, error) => rejected.push(error),
       webPushService,
       assertDirectoryAccess: async input => {
@@ -1045,13 +1088,16 @@ describe('MatrixMlp3GatewayRunner', () => {
       },
       createProject: async input => {
         createdProjectRequests.push(`${input.name}:${input.cwd}`)
+        const deferred = input.name === 'Created with deferred publication'
         return {
           gatewayNodeId: 'gateway-node-1',
           alreadyExisted: false,
           room: {
-            roomId: '!created-project:example.org',
-            conversationId: 'created-project',
-            projectId: 'project-created',
+            roomId: deferred
+              ? '!created-project-deferred:example.org'
+              : '!created-project:example.org',
+            conversationId: deferred ? 'created-project-deferred' : 'created-project',
+            projectId: deferred ? 'project-created-deferred' : 'project-created',
             projectName: input.name,
             cwd: input.cwd,
             providerName: input.provider ?? input.sourceRoom.providerName,
@@ -1346,11 +1392,27 @@ describe('MatrixMlp3GatewayRunner', () => {
       payload: expect.objectContaining({
         type: 'workspace.snapshot',
         capabilities: expect.objectContaining({
-          models: [expect.objectContaining({ id: 'model-selectable' })],
+          models: [],
           web_push: { vapid_public_key: 'B'.repeat(87) },
         }),
       }),
     }))
+    await waitFor(async () => {
+      const catalogEvents = await stateEvents(
+        client,
+        activeKey.key,
+        roomId,
+        projectId,
+        MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+      )
+      return catalogEvents.some(event =>
+        event.payload.type === 'provider.catalog.page'
+        && event.payload.items.some(model => model.id === 'model-selectable')
+      ) && catalogEvents.some(event =>
+        event.payload.type === 'provider.catalog.manifest'
+        && event.payload.itemCount === 1
+      )
+    })
     await waitFor(() => Promise.resolve([...client.state.values()].some(state =>
       state.eventType === MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
     )))
@@ -1478,6 +1540,32 @@ describe('MatrixMlp3GatewayRunner', () => {
     })
     expect(projectCreatedHooks).toBe(1)
 
+    client.roomEncryptionFailures.add('!created-project-deferred:example.org')
+    await send({
+      ...base,
+      commandId: 'project-create-deferred-1',
+      operation: 'project.create',
+      payload: {
+        operation: 'project.create',
+        name: 'Created with deferred publication',
+        cwd: '/srv/created-deferred',
+        provider: 'test',
+      },
+    }, '$project-create-deferred-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'project-create-deferred-1'))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'project-create-deferred-1'
+    )?.payload).toMatchObject({
+      type: 'project.created',
+      projectId: 'project-created-deferred',
+      roomId: '!created-project-deferred:example.org',
+    })
+    expect(gatewayLogs).toContainEqual(expect.stringContaining(
+      'created project activation deferred for project-created-deferred',
+    ))
+    client.roomEncryptionFailures.delete('!created-project-deferred:example.org')
+
     await send({
       ...base,
       commandId: 'gateway-enrollment-cancel-1',
@@ -1595,7 +1683,10 @@ describe('MatrixMlp3GatewayRunner', () => {
       code: 'operation_not_allowed',
       retryable: false,
     })
-    expect(createdProjectRequests).toEqual(['Created remotely:/srv/created-remotely'])
+    expect(createdProjectRequests).toEqual([
+      'Created remotely:/srv/created-remotely',
+      'Created with deferred publication:/srv/created-deferred',
+    ])
 
     await send({
       ...base,
@@ -2650,6 +2741,62 @@ async function events(
     if (opened.plaintext.kind === 'signed_event') result.push(opened.plaintext.value.event)
   }
   return result
+}
+
+async function stateEvents(
+  client: TestMatrixClient,
+  key: string,
+  roomId: string,
+  projectId: string,
+  eventType: string,
+): Promise<Mlp3Event[]> {
+  const result: Mlp3Event[] = []
+  for (const delivery of client.state.values()) {
+    if (delivery.roomId !== roomId || delivery.eventType !== eventType) continue
+    const extension = delivery.content[MALINK_MATRIX_EXTENSION] as
+      | Record<string, unknown>
+      | undefined
+    if (!extension?.envelope) continue
+    const opened = await openMlp3Envelope(extension.envelope, {
+      projectKey: base64UrlDecode(key),
+      roomId,
+      projectId,
+      keyId: (extension.envelope as { keyId: string }).keyId,
+    })
+    if (opened.plaintext.kind === 'signed_event') {
+      result.push(opened.plaintext.value.event)
+    }
+  }
+  return result
+}
+
+async function projectKeyForRoom(
+  client: TestMatrixClient,
+  roomId: string,
+  recipientPrivateKey: CryptoKey,
+  senderPublicKey: CryptoKey,
+): Promise<string> {
+  const grantState = [...client.state.values()].find(state =>
+    state.roomId === roomId
+    && state.eventType === MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE
+    && state.content.deviceId === 'phone-1'
+  )
+  const grant = mlp3ProjectKeyGrantStateSchema.parse(grantState?.content)
+  const keyGrant = await openMlp3ProjectKeyGrant(grant.sealedGrant, {
+    expected: {
+      grantId: grant.grantId,
+      workspaceId: grant.workspaceId,
+      projectId: grant.projectId,
+      roomId: grant.roomId,
+      deviceId: grant.deviceId,
+      certificateId: grant.certificateId,
+      senderKeyId: grant.sealedGrant.envelope.senderKeyId,
+      recipientKeyId: grant.sealedGrant.envelope.recipientKeyId,
+    },
+    recipientPrivateKey,
+    senderPublicKey,
+  })
+  return keyGrant.keys.find(key => key.keyId === keyGrant.activeKeyId)!.key
 }
 
 function deferred<T>() {

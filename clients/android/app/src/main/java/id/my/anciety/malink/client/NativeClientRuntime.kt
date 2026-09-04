@@ -69,6 +69,7 @@ import id.my.anciety.malink.security.malink.GatewayTransportCodec
 import id.my.anciety.malink.security.malink.MatrixTransportBinding
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_KEY_GRANT_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE
+import id.my.anciety.malink.security.malink.MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MatrixMlp3ProjectKeyGrant
@@ -2610,6 +2611,7 @@ class NativeClientRuntime(
             eventType != MLP3_MATRIX_KEY_GRANT_EVENT_TYPE &&
             eventType != MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE &&
             eventType != MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE &&
+            eventType != MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE &&
             !(eventType == "m.room.message" &&
                 (content["io.malink"] as? JsonObject)?.long("version") == 3L)
         ) return false
@@ -3957,6 +3959,7 @@ private fun isMatrixMlp3RawEvent(rawJson: String): Boolean = runCatching {
         MLP3_MATRIX_KEY_GRANT_EVENT_TYPE,
         MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
         MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
+        MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
         MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
         -> true
         "m.room.message" ->

@@ -20,6 +20,42 @@ import org.junit.Test
 
 class MatrixMlp3NativeProjectionTest {
     @Test
+    fun `provider catalog pages replace embedded models and survive durable restore`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(workspaceSnapshot(1, "inline-old"), "\$workspace", null)
+        projection.applyGatewayEvent(providerCatalogManifest(2, 2), "\$manifest", null)
+        projection.applyGatewayEvent(providerCatalogPage(1, "model-b"), "\$page-b", null)
+        projection.applyGatewayEvent(providerCatalogPage(0, "model-a"), "\$page-a", null)
+
+        val capabilities = projection.snapshot()!!.getValue("capabilities").jsonObject
+        assertEquals(
+            listOf("model-a", "model-b"),
+            capabilities.getValue("models").jsonArray.map {
+                it.jsonObject.getValue("id").jsonPrimitive.content
+            },
+        )
+        val controls = capabilities.getValue("controls").jsonArray
+        assertEquals(
+            2,
+            controls.first().jsonObject.getValue("options").jsonArray.size,
+        )
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        assertEquals(
+            listOf("model-a", "model-b"),
+            restored.snapshot()!!.getValue("capabilities").jsonObject
+                .getValue("models").jsonArray.map {
+                    it.jsonObject.getValue("id").jsonPrimitive.content
+                },
+        )
+    }
+
+    @Test
     fun `semantic validation rejects a structurally valid but incompatible cache`() {
         val incompatible = buildJsonObject {
             put("schemaVersion", 14)
@@ -1608,6 +1644,39 @@ class MatrixMlp3NativeProjectionTest {
                     "providerHistory" to providerHistory,
                 ))
             })
+        },
+    )
+
+    private fun providerCatalogPage(pageIndex: Int, modelId: String) = event(
+        eventId = "provider-catalog-page-$pageIndex",
+        projectId = "project-1",
+        payload = buildJsonObject {
+            put("type", "provider.catalog.page")
+            put("providerId", "codex")
+            put("catalog", "models")
+            put("revision", "r".repeat(43))
+            put("pageIndex", pageIndex)
+            put("pageCount", 2)
+            put("items", buildJsonArray {
+                add(buildJsonObject {
+                    put("id", modelId)
+                    put("name", modelId)
+                })
+            })
+        },
+    )
+
+    private fun providerCatalogManifest(itemCount: Int, pageCount: Int) = event(
+        eventId = "provider-catalog-manifest",
+        projectId = "project-1",
+        payload = buildJsonObject {
+            put("type", "provider.catalog.manifest")
+            put("providerId", "codex")
+            put("catalog", "models")
+            put("revision", "r".repeat(43))
+            put("status", "ready")
+            put("itemCount", itemCount)
+            put("pageCount", pageCount)
         },
     )
 

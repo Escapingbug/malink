@@ -1,5 +1,6 @@
 import {
   MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
+  MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
   MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
   MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
   MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
@@ -74,6 +75,7 @@ import {
   parseGatewayCapabilities,
   type GatewayStateSnapshot,
 } from "./gatewayState";
+import { applyProviderModelCatalogs } from "./providerControlCompatibility";
 import {
   MATRIX_PROJECT_AUTHORIZATION_REPAIR_REQUIRED,
   resolveAuthoritativeProjectKeyGrant,
@@ -663,6 +665,8 @@ export async function connectMatrixMlp3(
           failures.push(error);
         }
       }
+      await replayProviderCatalogState(context.room, event =>
+        ingestSecondaryEvent(context, event));
       for (const event of context.room.getLiveTimeline().getEvents()) {
         await ingestSecondaryEvent(context, event);
       }
@@ -699,7 +703,13 @@ export async function connectMatrixMlp3(
     if (event.isEncrypted() || event.getType() === "m.room.encrypted") {
       await client.decryptEventIfNeeded(event);
     }
-    if (event.isDecryptionFailure() || event.getType() !== "m.room.message") return;
+    if (
+      event.isDecryptionFailure()
+      || (
+        event.getType() !== "m.room.message"
+        && event.getType() !== MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE
+      )
+    ) return;
     const eventId = event.getId();
     const sender = event.getSender();
     if (!eventId || !sender) return;
@@ -719,7 +729,13 @@ export async function connectMatrixMlp3(
     if (event.isEncrypted() || event.getType() === "m.room.encrypted") {
       await client.decryptEventIfNeeded(event);
     }
-    if (event.isDecryptionFailure() || event.getType() !== "m.room.message") return;
+    if (
+      event.isDecryptionFailure()
+      || (
+        event.getType() !== "m.room.message"
+        && event.getType() !== MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE
+      )
+    ) return;
     const eventId = event.getId();
     const sender = event.getSender();
     if (!eventId || !sender) return;
@@ -1172,6 +1188,11 @@ export async function connectMatrixMlp3(
             `[mlp3/matrix] project ${secondary.route.projectId} snapshot could not be recovered`,
             error,
           ));
+      } else if (event.getType() === MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE) {
+        void ingestSecondaryEvent(secondary, event).catch(error => console.error(
+          `[mlp3/matrix] project ${secondary.route.projectId} provider catalog could not be recovered`,
+          error,
+        ));
       }
       return;
     }
@@ -1190,6 +1211,10 @@ export async function connectMatrixMlp3(
       void recoverAuthoritativeState().catch(error => {
         reportRecoveryFailure("The current MLP/3 snapshots could not be recovered", error);
       });
+      return;
+    }
+    if (event.getType() === MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE) {
+      enqueue(event);
     }
   };
   const onSync = (state: string) => {
@@ -1252,6 +1277,18 @@ export async function connectMatrixMlp3(
       }
     });
     await inboundChain;
+  };
+
+  const replayProviderCatalogState = async (
+    targetRoom: Room,
+    ingest: (event: MatrixEvent) => Promise<void>,
+  ): Promise<void> => {
+    const states = targetRoom.currentState.getStateEvents(
+      MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+    );
+    const events = Array.isArray(states) ? states : states ? [states] : [];
+    // Pages and manifests are order-independent in the durable projection.
+    for (const event of events) await ingest(event);
   };
 
   const replayThreadDirectory = async (
@@ -1378,6 +1415,7 @@ export async function connectMatrixMlp3(
       ].filter((value): value is string => value !== null).join(" and ");
       throw new Error(`The Gateway has not published the current ${missing} snapshot pointer.`);
     }
+    if (room) await replayProviderCatalogState(room, ingestEvent);
     await replayKnownTimeline();
     await protocol?.retryPending();
     await checkpointMatrixSync(activeWorkspaceProtocols());
@@ -2206,7 +2244,7 @@ function gatewayState(
         },
       }
     : {};
-  const capabilities = protocol.projection.workspace
+  const baseCapabilities = protocol.projection.workspace
     ? parseGatewayCapabilities(protocol.projection.workspace.capabilities)
     : {
         models: [],
@@ -2219,6 +2257,11 @@ function gatewayState(
         canDeleteSession: false,
         sessionExtensions: project?.installedExtensions ?? [],
       };
+  const capabilities = applyProviderModelCatalogs(
+    baseCapabilities,
+    protocol.projection.providerModelCatalogs(),
+    project?.provider,
+  );
   return {
     stateVersion: Math.max(1, ...sessions.map(session => session.stateVersion)),
     revision: 0,

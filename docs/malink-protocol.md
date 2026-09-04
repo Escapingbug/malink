@@ -167,6 +167,18 @@ session-only descriptors after ACP initialization. Clients render only the
 descriptors for the current surface and MUST NOT infer an unsupported model or
 reasoning control from an empty catalog exposed by a current Gateway.
 
+Potentially long model catalogs are not embedded in `workspace.snapshot` or
+repeated in session projections. The Gateway publishes application-encrypted
+`provider.catalog.page` events under stable
+`io.malink.provider_catalog.v1` Room State keys, then publishes the matching
+`provider.catalog.manifest` only after every revision-bound page is confirmed.
+Current-state key count is bounded by each Provider's historical maximum page
+count; refresh revisions replace those keys instead of appending application
+RPC results. Clients retain pages in their authenticated projection, activate
+only a complete manifest revision, and perform search and incremental display
+locally. Unknown older clients ignore this additive state and continue using
+the Provider default rather than rejecting the smaller workspace snapshot.
+
 `project.update` atomically stores the display name, Provider control values,
 and extension bindings used by later sessions for the project's default
 provider. When its `controls` field is present, it replaces the values of all
@@ -505,6 +517,8 @@ Traffic scales with visible business activity:
   materially changes;
 - one workspace snapshot plus one pointer replacement per active project when
   an account native-client release changes;
+- one bounded set of stable provider-catalog page state replacements followed
+  by one manifest replacement when a Provider's model catalog changes;
 - one pairwise key-grant state event only when a device or key epoch changes.
 - one root-signed Workspace directory/grant/revocation state write on the
   Gateway bootstrap control route when that semantic document changes, rather

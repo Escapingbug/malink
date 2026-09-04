@@ -62,9 +62,9 @@ export function ProviderControls({
             data-control-id={control.id}
           >
             {presentedControl.status === "loading" ? (
-              <ControlDiagnostic control={presentedControl} loading />
+              <ControlDiagnostic control={presentedControl} loading compact={compact} />
             ) : presentedControl.status === "error" ? (
-              <ControlDiagnostic control={presentedControl} />
+              <ControlDiagnostic control={presentedControl} compact={compact} />
             ) : (
               <>
                 {control.renderer === "toggle" ? (
@@ -111,28 +111,22 @@ export function ProviderControls({
                         onChange={event => update(control, event.target.value)}
                       />
                     ) : (
-                      <select
-                        value={typeof value === "string" ? value : ""}
+                      <SearchableSelect
+                        control={control}
+                        options={options}
+                        value={value}
                         disabled={disabled}
-                        onChange={event => update(
-                          control,
-                          options.find(option => String(option.value) === event.target.value)?.value,
-                        )}
-                      >
-                        {(allowProviderDefault || value === undefined) && (
-                          <option value="">Provider default</option>
-                        )}
-                        {options.map(option => (
-                          <option key={String(option.value)} value={String(option.value)}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
+                        compact={compact}
+                        allowProviderDefault={allowProviderDefault}
+                        onSelect={value => update(control, value)}
+                      />
                     )}
                     {control.description && <small>{control.description}</small>}
                   </label>
                 )}
-                {control.status === "stale" && <ControlDiagnostic control={control} />}
+                {control.status === "stale" && (
+                  <ControlDiagnostic control={control} compact={compact} />
+                )}
               </>
             )}
           </div>
@@ -164,16 +158,12 @@ function useControlDeadlineClock(controls: readonly ProviderControl[]): number {
 }
 
 function expiredLoadingControl(control: ProviderControl): ProviderControl {
-  const deadline = control.deadlineAt === undefined
-    ? "unknown"
-    : new Date(control.deadlineAt).toISOString();
   return {
     ...control,
     status: "error",
     error: {
       code: "catalog_timeout",
-      message: "The provider did not report its choices before the loading deadline. The Gateway may still be retrying or its latest update may not have arrived.",
-      detail: `The last received loading state expired at ${deadline}.`,
+      message: "The provider is taking longer than expected. The Gateway will keep retrying.",
       retryable: true,
     },
   };
@@ -182,21 +172,15 @@ function expiredLoadingControl(control: ProviderControl): ProviderControl {
 function ControlDiagnostic({
   control,
   loading = false,
+  compact = false,
 }: {
   control: ProviderControl;
   loading?: boolean;
+  compact?: boolean;
 }) {
   const stale = control.status === "stale";
   const retry = control.retryAt
     ? ` Automatic retry ${new Date(control.retryAt).toLocaleTimeString()}.`
-    : "";
-  const expectedSeconds = loading && control.deadlineAt && control.checkedAt
-    ? Math.max(1, Math.ceil((control.deadlineAt - control.checkedAt) / 1_000))
-    : null;
-  const deadline = loading && control.deadlineAt
-    ? expectedSeconds
-      ? ` Expected within ${expectedSeconds} seconds (by ${new Date(control.deadlineAt).toLocaleTimeString()}).`
-      : ` Expected by ${new Date(control.deadlineAt).toLocaleTimeString()}.`
     : "";
   return (
     <div
@@ -212,26 +196,111 @@ function ControlDiagnostic({
               ? `${control.label} choices may be out of date`
               : `${control.label} unavailable`}
         </strong>
-        <small>
-          {loading
-            ? `${control.description ?? "Waiting for the provider to report its choices."}${deadline}`
-            : stale
-              ? `${control.error?.message ?? "Using the last choices reported by the provider."}${retry}`
-              : `${control.error?.message ?? "The provider could not load this control."}${retry}`}
-        </small>
-        {!loading && control.error && (
-          <>
-            <code>{control.error.code}</code>
-            {control.error.detail && (
-              <details>
-                <summary>Technical details</summary>
-                <pre>{control.error.detail}</pre>
-              </details>
-            )}
-          </>
+        {!compact && (
+          <small>
+            {loading
+              ? "Waiting for the Gateway…"
+              : stale
+                ? `${control.error?.message ?? "Using the last available choices."}${retry}`
+                : `${control.error?.message ?? "The provider could not load this control."}${retry}`}
+          </small>
+        )}
+        {!compact && !loading && control.error?.detail && (
+          <details>
+            <summary>Technical details</summary>
+            <pre>{control.error.detail}</pre>
+          </details>
         )}
       </span>
     </div>
+  );
+}
+
+const SEARCHABLE_OPTION_THRESHOLD = 20;
+const OPTION_PAGE_SIZE = 40;
+
+function SearchableSelect({
+  control,
+  options,
+  value,
+  disabled,
+  compact,
+  allowProviderDefault,
+  onSelect,
+}: {
+  control: ProviderControl;
+  options: NonNullable<ProviderControl["options"]>;
+  value: ProviderControlValue | undefined;
+  disabled: boolean;
+  compact: boolean;
+  allowProviderDefault: boolean;
+  onSelect(value: ProviderControlValue | undefined): void;
+}) {
+  const [query, setQuery] = useState("");
+  const [pagination, setPagination] = useState({ key: "", limit: OPTION_PAGE_SIZE });
+  const searchable = options.length > SEARCHABLE_OPTION_THRESHOLD;
+  const paginationKey = `${control.id}\u0000${query}`;
+  const limit = pagination.key === paginationKey ? pagination.limit : OPTION_PAGE_SIZE;
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const filtered = normalizedQuery
+    ? options.filter(option =>
+        option.label.toLocaleLowerCase().includes(normalizedQuery)
+        || String(option.value).toLocaleLowerCase().includes(normalizedQuery))
+    : options;
+  const visible = searchable ? filtered.slice(0, limit) : filtered;
+  const selected = options.find(option => option.value === value);
+  const presented = selected && !visible.some(option => option.value === selected.value)
+    ? [selected, ...visible]
+    : visible;
+
+  return (
+    <span className={`provider-control-select${searchable ? " is-searchable" : ""}`}>
+      {searchable && (
+        <input
+          type="search"
+          value={query}
+          disabled={disabled}
+          aria-label={`Search ${control.label.toLowerCase()}`}
+          placeholder={compact ? "Search…" : `Search ${options.length} choices…`}
+          onChange={event => setQuery(event.target.value)}
+        />
+      )}
+      <select
+        value={typeof value === "string" ? value : ""}
+        disabled={disabled}
+        onChange={event => onSelect(
+          options.find(option => String(option.value) === event.target.value)?.value,
+        )}
+      >
+        {(allowProviderDefault || value === undefined) && (
+          <option value="">Provider default</option>
+        )}
+        {presented.map(option => (
+          <option key={String(option.value)} value={String(option.value)}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      {searchable && (
+        <small className="provider-control-page-status">
+          {filtered.length === 0
+            ? "No matches"
+            : `${Math.min(limit, filtered.length)} of ${filtered.length}`}
+          {visible.length < filtered.length && (
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => setPagination({
+                key: paginationKey,
+                limit: limit + OPTION_PAGE_SIZE,
+              })}
+            >
+              Show more
+            </button>
+          )}
+        </small>
+      )}
+    </span>
   );
 }
 

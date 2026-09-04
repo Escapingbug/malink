@@ -17,6 +17,7 @@ import kotlinx.serialization.json.put
 const val MLP3_MATRIX_KEY_GRANT_EVENT_TYPE = "io.malink.project.key_grant.v3"
 const val MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE = "io.malink.project.current.v3"
 const val MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE = "io.malink.workspace.current.v3"
+const val MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE = "io.malink.provider_catalog.v1"
 const val MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE =
     "io.malink.workspace.gateway_directory.v1"
 private val MATRIX_USER_ID = Regex("^@[^:\\s]+:[^\\s]+$")
