@@ -299,11 +299,16 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
         this.rememberRoomMember(roomId, userId)
     }
 
-    async deleteRoomThread(roomId: string, threadRootEventId: string): Promise<void> {
+    async deleteRoomThread(
+        roomId: string,
+        threadRootEventId: string,
+        options: { signal?: AbortSignal } = {},
+    ): Promise<void> {
         const eventIds: string[] = []
         const seenTokens = new Set<string>()
         let from: string | undefined
         while (true) {
+            options.signal?.throwIfAborted()
             const page = await this.matrixRequest<MatrixRelationsResponse>(
                 'GET',
                 `/_matrix/client/v1/rooms/${encodeURIComponent(roomId)}/relations/${encodeURIComponent(threadRootEventId)}`,
@@ -314,11 +319,13 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                         recurse: true,
                         ...(from ? { from } : {}),
                     },
+                    signal: options.signal,
                 },
             ).catch(error => {
                 if (isMissingMatrixEntity(error)) return {} as MatrixRelationsResponse
                 throw error
             })
+            options.signal?.throwIfAborted()
             for (const event of page.chunk ?? []) {
                 if (typeof event.event_id === 'string' && event.event_id) {
                     eventIds.push(event.event_id)
@@ -333,6 +340,7 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             from = next
         }
         for (const eventId of [...new Set(eventIds), threadRootEventId]) {
+            options.signal?.throwIfAborted()
             await this.withRoomSendLock(() => this.matrixRequest(
                 'PUT',
                 `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/redact/${encodeURIComponent(eventId)}/${encodeURIComponent(matrixRetirementTransactionId('thread', roomId, eventId))}`,
@@ -341,17 +349,21 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                     retryRateLimit: true,
                     retryTransient: true,
                     paceRoomWrite: true,
+                    signal: options.signal,
                 },
-            )).catch(error => {
+            ), options.signal).catch(error => {
                 if (!isMissingMatrixEntity(error)) throw error
             })
+            options.signal?.throwIfAborted()
         }
     }
 
-    async retireRoom(roomId: string): Promise<void> {
+    async retireRoom(roomId: string, options: { signal?: AbortSignal } = {}): Promise<void> {
+        options.signal?.throwIfAborted()
         const members = await this.matrixRequest<MatrixMembersResponse>(
             'GET',
             `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/members`,
+            { signal: options.signal },
         ).catch(error => {
             if (isRetiredMatrixRoom(error)) return null
             throw error
@@ -360,7 +372,7 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             await this.matrixRequest(
                 'POST',
                 `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/forget`,
-                { body: {}, retryTransient: true },
+                { body: {}, retryTransient: true, signal: options.signal },
             ).catch(error => {
                 if (!isRetiredMatrixRoom(error)) throw error
             })
@@ -369,6 +381,7 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             return
         }
         for (const event of members.chunk ?? []) {
+            options.signal?.throwIfAborted()
             const content = asRecord(event.content)
             const membership = content?.membership
             const userId = typeof event.state_key === 'string' ? event.state_key : undefined
@@ -385,15 +398,18 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                     retryRateLimit: true,
                     retryTransient: true,
                     paceRoomWrite: true,
+                    signal: options.signal,
                 },
-            ))
+            ), options.signal)
         }
         const aliases = await this.matrixRequest<{ aliases?: unknown }>(
             'GET',
             `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/aliases`,
+            { signal: options.signal },
         )
         if (Array.isArray(aliases.aliases)) {
             for (const alias of aliases.aliases) {
+                options.signal?.throwIfAborted()
                 if (typeof alias !== 'string' || !alias) continue
                 await this.withRoomSendLock(() => this.matrixRequest(
                     'DELETE',
@@ -402,10 +418,12 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                         retryRateLimit: true,
                         retryTransient: true,
                         paceRoomWrite: true,
+                        signal: options.signal,
                     },
-                ))
+                ), options.signal)
             }
         }
+        options.signal?.throwIfAborted()
         await this.withRoomSendLock(() => this.matrixRequest(
             'POST',
             `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/leave`,
@@ -414,12 +432,14 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                 retryRateLimit: true,
                 retryTransient: true,
                 paceRoomWrite: true,
+                signal: options.signal,
             },
-        ))
+        ), options.signal)
+        options.signal?.throwIfAborted()
         await this.matrixRequest(
             'POST',
             `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/forget`,
-            { body: {}, retryTransient: true },
+            { body: {}, retryTransient: true, signal: options.signal },
         )
         this.knownRoomMembers.delete(roomId)
         this.roomCrypto.delete(roomId)
@@ -1155,10 +1175,15 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
      * one lane so a 429 retry owns the account-wide retry_after window instead
      * of waking several independent retries into the same empty token bucket.
      */
-    private withRoomSendLock<T>(operation: () => Promise<T>): Promise<T> {
+    private withRoomSendLock<T>(
+        operation: () => Promise<T>,
+        signal?: AbortSignal,
+    ): Promise<T> {
         const run = this.roomSendChain.then(async () => {
+            signal?.throwIfAborted()
             const delayMs = this.roomSendNotBefore - Date.now()
-            if (delayMs > 0) await wait(delayMs)
+            if (delayMs > 0) await wait(delayMs, signal)
+            signal?.throwIfAborted()
             try {
                 return await operation()
             } finally {

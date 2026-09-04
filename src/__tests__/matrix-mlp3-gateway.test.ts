@@ -43,7 +43,11 @@ import {
   gatewayMaintenanceSessionId,
   MatrixMlp3GatewayRunner,
 } from '@/gateway/matrix/mlp3Gateway'
-import { FileMlp3RuntimeStateStore } from '@/gateway/matrix/fileMlp3RuntimeState'
+import {
+  FileMlp3RuntimeStateStore,
+  type PersistedMlp3Session,
+} from '@/gateway/matrix/fileMlp3RuntimeState'
+import { SqliteMlp3CommandJournal } from '@/gateway/matrix/sqliteMlp3CommandJournal'
 import { gatewayProjectIdentity } from '@/gateway/matrix/project'
 import type { GatewayWebPushService } from '@/gateway/matrix/webPush'
 import { createTopicSessionRecord } from '@/bridge/topicSession'
@@ -63,6 +67,10 @@ class TestMatrixClient extends InMemoryMatrixTransport implements MatrixGatewayC
     started: ReturnType<typeof deferred<void>>
     release: ReturnType<typeof deferred<void>>
   }>()
+  private nextThreadDeletionGate: {
+    started: ReturnType<typeof deferred<void>>
+    release: ReturnType<typeof deferred<void>>
+  } | null = null
   initializeCrypto(_config: MatrixGatewayCryptoConfig): Promise<void> { return Promise.resolve() }
   onRoomEvent(listener: MatrixGatewayEventListener): () => void {
     this.listeners.add(listener)
@@ -84,7 +92,11 @@ class TestMatrixClient extends InMemoryMatrixTransport implements MatrixGatewayC
   prepareRoomThread(): Promise<void> { return Promise.resolve() }
   deleteRoomThread(roomId: string, threadRootEventId: string): Promise<void> {
     this.deletedThreads.push({ roomId, threadRootEventId })
-    return Promise.resolve()
+    const gate = this.nextThreadDeletionGate
+    this.nextThreadDeletionGate = null
+    if (!gate) return Promise.resolve()
+    gate.started.resolve()
+    return gate.release.promise
   }
   retireRoom(roomId: string): Promise<void> {
     this.retiredRooms.push(roomId)
@@ -94,6 +106,11 @@ class TestMatrixClient extends InMemoryMatrixTransport implements MatrixGatewayC
   blockTimelineTransaction(transactionId: string) {
     const gate = { started: deferred<void>(), release: deferred<void>() }
     this.timelineGates.set(transactionId, gate)
+    return gate
+  }
+  blockNextThreadDeletion() {
+    const gate = { started: deferred<void>(), release: deferred<void>() }
+    this.nextThreadDeletionGate = gate
     return gate
   }
   override async sendApplicationTimelineEvent(
@@ -290,7 +307,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     )
     await state.initialize(config.rooms)
     await state.updateProject(roomId, project => {
-      project.sessions.push({
+      const legacy = {
         id: 'legacy-archive',
         scope: 'project',
         cwd: project.cwd,
@@ -307,12 +324,51 @@ describe('MatrixMlp3GatewayRunner', () => {
         permissionMode: 'default',
         providerSessionId: 'provider-legacy',
         providerHistory: null,
+        archiveCleanup: null,
         extensions: [],
         extensionRevision: 1,
         inheritedFromProjectExtensionRevision: null,
         availableCommands: [],
+      } satisfies PersistedMlp3Session
+      project.sessions.push(legacy, {
+        ...legacy,
+        id: 'requested-archive',
+        sourceCommandId: 'requested-create',
+        threadRootEventId: '$requested-thread-root',
+        title: 'Requested archive',
+        archiveCleanup: {
+          commandId: 'requested-archive-command',
+          requestedAt: 2,
+          matrixThreadDeleted: false,
+          providerHistoryDeleted: true,
+          scratchDirectoryDeleted: true,
+        },
       })
     })
+    const interruptedArchive = {
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'requested-archive-command',
+      workspaceId: config.gatewayId,
+      projectId: gatewayProjectIdentity('/archive-migration-repo').id,
+      sessionId: 'requested-archive',
+      deviceId: 'phone-1',
+      certificateId: 'certificate-1',
+      createdAt: 2,
+      operation: 'session.set_lifecycle',
+      payload: { operation: 'session.set_lifecycle', state: 'archived' },
+    } satisfies Mlp3Command
+    const journal = new SqliteMlp3CommandJournal(
+      `${replayLedgerPath}.v3-commands.sqlite`,
+      `${replayLedgerPath}.v3-commands.jsonl`,
+    )
+    await journal.initialize()
+    await journal.claim(interruptedArchive, 2, {
+      roomId,
+      matrixEventId: '$requested-archive-command',
+    })
+    await journal.markDispatched(interruptedArchive, 2)
+    await journal.close()
 
     const runner = new MatrixMlp3GatewayRunner(config, {
       client,
@@ -354,10 +410,27 @@ describe('MatrixMlp3GatewayRunner', () => {
       },
     })
 
-    expect(client.deletedThreads).toEqual([])
+    await waitFor(() => Promise.resolve(client.deletedThreads.some(deleted =>
+      deleted.threadRootEventId === '$requested-thread-root'
+    )))
+    await waitFor(async () => (await state.project(roomId)).sessions.length === 1)
     expect((await state.project(roomId)).sessions).toEqual([
-      expect.objectContaining({ id: 'legacy-archive', lifecycle: 'archived' }),
+      expect.objectContaining({
+        id: 'legacy-archive',
+        lifecycle: 'archived',
+        archiveCleanup: null,
+      }),
     ])
+    expect(client.deletedThreads).not.toContainEqual(expect.objectContaining({
+      threadRootEventId: '$legacy-thread-root',
+    }))
+    expect((await events(client, activeKey.key, roomId, grant.projectId)).find(event =>
+      event.sessionId === 'requested-archive'
+      && event.causationCommandId === 'requested-archive-command'
+    )?.payload).toMatchObject({
+      type: 'session.lifecycle',
+      state: 'deleted',
+    })
     expect(gatewayLogs).toContain(
       '[mlp3/matrix] 1 archived session cleanup checkpoint(s) remain available for explicit retry',
     )
@@ -2089,6 +2162,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       projection: { activity: 'idle' },
     })
 
+    const archiveCleanupGate = client.blockNextThreadDeletion()
     await send({
       ...base,
       commandId: 'archive-a',
@@ -2098,6 +2172,31 @@ describe('MatrixMlp3GatewayRunner', () => {
     }, '$archive-a')
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
       .some(event => event.causationCommandId === 'archive-a'))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'archive-a'
+    )?.payload).toMatchObject({
+      type: 'session.lifecycle',
+      state: 'deleted',
+    })
+    await archiveCleanupGate.started.promise
+    const archiveState = new FileMlp3RuntimeStateStore(
+      `${config.replayLedgerPath}.v3-runtime-state.json`,
+      config.gatewayId,
+    )
+    expect((await archiveState.project(roomId)).sessions.find(session =>
+      session.id === 'session-a'
+    )).toMatchObject({
+      lifecycle: 'archived',
+      archiveCleanup: {
+        matrixThreadDeleted: false,
+        providerHistoryDeleted: false,
+        scratchDirectoryDeleted: true,
+      },
+    })
+    archiveCleanupGate.release.resolve()
+    await waitFor(async () => !(await archiveState.project(roomId)).sessions.some(session =>
+      session.id === 'session-a'
+    ))
     await send({
       ...base,
       commandId: 'provider-list-after-archive',
@@ -2317,6 +2416,9 @@ describe('MatrixMlp3GatewayRunner', () => {
         type: 'session.lifecycle',
         state: 'deleted',
       })
+      await waitFor(async () => !(await archiveState.project(roomId)).sessions.some(session =>
+        session.id === sessionId
+      ))
     }
     await send({
       ...base,

@@ -196,6 +196,37 @@ describe('MatrixNodeSdkGatewayClient', () => {
         ]))
     })
 
+    it('stops a background thread cleanup between idempotent Matrix writes', async () => {
+        const controller = new AbortController()
+        const fetchMock = vi.fn(async (input: string | URL | Request) => {
+            const url = new URL(String(input))
+            const path = decodeURIComponent(url.pathname)
+            if (path.includes('/relations/')) {
+                return jsonResponse({ chunk: [{ event_id: '$reply-1' }] })
+            }
+            if (path.includes('/redact/')) {
+                controller.abort(new Error('Gateway is stopping'))
+            }
+            return jsonResponse({})
+        })
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test',
+            accessToken: 'token',
+            userId: '@gateway:example.test',
+            deviceId: 'STABLE_DEVICE',
+        }, 1_000, undefined, fetchMock as unknown as typeof fetch)
+
+        await expect(client.deleteRoomThread(
+            '!room:example.test',
+            '$root',
+            { signal: controller.signal },
+        )).rejects.toThrow('Gateway is stopping')
+
+        expect(fetchMock.mock.calls.filter(([input]) =>
+            decodeURIComponent(new URL(String(input)).pathname).includes('/redact/')
+        )).toHaveLength(1)
+    })
+
     it('reopens the same Olm identity for a persisted Matrix device', async () => {
         const directory = await temporaryDirectory()
         const fetchMock = vi.fn(async () => new Response(JSON.stringify({

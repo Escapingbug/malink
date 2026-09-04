@@ -193,13 +193,16 @@ Every active session owns its own `TopicSession`, `SemanticSessionRuntime`, and
 provider instance. Sessions may execute concurrently. Selecting a conversation
 is client-local view state and never suspends another session or mutates a
 Gateway-wide “current session”. Archive is the destructive Malink-session
-boundary: it releases runtime resources, redacts the project-room thread,
-retires any recovered-history room, and removes the persisted session record.
-It never deletes the fixed project working directory or the provider-owned
-conversation. A later continuation is a new Malink session restored through
-Provider History. During upgrade, non-active records written by the old
-tombstone model are cleanup checkpoints: startup performs the same Matrix
-cleanup and then removes those records. Existing active sessions are unchanged.
+boundary: one durable checkpoint first detaches execution and produces the
+logical deleted result, then a resumable background cleanup releases runtime
+resources, redacts the project-room thread, retires any recovered-history room,
+and removes the persisted checkpoint. Long Matrix history and provider shutdown
+therefore cannot consume the control-command deadline or reinterpret a committed
+archive as failed. It never deletes the fixed project working directory or the
+provider-owned conversation. A later continuation is a new Malink session
+restored through Provider History. Startup resumes only cleanup requests written
+by this two-phase model; non-active records from older releases remain explicit
+retry checkpoints so an upgrade cannot create unbounded Matrix traffic.
 
 Restoring a provider conversation snapshots its transcript once on the Gateway
 and provisions one application-encrypted auxiliary history room for that new

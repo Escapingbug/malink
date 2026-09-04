@@ -34,6 +34,7 @@ describe('FileMlp3RuntimeStateStore', () => {
         permissionMode: 'default',
         providerSessionId: null,
         providerHistory: null,
+        archiveCleanup: null,
         extensions: [],
         extensionRevision: 1,
         inheritedFromProjectExtensionRevision: null,
@@ -106,6 +107,7 @@ describe('FileMlp3RuntimeStateStore', () => {
       cwd: '/repo',
       extensionRevision: 1,
       inheritedFromProjectExtensionRevision: null,
+      archiveCleanup: null,
     })
   })
 })

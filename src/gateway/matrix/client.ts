@@ -103,9 +103,13 @@ export interface MatrixGatewayClient extends MatrixTransport {
         request: MatrixProviderHistoryRoomRequest,
     ): Promise<MatrixProjectRoomResult>
     /** Redacts a session root and every event related to that Matrix thread. */
-    deleteRoomThread?(roomId: string, threadRootEventId: string): Promise<void>
+    deleteRoomThread?(
+        roomId: string,
+        threadRootEventId: string,
+        options?: { signal?: AbortSignal },
+    ): Promise<void>
     /** Removes aliases and members, then leaves and forgets a data/project room. */
-    retireRoom?(roomId: string): Promise<void>
+    retireRoom?(roomId: string, options?: { signal?: AbortSignal }): Promise<void>
     pinTrustedDevices?(devices: MatrixGatewayPinnedTransportDevice[]): Promise<void>
     prepareRoomThread?(roomId: string, rootEventId: string, timeoutMs?: number): Promise<void>
     setExtendedProfileProperty?(key: string, value: unknown): Promise<void>
@@ -309,11 +313,16 @@ export class MatrixJsSdkGatewayClient implements MatrixGatewayClient {
         await this.client.invite(roomId, userId)
     }
 
-    async deleteRoomThread(roomId: string, threadRootEventId: string): Promise<void> {
+    async deleteRoomThread(
+        roomId: string,
+        threadRootEventId: string,
+        options: { signal?: AbortSignal } = {},
+    ): Promise<void> {
         const eventIds: string[] = []
         const seenTokens = new Set<string>()
         let from: string | undefined
         while (true) {
+            options.signal?.throwIfAborted()
             const page = await this.client.relations(
                 roomId,
                 threadRootEventId,
@@ -329,6 +338,7 @@ export class MatrixJsSdkGatewayClient implements MatrixGatewayClient {
                 if (isMissingMatrixEntity(error)) return { events: [], nextBatch: null }
                 throw error
             })
+            options.signal?.throwIfAborted()
             for (const event of page.events) {
                 const eventId = event.getId()
                 if (eventId) eventIds.push(eventId)
@@ -340,6 +350,7 @@ export class MatrixJsSdkGatewayClient implements MatrixGatewayClient {
             from = next
         }
         for (const eventId of [...new Set(eventIds), threadRootEventId]) {
+            options.signal?.throwIfAborted()
             await this.client.redactEvent(
                 roomId,
                 eventId,
@@ -348,22 +359,26 @@ export class MatrixJsSdkGatewayClient implements MatrixGatewayClient {
             ).catch(error => {
                 if (!isMissingMatrixEntity(error)) throw error
             })
+            options.signal?.throwIfAborted()
         }
     }
 
-    async retireRoom(roomId: string): Promise<void> {
+    async retireRoom(roomId: string, options: { signal?: AbortSignal } = {}): Promise<void> {
+        options.signal?.throwIfAborted()
         const ownUserId = this.client.getUserId()
         const room = this.client.getRoom(roomId)
         if (!room) {
             await this.client.leave(roomId).catch(error => {
                 if (!isRetiredMatrixRoom(error)) throw error
             })
+            options.signal?.throwIfAborted()
             await this.client.forget(roomId, true).catch(error => {
                 if (!isRetiredMatrixRoom(error)) throw error
             })
             return
         }
         for (const member of room?.getMembers() ?? []) {
+            options.signal?.throwIfAborted()
             if (
                 member.userId === ownUserId
                 || (member.membership !== 'join' && member.membership !== 'invite')
@@ -372,13 +387,16 @@ export class MatrixJsSdkGatewayClient implements MatrixGatewayClient {
         }
         const aliases = await this.client.getLocalAliases(roomId).catch(() => ({ aliases: [] }))
         for (const alias of aliases.aliases) {
+            options.signal?.throwIfAborted()
             await this.client.deleteAlias(alias).catch(error => {
                 if (!isMissingMatrixEntity(error)) throw error
             })
         }
+        options.signal?.throwIfAborted()
         await this.client.leave(roomId).catch(error => {
             if (!isRetiredMatrixRoom(error)) throw error
         })
+        options.signal?.throwIfAborted()
         await this.client.forget(roomId, true).catch(error => {
             if (!isRetiredMatrixRoom(error)) throw error
         })

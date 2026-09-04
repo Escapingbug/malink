@@ -142,6 +142,8 @@ interface ScheduledPromptCommand {
 
 const DEFAULT_CONTROL_COMMAND_EXECUTION_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_UPDATE_EXECUTION_TIMEOUT_MS = 2 * 60 * 60_000
+const ARCHIVED_SESSION_CLEANUP_RETRY_MIN_MS = 60_000
+const ARCHIVED_SESSION_CLEANUP_RETRY_MAX_MS = 15 * 60_000
 
 export interface MatrixMlp3GatewayDependencies {
   client?: MatrixGatewayClient
@@ -324,6 +326,13 @@ export class MatrixMlp3GatewayRunner {
   private readonly activeCommands = new Map<string, Promise<void>>()
   private readonly executionTasks = new Set<Promise<void>>()
   private readonly expiredCommandExecutions = new Set<string>()
+  private readonly archivedSessionCleanupTasks = new Map<string, Promise<void>>()
+  private readonly archivedSessionCleanupRetryAttempts = new Map<string, number>()
+  private readonly archivedSessionCleanupRetryTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >()
+  private archivedSessionCleanupAbortController: AbortController | null = null
   private readonly terminalDeliveriesInFlight = new Set<string>()
   private readonly queuedInboxEvents = new Set<string>()
   private eventChain: Promise<void> = Promise.resolve()
@@ -456,6 +465,7 @@ export class MatrixMlp3GatewayRunner {
     if (this.state === 'running') return
     if (this.state !== 'stopped') throw new Error(`Cannot start MLP/3 Gateway while ${this.state}`)
     this.state = 'starting'
+    this.archivedSessionCleanupAbortController = new AbortController()
     try {
       await this.inbox.initialize()
       await this.journal.initialize()
@@ -483,12 +493,12 @@ export class MatrixMlp3GatewayRunner {
         await this.client.assertRoomEncrypted(project.config.roomId)
         await this.content.provisionProject(project.config, this.client, false)
         if (project.deletingCommandId) continue
-        const cleanupCheckpoints = project.project.sessions.filter(
-          record => record.lifecycle !== 'active',
+        const legacyCleanupCheckpoints = project.project.sessions.filter(
+          record => record.lifecycle !== 'active' && record.archiveCleanup === null,
         ).length
-        if (cleanupCheckpoints > 0) {
+        if (legacyCleanupCheckpoints > 0) {
           this.log(
-            `[mlp3/matrix] ${cleanupCheckpoints} archived session cleanup checkpoint(s) `
+            `[mlp3/matrix] ${legacyCleanupCheckpoints} archived session cleanup checkpoint(s) `
             + 'remain available for explicit retry',
           )
         }
@@ -506,6 +516,7 @@ export class MatrixMlp3GatewayRunner {
       await this.eventChain
       this.modelCapabilityPublicationEnabled = true
       this.scheduleModelCapabilityPublication()
+      this.schedulePersistedArchivedSessionCleanup()
     } catch (error) {
       await this.cleanup()
       this.state = 'stopped'
@@ -1103,7 +1114,7 @@ export class MatrixMlp3GatewayRunner {
         await this.updateSession(project, command)
         return
       case 'session.set_lifecycle':
-        await this.setSessionLifecycle(project, command)
+        await this.setSessionLifecycle(project, command, signal)
         return
       case 'project.update':
         await this.updateProject(project, command)
@@ -1286,6 +1297,7 @@ export class MatrixMlp3GatewayRunner {
       permissionMode: 'bypassPermissions',
       providerSessionId: null,
       providerHistory: null,
+      archiveCleanup: null,
       extensions: [],
       extensionRevision: 1,
       inheritedFromProjectExtensionRevision: null,
@@ -1667,6 +1679,7 @@ export class MatrixMlp3GatewayRunner {
       permissionMode: settings.permissionMode,
       providerSessionId: command.payload.providerSessionId ?? null,
       providerHistory: null,
+      archiveCleanup: null,
       extensions: this.extensions.normalizeBindings(
         command.payload.extensions ?? project.project.defaultExtensions,
       ),
@@ -2182,6 +2195,7 @@ export class MatrixMlp3GatewayRunner {
   private async setSessionLifecycle(
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'session.set_lifecycle'>,
+    signal?: AbortSignal,
   ): Promise<void> {
     const sessionId = command.sessionId
     if (!sessionId) throw new Error('Lifecycle command is missing its session ID')
@@ -2201,42 +2215,50 @@ export class MatrixMlp3GatewayRunner {
       return
     }
     await this.assertMaintenanceSessionCanBeArchived(record.id)
+    assertCommandExecutionActive(signal)
     const active = project.sessions.get(record.id)
-    if (active) {
-      record.providerSessionId = active.session.sessionRecord.conversationId
-      await this.destroySessionRuntime(active, 'archive')
-      project.sessions.delete(record.id)
-    }
     const previousLifecycle = record.lifecycle
     const previousUpdatedAt = record.updatedAt
     const previousStateVersion = record.stateVersion
+    const previousProviderSessionId = record.providerSessionId
+    const previousArchiveCleanup = record.archiveCleanup
+    if (active) record.providerSessionId = active.session.sessionRecord.conversationId
     record.lifecycle = 'archived'
     record.updatedAt = this.now()
     record.stateVersion += 1
+    record.archiveCleanup = record.archiveCleanup
+      ? { ...record.archiveCleanup, commandId: command.commandId }
+      : {
+          commandId: command.commandId,
+          requestedAt: record.updatedAt,
+          matrixThreadDeleted: false,
+          providerHistoryDeleted: record.providerHistory === null,
+          scratchDirectoryDeleted: record.scope !== 'scratch',
+        }
     try {
+      assertCommandExecutionActive(signal)
       await this.persist(project)
     } catch (error) {
       record.lifecycle = previousLifecycle
       record.updatedAt = previousUpdatedAt
       record.stateVersion = previousStateVersion
-      if (active) project.sessions.set(record.id, this.createSessionRuntime(project, record))
+      record.providerSessionId = previousProviderSessionId
+      record.archiveCleanup = previousArchiveCleanup
       throw error
     }
-    // `archived` is an internal migration/cleanup checkpoint, not a retained
-    // product lifecycle. If the process stops after this point, startup cleanup
-    // finishes the idempotent Matrix redaction before dropping the record.
-    await this.deleteSessionStorage(project, record)
-    record.lifecycle = 'deleted'
-    record.updatedAt = this.now()
-    record.stateVersion += 1
-    project.project.sessions = project.project.sessions.filter(candidate => candidate.id !== record.id)
-    await this.persist(project)
+    // The persisted checkpoint is the authoritative execution boundary. No
+    // later prompt can reach this runtime, while provider shutdown and an
+    // O(history) Matrix redaction continue independently of the user's command
+    // deadline. The client sees logical deletion immediately and never needs
+    // to reason about physical cleanup progress.
+    project.sessions.delete(record.id)
     const lifecycle = this.eventFor(project, record, command, 'session-lifecycle', {
       type: 'session.lifecycle',
       projection: terminalProjection(record, 'idle', this.extensions),
       state: 'deleted',
     })
     await this.settleAndDeliver(project, command, lifecycle, 'succeeded')
+    this.scheduleArchivedSessionCleanup(project, record, active)
   }
 
   private async assertMaintenanceSessionCanBeArchived(sessionId: string): Promise<void> {
@@ -3061,6 +3083,37 @@ export class MatrixMlp3GatewayRunner {
       if (record.status === 'accepted') {
         this.scheduleExecution(project, record)
       } else {
+        const archived = record.command.operation === 'session.set_lifecycle'
+          && record.command.payload.state !== 'active'
+          && record.command.sessionId
+          ? project.project.sessions.find(session =>
+              session.id === record.command.sessionId
+              && session.lifecycle === 'archived'
+              && session.archiveCleanup?.commandId === record.command.commandId,
+            )
+          : undefined
+        if (archived) {
+          const recovered = this.eventFor(
+            project,
+            archived,
+            record.command,
+            'session-lifecycle',
+            {
+              type: 'session.lifecycle',
+              projection: terminalProjection(archived, 'idle', this.extensions),
+              state: 'deleted',
+            },
+          )
+          await this.settleAndDeliver(
+            project,
+            record.command,
+            recovered,
+            'succeeded',
+          ).catch(error => {
+            this.log(`[mlp3/matrix] archived command recovery failed: ${formatError(error)}`)
+          })
+          continue
+        }
         const interrupted = this.eventFor(
           project,
           record.command.sessionId
@@ -3552,14 +3605,13 @@ export class MatrixMlp3GatewayRunner {
             extensionBindings: record.extensions,
           }
         : {
-            // An interrupted archive can persist its cleanup checkpoint before
-            // the final Matrix deletion event is published. Re-advertise that
-            // authoritative non-active lifecycle on startup so clients never
-            // retain an older working projection while explicit cleanup stays
-            // off the Gateway health path.
+            // A durable user-requested cleanup checkpoint is already logically
+            // deleted even while physical redaction resumes in the background.
+            // Legacy tombstones have no cleanup request and remain visible for
+            // an explicit retry without generating upgrade-time Matrix work.
             type: 'session.lifecycle',
             projection: terminalProjection(record, 'idle', this.extensions),
-            state: record.lifecycle,
+            state: record.archiveCleanup === null ? record.lifecycle : 'deleted',
           }
       const event: Mlp3Event = {
         kind: 'malink.event',
@@ -3793,29 +3845,124 @@ export class MatrixMlp3GatewayRunner {
     }
   }
 
-  private async deleteSessionStorage(
+  private schedulePersistedArchivedSessionCleanup(): void {
+    for (const project of this.projects.values()) {
+      for (const record of project.project.sessions) {
+        if (record.lifecycle !== 'archived' || record.archiveCleanup === null) continue
+        this.scheduleArchivedSessionCleanup(project, record)
+      }
+    }
+  }
+
+  private scheduleArchivedSessionCleanup(
     project: V3ProjectRuntime,
     record: PersistedMlp3Session,
+    detachedRuntime?: Mlp3SessionRuntime,
+  ): void {
+    if (
+      this.state !== 'running'
+      || record.lifecycle !== 'archived'
+      || record.archiveCleanup === null
+    ) return
+    const key = `${project.config.roomId}\0${record.id}`
+    if (this.archivedSessionCleanupTasks.has(key)) return
+    const controller = this.archivedSessionCleanupAbortController
+    if (!controller || controller.signal.aborted) return
+    const signal = controller.signal
+    let task!: Promise<void>
+    task = (async () => {
+      if (detachedRuntime) {
+        await this.destroySessionRuntime(detachedRuntime, 'archive').catch(error => {
+          this.log(
+            `[mlp3/matrix] archived session runtime shutdown deferred for ${record.id}: `
+            + formatError(error),
+          )
+        })
+      }
+      assertCommandExecutionActive(signal)
+      await this.cleanupArchivedSessionStorage(project, record, signal)
+      assertCommandExecutionActive(signal)
+      record.lifecycle = 'deleted'
+      record.updatedAt = this.now()
+      record.stateVersion += 1
+      project.project.sessions = project.project.sessions.filter(candidate => candidate !== record)
+      await this.persist(project)
+      this.archivedSessionCleanupRetryAttempts.delete(key)
+      this.log(`[mlp3/matrix] archived session cleanup completed for ${record.id}`)
+    })().catch(error => {
+      if (signal.aborted || this.state !== 'running') return
+      const attempt = (this.archivedSessionCleanupRetryAttempts.get(key) ?? 0) + 1
+      this.archivedSessionCleanupRetryAttempts.set(key, attempt)
+      const delayMs = archivedSessionCleanupRetryDelayMs(attempt)
+      this.log(
+        `[mlp3/matrix] archived session cleanup deferred for ${record.id}; `
+        + `retrying in ${delayMs}ms: ${formatError(error)}`,
+      )
+      const timer = setTimeout(() => {
+        if (this.archivedSessionCleanupRetryTimers.get(key) !== timer) return
+        this.archivedSessionCleanupRetryTimers.delete(key)
+        this.scheduleArchivedSessionCleanup(project, record)
+      }, delayMs)
+      this.archivedSessionCleanupRetryTimers.set(key, timer)
+    }).finally(() => {
+      if (this.archivedSessionCleanupTasks.get(key) === task) {
+        this.archivedSessionCleanupTasks.delete(key)
+      }
+    })
+    this.archivedSessionCleanupTasks.set(key, task)
+  }
+
+  private async cleanupArchivedSessionStorage(
+    project: V3ProjectRuntime,
+    record: PersistedMlp3Session,
+    signal: AbortSignal,
   ): Promise<void> {
     if (!this.client.deleteRoomThread || !this.client.retireRoom) {
       throw new Error('Matrix transport cannot delete archived session data')
     }
-    await this.client.deleteRoomThread(project.config.roomId, record.threadRootEventId)
-    await this.deleteProviderHistoryStorage(record)
-    if (record.scope === 'scratch') await this.removeScratchSessionDirectory(record)
+    const cleanup = record.archiveCleanup
+    if (!cleanup) throw new Error(`Session ${record.id} has no archive cleanup request`)
+    if (!cleanup.matrixThreadDeleted) {
+      await this.client.deleteRoomThread(
+        project.config.roomId,
+        record.threadRootEventId,
+        { signal },
+      )
+      assertCommandExecutionActive(signal)
+      cleanup.matrixThreadDeleted = true
+      await this.persist(project)
+    }
+    if (!cleanup.providerHistoryDeleted) {
+      await this.deleteProviderHistoryStorage(record, signal)
+      assertCommandExecutionActive(signal)
+      record.providerHistory = null
+      cleanup.providerHistoryDeleted = true
+      await this.persist(project)
+    }
+    if (!cleanup.scratchDirectoryDeleted) {
+      await this.removeScratchSessionDirectory(record)
+      assertCommandExecutionActive(signal)
+      cleanup.scratchDirectoryDeleted = true
+      await this.persist(project)
+    }
   }
 
-  private async deleteProviderHistoryStorage(record: PersistedMlp3Session): Promise<void> {
+  private async deleteProviderHistoryStorage(
+    record: PersistedMlp3Session,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (!record.providerHistory) return
-    await this.retireProviderHistoryRoom(record.providerHistory.roomId)
+    await this.retireProviderHistoryRoom(record.providerHistory.roomId, signal)
+    signal?.throwIfAborted()
     await this.providerHistorySnapshots.delete(record.id)
   }
 
-  private async retireProviderHistoryRoom(roomId: string): Promise<void> {
+  private async retireProviderHistoryRoom(roomId: string, signal?: AbortSignal): Promise<void> {
     if (!this.client.retireRoom) {
       throw new Error('Matrix transport cannot retire Provider History rooms')
     }
-    await this.client.retireRoom(roomId)
+    await this.client.retireRoom(roomId, { signal })
+    signal?.throwIfAborted()
     await this.content.forgetRoom(roomId)
     await this.dependencies.onProviderHistoryRoomDeleted?.(roomId)
   }
@@ -3890,6 +4037,12 @@ export class MatrixMlp3GatewayRunner {
   private async cleanup(): Promise<void> {
     this.modelCapabilityPublicationEnabled = false
     this.modelCapabilityPublicationPending = false
+    this.archivedSessionCleanupAbortController?.abort(new Error('Gateway is stopping'))
+    this.archivedSessionCleanupAbortController = null
+    for (const timer of this.archivedSessionCleanupRetryTimers.values()) clearTimeout(timer)
+    this.archivedSessionCleanupRetryTimers.clear()
+    this.archivedSessionCleanupRetryAttempts.clear()
+    this.archivedSessionCleanupTasks.clear()
     for (const unsubscribeModelCatalog of this.modelCatalogUnsubscribers.splice(0)) {
       try {
         unsubscribeModelCatalog()
@@ -4386,6 +4539,13 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function archivedSessionCleanupRetryDelayMs(attempt: number): number {
+  return Math.min(
+    ARCHIVED_SESSION_CLEANUP_RETRY_MAX_MS,
+    ARCHIVED_SESSION_CLEANUP_RETRY_MIN_MS * (2 ** Math.min(4, Math.max(0, attempt - 1))),
+  )
 }
 
 class GatewayCommandExecutionTimeoutError extends Error {

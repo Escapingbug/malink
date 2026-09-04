@@ -20,6 +20,14 @@ export interface PersistedProviderHistoryRoom {
   totalMessages: number
 }
 
+export interface PersistedMlp3SessionArchiveCleanup {
+  commandId: string
+  requestedAt: number
+  matrixThreadDeleted: boolean
+  providerHistoryDeleted: boolean
+  scratchDirectoryDeleted: boolean
+}
+
 export interface PersistedMlp3Session {
   id: string
   scope: Mlp3SessionScope
@@ -37,6 +45,7 @@ export interface PersistedMlp3Session {
   permissionMode: string
   providerSessionId: string | null
   providerHistory: PersistedProviderHistoryRoom | null
+  archiveCleanup: PersistedMlp3SessionArchiveCleanup | null
   extensions: SessionExtensionBinding[]
   extensionRevision: number
   inheritedFromProjectExtensionRevision: number | null
@@ -135,6 +144,14 @@ export class FileMlp3RuntimeStateStore {
               }
               if (session.providerHistory === undefined) {
                 session.providerHistory = null
+                changed = true
+              }
+              if (session.archiveCleanup === undefined) {
+                // Archived records written before durable background cleanup
+                // remain explicit-retry tombstones. They must not begin an
+                // O(history) Matrix migration merely because the Gateway was
+                // upgraded or restarted.
+                session.archiveCleanup = null
                 changed = true
               }
             }
@@ -306,6 +323,8 @@ function validateProject(project: PersistedMlp3Project, roomId: string): void {
       || session.extensionRevision < 1
       || !Array.isArray(session.availableCommands)
       || !validProviderHistoryRoom(session.providerHistory)
+      || !validArchiveCleanup(session.archiveCleanup)
+      || (session.archiveCleanup !== null && session.lifecycle !== 'archived')
       || (
         session.inheritedFromProjectExtensionRevision !== null
         && (
@@ -318,6 +337,18 @@ function validateProject(project: PersistedMlp3Project, roomId: string): void {
     }
     ids.add(session.id)
   }
+}
+
+function validArchiveCleanup(value: PersistedMlp3SessionArchiveCleanup | null): boolean {
+  return value === null || (
+    typeof value.commandId === 'string'
+    && value.commandId.length > 0
+    && Number.isSafeInteger(value.requestedAt)
+    && value.requestedAt >= 0
+    && typeof value.matrixThreadDeleted === 'boolean'
+    && typeof value.providerHistoryDeleted === 'boolean'
+    && typeof value.scratchDirectoryDeleted === 'boolean'
+  )
 }
 
 function validProviderHistoryRoom(value: PersistedProviderHistoryRoom | null): boolean {

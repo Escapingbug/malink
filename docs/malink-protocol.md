@@ -258,18 +258,24 @@ heartbeat, or per-provider startup event is added.
 
 Malink has one session-removal action: archive. The command name and accepted
 legacy lifecycle values remain wire-compatible, but successful archive emits
-`session.lifecycle(state=deleted)`, redacts the Matrix thread, retires the
-session's auxiliary history room, removes local snapshot/scratch data, and
-deletes the persisted Malink session record. It never invokes provider-level
-delete or removes the project working directory. If the provider still lists
-the conversation, users continue it from Provider History under a new Malink
-session identity. Before destructive Matrix cleanup begins, the Gateway
-durably records an internal `archived` cleanup checkpoint. That checkpoint
-survives a restart and remains available for an explicit archive retry; startup
-must not turn it into an O(history) Matrix-redaction migration. Tombstones
-produced by older versions therefore cannot delay Gateway availability or
-generate unsolicited Matrix traffic, while existing active sessions remain
-untouched.
+`session.lifecycle(state=deleted)` after durably recording an internal
+`archived` cleanup checkpoint and detaching the executable runtime. That
+constant-time logical boundary owns the command result; it never waits for
+provider shutdown or O(history) Matrix work. A resumable background task then
+redacts the Matrix thread, retires the session's auxiliary history room,
+removes local snapshot/scratch data, and finally drops the checkpoint. Progress
+is persisted after each destructive stage, and Gateway shutdown aborts Matrix
+cleanup between idempotent requests. A restart resumes only checkpoints that
+carry a prior authenticated user cleanup request, without delaying Gateway
+availability or making the deleted session reappear. Tombstones produced by
+older releases remain available for an explicit archive retry and do not begin
+unsolicited Matrix migrations merely because software was upgraded. Archive
+never invokes provider-level delete or removes the project working directory;
+provider-owned conversations remain continuable from Provider History under a
+new Malink session identity. The checkpoint binds the authenticated archive
+command ID, so a crash between its state commit and command-journal settlement
+recovers that same command as succeeded instead of reporting an ambiguous
+failure or executing it twice.
 Pre-release `delete` requests are normalized to archive and `restore` is
 rejected for compatibility.
 
