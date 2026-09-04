@@ -31,6 +31,10 @@ import type {
 } from "./matrixMlp3Projection";
 import { MatrixMlp3Readiness } from "./matrixMlp3Readiness";
 import {
+  CoalescingAsyncRunner,
+  MatrixMlp3ThreadDirectoryRecovery,
+} from "./matrixMlp3Recovery";
+import {
   acquireMatrixCryptoLock,
   flushAndReleaseMatrixSyncStore,
   flushMatrixSyncStore,
@@ -81,6 +85,10 @@ import {
   MATRIX_CRYPTO_LOADING_DETAIL,
 } from "./matrixStartup";
 import { parseOwnPrivateThreadReceipts } from "./matrixSessionReadReceipts";
+import {
+  MatrixSessionReadReceiptOutbox,
+  type PendingMatrixSessionReadReceipt,
+} from "./matrixSessionReadOutbox";
 
 const LOCAL_TIMEOUT_MS = 10_000;
 const MATRIX_HISTORY_REQUEST_TIMEOUT_MS = 30_000;
@@ -121,6 +129,10 @@ export async function connectMatrixMlp3(
   const config = normalizeMatrixConfig(configInput);
   handlers.onStatus("connecting", "Opening the durable MLP/3 client…");
   const identity = await getOrCreateDeviceIdentity();
+  const sessionReadReceiptOutbox = new MatrixSessionReadReceiptOutbox(
+    window.localStorage,
+    [config.homeserver, config.userId, config.gatewayId, identity.keyId].join("\u0000"),
+  );
   let trust = await loadTrustedGateway(identity, config.gatewayId || undefined);
   const sdk = await import("matrix-js-sdk");
   const syncDatabase = await matrixSyncDatabaseName(config);
@@ -140,7 +152,7 @@ export async function connectMatrixMlp3(
   let room: Room | null = null;
   let protocol: MatrixMlp3ProtocolClient | null = null;
   let projectId: string | null = null;
-  let savedMatrixSyncToken: string | null = null;
+  let startupSavedMatrixSyncToken: string | null = null;
   let matrixSyncCatchingUp = false;
   let matrixSyncCatchupGeneration = 0;
   const secondaryProtocols = new Map<string, {
@@ -159,6 +171,7 @@ export async function connectMatrixMlp3(
   const activeSecondaryRecoveryCounts = new Map<string, number>();
   let matrixDeviceKeys: { ed25519: string; curve25519: string } | null = null;
   const readiness = new MatrixMlp3Readiness(Boolean(trust));
+  const threadDirectoryRecovery = new MatrixMlp3ThreadDirectoryRecovery();
   let authoritativeProjectionPrepared = false;
   let cachedProjectionPublished = false;
   let reconcileWorkspaceRoutes: (force?: boolean) => void = () => undefined;
@@ -171,6 +184,8 @@ export async function connectMatrixMlp3(
   const deliveredHistory = new Map<string, Set<string>>();
   const ownPrivateThreadReceipts = new Map<string, string>();
   const emittedSessionReads = new Map<string, number>();
+  let sessionReadReceiptRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let sessionReadReceiptDeliveryFailures = 0;
   const historyTokens = new Map<string, string | null>();
   const historyInitialized = new Set<string>();
   let readySettled = false;
@@ -280,6 +295,75 @@ export async function connectMatrixMlp3(
         });
       }
     }
+  };
+
+  const sendPrivateThreadReceipt = async (
+    receipt: PendingMatrixSessionReadReceipt,
+  ): Promise<void> => {
+    const path = [
+      "/rooms/",
+      encodeURIComponent(receipt.roomId),
+      "/receipt/",
+      encodeURIComponent("m.read.private"),
+      "/",
+      encodeURIComponent(receipt.eventId),
+    ].join("");
+    await client.http.authedRequest(
+      "POST" as Parameters<MatrixClient["http"]["authedRequest"]>[0],
+      path,
+      undefined,
+      { thread_id: receipt.threadRootEventId },
+    );
+    sessionReadReceiptOutbox.acknowledge(receipt);
+    rememberOwnPrivateThreadReceipt(
+      receipt.roomId,
+      receipt.threadRootEventId,
+      receipt.eventId,
+    );
+  };
+
+  const sessionReadReceiptDelivery = new CoalescingAsyncRunner(async () => {
+    const activeRoomIds = new Set(
+      activeWorkspaceProtocols()
+        .map(roomForProtocol)
+        .filter((roomId): roomId is string => Boolean(roomId)),
+    );
+    let firstFailure: unknown;
+    for (const receipt of sessionReadReceiptOutbox.pending()) {
+      if (!activeRoomIds.has(receipt.roomId)) continue;
+      try {
+        await sendPrivateThreadReceipt(receipt);
+      } catch (error) {
+        firstFailure ??= error;
+      }
+    }
+    reconcileSessionReadReceipts();
+    if (firstFailure) throw firstFailure;
+  });
+
+  const scheduleSessionReadReceiptDelivery = (delayMs = 0): void => {
+    if (stopped) return;
+    if (sessionReadReceiptRetryTimer !== null) {
+      if (delayMs > 0) return;
+      // A successful Matrix reconnect or newly opened Workspace route should
+      // not remain stuck behind an old offline backoff timer.
+      clearTimeout(sessionReadReceiptRetryTimer);
+      sessionReadReceiptRetryTimer = null;
+    }
+    sessionReadReceiptRetryTimer = setTimeout(() => {
+      sessionReadReceiptRetryTimer = null;
+      if (stopped) return;
+      void sessionReadReceiptDelivery.run().then(() => {
+        sessionReadReceiptDeliveryFailures = 0;
+      }).catch(error => {
+        console.warn("[mlp3/matrix] a private session read receipt will be retried", error);
+        const retryDelay = matrixSessionReadReceiptRetryDelayMs(
+          sessionReadReceiptDeliveryFailures,
+        );
+        sessionReadReceiptDeliveryFailures += 1;
+        scheduleSessionReadReceiptDelivery(retryDelay);
+      });
+    }, delayMs);
   };
 
   const publishProjection = (
@@ -534,14 +618,17 @@ export async function connectMatrixMlp3(
       secondaryProtocols.set(route.projectId, context);
       routeRoom.on(sdk.RoomStateEvent.Events, onRoomState);
       await recoverSecondaryProject(route.projectId, "hydrate");
-      if (await routeProtocol.requiresThreadDirectoryRecovery(savedMatrixSyncToken)) {
-        await replayThreadDirectory(
-          route.roomId,
-          event => ingestSecondaryEvent(context, event),
-          routeProtocol,
-        );
-      }
+      await threadDirectoryRecovery.ensure(routeProtocol, async () => {
+        if (await routeProtocol.requiresThreadDirectoryRecovery(startupSavedMatrixSyncToken)) {
+          await replayThreadDirectory(
+            route.roomId,
+            event => ingestSecondaryEvent(context, event),
+            routeProtocol,
+          );
+        }
+      });
       await checkpointMatrixSync([routeProtocol]);
+      scheduleSessionReadReceiptDelivery();
     } finally {
       pendingSecondaryProjects.delete(route.projectId);
     }
@@ -1121,6 +1208,7 @@ export async function connectMatrixMlp3(
       if (readiness.canPublishAuthoritativeProjection) {
         void protocol?.retryPending();
         void checkpointMatrixSync(activeWorkspaceProtocols(), persisted);
+        scheduleSessionReadReceiptDelivery();
       }
       if (matrixSyncCatchingUp) {
         const generation = matrixSyncCatchupGeneration;
@@ -1155,11 +1243,14 @@ export async function connectMatrixMlp3(
 
   const replayKnownTimeline = async (): Promise<void> => {
     const currentRoom = room;
-    if (!currentRoom || !protocol) return;
+    const active = protocol;
+    if (!currentRoom || !active) return;
     for (const event of currentRoom.getLiveTimeline().getEvents()) enqueue(event);
-    if (await protocol.requiresThreadDirectoryRecovery(savedMatrixSyncToken)) {
-      await replayThreadDirectory(config.roomId, ingestEvent, protocol);
-    }
+    await threadDirectoryRecovery.ensure(active, async () => {
+      if (await active.requiresThreadDirectoryRecovery(startupSavedMatrixSyncToken)) {
+        await replayThreadDirectory(config.roomId, ingestEvent, active);
+      }
+    });
     await inboundChain;
   };
 
@@ -1263,38 +1354,45 @@ export async function connectMatrixMlp3(
     return operation;
   };
 
-  const recoverAuthoritativeState = async (
+  let pendingRecoveryDeliveryMode: ProjectionDeliveryMode = "live";
+  const authoritativeRecovery = new CoalescingAsyncRunner(async () => {
+    const deliveryMode = pendingRecoveryDeliveryMode;
+    pendingRecoveryDeliveryMode = "live";
+    if (readiness.beginBlockingRecovery()) {
+      handlers.onStatus("connecting", "matrix_gateway_state_syncing");
+    }
+    if (!authoritativeProjectionPrepared) {
+      const active = protocol;
+      if (!active) throw new Error("The MLP/3 project is not initialized.");
+      await active.prepareAuthoritativeRecovery();
+      authoritativeProjectionPrepared = true;
+    }
+    const [workspaceRecovered, projectRecovered] = await Promise.all([
+      recoverCurrentWorkspaceSnapshot(),
+      recoverCurrentProjectSnapshot(),
+    ]);
+    if (!workspaceRecovered || !projectRecovered) {
+      const missing = [
+        !workspaceRecovered ? "workspace" : null,
+        !projectRecovered ? "project" : null,
+      ].filter((value): value is string => value !== null).join(" and ");
+      throw new Error(`The Gateway has not published the current ${missing} snapshot pointer.`);
+    }
+    await replayKnownTimeline();
+    await protocol?.retryPending();
+    await checkpointMatrixSync(activeWorkspaceProtocols());
+    readiness.completeRecovery();
+    publishProjection(deliveryMode);
+    handlers.onStatus("connected");
+  });
+
+  const recoverAuthoritativeState = (
     deliveryMode: ProjectionDeliveryMode = "live",
   ): Promise<void> => {
-    const operation = recoveryChain.catch(() => undefined).then(async () => {
-      readiness.beginRecovery();
-      handlers.onStatus("connecting", "matrix_gateway_state_syncing");
-      if (!authoritativeProjectionPrepared) {
-        const active = protocol;
-        if (!active) throw new Error("The MLP/3 project is not initialized.");
-        await active.prepareAuthoritativeRecovery();
-        authoritativeProjectionPrepared = true;
-      }
-      const [workspaceRecovered, projectRecovered] = await Promise.all([
-        recoverCurrentWorkspaceSnapshot(),
-        recoverCurrentProjectSnapshot(),
-      ]);
-      if (!workspaceRecovered || !projectRecovered) {
-        const missing = [
-          !workspaceRecovered ? "workspace" : null,
-          !projectRecovered ? "project" : null,
-        ].filter((value): value is string => value !== null).join(" and ");
-        throw new Error(`The Gateway has not published the current ${missing} snapshot pointer.`);
-      }
-      await replayKnownTimeline();
-      await protocol?.retryPending();
-      await checkpointMatrixSync(activeWorkspaceProtocols());
-      readiness.completeRecovery();
-      publishProjection(deliveryMode);
-      handlers.onStatus("connected");
-    });
+    if (deliveryMode === "hydrate") pendingRecoveryDeliveryMode = "hydrate";
+    const operation = authoritativeRecovery.run();
     recoveryChain = operation;
-    await operation;
+    return operation;
   };
 
   const reportRecoveryFailure = (context: string, error: unknown): void => {
@@ -1311,7 +1409,7 @@ export async function connectMatrixMlp3(
 
   const transportReady = (async () => {
     await withMatrixTimeout(syncStore.startup(), LOCAL_TIMEOUT_MS, "The Matrix sync store did not open in time.");
-    savedMatrixSyncToken = await syncStore.getSavedSyncToken();
+    startupSavedMatrixSyncToken = await syncStore.getSavedSyncToken();
     handlers.onStatus("connecting", MATRIX_CRYPTO_LOADING_DETAIL);
     await withMatrixTimeout(
       client.initRustCrypto({ useIndexedDB: true, cryptoDatabasePrefix: cryptoScope }),
@@ -1351,6 +1449,7 @@ export async function connectMatrixMlp3(
     await recoverAuthoritativeState("hydrate");
     await recoverWorkspaceDirectoryState();
     completeReady();
+    scheduleSessionReadReceiptDelivery();
     reconcileWorkspaceRoutes(true);
   });
   void initialRecovery.catch(error => {
@@ -1419,6 +1518,7 @@ export async function connectMatrixMlp3(
       await recoverAuthoritativeState("hydrate");
       await recoverWorkspaceDirectoryState();
       completeReady();
+      scheduleSessionReadReceiptDelivery();
       reconcileWorkspaceRoutes(true);
     } catch (error) {
       reportRecoveryFailure("The paired Gateway state could not be recovered", error);
@@ -1778,29 +1878,34 @@ export async function connectMatrixMlp3(
       await ready;
       const context = protocolForSession(sessionId, targetProjectId);
       const session = context?.protocol.projection.sessions.get(sessionId);
-      if (!context || !session?.threadRootEventId || !session.readReceiptEventId) {
+      if (
+        !context
+        || !session?.threadRootEventId
+        || !session.readReceiptEventId
+        || session.readReceiptThreadRootEventId !== session.threadRootEventId
+      ) {
         throw new Error("The session does not yet have a verified Matrix receipt target.");
       }
-      const path = [
-        "/rooms/",
-        encodeURIComponent(context.roomId),
-        "/receipt/",
-        encodeURIComponent("m.read.private"),
-        "/",
-        encodeURIComponent(session.readReceiptEventId),
-      ].join("");
-      await client.http.authedRequest(
-        "POST" as Parameters<MatrixClient["http"]["authedRequest"]>[0],
-        path,
-        undefined,
-        { thread_id: session.threadRootEventId },
-      );
-      rememberOwnPrivateThreadReceipt(
-        context.roomId,
-        session.threadRootEventId,
-        session.readReceiptEventId,
-      );
-      reconcileSessionReadReceipts([context.protocol]);
+      sessionReadReceiptOutbox.enqueue({
+        roomId: context.roomId,
+        projectId: targetProjectId ?? session.projectId,
+        sessionId,
+        threadRootEventId: session.threadRootEventId,
+        eventId: session.readReceiptEventId,
+        stateVersion: session.stateVersion,
+        readUpdatedAt: session.updatedAt,
+      });
+      try {
+        await sessionReadReceiptDelivery.run();
+        sessionReadReceiptDeliveryFailures = 0;
+      } catch (error) {
+        const retryDelay = matrixSessionReadReceiptRetryDelayMs(
+          sessionReadReceiptDeliveryFailures,
+        );
+        sessionReadReceiptDeliveryFailures += 1;
+        scheduleSessionReadReceiptDelivery(retryDelay);
+        throw error;
+      }
     },
     loadLocalHistory,
     loadHistoryPage: loadHistory,
@@ -1823,6 +1928,10 @@ export async function connectMatrixMlp3(
         clearTimeout(workspaceRouteRecoveryTimer);
         workspaceRouteRecoveryTimer = null;
       }
+      if (sessionReadReceiptRetryTimer !== null) {
+        clearTimeout(sessionReadReceiptRetryTimer);
+        sessionReadReceiptRetryTimer = null;
+      }
       workspaceRouteReconciliationRequested = false;
       client.off(sdk.ClientEvent.Event, onMatrixEvent);
       client.off(sdk.RoomEvent.Receipt, onReceipt);
@@ -1841,6 +1950,13 @@ export async function connectMatrixMlp3(
 export function workspaceRouteRecoveryDelayMs(completedFailures: number): number {
   if (!Number.isInteger(completedFailures) || completedFailures < 0) {
     throw new TypeError("Workspace route recovery failure count must be a non-negative integer.");
+  }
+  return [1_000, 2_000, 5_000, 10_000, 30_000][completedFailures] ?? 60_000;
+}
+
+export function matrixSessionReadReceiptRetryDelayMs(completedFailures: number): number {
+  if (!Number.isInteger(completedFailures) || completedFailures < 0) {
+    throw new TypeError("Session read receipt failure count must be a non-negative integer.");
   }
   return [1_000, 2_000, 5_000, 10_000, 30_000][completedFailures] ?? 60_000;
 }

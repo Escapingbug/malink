@@ -187,6 +187,34 @@ describe("MatrixMlp3ProtocolClient", () => {
     });
     expect(quarantined).toEqual(["$bad", "$forged-local-command"]);
 
+    const historicalCommand = {
+      ...forgedCommand,
+      commandId: "historical-local-command",
+      certificateId: "certificate-before-repair",
+    };
+    const historicalSigned = await signMlp3Command(
+      historicalCommand,
+      device.privateKey,
+      device.keyId,
+    );
+    const historicalEnvelope = await sealMlp3Envelope({
+      plaintext: { kind: "signed_command", value: historicalSigned },
+      projectKey,
+      roomId: config.roomId,
+      projectId: config.projectId,
+      keyId,
+      logicalEventId: historicalCommand.commandId,
+    });
+    await client.ingest({
+      roomId: config.roomId,
+      eventId: "$historical-local-command",
+      sender: "@device:example.org",
+      timestamp: 2,
+      content: { [MALINK_MATRIX_EXTENSION]: { version: 3, envelope: historicalEnvelope } },
+    });
+    expect(quarantined).toEqual(["$bad", "$forged-local-command"]);
+    expect(store.inbox.has("$historical-local-command")).toBe(false);
+
     const command = store.outbox.get(sent.commandId)!.command;
     const terminal: Mlp3Event = {
       kind: "malink.event",

@@ -9,6 +9,7 @@ import {
   type WebPushSubscription as Mlp3WebPushSubscription,
 } from "@malink/protocol";
 import {
+  SecurityError,
   base64UrlDecode,
   openMlp3Envelope,
   openMlp3ProjectKeyGrant,
@@ -497,18 +498,36 @@ export class MatrixMlp3ProtocolClient {
       // Only our own command can be verified with the local public key. Remote
       // user text is projected from the Gateway-signed canonical event.
       if (candidate.deviceId === this.identity.keyId) {
-        const command = await verifyMlp3Command(
-          opened.plaintext.value,
-          this.identity.publicKey,
-          {
-            workspaceId: this.config.workspaceId,
-            projectId: this.config.projectId,
-            deviceId: this.identity.keyId,
-            certificateId: this.trust.certificate.certificate.certificateId,
-          },
-        );
-        if (opened.envelope.logicalEventId !== command.commandId) {
+        if (opened.envelope.logicalEventId !== candidate.commandId) {
           throw new Error("The MLP/3 command envelope logical ID is invalid.");
+        }
+        const certificateId = this.trust.certificate.certificate.certificateId;
+        let command: Mlp3Command;
+        try {
+          command = await verifyMlp3Command(
+            opened.plaintext.value,
+            this.identity.publicKey,
+            {
+              workspaceId: this.config.workspaceId,
+              projectId: this.config.projectId,
+              deviceId: this.identity.keyId,
+              certificateId,
+            },
+          );
+        } catch (error) {
+          if (
+            error instanceof SecurityError
+            && error.code === "binding_mismatch"
+            && candidate.workspaceId === this.config.workspaceId
+            && candidate.projectId === this.config.projectId
+            && candidate.certificateId !== certificateId
+          ) {
+            // Re-pairing keeps the application identity but rotates its
+            // certificate. A correctly signed command from that older grant is
+            // historical input, not a corrupt current-context event.
+            return;
+          }
+          throw error;
         }
         const changed = this.projection.applyCommand(command, raw.eventId, raw.timestamp);
         if (changed && persistAndPublish) {

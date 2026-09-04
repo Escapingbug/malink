@@ -47,6 +47,18 @@ test("later successful Matrix sync cannot hide authoritative recovery failure", 
   });
 });
 
+test("a routine pointer refresh does not downgrade a ready client to connecting", () => {
+  const readiness = new MatrixMlp3Readiness(true);
+  assert.equal(readiness.beginBlockingRecovery(), true);
+  readiness.completeRecovery();
+
+  assert.equal(readiness.beginBlockingRecovery(), false);
+  assert.equal(readiness.phase, "ready");
+  assert.deepEqual(readiness.statusForMatrixSync("SYNCING"), {
+    status: "connected",
+  });
+});
+
 test("an unpaired client may report transport readiness for the pairing flow", () => {
   const readiness = new MatrixMlp3Readiness(false);
 

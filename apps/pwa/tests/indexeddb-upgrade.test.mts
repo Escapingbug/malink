@@ -146,7 +146,7 @@ test("a registered projection migration preserves the read model", async () => {
 });
 
 test("the MLP/3 repair migration preserves sessions while reopening bounded event replay", () => {
-  assert.equal(MATRIX_MLP3_READ_MODEL_SCHEMA_VERSION, 5);
+  assert.equal(MATRIX_MLP3_READ_MODEL_SCHEMA_VERSION, 6);
   const state = {
     version: 9,
     sessions: [
