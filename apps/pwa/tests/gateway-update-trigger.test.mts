@@ -3,6 +3,7 @@ import test from "node:test";
 import type { SignedWorkspaceGatewayDirectory } from "@malink/protocol";
 import {
   collidingGatewayMaintenanceSessionIds,
+  gatewayMaintenanceAutoArchiveAttemptKey,
   gatewayMaintenanceSessionCanBeArchived,
   gatewayMaintenanceSessionShouldAutoArchive,
   type GatewayUpdateCommand,
@@ -423,16 +424,67 @@ test("archives terminal or deterministic failures but preserves useful retry che
   assert.equal(gatewayMaintenanceSessionCanBeArchived(status("rolled_back")), true);
 });
 
-test("automatically archives inactive terminal maintenance sessions", () => {
-  const status = (phase: "idle" | "committed" | "rolled_back" | "failed") => ({
+test("automatically archives only the exact terminal transaction maintenance session", () => {
+  const terminalStatus = (phase: "idle" | "committed" | "rolled_back" | "failed") => ({
     version: 1 as const,
     phase,
+    updateId: "update-1",
+    releaseId: "release-1",
+    maintenanceSessionId: "gateway-update-node-1-release-1",
     updatedAt: 10,
   });
-  assert.equal(gatewayMaintenanceSessionShouldAutoArchive(status("idle")), true);
-  assert.equal(gatewayMaintenanceSessionShouldAutoArchive(status("committed")), true);
-  assert.equal(gatewayMaintenanceSessionShouldAutoArchive(status("rolled_back")), true);
-  assert.equal(gatewayMaintenanceSessionShouldAutoArchive(status("failed")), false);
+  const shouldArchive = (phase: "idle" | "committed" | "rolled_back" | "failed") =>
+    gatewayMaintenanceSessionShouldAutoArchive({
+      status: terminalStatus(phase),
+      maintenanceSessionId: "gateway-update-node-1-release-1",
+    });
+  assert.equal(shouldArchive("idle"), false);
+  assert.equal(shouldArchive("committed"), true);
+  assert.equal(shouldArchive("rolled_back"), true);
+  assert.equal(shouldArchive("failed"), false);
+  assert.equal(gatewayMaintenanceSessionShouldAutoArchive({
+    status: terminalStatus("committed"),
+    maintenanceSessionId: "gateway-update-node-2-release-1",
+  }), false);
+  assert.equal(gatewayMaintenanceSessionShouldAutoArchive({
+    status: {
+      ...terminalStatus("committed"),
+      maintenanceSessionId: undefined,
+    },
+    maintenanceSessionId: "gateway-update-node-1-release-1",
+  }), false);
+});
+
+test("uses one stable automatic archive attempt per signed status snapshot", () => {
+  const committed = {
+    version: 1 as const,
+    phase: "committed" as const,
+    updateId: "update-1",
+    releaseId: "release-1",
+    maintenanceSessionId: "gateway-update-node-1-release-1",
+    updatedAt: 10,
+  };
+  const input = {
+    gatewayNodeId: "node-1",
+    projectId: "project-1",
+    maintenanceSessionId: committed.maintenanceSessionId,
+    status: committed,
+  };
+  const key = gatewayMaintenanceAutoArchiveAttemptKey(input);
+  assert.ok(key);
+  assert.equal(gatewayMaintenanceAutoArchiveAttemptKey({ ...input }), key);
+  assert.notEqual(gatewayMaintenanceAutoArchiveAttemptKey({
+    ...input,
+    status: { ...committed, updatedAt: 11 },
+  }), key);
+  assert.notEqual(gatewayMaintenanceAutoArchiveAttemptKey({
+    ...input,
+    status: { ...committed, updateId: "update-2" },
+  }), key);
+  assert.equal(gatewayMaintenanceAutoArchiveAttemptKey({
+    ...input,
+    maintenanceSessionId: "gateway-update-node-2-release-1",
+  }), null);
 });
 
 test("offers activation for any complete staged release identity", () => {

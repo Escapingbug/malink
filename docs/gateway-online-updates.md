@@ -352,12 +352,15 @@ exporting credentials or unstructured Gateway errors.
 The maintenance session is transaction-owned state, not ordinary conversation
 history. Neither a client nor the Gateway may archive the session while the
 supervisor reports an active, staged, transiently retryable, or repair-required
-update. Successfully committed transactions are archived automatically by an
-authenticated lifecycle command. Rolled-back and deterministic failed sessions
-remain visible for diagnosis and can be archived after their evidence is
-collected because repeating that release is not a supported recovery. The
-client rechecks signed live status immediately before manual cleanup and the
-Gateway enforces the same rule before changing session lifecycle.
+update. A client may automatically archive only the exact maintenance session
+named by a signed `committed` or `rolled_back` supervisor status. `idle` is not
+a terminal boundary because it may be an older cached snapshot from before the
+maintenance session appeared. Each signed status snapshot permits at most one
+automatic cleanup attempt, so a rejected cleanup cannot become a Matrix command
+loop. Legacy maintenance IDs and deterministic failed sessions remain visible
+for explicit diagnosis and cleanup. The client rechecks signed live status
+immediately before manual cleanup and the Gateway enforces the same rule before
+changing session lifecycle.
 
 ## Agent-safe candidate completion
 

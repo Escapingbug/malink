@@ -152,8 +152,8 @@ import { uncertainCommandRecoveryPresentation } from "./uncertainCommandRecovery
 import { gatewayBuildSupportsWorkspaceRetirement } from "./workspaceGatewayRepair";
 import {
   collidingGatewayMaintenanceSessionIds,
+  gatewayMaintenanceAutoArchiveAttemptKey,
   gatewayMaintenanceSessionCanBeArchived,
-  gatewayMaintenanceSessionShouldAutoArchive,
   gatewayUpdatePlan as buildGatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
   gatewayUpdateRequiresForwardOnlyConfirmation,
@@ -4002,43 +4002,35 @@ function MalinkAppRuntime() {
       if (!node.targetProjectId) continue;
       const runtime = gatewayUpdateRuntimePresentation[node.gatewayNodeId];
       const status = runtime?.status;
-      if (!gatewayMaintenanceSessionShouldAutoArchive(status)) continue;
-      const sessionIds = [
-        runtime.maintenanceSessionId,
-        runtime.legacyMaintenanceSessionId,
-      ].filter((value): value is string => Boolean(value));
-      for (const sessionId of sessionIds) {
-        const session = gatewayState?.sessions.find(candidate =>
-          candidate.id === sessionId && candidate.projectId === node.targetProjectId,
+      const sessionId = runtime?.maintenanceSessionId;
+      if (!sessionId) continue;
+      const key = gatewayMaintenanceAutoArchiveAttemptKey({
+        gatewayNodeId: node.gatewayNodeId,
+        projectId: node.targetProjectId,
+        maintenanceSessionId: sessionId,
+        status,
+      });
+      if (!key || gatewayAutoArchiveKeysRef.current.has(key)) continue;
+      const session = gatewayState?.sessions.find(candidate =>
+        candidate.id === sessionId && candidate.projectId === node.targetProjectId,
+      );
+      if (!session || session.status === "archived") continue;
+      gatewayAutoArchiveKeysRef.current.add(key);
+      void runSessionLifecycle(
+        "archive",
+        sessionId,
+        node.targetProjectId,
+      ).catch(error => {
+        console.warn(
+          `[gateway-update/auto-archive] ${formatUiError(error)}`,
+          error,
         );
-        if (!session || session.status === "archived") continue;
-        const key = `${node.targetProjectId}\0${sessionId}\0${status.updatedAt}`;
-        if (gatewayAutoArchiveKeysRef.current.has(key)) continue;
-        gatewayAutoArchiveKeysRef.current.add(key);
-        void runSessionLifecycle(
-          "archive",
-          sessionId,
-          node.targetProjectId,
-          undefined,
-          () => {
-            // A deterministic command failure is not a completed cleanup.
-            // Let the next signed status/projection change retry this session.
-            gatewayAutoArchiveKeysRef.current.delete(key);
-          },
-        ).then(started => {
-          if (!started) gatewayAutoArchiveKeysRef.current.delete(key);
-        }).catch(error => {
-          gatewayAutoArchiveKeysRef.current.delete(key);
-          console.warn(
-            `[gateway-update/auto-archive] ${formatUiError(error)}`,
-            error,
-          );
-        });
-      }
+      });
     }
-    // Idle, committed, and safely rolled-back statuses are authenticated
-    // cleanup boundaries. The lifecycle callback clears the guard after an
-    // actual failure so a stale maintenance session cannot become permanent.
+    // Only the exact maintenance session named by a committed or rolled-back
+    // signed transaction is eligible. Each signed snapshot gets one attempt;
+    // failures remain visible for manual cleanup instead of creating a Matrix
+    // command loop. Legacy session IDs are always handled explicitly by users.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     connectionStatus,

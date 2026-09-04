@@ -166,14 +166,43 @@ export function gatewayMaintenanceSessionCanBeArchived(
     .test(status.detail ?? "");
 }
 
-export function gatewayMaintenanceSessionShouldAutoArchive(
-  status: GatewayUpdateStatus | undefined,
-): boolean {
-  return status !== undefined && [
-    "idle",
-    "committed",
-    "rolled_back",
-  ].includes(status.phase);
+export function gatewayMaintenanceSessionShouldAutoArchive(input: {
+  status: GatewayUpdateStatus | undefined;
+  maintenanceSessionId: string;
+}): boolean {
+  const status = input.status;
+  return status !== undefined &&
+    status.maintenanceSessionId === input.maintenanceSessionId &&
+    ["committed", "rolled_back"].includes(status.phase);
+}
+
+/**
+ * Bind one automatic cleanup attempt to one signed supervisor snapshot.
+ *
+ * The key is intentionally stable across React projection changes. A failed
+ * lifecycle command must not turn a stale terminal snapshot into an unbounded
+ * Matrix command loop; a newer signed status produces a different key and may
+ * make one fresh best-effort attempt.
+ */
+export function gatewayMaintenanceAutoArchiveAttemptKey(input: {
+  gatewayNodeId: string;
+  projectId: string;
+  maintenanceSessionId: string;
+  status: GatewayUpdateStatus | undefined;
+}): string | null {
+  if (!gatewayMaintenanceSessionShouldAutoArchive({
+    status: input.status,
+    maintenanceSessionId: input.maintenanceSessionId,
+  })) return null;
+  const status = input.status!;
+  return [
+    input.gatewayNodeId,
+    input.projectId,
+    input.maintenanceSessionId,
+    status.updateId ?? "",
+    status.releaseId ?? "",
+    status.updatedAt.toString(),
+  ].join("\0");
 }
 
 export function gatewayUpdateCanApplyStaged(input: {
