@@ -9,6 +9,7 @@ import id.my.anciety.malink.client.events.ToolGroupPresentation
 import id.my.anciety.malink.client.events.ToolPhase
 import id.my.anciety.malink.client.events.ToolPresentationItem
 import id.my.anciety.malink.security.malink.CanonicalJson
+import java.net.URI
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -2746,7 +2747,7 @@ internal class MatrixMlp3NativeProjection(
                 ?: throw IllegalArgumentException("A MLP/3 extension capability must be an object.")
             extension.requireKeys(
                 setOf("id", "name", "description", "version", "settings"),
-                emptySet(),
+                setOf("clientIntegration"),
                 "MLP/3 extension capability",
             )
             extension.requiredString("id", 256)
@@ -2786,6 +2787,71 @@ internal class MatrixMlp3NativeProjection(
                 }
             }
             requireUniqueIds(settings, "MLP/3 extension settings")
+            extension["clientIntegration"]?.let { integrationValue ->
+                val integration = integrationValue as? JsonObject
+                    ?: throw IllegalArgumentException(
+                        "An MLP/3 client integration capability must be an object.",
+                    )
+                integration.requireKeys(
+                    setOf("origin", "bridgeVersion", "routes", "capabilities"),
+                    emptySet(),
+                    "MLP/3 client integration capability",
+                )
+                val origin = runCatching { URI(integration.requiredString("origin", 2_048)) }
+                    .getOrElse {
+                        throw IllegalArgumentException("The client integration origin is invalid.")
+                    }
+                require(
+                    origin.scheme == "https" &&
+                        origin.host != null &&
+                        origin.userInfo == null &&
+                        (origin.path.isNullOrEmpty() || origin.path == "/") &&
+                        origin.query == null &&
+                        origin.fragment == null
+                )
+                require(integration.requiredPositiveLong("bridgeVersion") == 1L)
+                val routes = integration.requiredArray("routes", 32)
+                require(routes.isNotEmpty())
+                routes.forEach { routeValue ->
+                    val route = routeValue as? JsonObject
+                        ?: throw IllegalArgumentException(
+                            "An MLP/3 client integration route must be an object.",
+                        )
+                    route.requireKeys(
+                        setOf("id", "path"),
+                        emptySet(),
+                        "MLP/3 client integration route",
+                    )
+                    require(
+                        route.requiredString("id", 64)
+                            .matches(Regex("^[a-z][a-z0-9._-]*$"))
+                    )
+                    val path = route.requiredString("path", 2_048)
+                    require(path.startsWith("/") && !path.startsWith("//"))
+                    require(
+                        path.none {
+                            it.isWhitespace() || it == '\\' || it == '?' || it == '#'
+                        }
+                    )
+                }
+                requireUniqueIds(routes, "MLP/3 client integration routes")
+                val allowedCapabilities = setOf(
+                    "host.close",
+                    "host.back",
+                    "host.read-theme",
+                    "host.read-locale",
+                )
+                val capabilities = integration.requiredArray("capabilities", 4)
+                val parsedCapabilities = capabilities.map { capability ->
+                    val primitive = capability as? JsonPrimitive
+                        ?: throw IllegalArgumentException(
+                            "An MLP/3 client integration capability must be a string.",
+                        )
+                    require(primitive.isString && primitive.content in allowedCapabilities)
+                    primitive.content
+                }
+                require(parsedCapabilities.distinct().size == parsedCapabilities.size)
+            }
         }
         requireUniqueIds(extensions, "MLP/3 extension capabilities")
     }

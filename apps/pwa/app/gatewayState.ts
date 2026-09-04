@@ -15,6 +15,7 @@ import {
   type ProviderControlValues,
   providerControlSchema,
   providerControlValuesSchema,
+  sessionExtensionDescriptorSchema,
 } from "@malink/protocol";
 
 export type GatewayNodeStatusObservation = {
@@ -1211,6 +1212,18 @@ function parseSessionExtensionDescriptors(value: unknown): SessionExtensionDescr
       description: extension.description,
       version: extension.version,
       settings,
+      ...(extension.clientIntegration === undefined
+        ? {}
+        : {
+            clientIntegration: sessionExtensionDescriptorSchema.parse({
+              id: extension.id,
+              name: extension.name,
+              description: extension.description,
+              version: extension.version,
+              settings: [],
+              clientIntegration: extension.clientIntegration,
+            }).clientIntegration,
+          }),
     };
   });
 }

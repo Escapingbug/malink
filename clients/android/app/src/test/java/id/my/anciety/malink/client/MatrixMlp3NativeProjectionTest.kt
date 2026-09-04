@@ -5,6 +5,7 @@ import id.my.anciety.malink.client.events.ToolCategory
 import id.my.anciety.malink.client.events.ToolPhase
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -1432,6 +1433,35 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `client integration descriptors survive the native authenticated projection`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            workspaceSnapshot(
+                snapshotVersion = 1,
+                model = "codex-test",
+                includeClientIntegration = true,
+            ),
+            "\$workspace",
+            null,
+        )
+
+        val integration = projection.snapshot()!!
+            .getValue("capabilities").jsonObject
+            .getValue("session_extensions").jsonArray.single().jsonObject
+            .getValue("clientIntegration").jsonObject
+        assertEquals(
+            "https://app.metapp.example",
+            integration.getValue("origin").jsonPrimitive.content,
+        )
+        assertEquals(
+            "artifact.preview",
+            integration.getValue("routes").jsonArray.single().jsonObject
+                .getValue("id").jsonPrimitive.content,
+        )
+    }
+
+    @Test
     fun `scratch sessions and workspace inbox files survive durable restore`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
@@ -1504,6 +1534,7 @@ class MatrixMlp3NativeProjectionTest {
         releaseVersion: Long = 42,
         projectId: String = "project-1",
         pending: JsonArray = JsonArray(emptyList()),
+        includeClientIntegration: Boolean = false,
     ) = event(
         eventId = "workspace-snapshot-$projectId-$snapshotVersion",
         projectId = projectId,
@@ -1574,7 +1605,30 @@ class MatrixMlp3NativeProjectionTest {
                 put("can_select_session", false)
                 put("can_archive_session", true)
                 put("can_delete_session", true)
-                put("session_extensions", buildJsonArray {})
+                put("session_extensions", buildJsonArray {
+                    if (includeClientIntegration) {
+                        add(buildJsonObject {
+                            put("id", "metapp")
+                            put("name", "metapp")
+                            put("description", "metapp client integration")
+                            put("version", "1")
+                            put("settings", buildJsonArray {})
+                            put("clientIntegration", buildJsonObject {
+                                put("origin", "https://app.metapp.example")
+                                put("bridgeVersion", 1)
+                                put("routes", buildJsonArray {
+                                    add(buildJsonObject {
+                                        put("id", "artifact.preview")
+                                        put("path", "/embed/preview")
+                                    })
+                                })
+                                put("capabilities", buildJsonArray {
+                                    add(JsonPrimitive("host.close"))
+                                })
+                            })
+                        })
+                    }
+                })
                 put("web_push", buildJsonObject {
                     put("vapid_public_key", "B".repeat(87))
                 })

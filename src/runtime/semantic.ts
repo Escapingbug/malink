@@ -1,4 +1,5 @@
 import type { AgentEvent, ToolResultContentBlock } from '@/providers/types'
+import type { IntegrationEntryPresentation } from '@malink/protocol'
 
 export type SessionInputSource = 'channel' | 'scheduler' | 'mcp' | 'system'
 
@@ -152,6 +153,12 @@ export type ConversationEvent =
         meta: SemanticMeta
         command: string
         output: unknown
+    }
+    | {
+        /** Passive, signed session entry that opens an installed client integration. */
+        kind: 'integration_entry'
+        meta: SemanticMeta
+        presentation: IntegrationEntryPresentation
     }
     | {
         kind: 'turn_finished'

@@ -117,6 +117,23 @@ export class ChannelProjector {
                     },
                 ]
 
+            case 'integration_entry':
+                return [
+                    ...this.flushText(event, true, true),
+                    {
+                        message: {
+                            text: event.presentation.fallback?.text
+                                ?? event.presentation.description
+                                ?? event.presentation.title,
+                            format: 'plain',
+                            integrationEntry: event.presentation,
+                        },
+                        isToolEvent: false,
+                        isTerminal: false,
+                        semanticEvent: event,
+                    },
+                ]
+
             case 'turn_finished':
                 return this.projectTurnFinished(event, options)
 

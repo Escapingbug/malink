@@ -102,7 +102,15 @@ The extension owns and returns its descriptor:
     "name": "Example extension",
     "description": "Transforms a session for an extension-owned purpose.",
     "version": "1",
-    "settings": []
+    "settings": [],
+    "clientIntegration": {
+      "origin": "https://app.example-extension.test",
+      "bridgeVersion": 1,
+      "routes": [
+        { "id": "artifact.preview", "path": "/embed/preview" }
+      ],
+      "capabilities": ["host.close"]
+    }
   }
 }
 ```
@@ -170,6 +178,88 @@ event through its native projection. Resolution is a persisted MLP/3 event, so
 other devices replace the pending control with the selected outcome instead of
 leaving a stale actionable UI.
 
+## Client application integration
+
+An extension may optionally register one HTTPS client application and a
+bounded set of routes in `descriptor.clientIntegration`. The descriptor comes
+from the administrator-installed, loopback-authenticated extension process and
+is published in the signed, application-encrypted project projection. A
+conversation event can therefore name only an extension ID, registered route
+ID, and opaque resource reference; it cannot inject a URL.
+
+An extension returns a passive entry from `/v1/events/present` as an ordinary
+normalized conversation event:
+
+```json
+{
+  "kind": "integration_entry",
+  "meta": {
+    "id": "event-1",
+    "sessionId": "session-1",
+    "turnId": "turn-1",
+    "provider": "agent",
+    "seq": 1,
+    "timestamp": 1,
+    "sourcePhase": "live"
+  },
+  "presentation": {
+    "kind": "integration_entry",
+    "version": 1,
+    "integrationId": "example-extension",
+    "routeId": "artifact.preview",
+    "resourceRef": "opaque-extension-owned-reference",
+    "title": "Project report",
+    "description": "Open the protected report in the extension application.",
+    "actionLabel": "Open report"
+  }
+}
+```
+
+The integration ID MUST equal the presenting extension ID. Malink validates
+the entry, publishes it as bounded `assistant.message.ui` inside MLP/3, and
+shows a passive card. Opening the card is local navigation; it is not an MLP
+command, does not resolve an extension interaction, and cannot mutate Agent
+execution state.
+
+The PWA resolves the route against the installed descriptor, opens it in a
+cross-origin sandboxed iframe, and sends the resource reference only after the
+frame loads. The reference is transferred through a dedicated
+`MessageChannel`; it is never placed in the iframe URL, referrer, cleartext
+Matrix message fields, or server access logs. The launch message is:
+
+```ts
+interface ClientIntegrationLaunchMessage {
+  protocol: 'io.malink.client-integration'
+  version: 1
+  type: 'launch'
+  integrationId: string
+  routeId: string
+  resourceRef: string
+  resourceVersion?: string
+  environment: {
+    locale?: string
+    colorScheme?: 'light' | 'dark'
+  }
+}
+```
+
+The transferred port accepts only exact `close` or `back` messages, and only
+when the manifest declares the matching `host.close` or `host.back`
+capability. Locale and color scheme are likewise omitted unless the manifest
+declares `host.read-locale` or `host.read-theme`. Both navigation messages
+return to the originating conversation in V1. The integrated page must use a
+different origin from Malink, allow the approved Malink origins in its CSP
+`frame-ancestors` policy, validate the initial `message` event origin, and use
+the transferred port for subsequent messages. V1 does not expose Matrix
+credentials, MLP project keys, local files, conversation projection access,
+arbitrary navigation, or command execution to the embedded application.
+
+The integrated application owns its page, authentication, data model, and
+E2EE synchronization. Malink transfers only the opaque reference. If content
+exists solely in Malink, sharing it with the application requires a separate,
+explicit cross-security-domain authorization; a client integration entry does
+not grant that access implicitly.
+
 ## Project and MLP/3 protocol state
 
 Project snapshots advertise:
@@ -191,7 +281,8 @@ bindings. Existing unbound behavior is unchanged.
 
 Malink does not bundle a first-party extension implementation. Extension
 projects own their implementation, packaging, model or service dependencies,
-state, policy, and implementation-specific tests. They consume the protocol
+state, policy, integrated client page, independent E2EE service, and
+implementation-specific tests. They consume the protocol
 published by Malink and may run their own compatibility and product acceptance
 suites against a Malink Gateway.
 

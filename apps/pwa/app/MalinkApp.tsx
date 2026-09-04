@@ -32,6 +32,7 @@ import {
   type ProviderHistoryMessage,
   type ProviderSessionEntry,
   type ProviderControlValues,
+  type SessionExtensionDescriptor,
 } from "@malink/protocol";
 import type { NativeUpdateStatus } from "@malink/native-bridge";
 import {
@@ -132,6 +133,7 @@ import {
 import {
   gatewayProjectKey,
   reconcileGatewayMaintenanceSessions,
+  type GatewayStateSnapshot,
   type GatewaySessionSummary,
 } from "./gatewayState";
 import {
@@ -147,6 +149,13 @@ import {
   type ExtensionViewDecisionState,
 } from "./ExtensionViewCard";
 import { parseExtensionViewPresentation } from "./presentation";
+import { ClientIntegrationHost } from "./ClientIntegrationHost";
+import { IntegrationEntryCard } from "./IntegrationEntryCard";
+import {
+  parseIntegrationEntryPresentation,
+  resolveClientIntegration,
+  type ClientIntegrationTarget,
+} from "./clientIntegrations";
 import {
   MALINK_BUILD_VERSION,
   MALINK_GATEWAY_RELEASE,
@@ -1699,6 +1708,8 @@ function MalinkAppRuntime() {
     detail: string;
   } | null>(null);
   const [gatewayUpdateDialogOpen, setGatewayUpdateDialogOpen] = useState(false);
+  const [activeClientIntegration, setActiveClientIntegration] =
+    useState<ClientIntegrationTarget | null>(null);
   const [dismissedGatewayUpdateNoticeKey, setDismissedGatewayUpdateNoticeKey] =
     useState<string | null>(null);
   const [gatewayUpdateActiveNodeIds, setGatewayUpdateActiveNodeIds] =
@@ -13340,6 +13351,14 @@ function MalinkAppRuntime() {
             }
             const message = item.message;
             const artifactReferences = artifactReferencesFromRaw(message.raw);
+            const integrationEntry = parseIntegrationEntryPresentation(message.raw);
+            const integrationResolution = integrationEntry
+              ? resolveClientIntegration(
+                  integrationEntry,
+                  sessionExtensionsForMessage(gatewayState, message.sessionId),
+                  window.location.origin,
+                )
+              : undefined;
             const artifactAttachmentIds = new Set(
               artifactReferences.map(reference => reference.id),
             );
@@ -13593,6 +13612,28 @@ function MalinkAppRuntime() {
                     )}
                     <time>{message.time}</time>
                   </div>
+                </div>
+              );
+            }
+            if (integrationEntry && integrationResolution) {
+              return (
+                <div
+                  className={`message-row agent-row ${agentTurnClass} ${turnPresentationClass} ${
+                    isLiveMessageDelivery(message) ? "message-enter" : ""
+                  }`}
+                  key={message.id}
+                >
+                  <div className="agent-mark">C</div>
+                  <IntegrationEntryCard
+                    entry={integrationEntry}
+                    onOpen={() => {
+                      if (integrationResolution.status === "ready") {
+                        setActiveClientIntegration(integrationResolution.target);
+                      }
+                    }}
+                    resolution={integrationResolution}
+                    time={message.time}
+                  />
                 </div>
               );
             }
@@ -14238,6 +14279,14 @@ function MalinkAppRuntime() {
         />
       )}
 
+      {activeClientIntegration && (
+        <ClientIntegrationHost
+          key={`${activeClientIntegration.integrationId}:${activeClientIntegration.routeId}:${activeClientIntegration.resourceRef}`}
+          target={activeClientIntegration}
+          onClose={() => setActiveClientIntegration(null)}
+        />
+      )}
+
       {projectSettingsWorkspace && (
         <ProjectSettingsDialog
           key={projectSettingsWorkspace.projectId}
@@ -14534,6 +14583,21 @@ function MalinkAppRuntime() {
       />
     </main>
   );
+}
+
+function sessionExtensionsForMessage(
+  state: GatewayStateSnapshot | null,
+  sessionId: string | undefined,
+): SessionExtensionDescriptor[] {
+  if (!state) return [];
+  const projectId = state.sessions.find(session => session.id === sessionId)?.projectId
+    ?? state.workspace.projectId;
+  const project = state.projects?.find(candidate => candidate.projectId === projectId)
+    ?? (state.workspace.projectId === projectId ? state.workspace : undefined);
+  return project?.capabilities?.sessionExtensions
+    ?? (state.workspace.projectId === projectId
+      ? state.capabilities.sessionExtensions
+      : []);
 }
 
 async function requestNativeUpdateStatus(

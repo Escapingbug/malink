@@ -1,4 +1,5 @@
 import {
+    integrationEntryPresentationSchema,
     sessionExtensionManifestSchema,
     sessionExtensionViewSchema,
     type JsonValue,
@@ -243,7 +244,14 @@ class HttpSessionExtensionInstance implements SessionExtensionInstance {
         if (!response.events.every(isConversationEvent)) {
             throw new Error(`${this.id} returned malformed display events`)
         }
-        return response.events
+        const events = response.events as ConversationEvent[]
+        if (events.some(candidate =>
+            candidate.kind === 'integration_entry'
+            && candidate.presentation.integrationId !== this.id
+        )) {
+            throw new Error(`${this.id} returned an entry for another client integration`)
+        }
+        return events
     }
 
     async lifecycle(reason: SessionExtensionLifecycleReason): Promise<void> {
@@ -358,7 +366,12 @@ function isConversationEvent(value: unknown): value is ConversationEvent {
         || !Number.isFinite(meta.timestamp)
         || !['live', 'replay', 'tailDrain', 'synthetic'].includes(String(meta.sourcePhase))
     ) return false
-    if (record.kind === 'assistant_text_delta') return typeof record.text === 'string'
+    if (record.kind === 'assistant_text_delta') {
+        return typeof record.text === 'string' && typeof record.messageId === 'string'
+    }
+    if (record.kind === 'integration_entry') {
+        return integrationEntryPresentationSchema.safeParse(record.presentation).success
+    }
     return [
         'turn_started',
         'tool',

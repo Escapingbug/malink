@@ -127,7 +127,7 @@ export class MatrixMlp3Port implements ChannelPort {
     const messageId = messageOptions.idempotencyKey ?? this.operationIdFor(message)
     const prepared = await this.prepareArtifacts(messageId, message)
     message = prepared.message
-    const presentation = message.presentation ?? messageOptions.ui
+    const presentation = message.integrationEntry ?? message.presentation ?? messageOptions.ui
     const liveToolGroup = isToolGroupPresentation(presentation)
     const attachments = await this.uploadAttachments(messageId, message.attachments)
     const parts = splitMessage(message)
@@ -197,7 +197,7 @@ export class MatrixMlp3Port implements ChannelPort {
     const messageOptions = readMessageOptions(message.replyMarkup)
     const prepared = await this.prepareArtifacts(messageId, message)
     message = prepared.message
-    const presentation = message.presentation ?? messageOptions.ui
+    const presentation = message.integrationEntry ?? message.presentation ?? messageOptions.ui
     const toolGroup = isToolGroupPresentation(presentation)
     const attachments = await this.uploadAttachments(messageId, message.attachments)
     // Tool output is execution data, not chat history. Final snapshots carry

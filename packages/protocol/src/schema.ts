@@ -220,6 +220,140 @@ const sessionExtensionSettingSchema = z.discriminatedUnion('type', [
 
 export type SessionExtensionSetting = z.infer<typeof sessionExtensionSettingSchema>
 
+export const clientIntegrationRouteIdSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z][a-z0-9._-]*$/u)
+
+export const clientIntegrationRouteSchema = z
+  .object({
+    id: clientIntegrationRouteIdSchema,
+    path: z
+      .string()
+      .min(1)
+      .max(2_048)
+      .regex(/^\/(?!\/)[^\\\s?#]*$/u),
+  })
+  .strict()
+
+export const clientIntegrationManifestSchema = z
+  .object({
+    origin: z
+      .string()
+      .min(1)
+      .max(2_048)
+      .refine(value => {
+        try {
+          const parsed = new URL(value)
+          return parsed.protocol === 'https:'
+            && !parsed.username
+            && !parsed.password
+            && parsed.pathname === '/'
+            && !parsed.search
+            && !parsed.hash
+        } catch {
+          return false
+        }
+      }, 'Client integration origin must be an HTTPS origin'),
+    bridgeVersion: z.literal(1),
+    routes: z.array(clientIntegrationRouteSchema).min(1).max(32),
+    capabilities: z
+      .array(z.enum([
+        'host.close',
+        'host.back',
+        'host.read-theme',
+        'host.read-locale',
+      ]))
+      .max(4),
+  })
+  .strict()
+  .superRefine((integration, context) => {
+    const routeIds = new Set<string>()
+    integration.routes.forEach((route, index) => {
+      if (routeIds.has(route.id)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['routes', index, 'id'],
+          message: 'Client integration route IDs must be unique',
+        })
+      }
+      routeIds.add(route.id)
+    })
+    if (new Set(integration.capabilities).size !== integration.capabilities.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['capabilities'],
+        message: 'Client integration capabilities must be unique',
+      })
+    }
+  })
+
+export type ClientIntegrationManifest = z.infer<typeof clientIntegrationManifestSchema>
+
+export const integrationEntryPresentationSchema = z
+  .object({
+    kind: z.literal('integration_entry'),
+    version: z.literal(1),
+    integrationId: opaqueId,
+    routeId: clientIntegrationRouteIdSchema,
+    resourceRef: z.string().min(1).max(2_048),
+    resourceVersion: z.string().min(1).max(256).optional(),
+    title: z.string().min(1).max(256),
+    description: z.string().min(1).max(2_048).optional(),
+    actionLabel: z.string().min(1).max(64).optional(),
+    appearance: z.enum(['card', 'inline', 'attachment']).optional(),
+    fallback: z
+      .object({
+        text: z.string().min(1).max(8_192),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine(
+    value => new TextEncoder().encode(JSON.stringify(value)).byteLength <= 16 * 1024,
+    'Client integration entry is too large',
+  )
+
+export type IntegrationEntryPresentation = z.infer<typeof integrationEntryPresentationSchema>
+
+export const MALINK_CLIENT_INTEGRATION_PROTOCOL = 'io.malink.client-integration' as const
+
+export const clientIntegrationLaunchMessageSchema = z
+  .object({
+    protocol: z.literal(MALINK_CLIENT_INTEGRATION_PROTOCOL),
+    version: z.literal(1),
+    type: z.literal('launch'),
+    integrationId: opaqueId,
+    routeId: clientIntegrationRouteIdSchema,
+    resourceRef: z.string().min(1).max(2_048),
+    resourceVersion: z.string().min(1).max(256).optional(),
+    environment: z
+      .object({
+        locale: z.string().min(1).max(128).optional(),
+        colorScheme: z.enum(['light', 'dark']).optional(),
+      })
+      .strict(),
+  })
+  .strict()
+
+export type ClientIntegrationLaunchMessage = z.infer<
+  typeof clientIntegrationLaunchMessageSchema
+>
+
+export const clientIntegrationHostRequestSchema = z
+  .object({
+    protocol: z.literal(MALINK_CLIENT_INTEGRATION_PROTOCOL),
+    version: z.literal(1),
+    type: z.enum(['close', 'back']),
+  })
+  .strict()
+
+export type ClientIntegrationHostRequest = z.infer<
+  typeof clientIntegrationHostRequestSchema
+>
+
 export const sessionExtensionDescriptorSchema = z
   .object({
     id: opaqueId,
@@ -227,6 +361,7 @@ export const sessionExtensionDescriptorSchema = z
     description: z.string().min(1).max(4_096),
     version: z.string().min(1).max(128),
     settings: z.array(sessionExtensionSettingSchema).max(32),
+    clientIntegration: clientIntegrationManifestSchema.optional(),
   })
   .strict()
   .superRefine((descriptor, context) => {

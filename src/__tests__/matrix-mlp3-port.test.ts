@@ -645,6 +645,69 @@ describe('MatrixMlp3Port', () => {
     })
     expect(deliveryPriority).toBe('normal')
   })
+
+  it('serializes a passive integration entry into assistant UI metadata', async () => {
+    let capturedEvent: Record<string, unknown> | undefined
+    const contentLayer = {
+      enqueueEvent: async (
+        _room: unknown,
+        event: Record<string, unknown>,
+      ) => {
+        capturedEvent = event
+        return {
+          deliveryId: 'integration-entry-delivery',
+          confirmation: Promise.resolve({ eventId: '$integration-entry' }),
+        }
+      },
+    } as unknown as GatewayMlp3ContentLayer
+    const port = new MatrixMlp3Port({
+      contentLayer,
+      transport: {} as InMemoryMatrixTransport,
+      room: {
+        roomId: '!project:example.org',
+        conversationId: 'unused-v3',
+        cwd: '/repo',
+        providerName: 'test',
+      },
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      threadRootEventId: '$root:example.org',
+      projection: () => ({
+        title: 'Session',
+        lifecycle: 'active',
+        activity: 'working',
+        updatedAt: 1,
+        stateVersion: 1,
+      }),
+      now: () => 1,
+    })
+
+    await port.send({
+      text: 'Open the project report in metapp.',
+      format: 'plain',
+      integrationEntry: {
+        kind: 'integration_entry',
+        version: 1,
+        integrationId: 'metapp',
+        routeId: 'artifact.preview',
+        resourceRef: 'artifact-1',
+        title: 'Project report',
+      },
+    })
+
+    expect(capturedEvent).toMatchObject({
+      payload: {
+        type: 'assistant.message',
+        ui: {
+          kind: 'integration_entry',
+          integrationId: 'metapp',
+          routeId: 'artifact.preview',
+          resourceRef: 'artifact-1',
+        },
+      },
+    })
+  })
 })
 
 async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
