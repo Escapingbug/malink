@@ -10,6 +10,7 @@ import {
     MALINK_MATRIX_GATEWAY_STATE_EVENT_TYPE,
     MALINK_MATRIX_SESSION_DIRECTORY_EVENT_TYPE,
     MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
+    MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
 } from '@malink/protocol'
 import {
     MALINK_MATRIX_EXTENSION,
@@ -380,6 +381,35 @@ describe('MatrixJsSdkGatewayClient', () => {
             expect.objectContaining({ kind: 'state_envelope' }),
             expect.any(Object),
         )
+        await client.setApplicationRoomState({
+            roomId: '!room:example.org',
+            eventType: MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+            stateKey: 'codex/manifest',
+            content: {
+                msgtype: 'm.notice',
+                body: 'Encrypted Malink event',
+                'io.malink': {
+                    version: 3,
+                    envelope: {
+                        kind: 'malink.project-envelope',
+                        version: 3,
+                        roomId: '!room:example.org',
+                        projectId: 'project-1',
+                        keyId: 'key-1',
+                        logicalEventId: 'catalog-1',
+                        nonce: 'AAAAAAAAAAAAAAAA',
+                        ciphertext: 'AAAAAAAAAAAAAAAAAAAAAA',
+                    },
+                },
+            },
+        })
+        expect(sdk.http.authedRequest).toHaveBeenCalledWith(
+            'PUT',
+            '/rooms/!room%3Aexample.org/state/io.malink.provider_catalog.v1/codex%2Fmanifest',
+            undefined,
+            expect.objectContaining({ body: 'Encrypted Malink event' }),
+            expect.any(Object),
+        )
         await expect(client.setApplicationRoomState({
             roomId: '!room:example.org',
             eventType: MALINK_MATRIX_GATEWAY_STATE_EVENT_TYPE,
@@ -397,7 +427,7 @@ describe('MatrixJsSdkGatewayClient', () => {
             },
         })).rejects.toThrow('must contain a Malink state envelope')
         expect(sdk.sendMessage).toHaveBeenCalledTimes(1)
-        expect(sdk.http.authedRequest).toHaveBeenCalledTimes(4)
+        expect(sdk.http.authedRequest).toHaveBeenCalledTimes(5)
         await client.stop()
         expect(sdk.stopClient).toHaveBeenCalledOnce()
     })

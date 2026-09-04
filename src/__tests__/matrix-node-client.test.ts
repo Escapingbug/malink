@@ -2,7 +2,10 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MALINK_MATRIX_SESSION_STATE_EVENT_TYPE } from '@malink/protocol'
+import {
+    MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
+    MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+} from '@malink/protocol'
 import {
     MatrixNodeSdkGatewayClient,
     loadOrCreateMatrixCryptoPassphrase,
@@ -16,6 +19,41 @@ afterEach(async () => {
 })
 
 describe('MatrixNodeSdkGatewayClient', () => {
+    it('accepts application-encrypted Provider Catalog state', async () => {
+        const fetchMock = vi.fn(async () => jsonResponse({ event_id: '$catalog' }))
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test',
+            accessToken: 'token',
+            userId: '@gateway:example.test',
+            deviceId: 'STABLE_DEVICE',
+        }, 1_000, undefined, fetchMock)
+
+        await expect(client.setApplicationRoomState({
+            roomId: '!room:example.test',
+            eventType: MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+            stateKey: 'codex/manifest',
+            content: {
+                msgtype: 'm.notice',
+                body: 'Encrypted Malink event',
+                'io.malink': {
+                    version: 3,
+                    envelope: {
+                        kind: 'malink.project-envelope',
+                        version: 3,
+                        roomId: '!room:example.test',
+                        projectId: 'project-1',
+                        keyId: 'key-1',
+                        logicalEventId: 'catalog-1',
+                        nonce: 'AAAAAAAAAAAAAAAA',
+                        ciphertext: 'AAAAAAAAAAAAAAAAAAAAAA',
+                    },
+                },
+            },
+        })).resolves.toMatchObject({ eventId: '$catalog' })
+
+        expect(fetchMock).toHaveBeenCalledOnce()
+    })
+
     it('idempotently creates an encrypted project room with a Gateway ownership marker', async () => {
         const directory = await temporaryDirectory()
         let createAttempts = 0

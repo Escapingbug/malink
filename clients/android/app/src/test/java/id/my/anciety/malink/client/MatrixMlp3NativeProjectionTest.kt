@@ -57,6 +57,42 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `split schema twenty projection variants preserve sessions during upgrade`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$root-a",
+            "\$root-a",
+        )
+        projection.applyGatewayEvent(providerCatalogManifest(2, 2), "\$manifest", null)
+        projection.applyGatewayEvent(providerCatalogPage(0, "model-a"), "\$page-a", null)
+        projection.applyGatewayEvent(providerCatalogPage(1, "model-b"), "\$page-b", null)
+        projection.applyGatewayEvent(turn("started", 2, "working"), "\$started", "\$root-a")
+        projection.applyGatewayEvent(turn("completed", 3, "idle"), "\$completed", "\$root-a")
+        val current = projection.durableState()
+        assertEquals(21, current.getValue("schemaVersion").jsonPrimitive.content.toInt())
+
+        val providerCatalogOnly = JsonObject(current.filterKeys {
+            it != "completionObservations"
+        } + ("schemaVersion" to JsonPrimitive(20)))
+        val completionOnly = JsonObject(current.filterKeys {
+            it != "providerCatalogPages" && it != "providerCatalogManifests"
+        } + ("schemaVersion" to JsonPrimitive(20)))
+
+        listOf(providerCatalogOnly, completionOnly).forEach { legacy ->
+            val restored = MatrixMlp3NativeProjection(
+                gatewayId = { "gateway-1" },
+                activeDeviceCount = { 2 },
+                initialState = legacy,
+            )
+            val session = restored.snapshot()!!.getValue("sessions").jsonArray.single().jsonObject
+            assertEquals("session-a", session.getValue("id").jsonPrimitive.content)
+            assertEquals("idle", session.getValue("activity_phase").jsonPrimitive.content)
+        }
+    }
+
+    @Test
     fun `semantic validation rejects a structurally valid but incompatible cache`() {
         val incompatible = buildJsonObject {
             put("schemaVersion", 14)

@@ -1642,7 +1642,7 @@ internal class MatrixMlp3NativeProjection(
             .filter { it.sessionId in retainedSessionIds }
             .takeLast(MAX_TASK_NOTIFICATION_PREVIEWS)
         val value = buildJsonObject {
-            put("schemaVersion", 20)
+            put("schemaVersion", 21)
             put("projectCapabilities", buildJsonArray {
                 projectCapabilities.entries.sortedBy { it.key }.forEach { (projectId, capabilities) ->
                     add(buildJsonObject {
@@ -1880,7 +1880,7 @@ internal class MatrixMlp3NativeProjection(
 
     private fun restore(value: JsonObject) {
         val schemaVersion = value.requiredLong("schemaVersion")
-        require(schemaVersion in 1L..20L)
+        require(schemaVersion in 1L..21L)
         val legacyWorkspaceCapabilities = if (schemaVersion == 1L || schemaVersion >= 9L) {
             null
         } else {
@@ -2207,7 +2207,11 @@ internal class MatrixMlp3NativeProjection(
                 ) == null) { "A Provider History page commit is duplicated." }
             }
         }
-        if (schemaVersion >= 20L) {
+        if (
+            schemaVersion >= 21L ||
+            "providerCatalogPages" in value ||
+            "providerCatalogManifests" in value
+        ) {
             value.requiredArray("providerCatalogPages", 8_192).forEach { element ->
                 val item = element as? JsonObject
                     ?: throw IllegalArgumentException("A Provider Catalog page is invalid.")
@@ -2330,7 +2334,7 @@ internal class MatrixMlp3NativeProjection(
                     assistantMessageVersions[key] = entry.requiredPositiveLong("version")
                 }
         }
-        if (schemaVersion >= 20L) {
+        if (schemaVersion >= 21L || "completionObservations" in value) {
             value.requiredArray(
                 "completionObservations",
                 MAX_COMPLETION_OBSERVATIONS,

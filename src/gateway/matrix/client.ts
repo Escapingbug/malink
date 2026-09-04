@@ -20,6 +20,7 @@ import {
     MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
     MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
     MLP3_MATRIX_PROJECT_PROVISIONING_EVENT_TYPE,
+    MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
     MLP3_MATRIX_PROVIDER_HISTORY_PROVISIONING_EVENT_TYPE,
     MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
     MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
@@ -761,6 +762,10 @@ function assertSecureApplicationControlContent(content: Record<string, unknown>)
 
 function assertSecureApplicationStateContent(request: MatrixApplicationStateEventRequest): void {
     const content = request.content
+    if (request.eventType === MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE) {
+        mlp3TimelineContentSchema.parse(content)
+        return
+    }
     if (request.eventType === MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE) {
         signedWorkspaceGatewayDirectorySchema.parse(content)
         return
