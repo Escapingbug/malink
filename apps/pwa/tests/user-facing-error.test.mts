@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   GENERIC_ERROR_DETAIL,
   formatDeviceInvitationSignInFailure,
+  formatPairingFailure,
   formatUserFacingError,
   isCommandRecoveryPendingError,
 } from "../app/userFacingError.ts";
@@ -45,6 +46,30 @@ test("turns native RPC and network failures into calm product copy", () => {
     true,
   );
   assert.equal(isCommandRecoveryPendingError(new Error("Gateway offline.")), false);
+});
+
+test("keeps the failed pairing stage and recovery action visible", () => {
+  assert.equal(
+    formatPairingFailure(
+      new Error("Request timeout after 30000ms"),
+      "Mac Studio",
+    ),
+    "Mac Studio did not finish the secure connection in time. The pending request is kept for safe recovery; check that the computer is online and retry.",
+  );
+  assert.equal(
+    formatPairingFailure(
+      new Error("The pairing request expired before its signed response arrived."),
+      "Mac Studio",
+    ),
+    "Mac Studio did not return the device authorization before the invitation expired. Make sure Malink Gateway is running on that computer, then create a new invitation.",
+  );
+  assert.match(
+    formatPairingFailure(
+      new Error("The computer approved this device, but its conversation authorization did not arrive."),
+      "Mac Studio",
+    ),
+    /approved this device, but the Workspace did not finish syncing/,
+  );
 });
 
 test("hides machine details while preserving short actionable copy", () => {

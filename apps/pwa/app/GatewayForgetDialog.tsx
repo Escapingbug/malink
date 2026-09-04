@@ -48,10 +48,10 @@ export function GatewayForgetDialog({
 
   if (!open) return null;
   const title = deviceKind === "android"
-    ? "Sign out of this Android app?"
+    ? "Sign out this device?"
     : deviceKind === "browser"
-      ? "Sign out of this browser?"
-      : "Clear this device’s local setup?";
+      ? "Sign out this device?"
+      : "Discard this incomplete setup?";
 
   return (
     <div
@@ -80,13 +80,13 @@ export function GatewayForgetDialog({
         <h2 id="gateway-forget-title">{title}</h2>
         <p id="gateway-forget-description">
           {deviceKind
-            ? `Malink will remove this ${deviceKind === "android" ? "Android app" : "browser"} account, authorization, pending commands, and cached conversation history. It also makes a short best-effort request to revoke the Matrix login.`
-            : "This disconnects Malink and removes the saved connection, approved computer, and locally cached conversation history from this device."}
+            ? `Malink will remove this ${deviceKind === "android" ? "Android app's" : "browser's"} local account, device authorization, pending commands, and cached conversation history. It will also try to invalidate this device's server login.`
+            : "Malink will remove only the unfinished invitation and connection information stored on this device."}
         </p>
         <div id="gateway-forget-boundary" className="delete-boundary-note">
           {deviceKind
-            ? "Your Workspace, Gateways, and server history remain available on your other signed-in devices. Matrix being offline will not block local sign-out; use a new invitation to sign in again."
-            : "Your sessions and data on the computer or server are not deleted."}
+            ? "Your Workspace, computers, and server history remain available on your other authorized devices. Being offline will not block local sign-out; use a new invitation to add this device again."
+            : "Your Workspace, computers, sessions, and server history are not deleted."}
         </div>
         {error && (
           <div id="gateway-forget-error" className="connection-error" role="alert">
@@ -104,7 +104,7 @@ export function GatewayForgetDialog({
           >
             {deviceKind
               ? "Stay signed in"
-              : "Keep local setup"}
+              : "Keep setup"}
           </button>
           <button
             type="button"
@@ -117,8 +117,8 @@ export function GatewayForgetDialog({
                 ? "Signing out…"
                 : "Removing…"
               : deviceKind
-                ? "Sign out"
-                : "Clear local setup"}
+                ? "Sign out this device"
+                : "Discard setup"}
           </button>
         </footer>
       </section>

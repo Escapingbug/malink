@@ -47,8 +47,8 @@ export function GatewayEnrollmentPanel({
     <section className="gateway-enrollment-panel" aria-live="polite">
       <header>
         <span>
-          <strong>Add a Gateway</strong>
-          <small>One approval connects it to every authorized client.</small>
+          <strong>Add a Workspace computer</strong>
+          <small>The new computer will run projects and Agents for every authorized device.</small>
         </span>
         <button type="button" disabled={operationBusy} onClick={onClear}>Close</button>
       </header>
@@ -57,15 +57,15 @@ export function GatewayEnrollmentPanel({
         <div className="gateway-enrollment-empty">
           <p>
             {pending.length > 0
-              ? "You can review the requests below or create a separate setup link for another Gateway."
-              : "Create a one-time setup command, run it on the new Gateway, then approve the matching verification code here. No Workspace key or existing Gateway credential needs to be copied."}
+              ? "Review the request below, or create a separate setup command for another computer."
+              : "Create a one-time setup command, run it on the new computer, then approve the matching verification code here."}
           </p>
           <button type="button" className="connect-button" disabled={operationBusy} onClick={onCreate}>
             {busy?.kind === "create"
               ? <BusyActionLabel>Creating setup link…</BusyActionLabel>
               : pending.length > 0
-                ? "Create another Gateway setup link"
-                : "Create Gateway setup link"}
+                ? "Set up another computer"
+                : "Create computer setup command"}
           </button>
         </div>
       )}
@@ -73,10 +73,10 @@ export function GatewayEnrollmentPanel({
       {invitation && (
         <div className="generated-device-invitation">
           <div>
-            <strong>1. Run this on the new Gateway</strong>
+            <strong>1. Run this on the new computer</strong>
             <p>
               The command tells it which Matrix Workspace to contact and sends
-              an access request. Change the data folder if needed.
+              an access request. The computer cannot join until you approve it here.
             </p>
           </div>
           <label>
@@ -97,7 +97,7 @@ export function GatewayEnrollmentPanel({
                   .finally(() => setCopyBusy(false));
               }}
             >
-              {copyBusy ? <BusyActionLabel>Copying…</BusyActionLabel> : "Copy setup command"}
+              {copyBusy ? <BusyActionLabel>Copying…</BusyActionLabel> : "Copy computer setup command"}
             </button>
             <button type="button" disabled={operationBusy || copyBusy} onClick={onCreate}>
               {busy?.kind === "create"
@@ -121,17 +121,22 @@ export function GatewayEnrollmentPanel({
               <strong>
                 {approved
                   ? `Approved ${request.gatewayName}`
-                  : `2. Approve ${request.gatewayName}`}
+                  : `2. Approve computer · ${request.gatewayName}`}
               </strong>
               <small>
                 {approved
-                  ? "Approval was delivered. The new computer is starting Malink Gateway Host; sending it again will not help."
+                  ? "Approval was delivered. Keep Malink open while the new computer starts and publishes its projects."
                   : "Confirm this code is also shown on the new Gateway"}
               </small>
               <code>{request.verificationCode}</code>
             </span>
             {approved
-              ? <small role="status">Waiting for Gateway Host…</small>
+              ? (
+                <span className="gateway-enrollment-approved" role="status">
+                  <strong>Approved</strong>
+                  <small>Finishing setup on the new computer…</small>
+                </span>
+              )
               : (
                 <div className="pairing-actions">
                   <button
@@ -142,7 +147,7 @@ export function GatewayEnrollmentPanel({
                   >
                     {approvingThisRequest
                       ? <BusyActionLabel>Sending approval…</BusyActionLabel>
-                      : "Approve Gateway"}
+                      : "Approve computer"}
                   </button>
                   <button
                     type="button"

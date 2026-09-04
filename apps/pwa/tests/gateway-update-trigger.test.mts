@@ -96,6 +96,32 @@ test("creates the maintenance session and schedules the confirmed Gateway", asyn
   ]);
 });
 
+test("passes an explicit restart-now choice to the Gateway supervisor", async () => {
+  const commands: GatewayUpdateCommand[] = [];
+  await triggerGatewayUpdate({
+    release,
+    mode: "force",
+    target: {
+      gatewayNodeId: "node-1",
+      gatewayName: "Office Mac",
+      currentBuildId: "gateway-old-arm64",
+      targetProjectId: "project-1",
+    },
+    send: async (command) => {
+      commands.push(command);
+      return command.operation === "gateway.update.stage"
+        ? status("staged")
+        : status("scheduled");
+    },
+  });
+
+  assert.deepEqual(commands[1], {
+    operation: "gateway.update.apply",
+    releaseId: release.releaseId,
+    mode: "force",
+  });
+});
+
 test("stops after staging a forward-only release and sends confirmation only on the second action", async () => {
   const commands: Array<{ operation: string; allowForwardOnly?: true }> = [];
   const target = {

@@ -91,4 +91,55 @@ export function formatDeviceInvitationSignInFailure(error: unknown): string {
   );
 }
 
+/**
+ * Pairing spans account sign-in, encrypted transport startup, Gateway
+ * authorization, and Workspace hydration. Preserve that user-facing boundary
+ * instead of collapsing every bounded wait into one generic timeout.
+ */
+export function formatPairingFailure(
+  error: unknown,
+  gatewayName = "the Workspace computer",
+): string {
+  const raw = errorMessage(error).replace(/\s+/gu, " ").trim();
+  const safeGatewayName = gatewayName.trim() || "the Workspace computer";
+
+  if (/pairing request expired|signed response.*(?:did not|not).*arriv/iu.test(raw)) {
+    return (
+      `${safeGatewayName} did not return the device authorization before the invitation expired. ` +
+      "Make sure Malink Gateway is running on that computer, then create a new invitation."
+    );
+  }
+  if (/secure Matrix transport did not become ready|device keys.*(?:time|timeout)|encryption keys/iu.test(raw)) {
+    return (
+      "This device could not finish starting its protected connection. " +
+      "Check the network and keep Malink open, then retry this same invitation."
+    );
+  }
+  if (/conversation authorization did not arrive|Gateway state could not be recovered|authorization.*(?:time|timeout)/iu.test(raw)) {
+    return (
+      `${safeGatewayName} approved this device, but the Workspace did not finish syncing. ` +
+      "Keep the saved setup and retry; do not create another device unless Malink says the invitation expired."
+    );
+  }
+  if (/native bridge.*did not answer.*(?:in time|timed out)/iu.test(raw)) {
+    return (
+      "The Android background connection did not answer. Keep Malink open, restart the app if needed, " +
+      "then retry this same invitation."
+    );
+  }
+  if (/failed to fetch|network request failed|networkerror|load failed/iu.test(raw)) {
+    return (
+      "The account service could not be reached. The Gateway authorization was not replaced; " +
+      "check the network and retry this same invitation."
+    );
+  }
+  if (/\b(?:timed out|timeout|took too long)\b/iu.test(raw)) {
+    return (
+      `${safeGatewayName} did not finish the secure connection in time. ` +
+      "The pending request is kept for safe recovery; check that the computer is online and retry."
+    );
+  }
+  return formatUserFacingError(error);
+}
+
 export { GENERIC_ERROR_DETAIL };

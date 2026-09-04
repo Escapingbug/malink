@@ -44,8 +44,8 @@ export function deriveConnectionPathPresentation(input: {
     summary: primary?.label ?? "Connected",
     summaryTone: primary?.tone ?? "ready",
     accessibleLabel:
-      "This device to Matrix: " + deviceToMatrix.detail + ". " +
-      "Matrix to " + input.gatewayLabel + ": " + matrixToGateway.detail + ".",
+      "This device: " + deviceToMatrix.detail + ". " +
+      "Workspace computer " + input.gatewayLabel + ": " + matrixToGateway.detail + ".",
   };
 }
 
@@ -56,37 +56,37 @@ function deviceMatrixSegment(
   if (!trusted) {
     return {
       tone: "setup",
-      label: "Connect device",
-      detail: "setup is required",
+      label: "Set up device",
+      detail: "this device has not joined a Workspace",
     };
   }
   if (status === "connected") {
     return {
       tone: "ready",
       label: "Connected",
-      detail: "connected to Matrix and receiving updates",
+      detail: "signed in and receiving Workspace updates",
     };
   }
   if (status === "offline") {
     return {
       tone: "offline",
       label: "Not connected",
-      detail: "not connected to Matrix",
+      detail: "not connected to the Workspace service",
     };
   }
   if (status === "error") {
     return {
       tone: "attention",
       label: "Not connected",
-      detail: "the Matrix connection needs attention before it can reconnect",
+      detail: "this device's Workspace connection needs attention before it can reconnect",
     };
   }
   return {
     tone: "progress",
     label: status === "reconnecting" ? "Reconnecting" : "Connecting",
     detail: status === "reconnecting"
-      ? "reconnecting to Matrix"
-      : "establishing the Matrix connection",
+      ? "reconnecting this device to the Workspace"
+      : "establishing this device's protected Workspace connection",
   };
 }
 
@@ -100,15 +100,15 @@ function gatewaySegment(input: {
   if (!input.trusted) {
     return {
       tone: "unknown",
-      label: "Unable to verify",
-      detail: "Gateway availability cannot be verified until this device is connected",
+      label: "Not checked",
+      detail: "computer availability is checked after this device joins the Workspace",
     };
   }
   if (input.matrixStatus !== "connected") {
     return {
       tone: "unknown",
-      label: "Unable to verify",
-      detail: "Gateway availability cannot be verified until Matrix reconnects",
+      label: "Not checked",
+      detail: "computer availability is checked after this device reconnects",
     };
   }
 

@@ -22,6 +22,7 @@ test("persists a project-qualified update intent for reload-safe continuation", 
     projectId: "project-1",
     releaseId: "release-2",
     buildId: "build-2",
+    mode: "force" as const,
     requestedAt: Date.now(),
   };
 

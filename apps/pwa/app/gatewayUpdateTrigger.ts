@@ -42,7 +42,7 @@ export type GatewayUpdateCommand =
   | {
       operation: "gateway.update.apply";
       releaseId: string;
-      mode: "when_idle";
+      mode: "when_idle" | "force";
       allowForwardOnly?: true;
     };
 
@@ -269,6 +269,7 @@ export async function triggerGatewayUpdate(input: {
   release: GatewayReleaseBuild;
   target: GatewayUpdateTarget;
   allowForwardOnly?: boolean;
+  mode?: "when_idle" | "force";
   send(
     command: GatewayUpdateCommand,
     targetProjectId: string,
@@ -302,7 +303,7 @@ export async function triggerGatewayUpdate(input: {
     // `when_idle` is the stable wire name. The Gateway closes its execution
     // gate immediately, drains only work that was already running, and leaves
     // later commands durably queued for the replacement process.
-    mode: "when_idle",
+    mode: input.mode ?? "when_idle",
     ...(input.allowForwardOnly ? { allowForwardOnly: true as const } : {}),
   }, input.target.targetProjectId);
 }

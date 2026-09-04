@@ -7,7 +7,7 @@ import { deriveConnectionPathPresentation } from "../app/connectionPathPresentat
 
 const now = 1_000_000;
 
-test("shows Matrix and Gateway as separate healthy statuses", () => {
+test("shows this device and its Workspace computer as separate healthy statuses", () => {
   const presentation = deriveConnectionPathPresentation({
     trusted: true,
     matrixStatus: "connected",
@@ -41,7 +41,7 @@ test("does not describe Gateway as offline when the client loses Matrix", () => 
   assert.equal(presentation.deviceToMatrix.tone, "progress");
   assert.equal(presentation.deviceToMatrix.label, "Reconnecting");
   assert.equal(presentation.matrixToGateway.tone, "unknown");
-  assert.equal(presentation.matrixToGateway.label, "Unable to verify");
+  assert.equal(presentation.matrixToGateway.label, "Not checked");
   assert.equal(presentation.summary, "Reconnecting");
 });
 
@@ -167,13 +167,12 @@ test("renders two named status units without a device-cloud-computer diagram", (
     now,
   });
   const html = renderToStaticMarkup(createElement(ConnectionPathIndicator, {
-    gatewayLabel: "Office Mac",
     presentation,
   }));
 
-  assert.match(html, />Matrix</);
+  assert.match(html, />This device</);
   assert.match(html, />Connected</);
-  assert.match(html, />Gateway · Office Mac</);
+  assert.match(html, />Computer</);
   assert.match(html, />Available</);
   assert.doesNotMatch(html, /connection-path-(?:node|route|segment)/);
   assert.doesNotMatch(html, /connection-status-divider/);
@@ -188,14 +187,13 @@ test("compact status names the affected service and uses one short value", () =>
     now,
   });
   const html = renderToStaticMarkup(createElement(ConnectionPathIndicator, {
-    gatewayLabel: "Office Mac",
     presentation,
     variant: "compact",
   }));
 
-  assert.match(html, />Matrix</);
+  assert.match(html, />Device</);
   assert.match(html, />Syncing</);
-  assert.match(html, />Gateway</);
+  assert.match(html, />Computer</);
   assert.match(html, />Can&#x27;t verify</);
   assert.doesNotMatch(html, />Office Mac</);
 });

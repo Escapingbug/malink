@@ -310,6 +310,7 @@ import {
 import { createConnectionDiagnostics } from "./connectionDiagnostics";
 import {
   formatDeviceInvitationSignInFailure,
+  formatPairingFailure,
   formatUserFacingError,
   isCommandRecoveryPendingError,
 } from "./userFacingError";
@@ -1619,6 +1620,10 @@ function MalinkAppRuntime() {
   // Pairing is an operation layered on top of an already-connected Matrix
   // sync. A routine "connected" status must not erase its timeout/error.
   const [pairingError, setPairingError] = useState<string | null>(null);
+  const [pairingCompletion, setPairingCompletion] = useState<{
+    gatewayName: string;
+  } | null>(null);
+  const [onboardingNotice, setOnboardingNotice] = useState<"signed-out" | null>(null);
   const [nativeRuntime, setNativeRuntime] =
     useState<MalinkNativeRuntimeInfo | null>(null);
   const [nativeUpdateState, setNativeUpdateState] =
@@ -2581,7 +2586,7 @@ function MalinkAppRuntime() {
       ? gatewayState
         ? "No active session"
         : "Syncing conversations…"
-      : "Connect a computer");
+      : "Add this device");
   const activeProvider =
     selected?.provider ?? gatewayState?.workspace.provider ?? "Agent";
   const selectedProjectWorkspace = selected
@@ -3943,7 +3948,7 @@ function MalinkAppRuntime() {
       const key = `${node.gatewayNodeId}\0${status.updateId ?? status.releaseId}\0${status.updatedAt}`;
       if (gatewayUpdateResumeKeysRef.current.has(key)) continue;
       gatewayUpdateResumeKeysRef.current.add(key);
-      void startGatewayUpdateNode(node).finally(() => {
+      void startGatewayUpdateNode(node, intent.mode ?? "when_idle").finally(() => {
         gatewayUpdateResumeKeysRef.current.delete(key);
       });
     }
@@ -6259,7 +6264,7 @@ function MalinkAppRuntime() {
             ]);
           }
           setActiveDeviceCount(trust?.activeDeviceCount ?? null);
-          if (trust) {
+          if (trust && pairingAbortRef.current === null) {
             setPairingPreview(null);
             setPairingBusy(false);
             setPairingError(null);
@@ -6738,7 +6743,7 @@ function MalinkAppRuntime() {
     setConnectionDetail(null);
   }
 
-  function forgetMatrixConfig() {
+  function forgetMatrixConfig(options: { keepSettingsOpen?: boolean } = {}) {
     const historyScope = historyScopeRef.current;
     pairingAbortRef.current?.abort();
     disconnectClient();
@@ -6764,6 +6769,7 @@ function MalinkAppRuntime() {
     setSelectedSessionId(null);
     setSelectedProjectId(null);
     setPairingPreview(null);
+    setPairingCompletion(null);
     setDeviceInvitation(null);
     setInvitationReauthRequired(false);
     setConnectionError(null);
@@ -6783,7 +6789,7 @@ function MalinkAppRuntime() {
         );
       });
     }
-    setSettingsOpen(true);
+    setSettingsOpen(options.keepSettingsOpen !== false);
   }
 
   async function signOutCurrentDevice(): Promise<void> {
@@ -6820,7 +6826,8 @@ function MalinkAppRuntime() {
         }
       }
       setForgetDialogOpen(false);
-      forgetMatrixConfig();
+      forgetMatrixConfig({ keepSettingsOpen: false });
+      setOnboardingNotice("signed-out");
     } catch (error) {
       if (nativeAccountRemoved) {
         setForgetDialogOpen(false);
@@ -6845,6 +6852,8 @@ function MalinkAppRuntime() {
   async function openPairingLink(link: string) {
     if (pairingBusy) return;
     setPairingBusy(true);
+    setPairingCompletion(null);
+    setOnboardingNotice(null);
     setConnectionError(null);
     setPairingError(null);
     try {
@@ -6874,6 +6883,8 @@ function MalinkAppRuntime() {
   }
 
   async function openDeviceInvitation(link: string) {
+    setPairingCompletion(null);
+    setOnboardingNotice(null);
     setConnectionError(null);
     setPairingError(null);
     try {
@@ -7763,7 +7774,10 @@ function MalinkAppRuntime() {
     }
   }
 
-  async function startGatewayUpdateNode(node: GatewayUpdatePlanNode): Promise<void> {
+  async function startGatewayUpdateNode(
+    node: GatewayUpdatePlanNode,
+    mode: "when_idle" | "force" = "when_idle",
+  ): Promise<void> {
     if (!gatewayRelease || gatewayUpdateActiveNodeIdsRef.current.has(node.gatewayNodeId)) return;
     const target = gatewayUpdateTarget(node);
     if (!target || node.state !== "available") return;
@@ -7809,6 +7823,7 @@ function MalinkAppRuntime() {
         gatewayNodeId: node.gatewayNodeId,
         projectId: target.targetProjectId,
         ...intentRelease,
+        mode,
         requestedAt: Date.now(),
       });
       if (!intentPersisted) {
@@ -7837,7 +7852,7 @@ function MalinkAppRuntime() {
         ? await executeGatewayUpdateRef.current({
             operation: "gateway.update.apply",
             releaseId: stagedReleaseId,
-            mode: "when_idle",
+            mode,
             ...(gatewayUpdateRequiresForwardOnlyConfirmation(liveStatus)
               ? { allowForwardOnly: true as const }
               : {}),
@@ -7845,6 +7860,7 @@ function MalinkAppRuntime() {
         : await triggerGatewayUpdate({
             release: gatewayRelease,
             target,
+            mode,
             send: (command, targetProjectId) =>
               executeGatewayUpdateRef.current(command, targetProjectId),
           });
@@ -7868,9 +7884,11 @@ function MalinkAppRuntime() {
         "success",
         status.phase === "committed"
           ? `${node.gatewayName} already runs release ${status.releaseId ?? gatewayRelease.releaseId}.`
+          : gatewayUpdateRequiresForwardOnlyConfirmation(status)
+            ? `${node.gatewayName} prepared the update. Review the protected-data warning, then choose when to install and restart.`
           : ["waiting_for_idle", "scheduled", "activating", "probation"].includes(status.phase)
             ? `${node.gatewayName} scheduled release ${status.releaseId ?? gatewayRelease.releaseId} and will switch after current Agent work finishes.`
-            : `${node.gatewayName} created its maintenance session and will continue automatically.`,
+          : `${node.gatewayName} is preparing the update. Progress remains available from its computer card.`,
         8_000,
       );
     } catch (error) {
@@ -8031,17 +8049,11 @@ function MalinkAppRuntime() {
       setMatrixConfig(configForPairing);
       setPairingPreview(null);
       setPairingError(null);
-      setSettingsOpen(false);
-      showUiNotice(
-        "connection:paired",
-        "session",
-        "success",
-        `${trust.gatewayName} connected.`,
-        5_000,
-      );
+      setPairingCompletion({ gatewayName: trust.gatewayName });
+      setSettingsOpen(true);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
-        setPairingError(formatUiError(error));
+        setPairingError(formatPairingFailure(error, previewOverride.gatewayName));
       }
     } finally {
       if (pairingAbortRef.current === abort) pairingAbortRef.current = null;
@@ -12240,7 +12252,6 @@ function MalinkAppRuntime() {
           onClick={() => setSettingsOpen(true)}
         >
           <ConnectionPathIndicator
-            gatewayLabel={activeProjectGateway.label}
             presentation={connectionPathPresentation}
           />
           <span className="gateway-more" aria-hidden="true">›</span>
@@ -12742,8 +12753,8 @@ function MalinkAppRuntime() {
           })}
           {!trustedGateway && (
             <div className="empty-search connection-list-empty">
-              <strong>Your workspace is ready</strong>
-              <small>Connect a computer to load projects and conversations.</small>
+              <strong>This device is not set up yet</strong>
+              <small>Use a Workspace invitation to load projects and conversations.</small>
             </div>
           )}
           {trustedGateway &&
@@ -12874,7 +12885,14 @@ function MalinkAppRuntime() {
         aria-label={conversationTitle}
       >
         {!trustedGateway && (
-          <ConnectionOnboarding onConnect={() => setSettingsOpen(true)} />
+          <ConnectionOnboarding
+            notice={onboardingNotice}
+            onDismissNotice={() => setOnboardingNotice(null)}
+            onConnect={() => {
+              setOnboardingNotice(null);
+              setSettingsOpen(true);
+            }}
+          />
         )}
         <header className="conversation-header">
           <button
@@ -12901,7 +12919,6 @@ function MalinkAppRuntime() {
                 onClick={() => setSettingsOpen(true)}
               >
                 <ConnectionPathIndicator
-                  gatewayLabel={activeProjectGateway.label}
                   presentation={connectionPathPresentation}
                   variant="compact"
                 />
@@ -13669,8 +13686,8 @@ function MalinkAppRuntime() {
                 gatewayAvailable
                   ? `Message ${activeProvider}…`
                   : trustedGateway
-                    ? "Connect your computer to send messages"
-                    : "Connect a computer to start"
+                    ? "Reconnect a Workspace computer to send messages"
+                    : "Add this device to start"
               }
               aria-label={`Message ${activeProvider}`}
               rows={2}
@@ -14088,7 +14105,7 @@ function MalinkAppRuntime() {
             const target = gatewayNodeProbeTargetsById.get(node.gatewayNodeId);
             if (target) void probeGatewayNodeLiveness(target);
           }}
-          onStart={(node) => void startGatewayUpdateNode(node)}
+          onStart={(node, mode) => void startGatewayUpdateNode(node, mode)}
           onOpenSession={openGatewayUpdateSession}
           onArchiveSession={(node, sessionId) =>
             void archiveGatewayMaintenanceSession(node, sessionId)
@@ -14177,7 +14194,9 @@ function MalinkAppRuntime() {
         repairReason={connectionRepairReason}
         error={pairingError ?? connectionError}
         pairingPreview={pairingPreview}
+        pairingCompletion={pairingCompletion}
         trustedGateway={trustedGateway}
+        activeDeviceCount={activeDeviceCount}
         savedGateways={savedGateways}
         gatewayDirectory={gatewayState?.gatewayDirectory ?? null}
         availableProjectIds={allWorkspaceProjects
@@ -14225,6 +14244,10 @@ function MalinkAppRuntime() {
           setConnectionError(null);
         }}
         onConfirmPairing={() => void confirmPairing()}
+        onFinishPairing={() => {
+          setPairingCompletion(null);
+          setSettingsOpen(false);
+        }}
         onClose={() => setSettingsOpen(false)}
         onDisconnect={() => disconnectClient()}
         onForget={() => {

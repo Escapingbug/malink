@@ -11,7 +11,7 @@ import {
   shouldAutoLoadEarlierMessages,
   waitForHistoryOperation,
 } from "../app/historyPagination.ts";
-import { PairingWizard } from "../app/PairingWizard.tsx";
+import { PairingWizard, pairingProgressStep } from "../app/PairingWizard.tsx";
 import {
   ClipboardOperationTimeoutError,
   readClipboardTextWithTimeout,
@@ -74,6 +74,9 @@ test("shows an explicit busy state while a pairing invitation is verified", () =
     trustedGateway: null,
     repairReason: null,
     busy: true,
+    connectionStatus: "offline",
+    error: null,
+    completion: null,
     canConfirm: false,
     deviceInvitation: null,
     invitationBusy: false,
@@ -82,6 +85,7 @@ test("shows an explicit busy state while a pairing invitation is verified", () =
     onLink() {},
     onClear() {},
     onConfirm() {},
+    onFinish() {},
     onCreateInvitation() {},
     onClearInvitation() {},
   }));
@@ -106,7 +110,10 @@ test("shows the exact secure pairing stage while finishing a connection", () => 
     trustedGateway: null,
     repairReason: null,
     busy: true,
+    connectionStatus: "securing",
     progressDetail: "Recovering the approved pairing response…",
+    error: null,
+    completion: null,
     canConfirm: true,
     deviceInvitation: null,
     invitationBusy: false,
@@ -115,6 +122,7 @@ test("shows the exact secure pairing stage while finishing a connection", () => 
     onLink() {},
     onClear() {},
     onConfirm() {},
+    onFinish() {},
     onCreateInvitation() {},
     onClearInvitation() {},
   }));
@@ -123,6 +131,81 @@ test("shows the exact secure pairing stage while finishing a connection", () => 
   assert.match(html, /Recovering the approved pairing response…/);
   assert.match(html, /operation-progress/);
   assert.doesNotMatch(html, /Finishing the connection…/);
+});
+
+test("does not confuse account connectivity with completed Workspace setup", () => {
+  assert.equal(pairingProgressStep("connected", null, false), 1);
+  assert.equal(
+    pairingProgressStep("connected", "Waiting for computer authorization…", true),
+    3,
+  );
+  assert.equal(
+    pairingProgressStep(
+      "connected",
+      "The Workspace did not finish syncing.",
+      true,
+    ),
+    4,
+  );
+});
+
+test("marks the exact stopped setup stage after a recoverable failure", () => {
+  const html = renderToStaticMarkup(createElement(PairingWizard, {
+    preview: {
+      gatewayName: "Studio computer",
+      verificationCode: "123 456",
+      expiresAt: Date.now() + 60_000,
+    } as never,
+    trustedGateway: null,
+    repairReason: null,
+    busy: false,
+    connectionStatus: "connected",
+    error: "Studio computer did not return the device authorization before the invitation expired.",
+    completion: null,
+    canConfirm: true,
+    deviceInvitation: null,
+    invitationBusy: false,
+    invitationError: null,
+    invitationReauthRequired: false,
+    onLink() {},
+    onClear() {},
+    onConfirm() {},
+    onFinish() {},
+    onCreateInvitation() {},
+    onClearInvitation() {},
+  }));
+
+  assert.match(html, /class="is-error" aria-current="step"><span aria-hidden="true">!<\/span><strong>Computer authorization/);
+  assert.match(html, /Retry secure setup/);
+  assert.match(html, /recoverable request remain/);
+});
+
+test("keeps successful setup visible until the user opens conversations", () => {
+  const html = renderToStaticMarkup(createElement(PairingWizard, {
+    preview: null,
+    trustedGateway: null,
+    repairReason: null,
+    busy: false,
+    connectionStatus: "connected",
+    error: null,
+    completion: { gatewayName: "Studio computer" },
+    canConfirm: true,
+    deviceInvitation: null,
+    invitationBusy: false,
+    invitationError: null,
+    invitationReauthRequired: false,
+    onLink() {},
+    onClear() {},
+    onConfirm() {},
+    onFinish() {},
+    onCreateInvitation() {},
+    onClearInvitation() {},
+  }));
+
+  assert.match(html, /Setup complete/);
+  assert.match(html, /This device is ready/);
+  assert.match(html, /Studio computer/);
+  assert.match(html, />Open conversations<\/button>/);
 });
 
 test("identifies only the Gateway row whose approval is in flight", () => {
@@ -155,9 +238,9 @@ test("identifies only the Gateway row whose approval is in flight", () => {
 
   assert.equal(html.match(/Sending approval…/g)?.length, 1);
   assert.equal(html.match(/operation-progress/g)?.length, 1);
-  assert.equal(html.match(/>Approve Gateway</g)?.length, 1);
-  assert.match(html, /2\. Approve Office Gateway/);
-  assert.match(html, /2\. Approve NAS Gateway/);
+  assert.equal(html.match(/>Approve computer</g)?.length, 1);
+  assert.match(html, /2\. Approve computer · Office Gateway/);
+  assert.match(html, /2\. Approve computer · NAS Gateway/);
 });
 
 test("keeps long-running notices visibly active until their terminal state", () => {
