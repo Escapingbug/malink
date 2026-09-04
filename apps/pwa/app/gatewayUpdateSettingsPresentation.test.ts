@@ -61,6 +61,7 @@ describe("gatewayUpdateSettingsPresentation", () => {
     });
 
     expect(presentation.action).toBe("review");
-    expect(presentation.actionLabel).toBe("Review update");
+    expect(presentation.actionLabel).toBe("Review 2 updates");
+    expect(presentation.attention).toBe(false);
   });
 });

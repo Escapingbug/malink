@@ -11465,7 +11465,13 @@ body {
 
 .settings-navigation button {
   position: relative;
+  display: inline-flex;
   min-height: 38px;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding-inline: 8px;
   border: 1px solid transparent;
   border-radius: 9px;
   color: #71798a;
@@ -11484,12 +11490,18 @@ body {
   display: inline-grid;
   min-width: 17px;
   height: 17px;
-  margin-left: 5px;
   place-items: center;
+  border: 1px solid #d8d1ff;
   border-radius: 999px;
-  background: #e35663;
-  color: white;
+  background: #ebe8ff;
+  color: #5844c3;
   font-size: 8px;
+}
+
+.settings-navigation button.is-active b {
+  border-color: #6b55d5;
+  background: #6b55d5;
+  color: white;
 }
 
 .workspace-overview {
@@ -11524,6 +11536,12 @@ body {
 .computer-software-summary.needs-attention {
   border-color: #ecd3d6;
   background: #fffafa;
+}
+
+.computer-software-summary.has-updates {
+  border-color: #d8d1ff;
+  background: #faf9ff;
+  box-shadow: inset 3px 0 0 #7567d5;
 }
 
 .workspace-health-mark,
@@ -12072,9 +12090,12 @@ body {
 
 @media (max-width: 520px) {
   .settings-navigation {
-    grid-template-columns: repeat(4, minmax(90px, 1fr));
-    overflow-x: auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     padding-inline: 12px;
+  }
+
+  .settings-navigation button {
+    min-height: 42px;
   }
 
   .workspace-overview,
