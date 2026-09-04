@@ -485,6 +485,24 @@ events. Explicit `send_file` and authenticated artifact materialization are the
 two Agent-to-client local-file delivery authorities; both terminate in the
 same signed attachment model.
 
+## Extension-owned client applications
+
+A trusted session extension can reduce an Agent result to a passive
+`integration_entry` presentation. The entry is signed and application-encrypted
+with the assistant message, but carries only a registered extension ID, route
+ID, and opaque resource reference. It cannot supply a URL. The PWA resolves the
+destination against the installed extension descriptor from the authenticated
+project projection and opens the HTTPS application in a cross-origin sandbox.
+
+The application resource reference crosses the browser boundary only through
+a dedicated `MessageChannel` after the frame loads. The integration receives
+no Matrix credentials, MLP project key, filesystem access, conversation
+projection, or generic command bridge. Its own page, account, storage,
+synchronization server, and E2EE scheme remain outside Malink. Closing the
+integration returns to the originating conversation without creating an MLP
+command. Mutating Malink state from an integrated application would require a
+future typed, signed operation and is intentionally absent from V1.
+
 ## Delivery and recovery ownership
 
 - Gateway SQLite command journal: local deduplication and execution outcome.

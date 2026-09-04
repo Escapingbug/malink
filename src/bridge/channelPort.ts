@@ -15,6 +15,7 @@ import type {
     PrivilegedExecutionInput,
     PrivilegedExecutionResult,
 } from '@/privilege'
+import type { IntegrationEntryPresentation } from '@malink/protocol'
 
 export interface ChannelAttachment {
     /** Stable application identity used by deferred artifact references. */
@@ -62,6 +63,8 @@ export interface ChannelMessage {
     format: 'markdown' | 'html' | 'plain'
     /** Channel-neutral structured UI hints. Ports may serialize or ignore them. */
     presentation?: ChannelPresentation
+    /** Passive entry into an administrator-installed client application. */
+    integrationEntry?: IntegrationEntryPresentation
     replyMarkup?: unknown
     attachments?: ChannelAttachment[]
 }

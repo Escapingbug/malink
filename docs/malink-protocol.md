@@ -472,6 +472,16 @@ signed metadata. Large visible text is split into deterministic bounded parts
 with one logical message identity so recovery never depends on an oversized
 single response.
 
+An installed session extension may project a passive client-application entry
+inside `assistant.message.ui`. The encrypted entry contains a registered
+extension ID, a registered route ID, and an opaque extension-owned resource
+reference; it never contains an executable URL or embedded code. Clients
+resolve the route only against the extension descriptor in the authenticated
+project projection. Opening the entry is local presentation behavior and has
+no MLP/3 execution authority. The integrated application owns its own E2EE
+transport and receives no Matrix credential, project key, or implicit access
+to Malink content.
+
 An Agent Markdown local path may be rewritten only by the owning Gateway to an
 opaque `malink-artifact:` destination after canonical-path containment and stat
 checks. The original `assistant.message` carries at most ten encrypted

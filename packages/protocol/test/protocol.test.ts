@@ -3,8 +3,12 @@ import {
   canonicalJson,
   commandPayloadSchema,
   commandSchema,
+  clientIntegrationHostRequestSchema,
+  clientIntegrationLaunchMessageSchema,
   eventSchema,
+  integrationEntryPresentationSchema,
   providerControlSchema,
+  sessionExtensionDescriptorSchema,
 } from '../src/index.js'
 
 describe('canonicalJson', () => {
@@ -21,6 +25,66 @@ describe('canonicalJson', () => {
 })
 
 describe('protocol schemas', () => {
+  it('registers HTTPS client integrations without accepting message-owned destinations', () => {
+    const descriptor = sessionExtensionDescriptorSchema.parse({
+      id: 'metapp',
+      name: 'metapp',
+      description: 'Renders metapp resources in its own client.',
+      version: '1',
+      settings: [],
+      clientIntegration: {
+        origin: 'https://app.metapp.example',
+        bridgeVersion: 1,
+        routes: [{ id: 'artifact.preview', path: '/embed/preview' }],
+        capabilities: [],
+      },
+    })
+    expect(descriptor.clientIntegration).toMatchObject({
+      origin: 'https://app.metapp.example',
+      capabilities: [],
+    })
+    expect(integrationEntryPresentationSchema.parse({
+      kind: 'integration_entry',
+      version: 1,
+      integrationId: 'metapp',
+      routeId: 'artifact.preview',
+      resourceRef: 'artifact-1',
+      title: 'Project report',
+    })).not.toHaveProperty('url')
+    expect(clientIntegrationLaunchMessageSchema.parse({
+      protocol: 'io.malink.client-integration',
+      version: 1,
+      type: 'launch',
+      integrationId: 'metapp',
+      routeId: 'artifact.preview',
+      resourceRef: 'artifact-1',
+      environment: {},
+    })).toMatchObject({ type: 'launch', resourceRef: 'artifact-1' })
+    expect(() => clientIntegrationHostRequestSchema.parse({
+      protocol: 'io.malink.client-integration',
+      version: 1,
+      type: 'close',
+      command: 'session.delete',
+    })).toThrow()
+    expect(() => sessionExtensionDescriptorSchema.parse({
+      ...descriptor,
+      clientIntegration: {
+        ...descriptor.clientIntegration,
+        origin: 'http://app.metapp.example',
+      },
+    })).toThrow('HTTPS origin')
+    expect(() => sessionExtensionDescriptorSchema.parse({
+      ...descriptor,
+      clientIntegration: {
+        ...descriptor.clientIntegration,
+        routes: [
+          { id: 'artifact.preview', path: '/one' },
+          { id: 'artifact.preview', path: '/two' },
+        ],
+      },
+    })).toThrow('route IDs must be unique')
+  })
+
   it('models provider controls with explicit loading and diagnostic states', () => {
     expect(providerControlSchema.parse({
       id: 'model',

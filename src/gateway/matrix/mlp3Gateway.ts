@@ -4103,6 +4103,9 @@ export class MatrixMlp3GatewayRunner {
         name: extension.name,
         description: extension.description,
         version: extension.version,
+        ...(extension.clientIntegration
+          ? { clientIntegration: extension.clientIntegration }
+          : {}),
         settings: extension.settings.map(setting => setting.type === 'text'
           ? {
               id: setting.id,

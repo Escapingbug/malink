@@ -1,5 +1,9 @@
 import { z } from 'zod'
-import { providerControlSchema, signatureSchema } from './schema.js'
+import {
+  clientIntegrationManifestSchema,
+  providerControlSchema,
+  signatureSchema,
+} from './schema.js'
 import { signedSecureEnvelopeBundleSchema } from './secure-envelope.js'
 
 /** Pre-MLP/3 application envelope retained only for migration/boundary tests. */
@@ -205,6 +209,7 @@ const matrixSessionExtensionCapabilitySchema = z
     description: z.string().min(1).max(4_096),
     version: z.string().min(1).max(128),
     settings: z.array(matrixSessionExtensionSettingSchema).max(32),
+    clientIntegration: clientIntegrationManifestSchema.optional(),
   })
   .strict()
   .superRefine((extension, context) => {

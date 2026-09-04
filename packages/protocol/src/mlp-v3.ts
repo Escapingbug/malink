@@ -7,6 +7,7 @@ import { gatewayUpdateStatusSchema } from './gateway-release.js'
 import {
   attachmentSchema,
   artifactReferenceSchema,
+  integrationEntryPresentationSchema,
   jsonValueSchema,
   providerControlSchema,
   providerControlValuesSchema,
@@ -870,6 +871,21 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
           path: ['partIndex'],
           message: 'Message part index must be smaller than part count',
         })
+      }
+      if (
+        value.ui
+        && typeof value.ui === 'object'
+        && !Array.isArray(value.ui)
+        && value.ui.kind === 'integration_entry'
+      ) {
+        const entry = integrationEntryPresentationSchema.safeParse(value.ui)
+        if (!entry.success) {
+          context.addIssue({
+            code: 'custom',
+            path: ['ui'],
+            message: 'Client integration entry UI metadata is invalid',
+          })
+        }
       }
       if (
         value.ui

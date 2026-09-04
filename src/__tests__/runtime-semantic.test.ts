@@ -5,6 +5,43 @@ import { mapSessionUpdate } from '@/providers/acp/eventAdapter'
 import { ChannelProjector } from '@/runtime/channelProjector'
 
 describe('DefaultProviderSemanticAdapter', () => {
+    it('projects a passive client integration entry without making it a decision', () => {
+        const projector = new ChannelProjector()
+        const [projected] = projector.project({
+            kind: 'integration_entry',
+            meta: {
+                id: 'integration-entry-1',
+                sessionId: 'session-1',
+                turnId: 'turn-1',
+                provider: 'test-provider',
+                seq: 1,
+                timestamp: 1,
+                sourcePhase: 'live',
+            },
+            presentation: {
+                kind: 'integration_entry',
+                version: 1,
+                integrationId: 'metapp',
+                routeId: 'artifact.preview',
+                resourceRef: 'artifact-1',
+                title: 'Project report',
+                description: 'Rendered by metapp.',
+            },
+        })
+
+        expect(projected).toMatchObject({
+            isToolEvent: false,
+            isTerminal: false,
+            message: {
+                text: 'Rendered by metapp.',
+                integrationEntry: {
+                    kind: 'integration_entry',
+                    resourceRef: 'artifact-1',
+                },
+            },
+        })
+    })
+
     it('maps provider text into assistant text deltas', () => {
         const adapter = new DefaultProviderSemanticAdapter('test-provider')
 

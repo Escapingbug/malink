@@ -8,6 +8,54 @@ import {
 import { matrixGatewayCapabilitiesSchema } from '../src/matrix-native.js'
 
 describe('Malink Protocol v3 (MLP/3)', () => {
+  it('carries a bounded passive client integration entry inside an encrypted assistant event', () => {
+    const event = {
+      kind: 'malink.event' as const,
+      version: 3 as const,
+      eventId: 'integration-entry-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      causationCommandId: 'command-1',
+      occurredAt: 2,
+      payload: {
+        type: 'assistant.message' as const,
+        messageId: 'message-1',
+        messageVersion: 1,
+        body: 'Open the project report in metapp.',
+        format: 'plain' as const,
+        final: true,
+        projection: {
+          title: 'Session',
+          lifecycle: 'active' as const,
+          activity: 'idle' as const,
+          updatedAt: 2,
+          stateVersion: 1,
+        },
+        ui: {
+          kind: 'integration_entry',
+          version: 1,
+          integrationId: 'metapp',
+          routeId: 'artifact.preview',
+          resourceRef: 'artifact-1',
+          title: 'Project report',
+        },
+      },
+    }
+    expect(mlp3EventSchema.parse(event).payload).toMatchObject({
+      type: 'assistant.message',
+      ui: { kind: 'integration_entry', integrationId: 'metapp' },
+    })
+    expect(() => mlp3EventSchema.parse({
+      ...event,
+      eventId: 'integration-entry-invalid',
+      payload: {
+        ...event.payload,
+        ui: { ...event.payload.ui, url: 'https://phishing.example' },
+      },
+    })).toThrow('integration entry')
+  })
+
   it('adds Gateway enrollment cancellation without changing the protocol version', () => {
     const command = mlp3CommandSchema.parse({
       kind: 'malink.command',
@@ -449,10 +497,24 @@ describe('Malink Protocol v3 (MLP/3)', () => {
       can_select_session: false,
       can_archive_session: true,
       can_delete_session: true,
-      session_extensions: [],
+      session_extensions: [{
+        id: 'metapp',
+        name: 'metapp',
+        description: 'metapp client integration',
+        version: '1',
+        settings: [],
+        clientIntegration: {
+          origin: 'https://app.metapp.example',
+          bridgeVersion: 1,
+          routes: [{ id: 'artifact.preview', path: '/embed/preview' }],
+          capabilities: ['host.close'],
+        },
+      }],
       web_push: { vapid_public_key: 'B'.repeat(87) },
     })
     expect(capabilities.web_push?.vapid_public_key).toHaveLength(87)
+    expect(capabilities.session_extensions[0]?.clientIntegration?.routes[0]?.id)
+      .toBe('artifact.preview')
   })
 
   it('carries a six-digit TOTP only on an approval response', () => {

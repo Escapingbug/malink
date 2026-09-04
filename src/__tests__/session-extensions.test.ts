@@ -187,6 +187,67 @@ describe('session extension registry', () => {
 })
 
 describe('HTTP session extension boundary', () => {
+    it('accepts only passive client entries owned by the presenting extension', async () => {
+        const integrationDescriptor: SessionExtensionDescriptor = {
+            ...descriptor,
+            id: 'metapp',
+            name: 'metapp',
+            clientIntegration: {
+                origin: 'https://app.metapp.example',
+                bridgeVersion: 1,
+                routes: [{ id: 'artifact.preview', path: '/embed/preview' }],
+                capabilities: ['host.close'],
+            },
+        }
+        let integrationId = integrationDescriptor.id
+        const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+            const path = new URL(String(url)).pathname
+            if (path === '/v1/manifest') {
+                return new Response(JSON.stringify({
+                    protocolVersion: 1,
+                    descriptor: integrationDescriptor,
+                }), { status: 200 })
+            }
+            const request = JSON.parse(String(init?.body)) as {
+                event: ConversationEvent
+            }
+            return new Response(JSON.stringify({
+                events: [{
+                    kind: 'integration_entry',
+                    meta: request.event.meta,
+                    presentation: {
+                        kind: 'integration_entry',
+                        version: 1,
+                        integrationId,
+                        routeId: 'artifact.preview',
+                        resourceRef: 'artifact-1',
+                        title: 'Project report',
+                    },
+                }],
+            }), { status: 200 })
+        }) as typeof fetch
+        const provider = await HttpSessionExtensionProvider.connect({
+            endpoint: 'http://127.0.0.1:8791',
+            bearerToken: 'extension-secret-at-least-32-bytes',
+            expectedExtensionId: integrationDescriptor.id,
+            fetch: fetchImpl,
+        })
+        const instance = provider.create({ id: integrationDescriptor.id }, {
+            sessionId: 'session-1',
+            cwd: '/repo',
+            providerName: 'test-provider',
+        })
+
+        await expect(instance.presentEvent(event('report ready'), context))
+            .resolves.toMatchObject([{
+                kind: 'integration_entry',
+                presentation: { integrationId: 'metapp', resourceRef: 'artifact-1' },
+            }])
+        integrationId = 'another-extension'
+        await expect(instance.presentEvent(event('report ready'), context))
+            .rejects.toThrow('another client integration')
+    })
+
     it('uses the preview/commit protocol and strips provider raw metadata', async () => {
         const requests: Array<{ path: string; body: Record<string, unknown> }> = []
         const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
