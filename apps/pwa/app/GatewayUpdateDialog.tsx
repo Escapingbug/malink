@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { GatewayUpdateStatus } from "@malink/protocol";
 import type { GatewayReleaseBuild } from "./buildInfo";
 import { useDialogFocus } from "./dialogFocus";
@@ -82,12 +82,21 @@ function GatewayUpdateDialogContent({
   const [forceConfirmationNodeId, setForceConfirmationNodeId] = useState<string | null>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const forceConfirmationRef = useRef<HTMLDivElement>(null);
   useDialogFocus({
     open,
     containerRef: dialogRef,
     initialFocusRef: closeRef,
     onEscape: onClose,
   });
+  useEffect(() => {
+    if (!forceConfirmationNodeId) return;
+    const frame = window.requestAnimationFrame(() => {
+      forceConfirmationRef.current?.scrollIntoView({ block: "nearest" });
+      forceConfirmationRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [forceConfirmationNodeId]);
   const availableCount = nodes.filter(node => node.state === "available").length;
   const ordered = [...nodes].sort((left, right) =>
     updateStateOrder(left.state) - updateStateOrder(right.state)
@@ -193,13 +202,14 @@ function GatewayUpdateDialogContent({
               )
             );
             const canProbe = connected && node.onlineUpdate && Boolean(node.targetProjectId);
-            const canStart =
+            const canRequestUpdate =
+              connected &&
               node.state === "available" &&
-              runtime.state === "online" &&
-              Boolean(runtime.status) &&
               updateActionAvailable &&
               !activeGatewayNodeIds.has(node.gatewayNodeId);
             const active = activeGatewayNodeIds.has(node.gatewayNodeId);
+            const requiresLivePreflight =
+              runtime.state !== "online" || runtime.status === undefined;
             const forceConfirming = forceConfirmationNodeId === node.gatewayNodeId;
             return (
               <article
@@ -406,11 +416,14 @@ function GatewayUpdateDialogContent({
                       <button
                         type="button"
                         className="primary-button"
-                        disabled={!canStart}
+                        disabled={!connected || active}
+                        aria-busy={active}
                         onClick={() => onStart(node, "when_idle")}
                       >
                         {active
                           ? "Updating…"
+                          : requiresLivePreflight
+                            ? "Check and update when idle"
                           : runtime.status?.phase === "staged"
                             ? forwardOnlyConfirmation
                               ? "Confirm and install when idle"
@@ -422,16 +435,28 @@ function GatewayUpdateDialogContent({
                       <button
                         type="button"
                         className="secondary-button"
-                        disabled={!canStart}
+                        disabled={!connected || active}
                         onClick={() => setForceConfirmationNodeId(node.gatewayNodeId)}
                       >
-                        Install and restart now…
+                        {requiresLivePreflight
+                          ? "Check and restart now…"
+                          : "Install and restart now…"}
                       </button>
+                      {!connected && (
+                        <p className="gateway-update-action-status" role="status">
+                          Reconnect this Malink client before installing the update.
+                        </p>
+                      )}
                     </>
                   )}
                 </div>
                 {forceConfirming && (
-                  <div className="gateway-update-force-confirmation" role="alert">
+                  <div
+                    ref={forceConfirmationRef}
+                    className="gateway-update-force-confirmation"
+                    role="alert"
+                    tabIndex={-1}
+                  >
                     <strong>Restart {owner.label} now?</strong>
                     <p>
                       Malink will stop active Agent turns on this computer, finish preparing
@@ -449,7 +474,7 @@ function GatewayUpdateDialogContent({
                       <button
                         type="button"
                         className="danger-button"
-                        disabled={!canStart}
+                        disabled={!canRequestUpdate}
                         onClick={() => {
                           setForceConfirmationNodeId(null);
                           onStart(node, "force");

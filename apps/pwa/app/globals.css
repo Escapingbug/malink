@@ -8756,6 +8756,15 @@ select:focus-visible {
   line-height: 1.45;
 }
 
+.gateway-update-action-status {
+  flex: 1 1 100%;
+  margin: 0;
+  color: #737b8c;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  text-align: right;
+}
+
 .gateway-update-node-actions button,
 .gateway-update-dialog > footer button {
   min-height: 36px;

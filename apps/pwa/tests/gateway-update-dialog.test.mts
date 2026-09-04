@@ -82,6 +82,57 @@ test("shows node identity, version need, and signed live status before consent",
   assert.match(html, /You choose the restart timing/);
 });
 
+test("starts a live preflight instead of rendering inert install buttons", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [nodes[0]!],
+    runtimeByNode: {
+      "node-office": { state: "unchecked" },
+    },
+    activeGatewayNodeIds: new Set(),
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  assert.match(
+    html,
+    /<button type="button" class="primary-button" aria-busy="false">Check and update when idle<\/button>/,
+  );
+  assert.match(
+    html,
+    /<button type="button" class="secondary-button">Check and restart now…<\/button>/,
+  );
+  assert.doesNotMatch(html, /primary-button" disabled/);
+});
+
+test("explains why install actions are unavailable while disconnected", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: false,
+    release,
+    nodes: [nodes[0]!],
+    runtimeByNode: {
+      "node-office": { state: "unchecked" },
+    },
+    activeGatewayNodeIds: new Set(),
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  assert.match(html, /Reconnect this Malink client before installing the update/);
+  assert.match(html, /primary-button" disabled/);
+});
+
 test("turns repeated missing replies into actionable Gateway attention", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
     open: true,

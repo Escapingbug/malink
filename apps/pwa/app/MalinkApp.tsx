@@ -8070,9 +8070,53 @@ function MalinkAppRuntime() {
     node: GatewayUpdatePlanNode,
     mode: "when_idle" | "force" = "when_idle",
   ): Promise<void> {
-    if (!gatewayRelease || gatewayUpdateActiveNodeIdsRef.current.has(node.gatewayNodeId)) return;
+    if (!gatewayRelease) {
+      showUiNotice(
+        `gateway-update:${node.gatewayNodeId}`,
+        "connection",
+        "warning",
+        "The Gateway update did not start because the published release is no longer available. Check the release channel again.",
+      );
+      return;
+    }
+    if (gatewayUpdateActiveNodeIdsRef.current.has(node.gatewayNodeId)) {
+      showUiNotice(
+        `gateway-update:${node.gatewayNodeId}`,
+        "connection",
+        "info",
+        `${node.gatewayName} is already processing this update request. Its computer card will show the next signed phase.`,
+        8_000,
+      );
+      return;
+    }
+    if (connectionStatusRef.current !== "connected") {
+      showUiNotice(
+        `gateway-update:${node.gatewayNodeId}`,
+        "connection",
+        "warning",
+        `The update did not start because this Malink client is not connected. Reconnect the Workspace, then install ${gatewayRelease.releaseId}.`,
+      );
+      return;
+    }
     const target = gatewayUpdateTarget(node);
-    if (!target || node.state !== "available") return;
+    if (!target || node.state !== "available") {
+      const detail = node.state === "current"
+        ? `${node.gatewayName} already reports the current Gateway build.`
+        : `${node.gatewayName} has no verified project route for this update.`;
+      setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
+        ...current,
+        state: node.state === "current" ? "online" : "error",
+        detail,
+      }));
+      showUiNotice(
+        `gateway-update:${node.gatewayNodeId}`,
+        "connection",
+        node.state === "current" ? "success" : "warning",
+        `The update did not start. ${detail}`,
+        node.state === "current" ? 8_000 : undefined,
+      );
+      return;
+    }
     const activeNodeIds = new Set(gatewayUpdateActiveNodeIdsRef.current);
     activeNodeIds.add(node.gatewayNodeId);
     gatewayUpdateActiveNodeIdsRef.current = activeNodeIds;
@@ -8097,7 +8141,15 @@ function MalinkAppRuntime() {
               ...(!node.targetProjectId ? { unavailableReason: "route" as const } : {}),
             },
           );
-      if (!liveStatus) return;
+      if (!liveStatus) {
+        showUiNotice(
+          `gateway-update:${node.gatewayNodeId}`,
+          "connection",
+          "warning",
+          `${node.gatewayName} did not return a signed live status, so no update was started. Keep the Gateway Host running and use Check again from this computer card.`,
+        );
+        return;
+      }
       const intentRelease = liveStatus.phase === "staged" &&
         liveStatus.releaseId &&
         liveStatus.targetBuildId
@@ -14404,7 +14456,16 @@ function MalinkAppRuntime() {
           onClose={() => setGatewayUpdateDialogOpen(false)}
           onProbe={(node) => {
             const target = gatewayNodeProbeTargetsById.get(node.gatewayNodeId);
-            if (target) void probeGatewayNodeLiveness(target);
+            if (target) {
+              void probeGatewayNodeLiveness(target);
+              return;
+            }
+            showUiNotice(
+              `gateway-update:probe:${node.gatewayNodeId}`,
+              "connection",
+              "warning",
+              `${node.gatewayName} cannot be checked because this client has no verified project route for it. Refresh the Workspace or export diagnostics.`,
+            );
           }}
           onStart={(node, mode) => void startGatewayUpdateNode(node, mode)}
           onOpenSession={openGatewayUpdateSession}
