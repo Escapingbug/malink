@@ -7,6 +7,68 @@ import {
 import { toIncomingMessage, toLegacyCompletion } from "./matrixMlp3Connection";
 
 describe("MatrixMlp3Projection", () => {
+  it("assembles revision-bound provider catalog pages independently of arrival order", () => {
+    const projection = new MatrixMlp3Projection();
+    const common = {
+      kind: "malink.event" as const,
+      version: 3 as const,
+      workspaceId: "workspace-a",
+      projectId: "project-a",
+      occurredAt: 10,
+    };
+    projection.applyEvent({
+      ...common,
+      eventId: "catalog-manifest",
+      payload: {
+        type: "provider.catalog.manifest",
+        providerId: "agent",
+        catalog: "models",
+        revision: "r".repeat(43),
+        status: "ready",
+        itemCount: 2,
+        pageCount: 2,
+      },
+    }, "$manifest");
+    projection.applyEvent({
+      ...common,
+      eventId: "catalog-page-1",
+      payload: {
+        type: "provider.catalog.page",
+        providerId: "agent",
+        catalog: "models",
+        revision: "r".repeat(43),
+        pageIndex: 1,
+        pageCount: 2,
+        items: [{ id: "model-b", name: "Model B" }],
+      },
+    }, "$page-1");
+    expect(projection.providerModelCatalogs()[0]).toMatchObject({ complete: false });
+    projection.applyEvent({
+      ...common,
+      eventId: "catalog-page-0",
+      payload: {
+        type: "provider.catalog.page",
+        providerId: "agent",
+        catalog: "models",
+        revision: "r".repeat(43),
+        pageIndex: 0,
+        pageCount: 2,
+        items: [{ id: "model-a", name: "Model A" }],
+      },
+    }, "$page-0");
+
+    expect(projection.providerModelCatalogs()[0]).toMatchObject({
+      complete: true,
+      models: [{ id: "model-a" }, { id: "model-b" }],
+    });
+    const restored = new MatrixMlp3Projection();
+    restored.restore(projection.durableState());
+    expect(restored.providerModelCatalogs()[0]).toMatchObject({
+      complete: true,
+      itemCount: 2,
+    });
+  });
+
   it("converges per session despite out-of-order events and physical relation changes", () => {
     const projection = new MatrixMlp3Projection();
     projection.applyCommand(createCommand("a"), "$root-original", 1);

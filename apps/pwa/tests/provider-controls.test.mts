@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ProviderControls } from "../app/ProviderControls.tsx";
 import {
+  applyProviderModelCatalogs,
   activeProviderControls,
   submittableProviderControlValues,
 } from "../app/providerControlCompatibility.ts";
@@ -35,7 +36,8 @@ test("renders loading as progress and failures as actionable diagnostics", () =>
   }));
   assert.match(loading, /button-spinner/);
   assert.match(loading, /Loading model/);
-  assert.match(loading, /Expected within 10 seconds/);
+  assert.match(loading, /Waiting for the Gateway/);
+  assert.doesNotMatch(loading, /Expected within|by \d/);
 
   const failed = renderToStaticMarkup(createElement(ProviderControls, {
     controls: [{
@@ -56,7 +58,6 @@ test("renders loading as progress and failures as actionable diagnostics", () =>
     onChange() {},
   }));
   assert.match(failed, /Model unavailable/);
-  assert.match(failed, /executable_not_found/);
   assert.match(failed, /Technical details/);
   assert.match(failed, /spawn agent ENOENT/);
 });
@@ -78,8 +79,64 @@ test("turns an expired loading snapshot into a visible timeout", () => {
   }));
   assert.doesNotMatch(html, /button-spinner|Loading model/);
   assert.match(html, /Model unavailable/);
-  assert.match(html, /catalog_timeout/);
-  assert.match(html, /last received loading state expired/);
+  assert.match(html, /taking longer than expected/);
+  assert.doesNotMatch(html, /catalog_timeout|expired at/);
+});
+
+test("searches and incrementally presents long select catalogs", () => {
+  const html = renderToStaticMarkup(createElement(ProviderControls, {
+    controls: [{
+      id: "model",
+      label: "Model",
+      renderer: "select",
+      surfaces: ["session-create"],
+      status: "ready",
+      options: Array.from({ length: 81 }, (_, index) => ({
+        value: `model-${index + 1}`,
+        label: `Model ${index + 1}`,
+      })),
+    }],
+    surface: "session-create",
+    values: {},
+    onChange() {},
+  }));
+  assert.match(html, /type="search"/);
+  assert.match(html, /Search 81 choices/);
+  assert.match(html, /40 of 81/);
+  assert.match(html, /Show more/);
+  assert.doesNotMatch(html, />Model 81</);
+});
+
+test("hydrates models and model controls from a complete paginated catalog", () => {
+  const capabilities = applyProviderModelCatalogs({
+    models: [],
+    providers: [{
+      id: "agent",
+      name: "agent",
+      models: [],
+      canListSessions: false,
+      canInspectSessions: false,
+      controls: [],
+    }],
+    controls: [],
+    permissionModes: [{ id: "default", name: "Default" }],
+    canCreateSession: true,
+    canSelectSession: false,
+    sessionExtensions: [],
+  }, [{
+    providerId: "agent",
+    revision: "r".repeat(43),
+    status: "ready",
+    itemCount: 1,
+    pageCount: 1,
+    occurredAt: 1,
+    complete: true,
+    models: [{ id: "model-a", name: "Model A" }],
+  }], "agent");
+
+  assert.deepEqual(capabilities.models.map(model => model.id), ["model-a"]);
+  assert.equal(capabilities.controls?.find(control => control.id === "model")
+    ?.options?.[0]?.value, "model-a");
 });
 
 test("replaces a session's old loading control with the refreshed capability", () => {

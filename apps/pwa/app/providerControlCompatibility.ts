@@ -5,8 +5,97 @@ import type {
 } from "@malink/protocol";
 import type {
   GatewayCapabilityOption,
+  GatewayCapabilities,
   GatewayModelCapability,
 } from "./gatewayState";
+import type { V3ProjectedProviderModelCatalog } from "./matrixMlp3Projection";
+
+export function applyProviderModelCatalogs(
+  capabilities: GatewayCapabilities,
+  catalogs: readonly V3ProjectedProviderModelCatalog[],
+  currentProvider?: string,
+): GatewayCapabilities {
+  const byProvider = new Map(catalogs.map(catalog => [catalog.providerId, catalog]));
+  const providers = capabilities.providers.map(provider => {
+    const catalog = byProvider.get(provider.id);
+    if (!catalog) return provider;
+    const models = catalog.models.map(model => ({
+      id: model.id,
+      name: model.name,
+      ...(model.default_reasoning_level
+        ? { defaultReasoningLevel: model.default_reasoning_level }
+        : {}),
+      supportedReasoningLevels: (model.supported_reasoning_levels ?? []).map(level => ({
+        effort: level.effort,
+        ...(level.description ? { description: level.description } : {}),
+      })),
+    }));
+    return {
+      ...provider,
+      models,
+      controls: controlsForProviderCatalog(provider.controls ?? [], catalog, models),
+    };
+  });
+  const current = currentProvider
+    ? providers.find(provider => provider.id === currentProvider)
+    : undefined;
+  return {
+    ...capabilities,
+    providers,
+    ...(current
+      ? { models: current.models, controls: current.controls }
+      : {}),
+  };
+}
+
+function controlsForProviderCatalog(
+  controls: readonly ProviderControl[],
+  catalog: V3ProjectedProviderModelCatalog,
+  models: readonly GatewayModelCapability[],
+): ProviderControl[] {
+  const retained = controls
+    .filter(control => control.id !== "model" && control.id !== "reasoningEffort")
+    .map(control => structuredClone(control));
+  if (!catalog.complete) {
+    return [catalogDiagnosticControl("loading", undefined, catalog.occurredAt), ...retained];
+  }
+  if (catalog.status === "loading" || catalog.status === "error") {
+    return [
+      catalogDiagnosticControl(catalog.status, catalog.error, catalog.occurredAt),
+      ...retained,
+    ];
+  }
+  const catalogControls = legacyProviderControls(models, []).map(control => ({
+    ...control,
+    status: catalog.status,
+    ...(catalog.error ? { error: structuredClone(catalog.error) } : {}),
+  }));
+  return [...catalogControls, ...retained];
+}
+
+function catalogDiagnosticControl(
+  status: "loading" | "error",
+  error?: import("@malink/protocol").ProviderControlError,
+  occurredAt = Date.now(),
+): ProviderControl {
+  return {
+    id: "model",
+    label: "Model",
+    renderer: "select",
+    surfaces: ["project-default", "session-create", "session-active"],
+    updateEffect: "next-turn",
+    status,
+    ...(status === "loading"
+      ? { checkedAt: occurredAt, deadlineAt: occurredAt + 30_000 }
+      : {
+          error: structuredClone(error ?? {
+            code: "catalog_failed",
+            message: "The provider model catalog is unavailable.",
+            retryable: true,
+          }),
+        }),
+  };
+}
 
 export function legacyProviderControls(
   models: readonly GatewayModelCapability[],

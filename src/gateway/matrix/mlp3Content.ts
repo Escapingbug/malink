@@ -316,6 +316,37 @@ export class GatewayMlp3ContentLayer {
   }
 
   /**
+   * Stores one signed/encrypted semantic event under a stable Matrix Room
+   * State key. This is used for bounded catalogs whose current pages should be
+   * recoverable without replaying the timeline or issuing application RPCs.
+   */
+  async enqueueStateEvent(
+    room: MatrixGatewayRoomConfig,
+    eventInput: Mlp3Event,
+    eventType: string,
+    stateKey: string,
+    transport: MatrixTransport,
+  ): Promise<EnqueuedMlp3Event> {
+    const { content } = await this.sealedEventContent(room, eventInput, transport)
+    const delivery = this.outbox.createState({
+      roomId: room.roomId,
+      eventType,
+      stateKey,
+      content,
+      createdAt: Date.now(),
+    })
+    const superseded = await this.outbox.stage(delivery)
+    this.rejectSupersededConfirmations(superseded)
+    if (superseded.includes(delivery.deliveryId)) {
+      throw supersededDeliveryError(delivery.deliveryId)
+    }
+    const staged = this.outbox.delivery(delivery.deliveryId) ?? delivery
+    const confirmation = this.confirmationFor(delivery.deliveryId)
+    void this.deliver(staged, transport).catch(() => undefined)
+    return { deliveryId: delivery.deliveryId, confirmation }
+  }
+
+  /**
    * Durably stages an event and returns immediately. The outbox owns Matrix
    * delivery and subsequent retries, so callers must not resend it.
    */
@@ -347,6 +378,37 @@ export class GatewayMlp3ContentLayer {
       priority?: MatrixMlp3DeliveryPriority
     },
   ): Promise<Extract<MatrixMlp3Delivery, { kind: 'event' }>> {
+    const { event, content } = await this.sealedEventContent(
+      room,
+      eventInput,
+      transport,
+      options.relation,
+    )
+    const delivery = this.outbox.createEvent({
+      roomId: room.roomId,
+      transactionId: options.transactionId ?? matrixTransactionId(event.eventId),
+      content,
+      createdAt: Date.now(),
+      ...eventDeliveryMetadata(event),
+      ...(options.priority ? { priority: options.priority } : {}),
+    })
+    const superseded = await this.outbox.stage(delivery)
+    this.rejectSupersededConfirmations(superseded)
+    if (superseded.includes(delivery.deliveryId)) {
+      throw supersededDeliveryError(delivery.deliveryId)
+    }
+    return (this.outbox.delivery(delivery.deliveryId) ?? delivery) as Extract<
+      MatrixMlp3Delivery,
+      { kind: 'event' }
+    >
+  }
+
+  private async sealedEventContent(
+    room: MatrixGatewayRoomConfig,
+    eventInput: Mlp3Event,
+    transport: MatrixTransport,
+    relation?: Record<string, unknown>,
+  ): Promise<{ event: Mlp3Event; content: MatrixRoomMessageContent }> {
     this.transports.set(room.roomId, transport)
     const event = mlp3EventSchema.parse(eventInput)
     const projectId = this.projectId(room)
@@ -377,27 +439,11 @@ export class GatewayMlp3ContentLayer {
     const content: MatrixRoomMessageContent = {
       msgtype: 'm.notice',
       body: 'Encrypted Malink event',
-      ...(options.relation ? { 'm.relates_to': structuredClone(options.relation) } : {}),
+      ...(relation ? { 'm.relates_to': structuredClone(relation) } : {}),
       [MALINK_MATRIX_EXTENSION]: { version: 3, envelope },
     }
     assertTimelineContentSize(content)
-    const delivery = this.outbox.createEvent({
-      roomId: room.roomId,
-      transactionId: options.transactionId ?? matrixTransactionId(event.eventId),
-      content,
-      createdAt: Date.now(),
-      ...eventDeliveryMetadata(event),
-      ...(options.priority ? { priority: options.priority } : {}),
-    })
-    const superseded = await this.outbox.stage(delivery)
-    this.rejectSupersededConfirmations(superseded)
-    if (superseded.includes(delivery.deliveryId)) {
-      throw supersededDeliveryError(delivery.deliveryId)
-    }
-    return (this.outbox.delivery(delivery.deliveryId) ?? delivery) as Extract<
-      MatrixMlp3Delivery,
-      { kind: 'event' }
-    >
+    return { event, content }
   }
 
   async publishProjectPointer(

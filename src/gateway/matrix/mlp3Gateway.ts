@@ -3,17 +3,21 @@ import { mkdir, rm } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import {
   MALINK_MATRIX_EXTENSION,
+  MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
   canonicalJson,
   matrixGatewayCapabilitiesSchema,
+  matrixModelCapabilitySchema,
   type Mlp3Command,
   type Mlp3Event,
   type Mlp3EventPayload,
   type Mlp3SessionProjection,
   type JsonValue,
   type MatrixGatewayCapabilities,
+  type MatrixModelCapability,
   type NativeClientRelease,
   type PairingOperation,
   type ProviderControl,
+  type ProviderControlError,
   type ProviderControlValue,
   type ProviderControlValues,
   type ProviderCommand,
@@ -122,6 +126,19 @@ interface Mlp3SessionRuntime {
   activity: { phase: Mlp3SessionProjection['activity'] }
   activeTurn: Mlp3ActiveTurn | null
 }
+
+interface ProviderModelCatalogSource {
+  providerId: string
+  status: 'loading' | 'ready' | 'stale' | 'error'
+  error?: ProviderControlError
+  models: MatrixModelCapability[]
+  pages: MatrixModelCapability[][]
+  revision: string
+  controls: ProviderControl[]
+}
+
+const PROVIDER_CATALOG_PAGE_BUDGET_BYTES = 20 * 1024
+const PROVIDER_CATALOG_PAGE_ITEM_LIMIT = 64
 
 interface Mlp3ActiveTurn {
   turnId: string
@@ -372,6 +389,8 @@ export class MatrixMlp3GatewayRunner {
   private modelCapabilityPublicationPending = false
   private modelCapabilityPublicationScheduled = false
   private modelCapabilityPublicationEnabled = false
+  private readonly providerCatalogPublicationTasks = new Map<string, Promise<void>>()
+  private readonly publishedProviderCatalogRevisions = new Map<string, string>()
 
   constructor(
     private readonly config: MatrixGatewayConfig,
@@ -525,6 +544,7 @@ export class MatrixMlp3GatewayRunner {
         })
         await this.publishSessionRecovery(project)
         await this.publishWorkspaceSnapshot(project, false)
+        this.scheduleProviderCatalogPublication(project)
         await this.publishProjectSnapshot(project, false)
         await this.provisionProviderHistoryRooms(project)
       }
@@ -2853,8 +2873,18 @@ export class MatrixMlp3GatewayRunner {
         ? {}
         : { createDirectory: command.payload.createDirectory }),
     })
-    const project = await this.registerProject(created.room)
-    await this.dependencies.onProjectCreated?.(created.room)
+    const project = await this.registerProject(created.room, { deferActivation: true })
+    void Promise.resolve()
+      .then(() => this.dependencies.onProjectCreated?.(created.room))
+      .catch(error => {
+        // The host-side project catalog is already committed. Directory and
+        // snapshot convergence are retryable publication work and must not turn
+        // a successful create into a failed business command.
+        this.log(
+          `[mlp3/matrix] created project directory publication deferred for `
+          + `${project.project.projectId}: ${formatError(error)}`,
+        )
+      })
     const result = {
       gatewayNodeId: created.gatewayNodeId,
       projectId: project.project.projectId,
@@ -3574,7 +3604,10 @@ export class MatrixMlp3GatewayRunner {
     }
   }
 
-  private async registerProject(room: MatrixGatewayRoomConfig): Promise<V3ProjectRuntime> {
+  private async registerProject(
+    room: MatrixGatewayRoomConfig,
+    options: { deferActivation?: boolean } = {},
+  ): Promise<V3ProjectRuntime> {
     const requestedProjectId = room.projectId ?? gatewayProjectIdentity(
       room.cwd,
       room.projectName,
@@ -3586,7 +3619,8 @@ export class MatrixMlp3GatewayRunner {
         existing.config.roomId !== room.roomId
         || existing.project.projectId !== requestedProjectId
       ) throw new Error(`Project ${requestedProjectId} conflicts with an active Matrix room`)
-      await this.activateProject(existing)
+      if (options.deferActivation) this.deferProjectActivation(existing)
+      else await this.activateProject(existing)
       return existing
     }
     await this.runtimeState.initialize([room])
@@ -3595,8 +3629,18 @@ export class MatrixMlp3GatewayRunner {
     if (!this.config.rooms.some(candidate => candidate.roomId === room.roomId)) {
       this.config.rooms.push(room)
     }
-    await this.activateProject(project)
+    if (options.deferActivation) this.deferProjectActivation(project)
+    else await this.activateProject(project)
     return project
+  }
+
+  private deferProjectActivation(project: V3ProjectRuntime): void {
+    void this.activateProject(project, false).catch(error => {
+      this.log(
+        `[mlp3/matrix] created project activation deferred for ${project.project.projectId}: `
+        + formatError(error),
+      )
+    })
   }
 
   private async createProjectRuntime(room: MatrixGatewayRoomConfig): Promise<V3ProjectRuntime> {
@@ -3621,13 +3665,23 @@ export class MatrixMlp3GatewayRunner {
     return project
   }
 
-  private async activateProject(project: V3ProjectRuntime): Promise<void> {
+  private async activateProject(
+    project: V3ProjectRuntime,
+    waitForPublication = true,
+  ): Promise<void> {
     await this.client.assertRoomEncrypted(project.config.roomId)
-    await this.content.provisionProject(project.config, this.client)
-    await this.prepareSessionThreads(project)
+    await this.content.provisionProject(project.config, this.client, waitForPublication)
+    if (waitForPublication) await this.prepareSessionThreads(project)
+    else void this.prepareSessionThreads(project).catch(error => {
+      this.log(
+        `[mlp3/matrix] created project thread preparation deferred for `
+        + `${project.project.projectId}: ${formatError(error)}`,
+      )
+    })
     await this.publishSessionRecovery(project)
-    await this.publishWorkspaceSnapshot(project)
-    await this.publishProjectSnapshot(project)
+    await this.publishWorkspaceSnapshot(project, waitForPublication)
+    this.scheduleProviderCatalogPublication(project)
+    await this.publishProjectSnapshot(project, waitForPublication)
   }
 
   private createSessionRuntime(
@@ -4077,51 +4131,59 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private discoverCapabilities(project: V3ProjectRuntime): MatrixGatewayCapabilities {
-    let models: MatrixGatewayCapabilities['models'] = []
-    let providers: NonNullable<MatrixGatewayCapabilities['providers']> = []
-    let controls: ProviderControl[] = []
     try {
-      const mapModels = (providerName: string) =>
-        (getProvider(providerName)?.getAvailableModels() ?? []).map(model => ({
-        id: model.id,
-        name: model.name,
-        ...(model.defaultReasoningLevel
-          ? { default_reasoning_level: model.defaultReasoningLevel }
-          : {}),
-        ...(model.supportedReasoningLevels
-          ? {
-              supported_reasoning_levels: model.supportedReasoningLevels.map(level => ({
-                effort: level.effort,
-                ...(level.description ? { description: level.description } : {}),
-              })),
-            }
-          : {}),
-        }))
-      models = mapModels(project.project.provider)
-      const mapControls = (providerName: string): ProviderControl[] => {
-        const provider = getProvider(providerName)
-        if (!provider) return []
-        return provider.getProviderControls?.() ?? synthesizedProviderControls(
-          provider.getAvailableModels(),
-          { status: 'ready' },
-          provider.getAvailablePermissionModes(),
-        )
-      }
-      controls = mapControls(project.project.provider)
-      providers = listProviders().map(providerName => {
-        const provider = getProvider(providerName)!
+      const catalogs = this.discoverProviderCatalogs()
+      const current = catalogs.find(catalog => catalog.providerId === project.project.provider)
+      const providers = catalogs.map(catalog => {
+        const provider = getProvider(catalog.providerId)!
         return {
-          id: providerName,
-          name: providerName,
-          models: providerName === project.project.provider ? models : mapModels(providerName),
-          controls: providerName === project.project.provider
-            ? controls
-            : mapControls(providerName),
+          id: catalog.providerId,
+          name: catalog.providerId,
+          models: [],
+          controls: catalogSnapshotControls(catalog),
           can_list_sessions: typeof provider.listSessions === 'function',
           can_inspect_sessions: typeof provider.getSessionHistory === 'function',
           can_materialize_history: typeof provider.getSessionHistory === 'function'
             && typeof this.client.ensureProviderHistoryRoom === 'function',
         }
+      })
+      return matrixGatewayCapabilitiesSchema.parse({
+        models: [],
+        providers,
+        controls: current ? catalogSnapshotControls(current) : [],
+        permission_modes: AGENT_PERMISSION_MODES.map(mode => ({ ...mode })),
+        can_create_session: true,
+        can_select_session: false,
+        can_archive_session: true,
+        can_delete_session: false,
+        session_extensions: this.extensions.descriptors().map(extension => ({
+          id: extension.id,
+          name: extension.name,
+          description: extension.description,
+          version: extension.version,
+          settings: extension.settings.map(setting => setting.type === 'text'
+            ? {
+                id: setting.id,
+                type: setting.type,
+                label: setting.label,
+                ...(setting.description ? { description: setting.description } : {}),
+                ...(setting.required ? { required: true } : {}),
+                ...(setting.placeholder ? { placeholder: setting.placeholder } : {}),
+                ...(setting.defaultValue === undefined
+                  ? {}
+                  : { default_value: setting.defaultValue }),
+              }
+            : {
+                id: setting.id,
+                type: setting.type,
+                label: setting.label,
+                ...(setting.description ? { description: setting.description } : {}),
+                ...(setting.defaultValue === undefined
+                  ? {}
+                  : { default_value: setting.defaultValue }),
+              }),
+        })),
+        web_push: { vapid_public_key: this.webPush.publicKey() },
       })
     } catch (error) {
       this.log(
@@ -4130,15 +4192,15 @@ export class MatrixMlp3GatewayRunner {
       )
       if (project.project.capabilities) {
         return matrixGatewayCapabilitiesSchema.parse({
-          ...project.project.capabilities,
+          ...catalogSlimCapabilities(project.project.capabilities),
           web_push: { vapid_public_key: this.webPush.publicKey() },
         })
       }
     }
     return matrixGatewayCapabilitiesSchema.parse({
-      models,
-      providers,
-      controls,
+      models: [],
+      providers: [],
+      controls: [],
       permission_modes: AGENT_PERMISSION_MODES.map(mode => ({ ...mode })),
       can_create_session: true,
       can_select_session: false,
@@ -4208,7 +4270,8 @@ export class MatrixMlp3GatewayRunner {
       if (this.state !== 'running') return
       this.modelCapabilityPublicationPending = false
       for (const project of this.projects.values()) {
-        await this.publishWorkspaceSnapshot(project)
+        await this.publishWorkspaceSnapshot(project, false)
+        this.scheduleProviderCatalogPublication(project)
       }
     }).catch(error => {
       this.log(`[mlp3/matrix] refreshed model capabilities could not be published: ${formatError(error)}`)
@@ -4217,6 +4280,147 @@ export class MatrixMlp3GatewayRunner {
       this.scheduleModelCapabilityPublication()
     })
     this.eventChain = operation.then(() => undefined, () => undefined)
+  }
+
+  private discoverProviderCatalogs(): ProviderModelCatalogSource[] {
+    return listProviders().map(providerId => {
+      const provider = getProvider(providerId)!
+      const models = normalizedProviderModels(provider.getAvailableModels())
+      const controls = provider.getProviderControls?.() ?? synthesizedProviderControls(
+        provider.getAvailableModels(),
+        { status: 'ready' },
+        provider.getAvailablePermissionModes(),
+      )
+      const modelControl = controls.find(control => control.id === MODEL_CONTROL_ID)
+      const status = modelControl?.status ?? 'ready'
+      const availableModels = status === 'loading' || status === 'error' ? [] : models
+      const error = modelControl?.error ? structuredClone(modelControl.error) : undefined
+      const revision = createHash('sha256').update(canonicalJson({
+        providerId,
+        status,
+        ...(error ? { error } : {}),
+        models: availableModels,
+      } as JsonValue)).digest('base64url')
+      return {
+        providerId,
+        status,
+        ...(error ? { error } : {}),
+        models: availableModels,
+        pages: providerCatalogPages(availableModels),
+        revision,
+        controls,
+      }
+    })
+  }
+
+  private scheduleProviderCatalogPublication(project: V3ProjectRuntime): void {
+    if (project.deletingCommandId || this.providerCatalogPublicationTasks.has(project.config.roomId)) {
+      return
+    }
+    const operation = this.publishProviderCatalogsUntilCurrent(project).catch(error => {
+      this.log(
+        `[mlp3/matrix] provider catalog publication deferred for ${project.project.projectId}: `
+        + formatError(error),
+      )
+    }).finally(() => {
+      if (this.providerCatalogPublicationTasks.get(project.config.roomId) === operation) {
+        this.providerCatalogPublicationTasks.delete(project.config.roomId)
+      }
+    })
+    this.providerCatalogPublicationTasks.set(project.config.roomId, operation)
+  }
+
+  private async publishProviderCatalogsUntilCurrent(project: V3ProjectRuntime): Promise<void> {
+    if (!await this.content.hasActiveDevices(project.config.roomId)) return
+    while (this.state !== 'stopped' && !project.deletingCommandId) {
+      const pending = this.discoverProviderCatalogs().filter(catalog =>
+        this.publishedProviderCatalogRevisions.get(
+          providerCatalogPublicationKey(project.config.roomId, catalog.providerId),
+        ) !== catalog.revision
+      )
+      if (pending.length === 0) return
+      for (const catalog of pending) {
+        await this.publishProviderCatalog(project, catalog)
+        this.publishedProviderCatalogRevisions.set(
+          providerCatalogPublicationKey(project.config.roomId, catalog.providerId),
+          catalog.revision,
+        )
+      }
+    }
+  }
+
+  private async publishProviderCatalog(
+    project: V3ProjectRuntime,
+    catalog: ProviderModelCatalogSource,
+  ): Promise<void> {
+    const publishedAt = this.now()
+    const pageDeliveries = await Promise.all(catalog.pages.map(async (items, pageIndex) => {
+      const event: Mlp3Event = {
+        kind: 'malink.event',
+        version: 3,
+        eventId: logicalProviderCatalogEventId(
+          this.config.gatewayId,
+          project.project.projectId,
+          catalog.providerId,
+          catalog.revision,
+          `page:${pageIndex}`,
+          publishedAt,
+        ),
+        workspaceId: this.config.gatewayId,
+        projectId: project.project.projectId,
+        occurredAt: publishedAt,
+        payload: {
+          type: 'provider.catalog.page',
+          providerId: catalog.providerId,
+          catalog: 'models',
+          revision: catalog.revision,
+          pageIndex,
+          pageCount: catalog.pages.length,
+          items,
+        },
+      }
+      return this.content.enqueueStateEvent(
+        project.config,
+        event,
+        MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+        providerCatalogStateKey(catalog.providerId, `page:${pageIndex}`),
+        this.client,
+      )
+    }))
+    await Promise.all(pageDeliveries.map(delivery => delivery.confirmation))
+    const manifest: Mlp3Event = {
+      kind: 'malink.event',
+      version: 3,
+      eventId: logicalProviderCatalogEventId(
+        this.config.gatewayId,
+        project.project.projectId,
+        catalog.providerId,
+        catalog.revision,
+        'manifest',
+        publishedAt,
+      ),
+      workspaceId: this.config.gatewayId,
+      projectId: project.project.projectId,
+      occurredAt: publishedAt,
+      payload: {
+        type: 'provider.catalog.manifest',
+        providerId: catalog.providerId,
+        catalog: 'models',
+        revision: catalog.revision,
+        status: catalog.status,
+        itemCount: catalog.models.length,
+        pageCount: catalog.pages.length,
+        ...(catalog.error ? { error: catalog.error } : {}),
+      },
+    }
+    const delivery = await this.content.enqueueStateEvent(
+      project.config,
+      manifest,
+      MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+      providerCatalogStateKey(catalog.providerId, 'manifest'),
+      this.client,
+    )
+    await delivery.confirmation
   }
 
   private async prepareSessionThreads(project: V3ProjectRuntime): Promise<void> {
@@ -4523,6 +4727,10 @@ function replaceSessionConfigControls(
 function sessionProviderControls(record: PersistedMlp3Session): ProviderControl[] {
   return availableProviderControls(getProvider(record.provider), record.providerControls)
     .filter(control => control.surfaces.includes('session-active'))
+    // Model and reasoning catalogs are published once as paginated Room State.
+    // Repeating hundreds of options in every session/turn projection recreates
+    // the same oversized-event failure the catalog transport is designed to avoid.
+    .filter(control => control.id !== MODEL_CONTROL_ID && control.id !== REASONING_CONTROL_ID)
     .map(control => ({
       ...control,
       ...(record.controlValues[control.id] === undefined
@@ -4798,6 +5006,136 @@ function logicalWorkspaceSnapshotEventId(
   return createHash('sha256')
     .update(`malink-v3-workspace-snapshot\0${workspaceId}\0${projectId}\0${snapshotVersion}`)
     .digest('base64url')
+}
+
+function logicalProviderCatalogEventId(
+  workspaceId: string,
+  projectId: string,
+  providerId: string,
+  revision: string,
+  part: string,
+  publishedAt: number,
+): string {
+  return createHash('sha256')
+    .update(
+      `malink-v3-provider-catalog\0${workspaceId}\0${projectId}`
+      + `\0${providerId}\0${revision}\0${part}\0${publishedAt}`,
+    )
+    .digest('base64url')
+}
+
+function providerCatalogStateKey(providerId: string, part: string): string {
+  const providerKey = createHash('sha256')
+    .update(`malink-v3-provider-catalog-key\0${providerId}`)
+    .digest('base64url')
+  return `models.${providerKey}.${part}`
+}
+
+function providerCatalogPublicationKey(roomId: string, providerId: string): string {
+  return `${roomId}\0${providerId}`
+}
+
+function normalizedProviderModels(models: readonly ModelEntry[]): MatrixModelCapability[] {
+  const unique = new Map<string, MatrixModelCapability>()
+  for (const model of models) {
+    if (unique.has(model.id)) continue
+    if (unique.size >= 4_096) {
+      throw new Error('Provider model catalog exceeds the supported item count')
+    }
+    const normalized = matrixModelCapabilitySchema.parse({
+      id: model.id,
+      name: model.name,
+      ...(model.defaultReasoningLevel
+        ? { default_reasoning_level: model.defaultReasoningLevel }
+        : {}),
+      ...(model.supportedReasoningLevels
+        ? {
+            supported_reasoning_levels: model.supportedReasoningLevels
+              .slice(0, 32)
+              .map(level => ({
+                effort: level.effort,
+                ...(level.description
+                  ? { description: level.description.slice(0, 512) }
+                  : {}),
+              })),
+          }
+        : {}),
+    })
+    unique.set(normalized.id, normalized)
+  }
+  return [...unique.values()].sort((left, right) =>
+    left.name.localeCompare(right.name) || left.id.localeCompare(right.id)
+  )
+}
+
+function providerCatalogPages(
+  models: readonly MatrixModelCapability[],
+): MatrixModelCapability[][] {
+  const pages: MatrixModelCapability[][] = []
+  let page: MatrixModelCapability[] = []
+  let bytes = 2
+  for (const model of models) {
+    const itemBytes = Buffer.byteLength(canonicalJson(model as JsonValue), 'utf8') + 1
+    if (
+      page.length > 0
+      && (
+        page.length >= PROVIDER_CATALOG_PAGE_ITEM_LIMIT
+        || bytes + itemBytes > PROVIDER_CATALOG_PAGE_BUDGET_BYTES
+      )
+    ) {
+      pages.push(page)
+      page = []
+      bytes = 2
+    }
+    page.push(structuredClone(model))
+    bytes += itemBytes
+  }
+  if (page.length > 0) pages.push(page)
+  if (pages.length > 4_096) {
+    throw new Error('Provider model catalog exceeds the supported page count')
+  }
+  return pages
+}
+
+function catalogSnapshotControls(catalog: ProviderModelCatalogSource): ProviderControl[] {
+  return catalog.controls.flatMap(control => {
+    if (control.id === REASONING_CONTROL_ID) return []
+    if (control.id !== MODEL_CONTROL_ID) return [structuredClone(control)]
+    if (control.status === 'ready' || control.status === 'stale') return []
+    const { options: _options, ...diagnostic } = structuredClone(control)
+    return [diagnostic]
+  })
+}
+
+function catalogSlimCapabilities(
+  capabilities: MatrixGatewayCapabilities,
+): MatrixGatewayCapabilities {
+  const slimControls = (controls: readonly ProviderControl[] | undefined) =>
+    controls?.flatMap(control => {
+      if (control.id === REASONING_CONTROL_ID) return []
+      if (control.id !== MODEL_CONTROL_ID) return [structuredClone(control)]
+      if (control.status === 'ready' || control.status === 'stale') return []
+      const { options: _options, ...diagnostic } = structuredClone(control)
+      return [diagnostic]
+    })
+  return {
+    ...structuredClone(capabilities),
+    models: [],
+    ...(capabilities.controls === undefined
+      ? {}
+      : { controls: slimControls(capabilities.controls) }),
+    ...(capabilities.providers === undefined
+      ? {}
+      : {
+          providers: capabilities.providers.map(provider => ({
+            ...structuredClone(provider),
+            models: [],
+            ...(provider.controls === undefined
+              ? {}
+              : { controls: slimControls(provider.controls) }),
+          })),
+        }),
+  }
 }
 
 function logicalGatewayNodeStatusEventId(

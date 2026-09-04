@@ -217,6 +217,27 @@ internal class MatrixMlp3NativeProjection(
         val digest: String,
     )
 
+    private data class ProviderCatalogPage(
+        val logicalEventId: String,
+        val providerId: String,
+        val revision: String,
+        val pageIndex: Int,
+        val pageCount: Int,
+        val items: JsonArray,
+        val occurredAt: Long,
+    )
+
+    private data class ProviderCatalogManifest(
+        val logicalEventId: String,
+        val providerId: String,
+        val revision: String,
+        val status: String,
+        val itemCount: Int,
+        val pageCount: Int,
+        val error: JsonObject?,
+        val occurredAt: Long,
+    )
+
     private data class InboxFile(
         val id: String,
         val receivedAt: Long,
@@ -247,6 +268,8 @@ internal class MatrixMlp3NativeProjection(
     private val providerHistoryPageStates = linkedMapOf<String, ProviderHistoryPageState>()
     private val providerHistoryMessageParts = linkedMapOf<String, ProviderHistoryMessagePart>()
     private val providerHistoryPageCommits = linkedMapOf<String, ProviderHistoryPageCommit>()
+    private val providerCatalogPages = linkedMapOf<String, ProviderCatalogPage>()
+    private val providerCatalogManifests = linkedMapOf<String, ProviderCatalogManifest>()
 
     init {
         initialState?.let(::restore)
@@ -415,6 +438,102 @@ internal class MatrixMlp3NativeProjection(
                 capabilities,
                 clientReleases,
             )
+            return MatrixMlp3NativeProjectionResult(changed = true)
+        }
+
+        if (type == "provider.catalog.page") {
+            if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
+            payload.requireKeys(
+                setOf(
+                    "type", "providerId", "catalog", "revision", "pageIndex",
+                    "pageCount", "items",
+                ),
+                emptySet(),
+                "Provider Catalog page",
+            )
+            require(payload.requiredString("catalog", 32) == "models")
+            val providerId = payload.requiredString("providerId", 256)
+            val revision = payload.requiredString("revision", 43)
+            require(revision.matches(Regex("^[A-Za-z0-9_-]{43}$")))
+            val pageIndex = payload.requiredLong("pageIndex").also { require(it >= 0) }.toInt()
+            val pageCount = payload.requiredPositiveLong("pageCount").also {
+                require(it <= 4_096)
+            }.toInt()
+            require(pageIndex < pageCount)
+            val items = payload.requiredArray("items", 64)
+            require(items.isNotEmpty())
+            validateCatalogModels(items, "Provider Catalog page")
+            val page = ProviderCatalogPage(
+                logicalEventId = eventId,
+                providerId = providerId,
+                revision = revision,
+                pageIndex = pageIndex,
+                pageCount = pageCount,
+                items = items,
+                occurredAt = occurredAt,
+            )
+            val key = providerCatalogPageKey(providerId, revision, pageIndex)
+            val current = providerCatalogPages[key]
+            if (current == null || isNewerCatalogEvent(
+                current.occurredAt,
+                current.logicalEventId,
+                occurredAt,
+                eventId,
+            )) {
+                providerCatalogPages[key] = page
+                pruneProviderCatalogPages(providerId)
+            }
+            return MatrixMlp3NativeProjectionResult(changed = true)
+        }
+
+        if (type == "provider.catalog.manifest") {
+            if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
+            payload.requireKeys(
+                setOf(
+                    "type", "providerId", "catalog", "revision", "status",
+                    "itemCount", "pageCount",
+                ),
+                setOf("error"),
+                "Provider Catalog manifest",
+            )
+            require(payload.requiredString("catalog", 32) == "models")
+            val providerId = payload.requiredString("providerId", 256)
+            val revision = payload.requiredString("revision", 43)
+            require(revision.matches(Regex("^[A-Za-z0-9_-]{43}$")))
+            val status = payload.requiredOneOf(
+                "status",
+                setOf("loading", "ready", "stale", "error"),
+            )
+            val itemCount = payload.requiredLong("itemCount").also {
+                require(it in 0L..4_096L)
+            }.toInt()
+            val pageCount = payload.requiredLong("pageCount").also {
+                require(it in 0L..4_096L)
+            }.toInt()
+            require((itemCount == 0) == (pageCount == 0))
+            require(status !in setOf("loading", "error") || itemCount == 0)
+            val error = (payload["error"] as? JsonObject)?.also(::validateCatalogError)
+            require((status in setOf("error", "stale")) == (error != null))
+            val manifest = ProviderCatalogManifest(
+                logicalEventId = eventId,
+                providerId = providerId,
+                revision = revision,
+                status = status,
+                itemCount = itemCount,
+                pageCount = pageCount,
+                error = error,
+                occurredAt = occurredAt,
+            )
+            val current = providerCatalogManifests[providerId]
+            if (current == null || isNewerCatalogEvent(
+                current.occurredAt,
+                current.logicalEventId,
+                occurredAt,
+                eventId,
+            )) {
+                providerCatalogManifests[providerId] = manifest
+                pruneProviderCatalogPages(providerId)
+            }
             return MatrixMlp3NativeProjectionResult(changed = true)
         }
 
@@ -861,8 +980,7 @@ internal class MatrixMlp3NativeProjection(
             })
             put(
                 "capabilities",
-                projectCapabilities[activeProject.id]?.value
-                    ?: defaultCapabilities(activeProject.installedExtensions),
+                capabilitiesForProject(activeProject),
             )
             put(
                 "native_client_releases",
@@ -888,9 +1006,193 @@ internal class MatrixMlp3NativeProjection(
         put("extension_defaults_revision", project.extensionDefaultsRevision)
         put(
             "capabilities",
+            capabilitiesForProject(project),
+        )
+    }
+
+    private fun capabilitiesForProject(project: Project): JsonObject =
+        capabilitiesWithProviderCatalogs(
             projectCapabilities[project.id]?.value
                 ?: defaultCapabilities(project.installedExtensions),
+            project.provider,
         )
+
+    private fun capabilitiesWithProviderCatalogs(
+        capabilities: JsonObject,
+        currentProvider: String,
+    ): JsonObject {
+        val providers = capabilities["providers"] as? JsonArray ?: return capabilities
+        val mergedProviders = buildJsonArray {
+            providers.forEach { element ->
+                val provider = element as? JsonObject
+                    ?: throw IllegalArgumentException("A provider capability is invalid.")
+                val providerId = provider.requiredString("id", 256)
+                val manifest = providerCatalogManifests[providerId]
+                if (manifest == null) {
+                    add(provider)
+                    return@forEach
+                }
+                val models = completeProviderCatalogModels(manifest)
+                val merged = provider.toMutableMap()
+                merged["models"] = models
+                merged["controls"] = catalogProviderControls(
+                    provider["controls"] as? JsonArray ?: JsonArray(emptyList()),
+                    manifest,
+                    models,
+                )
+                add(JsonObject(merged))
+            }
+        }
+        val current = mergedProviders
+            .mapNotNull { it as? JsonObject }
+            .find { it.requiredString("id", 256) == currentProvider }
+        val merged = capabilities.toMutableMap()
+        merged["providers"] = mergedProviders
+        if (current != null) {
+            merged["models"] = current.requiredArray("models", 4_096)
+            merged["controls"] = current["controls"] as? JsonArray ?: JsonArray(emptyList())
+        }
+        return JsonObject(merged)
+    }
+
+    private fun completeProviderCatalogModels(manifest: ProviderCatalogManifest): JsonArray {
+        if (manifest.pageCount == 0) return JsonArray(emptyList())
+        val pages = providerCatalogPages.values
+            .filter {
+                it.providerId == manifest.providerId &&
+                    it.revision == manifest.revision &&
+                    it.pageCount == manifest.pageCount
+            }
+            .sortedBy(ProviderCatalogPage::pageIndex)
+        if (
+            pages.size != manifest.pageCount ||
+            pages.withIndex().any { (index, page) -> page.pageIndex != index }
+        ) return JsonArray(emptyList())
+        val models = JsonArray(pages.flatMap { it.items })
+        return if (models.size == manifest.itemCount) models else JsonArray(emptyList())
+    }
+
+    private fun catalogProviderControls(
+        controls: JsonArray,
+        manifest: ProviderCatalogManifest,
+        models: JsonArray,
+    ): JsonArray = buildJsonArray {
+        val complete = manifest.itemCount == models.size
+        if (!complete || manifest.status == "loading" || manifest.status == "error") {
+            add(catalogDiagnosticControl(
+                if (complete) manifest.status else "loading",
+                if (complete) manifest.error else null,
+                manifest.occurredAt,
+            ))
+        } else if (models.isNotEmpty()) {
+            add(modelCatalogControl(models, manifest))
+            reasoningCatalogControl(models, manifest)?.let(::add)
+        }
+        controls.forEach { element ->
+            val control = element as? JsonObject ?: return@forEach
+            if (control.optionalString("id", 128) !in setOf("model", "reasoningEffort")) {
+                add(control)
+            }
+        }
+    }
+
+    private fun catalogDiagnosticControl(
+        status: String,
+        error: JsonObject?,
+        occurredAt: Long,
+    ): JsonObject = buildJsonObject {
+        put("id", "model")
+        put("label", "Model")
+        put("renderer", "select")
+        put("surfaces", JsonArray(listOf(
+            JsonPrimitive("project-default"),
+            JsonPrimitive("session-create"),
+            JsonPrimitive("session-active"),
+        )))
+        put("updateEffect", "next-turn")
+        put("status", status)
+        if (status == "loading") {
+            put("checkedAt", occurredAt)
+            put("deadlineAt", occurredAt + 30_000)
+        }
+        if (status == "error") {
+            put("error", error ?: buildJsonObject {
+                put("code", "catalog_failed")
+                put("message", "The provider model catalog is unavailable.")
+                put("retryable", true)
+            })
+        }
+    }
+
+    private fun modelCatalogControl(
+        models: JsonArray,
+        manifest: ProviderCatalogManifest,
+    ): JsonObject = buildJsonObject {
+        put("id", "model")
+        put("label", "Model")
+        put("renderer", "select")
+        put("surfaces", JsonArray(listOf(
+            JsonPrimitive("project-default"),
+            JsonPrimitive("session-create"),
+            JsonPrimitive("session-active"),
+        )))
+        put("updateEffect", "next-turn")
+        put("status", manifest.status)
+        if (manifest.error != null) put("error", manifest.error)
+        put("options", buildJsonArray {
+            models.forEach { element ->
+                val model = element as JsonObject
+                add(buildJsonObject {
+                    put("value", model.requiredString("id", 256))
+                    put("label", model.requiredString("name", 256))
+                    model.optionalString("default_reasoning_level", 64)?.let { default ->
+                        put("defaults", buildJsonObject { put("reasoningEffort", default) })
+                    }
+                })
+            }
+        })
+    }
+
+    private fun reasoningCatalogControl(
+        models: JsonArray,
+        manifest: ProviderCatalogManifest,
+    ): JsonObject? {
+        val modelIdsByEffort = linkedMapOf<String, MutableList<String>>()
+        models.forEach { element ->
+            val model = element as JsonObject
+            val modelId = model.requiredString("id", 256)
+            model.optionalArray("supported_reasoning_levels", 64).orEmpty().forEach { levelValue ->
+                val level = levelValue as JsonObject
+                modelIdsByEffort.getOrPut(level.requiredString("effort", 64)) { mutableListOf() }
+                    .add(modelId)
+            }
+        }
+        if (modelIdsByEffort.isEmpty()) return null
+        return buildJsonObject {
+            put("id", "reasoningEffort")
+            put("label", "Reasoning effort")
+            put("renderer", "select")
+            put("surfaces", JsonArray(listOf(
+                JsonPrimitive("project-default"),
+                JsonPrimitive("session-create"),
+                JsonPrimitive("session-active"),
+            )))
+            put("updateEffect", "next-turn")
+            put("status", manifest.status)
+            if (manifest.error != null) put("error", manifest.error)
+            put("options", buildJsonArray {
+                modelIdsByEffort.forEach { (effort, modelIds) ->
+                    add(buildJsonObject {
+                        put("value", effort)
+                        put("label", effort)
+                        put("when", buildJsonObject {
+                            put("controlId", "model")
+                            put("values", JsonArray(modelIds.map(::JsonPrimitive)))
+                        })
+                    })
+                }
+            })
+        }
     }
 
     private fun mergedNativeClientReleases(): JsonArray = projectCapabilities.values.fold(
@@ -1519,6 +1821,40 @@ internal class MatrixMlp3NativeProjection(
                         })
                     }
             })
+            put("providerCatalogPages", buildJsonArray {
+                providerCatalogPages.values
+                    .sortedWith(compareBy(
+                        ProviderCatalogPage::providerId,
+                        ProviderCatalogPage::revision,
+                        ProviderCatalogPage::pageIndex,
+                    ))
+                    .forEach { page ->
+                        add(buildJsonObject {
+                            put("logicalEventId", page.logicalEventId)
+                            put("providerId", page.providerId)
+                            put("revision", page.revision)
+                            put("pageIndex", page.pageIndex)
+                            put("pageCount", page.pageCount)
+                            put("items", page.items)
+                            put("occurredAt", page.occurredAt)
+                        })
+                    }
+            })
+            put("providerCatalogManifests", buildJsonArray {
+                providerCatalogManifests.values.sortedBy(ProviderCatalogManifest::providerId)
+                    .forEach { manifest ->
+                        add(buildJsonObject {
+                            put("logicalEventId", manifest.logicalEventId)
+                            put("providerId", manifest.providerId)
+                            put("revision", manifest.revision)
+                            put("status", manifest.status)
+                            put("itemCount", manifest.itemCount)
+                            put("pageCount", manifest.pageCount)
+                            manifest.error?.let { put("error", it) }
+                            put("occurredAt", manifest.occurredAt)
+                        })
+                    }
+            })
         }
         val encoded = CanonicalJson.bytes(value)
         val encodedBytes = try {
@@ -1869,6 +2205,89 @@ internal class MatrixMlp3NativeProjection(
                     providerHistoryPageKey(commit.sessionId, commit.snapshotId, commit.pageIndex),
                     commit,
                 ) == null) { "A Provider History page commit is duplicated." }
+            }
+        }
+        if (schemaVersion >= 20L) {
+            value.requiredArray("providerCatalogPages", 8_192).forEach { element ->
+                val item = element as? JsonObject
+                    ?: throw IllegalArgumentException("A Provider Catalog page is invalid.")
+                item.requireKeys(
+                    setOf(
+                        "logicalEventId", "providerId", "revision", "pageIndex",
+                        "pageCount", "items", "occurredAt",
+                    ),
+                    emptySet(),
+                    "Provider Catalog page",
+                )
+                val providerId = item.requiredString("providerId", 256)
+                val revision = item.requiredString("revision", 43)
+                require(revision.matches(Regex("^[A-Za-z0-9_-]{43}$")))
+                val pageIndex = item.requiredLong("pageIndex")
+                    .also { require(it >= 0) }
+                    .toInt()
+                val pageCount = item.requiredLong("pageCount")
+                    .also { require(it in 1L..4_096L) }
+                    .toInt()
+                require(pageIndex < pageCount)
+                val items = item.requiredArray("items", 64)
+                require(items.isNotEmpty())
+                validateCatalogModels(items, "Provider Catalog page")
+                val page = ProviderCatalogPage(
+                    logicalEventId = item.requiredString("logicalEventId", 256),
+                    providerId = providerId,
+                    revision = revision,
+                    pageIndex = pageIndex,
+                    pageCount = pageCount,
+                    items = items,
+                    occurredAt = item.requiredLong("occurredAt").also { require(it >= 0) },
+                )
+                require(providerCatalogPages.put(
+                    providerCatalogPageKey(providerId, revision, pageIndex),
+                    page,
+                ) == null) { "A Provider Catalog page is duplicated." }
+            }
+            value.requiredArray("providerCatalogManifests", 64).forEach { element ->
+                val item = element as? JsonObject
+                    ?: throw IllegalArgumentException("A Provider Catalog manifest is invalid.")
+                item.requireKeys(
+                    setOf(
+                        "logicalEventId", "providerId", "revision", "status",
+                        "itemCount", "pageCount", "occurredAt",
+                    ),
+                    setOf("error"),
+                    "Provider Catalog manifest",
+                )
+                val providerId = item.requiredString("providerId", 256)
+                val revision = item.requiredString("revision", 43)
+                require(revision.matches(Regex("^[A-Za-z0-9_-]{43}$")))
+                val itemCount = item.requiredLong("itemCount")
+                    .also { require(it in 0L..4_096L) }
+                    .toInt()
+                val pageCount = item.requiredLong("pageCount")
+                    .also { require(it in 0L..4_096L) }
+                    .toInt()
+                require((itemCount == 0) == (pageCount == 0))
+                val error = (item["error"] as? JsonObject)?.also(::validateCatalogError)
+                val status = item.requiredOneOf(
+                    "status",
+                    setOf("loading", "ready", "stale", "error"),
+                )
+                require(status !in setOf("loading", "error") || itemCount == 0)
+                require((status in setOf("error", "stale")) == (error != null))
+                val manifest = ProviderCatalogManifest(
+                    logicalEventId = item.requiredString("logicalEventId", 256),
+                    providerId = providerId,
+                    revision = revision,
+                    status = status,
+                    itemCount = itemCount,
+                    pageCount = pageCount,
+                    error = error,
+                    occurredAt = item.requiredLong("occurredAt").also { require(it >= 0) },
+                )
+                require(providerCatalogManifests.put(providerId, manifest) == null) {
+                    "A Provider Catalog manifest is duplicated."
+                }
+                pruneProviderCatalogPages(providerId)
             }
         }
         if (schemaVersion >= 3L) {
@@ -2715,6 +3134,73 @@ internal class MatrixMlp3NativeProjection(
         return JsonObject(values)
     }
 
+    private fun validateCatalogModels(models: JsonArray, label: String) {
+        models.forEach { item ->
+            val model = item as? JsonObject
+                ?: throw IllegalArgumentException("A $label model must be an object.")
+            model.requireKeys(
+                setOf("id", "name"),
+                setOf("default_reasoning_level", "supported_reasoning_levels"),
+                "$label model",
+            )
+            model.requiredString("id", 256)
+            model.requiredString("name", 256)
+            model.optionalString("default_reasoning_level", 64)
+            model.optionalArray("supported_reasoning_levels", 64).orEmpty().forEach { value ->
+                val level = value as? JsonObject
+                    ?: throw IllegalArgumentException("A $label reasoning level is invalid.")
+                level.requireKeys(setOf("effort"), setOf("description"), "$label reasoning level")
+                level.requiredString("effort", 64)
+                level.optionalString("description", 4_096)
+            }
+        }
+        requireUniqueIds(models, "$label models")
+    }
+
+    private fun validateCatalogError(error: JsonObject) {
+        error.requireKeys(
+            setOf("code", "message", "retryable"),
+            setOf("detail"),
+            "Provider Catalog error",
+        )
+        error.requiredString("code", 128)
+        error.requiredString("message", 2_048)
+        error.requiredBoolean("retryable")
+        error.optionalString("detail", 4_096)
+    }
+
+    private fun providerCatalogPageKey(
+        providerId: String,
+        revision: String,
+        pageIndex: Int,
+    ): String = "$providerId\u0000$revision\u0000$pageIndex"
+
+    private fun isNewerCatalogEvent(
+        currentOccurredAt: Long,
+        currentLogicalEventId: String,
+        nextOccurredAt: Long,
+        nextLogicalEventId: String,
+    ): Boolean = nextOccurredAt > currentOccurredAt ||
+        (nextOccurredAt == currentOccurredAt && nextLogicalEventId > currentLogicalEventId)
+
+    private fun pruneProviderCatalogPages(providerId: String) {
+        val manifestRevision = providerCatalogManifests[providerId]?.revision
+        val revisions = providerCatalogPages.values
+            .filter { it.providerId == providerId }
+            .groupBy(ProviderCatalogPage::revision)
+            .mapValues { (_, pages) -> pages.maxOf(ProviderCatalogPage::occurredAt) }
+            .entries
+            .sortedWith(
+                compareByDescending<Map.Entry<String, Long>> { it.key == manifestRevision }
+                    .thenByDescending { it.value },
+            )
+            .take(2)
+            .mapTo(mutableSetOf()) { it.key }
+        providerCatalogPages.entries.removeAll { (_, page) ->
+            page.providerId == providerId && page.revision !in revisions
+        }
+    }
+
     private fun validateCapabilities(value: JsonObject) {
         fun validateControls(controls: JsonArray, label: String) {
             controls.forEach { item ->
@@ -2746,7 +3232,7 @@ internal class MatrixMlp3NativeProjection(
                     "status",
                     setOf("loading", "ready", "stale", "error"),
                 )
-                val options = control.optionalArray("options", 256).orEmpty()
+                val options = control.optionalArray("options", 4_096).orEmpty()
                 options.forEach { optionValue ->
                     val option = optionValue as? JsonObject
                         ?: throw IllegalArgumentException("A $label control option must be an object.")

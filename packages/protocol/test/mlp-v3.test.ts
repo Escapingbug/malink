@@ -56,6 +56,60 @@ describe('Malink Protocol v3 (MLP/3)', () => {
     })).toThrow('integration entry')
   })
 
+  it('models provider catalogs as revision-bound pages with a terminal manifest', () => {
+    const common = {
+      kind: 'malink.event' as const,
+      version: 3 as const,
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      occurredAt: 10,
+    }
+    expect(mlp3EventSchema.parse({
+      ...common,
+      eventId: 'catalog-page-1',
+      payload: {
+        type: 'provider.catalog.page',
+        providerId: 'agent',
+        catalog: 'models',
+        revision: 'r'.repeat(43),
+        pageIndex: 0,
+        pageCount: 1,
+        items: [{
+          id: 'model-1',
+          name: 'Model 1',
+          default_reasoning_level: 'high',
+          supported_reasoning_levels: [{ effort: 'high' }],
+        }],
+      },
+    }).payload).toMatchObject({ type: 'provider.catalog.page', pageCount: 1 })
+    expect(mlp3EventSchema.parse({
+      ...common,
+      eventId: 'catalog-manifest-1',
+      payload: {
+        type: 'provider.catalog.manifest',
+        providerId: 'agent',
+        catalog: 'models',
+        revision: 'r'.repeat(43),
+        status: 'ready',
+        itemCount: 1,
+        pageCount: 1,
+      },
+    }).payload).toMatchObject({ type: 'provider.catalog.manifest', itemCount: 1 })
+    expect(() => mlp3EventSchema.parse({
+      ...common,
+      eventId: 'catalog-manifest-incomplete',
+      payload: {
+        type: 'provider.catalog.manifest',
+        providerId: 'agent',
+        catalog: 'models',
+        revision: 'r'.repeat(43),
+        status: 'ready',
+        itemCount: 1,
+        pageCount: 0,
+      },
+    })).toThrow('must contain pages')
+  })
+
   it('adds Gateway enrollment cancellation without changing the protocol version', () => {
     const command = mlp3CommandSchema.parse({
       kind: 'malink.command',
