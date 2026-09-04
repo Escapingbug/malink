@@ -51,6 +51,10 @@ import {
 } from "./gatewayNodeLiveness";
 import { GatewayNoReplyHelp } from "./GatewayNoReplyHelp";
 import { workspaceGatewayRepairPlan } from "./workspaceGatewayRepair";
+import {
+  SettingsNavigation,
+  type SettingsSection,
+} from "./SettingsNavigation";
 
 export const OFFICIAL_ANDROID_RELEASES_URL =
   "https://github.com/Escapingbug/malink/releases";
@@ -238,9 +242,7 @@ function MatrixSettingsDialog({
 }: Props) {
   const [manualRepairReason, setManualRepairReason] =
     useState<ConnectionRepairReason | null>(null);
-  const [activeSection, setActiveSection] = useState<
-    "workspace" | "devices" | "computers" | "support"
-  >("workspace");
+  const [activeSection, setActiveSection] = useState<SettingsSection>("workspace");
   const effectiveRepairReason = repairReason ?? manualRepairReason;
   const repairRequired = effectiveRepairReason !== null;
   const [addingGateway, setAddingGateway] = useState(false);
@@ -486,32 +488,14 @@ function MatrixSettingsDialog({
         </header>
 
         {!setupMode && (
-          <nav className="settings-navigation" aria-label="Settings sections">
-            {([
-              ["workspace", "Workspace"],
-              ["devices", "Devices"],
-              ["computers", "Computers"],
-              ["support", "App & support"],
-            ] as const).map(([section, label]) => (
-              <button
-                key={section}
-                type="button"
-                className={activeSection === section ? "is-active" : ""}
-                aria-current={activeSection === section ? "page" : undefined}
-                onClick={() => {
-                  setAddingGateway(false);
-                  setActiveSection(section);
-                }}
-              >
-                {label}
-                {section === "computers" && gatewayUpdateAvailableCount > 0 && (
-                  <b aria-label={`${gatewayUpdateAvailableCount} updates available`}>
-                    {gatewayUpdateAvailableCount}
-                  </b>
-                )}
-              </button>
-            ))}
-          </nav>
+          <SettingsNavigation
+            activeSection={activeSection}
+            gatewayUpdateAvailableCount={gatewayUpdateAvailableCount}
+            onSelect={(section) => {
+              setAddingGateway(false);
+              setActiveSection(section);
+            }}
+          />
         )}
 
         <div className="matrix-settings-body">
@@ -611,7 +595,17 @@ function MatrixSettingsDialog({
         )}
 
         {!setupMode && activeSection === "computers" && (
-          <section className={`computer-software-summary ${gatewaySoftware.attention ? "needs-attention" : ""}`}>
+          <section
+            className={
+              `computer-software-summary ${
+                gatewaySoftware.attention
+                  ? "needs-attention"
+                  : gatewayUpdateAvailableCount > 0
+                    ? "has-updates"
+                    : ""
+              }`
+            }
+          >
             <span>
               <small>Software across Workspace computers</small>
               <strong>

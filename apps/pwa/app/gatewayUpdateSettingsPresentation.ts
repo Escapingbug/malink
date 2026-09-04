@@ -80,7 +80,9 @@ export function gatewayUpdateSettingsPresentation(input: {
       ? `${input.availableCount} ${input.availableCount === 1 ? "Gateway needs" : "Gateways need"} release ${input.releaseId}.`
       : `Review ${input.nodeCount} ${input.nodeCount === 1 ? "Gateway" : "Gateways"} and their live status.`,
     action: "review",
-    actionLabel: input.availableCount > 0 ? "Review update" : "View versions",
+    actionLabel: input.availableCount > 0
+      ? `Review ${input.availableCount} update${input.availableCount === 1 ? "" : "s"}`
+      : "View versions",
     attention: false,
   };
 }
