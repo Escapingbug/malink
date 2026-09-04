@@ -28,6 +28,8 @@ import {
 import type { WebPushNotificationState } from "./webPushNotifications";
 import type {
   GatewayEnrollmentPending,
+  GatewayRestartMode,
+  GatewayRestartStatus,
   SignedWorkspaceGatewayDirectory,
 } from "@malink/protocol";
 import {
@@ -52,6 +54,12 @@ import { workspaceGatewayRepairPlan } from "./workspaceGatewayRepair";
 
 export const OFFICIAL_ANDROID_RELEASES_URL =
   "https://github.com/Escapingbug/malink/releases";
+
+export type GatewayRestartNodeRuntime = {
+  state: "idle" | "requesting" | "waiting" | "restarting" | "ready" | "failed";
+  status?: GatewayRestartStatus;
+  detail?: string;
+};
 
 type Props = {
   open: boolean;
@@ -82,6 +90,7 @@ type Props = {
   gatewayRetirementBusy: string | null;
   gatewayRetirementError: { gatewayNodeId: string; detail: string } | null;
   gatewayNodeLivenessById: Readonly<Record<string, GatewayNodeLiveness>>;
+  gatewayRestartRuntimeByNode: Readonly<Record<string, GatewayRestartNodeRuntime>>;
   gatewayLivenessNow: number;
   gatewayRelease: GatewayReleaseBuild | null;
   gatewayUpdateAvailableCount: number;
@@ -124,6 +133,11 @@ type Props = {
     authorityProjectId: string,
   ): Promise<void>;
   onCheckGatewayLiveness(gatewayNodeId: string): void;
+  onRestartGateway(
+    gatewayNodeId: string,
+    targetProjectId: string,
+    mode: GatewayRestartMode,
+  ): void;
   onReviewGatewayUpdates(): void;
   onRetryGatewayUpdateDiscovery(): void;
   onReconnectGatewayUpdates(): void;
@@ -172,6 +186,7 @@ function MatrixSettingsDialog({
   gatewayRetirementBusy,
   gatewayRetirementError,
   gatewayNodeLivenessById,
+  gatewayRestartRuntimeByNode,
   gatewayLivenessNow,
   gatewayRelease,
   gatewayUpdateAvailableCount,
@@ -207,6 +222,7 @@ function MatrixSettingsDialog({
   onRenameGateway,
   onRetireGateway,
   onCheckGatewayLiveness,
+  onRestartGateway,
   onReviewGatewayUpdates,
   onRetryGatewayUpdateDiscovery,
   onReconnectGatewayUpdates,
@@ -229,6 +245,7 @@ function MatrixSettingsDialog({
   const repairRequired = effectiveRepairReason !== null;
   const [addingGateway, setAddingGateway] = useState(false);
   const [editingGatewayNodeId, setEditingGatewayNodeId] = useState<string | null>(null);
+  const [restartConfirmationNodeId, setRestartConfirmationNodeId] = useState<string | null>(null);
   const [gatewayNameDraft, setGatewayNameDraft] = useState("");
   const [diagnosticExportStatus, setDiagnosticExportStatus] = useState<
     "started" | "failed" | null
@@ -683,6 +700,14 @@ function MatrixSettingsDialog({
                 const updateAvailable = Boolean(
                   gatewayRelease && gateway.buildId && gateway.buildId !== gatewayRelease.buildId,
                 );
+                const restartRuntime = gatewayRestartRuntimeByNode[gatewayProfileId]
+                  ?? { state: "idle" as const };
+                const restartBusy = restartRuntime.state === "requesting" ||
+                  restartRuntime.state === "waiting" ||
+                  restartRuntime.state === "restarting";
+                const restartConfirming = restartConfirmationNodeId === gatewayProfileId;
+                const canRestart = gatewayManagementReady && liveCheckAvailable &&
+                  Boolean(targetProjectId) && liveness.state === "online";
                 return (
                   <div
                     key={gatewayProfileId}
@@ -745,6 +770,95 @@ function MatrixSettingsDialog({
                         </button>
                       )}
                     </div>
+                    <div className="gateway-profile-restart">
+                      <span>
+                        <small>Provider changes</small>
+                        <strong>Restart Gateway to load them</strong>
+                        <small>
+                          After adding or changing a Provider on this computer, restart its
+                          Gateway before creating a session with that Provider.
+                        </small>
+                      </span>
+                      {!restartConfirming && (
+                        <button
+                          type="button"
+                          disabled={busy || restartBusy || !canRestart}
+                          title={!gateway.onlineUpdate
+                            ? "Update this Gateway Host before using remote restart."
+                            : !targetProjectId
+                              ? "This Gateway has no synchronized project route."
+                              : liveness.state !== "online"
+                                ? "Check status first so Malink can verify this Gateway is online."
+                                : "Restart this Gateway process"}
+                          onClick={() => setRestartConfirmationNodeId(gatewayProfileId)}
+                        >
+                          {restartRuntime.state === "requesting"
+                            ? "Sending…"
+                            : restartRuntime.state === "waiting"
+                              ? "Waiting for idle…"
+                              : restartRuntime.state === "restarting"
+                                ? "Restarting…"
+                                : restartRuntime.state === "failed"
+                                  ? "Retry restart"
+                                  : restartRuntime.state === "ready"
+                                    ? "Restart again"
+                                    : "Restart Gateway"}
+                        </button>
+                      )}
+                    </div>
+                    {restartConfirming && targetProjectId && (
+                      <div className="gateway-restart-confirmation" role="alert">
+                        <span>
+                          <strong>Restart {gatewayIdentity.label}?</strong>
+                          <small>
+                            New sessions will be unavailable briefly. Waiting for idle preserves
+                            active work; restarting now interrupts active Agent turns.
+                          </small>
+                        </span>
+                        <span>
+                          <button
+                            type="button"
+                            className="connect-button"
+                            disabled={busy || restartBusy}
+                            onClick={() => {
+                              setRestartConfirmationNodeId(null);
+                              onRestartGateway(gatewayProfileId, targetProjectId, "when_idle");
+                            }}
+                          >
+                            Restart when idle
+                          </button>
+                          <button
+                            type="button"
+                            className="danger-button"
+                            disabled={busy || restartBusy}
+                            onClick={() => {
+                              setRestartConfirmationNodeId(null);
+                              onRestartGateway(gatewayProfileId, targetProjectId, "force");
+                            }}
+                          >
+                            Restart now
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy || restartBusy}
+                            onClick={() => setRestartConfirmationNodeId(null)}
+                          >
+                            Cancel
+                          </button>
+                        </span>
+                      </div>
+                    )}
+                    {restartRuntime.state !== "idle" && (
+                      <p
+                        className={`gateway-restart-status gateway-restart-status-${restartRuntime.state}`}
+                        role={restartRuntime.state === "failed" ? "alert" : "status"}
+                        aria-live="polite"
+                      >
+                        <strong>{gatewayRestartStateLabel(restartRuntime.state)}</strong>{" "}
+                        {restartRuntime.detail ?? restartRuntime.status?.detail ??
+                          gatewayRestartStateDetail(restartRuntime.state)}
+                      </p>
+                    )}
                     <details className="gateway-profile-details">
                       <summary>Technical details</summary>
                       <dl>
@@ -1618,6 +1732,40 @@ export function nativeUpdateStatusText(state: NativeUpdateStatus | null): string
       return `APK: update check failed (${state.detailCode ?? "unknown_error"}); the current app remains unchanged`;
     case "current":
       return "APK: up to date; static releases are checked automatically";
+  }
+}
+
+function gatewayRestartStateLabel(state: GatewayRestartNodeRuntime["state"]): string {
+  switch (state) {
+    case "requesting":
+      return "Restart requested."
+    case "waiting":
+      return "Waiting for active work."
+    case "restarting":
+      return "Gateway is restarting."
+    case "ready":
+      return "Restart complete."
+    case "failed":
+      return "Restart did not complete."
+    case "idle":
+      return "";
+  }
+}
+
+function gatewayRestartStateDetail(state: GatewayRestartNodeRuntime["state"]): string {
+  switch (state) {
+    case "requesting":
+      return "Sending the signed restart request.";
+    case "waiting":
+      return "Gateway will restart automatically after active Agent turns finish.";
+    case "restarting":
+      return "Waiting for a signed reply from the replacement Gateway process.";
+    case "ready":
+      return "Provider changes are now loaded.";
+    case "failed":
+      return "Check this computer or export diagnostics, then retry.";
+    case "idle":
+      return "";
   }
 }
 

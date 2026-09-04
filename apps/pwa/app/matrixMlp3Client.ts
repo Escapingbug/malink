@@ -962,6 +962,21 @@ function toMlp3Command(
         operation: "gateway.update.status",
         payload: { operation: "gateway.update.status" },
       };
+    case "gateway.restart":
+      return {
+        ...common,
+        operation: "gateway.restart",
+        payload: {
+          operation: "gateway.restart",
+          mode: payload.mode ?? "when_idle",
+        },
+      };
+    case "gateway.restart.status":
+      return {
+        ...common,
+        operation: "gateway.restart.status",
+        payload: { operation: "gateway.restart.status" },
+      };
   }
 }
 

@@ -118,6 +118,34 @@ restart time**. A forward-only release shows an additional protected-data
 warning and requires a second explicit action. Closing the update panel never
 cancels an already requested update.
 
+## Provider changes and Gateway restart
+
+Provider profiles are loaded when the Gateway process starts. After a Provider
+is added or its launch configuration changes, the matching computer card keeps
+the required action beside Gateway health and software controls: **Restart
+Gateway**.
+
+Before offering the destructive action, the client verifies both that the
+computer is online and that its Gateway supports signed remote restart. A
+Gateway that cannot confirm support is not sent an open-ended restart command;
+the user is told to update the Gateway Host or repair the connection.
+
+The confirmation offers two explicit policies:
+
+- **Restart when idle** closes the command gate, waits for active Agent turns
+  and other accepted work to finish, then restarts.
+- **Restart now** warns that active Agent turns will be interrupted, cancels
+  them, then restarts.
+
+The independent local update supervisor persists the restart request before the
+Gateway process stops. The signed result remains recoverable through the command
+journal and outbox if the process switches before delivery completes. The client
+then waits through scheduled and restarting states until the replacement
+process reports both local health and Matrix readiness. Success explicitly
+confirms that Provider changes are loaded. Failure keeps the old Gateway command
+gate recoverable and presents the supervisor's reason instead of reporting only
+a timeout.
+
 ## Vocabulary
 
 Primary UI copy uses **this device**, **Workspace**, and **computer**. Use

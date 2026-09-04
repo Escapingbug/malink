@@ -79,6 +79,47 @@ describe('Malink Protocol v3 (MLP/3)', () => {
     })).toThrow()
   })
 
+  it('models signed Gateway restart scheduling and status', () => {
+    const command = mlp3CommandSchema.parse({
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'gateway-restart-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      deviceId: 'device-1',
+      certificateId: 'certificate-1',
+      createdAt: 1,
+      operation: 'gateway.restart',
+      payload: { operation: 'gateway.restart', mode: 'when_idle' },
+    })
+    expect(command.payload).toMatchObject({ mode: 'when_idle' })
+
+    expect(mlp3EventSchema.parse({
+      kind: 'malink.event',
+      version: 3,
+      eventId: 'gateway-restart-scheduled-1',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      causationCommandId: command.commandId,
+      occurredAt: 2,
+      payload: {
+        type: 'gateway.restart.status',
+        status: {
+          version: 1,
+          phase: 'scheduled',
+          restartId: 'restart-1',
+          mode: 'when_idle',
+          requestedAt: 2,
+          scheduledAt: 7,
+          updatedAt: 2,
+        },
+      },
+    }).payload).toMatchObject({
+      type: 'gateway.restart.status',
+      status: { phase: 'scheduled' },
+    })
+  })
+
   it('models lazy artifact materialization and bounded assistant stat metadata', () => {
     const command = mlp3CommandSchema.parse({
       kind: 'malink.command',

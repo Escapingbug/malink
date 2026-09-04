@@ -13,6 +13,7 @@ import id.my.anciety.malink.client.command.CommandState as DurableState
 import id.my.anciety.malink.client.command.CommandTransmission
 import id.my.anciety.malink.client.command.CommandView as DurableView
 import id.my.anciety.malink.client.command.DurableCommandOutbox
+import id.my.anciety.malink.client.command.isGatewayStatusProbe
 import id.my.anciety.malink.client.command.PublicCommandError as DurableError
 import id.my.anciety.malink.client.command.RevisionConflictAction
 import id.my.anciety.malink.client.command.UnknownCommandException
@@ -1134,7 +1135,7 @@ class NativeClientRuntime(
                 )
             }
             val existingStatusProbeIds = if (
-                validatedPayload.operation == CommandOperation.GATEWAY_UPDATE_STATUS
+                validatedPayload.operation.isGatewayStatusProbe
             ) {
                 outbox.unfinishedGatewayStatusProbeIds(projectId)
             } else {
@@ -1279,7 +1280,7 @@ class NativeClientRuntime(
         val current = outbox.get(commandId) ?: return false
         val operation = outbox.operation(commandId)
         require(
-            current.state.isTerminal || operation == CommandOperation.GATEWAY_UPDATE_STATUS,
+            current.state.isTerminal || operation?.isGatewayStatusProbe == true,
         ) {
             "Only completed commands and read-only Gateway status probes can be released."
         }
@@ -2227,6 +2228,19 @@ class NativeClientRuntime(
                 }
             }
             "gateway.update.status" -> {
+                v3Operation = operation
+                v3SessionId = null
+                v3Payload = buildJsonObject { put("operation", v3Operation) }
+            }
+            "gateway.restart" -> {
+                v3Operation = operation
+                v3SessionId = null
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    put("mode", raw.string("mode") ?: "when_idle")
+                }
+            }
+            "gateway.restart.status" -> {
                 v3Operation = operation
                 v3SessionId = null
                 v3Payload = buildJsonObject { put("operation", v3Operation) }

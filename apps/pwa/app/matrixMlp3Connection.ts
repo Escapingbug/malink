@@ -2032,6 +2032,8 @@ export function toLegacyCompletion(
         ? { result: payload }
       : payload.type === "gateway.update.status"
         ? { result: payload.status }
+      : payload.type === "gateway.restart.status"
+        ? { result: payload.status }
       : payload.type === "provider.sessions.listed" || payload.type === "provider.session.inspected"
         ? { result: payload }
       : payload.type === "command.reconciled" && payload.result !== undefined

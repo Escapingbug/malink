@@ -1227,6 +1227,9 @@ function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
       // schedules the update.
       if (event.payload.status.phase === "waiting_for_idle") return null;
       return { commandId, outcome: "succeeded", ...(event.sessionId ? { sessionId: event.sessionId } : {}), event };
+    case "gateway.restart.status":
+      if (event.payload.status.phase === "waiting_for_idle") return null;
+      return { commandId, outcome: "succeeded", ...(event.sessionId ? { sessionId: event.sessionId } : {}), event };
     case "turn.completed":
       return {
         commandId,

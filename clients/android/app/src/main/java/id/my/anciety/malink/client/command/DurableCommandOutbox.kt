@@ -54,9 +54,12 @@ class DurableCommandOutbox internal constructor(
         // Retire only these probes instead of surfacing them as user actions;
         // mutation commands keep their exact recovery identity above.
         val statusProbes = recoveredCommands.filter { command ->
-            !command.state.isTerminal &&
+            !command.state.isTerminal && (
                 command.payload["operation"] ==
-                JsonPrimitive(CommandOperation.GATEWAY_UPDATE_STATUS.wireName)
+                    JsonPrimitive(CommandOperation.GATEWAY_UPDATE_STATUS.wireName) ||
+                command.payload["operation"] ==
+                    JsonPrimitive(CommandOperation.GATEWAY_RESTART_STATUS.wireName)
+                )
         }.take(MAX_RELEASED_TOMBSTONES - loaded.released.size)
         val retiredStatusProbeIds = statusProbes.mapTo(mutableSetOf(), PersistedCommand::commandId)
         val releasedAt = if (statusProbes.isEmpty()) null else nonnegativeNow()
@@ -107,14 +110,18 @@ class DurableCommandOutbox internal constructor(
         }
         val now = nonnegativeNow()
         var expiredStatusProbes = emptyList<PersistedCommand>()
-        if (validatedPayload.operation == CommandOperation.GATEWAY_UPDATE_STATUS) {
+        if (validatedPayload.operation.isGatewayStatusProbe) {
             val statusProbes = snapshot.commands.filter { candidate ->
                 !candidate.state.isTerminal &&
                     candidate.projectId == projectId &&
-                    CommandPayloadValidator.validate(candidate.payload).operation ==
-                    CommandOperation.GATEWAY_UPDATE_STATUS
+                    CommandPayloadValidator.validate(candidate.payload).operation
+                        .isGatewayStatusProbe
             }
             val reusable = statusProbes
+                .filter { candidate ->
+                    CommandPayloadValidator.validate(candidate.payload).operation ==
+                        validatedPayload.operation
+                }
                 .filter { gatewayStatusProbeCanBeReused(it.submittedAt, now) }
                 .maxByOrNull(PersistedCommand::submittedAt)
             if (reusable != null) {
@@ -310,8 +317,8 @@ class DurableCommandOutbox internal constructor(
         snapshot.commands.filter { candidate ->
             !candidate.state.isTerminal &&
                 candidate.projectId == projectId &&
-                CommandPayloadValidator.validate(candidate.payload).operation ==
-                CommandOperation.GATEWAY_UPDATE_STATUS
+                CommandPayloadValidator.validate(candidate.payload).operation
+                    .isGatewayStatusProbe
         }.map(PersistedCommand::commandId)
 
     @Synchronized
@@ -319,7 +326,7 @@ class DurableCommandOutbox internal constructor(
         val command = findCurrent(commandId) ?: return false
         val operation = CommandPayloadValidator.validate(command.payload).operation
         require(
-            command.state.isTerminal || operation == CommandOperation.GATEWAY_UPDATE_STATUS,
+            command.state.isTerminal || operation.isGatewayStatusProbe,
         ) {
             "Only completed commands and read-only Gateway status probes can be released."
         }

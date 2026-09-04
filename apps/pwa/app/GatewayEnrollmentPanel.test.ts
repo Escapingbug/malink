@@ -30,10 +30,10 @@ describe("GatewayEnrollmentPanel", () => {
   it("offers approval while a Gateway request is pending", () => {
     const html = render(new Set());
 
-    expect(html).toContain("2. Approve Office Gateway");
-    expect(html).toContain("Approve Gateway");
+    expect(html).toContain("2. Approve computer · Office Gateway");
+    expect(html).toContain("Approve computer");
     expect(html).toContain("Abandon request");
-    expect(html).toContain("Create another Gateway setup link");
+    expect(html).toContain("Set up another computer");
     expect(html).toContain("123-456");
   });
 
@@ -42,7 +42,7 @@ describe("GatewayEnrollmentPanel", () => {
 
     expect(html).toContain("Approved Office Gateway");
     expect(html).toContain("Approval was delivered");
-    expect(html).toContain("Waiting for Gateway Host");
+    expect(html).toContain("Finishing setup on the new computer");
     expect(html).not.toContain("Send approval again");
     expect(html).not.toContain("Abandon request");
   });

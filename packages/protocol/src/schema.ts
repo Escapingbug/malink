@@ -431,6 +431,15 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
   z
     .object({ operation: z.literal('gateway.update.status') })
     .strict(),
+  z
+    .object({
+      operation: z.literal('gateway.restart'),
+      mode: z.enum(['when_idle', 'force']).optional(),
+    })
+    .strict(),
+  z
+    .object({ operation: z.literal('gateway.restart.status') })
+    .strict(),
 ])
 
 export type CommandPayload = z.infer<typeof commandPayloadSchema>
@@ -472,6 +481,8 @@ export const commandSchema = z
       'gateway.update.stage',
       'gateway.update.apply',
       'gateway.update.status',
+      'gateway.restart',
+      'gateway.restart.status',
     ]),
     issuedAt: timestamp,
     expiresAt: timestamp,

@@ -123,6 +123,13 @@ class CommandPayloadValidatorTest {
             buildJsonObject {
                 put("operation", "gateway.update.status")
             },
+            buildJsonObject {
+                put("operation", "gateway.restart")
+                put("mode", "when_idle")
+            },
+            buildJsonObject {
+                put("operation", "gateway.restart.status")
+            },
         )
 
         assertEquals(CommandOperation.entries, payloads.map { CommandPayloadValidator.validate(it).operation })
@@ -400,6 +407,8 @@ class CommandPayloadValidatorTest {
                 CommandOperation.GATEWAY_UPDATE_STAGE,
                 CommandOperation.GATEWAY_UPDATE_APPLY,
                 CommandOperation.GATEWAY_UPDATE_STATUS,
+                CommandOperation.GATEWAY_RESTART,
+                CommandOperation.GATEWAY_RESTART_STATUS,
             )
         ) {
             assertEquals(PairingOperation.GATEWAY_UPDATE, requiredCertificateOperation(operation))

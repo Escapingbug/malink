@@ -234,7 +234,7 @@ describe('MatrixMlp3CommandAuthorizer', () => {
     })
   })
 
-  it('maps the pinned-release grant to every Gateway update command', async () => {
+  it('maps the Gateway update grant to update and restart commands', async () => {
     const keys = await generateDeviceKeyPair()
     const journal = new FileMlp3CommandJournal(
       join(await mkdtemp(join(tmpdir(), 'malink-v3-update-auth-')), 'journal.jsonl'),
@@ -252,28 +252,44 @@ describe('MatrixMlp3CommandAuthorizer', () => {
       certificateExpiresAt: Date.now() + 60_000,
       sequenceEpoch: 'certificate-1',
     }
-    const command = await signMlp3Command({
-      kind: 'malink.command',
-      version: 3,
-      commandId: 'gateway-update-status-1',
-      workspaceId: 'workspace-1',
-      projectId: 'project-1',
-      deviceId: 'device-1',
-      certificateId: 'certificate-1',
-      createdAt: 1,
-      operation: 'gateway.update.status',
-      payload: { operation: 'gateway.update.status' },
-    }, keys.privateKey, keys.keyId)
+    for (const command of [
+      {
+        commandId: 'gateway-update-status-1',
+        operation: 'gateway.update.status' as const,
+        payload: { operation: 'gateway.update.status' as const },
+      },
+      {
+        commandId: 'gateway-restart-1',
+        operation: 'gateway.restart' as const,
+        payload: { operation: 'gateway.restart' as const, mode: 'when_idle' as const },
+      },
+      {
+        commandId: 'gateway-restart-status-1',
+        operation: 'gateway.restart.status' as const,
+        payload: { operation: 'gateway.restart.status' as const },
+      },
+    ]) {
+      const signed = await signMlp3Command({
+        kind: 'malink.command',
+        version: 3,
+        workspaceId: 'workspace-1',
+        projectId: 'project-1',
+        deviceId: 'device-1',
+        certificateId: 'certificate-1',
+        createdAt: 1,
+        ...command,
+      }, keys.privateKey, keys.keyId)
 
-    await expect(authorizer.authorize(
-      command,
-      policy,
-      '!project:example.org',
-      'project-1',
-    )).resolves.toMatchObject({
-      command: { operation: 'gateway.update.status' },
-      claim: { kind: 'accepted' },
-    })
+      await expect(authorizer.authorize(
+        signed,
+        policy,
+        '!project:example.org',
+        'project-1',
+      )).resolves.toMatchObject({
+        command: { operation: command.operation },
+        claim: { kind: 'accepted' },
+      })
+    }
   })
 
   it('returns a journaled rejection for a valid but explicitly limited device', async () => {

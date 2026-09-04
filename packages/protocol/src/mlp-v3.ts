@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { matrixGatewayCapabilitiesSchema } from './matrix-native.js'
 import { signedWorkspaceGatewayDirectorySchema } from './workspace-authorization.js'
+import { gatewayRestartStatusSchema } from './gateway-lifecycle.js'
 import { gatewayEnrollmentPendingSchema } from './gateway-enrollment.js'
 import { gatewayUpdateStatusSchema } from './gateway-release.js'
 import {
@@ -485,6 +486,15 @@ const gatewayUpdateApplyPayloadSchema = z
 const gatewayUpdateStatusPayloadSchema = z
   .object({ operation: z.literal('gateway.update.status') })
   .strict()
+const gatewayRestartPayloadSchema = z
+  .object({
+    operation: z.literal('gateway.restart'),
+    mode: z.enum(['when_idle', 'force']),
+  })
+  .strict()
+const gatewayRestartStatusPayloadSchema = z
+  .object({ operation: z.literal('gateway.restart.status') })
+  .strict()
 
 export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   sessionCreatePayloadSchema,
@@ -511,6 +521,8 @@ export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   gatewayUpdateStagePayloadSchema,
   gatewayUpdateApplyPayloadSchema,
   gatewayUpdateStatusPayloadSchema,
+  gatewayRestartPayloadSchema,
+  gatewayRestartStatusPayloadSchema,
 ])
 
 export type Mlp3CommandPayload = z.infer<
@@ -673,6 +685,18 @@ export const mlp3CommandSchema = z.union([
     sessionId: z.undefined().optional(),
     operation: z.literal('gateway.update.status'),
     payload: gatewayUpdateStatusPayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('gateway.restart'),
+    payload: gatewayRestartPayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('gateway.restart.status'),
+    payload: gatewayRestartStatusPayloadSchema,
   }).strict(),
 ])
 
@@ -1125,6 +1149,12 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
     .object({
       type: z.literal('gateway.update.status'),
       status: gatewayUpdateStatusSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('gateway.restart.status'),
+      status: gatewayRestartStatusSchema,
     })
     .strict(),
 ])

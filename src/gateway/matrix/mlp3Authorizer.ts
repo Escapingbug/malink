@@ -56,6 +56,8 @@ const CURRENT_WORKSPACE_MEMBER_OPERATIONS = [
   'gateway.update.stage',
   'gateway.update.apply',
   'gateway.update.status',
+  'gateway.restart',
+  'gateway.restart.status',
 ] as const satisfies readonly Mlp3CommandOperation[]
 
 type MissingWorkspaceMemberOperation = Exclude<
@@ -174,6 +176,8 @@ function v3AllowedOperations(
         result.add('gateway.update.stage')
         result.add('gateway.update.apply')
         result.add('gateway.update.status')
+        result.add('gateway.restart')
+        result.add('gateway.restart.status')
         break
     }
   }

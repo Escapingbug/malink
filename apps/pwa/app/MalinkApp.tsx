@@ -20,11 +20,14 @@ import {
   encodePairingLink,
   providerHistoryMessageSchema,
   providerSessionEntrySchema,
+  gatewayRestartStatusSchema,
   gatewayUpdateStatusSchema,
   type MalinkAttachment,
   type MalinkArtifactReference,
   type CommandPayload,
   type GatewayEnrollmentPending,
+  type GatewayRestartMode,
+  type GatewayRestartStatus,
   type GatewayUpdateStatus,
   type ProviderHistoryMessage,
   type ProviderSessionEntry,
@@ -69,6 +72,7 @@ import {
   MatrixSettings,
   nativeUpdateStatusText,
   OFFICIAL_ANDROID_RELEASES_URL,
+  type GatewayRestartNodeRuntime,
 } from "./MatrixSettings";
 import { ConnectionOnboarding } from "./ConnectionOnboarding";
 import { MalinkMark } from "./MalinkMark";
@@ -681,6 +685,9 @@ const BACKGROUND_HISTORY_SOURCE_TIMEOUT_MS = 65_000;
 const PROJECT_CREATE_RESULT_TIMEOUT_MS = 60_000;
 const PROVIDER_HISTORY_RESULT_TIMEOUT_MS = 60_000;
 const GATEWAY_UPDATE_DISCOVERY_INTERVAL_MS = 15 * 60_000;
+const GATEWAY_RESTART_RECOVERY_TIMEOUT_MS = 3 * 60_000;
+const GATEWAY_RESTART_STATUS_TIMEOUT_MS = 30_000;
+const GATEWAY_RESTART_STATUS_RETRY_MS = 1_500;
 
 type GatewayUpdateProbeRecord = {
   commandId: string;
@@ -696,6 +703,13 @@ class InvitationReauthenticationRequiredError extends Error {
   constructor() {
     super("Matrix reauthentication is required for this invitation.");
     this.name = "InvitationReauthenticationRequiredError";
+  }
+}
+
+class GatewayRestartFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GatewayRestartFailedError";
   }
 }
 
@@ -1704,6 +1718,9 @@ function MalinkAppRuntime() {
   const [gatewayNodeLivenessById, setGatewayNodeLivenessById] = useState<
     Record<string, GatewayNodeLiveness>
   >({});
+  const [gatewayRestartRuntimeByNode, setGatewayRestartRuntimeByNode] = useState<
+    Record<string, GatewayRestartNodeRuntime>
+  >({});
   const [gatewayLivenessNow, setGatewayLivenessNow] = useState(() => Date.now());
   const [gatewayUpdateDiscoveryError, setGatewayUpdateDiscoveryError] =
     useState<string | null>(null);
@@ -1865,6 +1882,7 @@ function MalinkAppRuntime() {
   );
   const gatewayNodeLivenessRef = useRef<Record<string, GatewayNodeLiveness>>({});
   const gatewayNodeProbeFlightsRef = useRef(new Set<string>());
+  const gatewayRestartActiveNodeIdsRef = useRef(new Set<string>());
   const executeGatewayUpdateRef = useRef<(
     payload: Extract<CommandPayload, { operation: `gateway.update.${string}` }>,
     targetProjectId: string,
@@ -7542,6 +7560,216 @@ function MalinkAppRuntime() {
     setGatewayNodeLivenessById(values);
     setGatewayLivenessNow(Date.now());
     return next;
+  }
+
+  function setGatewayRestartRuntime(
+    gatewayNodeId: string,
+    update: (current: GatewayRestartNodeRuntime) => GatewayRestartNodeRuntime,
+  ): void {
+    setGatewayRestartRuntimeByNode(current => ({
+      ...current,
+      [gatewayNodeId]: update(current[gatewayNodeId] ?? { state: "idle" }),
+    }));
+  }
+
+  async function restartGatewayNode(
+    gatewayNodeId: string,
+    targetProjectId: string,
+    mode: GatewayRestartMode,
+  ): Promise<void> {
+    if (gatewayRestartActiveNodeIdsRef.current.has(gatewayNodeId)) return;
+    gatewayRestartActiveNodeIdsRef.current.add(gatewayNodeId);
+    let commandId: string | null = null;
+    setGatewayRestartRuntime(gatewayNodeId, () => ({
+      state: "requesting",
+      detail: "Checking that this Gateway supports a signed remote restart.",
+    }));
+    try {
+      const preflight = await readGatewayRestartStatus(targetProjectId).catch(error => {
+        throw new Error(
+          "This Gateway did not confirm remote restart support. Update the Gateway Host or " +
+          `check the computer connection, then try again. ${formatUiError(error)}`,
+        );
+      });
+      if (preflight.phase === "scheduled" || preflight.phase === "restarting") {
+        setGatewayRestartRuntime(gatewayNodeId, () => ({
+          state: "restarting",
+          status: preflight,
+          detail: preflight.detail ?? "A restart is already in progress on this computer.",
+        }));
+        const ready = await waitForGatewayRestart(preflight, targetProjectId, gatewayNodeId);
+        setGatewayRestartRuntime(gatewayNodeId, () => ({
+          state: "ready",
+          status: ready,
+          detail: "Gateway is online again. Provider changes are now loaded.",
+        }));
+      } else {
+        setGatewayRestartRuntime(gatewayNodeId, () => ({
+          state: mode === "when_idle" ? "waiting" : "requesting",
+          detail: mode === "when_idle"
+            ? "The signed request is waiting for active work to finish."
+            : "The signed request will stop active Agent turns before restarting.",
+        }));
+        const sent = await sendRealCommand(
+          { operation: "gateway.restart", mode },
+          targetProjectId,
+          { autoRetryRevisionConflict: true, propagateFailure: true },
+        );
+        if (!sent) {
+          throw new Error("The connected client could not send the Gateway restart request.");
+        }
+        commandId = sent.commandId;
+        const completion = await waitForCommandCompletion(sent.completion, null);
+        if (completion.outcome !== "succeeded") {
+          throw new Error(
+            completion.error?.message ?? "The Gateway did not accept the restart request.",
+          );
+        }
+        const scheduled = gatewayRestartStatusSchema.parse(completion.result);
+        setGatewayRestartRuntime(gatewayNodeId, () => ({
+          state: scheduled.phase === "ready" ? "ready" : scheduled.phase === "failed"
+            ? "failed"
+            : "restarting",
+          status: scheduled,
+          detail: scheduled.phase === "ready"
+            ? "Provider changes are now loaded."
+            : scheduled.detail ?? "Waiting for the replacement Gateway process.",
+        }));
+        if (scheduled.phase === "failed") {
+          throw new Error(scheduled.detail ?? "The Gateway restart failed.");
+        }
+        if (scheduled.phase !== "ready") {
+          updateGatewayNodeLiveness(gatewayNodeId, current => ({
+            ...current,
+            state: "checking",
+            checkedAt: Date.now(),
+            detail: "Gateway restart is in progress.",
+          }));
+          const ready = await waitForGatewayRestart(scheduled, targetProjectId, gatewayNodeId);
+          setGatewayRestartRuntime(gatewayNodeId, () => ({
+            state: "ready",
+            status: ready,
+            detail: "Gateway is online again. Provider changes are now loaded.",
+          }));
+        }
+      }
+      const verifiedAt = Date.now();
+      updateGatewayNodeLiveness(gatewayNodeId, current => ({
+        ...current,
+        state: "online",
+        checkedAt: verifiedAt,
+        lastVerifiedAt: verifiedAt,
+        consecutiveNoReplies: 0,
+        detail: "Gateway restarted and returned a signed ready status.",
+      }));
+      showUiNotice(
+        `gateway-restart:${gatewayNodeId}`,
+        "connection",
+        "success",
+        "Gateway restarted successfully. Provider changes are now available.",
+        8_000,
+      );
+    } catch (error) {
+      const detail = formatUiError(error);
+      setGatewayRestartRuntime(gatewayNodeId, current => ({
+        ...current,
+        state: "failed",
+        detail,
+      }));
+      showUiNotice(
+        `gateway-restart:${gatewayNodeId}`,
+        "connection",
+        "error",
+        `Gateway restart did not complete: ${detail}`,
+      );
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+      gatewayRestartActiveNodeIdsRef.current.delete(gatewayNodeId);
+    }
+  }
+
+  async function waitForGatewayRestart(
+    scheduled: GatewayRestartStatus,
+    targetProjectId: string,
+    gatewayNodeId: string,
+  ): Promise<GatewayRestartStatus> {
+    const deadline = Math.max(Date.now(), scheduled.scheduledAt ?? Date.now())
+      + GATEWAY_RESTART_RECOVERY_TIMEOUT_MS;
+    const initialDelay = Math.max(0, (scheduled.scheduledAt ?? Date.now()) - Date.now() + 500);
+    if (initialDelay > 0) {
+      await new Promise<void>(resolveDelay => window.setTimeout(resolveDelay, initialDelay));
+    }
+    let lastError: unknown = new Error("The replacement Gateway has not replied yet.");
+    while (Date.now() <= deadline) {
+      if (connectionStatusRef.current !== "connected") {
+        await new Promise<void>(resolveDelay =>
+          window.setTimeout(resolveDelay, GATEWAY_RESTART_STATUS_RETRY_MS)
+        );
+        continue;
+      }
+      try {
+        const current = await readGatewayRestartStatus(targetProjectId);
+        if (scheduled.restartId && current.restartId !== scheduled.restartId) {
+          throw new Error("The Gateway reported a different restart request.");
+        }
+        setGatewayRestartRuntime(gatewayNodeId, runtime => ({
+          ...runtime,
+          state: current.phase === "ready" ? "ready" : current.phase === "failed"
+            ? "failed"
+            : "restarting",
+          status: current,
+          detail: current.detail,
+        }));
+        if (current.phase === "ready") return current;
+        if (current.phase === "failed") {
+          throw new GatewayRestartFailedError(
+            current.detail ?? "The Gateway supervisor could not restart the process.",
+          );
+        }
+      } catch (error) {
+        if (error instanceof GatewayRestartFailedError) throw error;
+        lastError = error;
+      }
+      await new Promise<void>(resolveDelay =>
+        window.setTimeout(resolveDelay, GATEWAY_RESTART_STATUS_RETRY_MS)
+      );
+    }
+    throw new Error(
+      `No signed ready reply arrived after the restart. ${formatUiError(lastError)}`,
+    );
+  }
+
+  async function readGatewayRestartStatus(
+    targetProjectId: string,
+  ): Promise<GatewayRestartStatus> {
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand(
+        { operation: "gateway.restart.status" },
+        targetProjectId,
+        { autoRetryRevisionConflict: true, propagateFailure: true },
+      );
+      if (!sent) throw new Error("The connected client could not check Gateway restart status.");
+      commandId = sent.commandId;
+      const completion = await waitForCommandCompletion(
+        sent.completion,
+        GATEWAY_RESTART_STATUS_TIMEOUT_MS,
+      );
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message ?? "The Gateway restart status check failed.",
+        );
+      }
+      return gatewayRestartStatusSchema.parse(completion.result);
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+    }
   }
 
   async function probeGatewayNodeLiveness(
@@ -14219,6 +14447,7 @@ function MalinkAppRuntime() {
         gatewayRetirementBusy={gatewayRetirementBusy}
         gatewayRetirementError={gatewayRetirementError}
         gatewayNodeLivenessById={gatewayNodeLivenessById}
+        gatewayRestartRuntimeByNode={gatewayRestartRuntimeByNode}
         gatewayLivenessNow={gatewayLivenessNow}
         gatewayRelease={gatewayRelease}
         gatewayUpdateAvailableCount={gatewayUpdateAvailableCount}
@@ -14293,6 +14522,9 @@ function MalinkAppRuntime() {
         onCheckGatewayLiveness={(gatewayNodeId) => {
           const target = gatewayNodeProbeTargetsById.get(gatewayNodeId);
           if (target) void probeGatewayNodeLiveness(target);
+        }}
+        onRestartGateway={(gatewayNodeId, targetProjectId, mode) => {
+          void restartGatewayNode(gatewayNodeId, targetProjectId, mode);
         }}
         onReviewGatewayUpdates={() => {
           setSettingsOpen(false);
@@ -14397,7 +14629,8 @@ function commandNoticeFor(payload: CommandPayload): {
     payload.operation === "device.invite" ||
     payload.operation.startsWith("gateway.enrollment.") ||
     payload.operation.startsWith("gateway.profile.") ||
-    payload.operation.startsWith("gateway.update.")
+    payload.operation.startsWith("gateway.update.") ||
+    payload.operation.startsWith("gateway.restart")
   ) {
     return { key: `pairing:${payload.operation}`, scope: "pairing" };
   }
@@ -14764,6 +14997,10 @@ function describeConflictedAction(payload: CommandPayload): string {
       return "The Gateway update activation request";
     case "gateway.update.status":
       return "The Gateway update status request";
+    case "gateway.restart":
+      return "The Gateway restart request";
+    case "gateway.restart.status":
+      return "The Gateway restart status request";
   }
 }
 

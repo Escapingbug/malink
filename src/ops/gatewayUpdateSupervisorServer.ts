@@ -10,6 +10,10 @@ import { chmod, lstat, mkdir, unlink } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import {
   gatewayUpdateStatusSchema,
+  gatewayRestartModeSchema,
+  gatewayRestartStatusSchema,
+  type GatewayRestartMode,
+  type GatewayRestartStatus,
   type GatewayUpdateStatus,
 } from '@malink/protocol'
 import type { GatewayUpdateSupervisor } from './gatewayUpdateSupervisor.js'
@@ -38,6 +42,15 @@ export async function startGatewayUpdateSupervisorServer(input: {
       const path = new URL(request.url ?? '/', 'http://localhost').pathname
       if (request.method === 'GET' && path === '/v1/status') {
         sendJson(response, 200, await input.supervisor.status())
+        return
+      }
+      if (request.method === 'GET' && path === '/v1/gateway/restart') {
+        sendJson(response, 200, await input.supervisor.restartStatus())
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/gateway/restart') {
+        const mode = restartModeFromBody(await readJsonBody(request))
+        sendJson(response, 202, await input.supervisor.scheduleRestart(mode))
         return
       }
       if (request.method === 'POST' && path === '/v1/releases/stage') {
@@ -126,6 +139,16 @@ export class GatewayUpdateSupervisorClient {
 
   status(): Promise<GatewayUpdateStatus> {
     return this.request('GET', '/v1/status').then(value => gatewayUpdateStatusSchema.parse(value))
+  }
+
+  restartStatus(): Promise<GatewayRestartStatus> {
+    return this.request('GET', '/v1/gateway/restart')
+      .then(value => gatewayRestartStatusSchema.parse(value))
+  }
+
+  scheduleRestart(mode: GatewayRestartMode): Promise<GatewayRestartStatus> {
+    return this.request('POST', '/v1/gateway/restart', { mode })
+      .then(value => gatewayRestartStatusSchema.parse(value))
   }
 
   stage(releaseId: string): Promise<GatewayUpdateStatus> {
@@ -263,6 +286,19 @@ function releaseIdFromBody(input: unknown): string {
     throw new SupervisorHttpError(400, 'invalid_release_id')
   }
   return values[0][1]
+}
+
+function restartModeFromBody(input: unknown): GatewayRestartMode {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new SupervisorHttpError(400, 'invalid_request')
+  }
+  const value = input as Record<string, unknown>
+  if (Object.keys(value).length !== 1) {
+    throw new SupervisorHttpError(400, 'invalid_request')
+  }
+  const parsed = gatewayRestartModeSchema.safeParse(value.mode)
+  if (!parsed.success) throw new SupervisorHttpError(400, 'invalid_restart_mode')
+  return parsed.data
 }
 
 function applyReleaseFromBody(input: unknown): {

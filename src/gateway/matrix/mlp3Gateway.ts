@@ -17,6 +17,8 @@ import {
   type ProviderHistoryMessage,
   type ProviderSessionEntry,
   type GatewayEnrollmentPending,
+  type GatewayRestartMode,
+  type GatewayRestartStatus,
   type GatewayUpdateStatus,
 } from '@malink/protocol'
 import type {
@@ -264,6 +266,8 @@ export interface MatrixMlp3GatewayDependencies {
       ownerCommandId: string,
       detail: string,
     ): Promise<GatewayUpdateStatus>
+    restartStatus(): Promise<GatewayRestartStatus>
+    scheduleRestart(mode: GatewayRestartMode): Promise<GatewayRestartStatus>
   }
 }
 
@@ -939,7 +943,10 @@ export class MatrixMlp3GatewayRunner {
   private shouldDeferForGatewayUpdate(command: Mlp3Command): boolean {
     if (this.updateDrainState === 'open') return false
     if (this.updateDrainState === 'sealed') return true
-    if (command.operation === 'gateway.update.status') return false
+    if (
+      command.operation === 'gateway.update.status'
+      || command.operation === 'gateway.restart.status'
+    ) return false
     return command.operation !== 'turn.cancel' && command.operation !== 'decision.answer'
   }
 
@@ -1053,6 +1060,7 @@ export class MatrixMlp3GatewayRunner {
     const execution = this.execute(project, journalRecord, abortController.signal)
     const timeoutMs = command.operation === 'prompt.submit'
       || (command.operation === 'session.create' && command.payload.initialPrompt !== undefined)
+      || command.operation === 'gateway.restart'
       ? null
       : command.operation === 'gateway.update.stage'
         ? this.config.gatewayUpdateExecutionTimeoutMs
@@ -1166,6 +1174,12 @@ export class MatrixMlp3GatewayRunner {
         return
       case 'gateway.update.status':
         await this.reportGatewayUpdateStatus(project, command)
+        return
+      case 'gateway.restart':
+        await this.restartGateway(project, command)
+        return
+      case 'gateway.restart.status':
+        await this.reportGatewayRestartStatus(project, command)
         return
     }
   }
@@ -1358,7 +1372,9 @@ export class MatrixMlp3GatewayRunner {
     this.updateDrainState = 'waiting'
     let scheduled = false
     try {
-      if (command.payload.mode === 'force') await this.interruptActiveTurnsForUpdate()
+      if (command.payload.mode === 'force') {
+        await this.interruptActiveTurnsForMaintenance('forced Gateway update')
+      }
       await this.drainGatewayForUpdate(project, command)
       // No business command or turn is active at this instant, and the sealed
       // gate synchronously prevents another one from starting before the
@@ -1408,12 +1424,85 @@ export class MatrixMlp3GatewayRunner {
     )
   }
 
+  private async restartGateway(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.restart'>,
+  ): Promise<void> {
+    const supervisor = this.requireGatewayUpdateSupervisor()
+    if (this.updateDrainState !== 'open') {
+      throw new Error('Another Gateway maintenance action is already draining this runtime')
+    }
+    this.updateDrainState = 'waiting'
+    let scheduled = false
+    try {
+      if (command.payload.mode === 'force') {
+        await this.interruptActiveTurnsForMaintenance('forced Gateway restart')
+      }
+      await this.drainGatewayForRestart(project, command)
+      this.updateDrainState = 'sealed'
+      const status = await supervisor.scheduleRestart(command.payload.mode)
+      scheduled = true
+      void this.monitorGatewayRestartFailure(status)
+      await this.settleAndDeliver(
+        project,
+        command,
+        this.eventFor(project, undefined, command, 'gateway-restart-scheduled', {
+          type: 'gateway.restart.status',
+          status,
+        }),
+        'succeeded',
+        status,
+        { waitForConfirmation: true },
+      )
+    } finally {
+      if (!scheduled) {
+        this.updateDrainState = 'open'
+        this.resumeDeferredUpdateCommands()
+      }
+    }
+  }
+
+  private async reportGatewayRestartStatus(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.restart.status'>,
+  ): Promise<void> {
+    const status = await this.requireGatewayUpdateSupervisor().restartStatus()
+    await this.settleAndDeliver(
+      project,
+      command,
+      this.eventFor(project, undefined, command, 'gateway-restart-status', {
+        type: 'gateway.restart.status',
+        status,
+      }),
+      'succeeded',
+      status,
+    )
+  }
+
+  private async monitorGatewayRestartFailure(scheduled: GatewayRestartStatus): Promise<void> {
+    while (this.state === 'running' && this.updateDrainState === 'sealed') {
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 500))
+      const current = await this.dependencies.gatewayUpdateSupervisor?.restartStatus()
+        .catch(error => {
+          this.log(`[mlp3/matrix] Gateway restart status unavailable: ${formatError(error)}`)
+          return undefined
+        })
+      if (!current || current.restartId !== scheduled.restartId) continue
+      if (current.phase === 'failed') {
+        this.updateDrainState = 'open'
+        this.resumeDeferredUpdateCommands()
+        return
+      }
+      if (current.phase === 'ready') return
+    }
+  }
+
   private requireGatewayUpdateSupervisor(): NonNullable<
     MatrixMlp3GatewayDependencies['gatewayUpdateSupervisor']
   > {
     const supervisor = this.dependencies.gatewayUpdateSupervisor
     if (!supervisor) {
-      throw new Error('Gateway online updates are not installed on this computer')
+      throw new Error('Gateway Host management is not installed on this computer')
     }
     return supervisor
   }
@@ -1465,6 +1554,39 @@ export class MatrixMlp3GatewayRunner {
     }
   }
 
+  private async drainGatewayForRestart(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.restart'>,
+  ): Promise<void> {
+    let published = false
+    while (this.activeTurnCount() > 0 || this.otherActiveCommandCount(command) > 0) {
+      if (!published) {
+        await this.emitBestEffort(project, undefined, this.eventFor(
+          project,
+          undefined,
+          command,
+          'gateway-restart-waiting-for-idle',
+          {
+            type: 'gateway.restart.status',
+            status: {
+              version: 1,
+              phase: 'waiting_for_idle',
+              mode: command.payload.mode,
+              activeTurns: this.activeTurnCount(),
+              detail: 'Gateway will restart after active work finishes',
+              updatedAt: this.now(),
+            },
+          },
+        ))
+        published = true
+      }
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 500))
+      if (this.state !== 'running') {
+        throw new Error('Gateway stopped while waiting to restart')
+      }
+    }
+  }
+
   private otherActiveCommandCount(command: Mlp3Command): number {
     const currentKey = commandKey(command)
     let count = 0
@@ -1474,7 +1596,7 @@ export class MatrixMlp3GatewayRunner {
     return count
   }
 
-  private async interruptActiveTurnsForUpdate(): Promise<void> {
+  private async interruptActiveTurnsForMaintenance(reason: string): Promise<void> {
     const cancellations: Promise<unknown>[] = []
     for (const project of this.projects.values()) {
       for (const runtime of project.sessions.values()) {
@@ -1486,7 +1608,7 @@ export class MatrixMlp3GatewayRunner {
           kind: 'cancel',
           reason: 'replace',
           source: 'channel',
-          user: { id: 'gateway-update', username: 'gateway-update' },
+          user: { id: 'gateway-maintenance', username: 'gateway-maintenance' },
         }))
       }
     }
@@ -1496,7 +1618,7 @@ export class MatrixMlp3GatewayRunner {
       await new Promise(resolveDelay => setTimeout(resolveDelay, 100))
     }
     if (this.activeTurnCount() > 0) {
-      throw new Error('Active Agent turns did not stop for the forced Gateway update')
+      throw new Error(`Active Agent turns did not stop for the ${reason}`)
     }
   }
 

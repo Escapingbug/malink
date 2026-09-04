@@ -51,6 +51,9 @@ describe('GatewayUpdateSupervisor', () => {
         phase: 'idle',
         currentBuildId: 'build-1',
       })
+      await expect(client.restartStatus()).resolves.toMatchObject({
+        phase: 'idle',
+      })
       await expect(client.acknowledgeGatewayRecovery()).resolves.toMatchObject({
         phase: 'idle',
         currentBuildId: 'build-1',
@@ -66,6 +69,98 @@ describe('GatewayUpdateSupervisor', () => {
       })
     } finally {
       await server.stop()
+      await supervisor.stop()
+    }
+  })
+
+  it('restarts the launchd-owned Gateway and records Matrix-ready recovery', async () => {
+    const fixture = await releaseFixture()
+    const restartGateway = vi.fn(async () => undefined)
+    const supervisor = new GatewayUpdateSupervisor({
+      ...fixture.config,
+      restartDelayMs: 0,
+      restartHealthTimeoutMs: 5_000,
+    }, {
+      restartGateway,
+      gatewayHealth: async () => ({
+        version: 1,
+        gatewayId: 'workspace-1',
+        workspaceId: 'workspace-1',
+        gatewayNodeId: 'gateway-node-1',
+        gatewayShortId: 'node-1',
+        gatewayName: 'Office',
+        state: 'running',
+        pid: 42,
+        startedAt: Date.now(),
+        activeDeviceCount: 1,
+        openInvitationCount: 0,
+        matrixReady: true,
+      }),
+    })
+    await supervisor.initialize()
+    const server = await startGatewayUpdateSupervisorServer({
+      socketPath: join(fixture.installRoot, 'supervisor.sock'),
+      supervisor,
+    })
+    try {
+      const client = new GatewayUpdateSupervisorClient(server.socketPath, 5_000)
+      const scheduled = await client.scheduleRestart('when_idle')
+      expect(scheduled).toMatchObject({
+        phase: 'scheduled',
+        mode: 'when_idle',
+      })
+      await vi.waitFor(async () => {
+        await expect(client.restartStatus()).resolves.toMatchObject({
+          phase: 'ready',
+          restartId: scheduled.restartId,
+        })
+      })
+      expect(restartGateway).toHaveBeenCalledOnce()
+    } finally {
+      await server.stop()
+      await supervisor.stop()
+    }
+  })
+
+  it('records a failed restart when the replacement Gateway does not become ready', async () => {
+    const fixture = await releaseFixture()
+    const restartGateway = vi.fn(async () => undefined)
+    const sleep = vi.fn(async () => undefined)
+    const supervisor = new GatewayUpdateSupervisor({
+      ...fixture.config,
+      restartDelayMs: 0,
+      restartHealthTimeoutMs: 0,
+    }, {
+      restartGateway,
+      sleep,
+      gatewayHealth: async () => ({
+        version: 1,
+        gatewayId: 'workspace-1',
+        workspaceId: 'workspace-1',
+        gatewayNodeId: 'gateway-node-1',
+        gatewayShortId: 'node-1',
+        gatewayName: 'Office',
+        state: 'running',
+        pid: 41,
+        startedAt: 1,
+        activeDeviceCount: 1,
+        openInvitationCount: 0,
+        matrixReady: false,
+      }),
+    })
+    await supervisor.initialize()
+    try {
+      const scheduled = await supervisor.scheduleRestart('force')
+      await vi.waitFor(async () => {
+        await expect(supervisor.restartStatus()).resolves.toMatchObject({
+          phase: 'failed',
+          restartId: scheduled.restartId,
+          mode: 'force',
+        })
+      })
+      expect(restartGateway).toHaveBeenCalledOnce()
+      expect(sleep).not.toHaveBeenCalled()
+    } finally {
       await supervisor.stop()
     }
   })
