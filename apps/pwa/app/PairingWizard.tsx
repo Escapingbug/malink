@@ -24,7 +24,7 @@ import {
   AUTHORIZATION_TRANSFER_MIME_TYPE,
   canShareAuthorizationTransferFile,
   createAuthorizationTransferFile,
-  downloadAuthorizationTransfer,
+  exportAuthorizationTransfer,
   MAX_AUTHORIZATION_TRANSFER_BYTES,
   parseAuthorizationTransfer,
 } from "./authorizationTransfer";
@@ -55,6 +55,7 @@ type Props = {
   onCreateInvitation(password?: string): void;
   onClearInvitation(): void;
   onSaveQrCode?(filename: string, dataBase64: string): Promise<boolean>;
+  onExportAuthorizationFile?(filename: string, contents: string): Promise<boolean>;
 };
 
 export function PairingWizard({
@@ -74,6 +75,7 @@ export function PairingWizard({
   onCreateInvitation,
   onClearInvitation,
   onSaveQrCode,
+  onExportAuthorizationFile,
 }: Props) {
   const repairRequired = repairReason !== null;
   const [link, setLink] = useState("");
@@ -83,7 +85,9 @@ export function PairingWizard({
   const [qrCode, setQrCode] = useState({ link: "", dataUrl: "" });
   const [qrErrorLink, setQrErrorLink] = useState("");
   const [shareStatus, setShareStatus] = useState<string | null>(null);
-  const [shareBusy, setShareBusy] = useState<"copy" | "share" | "save" | null>(null);
+  const [shareBusy, setShareBusy] = useState<
+    "copy" | "share" | "export" | "save" | null
+  >(null);
   const [pasteBusy, setPasteBusy] = useState(false);
   const [imageScanBusy, setImageScanBusy] = useState(false);
   const [imageScanError, setImageScanError] = useState<string | null>(null);
@@ -303,17 +307,27 @@ export function PairingWizard({
                 disabled={shareBusy !== null}
                 onClick={() => {
                   setShareStatus(null);
-                  try {
-                    downloadAuthorizationTransfer(deviceInvitation);
-                    setShareStatus(
-                      "Authorization file exported. It works once and expires with this invitation.",
+                  setShareBusy("export");
+                  void (async () => {
+                    const result = await exportAuthorizationTransfer(
+                      deviceInvitation,
+                      onExportAuthorizationFile,
                     );
-                  } catch (error) {
-                    setShareStatus(error instanceof Error ? error.message : String(error));
-                  }
+                    setShareStatus(result.destination === "native"
+                      ? "Authorization file saved to Downloads/Malink. It works once and expires with this invitation."
+                      : "Authorization file download started. Check Downloads. It works once and expires with this invitation.");
+                  })()
+                    .catch((error: unknown) => {
+                      setShareStatus(
+                        error instanceof Error ? error.message : String(error),
+                      );
+                    })
+                    .finally(() => setShareBusy(null));
                 }}
               >
-                Export authorization file
+                {shareBusy === "export"
+                  ? <BusyActionLabel>Exporting…</BusyActionLabel>
+                  : "Export authorization file"}
               </button>
               {qrDataUrl && (
                 <button

@@ -8153,6 +8153,21 @@ function MalinkAppRuntime() {
     return true;
   }
 
+  async function exportAuthorizationFile(
+    filename: string,
+    contents: string,
+  ): Promise<boolean> {
+    const connection = malinkClientRef.current;
+    if (connection?.runtime !== "native") return false;
+    if (!connection.exportAuthorizationFile ||
+        !(await connection.exportAuthorizationFile(filename, contents))) {
+      throw new Error(
+        "This APK cannot export authorization files yet. Update the Android app, then try again.",
+      );
+    }
+    return true;
+  }
+
   async function performConnectionDiagnosticsExport(): Promise<boolean> {
     try {
       const report = createConnectionDiagnostics({
@@ -14238,6 +14253,7 @@ function MalinkAppRuntime() {
           setInvitationError(null);
         }}
         onSaveInvitationQr={saveInvitationQr}
+        onExportAuthorizationFile={exportAuthorizationFile}
         onCreateGatewayEnrollment={() => void createGatewayEnrollment()}
         onApproveGatewayEnrollment={(enrollmentId, approverProjectId) =>
           void approveGatewayEnrollment(enrollmentId, approverProjectId)

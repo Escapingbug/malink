@@ -11,6 +11,7 @@ import {
   AUTHORIZATION_TRANSFER_MIME_TYPE,
   canShareAuthorizationTransferFile,
   createAuthorizationTransferFile,
+  exportAuthorizationTransfer,
   parseAuthorizationTransfer,
   parseAuthorizationTransferFragment,
   serializeAuthorizationTransfer,
@@ -60,6 +61,43 @@ test("rejects expired, modified, and unknown authorization files", async () => {
     () => parseAuthorizationTransferFragment("not+base64", NOW),
     /empty or too large/iu,
   );
+});
+
+test("reports native authorization export only after the native save confirms", async () => {
+  const invitation = await generatedInvitation();
+  const nativeWrites: Array<{ filename: string; contents: string }> = [];
+  const browserDownloads: File[] = [];
+  const result = await exportAuthorizationTransfer(
+    invitation,
+    async (filename, contents) => {
+      nativeWrites.push({ filename, contents });
+      return true;
+    },
+    NOW,
+    file => browserDownloads.push(file),
+  );
+
+  assert.deepEqual(result, {
+    destination: "native",
+    filename: "malink-authorization-20270115T080000Z.malink-auth",
+  });
+  assert.equal(nativeWrites.length, 1);
+  assert.equal(parseAuthorizationTransfer(nativeWrites[0]!.contents, NOW).link, invitation.link);
+  assert.deepEqual(browserDownloads, []);
+});
+
+test("uses the browser download only when native authorization export is unavailable", async () => {
+  const invitation = await generatedInvitation();
+  const browserDownloads: File[] = [];
+  const result = await exportAuthorizationTransfer(
+    invitation,
+    async () => false,
+    NOW,
+    file => browserDownloads.push(file),
+  );
+
+  assert.equal(result.destination, "browser");
+  assert.equal(browserDownloads[0]?.name, result.filename);
 });
 
 async function generatedInvitation() {

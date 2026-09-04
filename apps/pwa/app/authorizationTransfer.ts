@@ -54,6 +54,10 @@ export function downloadAuthorizationTransfer(
   now = Date.now(),
 ): void {
   const file = createAuthorizationTransferFile(invitation, now);
+  downloadAuthorizationTransferFile(file);
+}
+
+export function downloadAuthorizationTransferFile(file: File): void {
   const url = URL.createObjectURL(file);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -63,6 +67,20 @@ export function downloadAuthorizationTransfer(
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+export async function exportAuthorizationTransfer(
+  invitation: GeneratedDeviceInvitation,
+  saveNatively?: (filename: string, contents: string) => Promise<boolean>,
+  now = Date.now(),
+  download: (file: File) => void = downloadAuthorizationTransferFile,
+): Promise<{ destination: "native" | "browser"; filename: string }> {
+  const file = createAuthorizationTransferFile(invitation, now);
+  if (saveNatively && await saveNatively(file.name, await file.text())) {
+    return { destination: "native", filename: file.name };
+  }
+  download(file);
+  return { destination: "browser", filename: file.name };
 }
 
 export function createAuthorizationTransferFile(

@@ -1,12 +1,14 @@
 import { BridgeProtocolError } from "./errors.js";
 import {
   MUTATION_METHODS,
+  NATIVE_AUTHORIZATION_EXPORT_MAX_BYTES,
   NATIVE_BRIDGE_LIMITS,
   NATIVE_IMAGE_SAVE_MAX_BYTES,
   REQUEST_METHODS,
   type CapabilityRequest,
   type ClientDisconnectResult,
   type ClientBootstrapResult,
+  type AuthorizationExportResult,
   type ClientEvent,
   type ClientMessage,
   type ClientSnapshot,
@@ -450,6 +452,9 @@ function parseMethodResult<M extends RequestMethod>(
       break;
     case "malink.image.save":
       result = parseImageSaveResult(input);
+      break;
+    case "malink.authorization.export":
+      result = parseAuthorizationExportResult(input);
       break;
     case "malink.events.subscribe":
       result = parseEventsSubscribeResult(input);
@@ -1415,6 +1420,21 @@ function parseImageSaveResult(input: unknown): ImageSaveResult {
   };
 }
 
+function parseAuthorizationExportResult(input: unknown): AuthorizationExportResult {
+  const value = strictObject(
+    input,
+    ["status", "filename"],
+    "authorization export result",
+  );
+  if (value.status !== "saved") {
+    invalidParams("authorization export status must be saved.");
+  }
+  return {
+    status: "saved",
+    filename: authorizationFilename(value.filename, "authorization filename"),
+  };
+}
+
 function parseLiteralResult(
   input: unknown,
   flag: "unsubscribed" | "released" | "retired" | "aborted" | "closed" | "cancelled",
@@ -1586,6 +1606,15 @@ function parseMethodParams(method: RequestMethod, input: unknown): JsonObject {
         invalidParams("mimeType must be image/png.");
       }
       pngImageBase64(params.dataBase64);
+      return params;
+    }
+    case "malink.authorization.export": {
+      const params = mutationParams(input, ["filename", "mimeType", "contents"]);
+      authorizationFilename(params.filename, "filename");
+      if (params.mimeType !== "application/vnd.malink.authorization+json") {
+        invalidParams("mimeType must be application/vnd.malink.authorization+json.");
+      }
+      authorizationContents(params.contents);
       return params;
     }
     case "malink.update.check":
@@ -1968,6 +1997,26 @@ function pngFilename(input: unknown, label: string): string {
   const value = requiredString(input, label, 128);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.png$/u.test(value)) {
     invalidParams(`${label} must be a safe PNG filename.`);
+  }
+  return value;
+}
+
+function authorizationFilename(input: unknown, label: string): string {
+  const value = requiredString(input, label, 128);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.malink-auth$/u.test(value)) {
+    invalidParams(`${label} must be a safe Malink authorization filename.`);
+  }
+  return value;
+}
+
+function authorizationContents(input: unknown): string {
+  const value = requiredString(
+    input,
+    "contents",
+    NATIVE_AUTHORIZATION_EXPORT_MAX_BYTES,
+  );
+  if (new TextEncoder().encode(value).byteLength > NATIVE_AUTHORIZATION_EXPORT_MAX_BYTES) {
+    invalidParams("Authorization file exceeds the native export limit.");
   }
   return value;
 }
