@@ -141,7 +141,9 @@ function GatewayUpdateDialogContent({
         <p className="gateway-update-explanation">
           Choose when each computer may restart. Malink prepares the release,
           waits for current Agent work when requested, restarts the Gateway,
-          and verifies that the Workspace reconnects successfully.
+          and verifies that the Workspace reconnects successfully. After this
+          release, an additional stability trial runs only when it is explicitly
+          enabled on that Gateway.
         </p>
 
         <div className="gateway-update-node-list">
@@ -171,10 +173,25 @@ function GatewayUpdateDialogContent({
               gatewayUpdateRequiresForwardOnlyConfirmation(runtime.status);
             const updateActionAvailable = recovery.kind === "start" ||
               recovery.kind === "continue" || recovery.kind === "retry";
-            const runtimeNeedsAttention = runtime.state === "error" ||
-              (runtime.state === "unreachable" && noReply.persistent) ||
-              knownUpdateFailure;
-            const targetInstalled = runtime.status?.currentBuildId === release.buildId;
+            const targetInstalled =
+              runtime.status?.currentBuildId === release.buildId && !knownUpdateFailure;
+            const signedUpdateStatus = gatewayUpdateStatusForPresentation(
+              runtime.status,
+              release,
+            );
+            const expectedReplyGap = gatewayUpdateExpectsReplyGap(signedUpdateStatus);
+            const showUpdateProgress = Boolean(
+              signedUpdateStatus &&
+              signedUpdateStatus.phase !== "idle" &&
+              signedUpdateStatus.phase !== "committed" &&
+              !targetInstalled,
+            );
+            const runtimeNeedsAttention = knownUpdateFailure || (
+              !expectedReplyGap && !targetInstalled && (
+                runtime.state === "error" ||
+                (runtime.state === "unreachable" && noReply.persistent)
+              )
+            );
             const canProbe = connected && node.onlineUpdate && Boolean(node.targetProjectId);
             const canStart =
               node.state === "available" &&
@@ -198,14 +215,14 @@ function GatewayUpdateDialogContent({
                   <b>{planStateLabel(node.state)}</b>
                 </div>
 
-                {runtime.status && runtime.status.phase !== "idle" && (
-                  <GatewayUpdateProgress status={runtime.status} />
+                {showUpdateProgress && signedUpdateStatus && (
+                  <GatewayUpdateProgress status={signedUpdateStatus} />
                 )}
 
                 <div className="gateway-update-builds">
                   <span>
                     <small>Current build</small>
-                    <code>{node.currentBuildId ?? "unknown"}</code>
+                    <code>{runtime.status?.currentBuildId ?? node.currentBuildId ?? "unknown"}</code>
                   </span>
                   <span aria-hidden="true">→</span>
                   <span>
@@ -225,12 +242,13 @@ function GatewayUpdateDialogContent({
                 >
                   <span aria-hidden="true" />
                   <span>
-                    <strong>{runtimeStateTitle(runtime, node)}</strong>
+                    <strong>{runtimeStateTitle(runtime, node, release)}</strong>
                     <small>{runtimeStateDetail(runtime, node, release, connected)}</small>
                   </span>
                 </div>
 
-                {runtime.state === "unreachable" && (
+                {runtime.state === "unreachable" && !expectedReplyGap &&
+                  !targetInstalled && !knownUpdateFailure && (
                   <GatewayNoReplyHelp
                     gatewayLabel={owner.label}
                     consecutiveNoReplies={runtime.consecutiveNoReplies}
@@ -367,7 +385,7 @@ function GatewayUpdateDialogContent({
                       ) : null}
                     </>
                   )}
-                  {canProbe && !active && (
+                  {canProbe && !active && !signedUpdateStatus && !targetInstalled && (
                     <button
                       type="button"
                       className="secondary-button"
@@ -548,7 +566,32 @@ function planStateLabel(state: GatewayUpdatePlanNode["state"]): string {
 function runtimeStateTitle(
   runtime: GatewayUpdateNodeRuntime,
   node: GatewayUpdatePlanNode,
+  release: GatewayReleaseBuild,
 ): string {
+  const status = gatewayUpdateStatusForPresentation(runtime.status, release);
+  if (status?.phase === "repair_required") return "Gateway repair required";
+  if (status?.phase === "failed") return "Gateway update failed";
+  if (status?.phase === "rolled_back") return "Gateway update rolled back";
+  if (status?.currentBuildId === release.buildId) return "Gateway update complete";
+  if (gatewayUpdateRequiresForwardOnlyConfirmation(status)) {
+    return "Ready · confirmation required";
+  }
+  switch (status?.phase) {
+    case "staging":
+    case "agent_required":
+    case "agent_running":
+    case "agent_validating":
+      return "Preparing Gateway update";
+    case "staged": return "Ready to choose restart time";
+    case "waiting_for_idle": return "Waiting for current Agent work";
+    case "scheduled": return "Gateway restart scheduled";
+    case "activating": return "Restarting and checking Gateway";
+    case "probation": return "Additional stability trial running";
+    case "committed": return "Gateway update complete";
+    case "idle":
+    case undefined:
+      break;
+  }
   if (runtime.state === "checking") return "Checking this Gateway…";
   if (runtime.state === "unreachable") {
     return gatewayNoReplyPresentation({
@@ -558,30 +601,7 @@ function runtimeStateTitle(
   }
   if (runtime.state === "starting") return "Update requested by this device";
   if (runtime.state === "error") return "Update needs attention";
-  if (runtime.state === "online") {
-    if (runtime.status?.phase === "repair_required") return "Gateway repair required";
-    if (runtime.status?.phase === "failed") return "Gateway update failed";
-    if (runtime.status?.phase === "rolled_back") return "Gateway update rolled back";
-    if (gatewayUpdateRequiresForwardOnlyConfirmation(runtime.status)) {
-      return "Ready · confirmation required";
-    }
-    switch (runtime.status?.phase) {
-      case "staging":
-      case "agent_required":
-      case "agent_running":
-      case "agent_validating":
-        return "Preparing Gateway update";
-      case "staged": return "Ready to choose restart time";
-      case "waiting_for_idle": return "Waiting for current Agent work";
-      case "scheduled": return "Gateway restart scheduled";
-      case "activating": return "Restarting Gateway for update";
-      case "probation": return "Verifying updated Gateway";
-      case "committed": return "Gateway update complete";
-      case "idle":
-      case undefined:
-        return "Online now";
-    }
-  }
+  if (runtime.state === "online") return "Online now";
   if (node.state === "manual") return "Online update is not installed";
   if (node.state === "unrouted") return "No synchronized project route";
   if (node.state === "unknown") return "Cannot compare this build";
@@ -594,6 +614,34 @@ function runtimeStateDetail(
   release: GatewayReleaseBuild,
   connected: boolean,
 ): string {
+  const status = gatewayUpdateStatusForPresentation(runtime.status, release);
+  if (status?.phase === "failed" || status?.phase === "repair_required") {
+    const failure = status.detail ?? gatewayUpdatePhaseText(status);
+    return runtime.state === "online" && runtime.checkedAt
+      ? `${failure} · replied ${formatCheckedTime(runtime.checkedAt)}`
+      : failure;
+  }
+  if (status?.currentBuildId === release.buildId) {
+    return "The signed supervisor state confirms this build is installed. A delayed live-status check does not undo the completed update.";
+  }
+  if (gatewayUpdateRequiresForwardOnlyConfirmation(status)) {
+    const detail = "The update is prepared. Confirm the protected-data warning and choose when this computer may restart.";
+    return runtime.state === "online" && runtime.checkedAt
+      ? `${detail} · checked ${formatCheckedTime(runtime.checkedAt)}`
+      : detail;
+  }
+  if (status) {
+    const phaseDetail = status.phase === "staged" &&
+      status.targetBuildId !== release.buildId
+      ? `Another prepared release (${status.targetBuildId ?? "unknown build"}) is ready to install on this computer`
+      : gatewayUpdatePhaseText(status);
+    if (runtime.state === "unreachable" && !gatewayUpdateExpectsReplyGap(status)) {
+      return `${phaseDetail}. The separate live-status check is delayed; the signed update phase remains authoritative.`;
+    }
+    return runtime.state === "online" && runtime.checkedAt
+      ? `${phaseDetail} · replied ${formatCheckedTime(runtime.checkedAt)}`
+      : phaseDetail;
+  }
   if (runtime.state === "checking") {
     return "Waiting for a signed terminal reply from this node.";
   }
@@ -623,33 +671,7 @@ function runtimeStateDetail(
     return runtime.detail ?? "The current Gateway build remains unchanged.";
   }
   if (runtime.state === "online") {
-    if (
-      runtime.status?.phase === "failed" ||
-      runtime.status?.phase === "repair_required"
-    ) {
-      const failure = runtime.status.detail ?? gatewayUpdatePhaseText(runtime.status);
-      return runtime.checkedAt
-        ? `${failure} · replied ${formatCheckedTime(runtime.checkedAt)}`
-        : failure;
-    }
-    if (gatewayUpdateRequiresForwardOnlyConfirmation(runtime.status)) {
-      const detail = "The update is prepared. Confirm the protected-data warning and choose when this computer may restart.";
-      return runtime.checkedAt
-        ? `${detail} · checked ${formatCheckedTime(runtime.checkedAt)}`
-        : detail;
-    }
-    const supervisor = runtime.status?.phase === "staged" &&
-      runtime.status.targetBuildId !== release.buildId
-      ? `Another prepared release (${runtime.status.targetBuildId ?? "unknown build"}) is ready to install on this computer`
-      : runtime.status?.currentBuildId === release.buildId &&
-      !["activating", "probation"].includes(runtime.status.phase)
-      ? "Installed build verified"
-      : runtime.status
-        ? gatewayUpdatePhaseText(runtime.status)
-      : runtime.detail ?? "The node returned a signed response.";
-    return runtime.checkedAt
-      ? `${supervisor} · replied ${formatCheckedTime(runtime.checkedAt)}`
-      : supervisor;
+    return runtime.detail ?? "The node returned a signed response.";
   }
   if (!connected) return "Connect to Matrix before checking the Gateway process.";
   switch (node.state) {
@@ -678,15 +700,41 @@ function gatewayUpdatePhaseText(status: GatewayUpdateStatus): string {
       return status.activeTurns
         ? `Waiting for ${status.activeTurns} active Agent ${status.activeTurns === 1 ? "turn" : "turns"} to finish`
         : "Waiting for current Agent work to finish";
-    case "scheduled": return "Update prepared; installation is scheduled";
+    case "scheduled":
+      return "Installation is scheduled. Activation starts automatically after a short handoff; no user action is needed";
     case "activating":
+      return "The old process is stopping, the new build is starting, and required local plus Matrix health checks are running. A brief reply gap is expected";
     case "probation":
-      return "Installing and verifying the updated Gateway";
-    case "committed": return "Update complete";
+      return "Required startup checks passed. An additional stability trial is running before commit; this release makes future trials opt-in";
+    case "committed": return "Signed update complete";
     case "rolled_back": return "Previous Gateway version restored";
     case "failed": return "Update stopped safely";
     case "repair_required": return "Local Gateway repair required";
   }
+}
+
+function gatewayUpdateStatusForPresentation(
+  status: GatewayUpdateStatus | undefined,
+  release: GatewayReleaseBuild,
+): GatewayUpdateStatus | undefined {
+  if (!status || status.phase === "idle") return undefined;
+  if (
+    status.phase === "committed" &&
+    status.currentBuildId !== release.buildId &&
+    status.targetBuildId !== release.buildId
+  ) return undefined;
+  return status;
+}
+
+function gatewayUpdateExpectsReplyGap(
+  status: GatewayUpdateStatus | undefined,
+): boolean {
+  return status !== undefined && [
+    "scheduled",
+    "activating",
+    "probation",
+    "committed",
+  ].includes(status.phase);
 }
 
 function formatCheckedTime(timestamp: number): string {

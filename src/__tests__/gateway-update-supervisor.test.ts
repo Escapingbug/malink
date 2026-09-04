@@ -251,13 +251,12 @@ describe('GatewayUpdateSupervisor', () => {
     }
   })
 
-  it('stages signed files and schedules an independently owned activation', async () => {
+  it('stages signed files and activates without an implicit stability trial', async () => {
     const fixture = await releaseFixture()
     const activate = vi.fn(async () => undefined)
     const supervisor = new GatewayUpdateSupervisor({
       ...fixture.config,
       activationDelayMs: 0,
-      probationMs: 0,
     }, {
       fetch: fixture.fetch,
       activate,
@@ -288,6 +287,7 @@ describe('GatewayUpdateSupervisor', () => {
       releaseDirectory: join(fixture.installRoot, 'releases', 'release-2'),
       expectedBuildId: 'build-2',
       requireDeepHealth: true,
+      probationMs: 0,
     }))
   })
 

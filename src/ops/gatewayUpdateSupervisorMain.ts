@@ -25,7 +25,10 @@ const supervisor = new GatewayUpdateSupervisor({
   restartDelayMs: optionalDuration('MALINK_GATEWAY_RESTART_DELAY_MS', 5_000),
   healthTimeoutMs: optionalDuration('MALINK_GATEWAY_UPDATE_HEALTH_TIMEOUT_MS', 180_000),
   restartHealthTimeoutMs: optionalDuration('MALINK_GATEWAY_RESTART_HEALTH_TIMEOUT_MS', 180_000),
-  probationMs: optionalDuration('MALINK_GATEWAY_UPDATE_PROBATION_MS', 60_000),
+  // The deep startup health check is mandatory. A longer stability trial is
+  // optional because it delays completion and repeatedly exercises the live
+  // Gateway; operators must opt in with an explicit non-zero duration.
+  probationMs: optionalDuration('MALINK_GATEWAY_UPDATE_PROBATION_MS', 0),
   syncFreshnessMs: optionalDuration('MALINK_GATEWAY_UPDATE_SYNC_FRESHNESS_MS', 45_000),
   manifestFetchTimeoutMs: optionalDuration(
     'MALINK_GATEWAY_UPDATE_MANIFEST_TIMEOUT_MS',

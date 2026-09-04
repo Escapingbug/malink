@@ -670,7 +670,8 @@ static host without accepting a client-supplied URL. The public website stores
 immutable files but does not become execution or release-signing authority.
 
 Activation requires the expected build ID, a ready and recent Matrix sync, and
-a readable durable inbox throughout probation. Rollback-safe failure restores
+a readable durable inbox. An additional stability trial is opt-in and defaults
+to zero duration; it is not part of the mandatory health proof. Rollback-safe failure restores
 the previous symlink. Protected-state changes instead require an explicit
 forward-only confirmation and a verified stopped-state backup; after the target
 may have opened that state, the older binary is never started automatically.

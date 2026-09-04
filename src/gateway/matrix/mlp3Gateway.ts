@@ -156,6 +156,8 @@ const DEFAULT_CONTROL_COMMAND_EXECUTION_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_UPDATE_EXECUTION_TIMEOUT_MS = 2 * 60 * 60_000
 const ARCHIVED_SESSION_CLEANUP_RETRY_MIN_MS = 60_000
 const ARCHIVED_SESSION_CLEANUP_RETRY_MAX_MS = 15 * 60_000
+const GATEWAY_UPDATE_STATUS_MONITOR_INTERVAL_MS = 1_000
+const GATEWAY_UPDATE_STATUS_MONITOR_MAX_FAILURES = 30
 
 export interface MatrixMlp3GatewayDependencies {
   client?: MatrixGatewayClient
@@ -364,6 +366,8 @@ export class MatrixMlp3GatewayRunner {
   private gatewayNodeStatusFingerprint: string | null = null
   private gatewayNodeStatusLastPublishedAt = 0
   private gatewayNodeStatusControlRoomId: string | null | undefined
+  private gatewayUpdateStatusMonitorTimer: ReturnType<typeof setTimeout> | null = null
+  private gatewayUpdateStatusMonitorFailures = 0
   private readonly modelCatalogUnsubscribers: Array<() => void> = []
   private modelCapabilityPublicationPending = false
   private modelCapabilityPublicationScheduled = false
@@ -531,6 +535,10 @@ export class MatrixMlp3GatewayRunner {
       this.modelCapabilityPublicationEnabled = true
       this.scheduleModelCapabilityPublication()
       this.schedulePersistedArchivedSessionCleanup()
+      // A replacement process starts while the independent supervisor still
+      // owns the activation transaction. Read that local state once at startup
+      // and follow only real phase transitions until it becomes terminal.
+      this.scheduleGatewayUpdateStatusMonitor(0)
     } catch (error) {
       await this.cleanup()
       this.state = 'stopped'
@@ -1415,6 +1423,7 @@ export class MatrixMlp3GatewayRunner {
       // returns. Queue the shared snapshot before that independent process
       // restarts this Gateway.
       await this.publishGatewayUpdateStatus()
+      this.scheduleGatewayUpdateStatusMonitor()
     } finally {
       if (!scheduled) {
         this.updateDrainState = 'open'
@@ -1638,10 +1647,46 @@ export class MatrixMlp3GatewayRunner {
     }
   }
 
-  private async publishGatewayUpdateStatus(): Promise<void> {
-    await this.publishGatewayNodeStatus().catch(error => {
+  private async publishGatewayUpdateStatus(): Promise<GatewayUpdateStatus | undefined> {
+    return await this.publishGatewayNodeStatus().catch(error => {
       this.log(`[mlp3/matrix] Gateway node status publication failed: ${formatError(error)}`)
+      return undefined
     })
+  }
+
+  private scheduleGatewayUpdateStatusMonitor(
+    delayMs = GATEWAY_UPDATE_STATUS_MONITOR_INTERVAL_MS,
+  ): void {
+    if (
+      this.state !== 'running'
+      || !this.dependencies.gatewayUpdateSupervisor
+      || this.gatewayUpdateStatusMonitorTimer
+    ) return
+    const timer = setTimeout(() => {
+      if (this.gatewayUpdateStatusMonitorTimer === timer) {
+        this.gatewayUpdateStatusMonitorTimer = null
+      }
+      void this.monitorGatewayUpdateStatus()
+    }, delayMs)
+    this.gatewayUpdateStatusMonitorTimer = timer
+    timer.unref?.()
+  }
+
+  private async monitorGatewayUpdateStatus(): Promise<void> {
+    const update = await this.publishGatewayUpdateStatus()
+    if (!update) this.gatewayUpdateStatusMonitorFailures += 1
+    else this.gatewayUpdateStatusMonitorFailures = 0
+    if (
+      this.state === 'running'
+      && (
+        (update && ['scheduled', 'activating', 'probation'].includes(update.phase))
+        || (!update
+          && this.gatewayUpdateStatusMonitorFailures <
+            GATEWAY_UPDATE_STATUS_MONITOR_MAX_FAILURES)
+      )
+    ) {
+      this.scheduleGatewayUpdateStatusMonitor()
+    }
   }
 
   /**
@@ -1649,18 +1694,18 @@ export class MatrixMlp3GatewayRunner {
    * by visible clients through the existing signed gateway.update.status
    * command; an idle Gateway never creates periodic Matrix traffic.
    */
-  private async publishGatewayNodeStatus(): Promise<void> {
-    if (this.state !== 'running') return
+  private async publishGatewayNodeStatus(): Promise<GatewayUpdateStatus | undefined> {
+    if (this.state !== 'running') return undefined
     const update = await this.dependencies.gatewayUpdateSupervisor?.status().catch(error => {
       this.log(`[mlp3/matrix] Gateway update status unavailable: ${formatError(error)}`)
       return undefined
     })
-    if (!update) return
+    if (!update || update.phase === 'idle') return update
     const fingerprint = canonicalJson(update as JsonValue)
-    if (fingerprint === this.gatewayNodeStatusFingerprint) return
+    if (fingerprint === this.gatewayNodeStatusFingerprint) return update
     const now = this.now()
     const project = await this.gatewayNodeStatusProject()
-    if (!project) return
+    if (!project) return update
     const observedAt = Math.max(now, this.gatewayNodeStatusLastPublishedAt + 1)
     const event: Mlp3Event = {
       kind: 'malink.event',
@@ -1683,6 +1728,7 @@ export class MatrixMlp3GatewayRunner {
     await this.content.queueEvent(project.config, event, this.client)
     this.gatewayNodeStatusFingerprint = fingerprint
     this.gatewayNodeStatusLastPublishedAt = observedAt
+    return update
   }
 
   private async gatewayNodeStatusProject(): Promise<V3ProjectRuntime | null> {
@@ -4379,6 +4425,11 @@ export class MatrixMlp3GatewayRunner {
     this.archivedSessionCleanupRetryTimers.clear()
     this.archivedSessionCleanupRetryAttempts.clear()
     this.archivedSessionCleanupTasks.clear()
+    if (this.gatewayUpdateStatusMonitorTimer) {
+      clearTimeout(this.gatewayUpdateStatusMonitorTimer)
+      this.gatewayUpdateStatusMonitorTimer = null
+    }
+    this.gatewayUpdateStatusMonitorFailures = 0
     for (const unsubscribeModelCatalog of this.modelCatalogUnsubscribers.splice(0)) {
       try {
         unsubscribeModelCatalog()

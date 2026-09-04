@@ -31,7 +31,7 @@ The components deliberately have different authority:
 - The launchd supervisor owns the pinned ES256 public key, monotonic channel and
   Prompt verification, mirror failover, state-compatibility check, candidate
   copy and local SHA-256 seal, atomic switch, deep Matrix health checks,
-  probation, and rollback.
+  optional stability trials, and rollback.
 
 The release signing private key stays off Gateways. A Matrix server or web site
 cannot make a Gateway execute an unsigned Prompt. An Agent cannot activate an
@@ -66,8 +66,11 @@ The normal apply mode is `when_idle`:
   release runtime remains available for candidate construction and rollback,
   but does not replace the TCC identity used by the active service.
 - A release commits only after the expected build reports `running`, Matrix has
-  completed a fresh sync, the durable inbox is readable, and probation remains
-  healthy.
+  completed a fresh sync, and the durable inbox is readable. These checks are
+  mandatory. The post-health stability trial is disabled by default because it
+  delays completion and repeatedly exercises the live Gateway. A Gateway owner
+  may explicitly opt in by setting `MALINK_GATEWAY_UPDATE_PROBATION_MS` to a
+  non-zero duration.
 - For rollback-safe releases, failed activation restores the previous symlink
   and restarts the previous release. If rollback cannot be proven, the
   supervisor enters `repair_required` and stops automatic switching.
@@ -241,8 +244,9 @@ copies the candidate into the immutable
 `<install-root>/releases/<signed-release-id>` location, and only then stops
 the Gateway, copies and hashes every regular state file, records symlinks and
 skipped sockets in `backups/<release>-*/backup-manifest.json`, atomically
-switches `current`, proves the expected build and fresh Matrix health through
-probation, and finally restarts the independent supervisor from the new
+switches `current`, proves the expected build and fresh Matrix health, runs an
+explicitly requested `--probation-ms` stability trial when non-zero, and finally
+restarts the independent supervisor from the new
 release and reconciles its signed release status to `committed`. Backup failure
 restarts the unchanged Gateway. Once the target may
 have opened protected state, failure never starts the old binary.
@@ -470,11 +474,15 @@ staging -> agent_required -> agent_running -> agent_validating -> staged
 The PWA then sends `apply`, which progresses through:
 
 ```text
-waiting_for_idle -> scheduled -> activating -> probation -> committed
+waiting_for_idle -> scheduled -> activating -> [optional probation] -> committed
 ```
 
-Malink polls signed status during nonterminal maintenance and activation phases
-even after the panel is closed. The current client automatically continues a
+The replacement Gateway publishes the signed supervisor state when it starts,
+then emits one event for each real phase change until the transaction is
+terminal. Unchanged state never produces a Matrix event. A separate live-status
+probe delay does not overwrite a signed `scheduled`, `activating`, optional
+`probation`, or `committed` result in the UI, and the planned restart silence is
+not presented as a failure. The current client automatically continues a
 `staged` checkpoint only when its persisted user intent matches the exact
 project, node, release, and build. An older staged checkpoint without that
 intent exposes `Continue update`, even if the static release channel has since
@@ -509,7 +517,8 @@ a release ID or manually transfer Gateway credentials or artifacts.
   have already received bounded automatic retries and may be tried later.
   Deterministic failures require diagnostics and a corrected immutable release,
   not the same command again; their maintenance session may be archived.
-- `rolled_back`: the candidate failed health or probation and the previous
+- `rolled_back`: the candidate failed required health or an explicitly enabled
+  stability trial and the previous
   release is running.
 - `repair_required`: activation and safe rollback could not be proven. Preserve
   the inbox, journal, Matrix crypto store, supervisor state, Agent workspace,

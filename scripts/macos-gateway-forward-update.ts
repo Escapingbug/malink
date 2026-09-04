@@ -95,7 +95,10 @@ export async function runMacosGatewayForwardUpdate(): Promise<void> {
     rollbackBuildId: currentBuildId,
     requireDeepHealth: true,
     healthTimeoutMs: optionalNumberArgument('health-timeout-ms') ?? 180_000,
-    probationMs: optionalNumberArgument('probation-ms') ?? 60_000,
+    // Keep the offline/manual recovery path consistent with the supervisor:
+    // callers may explicitly request a stability trial, but it is never an
+    // implicit cost of activation.
+    probationMs: optionalNumberArgument('probation-ms') ?? 0,
     syncFreshnessMs: optionalNumberArgument('sync-freshness-ms') ?? 45_000,
     rollbackMode: 'disabled',
     onGatewayStopped: async () => {

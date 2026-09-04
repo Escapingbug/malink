@@ -192,3 +192,24 @@ test("a delayed status timeout cannot overrule newer signed Agent activity", () 
     gatewayLabel: "Office Gateway",
   }).state, "unreachable");
 });
+
+test("one delayed probe does not erase a still-current signed online proof", () => {
+  assert.deepEqual(gatewayNodeLivenessAfterProbeTimeout({
+    current: {
+      state: "checking",
+      checkedAt: now + 60_000,
+      lastVerifiedAt: now,
+      consecutiveNoReplies: 0,
+    },
+    probeStartedAt: now + 60_000,
+    checkedAt: now + 90_000,
+    gatewayLabel: "Office Gateway",
+  }), {
+    state: "online",
+    checkedAt: now + 90_000,
+    lastVerifiedAt: now,
+    consecutiveNoReplies: 1,
+    detail:
+      "The latest live check is delayed, but this Gateway still has recent signed activity. Malink will retry automatically.",
+  });
+});

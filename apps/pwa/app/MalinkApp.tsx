@@ -8179,7 +8179,7 @@ function MalinkAppRuntime() {
           : gatewayUpdateRequiresForwardOnlyConfirmation(status)
             ? `${node.gatewayName} prepared the update. Review the protected-data warning, then choose when to install and restart.`
           : ["waiting_for_idle", "scheduled", "activating", "probation"].includes(status.phase)
-            ? `${node.gatewayName} scheduled release ${status.releaseId ?? gatewayRelease.releaseId} and will switch after current Agent work finishes.`
+            ? `${node.gatewayName} accepted release ${status.releaseId ?? gatewayRelease.releaseId}. The signed supervisor phase will advance automatically; a brief reply gap during restart is expected.`
           : `${node.gatewayName} is preparing the update. Progress remains available from its computer card.`,
         8_000,
       );

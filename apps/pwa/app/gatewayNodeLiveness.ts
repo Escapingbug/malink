@@ -177,8 +177,9 @@ export function gatewayNodeLivenessPresentation(
 }
 
 /**
- * A timed-out status command cannot overrule newer signed activity from the
- * same Gateway. This prevents an active Agent reply from being followed by an
+ * A timed-out status command cannot overrule newer signed activity or erase a
+ * still-current signed online proof from the same Gateway. This prevents an
+ * active Agent reply or a planned restart transition from being followed by an
  * incorrect offline banner merely because the separate supervisor reply was
  * delayed in Matrix.
  */
@@ -200,6 +201,19 @@ export function gatewayNodeLivenessAfterProbeTimeout(input: {
     };
   }
   const consecutiveNoReplies = (input.current.consecutiveNoReplies ?? 0) + 1;
+  if (
+    input.current.lastVerifiedAt !== undefined &&
+    input.checkedAt - input.current.lastVerifiedAt <= GATEWAY_ONLINE_PROOF_WINDOW_MS
+  ) {
+    return {
+      ...input.current,
+      state: "online",
+      checkedAt: input.checkedAt,
+      consecutiveNoReplies,
+      detail:
+        "The latest live check is delayed, but this Gateway still has recent signed activity. Malink will retry automatically.",
+    };
+  }
   return {
     ...input.current,
     state: "unreachable",

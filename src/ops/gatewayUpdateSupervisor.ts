@@ -945,7 +945,11 @@ export class GatewayUpdateSupervisor {
           : {}),
         requireDeepHealth: true,
         syncFreshnessMs: this.config.syncFreshnessMs ?? 45_000,
-        probationMs: this.config.probationMs ?? 60_000,
+        // Startup, admin-socket, durable-inbox, and fresh Matrix-sync health
+        // are always required above. The extra stability trial is deliberately
+        // opt-in because it adds time and repeated live checks after health is
+        // already proven.
+        probationMs: this.config.probationMs ?? 0,
         rollbackMode: activationMode === 'forward-only' ? 'disabled' : 'automatic',
         ...(activationMode === 'forward-only'
           ? {

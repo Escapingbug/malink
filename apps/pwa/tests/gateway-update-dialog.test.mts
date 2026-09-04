@@ -112,7 +112,7 @@ test("turns repeated missing replies into actionable Gateway attention", () => {
   assert.match(html, /update-supervisor\.error\.log/);
 });
 
-test("does not say an existing supervised update was never started", () => {
+test("presents scheduled restart silence as part of the signed update", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
     open: true,
     connected: true,
@@ -141,9 +141,12 @@ test("does not say an existing supervised update was never started", () => {
     onExportDiagnostics() {},
   }));
 
-  assert.match(html, /already has a supervised update transaction/);
-  assert.match(html, /timed-out check did not start it again or cancel it/);
+  assert.match(html, /Gateway restart scheduled/);
+  assert.match(html, /Activation starts automatically after a short handoff/);
   assert.match(html, /Open update session/);
+  assert.doesNotMatch(html, /Gateway reply delayed/);
+  assert.doesNotMatch(html, /What should I do\?/);
+  assert.doesNotMatch(html, /Check again/);
   assert.doesNotMatch(html, /No update was started/);
 });
 
@@ -187,7 +190,7 @@ test("presents a signed supervisor repair failure as an actionable error", () =>
   assert.match(html, /role="alert"/);
 });
 
-test("renders every progress step complete after the signed commit", () => {
+test("keeps signed completion authoritative and removes stale progress", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
     open: true,
     connected: true,
@@ -195,7 +198,8 @@ test("renders every progress step complete after the signed commit", () => {
     nodes: [nodes[1]!],
     runtimeByNode: {
       "node-server": {
-        state: "online",
+        state: "unreachable",
+        consecutiveNoReplies: 2,
         status: {
           version: 1,
           phase: "committed",
@@ -214,9 +218,11 @@ test("renders every progress step complete after the signed commit", () => {
     onExportDiagnostics() {},
   }));
 
-  assert.equal(html.match(/class="is-complete"/g)?.length, 6);
-  assert.doesNotMatch(html, /class="is-active"/);
+  assert.doesNotMatch(html, /gateway-update-progress/);
   assert.match(html, /Gateway update complete/);
+  assert.match(html, /delayed live-status check does not undo/);
+  assert.doesNotMatch(html, /Gateway needs attention/);
+  assert.doesNotMatch(html, /Check again/);
 });
 
 test("does not offer a useless retry for an unpublished 404 release", () => {
@@ -626,7 +632,7 @@ test("treats a verified installed build as complete without cleanup warnings", (
     onExportDiagnostics() {},
   }));
 
-  assert.match(html, /Installed build verified/);
+  assert.match(html, /signed supervisor state confirms this build is installed/i);
   assert.doesNotMatch(html, /left by an older Malink version/);
   assert.doesNotMatch(html, /Archive old update session/);
   assert.doesNotMatch(html, /Maintenance Agent running/);
