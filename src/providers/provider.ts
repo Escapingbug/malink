@@ -62,6 +62,40 @@ export interface AgentQueryConfig {
     debugLog?: (line: string) => void
 }
 
+export interface AgentSessionRestoreConfig {
+    cwd: string
+    /** Malink runtime session identity, distinct from the provider's session ID. */
+    malinkSessionId?: string
+    sessionId: string
+    signal: AbortSignal
+    model?: string
+    providerSettings?: Record<string, unknown>
+}
+
+export interface AgentSessionRestoreResult {
+    sessionId: string
+    controls?: ProviderControl[]
+}
+
+export class ProviderSessionRestoreError extends Error {
+    readonly commandCode = 'provider_session_restore_failed'
+    readonly retryable = true
+
+    constructor(
+        readonly providerName: string,
+        readonly sessionId: string,
+        detail: string,
+        options: { cause?: unknown } = {},
+    ) {
+        super(
+            `Provider "${providerName}" could not restore the previous Agent session. `
+            + `${detail} Close the session in any other Agent client, then retry.`,
+            options,
+        )
+        this.name = 'ProviderSessionRestoreError'
+    }
+}
+
 export type AgentQueryInput = string | RichUserInput
 
 export interface ModelEntry {
@@ -102,6 +136,13 @@ export interface AgentProvider {
     prepareWorkingDirectory?(cwd: string): void
 
     startQuery(prompt: AgentQueryInput, config: AgentQueryConfig): AgentQueryHandle
+
+    /**
+     * Acquire a provider-owned session for writable use before Malink exposes a
+     * restored conversation as active. The provider instance must retain that
+     * ownership for the later startQuery call.
+     */
+    restoreSession?(config: AgentSessionRestoreConfig): Promise<AgentSessionRestoreResult>
 
     isReady(): boolean
     getInitError(): string | null

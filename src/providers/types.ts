@@ -58,9 +58,6 @@ export interface AgentSessionInitEvent {
     sessionId?: string
     model?: string
     cwd?: string
-    /** True when a stale conversationId could not be recovered and a brand-new
-     *  session was created instead of resuming the old one. */
-    isNewSession?: boolean
     /** Provider controls discovered only after the ACP session is open. */
     controls?: ProviderControl[]
 }

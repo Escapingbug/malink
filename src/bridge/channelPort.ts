@@ -200,6 +200,9 @@ export interface TopicSession {
     /** Push a semantic input into the session runtime */
     dispatch(input: SessionInput): Promise<unknown>
 
+    /** Acquire the persisted provider session before exposing a restored conversation. */
+    restoreProviderSession?(signal?: AbortSignal): Promise<void>
+
     /** Destroy the session and clean up resources */
     destroy(reason?: SessionExtensionLifecycleReason): Promise<void>
 

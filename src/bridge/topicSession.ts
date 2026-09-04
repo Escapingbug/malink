@@ -156,6 +156,9 @@ export function createTopicSession(options: TopicSessionConfig): TopicSession {
         dispatch(input) {
             return runtime.dispatch(input)
         },
+        restoreProviderSession(signal) {
+            return runtime.restoreProviderSession(signal)
+        },
         destroy,
         get state(): SessionState {
             const state = runtime.getState()

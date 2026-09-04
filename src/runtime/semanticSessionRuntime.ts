@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import type { ProviderControl, SessionExtensionView } from '@malink/protocol'
 import type { ChannelPort, ChannelMessage, SessionStatus } from '@/bridge/channelPort'
 import type { AgentPermissionHandler, AgentProvider, AgentQueryHandle } from '@/providers/provider'
+import { ProviderSessionRestoreError } from '@/providers/provider'
 import type { AgentEvent } from '@/providers/types'
 import type { ConversationEvent, RichFilePart, RichUserInput, SessionInput } from './semantic'
 import { normalizeUserInput } from './semantic'
@@ -340,6 +341,40 @@ export class SemanticSessionRuntime {
             progressiveEditDebounceMs: config.channelPort.toolActivityDebounceMs,
         })
         this.extensionHost = new SessionExtensionHost(config.extensions)
+    }
+
+    async restoreProviderSession(signal: AbortSignal = new AbortController().signal): Promise<void> {
+        const providerSessionId = this.config.providerSessionId
+        if (!providerSessionId) return
+        if (!this.config.provider.restoreSession) {
+            throw new ProviderSessionRestoreError(
+                this.config.providerName,
+                providerSessionId,
+                'This provider does not support writable session restoration.',
+            )
+        }
+
+        this.config.provider.prepareWorkingDirectory?.(this.config.cwd)
+        const restored = await this.config.provider.restoreSession({
+            cwd: this.config.cwd,
+            malinkSessionId: this.config.sessionId,
+            sessionId: providerSessionId,
+            signal,
+            ...(this.config.model ? { model: this.config.model } : {}),
+            ...(this.config.providerSettings
+                ? { providerSettings: this.config.providerSettings }
+                : {}),
+        })
+        if (restored.sessionId !== providerSessionId) {
+            throw new ProviderSessionRestoreError(
+                this.config.providerName,
+                providerSessionId,
+                'The provider returned a different session identity.',
+            )
+        }
+        if (restored.controls) {
+            await this.config.onProviderControlsChanged?.(restored.controls, 'replace')
+        }
     }
 
     dispatch(input: SessionInput): Promise<unknown> {
@@ -784,14 +819,16 @@ export class SemanticSessionRuntime {
                 const providerEvent = next.value
                 await reportExecutionStarted()
                 if (providerEvent.kind === 'session_init' && providerEvent.sessionId) {
+                    if (
+                        this.config.providerSessionId
+                        && this.config.providerSessionId !== providerEvent.sessionId
+                    ) {
+                        throw new Error(
+                            `Provider "${this.config.providerName}" opened a different Agent session instead of restoring the requested session`,
+                        )
+                    }
                     this.config.providerSessionId = providerEvent.sessionId
                     this.config.onProviderSessionId?.(providerEvent.sessionId)
-                    if (providerEvent.isNewSession) {
-                        await this.send({
-                            text: '⚠️ The previous Agent session could not be restored. This conversation is continuing in a new Agent session; earlier messages remain available, but the Agent context was reset.',
-                            format: 'plain',
-                        })
-                    }
                 }
                 if (providerEvent.kind === 'commands_update') {
                     this.availableCommands = providerEvent.commands

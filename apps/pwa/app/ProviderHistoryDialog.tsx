@@ -33,6 +33,7 @@ type Props = {
   selected: ProviderSessionEntry | null;
   messages: ProviderHistoryMessage[];
   loading: "sessions" | "session" | null;
+  restoring?: boolean;
   error: string | null;
   recoveryLabel?: string | null;
   onClose(): void;
@@ -59,6 +60,7 @@ function ProviderHistoryDialogContent({
   selected,
   messages,
   loading,
+  restoring = false,
   error,
   recoveryLabel = "Retry",
   onClose,
@@ -108,7 +110,7 @@ function ProviderHistoryDialogContent({
         role="dialog"
         aria-modal="true"
         aria-labelledby="provider-history-title"
-        aria-busy={loading !== null}
+        aria-busy={loading !== null || restoring}
         tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
       >
@@ -122,7 +124,13 @@ function ProviderHistoryDialogContent({
                 : "Choose a computer and project to browse provider-owned history."}
             </p>
           </div>
-          <button type="button" onClick={onClose} aria-label="Close provider history">×</button>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close provider history"
+          >
+            ×
+          </button>
         </header>
 
         <div className="provider-history-toolbar">
@@ -132,6 +140,7 @@ function ProviderHistoryDialogContent({
               <select
                 ref={sourceRef}
                 value={sourceKey}
+                disabled={restoring}
                 onChange={(event) => {
                   setMobilePreviewOpen(false);
                   onSourceChange(event.target.value);
@@ -153,6 +162,7 @@ function ProviderHistoryDialogContent({
               <select
                 ref={providerRef}
                 value={provider}
+                disabled={restoring}
                 onChange={(event) => {
                   setMobilePreviewOpen(false);
                   onProviderChange(event.target.value);
@@ -202,8 +212,11 @@ function ProviderHistoryDialogContent({
                         onInspect(session);
                       }}
                       disabled={
-                        loading === "session"
-                        && selected?.sessionId === session.sessionId
+                        restoring
+                        || (
+                          loading === "session"
+                          && selected?.sessionId === session.sessionId
+                        )
                       }
                     >
                       <strong>{session.title}</strong>
@@ -232,6 +245,7 @@ function ProviderHistoryDialogContent({
               type="button"
               className="provider-history-mobile-back"
               onClick={() => setMobilePreviewOpen(false)}
+              disabled={restoring}
             >
               <span aria-hidden="true">←</span>
               Provider sessions
@@ -240,7 +254,11 @@ function ProviderHistoryDialogContent({
               <div className="provider-history-error" role="alert">
                 <p>{error}</p>
                 {recoveryLabel && (
-                  <button type="button" onClick={onRetry} disabled={loading !== null}>
+                  <button
+                    type="button"
+                    onClick={onRetry}
+                    disabled={loading !== null || restoring}
+                  >
                     {recoveryLabel}
                   </button>
                 )}
@@ -250,6 +268,12 @@ function ProviderHistoryDialogContent({
               <p className="provider-history-empty provider-history-loading">
                 <OperationProgress />
                 Loading session history…
+              </p>
+            )}
+            {restoring && !selected && (
+              <p className="provider-history-empty provider-history-loading">
+                <OperationProgress />
+                Restoring Agent session before opening the conversation…
               </p>
             )}
             {loading !== "session" && selected && (
@@ -267,7 +291,11 @@ function ProviderHistoryDialogContent({
                     </small>
                   </div>
                   {selected.managedSessionId && (
-                    <button type="button" onClick={() => onOpenManaged(selected.managedSessionId!)}>
+                    <button
+                      type="button"
+                      onClick={() => onOpenManaged(selected.managedSessionId!)}
+                      disabled={restoring}
+                    >
                       Open current session
                     </button>
                   )}
@@ -285,15 +313,22 @@ function ProviderHistoryDialogContent({
                 </div>
                 {!selected.managedSessionId && (
                   <div className="provider-history-composer">
-                    <p>The session opens immediately. Earlier provider messages load only as you scroll back.</p>
+                    <p>
+                      Malink verifies that the Agent session can be restored for writable use before opening it.
+                    </p>
                     <button
                       type="button"
-                      disabled={loading === "session"}
+                      disabled={loading === "session" || restoring}
                       onClick={() => onContinue(selected)}
                     >
-                      {selected.latestArchivedSessionId
-                        ? "Continue as new Malink session"
-                        : "Continue in Malink"}
+                      {restoring ? (
+                        <>
+                          <OperationProgress />
+                          Restoring Agent session…
+                        </>
+                      ) : selected.latestArchivedSessionId
+                          ? "Continue as new Malink session"
+                          : "Continue in Malink"}
                     </button>
                   </div>
                 )}

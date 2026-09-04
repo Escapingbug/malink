@@ -1772,6 +1772,8 @@ function MalinkAppRuntime() {
   const [providerHistoryLoad, setProviderHistoryLoad] =
     useState<ProviderHistoryLoadState | null>(null);
   const [providerHistoryError, setProviderHistoryError] = useState<string | null>(null);
+  const [providerHistoryRestoreFailedSessionId, setProviderHistoryRestoreFailedSessionId] =
+    useState<string | null>(null);
   const [forgetDialogOpen, setForgetDialogOpen] = useState(false);
   const [deviceSignOutBusy, setDeviceSignOutBusy] = useState(false);
   const [deviceSignOutError, setDeviceSignOutError] = useState<string | null>(null);
@@ -3314,6 +3316,25 @@ function MalinkAppRuntime() {
 
   function closeProviderHistory(): void {
     setProviderHistoryOpen(false);
+    const optimistic = optimisticSessionRef.current;
+    if (
+      optimistic?.input.providerSessionId
+      && (
+        optimistic.phase === "creating"
+        || optimistic.phase === "uncertain"
+      )
+    ) {
+      providerHistoryBackgroundedRef.current = true;
+      showUiNotice(
+        "provider:history-background",
+        "background",
+        "info",
+        "The Agent session restore is continuing in the background. Malink will open it only after writable restore succeeds.",
+        null,
+        true,
+      );
+      return;
+    }
     if (!providerHistoryLoadRef.current) return;
     providerHistoryBackgroundedRef.current = true;
     showUiNotice(
@@ -3695,8 +3716,11 @@ function MalinkAppRuntime() {
         setOptimisticSession(optimistic);
         void restoreOptimisticSessionMessages(optimistic);
         if (
-          !selectedSessionIdRef.current ||
-          selectedSessionIdRef.current === optimistic.localSessionId
+          !optimistic.input.providerSessionId
+          && (
+            !selectedSessionIdRef.current
+            || selectedSessionIdRef.current === optimistic.localSessionId
+          )
         ) {
           activateLocalSession(
             optimistic.localSessionId,
@@ -3704,6 +3728,15 @@ function MalinkAppRuntime() {
             true,
             true,
           );
+        }
+        if (
+          optimistic.input.providerSessionId
+          && (
+            optimistic.phase === "creating"
+            || optimistic.phase === "uncertain"
+          )
+        ) {
+          setProviderHistoryOpen(true);
         }
       }
       if (recovery && optimistic?.phase !== "uncertain") {
@@ -5955,10 +5988,15 @@ function MalinkAppRuntime() {
           forgetPendingSessionCreate(activeCommandId);
           const draft = optimisticSessionRef.current;
           if (draft) {
-            markOptimisticSessionFailed(
-              draft.localSessionId,
-              "The saved creation command is no longer available. Retry creation to continue.",
-            );
+            const message = "The saved restoration command is no longer available. Retry to restore the Agent session.";
+            if (recovery.input.providerSessionId) {
+              failProviderSessionRestore(draft.localSessionId, message);
+            } else {
+              markOptimisticSessionFailed(
+                draft.localSessionId,
+                "The saved creation command is no longer available. Retry creation to continue.",
+              );
+            }
           } else {
             clearPendingSessionCreateUi();
           }
@@ -8633,6 +8671,8 @@ function MalinkAppRuntime() {
     if (
       pendingSessionCreateRecoveryRef.current?.commandId !== commandId
     ) return;
+    const recovery = pendingSessionCreateRecoveryRef.current;
+    const restoringProviderSession = Boolean(recovery.input.providerSessionId);
     let sessionToReveal: string | null = null;
     let skipHistoryRestore = false;
     try {
@@ -8641,7 +8681,19 @@ function MalinkAppRuntime() {
       if (failureMessage) {
         const draft = optimisticSessionRef.current;
         if (draft) {
-          markOptimisticSessionFailed(draft.localSessionId, failureMessage);
+          if (restoringProviderSession) {
+            failProviderSessionRestore(draft.localSessionId, failureMessage);
+          } else {
+            markOptimisticSessionFailed(draft.localSessionId, failureMessage);
+          }
+        } else if (restoringProviderSession) {
+          providerHistoryBackgroundedRef.current = false;
+          setProviderHistoryRestoreFailedSessionId(
+            recovery.input.providerSessionId ?? null,
+          );
+          setProviderHistoryError(failureMessage);
+          setProviderHistoryOpen(true);
+          recoverUiNotice("provider:history-background");
         }
         showUiNotice(
           "session:create",
@@ -8670,7 +8722,14 @@ function MalinkAppRuntime() {
         sessionToReveal = target.sessionToReveal;
         skipHistoryRestore = target.skipHistoryRestore;
       }
-      setNewSessionOpen(false);
+      if (restoringProviderSession) {
+        providerHistoryBackgroundedRef.current = false;
+        recoverUiNotice("provider:history-background");
+        setProviderHistoryRestoreFailedSessionId(null);
+        setProviderHistoryOpen(false);
+      } else {
+        setNewSessionOpen(false);
+      }
     } finally {
       // Receiving an acknowledgement is not enough for session.create: the
       // terminal sessionId must survive reloads until this UI has consumed it.
@@ -8724,13 +8783,14 @@ function MalinkAppRuntime() {
         const current = optimisticSessionRef.current;
         if (!current || current.localSessionId !== localSessionId) return;
         const selectedDraft = selectedSessionIdRef.current === localSessionId;
+        const revealRestoredSession = Boolean(current.input.providerSessionId);
         const localMessages = (
           liveMessagesBySessionRef.current.get(localSessionId) ?? []
         ).map((message) => ({ ...message, sessionId: remoteSessionId }));
         liveMessagesBySessionRef.current.delete(localSessionId);
         liveMessagesBySessionRef.current.set(remoteSessionId, localMessages);
         pendingCreatedSessionIdRef.current = null;
-        if (selectedDraft) {
+        if (selectedDraft || revealRestoredSession) {
           const projectId = current.input.projectId ?? null;
           selectedSessionIdRef.current = remoteSessionId;
           selectedProjectIdRef.current = projectId;
@@ -9493,6 +9553,7 @@ function MalinkAppRuntime() {
     if (!provider) return;
     setProviderHistorySelected(session);
     setProviderHistoryMessages([]);
+    setProviderHistoryRestoreFailedSessionId(null);
     setProviderHistoryError(null);
     const load: ProviderHistoryLoadState = {
       id: ++providerHistoryLoadIdRef.current,
@@ -9570,6 +9631,7 @@ function MalinkAppRuntime() {
   }
 
   function continueProviderHistorySession(session: ProviderSessionEntry) {
+    if (newSessionBusy) return;
     const source = findProviderHistorySource(providerHistorySources, {
       gatewayNodeId: providerHistoryGatewayNodeIdRef.current,
       projectId: providerHistoryProjectIdRef.current,
@@ -9601,7 +9663,8 @@ function MalinkAppRuntime() {
     }
     providerHistoryBackgroundedRef.current = false;
     recoverUiNotice("provider:history-background");
-    setProviderHistoryOpen(false);
+    setProviderHistoryRestoreFailedSessionId(null);
+    setProviderHistoryError(null);
     void createSession({
       projectId: historyWorkspace.projectId,
       scope: "project",
@@ -9877,6 +9940,7 @@ function MalinkAppRuntime() {
     input: NewSessionInput,
     retryRecord?: OptimisticSessionRecord,
   ) {
+    const restoringProviderSession = Boolean(input.providerSessionId);
     const targetWorkspace = gatewayState?.projects?.find(
       project => project.projectId === input.projectId,
     ) ?? gatewayState?.workspace;
@@ -9915,9 +9979,11 @@ function MalinkAppRuntime() {
     setSessionCreateReloadBlocked(true);
     setNewSessionBusy(true);
     setPendingSessionCreate(input);
-    setNewSessionOpen(false);
-    activateLocalSession(localRecord.localSessionId, null, true, true);
-    setMobileChatOpen(true);
+    if (!restoringProviderSession) {
+      setNewSessionOpen(false);
+      activateLocalSession(localRecord.localSessionId, null, true, true);
+      setMobileChatOpen(true);
+    }
     recoverUiNotice("session:create");
     let durableCommandRecorded = false;
     try {
@@ -10008,7 +10074,11 @@ function MalinkAppRuntime() {
         );
         if (connection) continuePendingSessionCreate(connection);
       } else {
-        markOptimisticSessionFailed(localRecord.localSessionId, error);
+        if (restoringProviderSession) {
+          failProviderSessionRestore(localRecord.localSessionId, error);
+        } else {
+          markOptimisticSessionFailed(localRecord.localSessionId, error);
+        }
         showUiNotice(
           "session:create",
           "session",
@@ -10130,6 +10200,24 @@ function MalinkAppRuntime() {
       failOptimisticSession(record, formatUiError(error)),
     );
     clearPendingSessionCreateUi();
+  }
+
+  function failProviderSessionRestore(
+    localSessionId: string,
+    error: unknown,
+  ): void {
+    const record = optimisticSessionRef.current;
+    const providerSessionId = record?.localSessionId === localSessionId
+      ? record.input.providerSessionId
+      : undefined;
+    removeOptimisticSession(localSessionId);
+    liveMessagesBySessionRef.current.delete(localSessionId);
+    clearPendingSessionCreateUi();
+    setProviderHistoryRestoreFailedSessionId(providerSessionId ?? null);
+    setProviderHistoryError(formatUiError(error));
+    setProviderHistoryOpen(true);
+    providerHistoryBackgroundedRef.current = false;
+    recoverUiNotice("provider:history-background");
   }
 
   async function settleSessionCreate(
@@ -14320,10 +14408,19 @@ function MalinkAppRuntime() {
           selected={providerHistorySelected}
           messages={providerHistoryMessages}
           loading={providerHistoryLoad?.kind ?? null}
+          restoring={Boolean(
+            optimisticSession?.input.providerSessionId
+            && (
+              optimisticSession.phase === "creating"
+              || optimisticSession.phase === "uncertain"
+            )
+          )}
           error={providerHistoryError}
           recoveryLabel={providerHistoryError
             ? connectionStatus !== "connected"
               ? "Reconnect Workspace"
+              : providerHistorySelected?.sessionId === providerHistoryRestoreFailedSessionId
+                ? "Retry restore"
               : providerHistorySource
                 ? "Retry request"
                 : null
@@ -14339,6 +14436,13 @@ function MalinkAppRuntime() {
               return;
             }
             if (!providerHistorySource) return;
+            if (
+              providerHistorySelected
+              && providerHistorySelected.sessionId === providerHistoryRestoreFailedSessionId
+            ) {
+              continueProviderHistorySession(providerHistorySelected);
+              return;
+            }
             if (providerHistorySelected) {
               void inspectProviderHistorySession(providerHistorySelected);
             } else {

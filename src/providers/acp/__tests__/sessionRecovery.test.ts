@@ -176,6 +176,57 @@ async function collectEvents(provider: AcpProvider, sessionId: string | null = '
 }
 
 describe('AcpProvider session-open recovery', () => {
+    it('acquires a restored provider session before the first prompt and reuses it', async () => {
+        const manager = new RecoveryClientManager()
+        const provider = providerWith(manager)
+
+        await expect(provider.restoreSession({
+            cwd: '/repo',
+            sessionId: 'existing-session',
+            signal: new AbortController().signal,
+        })).resolves.toEqual(expect.objectContaining({
+            sessionId: 'existing-session',
+        }))
+        const events = await collectEvents(provider)
+
+        expect(manager.resumeSessionCalls).toBe(1)
+        expect(manager.newSessionCalls).toBe(0)
+        expect(manager.promptSessionIds).toEqual(['existing-session'])
+        expect(events).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                kind: 'session_init',
+                sessionId: 'existing-session',
+            }),
+            expect.objectContaining({ kind: 'result', status: 'success' }),
+        ]))
+    })
+
+    it('rejects pre-restore without opening a replacement provider session', async () => {
+        const manager = new RecoveryClientManager()
+        manager.agentCapabilities = { agentCapabilities: { loadSession: true } }
+        manager.resumeBehavior = async () => {
+            throw new Error('session already has another active writer')
+        }
+        manager.loadBehavior = async () => {
+            throw new Error('session already has another active writer')
+        }
+        const provider = providerWith(manager)
+
+        await expect(provider.restoreSession({
+            cwd: '/repo',
+            sessionId: 'existing-session',
+            signal: new AbortController().signal,
+        })).rejects.toMatchObject({
+            commandCode: 'provider_session_restore_failed',
+            retryable: true,
+            message: expect.stringContaining('Close the session in any other Agent client'),
+        })
+        expect(manager.resumeSessionCalls).toBe(1)
+        expect(manager.loadSessionCalls).toBe(1)
+        expect(manager.newSessionCalls).toBe(0)
+        expect(manager.promptCalls).toBe(0)
+    })
+
     it('maps a Cursor CLI model alias to the ACP session model before the first prompt', async () => {
         const manager = new RecoveryClientManager()
         manager.supportsResumeSession = false
@@ -284,13 +335,12 @@ describe('AcpProvider session-open recovery', () => {
             expect.objectContaining({
                 kind: 'session_init',
                 sessionId: 'existing-session',
-                isNewSession: false,
             }),
             expect.objectContaining({ kind: 'result', status: 'success' }),
         ]))
     })
 
-    it('creates a replacement only after the restarted process explicitly rejects the old session', async () => {
+    it('fails closed when the restarted process explicitly rejects the old session', async () => {
         const wedgedManager = new RecoveryClientManager()
         const recoveredManager = new RecoveryClientManager()
         wedgedManager.resumeBehavior = () => wedgedManager.hangUntilClose()
@@ -299,7 +349,6 @@ describe('AcpProvider session-open recovery', () => {
         recoveredManager.loadBehavior = async () => {
             throw new Error('session not found')
         }
-        recoveredManager.newSessionBehavior = async () => ({ sessionId: 'replacement-session' })
         const provider = providerWithManagers([wedgedManager, recoveredManager])
 
         const events = await collectEvents(provider)
@@ -309,16 +358,17 @@ describe('AcpProvider session-open recovery', () => {
         expect(recoveredManager.initCalls).toBe(1)
         expect(recoveredManager.resumeSessionCalls).toBe(1)
         expect(recoveredManager.loadSessionCalls).toBe(1)
-        expect(recoveredManager.newSessionCalls).toBe(1)
-        expect(recoveredManager.promptCalls).toBe(1)
-        expect(recoveredManager.promptSessionIds).toEqual(['replacement-session'])
+        expect(recoveredManager.newSessionCalls).toBe(0)
+        expect(recoveredManager.promptCalls).toBe(0)
         expect(events).toEqual(expect.arrayContaining([
             expect.objectContaining({
-                kind: 'session_init',
-                sessionId: 'replacement-session',
-                isNewSession: true,
+                kind: 'result',
+                status: 'error',
+                summary: expect.stringContaining('could not restore the previous Agent session'),
             }),
-            expect.objectContaining({ kind: 'result', status: 'success' }),
+        ]))
+        expect(events).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'session_init' }),
         ]))
     })
 
@@ -348,7 +398,7 @@ describe('AcpProvider session-open recovery', () => {
         ]))
     })
 
-    it('uses a clean process for replacement when full and degraded recovery time out', async () => {
+    it('uses a clean process but does not replace an old session after every recovery attempt times out', async () => {
         const firstManager = new RecoveryClientManager()
         const secondManager = new RecoveryClientManager()
         const degradedManager = new RecoveryClientManager()
@@ -356,7 +406,6 @@ describe('AcpProvider session-open recovery', () => {
         firstManager.resumeBehavior = () => firstManager.hangUntilClose()
         secondManager.resumeBehavior = () => secondManager.hangUntilClose()
         degradedManager.resumeBehavior = () => degradedManager.hangUntilClose()
-        replacementManager.newSessionBehavior = async () => ({ sessionId: 'replacement-session' })
         const provider = providerWithManagers([
             firstManager,
             secondManager,
@@ -364,14 +413,17 @@ describe('AcpProvider session-open recovery', () => {
             replacementManager,
         ])
 
-        await collectEvents(provider)
+        const events = await collectEvents(provider)
 
         expect(firstManager.closeCalls).toBe(1)
         expect(secondManager.closeCalls).toBe(1)
         expect(degradedManager.closeCalls).toBe(1)
         expect(replacementManager.initCalls).toBe(1)
-        expect(replacementManager.newSessionMcpServerCounts).toEqual([1])
-        expect(replacementManager.promptSessionIds).toEqual(['replacement-session'])
+        expect(replacementManager.newSessionCalls).toBe(0)
+        expect(replacementManager.promptCalls).toBe(0)
+        expect(events).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'result', status: 'error' }),
+        ]))
     })
 
     it('restarts and retries when initial session creation times out', async () => {
@@ -395,7 +447,6 @@ describe('AcpProvider session-open recovery', () => {
             expect.objectContaining({
                 kind: 'session_init',
                 sessionId: 'created-after-restart',
-                isNewSession: false,
             }),
             expect.objectContaining({ kind: 'result', status: 'success' }),
         ]))

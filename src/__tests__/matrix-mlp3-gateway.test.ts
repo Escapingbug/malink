@@ -589,7 +589,21 @@ describe('MatrixMlp3GatewayRunner', () => {
     await restarted.stop()
   })
 
-  it('settles and releases a session creation whose filesystem preflight never returns', async () => {
+  it('settles timed-out creation and rejects provider restore before session.ready', async () => {
+    clearProviderRegistryForTesting()
+    registerProvider({
+      name: 'restore-fail-test',
+      startQuery() { throw new Error('Restore failure must not start a query') },
+      isReady: () => true,
+      getInitError: () => null,
+      getAvailableModels: () => [],
+      getAvailablePermissionModes: () => [],
+      getSessionHistory: async sessionId => ({
+        sessionId,
+        title: 'Provider restore failure',
+        messages: [],
+      }),
+    })
     const directory = await mkdtemp(join(tmpdir(), 'malink-v3-command-timeout-'))
     const gatewayKeys = await generateDeviceKeyPair()
     const phoneKeys = await generateDeviceKeyPair()
@@ -615,7 +629,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         roomId,
         conversationId: roomId,
         cwd: '/timeout-repo',
-        providerName: 'test',
+        providerName: 'restore-fail-test',
       }],
       trustedDevices: [{
         deviceId: 'phone-1',
@@ -639,7 +653,36 @@ describe('MatrixMlp3GatewayRunner', () => {
     const runner = new MatrixMlp3GatewayRunner(config, {
       client,
       assertDirectoryAccess: async () => accessGate.promise,
-      sessionFactory: () => { throw new Error('timed-out creation must not build a runtime') },
+      sessionFactory: (room, port, session) => {
+        if (session.id === 'session-timeout') {
+          throw new Error('timed-out creation must not build a runtime')
+        }
+        const sessionRecord = createTopicSessionRecord({
+          id: session.id,
+          cwd: room.cwd,
+          providerName: session.provider,
+          groupChatId: -1,
+        })
+        return {
+          receiveInput: () => undefined,
+          dispatch: async () => undefined,
+          restoreProviderSession: async () => {
+            throw Object.assign(new Error(
+              'Close the session in the other Agent client, then retry.',
+            ), {
+              commandCode: 'provider_session_restore_failed',
+              retryable: true,
+            })
+          },
+          destroy: async () => undefined,
+          state: 'idle',
+          sessionRecord,
+          channelPort: port,
+          getProgress: () => null,
+          getDeliveryStatus: () => ({ deliveries: [] }),
+          retryDelivery: async () => ({ status: 'not_found' as const }),
+        } satisfies TopicSession
+      },
     })
     await runner.start()
     const grantState = [...client.state.values()].find(state =>
@@ -662,6 +705,29 @@ describe('MatrixMlp3GatewayRunner', () => {
       senderPublicKey: gatewayKeys.publicKey,
     })
     const activeKey = keyGrant.keys.find(key => key.keyId === keyGrant.activeKeyId)!
+    const sendCommand = async (command: Mlp3Command, eventId: string) => {
+      const signed = await signMlp3Command(command, phoneKeys.privateKey, phoneKeys.keyId)
+      const envelope = await sealMlp3Envelope({
+        plaintext: { kind: 'signed_command', value: signed },
+        projectKey: base64UrlDecode(activeKey.key),
+        roomId,
+        projectId,
+        keyId: activeKey.keyId,
+        logicalEventId: command.commandId,
+      })
+      client.emit({
+        roomId,
+        eventId,
+        eventType: 'm.room.message',
+        sender: '@phone:example.org',
+        encrypted: false,
+        content: {
+          msgtype: 'm.notice',
+          body: 'Encrypted Malink command',
+          [MALINK_MATRIX_EXTENSION]: { version: 3, envelope },
+        },
+      })
+    }
     const command: Mlp3Command = {
       kind: 'malink.command',
       version: 3,
@@ -675,27 +741,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       operation: 'session.create',
       payload: { operation: 'session.create', title: 'Must not get stuck' },
     }
-    const signed = await signMlp3Command(command, phoneKeys.privateKey, phoneKeys.keyId)
-    const envelope = await sealMlp3Envelope({
-      plaintext: { kind: 'signed_command', value: signed },
-      projectKey: base64UrlDecode(activeKey.key),
-      roomId,
-      projectId,
-      keyId: activeKey.keyId,
-      logicalEventId: command.commandId,
-    })
-    client.emit({
-      roomId,
-      eventId: '$create-timeout',
-      eventType: 'm.room.message',
-      sender: '@phone:example.org',
-      encrypted: false,
-      content: {
-        msgtype: 'm.notice',
-        body: 'Encrypted Malink command',
-        [MALINK_MATRIX_EXTENSION]: { version: 3, envelope },
-      },
-    })
+    await sendCommand(command, '$create-timeout')
 
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
       .some(event => event.causationCommandId === command.commandId), 2_500)
@@ -718,8 +764,39 @@ describe('MatrixMlp3GatewayRunner', () => {
       event.causationCommandId === command.commandId
       && event.payload.type === 'session.ready'
     )).toBe(false)
+
+    const retiredRoomsBeforeRestore = client.retiredRooms.length
+    const restoreCommand: Mlp3Command = {
+      ...command,
+      commandId: 'create-provider-restore-failure',
+      sessionId: 'session-provider-restore-failure',
+      createdAt: Date.now(),
+      payload: {
+        operation: 'session.create',
+        providerSessionId: 'provider-session-1',
+      },
+    }
+    await sendCommand(restoreCommand, '$create-provider-restore-failure')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === restoreCommand.commandId), 2_500)
+    const restoreEvents = (await events(client, activeKey.key, roomId, projectId))
+      .filter(event => event.causationCommandId === restoreCommand.commandId)
+    expect(restoreEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          type: 'command.rejected',
+          code: 'provider_session_restore_failed',
+          retryable: true,
+        }),
+      }),
+    ]))
+    expect(restoreEvents).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ payload: expect.objectContaining({ type: 'session.ready' }) }),
+    ]))
+    expect(client.retiredRooms).toHaveLength(retiredRoomsBeforeRestore + 1)
     await runner.stop()
-  }, 5_000)
+    clearProviderRegistryForTesting()
+  }, 10_000)
 
   it('republishes every project after a background model catalog refresh', async () => {
     clearProviderRegistryForTesting()
@@ -928,6 +1005,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     await writeFile(generatedImagePath, 'generated image bytes', 'utf8')
     const sessionExtensions = new Map<string, readonly { id: string }[]>()
     const sessionCwds = new Map<string, string>()
+    const providerSessionRestoreCalls: string[] = []
     const rejected: unknown[] = []
     const notificationSubscriptions: string[] = []
     const terminalNotifications: Mlp3Event[] = []
@@ -1107,6 +1185,11 @@ describe('MatrixMlp3GatewayRunner', () => {
         let dead = false
         return {
           receiveInput: () => undefined,
+          async restoreProviderSession() {
+            providerSessionRestoreCalls.push(
+              `${session.id}:${session.providerSessionId ?? ''}`,
+            )
+          },
           async dispatch(input) {
             if (input.kind === 'user_message') {
               await input.onExecutionStarted?.()
@@ -1449,6 +1532,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       certificateId: 'certificate-1',
       createdAt: 1,
     }
+
     await send({
       ...base,
       commandId: 'project-create-1',
@@ -1808,6 +1892,9 @@ describe('MatrixMlp3GatewayRunner', () => {
     }])
     const createdSession = (await events(client, activeKey.key, roomId, projectId)).find(event =>
       event.causationCommandId === 'create-a' && event.payload.type === 'session.ready'
+    )
+    expect(providerSessionRestoreCalls).toContain(
+      'session-a:provider-session-1',
     )
     expect(createdSession?.payload).toMatchObject({
       controls: { verbosity: 'detailed' },

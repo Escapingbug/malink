@@ -530,7 +530,12 @@ describe('Semantic runtime integration chain', () => {
             destroy,
             startQuery: vi.fn((prompt: string, config: AgentQueryConfig): AgentQueryHandle => ({
                 events: (async function* () {
-                    yield { kind: 'session_init', sessionId: `${prompt}-session` } as AgentEvent
+                    yield {
+                        kind: 'session_init',
+                        sessionId: prompt === 'first'
+                            ? 'old-provider-session'
+                            : `${prompt}-session`,
+                    } as AgentEvent
                     if (prompt === 'first') await hold
                     yield { kind: 'result', status: 'success' } as AgentEvent
                 })(),
@@ -865,9 +870,9 @@ describe('Semantic runtime integration chain', () => {
         expect(channel.statuses[0]).not.toHaveProperty('model')
     })
 
-    it('uses resumed provider session id on the next turn and updates it from session_init', async () => {
+    it('uses the restored provider session id on the next turn', async () => {
         const provider = createProvider([
-            { kind: 'session_init', sessionId: 'new-session-id' },
+            { kind: 'session_init', sessionId: 'resumed-session-id' },
             { kind: 'result', status: 'success' },
         ])
         const channel = createChannel()
@@ -887,12 +892,12 @@ describe('Semantic runtime integration chain', () => {
         expect(provider.startQuery).toHaveBeenCalledWith('resume turn', expect.objectContaining({
             sessionId: 'resumed-session-id',
         }))
-        expect(onProviderSessionId).toHaveBeenCalledWith('new-session-id')
+        expect(onProviderSessionId).toHaveBeenCalledWith('resumed-session-id')
     })
 
-    it('notifies the user when an unrecoverable provider session is replaced', async () => {
+    it('fails closed when a provider substitutes a different session id', async () => {
         const provider = createProvider([
-            { kind: 'session_init', sessionId: 'replacement-session-id', isNewSession: true },
+            { kind: 'session_init', sessionId: 'replacement-session-id' },
             { kind: 'text', text: 'continued response' },
             { kind: 'result', status: 'success' },
         ])
@@ -908,12 +913,14 @@ describe('Semantic runtime integration chain', () => {
             onProviderSessionId,
         })
 
-        await runtime.dispatch({ kind: 'user_message', text: 'continue', source: 'channel' })
+        const result = await runtime.dispatch({ kind: 'user_message', text: 'continue', source: 'channel' })
 
-        expect(onProviderSessionId).toHaveBeenCalledWith('replacement-session-id')
-        expect(channel.sent.map(message => message.text)).toEqual([
-            expect.stringContaining('previous Agent session could not be restored'),
-            'continued response',
+        expect(result).toEqual(expect.objectContaining({ status: 'failed' }))
+        expect(onProviderSessionId).not.toHaveBeenCalled()
+        expect(channel.sent).toEqual([
+            expect.objectContaining({
+                text: expect.stringContaining('opened a different Agent session'),
+            }),
         ])
     })
 

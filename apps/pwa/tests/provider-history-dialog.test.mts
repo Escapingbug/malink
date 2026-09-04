@@ -52,6 +52,56 @@ test("keeps provider history dismissible while sessions load", () => {
   assert.match(html, /You can close this window while sessions load/);
 });
 
+test("keeps a provider restore inside the dialog until the Agent session is writable", () => {
+  const selected = {
+    sessionId: "provider-session",
+    title: "Provider work",
+    updatedAt: 200,
+    cwd: "/work/api",
+  };
+  const html = renderToStaticMarkup(createElement(ProviderHistoryDialog, {
+    open: true,
+    sourceKey: defaultSource.key,
+    sources: [defaultSource],
+    provider: "codex",
+    providers: [{
+      id: "codex",
+      name: "Codex",
+      canListSessions: true,
+      canInspectSessions: true,
+    }],
+    sessions: [selected],
+    selected,
+    messages: [],
+    loading: null,
+    restoring: true,
+    error: null,
+    onClose() {},
+    onSourceChange() {},
+    onProviderChange() {},
+    onInspect() {},
+    onRetry() {},
+    onOpenManaged() {},
+    onContinue() {},
+  }));
+
+  assert.match(html, /aria-busy="true"/);
+  assert.match(
+    html,
+    /<button(?=[^>]*aria-label="Close provider history")[^>]*>/,
+  );
+  const closeButton = html.match(
+    /<button(?=[^>]*aria-label="Close provider history")[^>]*>/,
+  )?.[0];
+  assert.ok(closeButton);
+  assert.doesNotMatch(closeButton, /disabled/);
+  const selects = html.match(/<select\b[^>]*>/g) ?? [];
+  assert.equal(selects.length, 2);
+  assert.ok(selects.every(select => select.includes("disabled")));
+  assert.match(html, /Restoring Agent session/);
+  assert.match(html, /verifies that the Agent session can be restored for writable use/);
+});
+
 test("keeps other provider sessions selectable while one session loads", () => {
   const sessions = [{
     sessionId: "session-one",

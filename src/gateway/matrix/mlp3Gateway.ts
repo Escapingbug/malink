@@ -1854,8 +1854,17 @@ export class MatrixMlp3GatewayRunner {
       if (record.providerSessionId) {
         await this.prepareRecoveredProviderHistory(project, record, signal)
       }
-      project.project.sessions.push(record)
       runtime = this.createSessionRuntime(project, record)
+      if (record.providerSessionId) {
+        if (!runtime.session.restoreProviderSession) {
+          throw new Error(
+            `Provider ${record.provider} cannot restore a writable Agent session`,
+          )
+        }
+        await runtime.session.restoreProviderSession(signal)
+        assertCommandExecutionActive(signal)
+      }
+      project.project.sessions.push(record)
       project.sessions.set(record.id, runtime)
       await this.persist(project)
       persisted = true
