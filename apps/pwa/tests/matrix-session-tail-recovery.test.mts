@@ -3,6 +3,7 @@ import test from "node:test";
 import type { V3ProjectedSession } from "../app/matrixMlp3Projection.ts";
 import {
   matrixActiveSessionTailRecoveryTargets,
+  matrixSessionReadReceiptRetryDelayMs,
   workspaceRouteRecoveryDelayMs,
 } from "../app/matrixMlp3Connection.ts";
 
@@ -26,6 +27,14 @@ test("retries incomplete Workspace routes with bounded backoff", () => {
     [1_000, 2_000, 5_000, 10_000, 30_000, 60_000, 60_000],
   );
   assert.throws(() => workspaceRouteRecoveryDelayMs(-1), TypeError);
+});
+
+test("retries private session read receipts with bounded backoff", () => {
+  assert.deepEqual(
+    [0, 1, 2, 3, 4, 5, 100].map(matrixSessionReadReceiptRetryDelayMs),
+    [1_000, 2_000, 5_000, 10_000, 30_000, 60_000, 60_000],
+  );
+  assert.throws(() => matrixSessionReadReceiptRetryDelayMs(-1), TypeError);
 });
 
 function session(

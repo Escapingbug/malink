@@ -18,7 +18,7 @@ const PROJECTION = "projection";
 // the PWA upgrade manifest. Bumping the read-model schema discards only state
 // that Matrix can rebuild, even when a user skips several application builds.
 export const MATRIX_MLP3_OUTBOX_SCHEMA_VERSION = 1;
-export const MATRIX_MLP3_READ_MODEL_SCHEMA_VERSION = 5;
+export const MATRIX_MLP3_READ_MODEL_SCHEMA_VERSION = 6;
 
 type OutboxRow = MatrixMlp3OutboxRecord & {
   key: string;
@@ -340,11 +340,12 @@ export async function ensureMatrixMlp3ReadModelDatabase(
  * authoritative thread-directory convergence after the next connection.
  *
  * Schema 3 was shipped for an optional receipt field but incorrectly reset the
- * whole read model. Preserve the materialized sessions/messages, but clear the
- * rebuildable raw inbox and its logical-event fence so the bounded replay can
- * actually re-apply authoritative roots and latest events. The migration is
- * idempotent and intentionally covers every stored Workspace/project scope in
- * the shared database.
+ * whole read model. Schema 6 adds proof that a receipt target is a non-root
+ * event in the expected Matrix thread. Preserve materialized sessions/messages,
+ * but clear the rebuildable raw inbox and its logical-event fence so bounded
+ * replay can re-apply authoritative roots, latest events, and their physical
+ * thread relations. The migration is idempotent and intentionally covers every
+ * stored Workspace/project scope in the shared database.
  */
 export async function migrateMatrixMlp3ReadModel(
   factory: IDBFactory = indexedDB,

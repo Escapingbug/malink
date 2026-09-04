@@ -37,6 +37,13 @@ export class MatrixMlp3Readiness {
     this.#failureDetail = null;
   }
 
+  /** Routine pointer refreshes must not downgrade an already usable client. */
+  beginBlockingRecovery(): boolean {
+    if (this.#phase === "ready") return false;
+    this.beginRecovery();
+    return true;
+  }
+
   completeRecovery(): void {
     this.#phase = "ready";
     this.#failureDetail = null;

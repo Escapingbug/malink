@@ -10,8 +10,16 @@ describe("MatrixMlp3Projection", () => {
   it("converges per session despite out-of-order events and physical relation changes", () => {
     const projection = new MatrixMlp3Projection();
     projection.applyCommand(createCommand("a"), "$root-original", 1);
-    projection.applyEvent(turnEvent("completed", 4, "idle"), "$physical-completed");
-    projection.applyEvent(turnEvent("started", 3, "working"), "$physical-started");
+    projection.applyEvent(
+      turnEvent("completed", 4, "idle"),
+      "$physical-completed",
+      "$root-original",
+    );
+    projection.applyEvent(
+      turnEvent("started", 3, "working"),
+      "$physical-started",
+      "$root-original",
+    );
     expect(projection.sessions.get("session-a")).toMatchObject({
       activity: "idle",
       stateVersion: 4,
@@ -404,7 +412,7 @@ describe("MatrixMlp3Projection", () => {
     expect(local).toMatchObject({ originDeviceId: "device-1" });
     expect(toIncomingMessage(local!).originDeviceId).toBe("device-1");
 
-    projection.applyEvent(turnQueuedEvent(), "$gateway-prompt");
+    projection.applyEvent(turnQueuedEvent(), "$gateway-prompt", "$root-a");
     const canonical = projection.messages.get("user:prompt-a");
     expect(canonical).toMatchObject({
       originDeviceId: "device-1",
@@ -416,6 +424,57 @@ describe("MatrixMlp3Projection", () => {
     restored.restore(projection.durableState());
     expect(restored.messages.get("user:prompt-a")?.originDeviceId).toBe("device-1");
     expect(restored.sessions.get("session-a")?.readReceiptEventId).toBe("$gateway-prompt");
+  });
+
+  it("does not advance a receipt target without the matching Matrix thread relation", () => {
+    const projection = new MatrixMlp3Projection();
+    projection.applyCommand(createCommand("a"), "$root-a");
+
+    projection.applyEvent(turnQueuedEvent(), "$unthreaded");
+    expect(projection.sessions.get("session-a")?.readReceiptEventId).toBeUndefined();
+
+    projection.applyEvent(turnEvent("started", 3, "working"), "$wrong-thread", "$root-b");
+    expect(projection.sessions.get("session-a")?.readReceiptEventId).toBeUndefined();
+
+    projection.applyEvent(turnEvent("completed", 4, "idle"), "$threaded", "$root-a");
+    expect(projection.sessions.get("session-a")).toMatchObject({
+      readReceiptEventId: "$threaded",
+      readReceiptThreadRootEventId: "$root-a",
+    });
+
+    const laterUnthreaded = turnEvent("completed", 5, "idle");
+    laterUnthreaded.eventId = "turn-completed-later-unthreaded";
+    projection.applyEvent(laterUnthreaded, "$later-unthreaded");
+    expect(projection.sessions.get("session-a")?.readReceiptEventId).toBeUndefined();
+  });
+
+  it("never uses the Matrix thread root as a threaded receipt target", () => {
+    const projection = new MatrixMlp3Projection();
+    projection.applyCommand(createCommand("a"), "$root-a");
+
+    expect(projection.sessions.get("session-a")).toMatchObject({
+      threadRootEventId: "$root-a",
+    });
+    expect(projection.sessions.get("session-a")?.readReceiptEventId).toBeUndefined();
+  });
+
+  it("drops an unproven receipt target restored from a version-ten projection", () => {
+    const projection = new MatrixMlp3Projection();
+    projection.applyCommand(createCommand("a"), "$root-a");
+    projection.applyEvent(turnQueuedEvent(), "$threaded", "$root-a");
+    const legacy = projection.durableState() as unknown as {
+      version: number;
+      sessions: Array<Record<string, unknown>>;
+    };
+    legacy.version = 10;
+    for (const session of legacy.sessions) {
+      delete session.readReceiptThreadRootEventId;
+    }
+
+    const restored = new MatrixMlp3Projection();
+    restored.restore(legacy);
+
+    expect(restored.sessions.get("session-a")?.readReceiptEventId).toBeUndefined();
   });
 
   it("repairs a version-three running projection from its unresolved prompt", () => {

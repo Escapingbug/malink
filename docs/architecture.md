@@ -134,6 +134,13 @@ a process restart it reconstructs an interrupted delivery by comparing the
 persisted timestamp with the SDK's private receipt cache before publishing.
 The retry is deliberately not an MLP command and never resolves a later session
 projection from only a session ID, so it cannot mark unseen activity as read.
+The browser transport likewise persists and coalesces the exact authenticated
+room, thread root, and non-root physical event before sending. Failed writes
+retry after reconnect and with bounded exponential backoff; a newer projection
+can replace an older pending target, while an older in-flight acknowledgement
+cannot erase the replacement. Thread roots and projections without an explicit
+matching `m.thread` relation are never receipt targets because Matrix classifies
+the root itself as part of the main timeline.
 On first startup or `invite-gateway`, active certificates created before
 portable grants existed are migrated in place with identical operations and
 expiry, so existing clients do not need to pair again.

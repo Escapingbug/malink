@@ -24,7 +24,7 @@ import {
 } from "@malink/protocol";
 import { gatewayMaintenanceSessionActivityOutcome } from "./gatewayState";
 
-export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 10 as const;
+export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 11 as const;
 
 export type V3ProjectedSession = Mlp3SessionProjection & {
   sessionId: string;
@@ -35,6 +35,8 @@ export type V3ProjectedSession = Mlp3SessionProjection & {
    * Matrix receipts are accepted only when they point at this exact event.
    */
   readReceiptEventId?: string;
+  /** Thread relation verified on the physical receipt target. */
+  readReceiptThreadRootEventId?: string;
   provider?: string;
   model?: string;
   reasoningEffort?: string;
@@ -242,7 +244,6 @@ export class MatrixMlp3Projection {
           ...current,
           projectId: current.projectId || command.projectId,
           threadRootEventId: current.threadRootEventId || physicalEventId,
-          ...(current.readReceiptEventId ? {} : { readReceiptEventId: physicalEventId }),
           ...(current.title === "New session" && commandTitle !== "New session"
             ? { title: commandTitle }
             : {}),
@@ -252,7 +253,6 @@ export class MatrixMlp3Projection {
           sessionId: command.sessionId,
           projectId: command.projectId,
           threadRootEventId: physicalEventId,
-          readReceiptEventId: physicalEventId,
           title: commandTitle,
           scope: command.payload.scope ?? "project",
           ...(this.project?.cwd ? { cwd: this.project.cwd } : {}),
@@ -497,6 +497,9 @@ export class MatrixMlp3Projection {
           ...(current?.readReceiptEventId
             ? { readReceiptEventId: current.readReceiptEventId }
             : {}),
+          ...(current?.readReceiptThreadRootEventId
+            ? { readReceiptThreadRootEventId: current.readReceiptThreadRootEventId }
+            : {}),
           ...payload.projection,
           provider: payload.provider,
           ...(payload.model ? { model: payload.model } : {}),
@@ -740,18 +743,31 @@ export class MatrixMlp3Projection {
     const sessionId = event.sessionId!;
     const current = this.sessions.get(sessionId);
     if (current && isOlderSessionProjection(current, next)) return;
+    const threadRootEventId = current?.threadRootEventId || threadRootHint || "";
+    const hasVerifiedReceiptTarget = Boolean(
+      threadRootEventId
+      && physicalEventId !== threadRootEventId
+      && threadRootHint === threadRootEventId,
+    );
     const projected: V3ProjectedSession = {
       sessionId,
       projectId: event.projectId ?? current?.projectId ?? "",
-      threadRootEventId: current?.threadRootEventId || threadRootHint || "",
+      threadRootEventId,
       ...current,
       ...next,
       controlValues: mergeProjectedControlValues(
         current?.controlValues ?? {},
         next.controls,
       ),
-      readReceiptEventId: physicalEventId,
+      ...(hasVerifiedReceiptTarget ? {
+        readReceiptEventId: physicalEventId,
+        readReceiptThreadRootEventId: threadRootEventId,
+      } : {}),
     };
+    if (!hasVerifiedReceiptTarget) {
+      delete projected.readReceiptEventId;
+      delete projected.readReceiptThreadRootEventId;
+    }
     // activeTurnId is transient execution state. A projection at the same or
     // newer session version that says the session is no longer active is the
     // authoritative recovery boundary after a Gateway/app restart.
@@ -869,17 +885,22 @@ export class MatrixMlp3Projection {
 
 function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
   const value = record(input);
+  const projectionVersion = value?.version;
   if (
-    value?.version !== 1
-    && value?.version !== 2
-    && value?.version !== 3
-    && value?.version !== 4
-    && value?.version !== 5
-    && value?.version !== 6
-    && value?.version !== 7
-    && value?.version !== 8
-    && value?.version !== 9
-    && value?.version !== 10
+    !value
+    || (
+      projectionVersion !== 1
+      && projectionVersion !== 2
+      && projectionVersion !== 3
+      && projectionVersion !== 4
+      && projectionVersion !== 5
+      && projectionVersion !== 6
+      && projectionVersion !== 7
+      && projectionVersion !== 8
+      && projectionVersion !== 9
+      && projectionVersion !== 10
+      && projectionVersion !== 11
+    )
   ) {
     throw new Error("Unsupported MLP/3 projection version.");
   }
@@ -897,14 +918,40 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
       || !integer(session.stateVersion, 1)
       || !(session.activeTurnId === undefined || text(session.activeTurnId))
       || !(session.readReceiptEventId === undefined || text(session.readReceiptEventId))
+      || !(
+        session.readReceiptThreadRootEventId === undefined
+        || text(session.readReceiptThreadRootEventId)
+      )
     ) throw new Error("The MLP/3 session projection is invalid.");
-    return {
+    const restored = {
       ...structuredClone(session),
       extensionBindings: Array.isArray(session.extensionBindings)
         ? session.extensionBindings.map(binding => sessionExtensionBindingSchema.parse(binding))
         : [],
       controlValues: providerControlValuesSchema.parse(session.controlValues ?? {}),
     } as V3ProjectedSession;
+    if (projectionVersion < 11) {
+      // Older projections did not retain proof that the physical receipt
+      // target belonged to this thread. A thread root is part of Matrix's main
+      // timeline and is not a valid target for a receipt scoped to that thread.
+      // Wait for the next authenticated event with an explicit m.thread
+      // relation instead of guessing from an unproven physical event ID.
+      delete restored.readReceiptEventId;
+      delete restored.readReceiptThreadRootEventId;
+    } else if (
+      (restored.readReceiptEventId === undefined)
+        !== (restored.readReceiptThreadRootEventId === undefined)
+      || (
+        restored.readReceiptThreadRootEventId !== undefined
+        && (
+          restored.readReceiptThreadRootEventId !== restored.threadRootEventId
+          || restored.readReceiptEventId === restored.threadRootEventId
+        )
+      )
+    ) {
+      throw new Error("The MLP/3 session read receipt target is invalid.");
+    }
+    return restored;
   });
   const messages = boundedArray(value.messages, "messages").map(messageValue => {
     const message = record(messageValue);
@@ -922,7 +969,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
     ) throw new Error("The MLP/3 message projection is invalid.");
     return structuredClone(message) as V3ProjectedMessage;
   });
-  const providerHistoryMessages = value.version >= 8
+  const providerHistoryMessages = projectionVersion >= 8
     ? boundedArray(value.providerHistoryMessages, "provider history messages").map(messageValue => {
         const message = record(messageValue);
         if (
@@ -954,7 +1001,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
         } as V3ProjectedProviderHistoryMessage;
       })
     : [];
-  const providerHistoryPages = value.version >= 8
+  const providerHistoryPages = projectionVersion >= 8
     ? boundedArray(value.providerHistoryPages, "provider history pages").map(pageValue => {
         const page = record(pageValue);
         if (
@@ -971,7 +1018,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
         return structuredClone(page) as V3ProjectedProviderHistoryPage;
       })
     : [];
-  const inboxFiles = value.version >= 3
+  const inboxFiles = projectionVersion >= 3
     ? boundedArray(value.inboxFiles, "inbox files").map(fileValue => {
         const file = record(fileValue);
         if (
@@ -1017,7 +1064,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
       event: mlp3EventSchema.parse(completion.event),
     } as Mlp3CommandCompletion;
   });
-  const gatewayUpdateObservation = value.version >= 7
+  const gatewayUpdateObservation = projectionVersion >= 7
     ? value.gatewayUpdateObservation === null
       ? null
       : (() => {
@@ -1038,7 +1085,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
     });
   const projectValue = value.project;
   const project = projectValue === null ? null : validateProjectProjection(projectValue);
-  const workspace = value.version === 1 || value.workspace === null
+  const workspace = projectionVersion === 1 || value.workspace === null
     ? null
     : validateWorkspaceProjection(value.workspace);
   requireUnique(sessions.map(session => session.sessionId), "session");
@@ -1054,7 +1101,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
   requireUnique(inboxFiles.map(file => file.fileId), "inbox file");
   requireUnique(completions.map(completion => completion.commandId), "completion");
   requireUnique(seenLogicalEvents, "logical event");
-  if (value.version < 4) {
+  if (projectionVersion < 4) {
     for (const session of sessions) {
       if (session.activeTurnId || !isActiveSessionActivity(session.activity)) continue;
       const unresolved = messages
