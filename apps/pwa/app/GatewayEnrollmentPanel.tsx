@@ -48,7 +48,7 @@ export function GatewayEnrollmentPanel({
       <header>
         <span>
           <strong>Add a Workspace computer</strong>
-          <small>The new computer will run projects and Agents for every authorized device.</small>
+          <small>The new computer will run projects and Agents for every authorized Malink app.</small>
         </span>
         <button type="button" disabled={operationBusy} onClick={onClear}>Close</button>
       </header>

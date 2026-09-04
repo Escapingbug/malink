@@ -172,19 +172,17 @@ export function PairingWizard({
   if (trustedGateway && !preview && !repairRequired) {
     return (
       <div className="device-invitation-flow">
-        <section className="paired-gateway-card" aria-label="Connected computer">
-          <span className="gateway-device-mark" aria-hidden="true">
-            G
+        <header className="device-invitation-heading">
+          <span className="device-invitation-mark" aria-hidden="true">+</span>
+          <span>
+            <small>Another phone or browser</small>
+            <strong>Add another Malink app</strong>
+            <p>
+              Create a one-time invitation, then open it in the app you want to
+              authorize. This does not add or change a Workspace computer.
+            </p>
           </span>
-          <div>
-            <span className="paired-label">Connected computer</span>
-            <strong>{trustedGateway.gatewayName}</strong>
-            <small>
-              Added {formatDate(trustedGateway.pairedAt)} · identity verified
-            </small>
-          </div>
-          <span className="verified-badge">Verified</span>
-        </section>
+        </header>
 
         {!deviceInvitation && !invitationReauthRequired && (
           <>
@@ -196,7 +194,7 @@ export function PairingWizard({
             >
               {invitationBusy
                 ? <BusyActionLabel>Creating invitation…</BusyActionLabel>
-                : "Add another device"}
+                : "Create invitation"}
             </button>
             {invitationError && (
               <p className="pairing-inline-error" role="status">
@@ -323,11 +321,11 @@ export function PairingWizard({
                     }
                     void navigator
                       .share(authorizationFile ? {
-                        title: `Join ${trustedGateway.gatewayName}`,
+                        title: "Add this app to Malink",
                         text: "Open this one-time Malink authorization file.",
                         files: [authorizationFile],
                       } : {
-                        title: `Join ${trustedGateway.gatewayName}`,
+                        title: "Add this app to Malink",
                         text: "Open this one-time Malink device invitation.",
                         url: deviceInvitation.link,
                       })
@@ -500,7 +498,7 @@ export function PairingWizard({
               <p>
                 This device still recognizes {trustedGateway.gatewayName}, but
                 its saved authorization no longer matches. On another connected
-                Malink device, choose Add another device. You can also run{" "}
+                Malink app, open Access and choose Create invitation. You can also run{" "}
                 <code>malink-matrix gateway invite</code> on the Gateway
                 computer. Import, scan, or paste that one-time invitation below.
               </p>
@@ -514,8 +512,8 @@ export function PairingWizard({
               <strong>Repair this device’s connection</strong>
               <p>
                 This device still recognizes {trustedGateway.gatewayName}, but
-                its local Matrix sign-in is missing. On another connected Malink
-                device, choose Add another device, then import its authorization
+                its local Matrix sign-in is missing. In another authorized Malink
+                app, open Access and choose Create invitation, then import its authorization
                 file, scan its QR code, or paste that one-time invitation here.
                 Your Malink device identity and approved Gateway will stay the same.
               </p>
@@ -536,8 +534,8 @@ export function PairingWizard({
                 : "Use a Workspace invitation"}
           </h3>
           <p>
-            Open Malink on another connected device and choose Add another
-            device. Then import its authorization file, scan its QR code, or
+            Open Access in another authorized Malink app and create an invitation.
+            Then import its authorization file, scan its QR code, or
             paste the one-time invitation shown there.
           </p>
         </div>
@@ -1015,12 +1013,5 @@ function formatExpiry(timestamp: number): string {
   return new Intl.DateTimeFormat(undefined, {
     hour: "2-digit",
     minute: "2-digit",
-  }).format(new Date(timestamp));
-}
-
-function formatDate(timestamp: number): string {
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
   }).format(new Date(timestamp));
 }

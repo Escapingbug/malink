@@ -1,10 +1,10 @@
-export type SettingsSection = "workspace" | "devices" | "computers" | "support";
+export type SettingsSection = "workspace" | "access" | "computers" | "support";
 
 const SETTINGS_SECTIONS: readonly [SettingsSection, string][] = [
-  ["workspace", "Workspace"],
-  ["devices", "Devices"],
+  ["workspace", "Overview"],
+  ["access", "Access"],
   ["computers", "Computers"],
-  ["support", "App & support"],
+  ["support", "App & help"],
 ];
 
 export function SettingsNavigation({

@@ -48,9 +48,9 @@ export function GatewayForgetDialog({
 
   if (!open) return null;
   const title = deviceKind === "android"
-    ? "Sign out this device?"
+    ? "Sign out on this phone?"
     : deviceKind === "browser"
-      ? "Sign out this device?"
+      ? "Sign out in this browser?"
       : "Discard this incomplete setup?";
 
   return (
@@ -76,16 +76,16 @@ export function GatewayForgetDialog({
         <div className="danger-symbol" aria-hidden="true">
           !
         </div>
-        <span className="eyebrow">This device</span>
+        <span className="eyebrow">Current app</span>
         <h2 id="gateway-forget-title">{title}</h2>
         <p id="gateway-forget-description">
           {deviceKind
-            ? `Malink will remove this ${deviceKind === "android" ? "Android app's" : "browser's"} local account, device authorization, pending commands, and cached conversation history. It will also try to invalidate this device's server login.`
+            ? `Malink will remove this ${deviceKind === "android" ? "Android app's" : "browser's"} local account, authorization, pending commands, and cached conversation history. It will also try to invalidate this app's server login.`
             : "Malink will remove only the unfinished invitation and connection information stored on this device."}
         </p>
         <div id="gateway-forget-boundary" className="delete-boundary-note">
           {deviceKind
-            ? "Your Workspace, computers, and server history remain available on your other authorized devices. Being offline will not block local sign-out; use a new invitation to add this device again."
+            ? "Your Workspace, computers, and server history remain available in your other authorized apps. Being offline will not block local sign-out; use a new invitation to authorize this app again."
             : "Your Workspace, computers, sessions, and server history are not deleted."}
         </div>
         {error && (
@@ -117,7 +117,9 @@ export function GatewayForgetDialog({
                 ? "Signing out…"
                 : "Removing…"
               : deviceKind
-                ? "Sign out this device"
+                ? deviceKind === "android"
+                  ? "Sign out on this phone"
+                  : "Sign out in this browser"
                 : "Discard setup"}
           </button>
         </footer>
