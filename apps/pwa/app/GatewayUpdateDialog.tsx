@@ -50,6 +50,7 @@ type Props = {
   nodes: GatewayUpdatePlanNode[];
   runtimeByNode: Readonly<Record<string, GatewayUpdateNodeRuntime>>;
   activeGatewayNodeIds: ReadonlySet<string>;
+  activeGatewayModesByNode?: Readonly<Record<string, "when_idle" | "force">>;
   onClose(): void;
   onProbe(node: GatewayUpdatePlanNode): void;
   onStart(node: GatewayUpdatePlanNode, mode: "when_idle" | "force"): void;
@@ -71,6 +72,7 @@ function GatewayUpdateDialogContent({
   nodes,
   runtimeByNode,
   activeGatewayNodeIds,
+  activeGatewayModesByNode = {},
   onClose,
   onProbe,
   onStart,
@@ -208,6 +210,7 @@ function GatewayUpdateDialogContent({
               updateActionAvailable &&
               !activeGatewayNodeIds.has(node.gatewayNodeId);
             const active = activeGatewayNodeIds.has(node.gatewayNodeId);
+            const activeMode = activeGatewayModesByNode[node.gatewayNodeId];
             const requiresLivePreflight =
               runtime.state !== "online" || runtime.status === undefined;
             const forceConfirming = forceConfirmationNodeId === node.gatewayNodeId;
@@ -252,8 +255,14 @@ function GatewayUpdateDialogContent({
                 >
                   <span aria-hidden="true" />
                   <span>
-                    <strong>{runtimeStateTitle(runtime, node, release)}</strong>
-                    <small>{runtimeStateDetail(runtime, node, release, connected)}</small>
+                    <strong>{runtimeStateTitle(runtime, node, release, activeMode)}</strong>
+                    <small>{runtimeStateDetail(
+                      runtime,
+                      node,
+                      release,
+                      connected,
+                      activeMode,
+                    )}</small>
                   </span>
                 </div>
 
@@ -417,11 +426,13 @@ function GatewayUpdateDialogContent({
                         type="button"
                         className="primary-button"
                         disabled={!connected || active}
-                        aria-busy={active}
+                        aria-busy={active && activeMode !== "force"}
                         onClick={() => onStart(node, "when_idle")}
                       >
-                        {active
-                          ? "Updating…"
+                        {active && activeMode !== "force"
+                          ? signedUpdateStatus?.phase === "staged"
+                            ? "Scheduling when idle…"
+                            : "Preparing update…"
                           : requiresLivePreflight
                             ? "Check and update when idle"
                           : runtime.status?.phase === "staged"
@@ -436,9 +447,14 @@ function GatewayUpdateDialogContent({
                         type="button"
                         className="secondary-button"
                         disabled={!connected || active}
+                        aria-busy={active && activeMode === "force" ? true : undefined}
                         onClick={() => setForceConfirmationNodeId(node.gatewayNodeId)}
                       >
-                        {requiresLivePreflight
+                        {active && activeMode === "force"
+                          ? signedUpdateStatus?.phase === "staged"
+                            ? "Scheduling restart now…"
+                            : "Preparing restart…"
+                          : requiresLivePreflight
                           ? "Check and restart now…"
                           : "Install and restart now…"}
                       </button>
@@ -592,6 +608,7 @@ function runtimeStateTitle(
   runtime: GatewayUpdateNodeRuntime,
   node: GatewayUpdatePlanNode,
   release: GatewayReleaseBuild,
+  activeMode?: "when_idle" | "force",
 ): string {
   const status = gatewayUpdateStatusForPresentation(runtime.status, release);
   if (status?.phase === "repair_required") return "Gateway repair required";
@@ -600,6 +617,9 @@ function runtimeStateTitle(
   if (status?.currentBuildId === release.buildId) return "Gateway update complete";
   if (gatewayUpdateRequiresForwardOnlyConfirmation(status)) {
     return "Ready · confirmation required";
+  }
+  if (status?.phase === "staged" && activeMode) {
+    return "Applying selected restart time";
   }
   switch (status?.phase) {
     case "staging":
@@ -638,6 +658,7 @@ function runtimeStateDetail(
   node: GatewayUpdatePlanNode,
   release: GatewayReleaseBuild,
   connected: boolean,
+  activeMode?: "when_idle" | "force",
 ): string {
   const status = gatewayUpdateStatusForPresentation(runtime.status, release);
   if (status?.phase === "failed" || status?.phase === "repair_required") {
@@ -654,6 +675,11 @@ function runtimeStateDetail(
     return runtime.state === "online" && runtime.checkedAt
       ? `${detail} · checked ${formatCheckedTime(runtime.checkedAt)}`
       : detail;
+  }
+  if (status?.phase === "staged" && activeMode) {
+    return activeMode === "force"
+      ? "Preparation is complete. Malink is submitting your choice to stop current Agent work and restart this computer now."
+      : "Preparation is complete. Malink is submitting your choice to restart after current Agent work finishes.";
   }
   if (status) {
     const phaseDetail = status.phase === "staged" &&

@@ -444,6 +444,44 @@ test("one active Gateway update does not disable another Gateway", () => {
   assert.match(html, /1 computer continues updating/);
 });
 
+test("keeps a signed staged phase consistent with the selected busy action", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [nodes[0]!],
+    runtimeByNode: {
+      "node-office": {
+        state: "online",
+        checkedAt: 1,
+        status: {
+          version: 1,
+          phase: "staged",
+          releaseId: release.releaseId,
+          targetBuildId: release.buildId,
+          currentBuildId: "gateway-old-arm64",
+          updatedAt: 2,
+        },
+      },
+    },
+    activeGatewayNodeIds: new Set(["node-office"]),
+    activeGatewayModesByNode: { "node-office": "when_idle" },
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  assert.match(html, /Applying selected restart time/);
+  assert.match(html, /restart after current Agent work finishes/);
+  assert.match(html, /Scheduling when idle…/);
+  assert.match(html, /Install and restart now…/);
+  assert.equal(html.match(/aria-busy="true"/g)?.length, 1);
+  assert.doesNotMatch(html, /Ready to choose restart time/);
+});
+
 test("opens a legacy maintenance session through its exact project route", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
     open: true,

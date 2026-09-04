@@ -46,6 +46,65 @@ export type GatewayUpdateCommand =
       allowForwardOnly?: true;
     };
 
+/**
+ * A signed supervisor transition is sufficient to advance the client-side
+ * update chain even when the command-result copy is delayed in Matrix or the
+ * native outbox. The command itself remains durable and is still released
+ * when its terminal result arrives; this boundary only prevents presentation
+ * and the next idempotent update step from being held behind duplicate
+ * delivery of the same authenticated state.
+ */
+export function gatewayUpdateCommandReachedSignedBoundary(input: {
+  command: GatewayUpdateCommand;
+  status: GatewayUpdateStatus | undefined;
+  baseline: GatewayUpdateStatus | undefined;
+}): boolean {
+  const { command, status, baseline } = input;
+  if (!status || status.releaseId !== command.releaseId) return false;
+  if (sameGatewayUpdateStatus(status, baseline)) return false;
+  const phases: ReadonlySet<GatewayUpdateStatus["phase"]> =
+    command.operation === "gateway.update.stage"
+      ? STAGE_SIGNED_BOUNDARY_PHASES
+      : APPLY_SIGNED_BOUNDARY_PHASES;
+  return phases.has(status.phase);
+}
+
+const STAGE_SIGNED_BOUNDARY_PHASES = new Set<GatewayUpdateStatus["phase"]>([
+  "staged",
+  "waiting_for_idle",
+  "scheduled",
+  "activating",
+  "probation",
+  "committed",
+  "rolled_back",
+  "failed",
+  "repair_required",
+]);
+
+const APPLY_SIGNED_BOUNDARY_PHASES = new Set<GatewayUpdateStatus["phase"]>([
+  "waiting_for_idle",
+  "scheduled",
+  "activating",
+  "probation",
+  "committed",
+  "rolled_back",
+  "failed",
+  "repair_required",
+]);
+
+function sameGatewayUpdateStatus(
+  left: GatewayUpdateStatus,
+  right: GatewayUpdateStatus | undefined,
+): boolean {
+  return right !== undefined &&
+    left.phase === right.phase &&
+    left.updateId === right.updateId &&
+    left.releaseId === right.releaseId &&
+    left.targetBuildId === right.targetBuildId &&
+    left.currentBuildId === right.currentBuildId &&
+    left.updatedAt === right.updatedAt;
+}
+
 const FORWARD_ONLY_STAGED = /Forward-only update staged\./u;
 
 export class GatewayUpdateCommandFailure extends Error {

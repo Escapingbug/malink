@@ -169,12 +169,14 @@ import {
   gatewayMaintenanceSessionCanBeArchived,
   gatewayUpdatePlan as buildGatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
+  gatewayUpdateCommandReachedSignedBoundary,
   gatewayUpdateRequiresForwardOnlyConfirmation,
   gatewayUpdateTarget,
   legacyGatewayMaintenanceSessionsByNode,
   recoverAmbiguousGatewayUpdateCompletion,
   triggerGatewayUpdate,
   GatewayUpdateCommandFailure,
+  type GatewayUpdateCommand,
   type GatewayUpdatePlanNode,
 } from "./gatewayUpdateTrigger";
 import {
@@ -688,6 +690,7 @@ const BACKGROUND_HISTORY_SOURCE_TIMEOUT_MS = 65_000;
 const PROJECT_CREATE_RESULT_TIMEOUT_MS = 60_000;
 const PROVIDER_HISTORY_RESULT_TIMEOUT_MS = 60_000;
 const GATEWAY_UPDATE_DISCOVERY_INTERVAL_MS = 15 * 60_000;
+const GATEWAY_UPDATE_SIGNED_BOUNDARY_POLL_MS = 200;
 const GATEWAY_RESTART_RECOVERY_TIMEOUT_MS = 3 * 60_000;
 const GATEWAY_RESTART_STATUS_TIMEOUT_MS = 30_000;
 const GATEWAY_RESTART_STATUS_RETRY_MS = 1_500;
@@ -1714,6 +1717,8 @@ function MalinkAppRuntime() {
     useState<string | null>(null);
   const [gatewayUpdateActiveNodeIds, setGatewayUpdateActiveNodeIds] =
     useState<Set<string>>(() => new Set());
+  const [gatewayUpdateActiveModesByNode, setGatewayUpdateActiveModesByNode] =
+    useState<Record<string, "when_idle" | "force">>({});
   const [gatewayUpdateRuntimeByNode, setGatewayUpdateRuntimeByNode] = useState<
     Record<string, GatewayUpdateNodeRuntime>
   >({});
@@ -1880,6 +1885,8 @@ function MalinkAppRuntime() {
   const gatewayAutoArchiveKeysRef = useRef(new Set<string>());
   const gatewayUpdateResumeKeysRef = useRef(new Set<string>());
   const gatewayUpdateActiveNodeIdsRef = useRef<Set<string>>(new Set());
+  const gatewayUpdateRuntimeByNodeRef = useRef(gatewayUpdateRuntimeByNode);
+  gatewayUpdateRuntimeByNodeRef.current = gatewayUpdateRuntimeByNode;
   const gatewayNodeByProjectRef = useRef(
     new Map<string, { gatewayNodeId: string }>(),
   );
@@ -7569,6 +7576,41 @@ function MalinkAppRuntime() {
     }));
   }
 
+  function observeGatewayUpdateSignedBoundary(
+    gatewayNodeId: string,
+    command: GatewayUpdateCommand,
+    baseline: GatewayUpdateStatus | undefined,
+  ): {
+    promise: Promise<GatewayUpdateStatus>;
+    cancel(): void;
+  } {
+    let timer: number | null = null;
+    let cancelled = false;
+    const promise = new Promise<GatewayUpdateStatus>((resolve) => {
+      const inspect = () => {
+        if (cancelled) return;
+        const status = gatewayUpdateRuntimeByNodeRef.current[gatewayNodeId]?.status;
+        if (status && gatewayUpdateCommandReachedSignedBoundary({
+          command,
+          status,
+          baseline,
+        })) {
+          resolve(status);
+          return;
+        }
+        timer = window.setTimeout(inspect, GATEWAY_UPDATE_SIGNED_BOUNDARY_POLL_MS);
+      };
+      inspect();
+    });
+    return {
+      promise,
+      cancel() {
+        cancelled = true;
+        if (timer !== null) window.clearTimeout(timer);
+      },
+    };
+  }
+
   function setGatewayArchivePreflight(sessionId: string, checking: boolean): void {
     const next = new Set(gatewayArchivePreflightSessionIdsRef.current);
     if (checking) next.add(sessionId);
@@ -8121,6 +8163,10 @@ function MalinkAppRuntime() {
     activeNodeIds.add(node.gatewayNodeId);
     gatewayUpdateActiveNodeIdsRef.current = activeNodeIds;
     setGatewayUpdateActiveNodeIds(activeNodeIds);
+    setGatewayUpdateActiveModesByNode(current => ({
+      ...current,
+      [node.gatewayNodeId]: mode,
+    }));
     try {
       const runtime = gatewayUpdateRuntimeForRelease[node.gatewayNodeId];
       const recentlyOnline =
@@ -8192,8 +8238,21 @@ function MalinkAppRuntime() {
       const stagedReleaseId = liveStatus.phase === "staged"
         ? liveStatus.releaseId
         : undefined;
+      const executeWithSignedBoundary = (
+        command: GatewayUpdateCommand,
+        targetProjectId: string,
+      ): Promise<GatewayUpdateStatus> => {
+        const observation = observeGatewayUpdateSignedBoundary(
+          node.gatewayNodeId,
+          command,
+          gatewayUpdateRuntimeByNodeRef.current[node.gatewayNodeId]?.status,
+        );
+        const execution = executeGatewayUpdateRef.current(command, targetProjectId);
+        return Promise.race([execution, observation.promise])
+          .finally(() => observation.cancel());
+      };
       const status = stagedReleaseId && liveStatus.targetBuildId
-        ? await executeGatewayUpdateRef.current({
+        ? await executeWithSignedBoundary({
             operation: "gateway.update.apply",
             releaseId: stagedReleaseId,
             mode,
@@ -8205,8 +8264,7 @@ function MalinkAppRuntime() {
             release: gatewayRelease,
             target,
             mode,
-            send: (command, targetProjectId) =>
-              executeGatewayUpdateRef.current(command, targetProjectId),
+            send: executeWithSignedBoundary,
           });
       setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
         ...current,
@@ -8266,6 +8324,11 @@ function MalinkAppRuntime() {
       remainingNodeIds.delete(node.gatewayNodeId);
       gatewayUpdateActiveNodeIdsRef.current = remainingNodeIds;
       setGatewayUpdateActiveNodeIds(remainingNodeIds);
+      setGatewayUpdateActiveModesByNode(current => {
+        const next = { ...current };
+        delete next[node.gatewayNodeId];
+        return next;
+      });
     }
   }
 
@@ -14453,6 +14516,7 @@ function MalinkAppRuntime() {
           nodes={gatewayUpdatePlan}
           runtimeByNode={gatewayUpdateRuntimePresentation}
           activeGatewayNodeIds={gatewayUpdateActiveNodeIds}
+          activeGatewayModesByNode={gatewayUpdateActiveModesByNode}
           onClose={() => setGatewayUpdateDialogOpen(false)}
           onProbe={(node) => {
             const target = gatewayNodeProbeTargetsById.get(node.gatewayNodeId);

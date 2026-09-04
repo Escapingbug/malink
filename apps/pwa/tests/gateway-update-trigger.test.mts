@@ -7,6 +7,7 @@ import {
   gatewayMaintenanceSessionCanBeArchived,
   gatewayMaintenanceSessionShouldAutoArchive,
   type GatewayUpdateCommand,
+  gatewayUpdateCommandReachedSignedBoundary,
   gatewayUpdateCanApplyStaged,
   gatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
@@ -18,6 +19,55 @@ import {
 import { gatewayUpdateRecoveryAction } from "../app/gatewayUpdateRecovery.ts";
 
 const release = { releaseId: "2026.08.26.2", buildId: "gateway-next-arm64" };
+
+test("uses a newer signed supervisor phase to unblock the client update chain", () => {
+  const baseline = {
+    version: 1 as const,
+    phase: "agent_running" as const,
+    releaseId: release.releaseId,
+    targetBuildId: release.buildId,
+    currentBuildId: "gateway-old-arm64",
+    updateId: "update-1",
+    updatedAt: 10,
+  };
+  const staged = { ...baseline, phase: "staged" as const, updatedAt: 11 };
+  const stageCommand = {
+    operation: "gateway.update.stage" as const,
+    releaseId: release.releaseId,
+  };
+
+  assert.equal(gatewayUpdateCommandReachedSignedBoundary({
+    command: stageCommand,
+    status: staged,
+    baseline,
+  }), true);
+  assert.equal(gatewayUpdateCommandReachedSignedBoundary({
+    command: stageCommand,
+    status: baseline,
+    baseline,
+  }), false);
+  assert.equal(gatewayUpdateCommandReachedSignedBoundary({
+    command: { ...stageCommand, releaseId: "another-release" },
+    status: staged,
+    baseline,
+  }), false);
+
+  const applyCommand = {
+    operation: "gateway.update.apply" as const,
+    releaseId: release.releaseId,
+    mode: "when_idle" as const,
+  };
+  assert.equal(gatewayUpdateCommandReachedSignedBoundary({
+    command: applyCommand,
+    status: staged,
+    baseline,
+  }), false);
+  assert.equal(gatewayUpdateCommandReachedSignedBoundary({
+    command: applyCommand,
+    status: { ...staged, phase: "scheduled", updatedAt: 12 },
+    baseline: staged,
+  }), true);
+});
 
 test("classifies every Gateway without starting an update", () => {
   const directory = {
