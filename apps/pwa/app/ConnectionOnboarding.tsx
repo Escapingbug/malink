@@ -20,7 +20,7 @@ export function ConnectionOnboarding({ notice, onDismissNotice, onConnect }: Pro
               <strong>Signed out on this device</strong>
               <small>
                 Your Workspace, computers, and server history remain available
-                on your other authorized devices.
+                in your other authorized Malink apps.
               </small>
             </span>
             {onDismissNotice && (
@@ -50,7 +50,7 @@ export function ConnectionOnboarding({ notice, onDismissNotice, onConnect }: Pro
           <li>
             <span>1</span>
             <strong>Get an invitation</strong>
-            <small>Open Devices on an authorized device, or Malink on a Workspace computer.</small>
+            <small>Open Access in an authorized Malink app, or Malink on a Workspace computer.</small>
           </li>
           <li>
             <span>2</span>
@@ -66,7 +66,7 @@ export function ConnectionOnboarding({ notice, onDismissNotice, onConnect }: Pro
 
         <p className="connection-onboarding-security">
           <span aria-hidden="true">✓</span>
-          Only approved devices can read or send workspace messages.
+          Only authorized Malink apps can read or send Workspace messages.
         </p>
       </div>
     </section>

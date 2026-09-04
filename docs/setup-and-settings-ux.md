@@ -9,10 +9,15 @@ terms internally.
 
 1. **Workspace** — the durable projects, conversations, authorized members, and
    computer directory shared by the user.
-2. **This device** — the current browser or Android installation and its own
-   authorization to the Workspace.
-3. **Workspace computer** — a Mac or other host that runs the Gateway, projects,
-   and Agents for authorized devices.
+2. **This app** — the Malink Android installation or browser currently open and
+   its own authorization to the Workspace.
+3. **Workspace computer** — a Mac or other host that runs Gateway, projects, and
+   Agents for authorized apps.
+
+“Device” is a security implementation term and is too broad for primary
+navigation: it can mean a phone, browser profile, Matrix login, or Gateway host.
+The UI instead says **this app**, **phone or browser**, or **computer** according
+to the object actually being controlled.
 
 A network connection is a temporary condition, not another object the user must
 manage. “Matrix” and protocol identifiers belong in advanced details and
@@ -36,11 +41,11 @@ The setup view remains open until it reaches either a recoverable error or an
 explicit success screen. Success is not represented only by a disappearing
 dialog or transient toast.
 
-### Add another device
+### Add another phone or browser
 
-The action lives under **Devices**. It creates a one-time invitation that grants
-only the new device its own authorization; it does not copy an existing
-device’s private key.
+The action lives under **Access**. It creates a one-time invitation that grants
+only the new app installation its own authorization; it does not copy an
+existing app’s private key and it does not add a Workspace computer.
 
 ### Add a Workspace computer
 
@@ -83,17 +88,20 @@ the account or creating duplicate authority.
 
 Settings has four stable sections:
 
-- **Workspace** — current connection health and counts for devices, computers,
-  and projects.
-- **Devices** — this device, pause/resume, invitations, and sign-out.
-- **Computers** — computer identity, availability, installed version, available
-  update, enrollment, retirement, and computer-specific diagnostics.
-- **App & support** — this app’s version/update, notifications, diagnostics, and
+- **Overview** — current connection health and a route to each object the user
+  can manage.
+- **Access** — only this app’s connection, an invitation for another phone or
+  browser, and local sign-out. It never displays a Gateway as a “connected
+  device.”
+- **Computers** — computer identity, availability, Gateway version, available
+  update, restart, enrollment, retirement, and computer-specific diagnostics.
+- **App & help** — this app’s version/update, notifications, diagnostics, and
   advanced connection details.
 
 Computer health and computer software are always shown together on the same
 computer card. A user should not have to reconcile a status section with a
-separate update section.
+separate update section. Aggregate software UI is reserved for loading or an
+update-discovery failure; it must not duplicate healthy computer cards.
 
 ## Workspace computer updates
 
@@ -148,7 +156,9 @@ a timeout.
 
 ## Vocabulary
 
-Primary UI copy uses **this device**, **Workspace**, and **computer**. Use
+Primary settings copy uses **this app**, **phone or browser**, **Workspace**, and
+**computer**. “This device” remains acceptable only during the one-time setup
+journey, where the user is adding the physical device in front of them. Use
 **Gateway** only when naming the software installed on a Workspace computer or
 inside troubleshooting instructions. Use **Matrix**, room IDs, device IDs, and
 protocol details only in advanced details, diagnostics, or developer-facing

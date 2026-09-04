@@ -367,7 +367,7 @@ function MatrixSettingsDialog({
           ? "Resume this device's Workspace connection before adding another computer"
           : workspaceRepair && workspaceRepair.unavailableProjects > 0
             ? `${workspaceRepair.availableProjects} of ${workspaceRepair.totalProjects} projects available; finish recovery from the affected computer card below`
-            : `${gatewayProfiles.length} ${gatewayProfiles.length === 1 ? "computer" : "computers"} available to every authorized device`;
+            : `${gatewayProfiles.length} ${gatewayProfiles.length === 1 ? "computer" : "computers"} available to every authorized Malink app`;
   const recoveryPlan = deriveConnectionRecoveryPlan({
     status,
     detail: connectionDetail,
@@ -505,8 +505,8 @@ function MatrixSettingsDialog({
               ? "One-time invitation"
               : activeSection === "workspace"
                 ? "Workspace"
-                : activeSection === "devices"
-                  ? "Authorized access"
+                : activeSection === "access"
+                  ? "Phones & browsers"
                   : activeSection === "computers"
                     ? "Agent hosts"
                     : "This application"}
@@ -516,30 +516,31 @@ function MatrixSettingsDialog({
                 : "Add this device to a Workspace"
               : activeSection === "workspace"
                 ? "Workspace overview"
-                : activeSection === "devices"
-                  ? "Devices"
+                : activeSection === "access"
+                  ? "Workspace access"
                   : activeSection === "computers"
-                    ? "Workspace computers"
+                    ? "Agent computers"
                     : "Application & support"}
             detail={setupMode
               ? "Use an invitation created by an authorized device or Workspace computer."
               : activeSection === "workspace"
                 ? "See whether this device can sync and which Workspace computers are available."
-                : activeSection === "devices"
-                  ? "Manage this phone or browser and invite another device."
+                : activeSection === "access"
+                  ? "Control this app’s access and create a one-time invitation for another phone or browser."
                   : activeSection === "computers"
-                    ? "Manage the computers that run projects and Agents."
+                    ? "Manage the computers that run Gateway, projects, and Agents."
                     : "Keep this app current and collect diagnostic information when needed."}
           />
 
-          {(setupMode || activeSection === "devices" || activeSection === "computers") && (
+          {(setupMode || activeSection === "access" ||
+            (activeSection === "computers" && addingGateway)) && (
           <div className="settings-security-note">
             <span>✓</span>
             <p>
               {addingGateway
                 ? "The new computer joins only after you approve its matching verification code."
-                : activeSection === "devices" && !setupMode
-                  ? "Each device receives its own authorization. Adding a device never copies another device's private key."
+                : activeSection === "access" && !setupMode
+                  ? "Each phone or browser receives its own authorization. This page controls the app open now; Workspace computers are managed separately."
                   : "The invitation works once and expires. Confirm its Workspace and verification code before continuing."}
             </p>
           </div>
@@ -570,10 +571,14 @@ function MatrixSettingsDialog({
               )}
             </section>
             <div className="workspace-facts">
-              <button type="button" onClick={() => setActiveSection("devices")}>
-                <small>Authorized devices</small>
-                <strong>{activeDeviceCount ?? "Checking"}</strong>
-                <span>Manage devices</span>
+              <button type="button" onClick={() => setActiveSection("access")}>
+                <small>Phone & browser access</small>
+                <strong>{connectionPresentation.state === "ready" ? "Ready" : "Check"}</strong>
+                <span>
+                  {activeDeviceCount === null
+                    ? "Checking authorized apps"
+                    : `${activeDeviceCount} authorized ${activeDeviceCount === 1 ? "app" : "apps"}`}
+                </span>
               </button>
               <button type="button" onClick={() => setActiveSection("computers")}>
                 <small>Workspace computers</small>
@@ -594,15 +599,14 @@ function MatrixSettingsDialog({
           </div>
         )}
 
-        {!setupMode && activeSection === "computers" && (
+        {!setupMode && activeSection === "computers" &&
+          (gatewayProfiles.length === 0 || gatewaySoftware.attention) && (
           <section
             className={
               `computer-software-summary ${
                 gatewaySoftware.attention
                   ? "needs-attention"
-                  : gatewayUpdateAvailableCount > 0
-                    ? "has-updates"
-                    : ""
+                  : ""
               }`
             }
           >
@@ -1060,37 +1064,17 @@ function MatrixSettingsDialog({
           />
         )}
 
-        {!setupMode && activeSection === "devices" && (
-          <section className="current-device-card" aria-live="polite">
-            <span className="current-device-mark" aria-hidden="true">
-              {nativeHostDetected ? "A" : "W"}
-            </span>
-            <span>
-              <small>This device</small>
-              <strong>{nativeHostDetected ? "Android app" : "This browser"}</strong>
-              <p>
-                {status === "connected"
-                  ? "Authorized and synchronizing this Workspace."
-                  : "Authorization is saved; syncing is currently paused or reconnecting."}
-              </p>
-            </span>
-            <span className="current-device-actions">
-              {status === "connected" ? (
-                <button type="button" disabled={busy} onClick={onDisconnect}>
-                  Pause syncing
-                </button>
-              ) : (
-                <button type="button" disabled={busy} onClick={onReconnectGatewayUpdates}>
-                  {status === "connecting" || status === "securing" || status === "reconnecting"
-                    ? "Connecting…"
-                    : "Resume syncing"}
-                </button>
-              )}
-            </span>
-          </section>
+        {!setupMode && activeSection === "access" && (
+          <CurrentAppAccessCard
+            nativeHostDetected={nativeHostDetected}
+            status={status}
+            busy={busy}
+            onPause={onDisconnect}
+            onResume={onReconnectGatewayUpdates}
+          />
         )}
 
-        {(setupMode || (!addingGateway && activeSection === "devices")) && <PairingWizard
+        {(setupMode || (!addingGateway && activeSection === "access")) && <PairingWizard
           preview={pairingPreview}
           trustedGateway={trustedGateway}
           repairReason={effectiveRepairReason}
@@ -1322,7 +1306,7 @@ function MatrixSettingsDialog({
         </section>
         )}
 
-        {((!setupMode && activeSection === "devices" && hasSavedConnection) ||
+        {((!setupMode && activeSection === "access" && hasSavedConnection) ||
           (setupMode && hasIncompleteLocalSetup && !pairingCompletion)) && (
           <DeviceRemovalSettings
             deviceKind={
@@ -1339,6 +1323,52 @@ function MatrixSettingsDialog({
         </div>
       </section>
     </div>
+  );
+}
+
+export function CurrentAppAccessCard({
+  nativeHostDetected,
+  status,
+  busy,
+  onPause,
+  onResume,
+}: {
+  nativeHostDetected: boolean;
+  status: MatrixConnectionStatus;
+  busy: boolean;
+  onPause(): void;
+  onResume(): void;
+}) {
+  const activelyConnecting = status === "connecting" ||
+    status === "securing" || status === "reconnecting";
+  return (
+    <section className="current-device-card" aria-live="polite">
+      <span className="current-device-mark" aria-hidden="true">
+        {nativeHostDetected ? "A" : "W"}
+      </span>
+      <span>
+        <small>Current app</small>
+        <strong>
+          {nativeHostDetected ? "Malink on this phone" : "Malink in this browser"}
+        </strong>
+        <p>
+          {status === "connected"
+            ? "This app is authorized and synchronizing the Workspace."
+            : "This app’s authorization is saved; synchronization is paused or reconnecting."}
+        </p>
+      </span>
+      <span className="current-device-actions">
+        {status === "connected" ? (
+          <button type="button" disabled={busy} onClick={onPause}>
+            Pause syncing
+          </button>
+        ) : (
+          <button type="button" disabled={busy} onClick={onResume}>
+            {activelyConnecting ? "Connecting…" : "Resume syncing"}
+          </button>
+        )}
+      </span>
+    </section>
   );
 }
 
@@ -1469,16 +1499,16 @@ export function DeviceRemovalSettings({
       <span>
         <strong>
           {deviceKind === "android"
-            ? "Sign out this device"
+            ? "Sign out on this phone"
             : deviceKind === "browser"
-              ? "Sign out this device"
+              ? "Sign out in this browser"
               : "Discard incomplete setup"}
         </strong>
         <small>
           {deviceKind === "android"
-            ? "Remove this Android app’s local account, device authorization, pending commands, and cached history."
+            ? "Remove this Android app’s local account, Workspace authorization, pending commands, and cached history."
             : deviceKind === "browser"
-              ? "Remove this browser’s local account, device authorization, pending commands, and cached history."
+              ? "Remove this browser’s local account, Workspace authorization, pending commands, and cached history."
               : "Remove only the unfinished invitation and connection information stored on this device."}
         </small>
       </span>
@@ -1491,7 +1521,9 @@ export function DeviceRemovalSettings({
         {deviceKind
           ? busy
             ? "Signing out…"
-            : "Sign out this device"
+            : deviceKind === "android"
+              ? "Sign out on this phone"
+              : "Sign out in this browser"
           : "Discard setup"}
       </button>
     </section>

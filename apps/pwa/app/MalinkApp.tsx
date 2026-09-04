@@ -13099,9 +13099,9 @@ function MalinkAppRuntime() {
               {deviceKeyId
                 ? `${connectionPresentation.title} · ${
                     activeDeviceCount === null
-                      ? "checking approved devices"
-                      : `${activeDeviceCount} approved ${
-                          activeDeviceCount === 1 ? "device" : "devices"
+                      ? "checking authorized apps"
+                      : `${activeDeviceCount} authorized ${
+                          activeDeviceCount === 1 ? "app" : "apps"
                         }`
                   }`
                 : "Preparing this device"}

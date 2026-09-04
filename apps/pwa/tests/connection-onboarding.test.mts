@@ -14,7 +14,8 @@ test("presents one clear connection action before conversation controls", () => 
   assert.match(html, />Use an invitation</);
   assert.equal((html.match(/<li>/g) ?? []).length, 3);
   assert.match(html, /authorized device or Workspace computer/);
-  assert.match(html, /Only approved devices can read or send workspace messages/);
+  assert.match(html, /Open Access in an authorized Malink app/);
+  assert.match(html, /Only authorized Malink apps can read or send Workspace messages/);
   assert.doesNotMatch(html, /Message Agent/);
 });
 
@@ -27,5 +28,6 @@ test("explains the boundary after this device signs out", () => {
 
   assert.match(html, /Signed out on this device/);
   assert.match(html, /Workspace, computers, and server history remain available/);
+  assert.match(html, /other authorized Malink apps/);
   assert.match(html, /Use an invitation/);
 });

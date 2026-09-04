@@ -13,9 +13,9 @@ test("exposes Android sign-out as an account action instead of computer removal"
     onRemove() {},
   }));
 
-  assert.match(html, /Sign out this device/);
-  assert.match(html, /Remove this Android app’s local account/);
-  assert.match(html, />Sign out this device<\/button>/);
+  assert.match(html, /Sign out on this phone/);
+  assert.match(html, /Remove this Android app’s local account, Workspace authorization/);
+  assert.match(html, />Sign out on this phone<\/button>/);
   assert.doesNotMatch(html, /Matrix/);
   assert.doesNotMatch(html, /Remove computer/);
 });
@@ -30,8 +30,8 @@ test("explains that Matrix availability cannot block local Android sign-out", ()
     onConfirm() {},
   }));
 
-  assert.match(html, /Sign out this device/);
-  assert.match(html, /try to invalidate this device.*server login/);
+  assert.match(html, /Sign out on this phone/);
+  assert.match(html, /try to invalidate this app.*server login/);
   assert.match(html, /Being offline will not block local sign-out/);
   assert.match(html, /Sign-out needs attention/);
   assert.match(html, /Matrix is offline/);
@@ -52,9 +52,9 @@ test("uses the same local sign-out contract in a browser", () => {
     onConfirm() {},
   }));
 
-  assert.match(action, /Sign out this device/);
-  assert.match(action, /Remove this browser’s local account/);
-  assert.match(dialog, /try to invalidate this device.*server login/);
+  assert.match(action, /Sign out in this browser/);
+  assert.match(action, /Remove this browser’s local account, Workspace authorization/);
+  assert.match(dialog, /try to invalidate this app.*server login/);
   assert.doesNotMatch(action, /Matrix/);
   assert.doesNotMatch(action, /Remove computer/);
 });
