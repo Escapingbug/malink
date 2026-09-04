@@ -368,6 +368,7 @@ class BridgeDispatcher(
     private val runtime: BridgeRuntime,
     private val bridgeSessionId: String = UUID.randomUUID().toString(),
     private val eventSink: (String) -> Unit = {},
+    private val unexpectedFailureSink: (String, Throwable) -> Unit = { _, _ -> },
 ) {
     private var negotiated = false
     private var negotiatedCapabilities = emptyMap<String, Int>()
@@ -1042,7 +1043,8 @@ class BridgeDispatcher(
             error.message ?: "The native runtime is not ready.",
             retryable = true,
         )
-    } catch (_: Exception) {
+    } catch (error: Exception) {
+        unexpectedFailureSink(request.method, error)
         BridgeProtocol.failure(
             request.id,
             BridgeError.NATIVE_INTERNAL,

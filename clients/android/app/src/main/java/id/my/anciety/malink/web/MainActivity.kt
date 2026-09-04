@@ -781,7 +781,12 @@ class MainActivity : ComponentActivity() {
             created.onPause()
             created.pauseTimers()
         }
-        val bridge = NativeWebBridge(created, ActivityBridgeRuntime(), trustedWebOrigin)
+        val bridge = NativeWebBridge(
+            created,
+            ActivityBridgeRuntime(),
+            trustedWebOrigin,
+            diagnostics,
+        )
         if (!bridge.install()) {
             created.destroy()
             webView = null

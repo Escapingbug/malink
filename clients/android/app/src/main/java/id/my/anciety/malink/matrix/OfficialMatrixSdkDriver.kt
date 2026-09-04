@@ -14,6 +14,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import org.matrix.rustcomponents.sdk.Client
 import org.matrix.rustcomponents.sdk.ClientBuilder
+import org.matrix.rustcomponents.sdk.ClientException
 import org.matrix.rustcomponents.sdk.ClientSessionDelegate
 import org.matrix.rustcomponents.sdk.CrossProcessLockConfig
 import org.matrix.rustcomponents.sdk.EventOrTransactionId
@@ -397,22 +398,42 @@ class OfficialMatrixSdkDriver(
         threadRootEventId: String,
         eventId: String,
     ) {
-        val room = receiptRoom(roomId)
-        room.sendSingleReceipt(
-            ReceiptType.READ_PRIVATE,
-            ReceiptThread.Thread(threadRootEventId),
-            eventId,
-        )
+        try {
+            val room = receiptRoom(roomId)
+            room.sendSingleReceipt(
+                ReceiptType.READ_PRIVATE,
+                ReceiptThread.Thread(threadRootEventId),
+                eventId,
+            )
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            diagnostics.record(
+                "matrix.session_read.sdk_failure",
+                errorAttributes(error) + ("stage" to "publish"),
+            )
+            throw error
+        }
     }
 
     override suspend fun loadPrivateReadReceipt(
         roomId: String,
         threadRootEventId: String,
-    ): String? = receiptRoom(roomId).loadUserReceipt(
-        ReceiptType.READ_PRIVATE,
-        ReceiptThread.Thread(threadRootEventId),
-        activeSession.userId,
-    )?.eventId
+    ): String? = try {
+        receiptRoom(roomId).loadUserReceipt(
+            ReceiptType.READ_PRIVATE,
+            ReceiptThread.Thread(threadRootEventId),
+            activeSession.userId,
+        )?.eventId
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        diagnostics.record(
+            "matrix.session_read.sdk_failure",
+            errorAttributes(error) + ("stage" to "inspect"),
+        )
+        throw error
+    }
 
     override suspend fun paginateApplicationTimelineBackwards(
         roomId: String,
@@ -732,9 +753,23 @@ class OfficialMatrixSdkDriver(
         runCatching { close() }
     }
 
-    private fun errorAttributes(error: Throwable): Map<String, String> = mapOf(
-        "error" to error.javaClass.simpleName.replace(Regex("[^A-Za-z0-9._:+/-]"), "_").take(160),
-    )
+    private fun errorAttributes(error: Throwable): Map<String, String> = buildMap {
+        put(
+            "error",
+            error.javaClass.simpleName.replace(Regex("[^A-Za-z0-9._:+/-]"), "_").take(160),
+        )
+        when (error) {
+            is ClientException.MatrixApi -> {
+                put("reason", "matrix_api")
+                error.code
+                    .replace(Regex("[^A-Za-z0-9._:+/-]"), "_")
+                    .take(160)
+                    .takeIf { it.isNotBlank() }
+                    ?.let { put("code", it) }
+            }
+            is ClientException -> put("reason", "matrix_sdk")
+        }
+    }
 
     private companion object {
         const val ROOM_LIST_TIMELINE_LIMIT = 32u

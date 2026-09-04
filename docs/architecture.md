@@ -127,6 +127,13 @@ carried it and accepts its own account's receipt only when the receipt points
 to that exact current projection event. This keeps Matrix responsible for the
 small monotonic transport marker while preventing an untrusted homeserver from
 claiming that an unverified or newer Malink state was read.
+Android persists the local read timestamp before attempting that Matrix write.
+The native runtime retains the exact physical event target, coalesces repeated
+marks per session, and retries delivery with bounded exponential backoff. After
+a process restart it reconstructs an interrupted delivery by comparing the
+persisted timestamp with the SDK's private receipt cache before publishing.
+The retry is deliberately not an MLP command and never resolves a later session
+projection from only a session ID, so it cannot mark unseen activity as read.
 On first startup or `invite-gateway`, active certificates created before
 portable grants existed are migrated in place with identical operations and
 expiry, so existing clients do not need to pair again.

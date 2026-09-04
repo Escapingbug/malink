@@ -3015,13 +3015,13 @@ function MalinkAppRuntime() {
   ): void {
     setSessionReadState((current) => markSessionRead(current, session));
     if (!connection?.markSessionRead) return;
-    void connection.markSessionRead(session.id, session.projectId).catch((error) => {
+    void connection.markSessionRead(session.id, session.projectId).catch(() => {
       showUiNotice(
         `session-read:${session.projectId}:${session.id}`,
         "connection",
-        "warning",
-        `Read status was saved on this device but could not sync: ${formatUiError(error)}`,
-        8_000,
+        "info",
+        "Read on this device. Cross-device read status is waiting for the connection and will retry when this conversation reconnects.",
+        5_000,
       );
     });
   }

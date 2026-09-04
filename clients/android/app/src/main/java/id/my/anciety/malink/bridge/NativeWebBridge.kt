@@ -4,6 +4,7 @@ import android.webkit.WebView
 import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import id.my.anciety.malink.diagnostics.DiagnosticRecorder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -14,11 +15,27 @@ class NativeWebBridge(
     private val webView: WebView,
     runtime: BridgeRuntime,
     private val trustedWebOrigin: TrustedWebOrigin,
+    diagnostics: DiagnosticRecorder = DiagnosticRecorder.None,
 ) {
     @Volatile private var notificationSink: ((String) -> Unit)? = null
-    private val dispatcher = BridgeDispatcher(runtime) { notification ->
-        webView.post { notificationSink?.invoke(notification) }
-    }
+    private val dispatcher = BridgeDispatcher(
+        runtime = runtime,
+        eventSink = { notification ->
+            webView.post { notificationSink?.invoke(notification) }
+        },
+        unexpectedFailureSink = { method, error ->
+            diagnostics.record(
+                "bridge.request.unexpected_failure",
+                mapOf(
+                    "action" to method,
+                    "error" to error.javaClass.simpleName
+                        .replace(Regex("[^A-Za-z0-9._:+/-]"), "_")
+                        .take(160)
+                        .ifBlank { "Exception" },
+                ),
+            )
+        },
+    )
     private val dispatchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var installed = false
 

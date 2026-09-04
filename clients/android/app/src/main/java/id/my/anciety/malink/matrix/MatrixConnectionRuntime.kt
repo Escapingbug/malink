@@ -409,8 +409,16 @@ class MatrixConnectionRuntime(
             if (!networkAvailable) throw MatrixOfflineException()
             driver ?: throw IllegalStateException("The native Matrix connection is not ready.")
         }
-        withTimeout(RECEIPT_OPERATION_TIMEOUT_MS) {
-            current.sendPrivateReadReceipt(roomId, threadRootEventId, eventId)
+        try {
+            withTimeout(RECEIPT_OPERATION_TIMEOUT_MS) {
+                current.sendPrivateReadReceipt(roomId, threadRootEventId, eventId)
+            }
+        } catch (error: TimeoutCancellationException) {
+            diagnostics.record(
+                "matrix.session_read.operation_timeout",
+                mapOf("stage" to "publish"),
+            )
+            throw error
         }
     }.await()
 
@@ -422,8 +430,16 @@ class MatrixConnectionRuntime(
             check(started.get()) { "The native Matrix runtime is stopped." }
             driver ?: throw IllegalStateException("The native Matrix connection is not ready.")
         }
-        withTimeout(RECEIPT_OPERATION_TIMEOUT_MS) {
-            current.loadPrivateReadReceipt(roomId, threadRootEventId)
+        try {
+            withTimeout(RECEIPT_OPERATION_TIMEOUT_MS) {
+                current.loadPrivateReadReceipt(roomId, threadRootEventId)
+            }
+        } catch (error: TimeoutCancellationException) {
+            diagnostics.record(
+                "matrix.session_read.operation_timeout",
+                mapOf("stage" to "inspect"),
+            )
+            throw error
         }
     }.await()
 

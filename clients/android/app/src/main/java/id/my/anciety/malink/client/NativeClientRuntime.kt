@@ -381,7 +381,11 @@ class NativeClientRuntime(
     @Volatile private var gatewayConvergenceFallbackJob: Job? = null
     @Volatile private var workspaceDirectoryConvergenceJob: Job? = null
     @Volatile private var sessionReadReceiptReconciliationJob: Job? = null
-    private var sessionReadReceiptReconciliationOffset = 0
+    private val sessionReadReceiptScheduleLock = Any()
+    private var sessionReadReceiptReconciliationRequested = false
+    private var sessionReadReceiptInspectionRequested = false
+    private var lastSessionReadReceiptInspectionAt: Long? = null
+    @Volatile private var sessionReadReceiptSyncEnabled = false
     @Volatile private var gatewayConvergenceMinimumRevision: Long? = null
     @Volatile private var pendingPairing: PendingPairing? = restoredPairing.getOrNull()?.let {
         PendingPairing(
@@ -405,7 +409,7 @@ class NativeClientRuntime(
         activeDeviceCount = { trust?.response?.response?.activeDeviceCount ?: 1 },
         initialState = matrixMlp3ProjectionStore.load(),
     )
-    private val sessionReadUpdatedAt = ConcurrentHashMap<String, Long>()
+    private val sessionReadReceiptSync = SessionReadReceiptSyncState(MAX_SESSION_READ_MARKERS)
 
     private val eventHub = ClientEventHub(
         eventPersistence,
@@ -431,7 +435,7 @@ class NativeClientRuntime(
         }
         stateUpgrade.complete()
         gatewayState = matrixMlp3Projection.snapshot() ?: eventHub.snapshot().gatewayState
-        sessionReadUpdatedAt.putAll(eventHub.snapshot().sessionReadState)
+        sessionReadReceiptSync.restoreReadState(eventHub.snapshot().sessionReadState)
         if (gatewayState != null) {
             diagnostics.record("gateway.state.cache.restored")
         }
@@ -460,8 +464,8 @@ class NativeClientRuntime(
         sessionId: String,
         projectId: String? = null,
     ): SessionReadUpdate {
-        val target = mutex.withLock {
-            matrixMlp3Projection.sessionReadReceiptTarget(
+        val update = mutex.withLock {
+            val target = matrixMlp3Projection.sessionReadReceiptTarget(
                 sessionId,
                 projectId,
                 singleProjectRoomFallback(),
@@ -469,25 +473,16 @@ class NativeClientRuntime(
                 ?: throw IllegalStateException(
                     "The session does not yet have a verified Matrix receipt target.",
                 )
-        }
-        matrix.sendPrivateReadReceipt(
-            target.roomId,
-            target.threadRootEventId,
-            target.eventId,
-        )
-        return mutex.withLock {
-            val current = matrixMlp3Projection.sessionReadReceiptTarget(
-                sessionId,
-                projectId,
-                singleProjectRoomFallback(),
-            )
-            if (current == target) recordSessionRead(target)
+            recordSessionRead(target)
+            sessionReadReceiptSync.requestPublish(target)
             SessionReadUpdate(
                 sessionId = target.sessionId,
                 projectId = target.projectId,
                 readUpdatedAt = target.updatedAt,
             )
         }
+        scheduleSessionReadReceiptReconciliation(includeInspection = false)
+        return update
     }
 
     private fun <T> openNativeStateStore(storeId: String, create: () -> T): T {
@@ -1358,6 +1353,11 @@ class NativeClientRuntime(
         cancelGatewayConvergenceFallback()
         workspaceDirectoryConvergenceJob?.cancel()
         workspaceDirectoryConvergenceJob = null
+        sessionReadReceiptSyncEnabled = false
+        synchronized(sessionReadReceiptScheduleLock) {
+            sessionReadReceiptReconciliationRequested = false
+            sessionReadReceiptInspectionRequested = false
+        }
         sessionReadReceiptReconciliationJob?.cancel()
         sessionReadReceiptReconciliationJob = null
         gatewayStateSynchronized = false
@@ -1428,6 +1428,7 @@ class NativeClientRuntime(
     override fun onTransportReady(identity: MatrixTransportIdentity) {
         transportIdentity = identity
         pairingTransportIdentityReady.complete(identity)
+        sessionReadReceiptSyncEnabled = true
         gatewayStateSynchronized = trust != null && workspaceProjectionProgress().hasUsableProject
         refreshSnapshot(publishLifecycle = true)
         if (trust != null) {
@@ -2762,57 +2763,176 @@ class NativeClientRuntime(
         return true
     }
 
-    private fun scheduleSessionReadReceiptReconciliation() {
-        if (sessionReadReceiptReconciliationJob?.isActive == true) return
-        sessionReadReceiptReconciliationJob = scope.launch {
-            delay(100)
-            val targets = mutex.withLock {
-                val candidates = matrixMlp3Projection
-                    .sessionReadReceiptTargets(singleProjectRoomFallback())
-                    .filter { (sessionReadUpdatedAt[it.sessionId] ?: -1L) < it.updatedAt }
-                    .sortedByDescending(MatrixMlp3SessionReadReceiptTarget::updatedAt)
-                if (candidates.isEmpty()) return@withLock emptyList()
-                val start = sessionReadReceiptReconciliationOffset % candidates.size
-                val selected = (candidates.drop(start) + candidates.take(start))
-                    .take(MAX_SESSION_READ_RECONCILIATION_TARGETS)
-                sessionReadReceiptReconciliationOffset = (start + selected.size) % candidates.size
-                selected
+    private fun scheduleSessionReadReceiptReconciliation(includeInspection: Boolean = true) {
+        if (!sessionReadReceiptSyncEnabled) return
+        synchronized(sessionReadReceiptScheduleLock) {
+            val lastInspectionAt = lastSessionReadReceiptInspectionAt
+            if (
+                includeInspection &&
+                (
+                    lastInspectionAt == null ||
+                        now() - lastInspectionAt >= SESSION_READ_INSPECTION_MIN_INTERVAL_MS
+                )
+            ) {
+                sessionReadReceiptInspectionRequested = true
             }
-            for (target in targets) {
-                val receiptEventId = runCatching {
-                    matrix.loadPrivateReadReceipt(target.roomId, target.threadRootEventId)
-                }.onFailure { error ->
-                    diagnostics.record(
-                        "matrix.session_read.reconcile_failure",
-                        mapOf("error" to diagnosticErrorName(error)),
-                    )
-                }.getOrNull()
-                if (receiptEventId != target.eventId) continue
-                mutex.withLock {
-                    if (
-                        matrixMlp3Projection.sessionReadReceiptTarget(
-                            target.sessionId,
-                            target.projectId,
-                            singleProjectRoomFallback(),
-                        ) == target
-                    ) {
-                        recordSessionRead(target)
+            if (!sessionReadReceiptInspectionRequested && !sessionReadReceiptSync.hasPendingPublish()) {
+                return
+            }
+            sessionReadReceiptReconciliationRequested = true
+            if (sessionReadReceiptReconciliationJob?.isActive == true) return
+            val worker = scope.launch(start = CoroutineStart.LAZY) {
+                runSessionReadReceiptReconciliation()
+            }
+            sessionReadReceiptReconciliationJob = worker
+            worker.start()
+        }
+    }
+
+    private suspend fun runSessionReadReceiptReconciliation() {
+        var reschedule = false
+        try {
+            delay(SESSION_READ_RECONCILIATION_COALESCE_MS)
+            while (scope.isActive) {
+                val includeInspection = synchronized(sessionReadReceiptScheduleLock) {
+                    sessionReadReceiptReconciliationRequested = false
+                    sessionReadReceiptInspectionRequested.also { inspect ->
+                        if (inspect) {
+                            sessionReadReceiptInspectionRequested = false
+                            lastSessionReadReceiptInspectionAt = now()
+                        }
                     }
                 }
+                val publishFailed = reconcileSessionReadReceiptsOnce(includeInspection)
+                val requested = synchronized(sessionReadReceiptScheduleLock) {
+                    sessionReadReceiptReconciliationRequested
+                }
+                if (!publishFailed && !requested && !sessionReadReceiptSync.hasPendingPublish()) {
+                    return
+                }
+                val retryDelay = if (publishFailed) {
+                    sessionReadReceiptRetryDelay(sessionReadReceiptSync.maximumPublishAttempt())
+                } else {
+                    SESSION_READ_RECONCILIATION_COALESCE_MS
+                }
+                delay(retryDelay)
+            }
+        } finally {
+            synchronized(sessionReadReceiptScheduleLock) {
+                sessionReadReceiptReconciliationJob = null
+                reschedule = sessionReadReceiptReconciliationRequested ||
+                    sessionReadReceiptSync.hasPendingPublish()
+            }
+            if (reschedule && scope.isActive && sessionReadReceiptSyncEnabled) {
+                scheduleSessionReadReceiptReconciliation()
             }
         }
     }
 
-    private fun recordSessionRead(target: MatrixMlp3SessionReadReceiptTarget) {
-        val previous = sessionReadUpdatedAt[target.sessionId] ?: -1L
-        if (previous >= target.updatedAt) return
-        sessionReadUpdatedAt[target.sessionId] = target.updatedAt
-        if (sessionReadUpdatedAt.size > MAX_SESSION_READ_MARKERS) {
-            sessionReadUpdatedAt.entries
-                .sortedBy { it.value }
-                .take(sessionReadUpdatedAt.size - MAX_SESSION_READ_MARKERS)
-                .forEach { sessionReadUpdatedAt.remove(it.key, it.value) }
+    private suspend fun reconcileSessionReadReceiptsOnce(includeInspection: Boolean): Boolean {
+        val targets = mutex.withLock {
+            matrixMlp3Projection.sessionReadReceiptTargets(singleProjectRoomFallback())
         }
+        val work = sessionReadReceiptSync.plan(
+            targets,
+            MAX_SESSION_READ_RECONCILIATION_TARGETS,
+            includeInspection,
+        )
+        var publishFailed = false
+        for ((kind, target) in work) {
+            val stillCurrent = mutex.withLock {
+                matrixMlp3Projection.sessionReadReceiptTarget(
+                    target.sessionId,
+                    target.projectId,
+                    singleProjectRoomFallback(),
+                ) == target
+            }
+            if (!stillCurrent) continue
+            when (kind) {
+                SessionReadReceiptWorkKind.PUBLISH -> {
+                    try {
+                        matrix.sendPrivateReadReceipt(
+                            target.roomId,
+                            target.threadRootEventId,
+                            target.eventId,
+                        )
+                        sessionReadReceiptSync.recordPublished(target)
+                        diagnostics.record("matrix.session_read.publish_completed")
+                    } catch (error: TimeoutCancellationException) {
+                        publishFailed = true
+                        recordSessionReadReceiptFailure("publish", target, error)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        publishFailed = true
+                        recordSessionReadReceiptFailure("publish", target, error)
+                    }
+                }
+                SessionReadReceiptWorkKind.INSPECT -> {
+                    val receiptEventId = try {
+                        matrix.loadPrivateReadReceipt(target.roomId, target.threadRootEventId)
+                    } catch (error: TimeoutCancellationException) {
+                        recordSessionReadReceiptFailure("inspect", target, error)
+                        continue
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        recordSessionReadReceiptFailure("inspect", target, error)
+                        continue
+                    }
+                    mutex.withLock {
+                        if (
+                            matrixMlp3Projection.sessionReadReceiptTarget(
+                                target.sessionId,
+                                target.projectId,
+                                singleProjectRoomFallback(),
+                            ) == target && sessionReadReceiptSync.observeRemote(target, receiptEventId)
+                        ) {
+                            publishSessionReadUpdate(target)
+                        }
+                    }
+                }
+            }
+        }
+        return publishFailed
+    }
+
+    private fun recordSessionReadReceiptFailure(
+        stage: String,
+        target: MatrixMlp3SessionReadReceiptTarget,
+        error: Throwable,
+    ) {
+        val attempt = if (stage == "publish") {
+            sessionReadReceiptSync.recordPublishFailure(target)
+        } else {
+            0
+        }
+        diagnostics.record(
+            "matrix.session_read.sync_deferred",
+            buildMap {
+                put("stage", stage)
+                put("error", diagnosticErrorName(error))
+                put("reason", diagnosticSessionReadReceiptReason(error))
+                if (attempt > 0) put("attempt", attempt.toString())
+            },
+        )
+    }
+
+    private fun diagnosticSessionReadReceiptReason(error: Throwable): String = when (error) {
+        is TimeoutCancellationException,
+        is java.net.SocketTimeoutException,
+        -> "timeout"
+        is id.my.anciety.malink.matrix.MatrixOfflineException -> "offline"
+        is java.io.IOException -> "network_io"
+        else -> "matrix_sdk"
+    }
+
+    private fun recordSessionRead(target: MatrixMlp3SessionReadReceiptTarget) {
+        if (!sessionReadReceiptSync.markLocallyRead(target)) return
+        publishSessionReadUpdate(target)
+    }
+
+    private fun publishSessionReadUpdate(target: MatrixMlp3SessionReadReceiptTarget) {
         val update = SessionReadUpdate(
             sessionId = target.sessionId,
             projectId = target.projectId,
@@ -3537,7 +3657,7 @@ class NativeClientRuntime(
             ),
             trust = publicTrust(),
             gatewayState = gatewayState,
-            sessionReadState = sessionReadUpdatedAt.toMap(),
+            sessionReadState = sessionReadReceiptSync.readState(),
             commands = snapshotCommands(),
             pairing = pendingPairing?.let {
                 buildJsonObject {
@@ -3557,7 +3677,7 @@ class NativeClientRuntime(
             lifecycle = lifecycle(),
             foregroundService = ForegroundServiceState(active = active, notificationVisible = visible),
             trust = publicTrust(),
-            sessionReadState = sessionReadUpdatedAt.toMap(),
+            sessionReadState = sessionReadReceiptSync.readState(),
             commands = snapshotCommands(),
             pairing = pendingPairing?.let {
                 buildJsonObject {
@@ -3796,8 +3916,17 @@ class NativeClientRuntime(
         const val GATEWAY_TRANSPORT_PROFILE_FIELD = "io.malink.gateway_transport"
         const val GATEWAY_CONVERGENCE_GRACE_MS = 3_000L
         const val MAX_SESSION_READ_MARKERS = 5_000
-        const val MAX_SESSION_READ_RECONCILIATION_TARGETS = 256
+        const val MAX_SESSION_READ_RECONCILIATION_TARGETS = 64
+        const val SESSION_READ_RECONCILIATION_COALESCE_MS = 250L
+        const val SESSION_READ_INSPECTION_MIN_INTERVAL_MS = 30_000L
     }
+}
+
+internal fun sessionReadReceiptRetryDelay(attempt: Int): Long {
+    if (attempt <= 0) return SESSION_READ_RETRY_INITIAL_MS
+    val shift = (attempt - 1).coerceAtMost(5)
+    return (SESSION_READ_RETRY_INITIAL_MS * (1L shl shift))
+        .coerceAtMost(SESSION_READ_RETRY_MAX_MS)
 }
 
 internal fun decodeMatrixToolGroup(extension: JsonObject): ToolGroupPresentation? {
@@ -4025,6 +4154,8 @@ private const val MAX_SESSION_TAIL_REQUEST_ATTEMPTS = 2
 private const val SESSION_TAIL_RECOVERY_RETRY_DELAY_MS = 1_000L
 private const val COMMAND_RECONCILIATION_DELIVERY_GRACE_MS = 12_000L
 private const val PUBLISHED_COMMAND_RECONCILIATION_MIN_INTERVAL_MS = 60_000L
+private const val SESSION_READ_RETRY_INITIAL_MS = 5_000L
+private const val SESSION_READ_RETRY_MAX_MS = 2 * 60_000L
 
 internal fun recoverableCommandIds(commands: List<DurableView>): List<String> =
     commands

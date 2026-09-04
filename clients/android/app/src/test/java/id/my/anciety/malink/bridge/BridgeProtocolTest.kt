@@ -357,6 +357,49 @@ class BridgeProtocolTest {
     }
 
     @Test
+    fun `unexpected native receipt failures retain method and exception diagnostics`() {
+        val runtime = FakeRuntime().apply {
+            markReadFailure = UnsupportedOperationException("private detail")
+        }
+        val failures = mutableListOf<Pair<String, String>>()
+        val dispatcher = BridgeDispatcher(
+            runtime,
+            BRIDGE_SESSION_ID,
+            unexpectedFailureSink = { method, error ->
+                failures += method to error.javaClass.simpleName
+            },
+        )
+        dispatch(
+            dispatcher,
+            helloRequest(
+                optionalCapabilities =
+                    """[{"name":"session.read-receipts","versions":[1]}]""",
+            ),
+        )
+
+        val failed = failure(dispatch(dispatcher, """
+            {
+              "jsonrpc":"2.0",
+              "id":"mark-read-failed",
+              "method":"malink.session.markRead",
+              "params":{
+                "context":{"bridgeSessionId":"$BRIDGE_SESSION_ID"},
+                "idempotencyKey":"$IDEMPOTENCY_KEY",
+                "sessionId":"session-1",
+                "projectId":"project-1"
+              }
+            }
+        """.trimIndent()))
+
+        assertEquals("NATIVE_INTERNAL", failed.getValue("data").jsonObject
+            .getValue("errorCode").jsonPrimitive.content)
+        assertEquals(
+            listOf("malink.session.markRead" to "UnsupportedOperationException"),
+            failures,
+        )
+    }
+
+    @Test
     fun `start and disconnect use shared context and UUID idempotency shape`() {
         val runtime = FakeRuntime()
         val dispatcher = BridgeDispatcher(runtime, BRIDGE_SESSION_ID)
@@ -702,6 +745,7 @@ class BridgeProtocolTest {
         var loginTokenIssues = 0
         var updateChecks = 0
         var diagnosticExports = 0
+        var markReadFailure: Exception? = null
         val savedPngImages = mutableListOf<Pair<String, Int>>()
         val loginTokenInputs = mutableListOf<Pair<String, String?>>()
         val disconnects = mutableListOf<String>()
@@ -800,7 +844,10 @@ class BridgeProtocolTest {
         override suspend fun markSessionRead(
             sessionId: String,
             projectId: String?,
-        ) = SessionReadUpdate(sessionId, projectId, 42)
+        ): SessionReadUpdate {
+            markReadFailure?.let { throw it }
+            return SessionReadUpdate(sessionId, projectId, 42)
+        }
 
         override fun checkNativeUpdate(): NativeUpdateStatus {
             updateChecks += 1
