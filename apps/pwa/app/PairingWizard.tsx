@@ -35,6 +35,7 @@ import {
 } from "./uiClipboard";
 import {
   downloadInvitationQrPng,
+  INVITATION_QR_IMAGE_WIDTH,
   invitationQrPng,
 } from "./invitationQrExport";
 
@@ -112,7 +113,7 @@ export function PairingWizard({
     void QRCode.toDataURL(deviceInvitation.link, {
       errorCorrectionLevel: "L",
       margin: 4,
-      width: 256,
+      width: INVITATION_QR_IMAGE_WIDTH,
     }).then((value) => {
       if (!cancelled) {
         setQrCode({ link: deviceInvitation.link, dataUrl: value });

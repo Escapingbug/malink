@@ -4,6 +4,11 @@ const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
 const BASE64_PATTERN =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 
+// Self-contained invitations can produce QR symbols with more than 100
+// modules per side. Keep the exported raster comfortably above the decoder's
+// minimum pixels-per-module even though CSS displays it at a smaller size.
+export const INVITATION_QR_IMAGE_WIDTH = 1_024;
+
 export type InvitationQrPng = {
   filename: string;
   dataUrl: string;
