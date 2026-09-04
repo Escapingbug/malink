@@ -3,6 +3,7 @@ import type {
   Mlp3Event,
   Mlp3SessionProjection,
   MatrixGatewayCapabilities,
+  MatrixModelCapability,
   NativeClientRelease,
   GatewayEnrollmentPending,
   GatewayUpdateStatus,
@@ -20,11 +21,13 @@ import {
   signedWorkspaceGatewayDirectorySchema,
   gatewayEnrollmentPendingSchema,
   gatewayUpdateStatusSchema,
+  matrixModelCapabilitySchema,
+  providerControlErrorSchema,
   providerControlValuesSchema,
 } from "@malink/protocol";
 import { gatewayMaintenanceSessionActivityOutcome } from "./gatewayState";
 
-export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 11 as const;
+export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 12 as const;
 
 export type V3ProjectedSession = Mlp3SessionProjection & {
   sessionId: string;
@@ -88,6 +91,35 @@ export type V3ProjectedProviderHistoryPage = {
   digest: string;
 };
 
+export type V3ProjectedProviderCatalogPage = {
+  logicalEventId: string;
+  providerId: string;
+  revision: string;
+  pageIndex: number;
+  pageCount: number;
+  items: MatrixModelCapability[];
+  occurredAt: number;
+};
+
+export type V3ProjectedProviderCatalogManifest = {
+  logicalEventId: string;
+  providerId: string;
+  revision: string;
+  status: "loading" | "ready" | "stale" | "error";
+  itemCount: number;
+  pageCount: number;
+  error?: import("@malink/protocol").ProviderControlError;
+  occurredAt: number;
+};
+
+export type V3ProjectedProviderModelCatalog = Omit<
+  V3ProjectedProviderCatalogManifest,
+  "logicalEventId"
+> & {
+  complete: boolean;
+  models: MatrixModelCapability[];
+};
+
 export type V3ProjectedInboxFile = {
   fileId: string;
   physicalEventId: string;
@@ -143,6 +175,8 @@ export type MatrixMlp3ProjectionState = {
   messages: V3ProjectedMessage[];
   providerHistoryMessages: V3ProjectedProviderHistoryMessage[];
   providerHistoryPages: V3ProjectedProviderHistoryPage[];
+  providerCatalogPages: V3ProjectedProviderCatalogPage[];
+  providerCatalogManifests: V3ProjectedProviderCatalogManifest[];
   inboxFiles: V3ProjectedInboxFile[];
   completions: Mlp3CommandCompletion[];
   gatewayUpdateObservation: GatewayUpdateObservation | null;
@@ -160,6 +194,8 @@ export class MatrixMlp3Projection {
   readonly messages = new Map<string, V3ProjectedMessage>();
   readonly providerHistoryMessages = new Map<string, V3ProjectedProviderHistoryMessage>();
   readonly providerHistoryPages = new Map<string, V3ProjectedProviderHistoryPage>();
+  readonly providerCatalogPages = new Map<string, V3ProjectedProviderCatalogPage>();
+  readonly providerCatalogManifests = new Map<string, V3ProjectedProviderCatalogManifest>();
   readonly inboxFiles = new Map<string, V3ProjectedInboxFile>();
   readonly completions = new Map<string, Mlp3CommandCompletion>();
   gatewayUpdateObservation: GatewayUpdateObservation | null = null;
@@ -174,6 +210,8 @@ export class MatrixMlp3Projection {
     this.messages.clear();
     this.providerHistoryMessages.clear();
     this.providerHistoryPages.clear();
+    this.providerCatalogPages.clear();
+    this.providerCatalogManifests.clear();
     this.inboxFiles.clear();
     this.completions.clear();
     this.gatewayUpdateObservation = null;
@@ -189,6 +227,8 @@ export class MatrixMlp3Projection {
       messages: [...this.messages.values()],
       providerHistoryMessages: [...this.providerHistoryMessages.values()],
       providerHistoryPages: [...this.providerHistoryPages.values()],
+      providerCatalogPages: [...this.providerCatalogPages.values()],
+      providerCatalogManifests: [...this.providerCatalogManifests.values()],
       inboxFiles: [...this.inboxFiles.values()],
       completions: [...this.completions.values()],
       gatewayUpdateObservation: this.gatewayUpdateObservation,
@@ -208,6 +248,16 @@ export class MatrixMlp3Projection {
     }
     for (const page of state.providerHistoryPages) {
       this.providerHistoryPages.set(providerHistoryPageKey(page.snapshotId, page.pageIndex), page);
+    }
+    for (const page of state.providerCatalogPages) {
+      this.providerCatalogPages.set(providerCatalogPageKey(
+        page.providerId,
+        page.revision,
+        page.pageIndex,
+      ), page);
+    }
+    for (const manifest of state.providerCatalogManifests) {
+      this.providerCatalogManifests.set(manifest.providerId, manifest);
     }
     for (const file of state.inboxFiles) this.inboxFiles.set(file.fileId, file);
     for (const completion of state.completions) {
@@ -357,6 +407,48 @@ export class MatrixMlp3Projection {
       };
       if (gatewayUpdate) {
         this.reconcileGatewayMaintenanceSession(gatewayUpdate, event.projectId);
+      }
+      return true;
+    }
+    if (payload.type === "provider.catalog.page") {
+      if (this.seenLogicalEvents.has(event.eventId)) return false;
+      this.seenLogicalEvents.add(event.eventId);
+      const key = providerCatalogPageKey(
+        payload.providerId,
+        payload.revision,
+        payload.pageIndex,
+      );
+      const current = this.providerCatalogPages.get(key);
+      if (!current || isNewerCatalogEvent(current, event)) {
+        this.providerCatalogPages.set(key, {
+          logicalEventId: event.eventId,
+          providerId: payload.providerId,
+          revision: payload.revision,
+          pageIndex: payload.pageIndex,
+          pageCount: payload.pageCount,
+          items: structuredClone(payload.items),
+          occurredAt: event.occurredAt,
+        });
+        this.pruneProviderCatalogPages(payload.providerId);
+      }
+      return true;
+    }
+    if (payload.type === "provider.catalog.manifest") {
+      if (this.seenLogicalEvents.has(event.eventId)) return false;
+      this.seenLogicalEvents.add(event.eventId);
+      const current = this.providerCatalogManifests.get(payload.providerId);
+      if (!current || isNewerCatalogEvent(current, event)) {
+        this.providerCatalogManifests.set(payload.providerId, {
+          logicalEventId: event.eventId,
+          providerId: payload.providerId,
+          revision: payload.revision,
+          status: payload.status,
+          itemCount: payload.itemCount,
+          pageCount: payload.pageCount,
+          ...(payload.error ? { error: structuredClone(payload.error) } : {}),
+          occurredAt: event.occurredAt,
+        });
+        this.pruneProviderCatalogPages(payload.providerId);
       }
       return true;
     }
@@ -666,6 +758,56 @@ export class MatrixMlp3Projection {
     return true;
   }
 
+  providerModelCatalogs(): V3ProjectedProviderModelCatalog[] {
+    return [...this.providerCatalogManifests.values()].map(manifest => {
+      const pages = [...this.providerCatalogPages.values()]
+        .filter(page =>
+          page.providerId === manifest.providerId
+          && page.revision === manifest.revision
+          && page.pageCount === manifest.pageCount
+        )
+        .sort((left, right) => left.pageIndex - right.pageIndex);
+      const indexesComplete = pages.length === manifest.pageCount
+        && pages.every((page, index) => page.pageIndex === index);
+      const models = indexesComplete ? pages.flatMap(page => page.items) : [];
+      const complete = indexesComplete && models.length === manifest.itemCount;
+      return {
+        providerId: manifest.providerId,
+        revision: manifest.revision,
+        status: manifest.status,
+        itemCount: manifest.itemCount,
+        pageCount: manifest.pageCount,
+        ...(manifest.error ? { error: structuredClone(manifest.error) } : {}),
+        occurredAt: manifest.occurredAt,
+        complete,
+        models: complete ? structuredClone(models) : [],
+      };
+    });
+  }
+
+  private pruneProviderCatalogPages(providerId: string): void {
+    const manifestRevision = this.providerCatalogManifests.get(providerId)?.revision;
+    const revisions = new Map<string, number>();
+    for (const page of this.providerCatalogPages.values()) {
+      if (page.providerId !== providerId) continue;
+      revisions.set(page.revision, Math.max(revisions.get(page.revision) ?? 0, page.occurredAt));
+    }
+    const retained = new Set(
+      [...revisions]
+        .sort((left, right) =>
+          Number(right[0] === manifestRevision) - Number(left[0] === manifestRevision)
+          || right[1] - left[1]
+        )
+        .slice(0, 2)
+        .map(([revision]) => revision),
+    );
+    for (const [key, page] of this.providerCatalogPages) {
+      if (page.providerId === providerId && !retained.has(page.revision)) {
+        this.providerCatalogPages.delete(key);
+      }
+    }
+  }
+
   sessionMessages(sessionId: string): V3ProjectedMessage[] {
     return [...this.messages.values()]
       .filter(message => message.sessionId === sessionId)
@@ -900,6 +1042,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
       && projectionVersion !== 9
       && projectionVersion !== 10
       && projectionVersion !== 11
+      && projectionVersion !== 12
     )
   ) {
     throw new Error("Unsupported MLP/3 projection version.");
@@ -1018,6 +1161,73 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
         return structuredClone(page) as V3ProjectedProviderHistoryPage;
       })
     : [];
+  const providerCatalogPages = projectionVersion >= 12
+    ? boundedArray(value.providerCatalogPages, "provider catalog pages").map(pageValue => {
+        const page = record(pageValue);
+        if (
+          !page
+          || !text(page.logicalEventId)
+          || !text(page.providerId)
+          || !/^[A-Za-z0-9_-]{43}$/u.test(String(page.revision))
+          || !integer(page.pageIndex)
+          || !integer(page.pageCount, 1)
+          || page.pageIndex >= page.pageCount
+          || page.pageCount > 4_096
+          || !integer(page.occurredAt)
+          || !Array.isArray(page.items)
+          || page.items.length < 1
+          || page.items.length > 64
+        ) throw new Error("The Provider Catalog page projection is invalid.");
+        return {
+          logicalEventId: page.logicalEventId,
+          providerId: page.providerId,
+          revision: page.revision,
+          pageIndex: page.pageIndex,
+          pageCount: page.pageCount,
+          items: page.items.map(item => matrixModelCapabilitySchema.parse(item)),
+          occurredAt: page.occurredAt,
+        } as V3ProjectedProviderCatalogPage;
+      })
+    : [];
+  const providerCatalogManifests = projectionVersion >= 12
+    ? boundedArray(value.providerCatalogManifests, "provider catalog manifests")
+      .map(manifestValue => {
+        const manifest = record(manifestValue);
+        if (
+          !manifest
+          || !text(manifest.logicalEventId)
+          || !text(manifest.providerId)
+          || !/^[A-Za-z0-9_-]{43}$/u.test(String(manifest.revision))
+          || !["loading", "ready", "stale", "error"].includes(String(manifest.status))
+          || !integer(manifest.itemCount)
+          || !integer(manifest.pageCount)
+          || manifest.itemCount > 4_096
+          || manifest.pageCount > 4_096
+          || ((manifest.itemCount === 0) !== (manifest.pageCount === 0))
+          || (
+            (manifest.status === "loading" || manifest.status === "error")
+            && manifest.itemCount !== 0
+          )
+          || (
+            (manifest.status === "error" || manifest.status === "stale")
+            !== Boolean(manifest.error)
+          )
+          || !integer(manifest.occurredAt)
+        ) throw new Error("The Provider Catalog manifest projection is invalid.");
+        return {
+          logicalEventId: manifest.logicalEventId,
+          providerId: manifest.providerId,
+          revision: manifest.revision,
+          status: manifest.status,
+          itemCount: manifest.itemCount,
+          pageCount: manifest.pageCount,
+          ...(manifest.error
+            ? { error: providerControlErrorSchema.parse(manifest.error) }
+            : {}),
+          occurredAt: manifest.occurredAt,
+        } as V3ProjectedProviderCatalogManifest;
+      })
+    : [];
   const inboxFiles = projectionVersion >= 3
     ? boundedArray(value.inboxFiles, "inbox files").map(fileValue => {
         const file = record(fileValue);
@@ -1098,6 +1308,15 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
     providerHistoryPages.map(page => providerHistoryPageKey(page.snapshotId, page.pageIndex)),
     "provider history page",
   );
+  requireUnique(
+    providerCatalogPages.map(page =>
+      providerCatalogPageKey(page.providerId, page.revision, page.pageIndex)),
+    "provider catalog page",
+  );
+  requireUnique(
+    providerCatalogManifests.map(manifest => manifest.providerId),
+    "provider catalog manifest",
+  );
   requireUnique(inboxFiles.map(file => file.fileId), "inbox file");
   requireUnique(completions.map(completion => completion.commandId), "completion");
   requireUnique(seenLogicalEvents, "logical event");
@@ -1125,6 +1344,8 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
     messages,
     providerHistoryMessages,
     providerHistoryPages,
+    providerCatalogPages,
+    providerCatalogManifests,
     inboxFiles,
     completions,
     gatewayUpdateObservation,
@@ -1146,6 +1367,25 @@ function isOlderSessionProjection(
 
 function providerHistoryPageKey(snapshotId: string, pageIndex: number): string {
   return `${snapshotId}\0${pageIndex}`;
+}
+
+function providerCatalogPageKey(
+  providerId: string,
+  revision: string,
+  pageIndex: number,
+): string {
+  return `${providerId}\0${revision}\0${pageIndex}`;
+}
+
+function isNewerCatalogEvent(
+  current: { logicalEventId: string; occurredAt: number },
+  next: Mlp3Event,
+): boolean {
+  return next.occurredAt > current.occurredAt
+    || (
+      next.occurredAt === current.occurredAt
+      && next.eventId.localeCompare(current.logicalEventId) > 0
+    );
 }
 
 function completeProviderHistoryPageIndexes(

@@ -169,7 +169,7 @@ const matrixCapabilityOptionSchema = z
   })
   .strict()
 
-const matrixModelCapabilitySchema = matrixCapabilityOptionSchema.safeExtend({
+export const matrixModelCapabilitySchema = matrixCapabilityOptionSchema.safeExtend({
   default_reasoning_level: z.string().min(1).max(64).optional(),
   supported_reasoning_levels: z.array(
     z.object({
@@ -178,6 +178,8 @@ const matrixModelCapabilitySchema = matrixCapabilityOptionSchema.safeExtend({
     }).strict(),
   ).max(64).optional(),
 }).strict()
+
+export type MatrixModelCapability = z.infer<typeof matrixModelCapabilitySchema>
 
 const matrixSessionExtensionSettingSchema = z.discriminatedUnion('type', [
   z

@@ -138,6 +138,13 @@ class MatrixApplicationControlClientTest {
               "content":${secureControlContent()}
             }
         """.trimIndent()))
+        assertTrue(isMalinkApplicationControlEvent("""
+            {
+              "type":"io.malink.provider_catalog.v1",
+              "state_key":"models.provider.page:0",
+              "content":${timelineContent()}
+            }
+        """.trimIndent()))
     }
 
     @Test

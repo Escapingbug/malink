@@ -212,6 +212,14 @@ wire fields for mixed-version compatibility. ACP session configuration updates
 are converted to the same descriptor format and remain owned by the ACP
 Provider adapter; clients do not contain provider-specific rendering logic.
 
+Long model catalogs use paginated, application-encrypted Matrix Room State.
+The Gateway obtains and validates the complete Provider-owned list, writes
+revision-bound pages to stable state keys, and commits the manifest last. PWA
+and Android projections assemble only complete revisions and search locally;
+catalog reads are durable state convergence, not Provider RPC commands. Model
+and reasoning option arrays are therefore excluded from workspace and session
+snapshots, preventing catalog size from delaying ordinary session recovery.
+
 The configured room is a bootstrap route, not a fixed project catalog. An
 authorized PWA or Android client creates another project by sending
 `project.create` through any existing route owned by the selected Gateway node.
@@ -224,6 +232,11 @@ path; no local Gateway UI or shell access is required. Newly provisioned
 project IDs include `gatewayNodeId` in their identity scope so identical paths
 on different Gateway nodes cannot collide. Legacy bootstrap project IDs retain
 their existing cwd-only identity.
+
+The durable project-catalog commit is the `project.create` business commit
+point. Room activation, capability/catalog publication, and Workspace
+Directory convergence after that point are retryable delivery work; a failure
+there must not reinterpret an already-created project as a failed command.
 
 Every active session owns its own `TopicSession`, `SemanticSessionRuntime`, and
 provider instance. Sessions may execute concurrently. Selecting a conversation

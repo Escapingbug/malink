@@ -1,5 +1,8 @@
 import { z } from 'zod'
-import { matrixGatewayCapabilitiesSchema } from './matrix-native.js'
+import {
+  matrixGatewayCapabilitiesSchema,
+  matrixModelCapabilitySchema,
+} from './matrix-native.js'
 import { signedWorkspaceGatewayDirectorySchema } from './workspace-authorization.js'
 import { gatewayRestartStatusSchema } from './gateway-lifecycle.js'
 import { gatewayEnrollmentPendingSchema } from './gateway-enrollment.js'
@@ -10,6 +13,7 @@ import {
   integrationEntryPresentationSchema,
   jsonValueSchema,
   providerControlSchema,
+  providerControlErrorSchema,
   providerControlValuesSchema,
   sessionExtensionActionIdSchema,
   sessionExtensionBindingSchema,
@@ -38,6 +42,9 @@ export const MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE =
   'io.malink.project.current.v3' as const
 export const MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE =
   'io.malink.workspace.current.v3' as const
+/** Application-encrypted, paginated provider catalogs stored as bounded Room State. */
+export const MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE =
+  'io.malink.provider_catalog.v1' as const
 export const MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE =
   'io.malink.project.key_grant.v3' as const
 /** Idempotent ownership marker for a Gateway-created Matrix project room. */
@@ -752,6 +759,76 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       snapshotVersion: z.number().int().positive(),
     })
     .strict(),
+  z
+    .object({
+      type: z.literal('provider.catalog.page'),
+      providerId: opaqueId,
+      catalog: z.literal('models'),
+      revision: base64Url.length(43),
+      pageIndex: z.number().int().nonnegative(),
+      pageCount: z.number().int().positive().max(4_096),
+      items: z.array(matrixModelCapabilitySchema).min(1).max(64),
+    })
+    .strict()
+    .superRefine((page, context) => {
+      if (page.pageIndex >= page.pageCount) {
+        context.addIssue({
+          code: 'custom',
+          path: ['pageIndex'],
+          message: 'Provider catalog page index must be inside its page count',
+        })
+      }
+    }),
+  z
+    .object({
+      type: z.literal('provider.catalog.manifest'),
+      providerId: opaqueId,
+      catalog: z.literal('models'),
+      revision: base64Url.length(43),
+      status: z.enum(['loading', 'ready', 'stale', 'error']),
+      itemCount: z.number().int().nonnegative().max(4_096),
+      pageCount: z.number().int().nonnegative().max(4_096),
+      error: providerControlErrorSchema.optional(),
+    })
+    .strict()
+    .superRefine((manifest, context) => {
+      if (manifest.itemCount === 0 && manifest.pageCount !== 0) {
+        context.addIssue({
+          code: 'custom',
+          path: ['pageCount'],
+          message: 'An empty provider catalog cannot contain pages',
+        })
+      }
+      if (manifest.itemCount > 0 && manifest.pageCount === 0) {
+        context.addIssue({
+          code: 'custom',
+          path: ['pageCount'],
+          message: 'A non-empty provider catalog must contain pages',
+        })
+      }
+      if ((manifest.status === 'loading' || manifest.status === 'error')
+        && (manifest.itemCount !== 0 || manifest.pageCount !== 0)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['status'],
+          message: 'An unavailable provider catalog cannot advertise items',
+        })
+      }
+      if ((manifest.status === 'error' || manifest.status === 'stale') && !manifest.error) {
+        context.addIssue({
+          code: 'custom',
+          path: ['error'],
+          message: 'An unavailable or stale provider catalog requires an error',
+        })
+      }
+      if (manifest.status !== 'error' && manifest.status !== 'stale' && manifest.error) {
+        context.addIssue({
+          code: 'custom',
+          path: ['error'],
+          message: 'Only unavailable or stale provider catalogs may include an error',
+        })
+      }
+    }),
   z
     .object({
       type: z.literal('project.snapshot'),
