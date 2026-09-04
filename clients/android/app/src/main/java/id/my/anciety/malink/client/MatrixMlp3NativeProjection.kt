@@ -103,12 +103,15 @@ internal data class MatrixMlp3DurableProjection(
     val retainedSeenCommands: Int,
     val totalAssistantVersions: Int,
     val retainedAssistantVersions: Int,
+    val totalCompletionObservations: Int,
+    val retainedCompletionObservations: Int,
 ) {
     val compacted: Boolean
         get() = retainedSessions < totalSessions ||
             retainedSeenEvents < totalSeenEvents ||
             retainedSeenCommands < totalSeenCommands ||
-            retainedAssistantVersions < totalAssistantVersions
+            retainedAssistantVersions < totalAssistantVersions ||
+            retainedCompletionObservations < totalCompletionObservations
 }
 
 /** Order-independent Android materialized view of MLP/3 timeline data. */
@@ -130,6 +133,12 @@ internal class MatrixMlp3NativeProjection(
         val messageVersion: Long,
         val occurredAt: Long,
         val body: String,
+    )
+
+    private data class CompletionObservation(
+        val commandId: String,
+        val sessionId: String,
+        val occurredAt: Long,
     )
 
     private data class Project(
@@ -234,6 +243,7 @@ internal class MatrixMlp3NativeProjection(
     private val seenCommands = mutableSetOf<String>()
     private val assistantMessageVersions = linkedMapOf<AssistantMessageKey, Long>()
     private val taskNotificationPreviews = linkedMapOf<String, TaskNotificationPreview>()
+    private val completionObservations = linkedMapOf<String, CompletionObservation>()
     private val providerHistoryPageStates = linkedMapOf<String, ProviderHistoryPageState>()
     private val providerHistoryMessageParts = linkedMapOf<String, ProviderHistoryMessagePart>()
     private val providerHistoryPageCommits = linkedMapOf<String, ProviderHistoryPageCommit>()
@@ -261,31 +271,50 @@ internal class MatrixMlp3NativeProjection(
                 val sessionId = command.requiredString("sessionId", 256)
                 val projectId = command.requiredString("projectId", 256)
                 val initial = payload["initialPrompt"] as? JsonObject
-                sessions[sessionId] = Session(
-                    id = sessionId,
-                    projectId = projectId,
-                    threadRootEventId = physicalEventId,
-                    readReceiptEventId = physicalEventId,
-                    title = payload.optionalString("title", 512)
-                        ?: titleFromPrompt(initial?.optionalString("text", Int.MAX_VALUE).orEmpty()),
-                    scope = payload.optionalString("scope", 32)?.also {
-                        require(it == "project" || it == "scratch")
-                    } ?: "project",
-                    cwd = projects[projectId]?.cwd.orEmpty(),
-                    lifecycle = "active",
-                    activity = if (initial == null) "idle" else "queued",
-                    updatedAt = timestamp,
-                    stateVersion = 1,
-                    provider = payload.optionalString("provider", 256),
-                    model = payload.optionalString("model", 256),
-                    reasoningEffort = payload.optionalString("reasoningEffort", 64),
-                    permissionMode = payload.optionalString("permissionMode", 128),
-                    extensions = payload["extensions"] as? JsonArray ?: JsonArray(emptyList()),
-                    extensionRevision = 1,
-                    availableCommands = JsonArray(emptyList()),
-                    providerHistory = null,
-                    controlValues = payload["controls"] as? JsonObject ?: JsonObject(emptyMap()),
-                )
+                val commandTitle = payload.optionalString("title", 512)
+                    ?: titleFromPrompt(initial?.optionalString("text", Int.MAX_VALUE).orEmpty())
+                val current = sessions[sessionId]
+                sessions[sessionId] = if (current == null) {
+                    Session(
+                        id = sessionId,
+                        projectId = projectId,
+                        threadRootEventId = physicalEventId,
+                        readReceiptEventId = physicalEventId,
+                        title = commandTitle,
+                        scope = payload.optionalString("scope", 32)?.also {
+                            require(it == "project" || it == "scratch")
+                        } ?: "project",
+                        cwd = projects[projectId]?.cwd.orEmpty(),
+                        lifecycle = "active",
+                        activity = if (initial == null) "idle" else "queued",
+                        updatedAt = timestamp,
+                        stateVersion = 1,
+                        provider = payload.optionalString("provider", 256),
+                        model = payload.optionalString("model", 256),
+                        reasoningEffort = payload.optionalString("reasoningEffort", 64),
+                        permissionMode = payload.optionalString("permissionMode", 128),
+                        extensions = payload["extensions"] as? JsonArray
+                            ?: JsonArray(emptyList()),
+                        extensionRevision = 1,
+                        availableCommands = JsonArray(emptyList()),
+                        providerHistory = null,
+                        controlValues = payload["controls"] as? JsonObject
+                            ?: JsonObject(emptyMap()),
+                    )
+                } else {
+                    // Matrix thread discovery can replay the immutable root
+                    // command after newer Gateway state. Use it only to fill
+                    // missing routing metadata and never regress execution.
+                    current.copy(
+                        projectId = current.projectId.ifEmpty { projectId },
+                        threadRootEventId = current.threadRootEventId.ifEmpty { physicalEventId },
+                        readReceiptEventId = current.readReceiptEventId ?: physicalEventId,
+                        title = if (
+                            current.title == "New session" && commandTitle != "New session"
+                        ) commandTitle else current.title,
+                    )
+                }
+                reconcileCompletedTurn(sessionId)
                 MatrixMlp3NativeProjectionResult(
                     messages = initial?.let {
                         listOf(userMessage(
@@ -425,6 +454,40 @@ internal class MatrixMlp3NativeProjection(
             )
         }
 
+        if (type == "project.snapshot" && projectId != null) {
+            val firstObservation = seenEvents.add(eventId)
+            val version = payload.requiredPositiveLong("snapshotVersion")
+            val current = projects[projectId]
+            val incoming = Project(
+                id = projectId,
+                snapshotVersion = version,
+                name = payload.requiredString("name", 256),
+                cwd = payload.requiredString("cwd", 8_192),
+                provider = payload.requiredString("provider", 256),
+                model = payload.optionalString("model", 256),
+                reasoningEffort = payload.optionalString("reasoningEffort", 64),
+                permissionMode = payload.requiredString("permissionMode", 128),
+                installedExtensions = payload["installedExtensions"] as? JsonArray
+                    ?: JsonArray(emptyList()),
+                defaultExtensions = payload["defaultExtensions"] as? JsonArray
+                    ?: JsonArray(emptyList()),
+                extensionDefaultsRevision = payload.optionalLong("extensionDefaultsRevision")
+                    ?.takeIf { it > 0 }
+                    ?: 1,
+                controlValues = payload["controls"] as? JsonObject ?: JsonObject(emptyMap()),
+            )
+            val changed = current == null || (version >= current.snapshotVersion && incoming != current)
+            if (current == null || version >= current.snapshotVersion) projects[projectId] = incoming
+            return MatrixMlp3NativeProjectionResult(
+                terminal = if (firstObservation) {
+                    terminal(type, event, payload, causation, sessionId)
+                } else {
+                    null
+                },
+                changed = changed,
+            )
+        }
+
         if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
 
         if (type == "project.deleted" && projectId != null) {
@@ -439,37 +502,11 @@ internal class MatrixMlp3NativeProjection(
             sessions.keys.removeAll(deletedSessionIds)
             assistantMessageVersions.keys.removeAll { it.sessionId in deletedSessionIds }
             taskNotificationPreviews.entries.removeAll { it.value.sessionId in deletedSessionIds }
+            completionObservations.entries.removeAll { it.value.sessionId in deletedSessionIds }
             return MatrixMlp3NativeProjectionResult(
                 terminal = terminal(type, event, payload, causation, sessionId),
                 changed = true,
             )
-        }
-
-        if (type == "project.snapshot" && projectId != null) {
-            val version = payload.requiredPositiveLong("snapshotVersion")
-            val current = projects[projectId]
-            if (current == null || version >= current.snapshotVersion) {
-                projects[projectId] = Project(
-                    id = projectId,
-                    snapshotVersion = version,
-                    name = payload.requiredString("name", 256),
-                    cwd = payload.requiredString("cwd", 8_192),
-                    provider = payload.requiredString("provider", 256),
-                    model = payload.optionalString("model", 256),
-                    reasoningEffort = payload.optionalString("reasoningEffort", 64),
-                    permissionMode = payload.requiredString("permissionMode", 128),
-                    installedExtensions = payload["installedExtensions"] as? JsonArray
-                        ?: JsonArray(emptyList()),
-                    defaultExtensions = payload["defaultExtensions"] as? JsonArray
-                        ?: JsonArray(emptyList()),
-                    extensionDefaultsRevision = payload.optionalLong("extensionDefaultsRevision")
-                        ?.takeIf { it > 0 }
-                        ?: 1,
-                    controlValues = payload["controls"] as? JsonObject ?: JsonObject(emptyMap()),
-                )
-                return MatrixMlp3NativeProjectionResult(changed = true)
-            }
-            return MatrixMlp3NativeProjectionResult()
         }
 
         if (type == "inbox.file.received" && projectId != null) {
@@ -588,6 +625,7 @@ internal class MatrixMlp3NativeProjection(
             sessions.remove(sessionId)
             assistantMessageVersions.keys.removeAll { it.sessionId == sessionId }
             taskNotificationPreviews.entries.removeAll { it.value.sessionId == sessionId }
+            completionObservations.entries.removeAll { it.value.sessionId == sessionId }
             providerHistoryPageStates.remove(sessionId)
             providerHistoryMessageParts.entries.removeAll { it.value.sessionId == sessionId }
             providerHistoryPageCommits.entries.removeAll { it.value.sessionId == sessionId }
@@ -760,6 +798,9 @@ internal class MatrixMlp3NativeProjection(
             }
         }
 
+        val eventTerminal = terminal(type, event, payload, causation, sessionId)
+        rememberCompletionObservation(type, eventTerminal, occurredAt)
+        sessionId?.let(::reconcileCompletedTurn)
         return MatrixMlp3NativeProjectionResult(
             messages = messages,
             progressedCommandId = when {
@@ -768,7 +809,7 @@ internal class MatrixMlp3NativeProjection(
                     payload.requiredString("state", 32) == "running" -> causation
                 else -> null
             },
-            terminal = terminal(type, event, payload, causation, sessionId),
+            terminal = eventTerminal,
             taskNotification = taskNotification(type, eventId, payload, causation, sessionId),
             changed = sessionId != null || messages.isNotEmpty(),
         )
@@ -1134,15 +1175,18 @@ internal class MatrixMlp3NativeProjection(
             causationCommandId = event.optionalString("causationCommandId", 256),
             payload = payload,
         )
+        val eventTerminal = terminal(
+            type = type,
+            event = event,
+            payload = payload,
+            commandId = event.optionalString("causationCommandId", 256),
+            sessionId = sessionId,
+        )
+        rememberCompletionObservation(type, eventTerminal, event.requiredLong("occurredAt"))
+        reconcileCompletedTurn(sessionId)
         val changed = sessions[sessionId] != current
         return MatrixMlp3NativeProjectionResult(
-            terminal = terminal(
-                type = type,
-                event = event,
-                payload = payload,
-                commandId = event.optionalString("causationCommandId", 256),
-                sessionId = sessionId,
-            ),
+            terminal = eventTerminal,
             changed = changed,
         )
     }
@@ -1219,6 +1263,7 @@ internal class MatrixMlp3NativeProjection(
         sessions.entries.removeAll { it.value.projectId !in projectIds }
         val retainedSessionIds = sessions.keys
         taskNotificationPreviews.entries.removeAll { it.value.sessionId !in retainedSessionIds }
+        completionObservations.entries.removeAll { it.value.sessionId !in retainedSessionIds }
     }
 
     @Synchronized
@@ -1235,6 +1280,7 @@ internal class MatrixMlp3NativeProjection(
         seenCommands.clear()
         assistantMessageVersions.clear()
         taskNotificationPreviews.clear()
+        completionObservations.clear()
     }
 
     @Synchronized
@@ -1287,11 +1333,14 @@ internal class MatrixMlp3NativeProjection(
             .toList()
             .takeLast(policy.assistantVersionLimit)
         val retainedSessionIds = retainedSessions.mapTo(mutableSetOf(), Session::id)
+        val retainedCompletionObservations = completionObservations.values
+            .filter { it.sessionId in retainedSessionIds }
+            .takeLast(policy.completionObservationLimit)
         val retainedTaskNotificationPreviews = taskNotificationPreviews.values
             .filter { it.sessionId in retainedSessionIds }
             .takeLast(MAX_TASK_NOTIFICATION_PREVIEWS)
         val value = buildJsonObject {
-            put("schemaVersion", 19)
+            put("schemaVersion", 20)
             put("projectCapabilities", buildJsonArray {
                 projectCapabilities.entries.sortedBy { it.key }.forEach { (projectId, capabilities) ->
                     add(buildJsonObject {
@@ -1393,6 +1442,15 @@ internal class MatrixMlp3NativeProjection(
                     })
                 }
             })
+            put("completionObservations", buildJsonArray {
+                retainedCompletionObservations.forEach { observation ->
+                    add(buildJsonObject {
+                        put("commandId", observation.commandId)
+                        put("sessionId", observation.sessionId)
+                        put("occurredAt", observation.occurredAt)
+                    })
+                }
+            })
             put("taskNotificationPreviews", buildJsonArray {
                 retainedTaskNotificationPreviews.forEach { preview ->
                     add(buildJsonObject {
@@ -1479,12 +1537,14 @@ internal class MatrixMlp3NativeProjection(
             retainedSeenCommands = retainedSeenCommands.size,
             totalAssistantVersions = assistantMessageVersions.size,
             retainedAssistantVersions = retainedAssistantVersions.size,
+            totalCompletionObservations = completionObservations.size,
+            retainedCompletionObservations = retainedCompletionObservations.size,
         )
     }
 
     private fun restore(value: JsonObject) {
         val schemaVersion = value.requiredLong("schemaVersion")
-        require(schemaVersion in 1L..19L)
+        require(schemaVersion in 1L..20L)
         val legacyWorkspaceCapabilities = if (schemaVersion == 1L || schemaVersion >= 9L) {
             null
         } else {
@@ -1851,6 +1911,30 @@ internal class MatrixMlp3NativeProjection(
                     assistantMessageVersions[key] = entry.requiredPositiveLong("version")
                 }
         }
+        if (schemaVersion >= 20L) {
+            value.requiredArray(
+                "completionObservations",
+                MAX_COMPLETION_OBSERVATIONS,
+            ).forEach { element ->
+                val item = element as? JsonObject
+                    ?: throw IllegalArgumentException("A completion observation is invalid.")
+                item.requireKeys(
+                    setOf("commandId", "sessionId", "occurredAt"),
+                    emptySet(),
+                    "Completion observation",
+                )
+                val observation = CompletionObservation(
+                    commandId = item.requiredString("commandId", 256),
+                    sessionId = item.requiredString("sessionId", 256),
+                    occurredAt = item.requiredLong("occurredAt").also { require(it >= 0) },
+                )
+                require(observation.sessionId in sessions)
+                require(completionObservations.put(
+                    completionObservationKey(observation.sessionId, observation.commandId),
+                    observation,
+                ) == null) { "A completion observation is duplicated." }
+            }
+        }
         if (schemaVersion >= 17L) {
             value.requiredArray(
                 "taskNotificationPreviews",
@@ -1889,6 +1973,7 @@ internal class MatrixMlp3NativeProjection(
             reconcileGatewayMaintenanceSession(observation.status, projectId)
         }
         gatewayUpdateStatus?.let { reconcileGatewayMaintenanceSession(it, null) }
+        sessions.keys.toList().forEach(::reconcileCompletedTurn)
     }
 
     private companion object {
@@ -1896,17 +1981,24 @@ internal class MatrixMlp3NativeProjection(
         const val MAX_DURABLE_SESSIONS = 4_000
         const val MAX_SESSION_TAIL_RECOVERY_TARGETS = 128
         const val MAX_TASK_NOTIFICATION_PREVIEWS = 128
+        const val MAX_COMPLETION_OBSERVATIONS = 10_000
         const val MAX_NOTIFICATION_BODY_CHARS = 2_048
         const val DEFAULT_DURABLE_TARGET_BYTES = 6 * 1024 * 1024
         const val MIN_DURABLE_TARGET_BYTES = 256 * 1024
         const val MAX_DURABLE_TARGET_BYTES = 8 * 1024 * 1024
         val ACTIVE_SESSION_ACTIVITIES = setOf("queued", "working", "attention")
         val DURABLE_RETENTION_POLICIES = listOf(
-            DurableRetentionPolicy(MAX_DURABLE_SESSIONS, MAX_SEEN_IDS, MAX_SEEN_IDS, MAX_SEEN_IDS),
-            DurableRetentionPolicy(2_000, 4_096, 4_096, 4_096),
-            DurableRetentionPolicy(1_000, 2_048, 2_048, 2_048),
-            DurableRetentionPolicy(256, 512, 512, 512),
-            DurableRetentionPolicy(64, 128, 128, 128),
+            DurableRetentionPolicy(
+                MAX_DURABLE_SESSIONS,
+                MAX_SEEN_IDS,
+                MAX_SEEN_IDS,
+                MAX_SEEN_IDS,
+                MAX_COMPLETION_OBSERVATIONS,
+            ),
+            DurableRetentionPolicy(2_000, 4_096, 4_096, 4_096, 4_096),
+            DurableRetentionPolicy(1_000, 2_048, 2_048, 2_048, 2_048),
+            DurableRetentionPolicy(256, 512, 512, 512, 512),
+            DurableRetentionPolicy(64, 128, 128, 128, 128),
         )
     }
 
@@ -1915,6 +2007,7 @@ internal class MatrixMlp3NativeProjection(
         val seenEventLimit: Int,
         val seenCommandLimit: Int,
         val assistantVersionLimit: Int,
+        val completionObservationLimit: Int,
     )
 
     private fun mergeNativeClientReleases(current: JsonArray, incoming: JsonArray): JsonArray {
@@ -2125,6 +2218,48 @@ internal class MatrixMlp3NativeProjection(
             sessions[sessionId] = current.copy(activeTurnId = turnId)
         }
     }
+
+    private fun rememberCompletionObservation(
+        type: String,
+        terminal: MatrixMlp3NativeTerminal?,
+        occurredAt: Long,
+    ): Boolean {
+        if (type !in setOf("turn.completed", "turn.failed", "command.rejected", "command.reconciled")) {
+            return false
+        }
+        val completed = terminal ?: return false
+        val sessionId = completed.sessionId ?: return false
+        val key = completionObservationKey(sessionId, completed.commandId)
+        val current = completionObservations[key]
+        if (current != null && current.occurredAt >= occurredAt) return false
+        completionObservations.remove(key)
+        completionObservations[key] = CompletionObservation(
+            commandId = completed.commandId,
+            sessionId = sessionId,
+            occurredAt = occurredAt,
+        )
+        while (completionObservations.size > MAX_COMPLETION_OBSERVATIONS) {
+            completionObservations.remove(completionObservations.keys.first())
+        }
+        return true
+    }
+
+    private fun reconcileCompletedTurn(sessionId: String): Boolean {
+        val current = sessions[sessionId] ?: return false
+        val activeTurnId = current.activeTurnId ?: return false
+        val completion = completionObservations[
+            completionObservationKey(sessionId, activeTurnId)
+        ] ?: return false
+        sessions[sessionId] = current.copy(
+            activity = "idle",
+            updatedAt = maxOf(current.updatedAt, completion.occurredAt),
+            activeTurnId = null,
+        )
+        return true
+    }
+
+    private fun completionObservationKey(sessionId: String, commandId: String): String =
+        "$sessionId\u0000$commandId"
 
     private fun terminal(
         type: String,

@@ -211,6 +211,75 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `replayed own session create cannot overwrite a newer Gateway terminal`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$ready-a",
+            null,
+        )
+        projection.applyGatewayEvent(turn("started", 2, "working"), "\$started-a", null)
+        projection.applyGatewayEvent(turn("completed", 3, "idle"), "\$completed-a", null)
+
+        projection.applyOwnCommand(
+            sessionCreateCommand("session-a", title = "Stale title"),
+            "\$root-a",
+            50,
+        )
+
+        val session = projection.snapshot()!!
+            .getValue("sessions").jsonArray.single().jsonObject
+        assertEquals("Session A", session.getValue("title").jsonPrimitive.content)
+        assertEquals("idle", session.getValue("status").jsonPrimitive.content)
+        assertEquals(3L, session.getValue("state_version").jsonPrimitive.content.toLong())
+        assertFalse("active_turn_id" in session)
+        assertEquals("\$root-a", projection.threadRootEventId("session-a"))
+    }
+
+    @Test
+    fun `terminal reconciliation remains authoritative over a delayed running event`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$root-a",
+            "\$root-a",
+        )
+        projection.applyGatewayEvent(
+            commandReconciledTerminal("session-a", "turn-1"),
+            "\$reconciled-a",
+            "\$root-a",
+        )
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        restored.applyGatewayEvent(turn("started", 2, "working"), "\$started-a", "\$root-a")
+
+        val session = restored.snapshot()!!
+            .getValue("sessions").jsonArray.single().jsonObject
+        assertEquals("idle", session.getValue("status").jsonPrimitive.content)
+        assertFalse("active_turn_id" in session)
+    }
+
+    @Test
+    fun `authoritative project snapshot can rebuild an evicted projection`() {
+        val projection = projection()
+        val snapshot = projectSnapshot()
+        projection.applyGatewayEvent(snapshot, "\$project", null)
+        projection.retainProjects(emptySet())
+        assertTrue(projection.projectedProjectIds().isEmpty())
+
+        val replay = projection.applyGatewayEvent(snapshot, "\$project", null)
+
+        assertTrue(replay.changed)
+        assertEquals(setOf("project-1"), projection.projectedProjectIds())
+    }
+
+    @Test
     fun `provider history room pages retain speaker order and durable frontier`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
@@ -1662,6 +1731,42 @@ class MatrixMlp3NativeProjectionTest {
                     "providerHistory" to providerHistory,
                 ))
             })
+        },
+    )
+
+    private fun sessionCreateCommand(
+        sessionId: String,
+        title: String,
+        projectId: String = "project-1",
+    ) = buildJsonObject {
+        put("commandId", "create-$sessionId")
+        put("deviceId", "device-1")
+        put("certificateId", "certificate-1")
+        put("sessionId", sessionId)
+        put("projectId", projectId)
+        put("operation", "session.create")
+        put("payload", buildJsonObject {
+            put("title", title)
+            put("initialPrompt", buildJsonObject { put("text", "Initial prompt") })
+        })
+    }
+
+    private fun commandReconciledTerminal(
+        sessionId: String,
+        commandId: String,
+    ) = event(
+        eventId = "reconciled-$commandId",
+        projectId = "project-1",
+        sessionId = sessionId,
+        causationCommandId = commandId,
+        payload = buildJsonObject {
+            put("type", "command.reconciled")
+            put("commandId", commandId)
+            put("state", "terminal")
+            put("acceptedAt", 100)
+            put("dispatchedAt", 200)
+            put("terminalAt", 300)
+            put("outcome", "succeeded")
         },
     )
 

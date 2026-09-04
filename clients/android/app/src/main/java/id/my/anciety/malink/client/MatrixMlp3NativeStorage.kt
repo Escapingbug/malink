@@ -781,6 +781,10 @@ internal fun persistMatrixMlp3ProjectionCache(
                     "assistant_versions" to durable.totalAssistantVersions.toString(),
                     "retained_assistant_versions" to
                         durable.retainedAssistantVersions.toString(),
+                    "completion_observations" to
+                        durable.totalCompletionObservations.toString(),
+                    "retained_completion_observations" to
+                        durable.retainedCompletionObservations.toString(),
                 ),
             )
         }
