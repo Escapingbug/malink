@@ -1360,6 +1360,56 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun saveAuthorizationFileToDownloads(filename: String, bytes: ByteArray): String {
+        val resolver = contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, filename)
+            put(MediaStore.Downloads.MIME_TYPE, AUTHORIZATION_TRANSFER_MIME_TYPE)
+            put(
+                MediaStore.Downloads.RELATIVE_PATH,
+                "${Environment.DIRECTORY_DOWNLOADS}/Malink",
+            )
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(
+            MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+            values,
+        ) ?: throw BridgeRuntimeFailure(
+            BridgeError.NATIVE_INTERNAL,
+            "Android could not create the authorization file in Downloads/Malink.",
+            retryable = true,
+        )
+        return try {
+            resolver.openOutputStream(uri, "w")?.use { output ->
+                output.write(bytes)
+                output.flush()
+            } ?: throw BridgeRuntimeFailure(
+                BridgeError.NATIVE_INTERNAL,
+                "Android could not write the authorization file to Downloads/Malink.",
+                retryable = true,
+            )
+            val committed = ContentValues().apply {
+                put(MediaStore.Downloads.IS_PENDING, 0)
+            }
+            if (resolver.update(uri, committed, null, null) <= 0) {
+                throw BridgeRuntimeFailure(
+                    BridgeError.NATIVE_INTERNAL,
+                    "Android could not finish saving the authorization file.",
+                    retryable = true,
+                )
+            }
+            val savedFilename = authorizationTransferDisplayName(uri) ?: filename
+            diagnostics.record(
+                "authorization_file.exported",
+                mapOf("filename" to savedFilename),
+            )
+            savedFilename
+        } catch (error: Throwable) {
+            runCatching { resolver.delete(uri, null, null) }
+            throw error
+        }
+    }
+
     private fun showRecoveryPage(detail: String) {
         showContent(messageView(
             title = "Malink is temporarily unavailable",
@@ -1611,6 +1661,11 @@ class MainActivity : ComponentActivity() {
 
         override suspend fun savePngImage(filename: String, bytes: ByteArray): String =
             withContext(Dispatchers.IO) { savePngImageToPictures(filename, bytes) }
+
+        override suspend fun saveAuthorizationFile(filename: String, bytes: ByteArray): String =
+            withContext(Dispatchers.IO) {
+                saveAuthorizationFileToDownloads(filename, bytes)
+            }
 
         private fun requireNativeUpdateManager(): NativeUpdateManager =
             updateManager ?: throw BridgeRuntimeFailure(

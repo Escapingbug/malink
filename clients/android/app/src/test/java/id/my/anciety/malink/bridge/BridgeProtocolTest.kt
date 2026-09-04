@@ -89,7 +89,8 @@ class BridgeProtocolTest {
                           {"name":"commands.orphan-retirement","versions":[1]},
                           {"name":"history.page","versions":[1,2,3]},
                           {"name":"client.diagnostics","versions":[1]},
-                          {"name":"client.image-save","versions":[1]}
+                          {"name":"client.image-save","versions":[1]},
+                          {"name":"client.authorization-export","versions":[1]}
                         ]
                     """.trimIndent(),
                 ),
@@ -107,6 +108,7 @@ class BridgeProtocolTest {
                 "history.page",
                 "client.diagnostics",
                 "client.image-save",
+                "client.authorization-export",
             ),
             capabilities.keys,
         )
@@ -193,6 +195,48 @@ class BridgeProtocolTest {
         successResult(dispatch(dispatcher, request))
         assertEquals(1, runtime.savedPngImages.size)
         assertEquals(8, runtime.savedPngImages.single().second)
+    }
+
+    @Test
+    fun `exports one bounded authorization file through native downloads`() {
+        val runtime = FakeRuntime()
+        val dispatcher = BridgeDispatcher(runtime, BRIDGE_SESSION_ID)
+        dispatch(
+            dispatcher,
+            helloRequest(
+                optionalCapabilities =
+                    """[{"name":"client.authorization-export","versions":[1]}]""",
+            ),
+        )
+        val request = """
+            {
+              "jsonrpc":"2.0",
+              "id":"authorization-export-1",
+              "method":"malink.authorization.export",
+              "params":{
+                "context":{"bridgeSessionId":"$BRIDGE_SESSION_ID"},
+                "idempotencyKey":"00000000-0000-4000-8000-000000000098",
+                "filename":"malink-authorization-20260904T100000Z.malink-auth",
+                "mimeType":"application/vnd.malink.authorization+json",
+                "contents":"{\"kind\":\"malink.authorization-transfer\",\"version\":1}"
+              }
+            }
+        """.trimIndent()
+
+        val response = successResult(dispatch(dispatcher, request))
+        assertEquals("saved", response.getValue("status").jsonPrimitive.content)
+        assertEquals(
+            "malink-authorization-20260904T100000Z.malink-auth",
+            response.getValue("filename").jsonPrimitive.content,
+        )
+        successResult(dispatch(dispatcher, request))
+        assertEquals(
+            listOf(
+                "malink-authorization-20260904T100000Z.malink-auth" to
+                    "{\"kind\":\"malink.authorization-transfer\",\"version\":1}",
+            ),
+            runtime.savedAuthorizationFiles,
+        )
     }
 
     @Test
@@ -703,6 +747,7 @@ class BridgeProtocolTest {
         var updateChecks = 0
         var diagnosticExports = 0
         val savedPngImages = mutableListOf<Pair<String, Int>>()
+        val savedAuthorizationFiles = mutableListOf<Pair<String, String>>()
         val loginTokenInputs = mutableListOf<Pair<String, String?>>()
         val disconnects = mutableListOf<String>()
         private var active = true
@@ -738,6 +783,11 @@ class BridgeProtocolTest {
 
         override suspend fun savePngImage(filename: String, bytes: ByteArray): String {
             savedPngImages += filename to bytes.size
+            return filename
+        }
+
+        override suspend fun saveAuthorizationFile(filename: String, bytes: ByteArray): String {
+            savedAuthorizationFiles += filename to bytes.toString(Charsets.UTF_8)
             return filename
         }
 

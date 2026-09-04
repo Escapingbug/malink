@@ -168,6 +168,8 @@ export interface MalinkClient {
   exportDiagnostics?(): Promise<boolean>;
   /** Saves a bounded QR PNG through the native platform image library. */
   savePngImage?(filename: string, dataBase64: string): Promise<boolean>;
+  /** Saves a bounded one-time authorization file to native public downloads. */
+  exportAuthorizationFile?(filename: string, contents: string): Promise<boolean>;
   signOut(): Promise<void>;
 
   disconnect(): Promise<void>;

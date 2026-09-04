@@ -1313,6 +1313,75 @@ test("does not send an image request to an APK without the optional save capabil
   client.dispose();
 });
 
+test("exports authorization files through the negotiated Android downloads surface", async () => {
+  const port = new RuntimePort();
+  const client = await createTestClient(port);
+  const contents = JSON.stringify({
+    kind: "malink.authorization-transfer",
+    version: 1,
+  });
+
+  assert.equal(
+    await client.exportAuthorizationFile(
+      "malink-authorization-20260904T100000Z.malink-auth",
+      contents,
+    ),
+    true,
+  );
+  const request = port.requests.find(
+    candidate => candidate.method === "malink.authorization.export",
+  );
+  assert.deepEqual(request?.params, {
+    context: { bridgeSessionId: "bridge-session-native-1" },
+    idempotencyKey:
+      (request?.params as
+        BridgeMethodParams["malink.authorization.export"] | undefined)
+        ?.idempotencyKey,
+    filename: "malink-authorization-20260904T100000Z.malink-auth",
+    mimeType: "application/vnd.malink.authorization+json",
+    contents,
+  });
+  assert.match(
+    (request?.params as BridgeMethodParams["malink.authorization.export"])
+      .idempotencyKey,
+    /^[0-9a-f-]{36}$/,
+  );
+  client.dispose();
+});
+
+test("does not claim authorization export on an APK without the optional capability", async () => {
+  const port = new RuntimePort();
+  const bridge = await acquireNativeRpcBridge(port);
+  const hello = await bridge.hello({
+    webBuild: "test-build",
+    requiredCapabilities: [],
+    optionalCapabilities: [
+      ...REQUIRED_NATIVE_CAPABILITIES,
+      ...OPTIONAL_NATIVE_CAPABILITIES,
+    ].map((name) => ({ name, versions: nativeCapabilityVersions(name) })),
+  });
+  const capabilities = { ...hello.capabilities };
+  delete capabilities["client.authorization-export"];
+  const client = new NativeBridgeClient(
+    bridge,
+    { ...hello, capabilities },
+    { onMessage() {}, onStatus() {} },
+  );
+  await client.ready;
+
+  assert.equal(
+    await client.exportAuthorizationFile("invitation.malink-auth", "{}"),
+    false,
+  );
+  assert.equal(
+    port.requests.some(
+      candidate => candidate.method === "malink.authorization.export",
+    ),
+    false,
+  );
+  client.dispose();
+});
+
 async function createTestClient(
   port: RuntimePort,
   onReview: (review: MalinkCommandReview | null) => void = () => {},
@@ -1430,6 +1499,11 @@ function responseFor(request: Request): unknown {
       };
     case "malink.image.save": {
       const params = request.params as BridgeMethodParams["malink.image.save"];
+      return { status: "saved", filename: params.filename };
+    }
+    case "malink.authorization.export": {
+      const params = request.params as
+        BridgeMethodParams["malink.authorization.export"];
       return { status: "saved", filename: params.filename };
     }
     case "malink.client.disconnect": {

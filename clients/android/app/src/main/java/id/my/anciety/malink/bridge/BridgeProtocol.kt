@@ -146,6 +146,7 @@ object BridgeProtocol {
         "malink.update.install",
         "malink.diagnostics.export",
         "malink.image.save",
+        "malink.authorization.export",
         "malink.events.subscribe",
         "malink.events.activate",
         "malink.events.ack",
@@ -360,6 +361,13 @@ interface BridgeRuntime {
             userAction = "update_native",
         )
 
+    suspend fun saveAuthorizationFile(filename: String, bytes: ByteArray): String =
+        throw BridgeRuntimeFailure(
+            BridgeError.CAPABILITY_UNAVAILABLE,
+            "Native authorization export is unavailable.",
+            userAction = "update_native",
+        )
+
     suspend fun markSessionRead(sessionId: String, projectId: String?): SessionReadUpdate =
         client().markSessionRead(sessionId, projectId)
 }
@@ -564,6 +572,40 @@ class BridgeDispatcher(
                         buildJsonObject {
                             put("status", "saved")
                             put("filename", runtime.savePngImage(filename, bytes))
+                        }
+                    } finally {
+                        bytes.fill(0)
+                    }
+                }
+            }
+            "malink.authorization.export" -> {
+                requireAuthorizationExportCapability()
+                requireContext(
+                    request.params,
+                    mutation = true,
+                    requiredExtra = setOf("filename", "mimeType", "contents"),
+                )
+                mutationResult(request) {
+                    val filename = requiredAuthorizationFilename(request.params, "filename")
+                    if (
+                        requiredString(request.params, "mimeType", 64) !=
+                        AUTHORIZATION_TRANSFER_MIME_TYPE
+                    ) {
+                        invalidParams("mimeType must be $AUTHORIZATION_TRANSFER_MIME_TYPE.")
+                    }
+                    val contents = requiredString(
+                        request.params,
+                        "contents",
+                        MAX_AUTHORIZATION_EXPORT_BYTES,
+                    )
+                    val bytes = contents.toByteArray(Charsets.UTF_8)
+                    try {
+                        if (bytes.size > MAX_AUTHORIZATION_EXPORT_BYTES) {
+                            invalidParams("Authorization file exceeds the native export limit.")
+                        }
+                        buildJsonObject {
+                            put("status", "saved")
+                            put("filename", runtime.saveAuthorizationFile(filename, bytes))
                         }
                     } finally {
                         bytes.fill(0)
@@ -1430,6 +1472,10 @@ class BridgeDispatcher(
         requiredString(value, key, 128).takeIf(PNG_FILENAME_PATTERN::matches)
             ?: invalidParams("$key must be a safe PNG filename.")
 
+    private fun requiredAuthorizationFilename(value: JsonObject, key: String): String =
+        requiredString(value, key, 128).takeIf(AUTHORIZATION_FILENAME_PATTERN::matches)
+            ?: invalidParams("$key must be a safe Malink authorization filename.")
+
     private fun ByteArray.hasPngSignature(): Boolean =
         size >= PNG_SIGNATURE.size && PNG_SIGNATURE.indices.all { index ->
             this[index] == PNG_SIGNATURE[index]
@@ -1548,6 +1594,16 @@ class BridgeDispatcher(
         }
     }
 
+    private fun requireAuthorizationExportCapability() {
+        if (NATIVE_AUTHORIZATION_EXPORT_CAPABILITY !in negotiatedCapabilities) {
+            throw BridgeDispatchException(
+                BridgeError.CAPABILITY_UNAVAILABLE,
+                "Native authorization export was not negotiated.",
+                userAction = "update_native",
+            )
+        }
+    }
+
     private fun requireCommandOrphanRetirementCapability() {
         if (COMMAND_ORPHAN_RETIREMENT_CAPABILITY !in negotiatedCapabilities) {
             throw BridgeDispatchException(
@@ -1587,6 +1643,7 @@ class BridgeDispatcher(
         const val PWA_SOURCE_CAPABILITY = "client.pwa-source"
         const val NATIVE_DIAGNOSTICS_CAPABILITY = "client.diagnostics"
         const val NATIVE_IMAGE_SAVE_CAPABILITY = "client.image-save"
+        const val NATIVE_AUTHORIZATION_EXPORT_CAPABILITY = "client.authorization-export"
         const val SESSION_READ_RECEIPTS_CAPABILITY = "session.read-receipts"
         val SUPPORTED_CAPABILITIES = setOf(
             "client.lifecycle",
@@ -1606,6 +1663,7 @@ class BridgeDispatcher(
             PWA_SOURCE_CAPABILITY,
             NATIVE_DIAGNOSTICS_CAPABILITY,
             NATIVE_IMAGE_SAVE_CAPABILITY,
+            NATIVE_AUTHORIZATION_EXPORT_CAPABILITY,
             SESSION_READ_RECEIPTS_CAPABILITY,
         )
         fun supportedCapabilityVersions(name: String): Set<Int> = when {
@@ -1620,7 +1678,12 @@ class BridgeDispatcher(
         const val MAX_EVENT_BATCH_BYTES = 256 * 1024
         const val MAX_IMAGE_SAVE_BYTES = 256 * 1024
         const val MAX_IMAGE_SAVE_BASE64_CHARACTERS = ((MAX_IMAGE_SAVE_BYTES + 2) / 3) * 4
+        const val MAX_AUTHORIZATION_EXPORT_BYTES = 128 * 1024
+        const val AUTHORIZATION_TRANSFER_MIME_TYPE =
+            "application/vnd.malink.authorization+json"
         val PNG_FILENAME_PATTERN = Regex("^[A-Za-z0-9][A-Za-z0-9._-]*\\.png$")
+        val AUTHORIZATION_FILENAME_PATTERN =
+            Regex("^[A-Za-z0-9][A-Za-z0-9._-]*\\.malink-auth$")
         val PNG_SIGNATURE = byteArrayOf(
             0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
         )

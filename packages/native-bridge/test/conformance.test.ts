@@ -767,6 +767,50 @@ describe("native bridge JSON-RPC conformance", () => {
     }))).toThrow(/bounded PNG/);
   });
 
+  it("strictly validates idempotent native authorization export", () => {
+    const contents = JSON.stringify({
+      kind: "malink.authorization-transfer",
+      version: 1,
+    });
+    const parsed = parseRpcRequest(request("malink.authorization.export", {
+      context,
+      idempotencyKey,
+      filename: "malink-authorization-20260904T100000Z.malink-auth",
+      mimeType: "application/vnd.malink.authorization+json",
+      contents,
+    }));
+    expect(parsed.method).toBe("malink.authorization.export");
+    expect(isMutationMethod(parsed.method)).toBe(true);
+
+    const result = parseMethodRpcResponse("malink.authorization.export", response({
+      status: "saved",
+      filename: "malink-authorization-20260904T100000Z.malink-auth",
+    }));
+    expect("result" in result && result.result.status).toBe("saved");
+
+    expect(() => parseRpcRequest(request("malink.authorization.export", {
+      context,
+      idempotencyKey,
+      filename: "../invitation.malink-auth",
+      mimeType: "application/vnd.malink.authorization+json",
+      contents,
+    }))).toThrow(/safe Malink authorization filename/);
+    expect(() => parseRpcRequest(request("malink.authorization.export", {
+      context,
+      idempotencyKey,
+      filename: "invitation.malink-auth",
+      mimeType: "application/json",
+      contents,
+    }))).toThrow(/application\/vnd\.malink\.authorization\+json/);
+    expect(() => parseRpcRequest(request("malink.authorization.export", {
+      context,
+      idempotencyKey,
+      filename: "invitation.malink-auth",
+      mimeType: "application/vnd.malink.authorization+json",
+      contents: "界".repeat(44_000),
+    }))).toThrow(/native export limit/);
+  });
+
   it("strictly validates replay subscription and activation cursors", () => {
     const subscribe = parseRpcRequest(request("malink.events.subscribe", {
       context,

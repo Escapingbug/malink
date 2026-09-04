@@ -67,6 +67,7 @@ export const OPTIONAL_NATIVE_CAPABILITIES = [
   "client.pwa-source",
   "client.diagnostics",
   "client.image-save",
+  "client.authorization-export",
 ] as const;
 
 export function nativeCapabilityVersions(
@@ -276,6 +277,25 @@ export class NativeBridgeClient implements MalinkClient {
       filename,
       mimeType: "image/png",
       dataBase64,
+    });
+    return true;
+  }
+
+  async exportAuthorizationFile(
+    filename: string,
+    contents: string,
+  ): Promise<boolean> {
+    if (
+      this.helloResult.capabilities["client.authorization-export"]?.version !== 1
+    ) {
+      return false;
+    }
+    await this.bridge.request("malink.authorization.export", {
+      context: this.bridge.context(),
+      idempotencyKey: crypto.randomUUID(),
+      filename,
+      mimeType: "application/vnd.malink.authorization+json",
+      contents,
     });
     return true;
   }

@@ -105,6 +105,7 @@ type Props = {
   onCreateInvitation(password?: string): void;
   onClearInvitation(): void;
   onSaveInvitationQr(filename: string, dataBase64: string): Promise<boolean>;
+  onExportAuthorizationFile(filename: string, contents: string): Promise<boolean>;
   onCreateGatewayEnrollment(): void;
   onApproveGatewayEnrollment(enrollmentId: string, approverProjectId?: string): void;
   onCancelGatewayEnrollment(request: GatewayEnrollmentPending): void;
@@ -191,6 +192,7 @@ function MatrixSettingsDialog({
   onCreateInvitation,
   onClearInvitation,
   onSaveInvitationQr,
+  onExportAuthorizationFile,
   onCreateGatewayEnrollment,
   onApproveGatewayEnrollment,
   onCancelGatewayEnrollment,
@@ -773,6 +775,7 @@ function MatrixSettingsDialog({
           onCreateInvitation={onCreateInvitation}
           onClearInvitation={onClearInvitation}
           onSaveQrCode={onSaveInvitationQr}
+          onExportAuthorizationFile={onExportAuthorizationFile}
           />}
 
         {(needsAccount || trustedGateway) && (

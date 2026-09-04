@@ -147,6 +147,9 @@ Bridge protocol version 1 currently implements:
   downloads for this action)
 - `client.image-save` v1 (saves a strictly bounded PNG invitation QR code to
   `Pictures/Malink`; the image stays on the device and never enters Matrix)
+- `client.authorization-export` v1 (saves a strictly bounded one-time
+  `.malink-auth` invitation to `Downloads/Malink`; the hosted Web UI waits for
+  Android to confirm the write before reporting success)
 - `background.foreground-service`
 
 The bridge has strict schemas, a 512 KiB RPC envelope limit, 256 KiB event
