@@ -119,7 +119,10 @@ import {
 } from "./GatewayUpdateDialog";
 import { PrivilegeTotpDialog } from "./PrivilegeTotpDialog";
 import { ProviderControls } from "./ProviderControls";
-import { legacyProviderControls } from "./providerControlCompatibility";
+import {
+  activeProviderControls as mergeActiveProviderControls,
+  legacyProviderControls,
+} from "./providerControlCompatibility";
 import {
   enrollPrivilegeTotp,
   forgetPrivilegeTotp,
@@ -3002,16 +3005,18 @@ function MalinkAppRuntime() {
   const activeProviderModels = activeProviderCapability?.models
     ?? activeCapabilities?.models
     ?? [];
-  const activeProviderControls = selected?.controls?.length
-    ? selected.controls
-    : activeProviderCapability?.controls !== undefined
-      ? activeProviderCapability.controls
-      : activeCapabilities?.controls !== undefined
-        ? activeCapabilities.controls
-        : legacyProviderControls(
-            activeProviderModels,
-            activeCapabilities?.permissionModes ?? [],
-          );
+  const activeCapabilityControls = activeProviderCapability?.controls !== undefined
+    ? activeProviderCapability.controls
+    : activeCapabilities?.controls !== undefined
+      ? activeCapabilities.controls
+      : legacyProviderControls(
+          activeProviderModels,
+          activeCapabilities?.permissionModes ?? [],
+        );
+  const activeProviderControls = mergeActiveProviderControls(
+    selected?.controls,
+    activeCapabilityControls,
+  );
   const activeProviderControlValues: ProviderControlValues = {
     ...(selected?.controlValues ?? {}),
     ...(selected?.model ? { model: selected.model } : {}),

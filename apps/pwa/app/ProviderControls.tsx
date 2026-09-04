@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import type {
   ProviderControl,
   ProviderControlSurface,
@@ -28,6 +29,7 @@ export function ProviderControls({
 }: Props) {
   const available = controls.filter(control => control.surfaces.includes(surface));
   const effectiveValues = effectiveControlValues(available, values);
+  const now = useControlDeadlineClock(available);
 
   const update = (control: ProviderControl, value: ProviderControlValue | undefined) => {
     const next = { ...values };
@@ -49,16 +51,20 @@ export function ProviderControls({
           && options.length === 0
         ) return null;
         const value = effectiveValues[control.id];
+        const loadingExpired = control.status === "loading"
+          && control.deadlineAt !== undefined
+          && control.deadlineAt <= now;
+        const presentedControl = loadingExpired ? expiredLoadingControl(control) : control;
         return (
           <div
-            className={`provider-control provider-control-${control.status}`}
+            className={`provider-control provider-control-${presentedControl.status}`}
             key={control.id}
             data-control-id={control.id}
           >
-            {control.status === "loading" ? (
-              <ControlDiagnostic control={control} loading />
-            ) : control.status === "error" ? (
-              <ControlDiagnostic control={control} />
+            {presentedControl.status === "loading" ? (
+              <ControlDiagnostic control={presentedControl} loading />
+            ) : presentedControl.status === "error" ? (
+              <ControlDiagnostic control={presentedControl} />
             ) : (
               <>
                 {control.renderer === "toggle" ? (
@@ -134,6 +140,43 @@ export function ProviderControls({
       })}
     </div>
   );
+}
+
+function useControlDeadlineClock(controls: readonly ProviderControl[]): number {
+  const [now, setNow] = useState(() => Date.now());
+  const nextDeadline = controls.reduce<number | undefined>((nearest, control) => {
+    if (control.status !== "loading" || control.deadlineAt === undefined) return nearest;
+    if (control.deadlineAt <= now) return nearest;
+    if (nearest === undefined || control.deadlineAt < nearest) return control.deadlineAt;
+    return nearest;
+  }, undefined);
+
+  useEffect(() => {
+    if (nextDeadline === undefined || nextDeadline <= now) return;
+    const timer = window.setTimeout(
+      () => setNow(Date.now()),
+      Math.max(0, nextDeadline - Date.now()) + 25,
+    );
+    return () => window.clearTimeout(timer);
+  }, [nextDeadline, now]);
+
+  return now;
+}
+
+function expiredLoadingControl(control: ProviderControl): ProviderControl {
+  const deadline = control.deadlineAt === undefined
+    ? "unknown"
+    : new Date(control.deadlineAt).toISOString();
+  return {
+    ...control,
+    status: "error",
+    error: {
+      code: "catalog_timeout",
+      message: "The provider did not report its choices before the loading deadline. The Gateway may still be retrying or its latest update may not have arrived.",
+      detail: `The last received loading state expired at ${deadline}.`,
+      retryable: true,
+    },
+  };
 }
 
 function ControlDiagnostic({

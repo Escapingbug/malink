@@ -67,6 +67,47 @@ export function legacyProviderControls(
   return controls;
 }
 
+/**
+ * Session projections contain the controls that were known when the last
+ * session event was published. Workspace capabilities are refreshed
+ * independently, so a catalog-backed session control can otherwise remain
+ * stuck on an older loading/error state forever.
+ *
+ * ACP session controls do not carry checkedAt and remain authoritative for an
+ * active session (they contain the provider's actual current value/options).
+ * For catalog-backed controls, prefer whichever snapshot was checked later.
+ */
+export function activeProviderControls(
+  sessionControls: readonly ProviderControl[] = [],
+  capabilityControls: readonly ProviderControl[] = [],
+): ProviderControl[] {
+  const merged = new Map<string, ProviderControl>();
+  for (const control of capabilityControls) {
+    merged.set(control.id, structuredClone(control));
+  }
+  for (const sessionControl of sessionControls) {
+    const capabilityControl = merged.get(sessionControl.id);
+    if (!capabilityControl || preferSessionControl(sessionControl, capabilityControl)) {
+      merged.set(sessionControl.id, structuredClone(sessionControl));
+      continue;
+    }
+    merged.set(sessionControl.id, {
+      ...structuredClone(capabilityControl),
+      ...(sessionControl.value === undefined ? {} : { value: sessionControl.value }),
+    });
+  }
+  return [...merged.values()];
+}
+
+function preferSessionControl(
+  sessionControl: ProviderControl,
+  capabilityControl: ProviderControl,
+): boolean {
+  if (sessionControl.checkedAt === undefined) return true;
+  if (capabilityControl.checkedAt === undefined) return false;
+  return sessionControl.checkedAt >= capabilityControl.checkedAt;
+}
+
 export function submittableProviderControlValues(
   controls: readonly ProviderControl[],
   surface: ProviderControlSurface,
