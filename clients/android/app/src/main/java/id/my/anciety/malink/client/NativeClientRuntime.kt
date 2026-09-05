@@ -2363,6 +2363,9 @@ class NativeClientRuntime(
                         }
                     }
                     val progress = mutex.withLock { workspaceProjectionProgress() }
+                    val incompleteCatalogProjects = mutex.withLock {
+                        matrixMlp3Projection.incompleteProviderCatalogProjectIds()
+                    }
                     diagnostics.record(
                         "matrix.v3_projection.progress",
                         mapOf(
@@ -2371,9 +2374,10 @@ class NativeClientRuntime(
                             "projected" to progress.projectedProjectIds.size.toString(),
                             "loaded" to progress.loadedProjectIds.size.toString(),
                             "missing" to progress.missingProjectIds.size.toString(),
+                            "catalog_incomplete" to incompleteCatalogProjects.size.toString(),
                         ),
                     )
-                    if (progress.complete && refreshed) {
+                    if (progress.complete && incompleteCatalogProjects.isEmpty() && refreshed) {
                         diagnostics.record("matrix.v3_projection.converged")
                         break
                     }
@@ -2381,7 +2385,9 @@ class NativeClientRuntime(
                     completedAttempts += 1
                     val delayMs = authoritativeStateRefreshRetryDelayMs(completedAttempts)
                     targetRoomIds = mutex.withLock {
-                        workspaceProjectRoomIds(progress.missingProjectIds)
+                        workspaceProjectRoomIds(
+                            progress.missingProjectIds + incompleteCatalogProjects,
+                        )
                     }.ifEmpty { null }
                     diagnostics.record(
                         "matrix.v3_projection.refresh_retry_scheduled",
@@ -2764,6 +2770,14 @@ class NativeClientRuntime(
         result.terminal?.let(::recordMatrixMlp3Terminal)
         result.taskNotification?.let(taskNotificationCoordinator::accept)
         commitMatrixMlp3Projection("gateway_event")
+        if (
+            protocolPayload.string("type") in setOf(
+                "provider.catalog.page",
+                "provider.catalog.manifest",
+            ) && matrixMlp3Projection.incompleteProviderCatalogProjectIds().isNotEmpty()
+        ) {
+            startMatrixMlp3ProjectionRefresh()
+        }
         scheduleSessionReadReceiptReconciliation()
         return true
     }

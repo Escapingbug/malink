@@ -666,7 +666,7 @@ export async function connectMatrixMlp3(
         }
       }
       await replayProviderCatalogState(context.room, event =>
-        ingestSecondaryEvent(context, event));
+        ingestSecondaryEvent(context, event), context.protocol);
       for (const event of context.room.getLiveTimeline().getEvents()) {
         await ingestSecondaryEvent(context, event);
       }
@@ -705,10 +705,7 @@ export async function connectMatrixMlp3(
     }
     if (
       event.isDecryptionFailure()
-      || (
-        event.getType() !== "m.room.message"
-        && event.getType() !== MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE
-      )
+      || !isMatrixMlp3ProjectionEventType(event.getType())
     ) return;
     const eventId = event.getId();
     const sender = event.getSender();
@@ -731,10 +728,7 @@ export async function connectMatrixMlp3(
     }
     if (
       event.isDecryptionFailure()
-      || (
-        event.getType() !== "m.room.message"
-        && event.getType() !== MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE
-      )
+      || !isMatrixMlp3ProjectionEventType(event.getType())
     ) return;
     const eventId = event.getId();
     const sender = event.getSender();
@@ -1044,7 +1038,7 @@ export async function connectMatrixMlp3(
     if (event.isEncrypted() || event.getType() === "m.room.encrypted") {
       await client.decryptEventIfNeeded(event);
     }
-    if (event.isDecryptionFailure() || event.getType() !== "m.room.message") return;
+    if (event.isDecryptionFailure() || !isMatrixMlp3ProjectionEventType(event.getType())) return;
     const eventId = event.getId();
     const sender = event.getSender();
     if (!eventId || !sender) return;
@@ -1282,6 +1276,7 @@ export async function connectMatrixMlp3(
   const replayProviderCatalogState = async (
     targetRoom: Room,
     ingest: (event: MatrixEvent) => Promise<void>,
+    targetProtocol: MatrixMlp3ProtocolClient,
   ): Promise<void> => {
     const states = targetRoom.currentState.getStateEvents(
       MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
@@ -1289,6 +1284,22 @@ export async function connectMatrixMlp3(
     const events = Array.isArray(states) ? states : states ? [states] : [];
     // Pages and manifests are order-independent in the durable projection.
     for (const event of events) await ingest(event);
+    const catalogs = targetProtocol.projection.providerModelCatalogs();
+    if (catalogs.length > 0 && catalogs.every(catalog => catalog.complete)) {
+      return;
+    }
+    // The SDK's cached Room State can be between a manifest and its pages after
+    // an interrupted sync. Read the authoritative bounded state once so a
+    // locally missing page cannot leave model selection disabled forever.
+    const current = await withMatrixTimeout(
+      client.roomState(targetRoom.roomId),
+      MATRIX_HISTORY_REQUEST_TIMEOUT_MS,
+      "The Provider Catalog Room State did not load in time.",
+    );
+    for (const raw of current) {
+      if (raw.type !== MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE) continue;
+      await ingest(new sdk.MatrixEvent(raw));
+    }
   };
 
   const replayThreadDirectory = async (
@@ -1398,9 +1409,9 @@ export async function connectMatrixMlp3(
     if (readiness.beginBlockingRecovery()) {
       handlers.onStatus("connecting", "matrix_gateway_state_syncing");
     }
+    const active = protocol;
+    if (!active) throw new Error("The MLP/3 project is not initialized.");
     if (!authoritativeProjectionPrepared) {
-      const active = protocol;
-      if (!active) throw new Error("The MLP/3 project is not initialized.");
       await active.prepareAuthoritativeRecovery();
       authoritativeProjectionPrepared = true;
     }
@@ -1415,7 +1426,7 @@ export async function connectMatrixMlp3(
       ].filter((value): value is string => value !== null).join(" and ");
       throw new Error(`The Gateway has not published the current ${missing} snapshot pointer.`);
     }
-    if (room) await replayProviderCatalogState(room, ingestEvent);
+    if (room) await replayProviderCatalogState(room, ingestEvent, active);
     await replayKnownTimeline();
     await protocol?.retryPending();
     await checkpointMatrixSync(activeWorkspaceProtocols());
@@ -2443,6 +2454,11 @@ function workspaceRoutesFromProtocols(
       gatewayMatrixEd25519: gateway.transport.ed25519,
     })),
   );
+}
+
+export function isMatrixMlp3ProjectionEventType(eventType: string): boolean {
+  return eventType === "m.room.message"
+    || eventType === MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE;
 }
 
 function isMatrixNotFound(error: unknown): boolean {

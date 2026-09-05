@@ -221,6 +221,7 @@ internal class MatrixMlp3NativeProjection(
 
     private data class ProviderCatalogPage(
         val logicalEventId: String,
+        val projectId: String,
         val providerId: String,
         val revision: String,
         val pageIndex: Int,
@@ -231,6 +232,7 @@ internal class MatrixMlp3NativeProjection(
 
     private data class ProviderCatalogManifest(
         val logicalEventId: String,
+        val projectId: String,
         val providerId: String,
         val revision: String,
         val status: String,
@@ -443,6 +445,9 @@ internal class MatrixMlp3NativeProjection(
 
         if (type == "provider.catalog.page") {
             if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
+            val catalogProjectId = requireNotNull(projectId) {
+                "The Provider Catalog page does not identify its project."
+            }
             payload.requireKeys(
                 setOf(
                     "type", "providerId", "catalog", "revision", "pageIndex",
@@ -465,6 +470,7 @@ internal class MatrixMlp3NativeProjection(
             validateCatalogModels(items, "Provider Catalog page")
             val page = ProviderCatalogPage(
                 logicalEventId = eventId,
+                projectId = catalogProjectId,
                 providerId = providerId,
                 revision = revision,
                 pageIndex = pageIndex,
@@ -472,7 +478,12 @@ internal class MatrixMlp3NativeProjection(
                 items = items,
                 occurredAt = occurredAt,
             )
-            val key = providerCatalogPageKey(providerId, revision, pageIndex)
+            val key = providerCatalogPageKey(
+                catalogProjectId,
+                providerId,
+                revision,
+                pageIndex,
+            )
             val current = providerCatalogPages[key]
             if (current == null || isNewerCatalogEvent(
                 current.occurredAt,
@@ -481,13 +492,16 @@ internal class MatrixMlp3NativeProjection(
                 eventId,
             )) {
                 providerCatalogPages[key] = page
-                pruneProviderCatalogPages(providerId)
+                pruneProviderCatalogPages(catalogProjectId, providerId)
             }
             return MatrixMlp3NativeProjectionResult(changed = true)
         }
 
         if (type == "provider.catalog.manifest") {
             if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
+            val catalogProjectId = requireNotNull(projectId) {
+                "The Provider Catalog manifest does not identify its project."
+            }
             payload.requireKeys(
                 setOf(
                     "type", "providerId", "catalog", "revision", "status",
@@ -516,6 +530,7 @@ internal class MatrixMlp3NativeProjection(
             require((status in setOf("error", "stale")) == (error != null))
             val manifest = ProviderCatalogManifest(
                 logicalEventId = eventId,
+                projectId = catalogProjectId,
                 providerId = providerId,
                 revision = revision,
                 status = status,
@@ -524,15 +539,16 @@ internal class MatrixMlp3NativeProjection(
                 error = error,
                 occurredAt = occurredAt,
             )
-            val current = providerCatalogManifests[providerId]
+            val manifestKey = providerCatalogManifestKey(catalogProjectId, providerId)
+            val current = providerCatalogManifests[manifestKey]
             if (current == null || isNewerCatalogEvent(
                 current.occurredAt,
                 current.logicalEventId,
                 occurredAt,
                 eventId,
             )) {
-                providerCatalogManifests[providerId] = manifest
-                pruneProviderCatalogPages(providerId)
+                providerCatalogManifests[manifestKey] = manifest
+                pruneProviderCatalogPages(catalogProjectId, providerId)
             }
             return MatrixMlp3NativeProjectionResult(changed = true)
         }
@@ -1014,11 +1030,13 @@ internal class MatrixMlp3NativeProjection(
         capabilitiesWithProviderCatalogs(
             projectCapabilities[project.id]?.value
                 ?: defaultCapabilities(project.installedExtensions),
+            project.id,
             project.provider,
         )
 
     private fun capabilitiesWithProviderCatalogs(
         capabilities: JsonObject,
+        projectId: String,
         currentProvider: String,
     ): JsonObject {
         val providers = capabilities["providers"] as? JsonArray ?: return capabilities
@@ -1027,7 +1045,9 @@ internal class MatrixMlp3NativeProjection(
                 val provider = element as? JsonObject
                     ?: throw IllegalArgumentException("A provider capability is invalid.")
                 val providerId = provider.requiredString("id", 256)
-                val manifest = providerCatalogManifests[providerId]
+                val manifest = providerCatalogManifests[
+                    providerCatalogManifestKey(projectId, providerId)
+                ]
                 if (manifest == null) {
                     add(provider)
                     return@forEach
@@ -1055,11 +1075,31 @@ internal class MatrixMlp3NativeProjection(
         return JsonObject(merged)
     }
 
+    @Synchronized
+    fun incompleteProviderCatalogProjectIds(): Set<String> =
+        providerCatalogManifests.values
+            .filterNot(::providerCatalogIsComplete)
+            .mapTo(linkedSetOf(), ProviderCatalogManifest::projectId)
+
+    private fun providerCatalogIsComplete(manifest: ProviderCatalogManifest): Boolean {
+        if (manifest.pageCount == 0) return manifest.itemCount == 0
+        val pages = providerCatalogPages.values.filter {
+            it.projectId == manifest.projectId &&
+                it.providerId == manifest.providerId &&
+                it.revision == manifest.revision &&
+                it.pageCount == manifest.pageCount
+        }
+        return pages.size == manifest.pageCount &&
+            pages.map(ProviderCatalogPage::pageIndex).toSet().size == manifest.pageCount &&
+            pages.sumOf { it.items.size } == manifest.itemCount
+    }
+
     private fun completeProviderCatalogModels(manifest: ProviderCatalogManifest): JsonArray {
         if (manifest.pageCount == 0) return JsonArray(emptyList())
         val pages = providerCatalogPages.values
             .filter {
-                it.providerId == manifest.providerId &&
+                it.projectId == manifest.projectId &&
+                    it.providerId == manifest.providerId &&
                     it.revision == manifest.revision &&
                     it.pageCount == manifest.pageCount
             }
@@ -1846,6 +1886,7 @@ internal class MatrixMlp3NativeProjection(
             put("providerCatalogPages", buildJsonArray {
                 providerCatalogPages.values
                     .sortedWith(compareBy(
+                        ProviderCatalogPage::projectId,
                         ProviderCatalogPage::providerId,
                         ProviderCatalogPage::revision,
                         ProviderCatalogPage::pageIndex,
@@ -1853,6 +1894,7 @@ internal class MatrixMlp3NativeProjection(
                     .forEach { page ->
                         add(buildJsonObject {
                             put("logicalEventId", page.logicalEventId)
+                            put("projectId", page.projectId)
                             put("providerId", page.providerId)
                             put("revision", page.revision)
                             put("pageIndex", page.pageIndex)
@@ -1863,10 +1905,14 @@ internal class MatrixMlp3NativeProjection(
                     }
             })
             put("providerCatalogManifests", buildJsonArray {
-                providerCatalogManifests.values.sortedBy(ProviderCatalogManifest::providerId)
+                providerCatalogManifests.values.sortedWith(compareBy(
+                    ProviderCatalogManifest::projectId,
+                    ProviderCatalogManifest::providerId,
+                ))
                     .forEach { manifest ->
                         add(buildJsonObject {
                             put("logicalEventId", manifest.logicalEventId)
+                            put("projectId", manifest.projectId)
                             put("providerId", manifest.providerId)
                             put("revision", manifest.revision)
                             put("status", manifest.status)
@@ -2245,22 +2291,19 @@ internal class MatrixMlp3NativeProjection(
                 ) == null) { "A Provider History page commit is duplicated." }
             }
         }
-        if (
-            schemaVersion >= 21L ||
-            "providerCatalogPages" in value ||
-            "providerCatalogManifests" in value
-        ) {
+        if (schemaVersion >= 22L) {
             value.requiredArray("providerCatalogPages", 8_192).forEach { element ->
                 val item = element as? JsonObject
                     ?: throw IllegalArgumentException("A Provider Catalog page is invalid.")
                 item.requireKeys(
                     setOf(
-                        "logicalEventId", "providerId", "revision", "pageIndex",
+                        "logicalEventId", "projectId", "providerId", "revision", "pageIndex",
                         "pageCount", "items", "occurredAt",
                     ),
                     emptySet(),
                     "Provider Catalog page",
                 )
+                val projectId = item.requiredString("projectId", 256)
                 val providerId = item.requiredString("providerId", 256)
                 val revision = item.requiredString("revision", 43)
                 require(revision.matches(Regex("^[A-Za-z0-9_-]{43}$")))
@@ -2276,6 +2319,7 @@ internal class MatrixMlp3NativeProjection(
                 validateCatalogModels(items, "Provider Catalog page")
                 val page = ProviderCatalogPage(
                     logicalEventId = item.requiredString("logicalEventId", 256),
+                    projectId = projectId,
                     providerId = providerId,
                     revision = revision,
                     pageIndex = pageIndex,
@@ -2284,21 +2328,22 @@ internal class MatrixMlp3NativeProjection(
                     occurredAt = item.requiredLong("occurredAt").also { require(it >= 0) },
                 )
                 require(providerCatalogPages.put(
-                    providerCatalogPageKey(providerId, revision, pageIndex),
+                    providerCatalogPageKey(projectId, providerId, revision, pageIndex),
                     page,
                 ) == null) { "A Provider Catalog page is duplicated." }
             }
-            value.requiredArray("providerCatalogManifests", 64).forEach { element ->
+            value.requiredArray("providerCatalogManifests", 4_096).forEach { element ->
                 val item = element as? JsonObject
                     ?: throw IllegalArgumentException("A Provider Catalog manifest is invalid.")
                 item.requireKeys(
                     setOf(
-                        "logicalEventId", "providerId", "revision", "status",
+                        "logicalEventId", "projectId", "providerId", "revision", "status",
                         "itemCount", "pageCount", "occurredAt",
                     ),
                     setOf("error"),
                     "Provider Catalog manifest",
                 )
+                val projectId = item.requiredString("projectId", 256)
                 val providerId = item.requiredString("providerId", 256)
                 val revision = item.requiredString("revision", 43)
                 require(revision.matches(Regex("^[A-Za-z0-9_-]{43}$")))
@@ -2318,6 +2363,7 @@ internal class MatrixMlp3NativeProjection(
                 require((status in setOf("error", "stale")) == (error != null))
                 val manifest = ProviderCatalogManifest(
                     logicalEventId = item.requiredString("logicalEventId", 256),
+                    projectId = projectId,
                     providerId = providerId,
                     revision = revision,
                     status = status,
@@ -2326,10 +2372,13 @@ internal class MatrixMlp3NativeProjection(
                     error = error,
                     occurredAt = item.requiredLong("occurredAt").also { require(it >= 0) },
                 )
-                require(providerCatalogManifests.put(providerId, manifest) == null) {
+                require(providerCatalogManifests.put(
+                    providerCatalogManifestKey(projectId, providerId),
+                    manifest,
+                ) == null) {
                     "A Provider Catalog manifest is duplicated."
                 }
-                pruneProviderCatalogPages(providerId)
+                pruneProviderCatalogPages(projectId, providerId)
             }
         }
         if (schemaVersion >= 3L) {
@@ -2353,6 +2402,18 @@ internal class MatrixMlp3NativeProjection(
         }
         (value["seenEvents"] as? JsonArray).orEmpty().takeLast(MAX_SEEN_IDS).forEach {
             seenEvents += it.jsonPrimitive.content
+        }
+        if (schemaVersion < 22L) {
+            // Schema 21 stored catalogs only by provider. In a multi-project
+            // Workspace those entries may belong to another Gateway, so they
+            // cannot be migrated safely. Forget their dedupe IDs as well and
+            // rebuild the project-scoped catalogs from authoritative Room State.
+            listOf("providerCatalogPages", "providerCatalogManifests").forEach { field ->
+                (value[field] as? JsonArray).orEmpty().forEach { element ->
+                    val item = element as? JsonObject ?: return@forEach
+                    item.optionalString("logicalEventId", 256)?.let(seenEvents::remove)
+                }
+            }
         }
         (value["seenCommands"] as? JsonArray).orEmpty().takeLast(MAX_SEEN_IDS).forEach {
             seenCommands += it.jsonPrimitive.content
@@ -3235,10 +3296,16 @@ internal class MatrixMlp3NativeProjection(
     }
 
     private fun providerCatalogPageKey(
+        projectId: String,
         providerId: String,
         revision: String,
         pageIndex: Int,
-    ): String = "$providerId\u0000$revision\u0000$pageIndex"
+    ): String = "$projectId\u0000$providerId\u0000$revision\u0000$pageIndex"
+
+    private fun providerCatalogManifestKey(
+        projectId: String,
+        providerId: String,
+    ): String = "$projectId\u0000$providerId"
 
     private fun isNewerCatalogEvent(
         currentOccurredAt: Long,
@@ -3248,10 +3315,12 @@ internal class MatrixMlp3NativeProjection(
     ): Boolean = nextOccurredAt > currentOccurredAt ||
         (nextOccurredAt == currentOccurredAt && nextLogicalEventId > currentLogicalEventId)
 
-    private fun pruneProviderCatalogPages(providerId: String) {
-        val manifestRevision = providerCatalogManifests[providerId]?.revision
+    private fun pruneProviderCatalogPages(projectId: String, providerId: String) {
+        val manifestRevision = providerCatalogManifests[
+            providerCatalogManifestKey(projectId, providerId)
+        ]?.revision
         val revisions = providerCatalogPages.values
-            .filter { it.providerId == providerId }
+            .filter { it.projectId == projectId && it.providerId == providerId }
             .groupBy(ProviderCatalogPage::revision)
             .mapValues { (_, pages) -> pages.maxOf(ProviderCatalogPage::occurredAt) }
             .entries
@@ -3262,7 +3331,9 @@ internal class MatrixMlp3NativeProjection(
             .take(2)
             .mapTo(mutableSetOf()) { it.key }
         providerCatalogPages.entries.removeAll { (_, page) ->
-            page.providerId == providerId && page.revision !in revisions
+            page.projectId == projectId &&
+                page.providerId == providerId &&
+                page.revision !in revisions
         }
     }
 

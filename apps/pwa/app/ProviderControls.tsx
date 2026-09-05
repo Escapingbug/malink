@@ -163,7 +163,7 @@ function expiredLoadingControl(control: ProviderControl): ProviderControl {
     status: "error",
     error: {
       code: "catalog_timeout",
-      message: "The provider is taking longer than expected. The Gateway will keep retrying.",
+      message: "Model choices have not finished syncing. Malink will recover this project's signed catalog automatically.",
       retryable: true,
     },
   };

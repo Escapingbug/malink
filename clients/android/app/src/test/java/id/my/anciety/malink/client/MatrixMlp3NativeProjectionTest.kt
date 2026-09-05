@@ -57,6 +57,109 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `provider catalogs remain isolated per project and report incomplete recovery targets`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project-1", null)
+        projection.applyGatewayEvent(
+            projectSnapshot("project-2", "Project Two", "/workspace/two"),
+            "\$project-2",
+            null,
+        )
+        projection.applyGatewayEvent(workspaceSnapshot(1, "inline-one"), "\$workspace-1", null)
+        projection.applyGatewayEvent(
+            workspaceSnapshot(1, "inline-two", projectId = "project-2"),
+            "\$workspace-2",
+            null,
+        )
+        projection.applyGatewayEvent(
+            providerCatalogManifest(1, 1, "project-1", "a".repeat(43)),
+            "\$manifest-1",
+            null,
+        )
+        assertEquals(setOf("project-1"), projection.incompleteProviderCatalogProjectIds())
+        projection.applyGatewayEvent(
+            providerCatalogPage(0, "model-one", "project-1", "a".repeat(43), 1),
+            "\$page-1",
+            null,
+        )
+        projection.applyGatewayEvent(
+            providerCatalogManifest(1, 1, "project-2", "b".repeat(43)),
+            "\$manifest-2",
+            null,
+        )
+        projection.applyGatewayEvent(
+            providerCatalogPage(0, "model-two", "project-2", "b".repeat(43), 1),
+            "\$page-2",
+            null,
+        )
+
+        assertTrue(projection.incompleteProviderCatalogProjectIds().isEmpty())
+        val projectModels = projection.snapshot()!!.getValue("projects").jsonArray.associate {
+            val project = it.jsonObject
+            project.getValue("project_id").jsonPrimitive.content to
+                project.getValue("capabilities").jsonObject.getValue("models")
+                    .jsonArray.single().jsonObject.getValue("id").jsonPrimitive.content
+        }
+        assertEquals(
+            mapOf("project-1" to "model-one", "project-2" to "model-two"),
+            projectModels,
+        )
+    }
+
+    @Test
+    fun `legacy unscoped catalogs are discarded and can be recovered with the same event identity`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(workspaceSnapshot(1, "inline-old"), "\$workspace", null)
+        projection.applyGatewayEvent(providerCatalogManifest(1, 1), "\$manifest", null)
+        projection.applyGatewayEvent(
+            providerCatalogPage(0, "model-new", pageCount = 1),
+            "\$page",
+            null,
+        )
+        val current = projection.durableState()
+        val legacy = JsonObject(current
+            .filterKeys { it !in setOf("providerCatalogPages", "providerCatalogManifests") } +
+            mapOf(
+                "schemaVersion" to JsonPrimitive(21),
+                "providerCatalogPages" to JsonArray(
+                    current.getValue("providerCatalogPages").jsonArray.map { element ->
+                        JsonObject(element.jsonObject.filterKeys { it != "projectId" })
+                    },
+                ),
+                "providerCatalogManifests" to JsonArray(
+                    current.getValue("providerCatalogManifests").jsonArray.map { element ->
+                        JsonObject(element.jsonObject.filterKeys { it != "projectId" })
+                    },
+                ),
+            ))
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = legacy,
+        )
+        assertEquals(
+            "inline-old",
+            restored.snapshot()!!.getValue("capabilities").jsonObject
+                .getValue("models").jsonArray.single().jsonObject
+                .getValue("id").jsonPrimitive.content,
+        )
+
+        restored.applyGatewayEvent(providerCatalogManifest(1, 1), "\$manifest-retry", null)
+        restored.applyGatewayEvent(
+            providerCatalogPage(0, "model-new", pageCount = 1),
+            "\$page-retry",
+            null,
+        )
+        assertEquals(
+            "model-new",
+            restored.snapshot()!!.getValue("capabilities").jsonObject
+                .getValue("models").jsonArray.single().jsonObject
+                .getValue("id").jsonPrimitive.content,
+        )
+    }
+
+    @Test
     fun `split schema twenty projection variants preserve sessions during upgrade`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
@@ -1950,16 +2053,22 @@ class MatrixMlp3NativeProjectionTest {
         },
     )
 
-    private fun providerCatalogPage(pageIndex: Int, modelId: String) = event(
-        eventId = "provider-catalog-page-$pageIndex",
-        projectId = "project-1",
+    private fun providerCatalogPage(
+        pageIndex: Int,
+        modelId: String,
+        projectId: String = "project-1",
+        revision: String = "r".repeat(43),
+        pageCount: Int = 2,
+    ) = event(
+        eventId = "provider-catalog-page-$projectId-$pageIndex-$revision",
+        projectId = projectId,
         payload = buildJsonObject {
             put("type", "provider.catalog.page")
             put("providerId", "codex")
             put("catalog", "models")
-            put("revision", "r".repeat(43))
+            put("revision", revision)
             put("pageIndex", pageIndex)
-            put("pageCount", 2)
+            put("pageCount", pageCount)
             put("items", buildJsonArray {
                 add(buildJsonObject {
                     put("id", modelId)
@@ -1969,14 +2078,19 @@ class MatrixMlp3NativeProjectionTest {
         },
     )
 
-    private fun providerCatalogManifest(itemCount: Int, pageCount: Int) = event(
-        eventId = "provider-catalog-manifest",
-        projectId = "project-1",
+    private fun providerCatalogManifest(
+        itemCount: Int,
+        pageCount: Int,
+        projectId: String = "project-1",
+        revision: String = "r".repeat(43),
+    ) = event(
+        eventId = "provider-catalog-manifest-$projectId-$revision",
+        projectId = projectId,
         payload = buildJsonObject {
             put("type", "provider.catalog.manifest")
             put("providerId", "codex")
             put("catalog", "models")
-            put("revision", "r".repeat(43))
+            put("revision", revision)
             put("status", "ready")
             put("itemCount", itemCount)
             put("pageCount", pageCount)

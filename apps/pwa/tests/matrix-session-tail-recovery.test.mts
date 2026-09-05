@@ -2,10 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { V3ProjectedSession } from "../app/matrixMlp3Projection.ts";
 import {
+  isMatrixMlp3ProjectionEventType,
   matrixActiveSessionTailRecoveryTargets,
   matrixSessionReadReceiptRetryDelayMs,
   workspaceRouteRecoveryDelayMs,
 } from "../app/matrixMlp3Connection.ts";
+
+test("routes signed Provider Catalog state through the primary project projection", () => {
+  assert.equal(isMatrixMlp3ProjectionEventType("m.room.message"), true);
+  assert.equal(isMatrixMlp3ProjectionEventType("io.malink.provider_catalog.v1"), true);
+  assert.equal(isMatrixMlp3ProjectionEventType("m.room.member"), false);
+});
 
 test("repairs only active session projections from recent Matrix thread tails", () => {
   const sessions = [

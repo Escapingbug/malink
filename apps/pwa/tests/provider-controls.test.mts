@@ -79,7 +79,7 @@ test("turns an expired loading snapshot into a visible timeout", () => {
   }));
   assert.doesNotMatch(html, /button-spinner|Loading model/);
   assert.match(html, /Model unavailable/);
-  assert.match(html, /taking longer than expected/);
+  assert.match(html, /recover this project&#x27;s signed catalog automatically/);
   assert.doesNotMatch(html, /catalog_timeout|expired at/);
 });
 
