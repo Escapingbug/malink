@@ -170,6 +170,7 @@ import {
   gatewayUpdatePlan as buildGatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
   gatewayUpdateCommandReachedSignedBoundary,
+  gatewayUpdateCanContinuePublishedRelease,
   gatewayUpdateStatusSupersededByDirectory,
   latestGatewayUpdateStatus,
   gatewayUpdateRequiresForwardOnlyConfirmation,
@@ -323,7 +324,6 @@ import { deriveConnectionPathPresentation } from "./connectionPathPresentation";
 import {
   GATEWAY_FOREGROUND_PROBE_INTERVAL_MS,
   GATEWAY_LIVE_STATUS_TIMEOUT_MS,
-  GATEWAY_ONLINE_PROOF_WINDOW_MS,
   gatewayForegroundProbeDue,
   gatewayNodeLivenessAfterProbeTimeout,
   gatewayNodeLivenessTargets,
@@ -4005,22 +4005,9 @@ function MalinkAppRuntime() {
         const update = incomingStatus
           ? latestGatewayUpdateStatus(currentStatus, incomingStatus)
           : currentStatus;
-        if ((current.lastVerifiedAt ?? -1) > verifiedAt) {
-          return update === current.status
-            ? current
-            : {
-                ...current,
-                status: update,
-                maintenanceSessionId: update?.maintenanceSessionId,
-                detail: undefined,
-              };
-        }
         return {
           ...current,
-          state: "online",
-          checkedAt: verifiedAt,
-          lastVerifiedAt: verifiedAt,
-          consecutiveNoReplies: 0,
+          state: "unchecked",
           status: update,
           maintenanceSessionId: update?.maintenanceSessionId,
           detail: undefined,
@@ -4675,14 +4662,6 @@ function MalinkAppRuntime() {
           lastVerifiedAt: verifiedAt,
           consecutiveNoReplies: 0,
           detail: "Recent signed Gateway activity was received.",
-        }));
-        setGatewayUpdateNodeRuntime(gatewayNodeId, current => ({
-          ...current,
-          state: "online",
-          checkedAt: verifiedAt,
-          lastVerifiedAt: verifiedAt,
-          consecutiveNoReplies: 0,
-          detail: undefined,
         }));
       }
     }
@@ -7662,16 +7641,16 @@ function MalinkAppRuntime() {
     if (gatewayArchivePreflightSessionIdsRef.current.has(sessionId)) return;
     setGatewayArchivePreflight(sessionId, true);
     try {
-      const target = gatewayNodeProbeTargetsById.get(node.gatewayNodeId);
-      const status = target
-        ? await probeGatewayNodeLiveness(target)
-        : null;
-      if (!gatewayMaintenanceSessionCanBeArchived(status ?? undefined)) {
+      const runtime = gatewayUpdateRuntimeByNodeRef.current[node.gatewayNodeId];
+      const status = runtime?.releaseKey === gatewayUpdateReleaseKey
+        ? runtime.status
+        : undefined;
+      if (!gatewayMaintenanceSessionCanBeArchived(status)) {
         showUiNotice(
           `gateway-update:archive-blocked:${node.gatewayNodeId}`,
           "update",
           "warning",
-          "This update session is still owned by the Gateway supervisor. It will be archived automatically after the update is committed or safely rolled back.",
+          "The latest signed Gateway state still owns this update session. It will be archived automatically after the update is committed or safely rolled back.",
           10_000,
         );
         return;
@@ -7943,11 +7922,6 @@ function MalinkAppRuntime() {
       checkedAt: probeStartedAt,
       detail: undefined,
     }));
-    setGatewayUpdateNodeRuntime(gatewayNodeId, current => ({
-      ...current,
-      state: "checking",
-      detail: undefined,
-    }));
     let probe = gatewayUpdateProbeCommandsRef.current.get(gatewayNodeId) ?? null;
     const hadProbe = probe !== null;
     let commandId = probe?.commandId ?? null;
@@ -7966,16 +7940,6 @@ function MalinkAppRuntime() {
             : "This Gateway replied, but its update supervisor is unavailable.",
       }));
       if (completion.outcome !== "succeeded") {
-        setGatewayUpdateNodeRuntime(gatewayNodeId, current => ({
-          ...current,
-          state: "online",
-          checkedAt,
-          lastVerifiedAt: checkedAt,
-          consecutiveNoReplies: 0,
-          detail: completion.error?.message
-            ? `Gateway replied, but its update supervisor reported: ${completion.error.message}`
-            : "Gateway replied, but its update supervisor is unavailable.",
-        }));
         return null;
       }
       const status = gatewayUpdateStatusSchema.parse(completion.result);
@@ -7991,10 +7955,7 @@ function MalinkAppRuntime() {
         : current);
       setGatewayUpdateNodeRuntime(gatewayNodeId, current => ({
         ...current,
-        state: "online",
-        checkedAt,
-        lastVerifiedAt: checkedAt,
-        consecutiveNoReplies: 0,
+        state: "unchecked",
         status: latestGatewayUpdateStatus(current.status, mergedStatus),
         maintenanceSessionId:
           mergedStatus.releaseId === gatewayRelease?.releaseId
@@ -8081,9 +8042,9 @@ function MalinkAppRuntime() {
               created.status = applyCompletion(completion);
               return created.status;
             } catch (error) {
-              setGatewayUpdateNodeRuntime(gatewayNodeId, current => ({
+              updateGatewayNodeLiveness(gatewayNodeId, current => ({
                 ...current,
-                state: "error",
+                state: "unknown",
                 checkedAt: Date.now(),
                 detail: `The Gateway returned an invalid live-status result: ${formatUiError(error)}`,
               }));
@@ -8105,7 +8066,7 @@ function MalinkAppRuntime() {
     } catch (error) {
       if (error instanceof CommandCompletionTimeoutError && commandId !== null && probe) {
         const checkedAt = Date.now();
-        const liveness = updateGatewayNodeLiveness(gatewayNodeId, current =>
+        updateGatewayNodeLiveness(gatewayNodeId, current =>
           gatewayNodeLivenessAfterProbeTimeout({
             current,
             probeStartedAt,
@@ -8113,14 +8074,6 @@ function MalinkAppRuntime() {
             gatewayLabel,
           }),
         );
-        setGatewayUpdateNodeRuntime(gatewayNodeId, current => ({
-          ...current,
-          state: liveness.state === "online" ? "online" : "unreachable",
-          checkedAt: liveness.checkedAt,
-          lastVerifiedAt: liveness.lastVerifiedAt,
-          consecutiveNoReplies: liveness.consecutiveNoReplies,
-          detail: liveness.detail,
-        }));
         // A timeout is not a terminal result. Keep the exact read-only command
         // durable and ask the native host to reconcile it through the Gateway
         // journal and bounded Matrix history. Releasing here would discard the
@@ -8142,12 +8095,6 @@ function MalinkAppRuntime() {
       updateGatewayNodeLiveness(gatewayNodeId, current => ({
         ...current,
         state: "unknown",
-        checkedAt: Date.now(),
-        detail,
-      }));
-      setGatewayUpdateNodeRuntime(gatewayNodeId, current => ({
-        ...current,
-        state: "error",
         checkedAt: Date.now(),
         detail,
       }));
@@ -8196,8 +8143,10 @@ function MalinkAppRuntime() {
         : `${node.gatewayName} has no verified project route for this update.`;
       setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
         ...current,
-        state: node.state === "current" ? "online" : "error",
+        state: node.state === "current" ? "unchecked" : "error",
         detail,
+        commandFailureCode: undefined,
+        commandFailureRetryable: undefined,
       }));
       showUiNotice(
         `gateway-update:${node.gatewayNodeId}`,
@@ -8217,51 +8166,18 @@ function MalinkAppRuntime() {
       [node.gatewayNodeId]: mode,
     }));
     try {
-      const runtime = gatewayUpdateRuntimeForRelease[node.gatewayNodeId];
-      const recentlyOnline =
-        runtime?.state === "online" &&
-        runtime.status !== undefined &&
-        runtime.checkedAt !== undefined &&
-        Date.now() - runtime.checkedAt <= GATEWAY_ONLINE_PROOF_WINDOW_MS;
-      const liveStatus = recentlyOnline
-        ? runtime.status
-        : await probeGatewayNodeLiveness(
-            gatewayNodeProbeTargetsById.get(node.gatewayNodeId) ?? {
-              gatewayNodeId: node.gatewayNodeId,
-              gatewayName: node.gatewayName,
-              ...(node.computerName ? { computerName: node.computerName } : {}),
-              ...(node.currentBuildId ? { currentBuildId: node.currentBuildId } : {}),
-              ...(node.targetProjectId ? { targetProjectId: node.targetProjectId } : {}),
-              canProbe: Boolean(node.targetProjectId),
-              ...(!node.targetProjectId ? { unavailableReason: "route" as const } : {}),
-            },
-          );
-      if (!liveStatus) {
-        showUiNotice(
-          `gateway-update:${node.gatewayNodeId}`,
-          "connection",
-          "warning",
-          `${node.gatewayName} did not return a signed live status, so no update was started. Keep the Gateway Host running and use Check again from this computer card.`,
-        );
-        return;
-      }
-      const intentRelease = liveStatus.phase === "staged" &&
-        liveStatus.releaseId &&
-        liveStatus.targetBuildId
-        ? {
-            releaseId: liveStatus.releaseId,
-            buildId: liveStatus.targetBuildId,
-          }
-        : {
-            releaseId: gatewayRelease.releaseId,
-            buildId: gatewayRelease.buildId,
-          };
+      const knownStatus = gatewayUpdateRuntimeForRelease[node.gatewayNodeId]?.status;
+      const continuePublishedRelease = gatewayUpdateCanContinuePublishedRelease({
+        status: knownStatus,
+        release: gatewayRelease,
+      });
       const intentPersisted = writeGatewayUpdateIntent(window.localStorage, {
         version: 1,
         workspaceId: matrixConfig.gatewayId,
         gatewayNodeId: node.gatewayNodeId,
         projectId: target.targetProjectId,
-        ...intentRelease,
+        releaseId: gatewayRelease.releaseId,
+        buildId: gatewayRelease.buildId,
         mode,
         requestedAt: Date.now(),
       });
@@ -8284,9 +8200,6 @@ function MalinkAppRuntime() {
         commandFailureCode: undefined,
         commandFailureRetryable: undefined,
       }));
-      const stagedReleaseId = liveStatus.phase === "staged"
-        ? liveStatus.releaseId
-        : undefined;
       const executeWithSignedBoundary = (
         command: GatewayUpdateCommand,
         targetProjectId: string,
@@ -8300,12 +8213,12 @@ function MalinkAppRuntime() {
         return Promise.race([execution, observation.promise])
           .finally(() => observation.cancel());
       };
-      const status = stagedReleaseId && liveStatus.targetBuildId
+      const status = continuePublishedRelease && knownStatus
         ? await executeWithSignedBoundary({
             operation: "gateway.update.apply",
-            releaseId: stagedReleaseId,
+            releaseId: gatewayRelease.releaseId,
             mode,
-            ...(gatewayUpdateRequiresForwardOnlyConfirmation(liveStatus)
+            ...(gatewayUpdateRequiresForwardOnlyConfirmation(knownStatus)
               ? { allowForwardOnly: true as const }
               : {}),
           }, target.targetProjectId)
@@ -8321,8 +8234,7 @@ function MalinkAppRuntime() {
       );
       setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
         ...current,
-        state: "online",
-        checkedAt: Date.now(),
+        state: "unchecked",
         status: latestGatewayUpdateStatus(current.status, mergedStatus),
         maintenanceSessionId: mergedStatus.maintenanceSessionId,
         commandFailureCode: undefined,
@@ -14618,22 +14530,10 @@ function MalinkAppRuntime() {
           release={gatewayRelease}
           nodes={gatewayUpdatePlan}
           runtimeByNode={gatewayUpdateRuntimePresentation}
+          livenessByNode={gatewayNodeLivenessById}
           activeGatewayNodeIds={gatewayUpdateActiveNodeIds}
           activeGatewayModesByNode={gatewayUpdateActiveModesByNode}
           onClose={() => setGatewayUpdateDialogOpen(false)}
-          onProbe={(node) => {
-            const target = gatewayNodeProbeTargetsById.get(node.gatewayNodeId);
-            if (target) {
-              void probeGatewayNodeLiveness(target);
-              return;
-            }
-            showUiNotice(
-              `gateway-update:probe:${node.gatewayNodeId}`,
-              "connection",
-              "warning",
-              `${node.gatewayName} cannot be checked because this client has no verified project route for it. Refresh the Workspace or export diagnostics.`,
-            );
-          }}
           onStart={(node, mode) => void startGatewayUpdateNode(node, mode)}
           onOpenSession={openGatewayUpdateSession}
           onArchiveSession={(node, sessionId) =>

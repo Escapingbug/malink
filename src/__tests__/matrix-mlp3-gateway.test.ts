@@ -1070,6 +1070,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     let gatewayAgentShouldSubmit = true
     let gatewayAgentRunningReleaseId: string | null = null
     let gatewayAgentFailedReleaseId: string | null = null
+    let gatewayStageFailureReleaseId: string | null = null
     let gatewayRestartStatus: GatewayRestartStatus = {
       version: 1,
       phase: 'idle',
@@ -1312,6 +1313,16 @@ describe('MatrixMlp3GatewayRunner', () => {
       gatewayUpdateSupervisor: {
         async status() {
           gatewayUpdateCalls.push('status')
+          if (gatewayStageFailureReleaseId) {
+            return {
+              version: 1,
+              phase: 'failed',
+              releaseId: gatewayStageFailureReleaseId,
+              currentBuildId: 'build-1',
+              detail: 'Gateway Agent update Prompt signature is invalid',
+              updatedAt: 14,
+            }
+          }
           if (gatewayAgentStaged) {
             return {
               version: 1,
@@ -1360,6 +1371,11 @@ describe('MatrixMlp3GatewayRunner', () => {
         },
         async stage(releaseId) {
           gatewayUpdateCalls.push(`stage:${releaseId}`)
+          if (releaseId === 'release-stage-failed') {
+            gatewayStageFailureReleaseId = releaseId
+            throw new Error('Gateway Agent update Prompt signature is invalid')
+          }
+          gatewayStageFailureReleaseId = null
           gatewayAgentFailedReleaseId = null
           return {
             version: 1,
@@ -1818,6 +1834,12 @@ describe('MatrixMlp3GatewayRunner', () => {
       .some(event => event.causationCommandId === undefined
         && event.payload.type === 'gateway.update.status'
         && event.payload.status.phase === 'staged'))
+    const sharedGatewayUpdateEvents = await events(client, activeKey.key, roomId, projectId)
+    expect(sharedGatewayUpdateEvents.some(event =>
+      event.causationCommandId === undefined
+      && event.payload.type === 'gateway.update.status'
+      && event.payload.status.phase === 'agent_running'
+    )).toBe(true)
     expect(gatewayUpdateCalls).toContain('instruction:release-2')
     expect(gatewayUpdateCalls).toContain(
       `begin:release-2:${gatewayMaintenanceSessionId('gateway-node-1', 'release-2')}`,
@@ -1865,6 +1887,26 @@ describe('MatrixMlp3GatewayRunner', () => {
       type: 'session.lifecycle',
       state: 'deleted',
     })
+    gatewayStageFailureReleaseId = null
+    await send({
+      ...base,
+      commandId: 'gateway-update-stage-invalid-release',
+      operation: 'gateway.update.stage',
+      payload: { operation: 'gateway.update.stage', releaseId: 'release-stage-failed' },
+    }, '$gateway-update-stage-invalid-release')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'gateway-update-stage-invalid-release'
+        && event.payload.type === 'command.rejected'
+      ))
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === undefined
+        && event.payload.type === 'gateway.update.status'
+        && event.payload.status.phase === 'failed'
+        && event.payload.status.releaseId === 'release-stage-failed'
+      ))
+    gatewayStageFailureReleaseId = null
     gatewayAgentStaged = true
     gatewayAgentShouldSubmit = true
     dispatched.splice(0)

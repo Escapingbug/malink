@@ -9,6 +9,7 @@ import {
   type GatewayUpdateCommand,
   gatewayUpdateCommandReachedSignedBoundary,
   gatewayUpdateCanApplyStaged,
+  gatewayUpdateCanContinuePublishedRelease,
   gatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
   gatewayUpdateStatusSupersededByDirectory,
@@ -256,6 +257,25 @@ test("offers retry only after a transient failure exhausted automatic retries", 
   }).kind, "report");
 });
 
+test("uses the command result when signed supervisor failure is still delayed", () => {
+  assert.equal(gatewayUpdateRecoveryAction({
+    release,
+    status: undefined,
+    commandFailure: {
+      code: "gateway_update_network_failure",
+      retryable: true,
+    },
+  }).kind, "retry");
+  assert.equal(gatewayUpdateRecoveryAction({
+    release,
+    status: undefined,
+    commandFailure: {
+      code: "gateway_update_invalid_release",
+      retryable: false,
+    },
+  }).kind, "report");
+});
+
 test("routes a protected-state release to external maintenance instead of retry", () => {
   const action = gatewayUpdateRecoveryAction({
     release,
@@ -280,6 +300,37 @@ test("continues an old staged checkpoint and never retries repair state", () => 
     release,
     status: status("repair_required"),
   }).kind, "repair");
+});
+
+test("continues only a staged checkpoint for the exact published release", () => {
+  assert.equal(gatewayUpdateCanContinuePublishedRelease({
+    release,
+    status: status("staged"),
+  }), true);
+  assert.equal(gatewayUpdateCanContinuePublishedRelease({
+    release,
+    status: {
+      ...status("staged"),
+      releaseId: "2026.08.20.1",
+      targetBuildId: "gateway-older-arm64",
+    },
+  }), false);
+});
+
+test("prepares the latest release instead of applying an older staged checkpoint", () => {
+  const action = gatewayUpdateRecoveryAction({
+    release,
+    status: {
+      ...status("staged"),
+      releaseId: "2026.08.20.1",
+      targetBuildId: "gateway-older-arm64",
+    },
+  });
+
+  assert.equal(action.kind, "start");
+  if (action.kind === "start") {
+    assert.equal(action.label, "Prepare latest update");
+  }
 });
 
 test("allows a genuinely new signed release after an old deterministic failure", () => {

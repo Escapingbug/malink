@@ -1235,6 +1235,11 @@ export class MatrixMlp3GatewayRunner {
   ): Promise<void> {
     if (!rootEventId) throw new Error('Gateway update command lost its Matrix thread root')
     const supervisor = this.requireGatewayUpdateSupervisor()
+    // Publish supervisor-owned progress while the maintenance Agent works.
+    // The fingerprint guard emits only semantic transitions, so this provides
+    // timely UI state without periodic Matrix status traffic. Start before
+    // stage so a download or signature failure is published too.
+    this.scheduleGatewayUpdateStatusMonitor(0)
     let status = await supervisor.stage(command.payload.releaseId)
     if (['agent_required', 'agent_running', 'failed'].includes(status.phase)) {
       const instruction = await supervisor.agentInstruction(command.payload.releaseId)
@@ -1244,6 +1249,7 @@ export class MatrixMlp3GatewayRunner {
         maintenanceSessionId,
         command.commandId,
       )
+      this.scheduleGatewayUpdateStatusMonitor(0)
       if (begin.started) {
         const runtime = await this.maintenanceAgentRuntime(
           project,
@@ -1704,7 +1710,16 @@ export class MatrixMlp3GatewayRunner {
     if (
       this.state === 'running'
       && (
-        (update && ['scheduled', 'activating', 'probation'].includes(update.phase))
+        (update && [
+          'staging',
+          'agent_required',
+          'agent_running',
+          'agent_validating',
+          'waiting_for_idle',
+          'scheduled',
+          'activating',
+          'probation',
+        ].includes(update.phase))
         || (!update
           && this.gatewayUpdateStatusMonitorFailures <
             GATEWAY_UPDATE_STATUS_MONITOR_MAX_FAILURES)

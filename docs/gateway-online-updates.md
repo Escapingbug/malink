@@ -279,13 +279,15 @@ Release discovery never starts an update. The PWA presents a node-level update
 notice, and its management panel identifies the exact Gateway name, stable short
 node ID, current build, target build, and update capability. A Gateway publishes
 one signed, encrypted uncaused `gateway.update.status` observation only when its
-supervisor phase changes. Current liveness is checked with the existing signed
-status command while the client is visible and connected; hiding the client or
-losing the network cancels the schedule. Any newer signed node activity defers
-the next check. A connected Matrix client or an old cached snapshot is not
-Gateway liveness. The user then confirms one exact node. The client sends
-`stage`, creates the visible maintenance Agent session, and sends `apply` as
-soon as a rollback-safe signed checkpoint is ready. A forward-only checkpoint
+supervisor phase changes. Current liveness is checked separately with the
+existing signed status command while the client is visible and connected;
+hiding the client or losing the network cancels the schedule. Any newer signed
+node activity defers the next check. A connected Matrix client or an old cached
+snapshot is not Gateway liveness, but a delayed liveness reply is also not an
+admission check for a durable update command. The user confirms one exact node,
+and the client sends `stage` directly. The Gateway creates the visible
+maintenance Agent session and the client sends `apply` as soon as a
+rollback-safe signed checkpoint is ready. A forward-only checkpoint
 stops instead, explains that automatic rollback is disabled, and requires a
 second confirmation before the client sends `apply` with
 `allowForwardOnly: true`. These remain separate compatible wire commands.
@@ -312,17 +314,20 @@ coincidentally matching checkpoint.
 The liveness check has a bounded foreground wait. It runs immediately when a
 visible client becomes connected and at most once per minute while visible;
 background, offline, and already-recent signed activity suppress it. The user
-may also choose `Check live status`. During a non-terminal signed update, the
-same per-node control remains available as `Refresh update status`; a stale
-phase must never leave the panel with no useful action. If no signed reply arrives within 30 seconds,
+may also run it from the computer status card. The update panel does not use
+that read-only check as a preflight or expose a second refresh control: its
+authoritative state is the signed supervisor phase, and an update request may
+be submitted while the separate check is delayed. If no signed reply arrives within 30 seconds,
 the first miss is presented as `Gateway reply delayed`: it is a
 warning that may still be caused by wake-up or Matrix latency, not proof of a
-Gateway fault. A second consecutive miss becomes `Gateway needs attention`,
-identifies the named Gateway computer as the component to inspect, and explains
-that repeated checks cannot repair a startup failure. The recovery disclosure
-provides the local restart command, bounded Gateway log paths, and a client
-diagnostic export; it also states that the client report cannot replace logs
-from a Gateway that is failing before it can reply. An
+Gateway fault. A second consecutive miss becomes `Gateway needs attention` on
+the computer status surface, identifies the named Gateway computer as the
+component to inspect, and explains that repeated checks cannot repair a startup
+failure. That surface provides the local restart command, bounded Gateway log
+paths, and a client diagnostic export; it also states that the client report
+cannot replace logs from a Gateway that is failing before it can reply. In the
+update panel, the same condition is a quiet connection advisory and never
+overwrites, blocks, or styles a signed update phase as failed. An
 unanswered manual `gateway.update.status` is safe to retire because it is strictly
 read-only; Android preserves an idempotency tombstone, and a newer status probe
 for the same project atomically retires older unfinished probes. No other MLP/3
@@ -364,9 +369,10 @@ a terminal boundary because it may be an older cached snapshot from before the
 maintenance session appeared. Each signed status snapshot permits at most one
 automatic cleanup attempt, so a rejected cleanup cannot become a Matrix command
 loop. Legacy maintenance IDs and deterministic failed sessions remain visible
-for explicit diagnosis and cleanup. The client rechecks signed live status
-immediately before manual cleanup and the Gateway enforces the same rule before
-changing session lifecycle.
+for explicit diagnosis and cleanup. The client enables cleanup only from its
+latest signed supervisor snapshot; the Gateway rechecks authoritative local
+supervisor state before changing session lifecycle. Manual cleanup therefore
+does not add another Matrix status round trip.
 
 ## Agent-safe candidate completion
 
@@ -479,11 +485,14 @@ The PWA then sends `apply`, which progresses through:
 waiting_for_idle -> scheduled -> activating -> [optional probation] -> committed
 ```
 
-The replacement Gateway publishes the signed supervisor state when it starts,
-then emits one event for each real phase change until the transaction is
-terminal. Android stores and projects each authenticated phase transition even
-while the WebView is backgrounded; background visibility controls active probes,
-not semantic event persistence. Unchanged state never produces a Matrix event.
+The Gateway starts its transition monitor as soon as `stage` records local
+supervisor state, so `agent_required`, `agent_running`, and `agent_validating`
+are visible while the maintenance Agent is still working. The replacement
+Gateway republishes the signed supervisor state when it starts, then emits one
+event for each real phase change until the transaction is terminal. Android
+stores and projects each authenticated phase transition even while the WebView
+is backgrounded; background visibility controls active probes, not semantic
+event persistence. Unchanged state never produces a Matrix event.
 During the bounded restart wait, explicit status reads use exponential backoff
 from two seconds up to thirty seconds rather than continuously producing Matrix
 request/reply pairs. A separate live-status
@@ -496,9 +505,11 @@ the final phase while backgrounded and prevents an already-installed prior
 release from blocking a newly published update. It does not manufacture a
 command terminal or alter the supervisor journal. The current client automatically continues a
 `staged` checkpoint only when its persisted user intent matches the exact
-project, node, release, and build. An older staged checkpoint without that
-intent exposes `Continue update`, even if the static release channel has since
-advanced. If the supervisor finds
+project, node, release, and build. A user may explicitly continue a staged
+checkpoint only when it matches the exact currently published release and
+build. If the static channel has advanced, the action prepares the new release
+and lets the supervisor replace the older checkpoint; the client never applies
+an older build while presenting the newer one. If the supervisor finds
 that the signed installed build already equals its target while an older state
 still says `agent_running`, `agent_validating`, or `staged`, it atomically
 converges that state to `committed`; the UI then treats the update as installed

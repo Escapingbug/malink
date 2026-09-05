@@ -29,11 +29,25 @@ export function gatewayUpdateRecoveryAction(input: {
   commandFailure?: { code?: string; retryable?: boolean };
 }): GatewayUpdateRecoveryAction {
   const { status, release, commandFailure } = input;
+  if (!status && commandFailure?.code) {
+    if (commandFailure.retryable === true) {
+      return {
+        kind: "retry",
+        label: "Try update again",
+        busyLabel: "Trying update again…",
+        explanation: "The update request ended with a temporary failure. Trying later can succeed.",
+      };
+    }
+    return {
+      kind: "report",
+      explanation: "The Gateway rejected this update request as non-retryable. Repeating it cannot change the result; export diagnostics and report the failure.",
+    };
+  }
   if (!status || status.phase === "idle") {
     return {
       kind: "start",
-      label: "Update Gateway",
-      busyLabel: "Starting update…",
+      label: "Update when idle",
+      busyLabel: "Preparing update…",
       explanation: "Create one maintenance session and complete the update in the background.",
     };
   }
@@ -44,13 +58,13 @@ export function gatewayUpdateRecoveryAction(input: {
   );
   if (
     publishedReleaseChanged &&
-    ["committed", "rolled_back", "failed"].includes(status.phase)
+    ["staged", "committed", "rolled_back", "failed"].includes(status.phase)
   ) {
     return {
       kind: "start",
-      label: "Update to new release",
-      busyLabel: "Starting new release…",
-      explanation: "A different signed release is now available, so this is a new attempt rather than a repeat of the earlier result.",
+      label: "Prepare latest update",
+      busyLabel: "Preparing latest update…",
+      explanation: "A newer signed release is available. Preparing it replaces the older checkpoint without installing the older build.",
     };
   }
   if (status.phase === "staged") {

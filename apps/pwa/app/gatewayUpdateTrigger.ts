@@ -345,6 +345,21 @@ export function gatewayUpdateCanApplyStaged(input: {
     !gatewayUpdateRequiresForwardOnlyConfirmation(input.status);
 }
 
+/**
+ * A staged checkpoint is safe to continue only when it belongs to the exact
+ * signed release currently presented to the user. A checkpoint from an older
+ * release must start the normal stage flow so the supervisor can replace it;
+ * applying it here would install a build other than the one on screen.
+ */
+export function gatewayUpdateCanContinuePublishedRelease(input: {
+  status: GatewayUpdateStatus | undefined;
+  release: GatewayReleaseBuild;
+}): boolean {
+  return input.status?.phase === "staged" &&
+    input.status.releaseId === input.release.releaseId &&
+    input.status.targetBuildId === input.release.buildId;
+}
+
 export function gatewayUpdateRequiresForwardOnlyConfirmation(
   status: GatewayUpdateStatus | undefined,
 ): boolean {

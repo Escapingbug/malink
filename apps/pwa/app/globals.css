@@ -8764,7 +8764,7 @@ select:focus-visible {
 .gateway-update-session-warning {
   flex: 1 1 100%;
   margin: 0;
-  color: #9a4f57;
+  color: #8a642b;
   font-size: 0.78rem;
   line-height: 1.45;
 }
@@ -12266,7 +12266,7 @@ body {
 }
 
 .gateway-update-progress {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 3px;
   margin: 2px 0 4px;
   padding: 10px 4px;
@@ -12424,11 +12424,11 @@ body {
   }
 
   .gateway-update-progress {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     row-gap: 12px;
   }
 
-  .gateway-update-progress li:nth-child(4)::before {
+  .gateway-update-progress li:nth-child(3)::before {
     display: none;
   }
 

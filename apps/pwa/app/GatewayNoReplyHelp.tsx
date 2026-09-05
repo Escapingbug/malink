@@ -63,6 +63,42 @@ export function GatewayNoReplyHelp({
   );
 }
 
+export function GatewayUpdateRequestFailureHelp({
+  recovery,
+  onExportDiagnostics,
+  diagnosticExportBusy = false,
+}: {
+  recovery: GatewayUpdateRecoveryAction;
+  onExportDiagnostics(): void;
+  diagnosticExportBusy?: boolean;
+}) {
+  return (
+    <details className="gateway-no-reply-help gateway-update-failure-help">
+      <summary>Diagnose update request</summary>
+      <div>
+        <p>{recovery.explanation}</p>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={diagnosticExportBusy}
+          aria-busy={diagnosticExportBusy}
+          onClick={onExportDiagnostics}
+        >
+          {diagnosticExportBusy ? "Exporting diagnostics…" : "Export client diagnostics"}
+        </button>
+        <a
+          className="secondary-button"
+          href={GATEWAY_UPDATE_ISSUE_URL}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Report update issue
+        </a>
+      </div>
+    </details>
+  );
+}
+
 export function GatewayUpdateFailureHelp({
   gatewayLabel,
   status,
