@@ -3,7 +3,51 @@ import {
   classifyGatewayStateProgress,
   gatewayMaintenanceSessionActivityOutcome,
   isIgnorableGatewayStateReplay,
+  parseGatewayCapabilities,
 } from "./gatewayState";
+
+describe("Provider presentation", () => {
+  it("presents legacy agent capabilities as Cursor without changing the provider id", () => {
+    const capabilities = parseGatewayCapabilities({
+      models: [],
+      providers: [{
+        id: "agent",
+        name: "agent",
+        models: [],
+        can_list_sessions: true,
+        can_inspect_sessions: true,
+      }],
+      permission_modes: [],
+      can_create_session: true,
+      can_select_session: false,
+      session_extensions: [],
+    });
+
+    expect(capabilities.providers[0]).toMatchObject({
+      id: "agent",
+      name: "Cursor",
+    });
+  });
+
+  it("preserves custom labels for agent-compatible profiles", () => {
+    const capabilities = parseGatewayCapabilities({
+      models: [],
+      providers: [{
+        id: "agent",
+        name: "Cursor Work Account",
+        models: [],
+        can_list_sessions: true,
+        can_inspect_sessions: true,
+      }],
+      permission_modes: [],
+      can_create_session: true,
+      can_select_session: false,
+      session_extensions: [],
+    });
+
+    expect(capabilities.providers[0]?.name).toBe("Cursor Work Account");
+  });
+});
 
 describe("Gateway state progress", () => {
   it("accepts a Matrix-native revision advance on current Gateway metadata", () => {

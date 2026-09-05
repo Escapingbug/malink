@@ -38,7 +38,12 @@ import {
   type AgentProvider,
   type ModelEntry,
 } from '@/providers/provider'
-import { createProviderInstance, getProvider, listProviders } from '@/providers/registry'
+import {
+  createProviderInstance,
+  getProvider,
+  getProviderDisplayName,
+  listProviders,
+} from '@/providers/registry'
 import {
   MODEL_CONTROL_ID,
   PERMISSION_CONTROL_ID,
@@ -4138,7 +4143,7 @@ export class MatrixMlp3GatewayRunner {
         const provider = getProvider(catalog.providerId)!
         return {
           id: catalog.providerId,
-          name: catalog.providerId,
+          name: getProviderDisplayName(catalog.providerId),
           models: [],
           controls: catalogSnapshotControls(catalog),
           can_list_sessions: typeof provider.listSessions === 'function',

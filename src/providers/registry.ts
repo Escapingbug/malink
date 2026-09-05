@@ -44,6 +44,17 @@ export function listProviders(): string[] {
     return Array.from(providers.keys())
 }
 
+/**
+ * Return the product-facing name for a stable provider identifier.
+ *
+ * `agent` is the historical protocol/profile id for Cursor's `agent` CLI.
+ * Keep that id stable for existing projects and sessions while presenting the
+ * actual product name to people.
+ */
+export function getProviderDisplayName(name: string): string {
+    return name === 'agent' ? 'Cursor' : name
+}
+
 export function clearProviderRegistryForTesting(): void {
     providers.clear()
     providerFactories.clear()

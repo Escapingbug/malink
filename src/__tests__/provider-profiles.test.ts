@@ -13,6 +13,7 @@ import { OpencodeProvider } from '@/providers/opencode'
 import {
     clearProviderRegistryForTesting,
     createProviderInstance,
+    getProviderDisplayName,
     getProviderType,
     listProviders,
     registerProvider,
@@ -41,6 +42,12 @@ describe('provider profiles', () => {
     afterEach(() => {
         clearProviderRegistryForTesting()
         acpProviderConfigs.splice(0, acpProviderConfigs.length)
+    })
+
+    it('presents the historical agent provider id as Cursor', () => {
+        expect(getProviderDisplayName('agent')).toBe('Cursor')
+        expect(getProviderDisplayName('cursor-work')).toBe('cursor-work')
+        expect(getProviderDisplayName('codex')).toBe('codex')
     })
 
     it('parses configured profiles and merges them with built-ins', () => {

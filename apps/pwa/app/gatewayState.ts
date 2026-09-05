@@ -734,7 +734,13 @@ export function parseGatewayCapabilities(input: unknown): GatewayCapabilities {
           }
           return {
             id: provider.id,
-            name: provider.name,
+            // Older signed snapshots expose Cursor's historical provider id as
+            // its label. Preserve the stable `agent` id while fixing that
+            // presentation locally, so existing Gateways do not need a
+            // protocol migration before the UI can say Cursor.
+            name: provider.id === "agent" && provider.name === "agent"
+              ? "Cursor"
+              : provider.name,
             models: parseModels(provider.models),
             canListSessions: provider.can_list_sessions,
             canInspectSessions: provider.can_inspect_sessions,
