@@ -1040,6 +1040,7 @@ internal class MatrixMlp3NativeProjection(
         currentProvider: String,
     ): JsonObject {
         val providers = capabilities["providers"] as? JsonArray ?: return capabilities
+        val expectsProviderCatalogs = capabilitiesUsePaginatedProviderCatalogs(capabilities)
         val mergedProviders = buildJsonArray {
             providers.forEach { element ->
                 val provider = element as? JsonObject
@@ -1049,7 +1050,15 @@ internal class MatrixMlp3NativeProjection(
                     providerCatalogManifestKey(projectId, providerId)
                 ]
                 if (manifest == null) {
-                    add(provider)
+                    if (!expectsProviderCatalogs) {
+                        add(provider)
+                    } else {
+                        val merged = provider.toMutableMap()
+                        merged["controls"] = missingProviderCatalogControls(
+                            provider["controls"] as? JsonArray ?: JsonArray(emptyList()),
+                        )
+                        add(JsonObject(merged))
+                    }
                     return@forEach
                 }
                 val models = completeProviderCatalogModels(manifest)
@@ -1076,10 +1085,35 @@ internal class MatrixMlp3NativeProjection(
     }
 
     @Synchronized
-    fun incompleteProviderCatalogProjectIds(): Set<String> =
-        providerCatalogManifests.values
+    fun incompleteProviderCatalogProjectIds(): Set<String> {
+        val incomplete = providerCatalogManifests.values
             .filterNot(::providerCatalogIsComplete)
             .mapTo(linkedSetOf(), ProviderCatalogManifest::projectId)
+        projectCapabilities.forEach { (projectId, workspace) ->
+            val providers = workspace.value["providers"] as? JsonArray
+                ?: JsonArray(emptyList())
+            if (!capabilitiesUsePaginatedProviderCatalogs(workspace.value)) return@forEach
+            if (providers.any { element ->
+                val provider = element as? JsonObject ?: return@any true
+                val providerId = provider.optionalString("id", 256) ?: return@any true
+                val manifest = providerCatalogManifests[
+                    providerCatalogManifestKey(projectId, providerId)
+                ]
+                manifest == null || !providerCatalogIsComplete(manifest)
+            }) incomplete += projectId
+        }
+        return incomplete
+    }
+
+    private fun capabilitiesUsePaginatedProviderCatalogs(capabilities: JsonObject): Boolean {
+        val providers = capabilities["providers"] as? JsonArray ?: return false
+        return providers.isNotEmpty() &&
+            (capabilities["models"] as? JsonArray).orEmpty().isEmpty() &&
+            providers.all { element ->
+                val provider = element as? JsonObject ?: return@all false
+                (provider["models"] as? JsonArray).orEmpty().isEmpty()
+            }
+    }
 
     private fun providerCatalogIsComplete(manifest: ProviderCatalogManifest): Boolean {
         if (manifest.pageCount == 0) return manifest.itemCount == 0
@@ -1128,6 +1162,19 @@ internal class MatrixMlp3NativeProjection(
             add(modelCatalogControl(models, manifest))
             reasoningCatalogControl(models, manifest)?.let(::add)
         }
+        controls.forEach { element ->
+            val control = element as? JsonObject ?: return@forEach
+            if (control.optionalString("id", 128) !in setOf("model", "reasoningEffort")) {
+                add(control)
+            }
+        }
+    }
+
+    private fun missingProviderCatalogControls(controls: JsonArray): JsonArray = buildJsonArray {
+        // A missing manifest is already older than its bounded recovery
+        // window. Keep the Model boundary visible as an actionable diagnostic
+        // instead of silently removing the selector from session creation.
+        add(catalogDiagnosticControl("loading", null, 0))
         controls.forEach { element ->
             val control = element as? JsonObject ?: return@forEach
             if (control.optionalString("id", 128) !in setOf("model", "reasoningEffort")) {

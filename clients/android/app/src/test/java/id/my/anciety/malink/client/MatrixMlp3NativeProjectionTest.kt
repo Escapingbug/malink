@@ -107,6 +107,33 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `missing manifests keep paginated catalog projects in recovery`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            workspaceSnapshot(1, "unused", embeddedModels = false),
+            "\$workspace",
+            null,
+        )
+
+        assertEquals(setOf("project-1"), projection.incompleteProviderCatalogProjectIds())
+        val missingControls = projection.snapshot()!!.getValue("capabilities").jsonObject
+            .getValue("controls").jsonArray
+        assertEquals("model", missingControls.single().jsonObject
+            .getValue("id").jsonPrimitive.content)
+        assertEquals("loading", missingControls.single().jsonObject
+            .getValue("status").jsonPrimitive.content)
+        projection.applyGatewayEvent(providerCatalogManifest(1, 1), "\$manifest", null)
+        assertEquals(setOf("project-1"), projection.incompleteProviderCatalogProjectIds())
+        projection.applyGatewayEvent(
+            providerCatalogPage(0, "model-new", pageCount = 1),
+            "\$page",
+            null,
+        )
+        assertTrue(projection.incompleteProviderCatalogProjectIds().isEmpty())
+    }
+
+    @Test
     fun `legacy unscoped catalogs are discarded and can be recovered with the same event identity`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
@@ -1887,6 +1914,7 @@ class MatrixMlp3NativeProjectionTest {
         projectId: String = "project-1",
         pending: JsonArray = JsonArray(emptyList()),
         includeClientIntegration: Boolean = false,
+        embeddedModels: Boolean = true,
     ) = event(
         eventId = "workspace-snapshot-$projectId-$snapshotVersion",
         projectId = projectId,
@@ -1926,24 +1954,28 @@ class MatrixMlp3NativeProjectionTest {
             })
             put("capabilities", buildJsonObject {
                 put("models", buildJsonArray {
-                    add(buildJsonObject {
-                        put("id", model)
-                        put("name", model)
-                        put("default_reasoning_level", "high")
-                        put("supported_reasoning_levels", buildJsonArray {
-                            add(buildJsonObject { put("effort", "high") })
+                    if (embeddedModels) {
+                        add(buildJsonObject {
+                            put("id", model)
+                            put("name", model)
+                            put("default_reasoning_level", "high")
+                            put("supported_reasoning_levels", buildJsonArray {
+                                add(buildJsonObject { put("effort", "high") })
+                            })
                         })
-                    })
+                    }
                 })
                 put("providers", buildJsonArray {
                     add(buildJsonObject {
                         put("id", "codex")
                         put("name", "Codex")
                         put("models", buildJsonArray {
-                            add(buildJsonObject {
-                                put("id", model)
-                                put("name", model)
-                            })
+                            if (embeddedModels) {
+                                add(buildJsonObject {
+                                    put("id", model)
+                                    put("name", model)
+                                })
+                            }
                         })
                         put("can_list_sessions", true)
                         put("can_inspect_sessions", true)

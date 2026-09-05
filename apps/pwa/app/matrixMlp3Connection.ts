@@ -75,7 +75,11 @@ import {
   parseGatewayCapabilities,
   type GatewayStateSnapshot,
 } from "./gatewayState";
-import { applyProviderModelCatalogs } from "./providerControlCompatibility";
+import {
+  applyProviderModelCatalogs,
+  expectedProviderCatalogIds,
+  providerCatalogsCoverProviders,
+} from "./providerControlCompatibility";
 import {
   MATRIX_PROJECT_AUTHORIZATION_REPAIR_REQUIRED,
   resolveAuthoritativeProjectKeyGrant,
@@ -1285,7 +1289,12 @@ export async function connectMatrixMlp3(
     // Pages and manifests are order-independent in the durable projection.
     for (const event of events) await ingest(event);
     const catalogs = targetProtocol.projection.providerModelCatalogs();
-    if (catalogs.length > 0 && catalogs.every(catalog => catalog.complete)) {
+    const expectedProviderIds = targetProtocol.projection.workspace
+      ? expectedProviderCatalogIds(parseGatewayCapabilities(
+          targetProtocol.projection.workspace.capabilities,
+        ))
+      : [];
+    if (providerCatalogsCoverProviders(catalogs, expectedProviderIds)) {
       return;
     }
     // The SDK's cached Room State can be between a manifest and its pages after

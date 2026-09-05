@@ -6,6 +6,8 @@ import { ProviderControls } from "../app/ProviderControls.tsx";
 import {
   applyProviderModelCatalogs,
   activeProviderControls,
+  expectedProviderCatalogIds,
+  providerCatalogsCoverProviders,
   submittableProviderControlValues,
 } from "../app/providerControlCompatibility.ts";
 
@@ -137,6 +139,67 @@ test("hydrates models and model controls from a complete paginated catalog", () 
   assert.deepEqual(capabilities.models.map(model => model.id), ["model-a"]);
   assert.equal(capabilities.controls?.find(control => control.id === "model")
     ?.options?.[0]?.value, "model-a");
+});
+
+test("keeps a missing paginated provider catalog visible while recovery continues", () => {
+  const capabilities = {
+    models: [],
+    providers: [{
+      id: "codex",
+      name: "Codex",
+      models: [],
+      canListSessions: false,
+      canInspectSessions: false,
+      controls: [],
+    }],
+    controls: [],
+    permissionModes: [{ id: "default", name: "Default" }],
+    canCreateSession: true,
+    canSelectSession: false,
+    sessionExtensions: [],
+  };
+  const expected = expectedProviderCatalogIds(capabilities);
+  assert.deepEqual(expected, ["codex"]);
+  assert.equal(providerCatalogsCoverProviders([], expected), false);
+
+  const hydrated = applyProviderModelCatalogs(capabilities, [], "codex");
+  const model = hydrated.controls?.find(control => control.id === "model");
+  assert.equal(model?.status, "loading");
+  const html = renderToStaticMarkup(createElement(ProviderControls, {
+    controls: hydrated.controls ?? [],
+    surface: "session-create",
+    values: {},
+    onChange() {},
+  }));
+  assert.match(html, /Loading model/);
+});
+
+test("does not require Provider Catalog state for legacy embedded models", () => {
+  const capabilities = {
+    models: [{
+      id: "legacy-model",
+      name: "Legacy model",
+      supportedReasoningLevels: [],
+    }],
+    providers: [{
+      id: "codex",
+      name: "Codex",
+      models: [{
+        id: "legacy-model",
+        name: "Legacy model",
+        supportedReasoningLevels: [],
+      }],
+      canListSessions: false,
+      canInspectSessions: false,
+      controls: [],
+    }],
+    controls: [],
+    permissionModes: [{ id: "default", name: "Default" }],
+    canCreateSession: true,
+    canSelectSession: false,
+    sessionExtensions: [],
+  };
+  assert.deepEqual(expectedProviderCatalogIds(capabilities), []);
 });
 
 test("replaces a session's old loading control with the refreshed capability", () => {

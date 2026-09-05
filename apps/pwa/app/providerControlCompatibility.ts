@@ -16,9 +16,23 @@ export function applyProviderModelCatalogs(
   currentProvider?: string,
 ): GatewayCapabilities {
   const byProvider = new Map(catalogs.map(catalog => [catalog.providerId, catalog]));
+  const expectedProviderIds = new Set(expectedProviderCatalogIds(capabilities));
+  const recoveryObservedAt = Math.max(0, ...catalogs.map(catalog => catalog.occurredAt))
+    || Date.now();
   const providers = capabilities.providers.map(provider => {
     const catalog = byProvider.get(provider.id);
-    if (!catalog) return provider;
+    if (!catalog) {
+      if (!expectedProviderIds.has(provider.id)) return provider;
+      return {
+        ...provider,
+        controls: [
+          catalogDiagnosticControl("loading", undefined, recoveryObservedAt),
+          ...(provider.controls ?? [])
+            .filter(control => control.id !== "model" && control.id !== "reasoningEffort")
+            .map(control => structuredClone(control)),
+        ],
+      };
+    }
     const models = catalog.models.map(model => ({
       id: model.id,
       name: model.name,
@@ -46,6 +60,35 @@ export function applyProviderModelCatalogs(
       ? { models: current.models, controls: current.controls }
       : {}),
   };
+}
+
+/**
+ * Paginated-capability snapshots intentionally omit every provider's embedded
+ * models. That shape is the compatibility signal that a signed Provider
+ * Catalog must arrive before model selection is authoritative. Older Gateway
+ * snapshots retain at least one embedded provider catalog and stay on the
+ * legacy path.
+ */
+export function expectedProviderCatalogIds(
+  capabilities: GatewayCapabilities,
+): string[] {
+  if (
+    capabilities.providers.length === 0
+    || capabilities.models.length > 0
+    || capabilities.providers.some(provider => provider.models.length > 0)
+  ) return [];
+  return capabilities.providers.map(provider => provider.id);
+}
+
+export function providerCatalogsCoverProviders(
+  catalogs: readonly V3ProjectedProviderModelCatalog[],
+  expectedProviderIds: readonly string[],
+): boolean {
+  if (expectedProviderIds.length === 0) return true;
+  const byProvider = new Map(catalogs.map(catalog => [catalog.providerId, catalog]));
+  return [...new Set(expectedProviderIds)].every(providerId =>
+    byProvider.get(providerId)?.complete === true,
+  );
 }
 
 function controlsForProviderCatalog(
