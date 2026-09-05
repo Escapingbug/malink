@@ -412,6 +412,9 @@ class OfficialMatrixSdkDriver(
                 "matrix.session_read.sdk_failure",
                 errorAttributes(error) + ("stage" to "publish"),
             )
+            if (error is ClientException.MatrixApi && error.code == "M_INVALID_PARAM") {
+                throw MatrixReadReceiptRejectedException(error.code, error)
+            }
             throw error
         }
     }

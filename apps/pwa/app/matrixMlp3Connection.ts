@@ -1922,7 +1922,7 @@ export async function connectMatrixMlp3(
         || !session.readReceiptEventId
         || session.readReceiptThreadRootEventId !== session.threadRootEventId
       ) {
-        throw new Error("The session does not yet have a verified Matrix receipt target.");
+        return;
       }
       sessionReadReceiptOutbox.enqueue({
         roomId: context.roomId,

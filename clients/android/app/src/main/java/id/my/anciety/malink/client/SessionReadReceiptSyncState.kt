@@ -30,6 +30,7 @@ internal class SessionReadReceiptSyncState(
     private val readUpdatedAt = linkedMapOf<String, Long>()
     private val pending = linkedMapOf<Route, MatrixMlp3SessionReadReceiptTarget>()
     private val confirmedEventIds = mutableMapOf<Route, String>()
+    private val rejectedEventIds = mutableMapOf<Route, String>()
     private val publishAttempts = mutableMapOf<Route, Int>()
     private var inspectionOffset = 0
 
@@ -51,9 +52,14 @@ internal class SessionReadReceiptSyncState(
 
     @Synchronized
     fun markLocallyRead(target: MatrixMlp3SessionReadReceiptTarget): Boolean {
-        val previous = readUpdatedAt[target.sessionId] ?: -1L
-        if (previous >= target.updatedAt) return false
-        readUpdatedAt[target.sessionId] = target.updatedAt
+        return markLocallyRead(target.sessionId, target.updatedAt)
+    }
+
+    @Synchronized
+    fun markLocallyRead(sessionId: String, updatedAt: Long): Boolean {
+        val previous = readUpdatedAt[sessionId] ?: -1L
+        if (previous >= updatedAt) return false
+        readUpdatedAt[sessionId] = updatedAt
         trimReadState()
         return true
     }
@@ -61,6 +67,8 @@ internal class SessionReadReceiptSyncState(
     @Synchronized
     fun requestPublish(target: MatrixMlp3SessionReadReceiptTarget) {
         val route = target.route()
+        if (rejectedEventIds[route] == target.eventId) return
+        rejectedEventIds.remove(route)
         if (confirmedEventIds[route] == target.eventId || pending[route] == target) return
         pending[route] = target
         confirmedEventIds.remove(route)
@@ -85,6 +93,9 @@ internal class SessionReadReceiptSyncState(
         confirmedEventIds.entries.removeAll { (route, eventId) ->
             currentByRoute[route]?.eventId != eventId
         }
+        rejectedEventIds.entries.removeAll { (route, eventId) ->
+            currentByRoute[route]?.eventId != eventId
+        }
 
         val publish = pending.values
             .sortedByDescending(MatrixMlp3SessionReadReceiptTarget::updatedAt)
@@ -97,7 +108,9 @@ internal class SessionReadReceiptSyncState(
             .asSequence()
             .filter { target ->
                 val route = target.route()
-                route !in publishingRoutes && confirmedEventIds[route] != target.eventId
+                route !in publishingRoutes &&
+                    confirmedEventIds[route] != target.eventId &&
+                    rejectedEventIds[route] != target.eventId
             }
             .sortedByDescending(MatrixMlp3SessionReadReceiptTarget::updatedAt)
             .toList()
@@ -120,11 +133,15 @@ internal class SessionReadReceiptSyncState(
         val route = target.route()
         if (remoteEventId == target.eventId) {
             confirmedEventIds[route] = target.eventId
+            rejectedEventIds.remove(route)
             if (pending[route] == target) pending.remove(route)
             publishAttempts.remove(route)
             return markLocallyRead(target)
         }
-        if ((readUpdatedAt[target.sessionId] ?: -1L) >= target.updatedAt) {
+        if (
+            rejectedEventIds[route] != target.eventId &&
+            (readUpdatedAt[target.sessionId] ?: -1L) >= target.updatedAt
+        ) {
             pending[route] = target
         }
         return false
@@ -134,6 +151,7 @@ internal class SessionReadReceiptSyncState(
     fun recordPublished(target: MatrixMlp3SessionReadReceiptTarget) {
         val route = target.route()
         confirmedEventIds[route] = target.eventId
+        rejectedEventIds.remove(route)
         if (pending[route] == target) pending.remove(route)
         publishAttempts.remove(route)
     }
@@ -145,6 +163,14 @@ internal class SessionReadReceiptSyncState(
         val attempt = (publishAttempts[route] ?: 0) + 1
         publishAttempts[route] = attempt
         return attempt
+    }
+
+    @Synchronized
+    fun recordPublishRejected(target: MatrixMlp3SessionReadReceiptTarget) {
+        val route = target.route()
+        rejectedEventIds[route] = target.eventId
+        if (pending[route] == target) pending.remove(route)
+        publishAttempts.remove(route)
     }
 
     @Synchronized

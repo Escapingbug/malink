@@ -71,7 +71,7 @@ class MatrixMlp3NativeProjectionTest {
         projection.applyGatewayEvent(turn("started", 2, "working"), "\$started", "\$root-a")
         projection.applyGatewayEvent(turn("completed", 3, "idle"), "\$completed", "\$root-a")
         val current = projection.durableState()
-        assertEquals(21, current.getValue("schemaVersion").jsonPrimitive.content.toInt())
+        assertEquals(22, current.getValue("schemaVersion").jsonPrimitive.content.toInt())
 
         val providerCatalogOnly = JsonObject(current.filterKeys {
             it != "completionObservations"
@@ -188,6 +188,114 @@ class MatrixMlp3NativeProjectionTest {
             initialState = projection.durableState(),
         )
         assertEquals(expected, restored.sessionReadReceiptTarget("session-a", "project-1"))
+    }
+
+    @Test
+    fun `session receipt target requires a matching Matrix thread relation`() {
+        val projection = projection()
+        projection.applyWorkspaceGatewayDirectory(buildJsonObject {
+            put("directory", buildJsonObject {
+                put("revision", 1)
+                put("gateways", buildJsonArray {
+                    add(buildJsonObject {
+                        put("projects", buildJsonArray {
+                            add(buildJsonObject {
+                                put("projectId", "project-1")
+                                put("roomId", "!project:example.org")
+                            })
+                        })
+                    })
+                })
+            })
+        })
+        projection.applyOwnCommand(
+            sessionCreateCommand("session-a", title = "Session A"),
+            "\$root-a",
+            50,
+        )
+
+        assertNull(projection.sessionReadReceiptTarget("session-a", "project-1"))
+        assertEquals(
+            id.my.anciety.malink.client.events.SessionReadUpdate(
+                sessionId = "session-a",
+                projectId = "project-1",
+                readUpdatedAt = 50,
+            ),
+            projection.sessionReadUpdate("session-a", "project-1"),
+        )
+
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$unthreaded",
+            null,
+        )
+        assertNull(projection.sessionReadReceiptTarget("session-a", "project-1"))
+
+        projection.applyGatewayEvent(
+            turn("started", 2, "working"),
+            "\$wrong-thread",
+            "\$root-b",
+        )
+        assertNull(projection.sessionReadReceiptTarget("session-a", "project-1"))
+
+        projection.applyGatewayEvent(
+            turn("completed", 3, "idle"),
+            "\$threaded",
+            "\$root-a",
+        )
+        assertEquals(
+            "\$threaded",
+            projection.sessionReadReceiptTarget("session-a", "project-1")?.eventId,
+        )
+
+        projection.applyGatewayEvent(
+            turn("completed", 4, "idle"),
+            "\$later-unthreaded",
+            null,
+        )
+        assertNull(projection.sessionReadReceiptTarget("session-a", "project-1"))
+    }
+
+    @Test
+    fun `legacy receipt target without thread proof is discarded during restore`() {
+        val projection = projection()
+        projection.applyWorkspaceGatewayDirectory(buildJsonObject {
+            put("directory", buildJsonObject {
+                put("revision", 1)
+                put("gateways", buildJsonArray {
+                    add(buildJsonObject {
+                        put("projects", buildJsonArray {
+                            add(buildJsonObject {
+                                put("projectId", "project-1")
+                                put("roomId", "!project:example.org")
+                            })
+                        })
+                    })
+                })
+            })
+        })
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 1, "Session A", 100),
+            "\$ready-a",
+            "\$root-a",
+        )
+        val current = projection.durableState()
+        val legacySessions = JsonArray(current.getValue("sessions").jsonArray.map { element ->
+            JsonObject(element.jsonObject.filterKeys { it != "readReceiptThreadRootEventId" })
+        })
+        val legacy = JsonObject(
+            current +
+                ("schemaVersion" to JsonPrimitive(21)) +
+                ("sessions" to legacySessions),
+        )
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = legacy,
+        )
+
+        assertNull(restored.sessionReadReceiptTarget("session-a", "project-1"))
     }
 
     @Test

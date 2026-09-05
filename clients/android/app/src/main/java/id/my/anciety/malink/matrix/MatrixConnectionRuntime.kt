@@ -28,6 +28,11 @@ fun interface MatrixSdkDriverFactory {
 class MatrixOfflineException(message: String = "The native Matrix connection is offline.") :
     IllegalStateException(message)
 
+class MatrixReadReceiptRejectedException(
+    val matrixErrorCode: String,
+    cause: Throwable,
+) : Exception("Matrix rejected the session read receipt.", cause)
+
 internal enum class MatrixRemoteLogoutOutcome {
     CONFIRMED,
     SKIPPED_OFFLINE,

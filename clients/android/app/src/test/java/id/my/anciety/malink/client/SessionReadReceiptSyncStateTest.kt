@@ -65,6 +65,28 @@ class SessionReadReceiptSyncStateTest {
     }
 
     @Test
+    fun `a permanently rejected target is quarantined until the projection advances`() {
+        val state = SessionReadReceiptSyncState(maxMarkers = 10)
+        val rejected = target(eventId = "\$event-1", updatedAt = 100)
+        state.markLocallyRead(rejected)
+        state.requestPublish(rejected)
+
+        state.recordPublishRejected(rejected)
+
+        assertFalse(state.hasPendingPublish())
+        assertTrue(state.plan(listOf(rejected), limit = 4).isEmpty())
+        state.requestPublish(rejected)
+        assertFalse(state.hasPendingPublish())
+
+        val advanced = target(eventId = "\$event-2", updatedAt = 200)
+        state.requestPublish(advanced)
+        assertEquals(
+            SessionReadReceiptWork(SessionReadReceiptWorkKind.PUBLISH, advanced),
+            state.plan(listOf(advanced), limit = 4).single(),
+        )
+    }
+
+    @Test
     fun `another device receipt advances local state without a publish`() {
         val state = SessionReadReceiptSyncState(maxMarkers = 10)
         val target = target(eventId = "\$event-1", updatedAt = 100)

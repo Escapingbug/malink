@@ -50,6 +50,7 @@ import id.my.anciety.malink.matrix.MatrixDecryptedEvent
 import id.my.anciety.malink.matrix.MatrixIdentifiers
 import id.my.anciety.malink.matrix.MatrixLoginTokenIssueResult
 import id.my.anciety.malink.matrix.MatrixApplicationControlRequestException
+import id.my.anciety.malink.matrix.MatrixReadReceiptRejectedException
 import id.my.anciety.malink.matrix.MatrixRuntimePhase
 import id.my.anciety.malink.matrix.MatrixTransportIdentity
 import id.my.anciety.malink.matrix.PublicMatrixSession
@@ -465,24 +466,21 @@ class NativeClientRuntime(
         sessionId: String,
         projectId: String? = null,
     ): SessionReadUpdate {
-        val update = mutex.withLock {
+        val (update, publishRequested) = mutex.withLock {
+            val localUpdate = matrixMlp3Projection.sessionReadUpdate(sessionId, projectId)
+                ?: throw IllegalArgumentException("The session is unavailable.")
             val target = matrixMlp3Projection.sessionReadReceiptTarget(
                 sessionId,
                 projectId,
                 singleProjectRoomFallback(),
             )
-                ?: throw IllegalStateException(
-                    "The session does not yet have a verified Matrix receipt target.",
-                )
-            recordSessionRead(target)
-            sessionReadReceiptSync.requestPublish(target)
-            SessionReadUpdate(
-                sessionId = target.sessionId,
-                projectId = target.projectId,
-                readUpdatedAt = target.updatedAt,
-            )
+            recordSessionRead(localUpdate)
+            target?.let(sessionReadReceiptSync::requestPublish)
+            localUpdate to (target != null)
         }
-        scheduleSessionReadReceiptReconciliation(includeInspection = false)
+        if (publishRequested) {
+            scheduleSessionReadReceiptReconciliation(includeInspection = false)
+        }
         return update
     }
 
@@ -2870,6 +2868,12 @@ class NativeClientRuntime(
                         recordSessionReadReceiptFailure("publish", target, error)
                     } catch (error: CancellationException) {
                         throw error
+                    } catch (error: MatrixReadReceiptRejectedException) {
+                        sessionReadReceiptSync.recordPublishRejected(target)
+                        diagnostics.record(
+                            "matrix.session_read.target_rejected",
+                            mapOf("code" to error.matrixErrorCode),
+                        )
                     } catch (error: Exception) {
                         publishFailed = true
                         recordSessionReadReceiptFailure("publish", target, error)
@@ -2934,17 +2938,26 @@ class NativeClientRuntime(
         else -> "matrix_sdk"
     }
 
+    private fun recordSessionRead(update: SessionReadUpdate) {
+        if (!sessionReadReceiptSync.markLocallyRead(update.sessionId, update.readUpdatedAt)) return
+        publishSessionReadUpdate(update)
+    }
+
     private fun recordSessionRead(target: MatrixMlp3SessionReadReceiptTarget) {
-        if (!sessionReadReceiptSync.markLocallyRead(target)) return
-        publishSessionReadUpdate(target)
+        recordSessionRead(target.toSessionReadUpdate())
     }
 
     private fun publishSessionReadUpdate(target: MatrixMlp3SessionReadReceiptTarget) {
-        val update = SessionReadUpdate(
-            sessionId = target.sessionId,
-            projectId = target.projectId,
-            readUpdatedAt = target.updatedAt,
-        )
+        publishSessionReadUpdate(target.toSessionReadUpdate())
+    }
+
+    private fun MatrixMlp3SessionReadReceiptTarget.toSessionReadUpdate() = SessionReadUpdate(
+        sessionId = sessionId,
+        projectId = projectId,
+        readUpdatedAt = updatedAt,
+    )
+
+    private fun publishSessionReadUpdate(update: SessionReadUpdate) {
         eventHub.publish(
             ClientEventType.SESSION_READ_CHANGED,
             PublicClientJson.encodeSessionReadUpdate(update),
