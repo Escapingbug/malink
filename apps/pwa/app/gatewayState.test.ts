@@ -4,6 +4,7 @@ import {
   gatewayMaintenanceSessionActivityOutcome,
   isIgnorableGatewayStateReplay,
   parseGatewayCapabilities,
+  parseGatewayStateExtension,
 } from "./gatewayState";
 
 describe("Provider presentation", () => {
@@ -89,6 +90,112 @@ describe("Gateway state progress", () => {
     expect(isIgnorableGatewayStateReplay("current", "stale")).toBe(true);
     expect(isIgnorableGatewayStateReplay("conflict")).toBe(false);
     expect(isIgnorableGatewayStateReplay("current", "advance")).toBe(false);
+  });
+});
+
+describe("Native Gateway state catalogs", () => {
+  it("expands a shared ACP command catalog referenced by multiple sessions", () => {
+    const session = (id: string) => ({
+      id,
+      title: id,
+      updated_at: 1,
+      state_version: 1,
+      status: "idle",
+      activity_phase: "idle",
+      project_id: "project-1",
+      project_name: "Project",
+      cwd: "/workspace",
+      provider: "codex",
+      extensions: [],
+      available_commands_ref: 0,
+    });
+    const workspace = {
+      project_id: "project-1",
+      project_name: "Project",
+      cwd: "/workspace",
+      provider: "codex",
+      permission_mode: "default",
+      capabilities_ref: 0,
+    };
+    const capabilities = {
+      models: [],
+      providers: [],
+      permission_modes: [],
+      can_create_session: true,
+      can_select_session: false,
+      session_extensions: [],
+    };
+    const parsed = parseGatewayStateExtension({
+      kind: "gateway_state",
+      version: 1,
+      state_version: 1,
+      revision: 0,
+      revision_epoch: "matrix-native-v3",
+      revision_epoch_generation: 1,
+      active_device_count: 1,
+      current_session_id: null,
+      sessions: [session("session-1"), session("session-2")],
+      session_array_catalogs: {
+        available_commands: [[{
+          name: "review",
+          description: "Review the workspace",
+          inputHint: null,
+        }]],
+      },
+      workspace,
+      projects: [workspace],
+      project_capability_catalogs: [capabilities],
+      capabilities,
+    });
+
+    expect(parsed?.sessions.map(value => value.availableCommands)).toEqual([
+      [{ name: "review", description: "Review the workspace", inputHint: null }],
+      [{ name: "review", description: "Review the workspace", inputHint: null }],
+    ]);
+    expect(parsed?.workspace.capabilities).toEqual(parsed?.capabilities);
+    expect(parsed?.projects?.[0]?.capabilities).toEqual(parsed?.capabilities);
+  });
+
+  it("rejects an unknown ACP command catalog reference", () => {
+    expect(() => parseGatewayStateExtension({
+      kind: "gateway_state",
+      version: 1,
+      state_version: 1,
+      revision: 0,
+      revision_epoch: "matrix-native-v3",
+      revision_epoch_generation: 1,
+      active_device_count: 1,
+      current_session_id: null,
+      sessions: [{
+        id: "session-1",
+        title: "Session",
+        updated_at: 1,
+        state_version: 1,
+        status: "idle",
+        project_id: "project-1",
+        project_name: "Project",
+        cwd: "/workspace",
+        provider: "codex",
+        extensions: [],
+        available_commands_ref: 1,
+      }],
+      session_array_catalogs: { available_commands: [[]] },
+      workspace: {
+        project_id: "project-1",
+        project_name: "Project",
+        cwd: "/workspace",
+        provider: "codex",
+        permission_mode: "default",
+      },
+      capabilities: {
+        models: [],
+        providers: [],
+        permission_modes: [],
+        can_create_session: true,
+        can_select_session: false,
+        session_extensions: [],
+      },
+    })).toThrow("command catalog reference is invalid");
   });
 });
 

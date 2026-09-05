@@ -404,6 +404,24 @@ class MatrixConnectionRuntime(
         )
     }
 
+    suspend fun loadWorkspaceDeviceRevocation(
+        roomId: String,
+        stateKey: String,
+    ): MatrixDecryptedEvent? {
+        val session = secrets?.session
+            ?: throw MatrixOfflineException("The Matrix session is unavailable.")
+        return applicationRoomStateClient.currentWorkspaceDeviceRevocation(
+            session,
+            roomId,
+            stateKey,
+        ).also { event ->
+            diagnostics.record(
+                "matrix.workspace_device_authorization.checked",
+                mapOf("revoked" to (event != null).toString()),
+            )
+        }
+    }
+
     suspend fun sendPrivateReadReceipt(
         roomId: String,
         threadRootEventId: String,

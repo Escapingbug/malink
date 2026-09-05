@@ -78,6 +78,10 @@ interface NativeMatrixPort {
         roomIds: Set<String>? = null,
         includeThreadDirectory: Boolean = true,
     )
+    suspend fun loadWorkspaceDeviceRevocation(
+        roomId: String,
+        stateKey: String,
+    ): MatrixDecryptedEvent? = null
     suspend fun sendPrivateReadReceipt(
         roomId: String,
         threadRootEventId: String,
@@ -168,6 +172,10 @@ class MatrixNativePort(context: Context) : NativeMatrixPort {
         roomIds: Set<String>?,
         includeThreadDirectory: Boolean,
     ) = runtime.refreshApplicationProjection(roomIds, includeThreadDirectory)
+    override suspend fun loadWorkspaceDeviceRevocation(
+        roomId: String,
+        stateKey: String,
+    ): MatrixDecryptedEvent? = runtime.loadWorkspaceDeviceRevocation(roomId, stateKey)
     override suspend fun sendPrivateReadReceipt(
         roomId: String,
         threadRootEventId: String,

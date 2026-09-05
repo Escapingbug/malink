@@ -1,9 +1,11 @@
 package id.my.anciety.malink.client
 
 import id.my.anciety.malink.client.events.ClientMessageKind
+import id.my.anciety.malink.client.events.MAX_BRIDGE_EVENT_PAYLOAD_BYTES
 import id.my.anciety.malink.client.events.ToolCategory
 import id.my.anciety.malink.client.events.ToolPhase
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -20,6 +22,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MatrixMlp3NativeProjectionTest {
+    @Test
+    fun `verified physical event ids can bypass repeated raw inbox writes`() {
+        val projection = projection()
+
+        assertFalse(projection.hasSeenPhysicalEvent("\$project"))
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        assertTrue(projection.hasSeenPhysicalEvent("\$project"))
+        assertFalse(projection.hasSeenPhysicalEvent("\$not-seen"))
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        assertTrue(restored.hasSeenPhysicalEvent("\$project"))
+    }
+
     @Test
     fun `provider catalog pages replace embedded models and survive durable restore`() {
         val projection = projection()
@@ -237,7 +256,7 @@ class MatrixMlp3NativeProjectionTest {
         projection.applyGatewayEvent(turn("started", 2, "working"), "\$started", "\$root-a")
         projection.applyGatewayEvent(turn("completed", 3, "idle"), "\$completed", "\$root-a")
         val current = projection.durableState()
-        assertEquals(22, current.getValue("schemaVersion").jsonPrimitive.content.toInt())
+        assertEquals(23, current.getValue("schemaVersion").jsonPrimitive.content.toInt())
 
         val providerCatalogOnly = JsonObject(current.filterKeys {
             it != "completionObservations"
@@ -757,6 +776,34 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `stale recovered session projection still completes its command`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady("session-a", 2, "Latest session", 200),
+            "\$ready-latest",
+            "\$root-a",
+        )
+        val recoveredReady = JsonObject(
+            sessionReady("session-a", 1, "Stale session", 100) +
+                ("eventId" to JsonPrimitive("ready-session-a-recovery")),
+        )
+
+        val recovered = projection.applyGatewayEvent(
+            recoveredReady,
+            "\$ready-recovery",
+            "\$root-a",
+        )
+
+        assertEquals("create-session-a", recovered.terminal?.commandId)
+        assertEquals("succeeded", recovered.terminal?.outcome)
+        assertTrue(recovered.messages.isEmpty())
+        val session = projection.snapshot()!!
+            .getValue("sessions").jsonArray.single().jsonObject
+        assertEquals("Latest session", session.getValue("title").jsonPrimitive.content)
+    }
+
+    @Test
     fun `older assistant message versions cannot truncate the latest text`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
@@ -1030,6 +1077,82 @@ class MatrixMlp3NativeProjectionTest {
             initialState = durable.value,
         )
         assertEquals("\$root-299", restored.threadRootEventId("session-299"))
+    }
+
+    @Test
+    fun `public snapshot interns repeated command catalogs before bridge limit`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        val availableCommands = buildJsonArray {
+            repeat(50) { index ->
+                add(buildJsonObject {
+                    put("name", "command-$index")
+                    put("description", "description-$index-${"x".repeat(280)}")
+                    put("inputHint", JsonNull)
+                })
+            }
+        }
+        repeat(20) { index ->
+            projection.applyGatewayEvent(
+                sessionReadyWithCommands("session-$index", index + 1L, availableCommands),
+                "\$root-$index",
+                "\$root-$index",
+            )
+        }
+
+        val snapshot = projection.snapshot()!!
+        val encoded = snapshot.toString()
+        assertTrue(encoded.toByteArray(Charsets.UTF_8).size <= MAX_BRIDGE_EVENT_PAYLOAD_BYTES)
+        assertEquals(1, Regex("description-49-").findAll(encoded).count())
+        assertEquals(
+            1,
+            snapshot.getValue("session_array_catalogs").jsonObject
+                .getValue("available_commands").jsonArray.size,
+        )
+        assertTrue(snapshot.getValue("sessions").jsonArray.all { session ->
+            "available_commands_ref" in session.jsonObject &&
+                "available_commands" !in session.jsonObject
+        })
+    }
+
+    @Test
+    fun `public snapshot omits optional unique command catalogs before losing workspace state`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        repeat(24) { sessionIndex ->
+            val uniqueCommands = buildJsonArray {
+                repeat(50) { commandIndex ->
+                    add(buildJsonObject {
+                        put("name", "command-$sessionIndex-$commandIndex")
+                        put(
+                            "description",
+                            "description-$sessionIndex-$commandIndex-${"x".repeat(280)}",
+                        )
+                        put("inputHint", JsonNull)
+                    })
+                }
+            }
+            projection.applyGatewayEvent(
+                sessionReadyWithCommands(
+                    "session-$sessionIndex",
+                    sessionIndex + 1L,
+                    uniqueCommands,
+                ),
+                "\$root-$sessionIndex",
+                "\$root-$sessionIndex",
+            )
+        }
+
+        val snapshot = projection.snapshot()!!
+        assertTrue(
+            snapshot.toString().toByteArray(Charsets.UTF_8).size <=
+                MAX_BRIDGE_EVENT_PAYLOAD_BYTES,
+        )
+        assertFalse("session_array_catalogs" in snapshot)
+        assertTrue(snapshot.getValue("sessions").jsonArray.all { session ->
+            "available_commands_ref" !in session.jsonObject &&
+                "available_commands" !in session.jsonObject
+        })
     }
 
     @Test

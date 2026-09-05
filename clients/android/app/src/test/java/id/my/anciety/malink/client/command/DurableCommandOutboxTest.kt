@@ -91,6 +91,22 @@ class DurableCommandOutboxTest {
     }
 
     @Test
+    fun `released tombstone identifies an already cleaned recovery command`() {
+        val fixture = fixture()
+        val receipt = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("session.create"))
+        fixture.outbox.claimForTransmission(receipt.commandId)
+        fixture.outbox.recordPublished(receipt.commandId, "matrix-event")
+        fixture.outbox.recordCompletion(CommandCompletion(
+            commandId = receipt.commandId,
+            outcome = CommandOutcome.SUCCEEDED,
+        ))
+
+        assertTrue(fixture.outbox.release(receipt.commandId))
+        assertTrue(fixture.outbox.wasReleased(receipt.commandId))
+        assertFalse(fixture.outbox.wasReleased("unknown-command"))
+    }
+
+    @Test
     fun `process restart retires a published Gateway status probe but preserves mutations`() {
         val fixture = fixture()
         val status = fixture.outbox.enqueue(

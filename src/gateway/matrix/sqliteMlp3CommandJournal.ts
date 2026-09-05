@@ -601,6 +601,11 @@ function compactDeliveredTerminal(terminal: Mlp3CommandTerminal): Mlp3CommandTer
   return {
     outcome: terminal.outcome,
     eventId: terminal.eventId,
+    // Delivery acknowledgement proves only that Matrix accepted the event;
+    // it does not prove that every client persisted it before advancing its
+    // sync cursor. Retain the signed application terminal so a later retry of
+    // the same command can converge local state without re-executing it.
+    ...(terminal.event === undefined ? {} : { event: terminal.event }),
     ...(terminal.sessionId === undefined ? {} : { sessionId: terminal.sessionId }),
     ...(terminal.code === undefined && !error ? {} : { code: terminal.code ?? error?.code }),
     ...(terminal.error === undefined && !error ? {} : { error: terminal.error ?? error?.message }),

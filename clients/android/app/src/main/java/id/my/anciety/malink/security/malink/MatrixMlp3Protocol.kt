@@ -20,6 +20,8 @@ const val MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE = "io.malink.workspace.curren
 const val MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE = "io.malink.provider_catalog.v1"
 const val MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE =
     "io.malink.workspace.gateway_directory.v1"
+const val MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE =
+    "io.malink.workspace.device_revocation.v1"
 private val MATRIX_USER_ID = Regex("^@[^:\\s]+:[^\\s]+$")
 
 data class MatrixMlp3ProjectKey(
@@ -351,6 +353,47 @@ object MatrixMlp3Protocol {
         }
         require(ids.distinct().size == ids.size)
         return directory
+    }
+
+    fun verifyWorkspaceDeviceRevocation(
+        signed: JsonObject,
+        gatewayKey: PairingPublicKey,
+        workspaceId: String,
+    ): JsonObject {
+        signed.requireExactKeys(
+            setOf("revocation", "signature"),
+            "Workspace device revocation",
+        )
+        val revocation = signed.objectValue("revocation")
+        verifySignature(
+            signed.objectValue("signature"),
+            gatewayKey,
+            buildJsonObject {
+                put("domain", "malink.workspace.device-revocation.v1")
+                put("document", revocation)
+            },
+        )
+        revocation.requireAllowedKeys(
+            required = setOf(
+                "kind", "version", "revocationId", "workspaceId", "deviceId",
+                "certificateId", "issuedAt",
+            ),
+            optional = setOf("reason"),
+            label = "Workspace device revocation",
+        )
+        require(revocation.string("kind") == "malink.workspace.device-revocation")
+        require(revocation.long("version") == 1L)
+        revocation.opaque("revocationId")
+        require(revocation.opaque("workspaceId") == workspaceId)
+        revocation.opaque("deviceId")
+        revocation.opaque("certificateId")
+        revocation.nonnegative("issuedAt")
+        revocation.string("reason")?.let { reason ->
+            require(reason.isNotBlank() && reason.length <= 1_024) {
+                "Workspace device revocation reason is invalid."
+            }
+        }
+        return revocation
     }
 
     fun sealSignedCommand(

@@ -31,4 +31,35 @@ class NativeClientPowerPolicyTest {
         assertEquals(60_000L, authoritativeStateRefreshRetryDelayMs(6))
         assertEquals(60_000L, authoritativeStateRefreshRetryDelayMs(100))
     }
+
+    @Test
+    fun `successful projection snapshot never becomes a polling loop`() {
+        val partial = matrixMlp3WorkspaceProjectionProgress(
+            expectedProjectIds = setOf("project-ready", "project-missing"),
+            keyedProjectIds = setOf("project-ready"),
+            projectedProjectIds = setOf("project-ready"),
+            capabilityProjectIds = emptySet(),
+        )
+
+        assertEquals(false, shouldRetryMatrixMlp3ProjectionRefresh(true, partial))
+    }
+
+    @Test
+    fun `failed projection read retries only when no signed project is usable`() {
+        val cached = matrixMlp3WorkspaceProjectionProgress(
+            expectedProjectIds = setOf("project-ready", "project-missing"),
+            keyedProjectIds = setOf("project-ready"),
+            projectedProjectIds = setOf("project-ready"),
+            capabilityProjectIds = emptySet(),
+        )
+        val empty = matrixMlp3WorkspaceProjectionProgress(
+            expectedProjectIds = setOf("project-missing"),
+            keyedProjectIds = emptySet(),
+            projectedProjectIds = emptySet(),
+            capabilityProjectIds = emptySet(),
+        )
+
+        assertEquals(false, shouldRetryMatrixMlp3ProjectionRefresh(false, cached))
+        assertEquals(true, shouldRetryMatrixMlp3ProjectionRefresh(false, empty))
+    }
 }

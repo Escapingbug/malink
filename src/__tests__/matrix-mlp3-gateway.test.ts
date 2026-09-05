@@ -2296,21 +2296,26 @@ describe('MatrixMlp3GatewayRunner', () => {
       ))
     await send(promptA, '$prompt-a-terminal-reconciliation')
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
-      .some(event =>
+      .filter(event =>
         event.causationCommandId === 'prompt-a'
-        && event.payload.type === 'command.reconciled'
-        && event.payload.state === 'terminal'
-      ))
+        && event.payload.type === 'turn.completed'
+      ).length >= 2)
     await send(promptA, '$prompt-a-retry-same-terminal-state')
-    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
-      event.causationCommandId === 'prompt-a'
-      && event.payload.type === 'command.reconciled'
-      && event.payload.state === 'terminal'
-    )?.payload).toMatchObject({
-      type: 'command.reconciled',
-      commandId: 'prompt-a',
-      outcome: 'succeeded',
-    })
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .filter(event =>
+        event.causationCommandId === 'prompt-a'
+        && event.payload.type === 'turn.completed'
+      ).length >= 3)
+    const promptATerminalEvents = (await events(client, activeKey.key, roomId, projectId))
+      .filter(event =>
+        event.causationCommandId === 'prompt-a'
+        && event.payload.type === 'turn.completed'
+      )
+    expect(new Set(promptATerminalEvents.map(event => event.eventId)).size)
+      .toBe(promptATerminalEvents.length)
+    expect(promptATerminalEvents.map(event => event.payload)).toEqual(
+      promptATerminalEvents.map(() => promptATerminalEvents[0]?.payload),
+    )
     expect(dispatched.filter(item => item.text === 'block A')).toHaveLength(1)
     expect(terminalNotifications.filter(event =>
       event.causationCommandId === 'prompt-blocked-by-macos'
@@ -2370,7 +2375,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(promptAReconciliations.filter(event =>
       event.payload.type === 'command.reconciled'
       && event.payload.state === 'terminal'
-    )).toHaveLength(1)
+    )).toHaveLength(0)
     expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
       event.causationCommandId === 'decision-allow-b'
     )?.payload).toMatchObject({
@@ -2412,16 +2417,11 @@ describe('MatrixMlp3GatewayRunner', () => {
       operation: 'prompt.submit',
       payload: { operation: 'prompt.submit', text: 'cancel active' },
     }, '$prompt-cancel-active-reconcile')
-    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).filter(event =>
       event.causationCommandId === 'prompt-cancel-active'
-      && event.payload.type === 'command.reconciled'
-      && event.payload.state === 'terminal'
-    ))
-    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
-      event.causationCommandId === 'prompt-cancel-active'
-      && event.payload.type === 'command.reconciled'
-      && event.payload.state === 'terminal'
-    )?.payload).toMatchObject({ outcome: 'cancelled' })
+      && event.payload.type === 'turn.completed'
+      && event.payload.outcome === 'cancelled'
+    ).length >= 2)
 
     const causalText = 'causal barrier'
     const causalMessageId = `reply-session-b-${causalText}`
@@ -2493,13 +2493,14 @@ describe('MatrixMlp3GatewayRunner', () => {
     })
 
     const archiveCleanupGate = client.blockNextThreadDeletion()
-    await send({
+    const archiveA = {
       ...base,
       commandId: 'archive-a',
       sessionId: 'session-a',
       operation: 'session.set_lifecycle',
       payload: { operation: 'session.set_lifecycle', state: 'archived' },
-    }, '$archive-a')
+    } satisfies Mlp3Command
+    await send(archiveA, '$archive-a')
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
       .some(event => event.causationCommandId === 'archive-a'))
     expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
@@ -2527,6 +2528,12 @@ describe('MatrixMlp3GatewayRunner', () => {
     await waitFor(async () => !(await archiveState.project(roomId)).sessions.some(session =>
       session.id === 'session-a'
     ))
+    await send(archiveA, '$archive-a-recovery')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).filter(event =>
+      event.causationCommandId === 'archive-a'
+      && event.payload.type === 'session.lifecycle'
+      && event.payload.state === 'deleted'
+    ).length >= 2)
     await send({
       ...base,
       commandId: 'provider-list-after-archive',

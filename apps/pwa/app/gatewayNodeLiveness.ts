@@ -1,9 +1,10 @@
 import type { SignedWorkspaceGatewayDirectory } from "@malink/protocol";
 
-// Visible clients probe at most once a minute. Allow one delayed foreground
-// round trip before presenting the most recent proof as stale.
-export const GATEWAY_FOREGROUND_PROBE_INTERVAL_MS = 60_000;
-export const GATEWAY_ONLINE_PROOF_WINDOW_MS = 150_000;
+// A status check consumes a signed command and reply on the same Matrix lane
+// as user work. Probe only while the user is inspecting Gateway software, and
+// otherwise rely on passive signed activity instead of delaying session work.
+export const GATEWAY_FOREGROUND_PROBE_INTERVAL_MS = 5 * 60_000;
+export const GATEWAY_ONLINE_PROOF_WINDOW_MS = 6 * 60_000;
 // Matrix delivery, Gateway journal execution, and the signed reply are each
 // asynchronous. Keep the UI deadline above the native HTTP send timeout so a
 // healthy but delayed round trip is not reported as a Gateway fault.
@@ -52,6 +53,7 @@ export type GatewayNoReplyPresentation = {
 };
 
 export function gatewayForegroundProbeDue(input: {
+  userInspecting: boolean;
   visible: boolean;
   networkOnline: boolean;
   matrixConnected: boolean;
@@ -60,6 +62,7 @@ export function gatewayForegroundProbeDue(input: {
   lastVerifiedAt?: number;
 }): boolean {
   if (
+    !input.userInspecting ||
     !input.visible ||
     !input.networkOnline ||
     !input.matrixConnected ||

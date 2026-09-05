@@ -931,7 +931,7 @@ export class MatrixMlp3GatewayRunner {
     this.observeRelationHint(project, authorized.command, event)
     const record = authorized.claim.record
     if (authorized.claim.kind === 'duplicate') {
-      await this.publishCommandReconciliation(project, record).catch(error => {
+      await this.publishCommandReconciliation(project, record, event.eventId).catch(error => {
         this.log(
           `[mlp3/matrix] command ${record.command.commandId} reconciliation failed: `
           + formatError(error),
@@ -3539,7 +3539,42 @@ export class MatrixMlp3GatewayRunner {
   private async publishCommandReconciliation(
     project: V3ProjectRuntime,
     record: Mlp3CommandJournalRecord,
+    sourceMatrixEventId: string,
   ): Promise<void> {
+    if (record.status === 'terminal' && record.terminal?.event) {
+      const originalEvent = record.terminal.event
+      const boundedPayload = boundedProviderHistoryEventPayload(record.command, originalEvent.payload)
+      // A recovery is a fresh delivery of the retained terminal fact, not the
+      // original logical event again. Matrix gives the duplicate command a new
+      // physical event ID, but both the durable outbox and clients deduplicate
+      // application events by MLP eventId. Reusing originalEvent.eventId would
+      // therefore produce a successful Matrix send that the client correctly
+      // ignores, leaving its command pending forever. Bind a deterministic new
+      // logical ID to this recovery request while preserving command causality
+      // and the exact terminal payload.
+      const terminalEvent: Mlp3Event = {
+        ...originalEvent,
+        eventId: commandTerminalRecoveryEventId(record.command, sourceMatrixEventId),
+        occurredAt: this.now(),
+        payload: boundedPayload,
+      }
+      const session = terminalEvent.sessionId
+        ? project.project.sessions.find(candidate => candidate.id === terminalEvent.sessionId)
+        : undefined
+      await this.content.queueEvent(project.config, terminalEvent, this.client, {
+        ...(session ? { relation: threadRelation(session.threadRootEventId) } : {}),
+        priority: 'urgent',
+        transactionId: commandTerminalRecoveryTransactionId(
+          record.command,
+          sourceMatrixEventId,
+        ),
+      })
+      this.log(
+        `[mlp3/matrix] replayed terminal command ${record.command.commandId} as `
+        + `${record.terminal.reconciledOutcome ?? record.terminal.outcome}`,
+      )
+      return
+    }
     const terminal = record.terminal
     const sessionId = terminal?.sessionId ?? record.command.sessionId
     const payload = commandReconciliationPayload(record)
@@ -5236,6 +5271,30 @@ function commandReconciliationPayload(
 function providerHistoryRecoveryEventId(command: Mlp3Command): string {
   return createHash('sha256')
     .update(`malink-v3-provider-history-recovery\0${command.commandId}`)
+    .digest('base64url')
+}
+
+function commandTerminalRecoveryTransactionId(
+  command: Mlp3Command,
+  sourceMatrixEventId: string,
+): string {
+  return `malink.v3.recovery.${createHash('sha256')
+    .update(
+      `malink-v3-terminal-recovery\0${command.deviceId}\0${command.certificateId}`
+      + `\0${command.commandId}\0${sourceMatrixEventId}`,
+    )
+    .digest('hex')}`
+}
+
+function commandTerminalRecoveryEventId(
+  command: Mlp3Command,
+  sourceMatrixEventId: string,
+): string {
+  return createHash('sha256')
+    .update(
+      `malink-v3-terminal-recovery-event\0${command.deviceId}\0${command.certificateId}`
+      + `\0${command.commandId}\0${sourceMatrixEventId}`,
+    )
     .digest('base64url')
 }
 

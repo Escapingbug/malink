@@ -17,6 +17,7 @@ import id.my.anciety.malink.client.command.isGatewayStatusProbe
 import id.my.anciety.malink.client.command.PublicCommandError as DurableError
 import id.my.anciety.malink.client.command.RevisionConflictAction
 import id.my.anciety.malink.client.command.UnknownCommandException
+import id.my.anciety.malink.client.command.UnknownCommandReason
 import id.my.anciety.malink.client.events.ClientEventHub
 import id.my.anciety.malink.client.events.ClientEventListener
 import id.my.anciety.malink.client.events.ClientEventType
@@ -73,6 +74,7 @@ import id.my.anciety.malink.security.malink.MLP3_MATRIX_PROJECT_POINTER_EVENT_TY
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE
+import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MatrixMlp3ProjectKeyGrant
 import id.my.anciety.malink.security.malink.MatrixMlp3Protocol
 import id.my.anciety.malink.security.malink.PairingCodec
@@ -134,7 +136,9 @@ class NativePairingRejectedException(
     val retryable: Boolean = true,
 ) : IllegalStateException(message)
 class NativeTrustRequiredException(message: String) : IllegalStateException(message)
-private class MatrixMlp3EventDeferredException(message: String) : IllegalStateException(message)
+private class MatrixMlp3EventDeferredException(
+    val reason: String,
+) : IllegalStateException(reason)
 
 /**
  * Service-owned Malink domain runtime. Matrix tokens, application private
@@ -172,6 +176,11 @@ class NativeClientRuntime(
         val protocolEvent: JsonObject,
         val physicalEventId: String,
         val threadRootHint: String?,
+    )
+
+    private data class HistoricalMessageProjection(
+        val message: ClientMessage?,
+        val checkpointChanged: Boolean,
     )
 
     private data class RecoveredSessionTerminal(
@@ -378,10 +387,14 @@ class NativeClientRuntime(
     @Volatile private var pairingStorageBlocked = restoredPairing.isFailure
     @Volatile private var gatewayState: JsonObject? = null
     @Volatile private var gatewayStateSynchronized = false
+    @Volatile private var gatewayStateBridgeLimitReported = false
+    @Volatile private var workspaceAuthorizationChecked = restoredTrust.getOrNull() == null
+    @Volatile private var workspaceAuthorizationRevoked = false
     private val authoritativeStateRefreshLock = Any()
     @Volatile private var authoritativeStateRefreshJob: Job? = null
     @Volatile private var gatewayConvergenceFallbackJob: Job? = null
     @Volatile private var workspaceDirectoryConvergenceJob: Job? = null
+    @Volatile private var workspaceAuthorizationCheckJob: Job? = null
     @Volatile private var sessionReadReceiptReconciliationJob: Job? = null
     private val sessionReadReceiptScheduleLock = Any()
     private var sessionReadReceiptReconciliationRequested = false
@@ -441,6 +454,14 @@ class NativeClientRuntime(
         if (gatewayState != null) {
             diagnostics.record("gateway.state.cache.restored")
         }
+        diagnostics.record(
+            "matrix.workspace_device_authorization.initialized",
+            mapOf(
+                "available" to (trust != null).toString(),
+                "stage" to if (workspaceAuthorizationChecked) "checked" else "pending",
+                "projected" to workspaceProjectionProgress().hasUsableProject.toString(),
+            ),
+        )
         matrix.setObserver(this)
         refreshSnapshot(publishLifecycle = false)
         schedulePendingPairingExpiry()
@@ -449,6 +470,18 @@ class NativeClientRuntime(
     fun start(): ClientSnapshot {
         taskNotificationCoordinator.drain()
         matrix.start()
+        val activeTrust = trust
+        if (activeTrust != null && !workspaceAuthorizationChecked) {
+            // The encrypted Matrix session becomes readable before the SDK has
+            // opened every bound room timeline. Prove that this certificate is
+            // still active in parallel so a cold start does not serialize a
+            // one-key authorization read behind the full Workspace projection.
+            scope.launch {
+                if (matrix.awaitPublicSessionRestored() != null) {
+                    startWorkspaceAuthorizationCheck(activeTrust)
+                }
+            }
+        }
         refreshSnapshot(publishLifecycle = true)
         return snapshot()
     }
@@ -613,15 +646,21 @@ class NativeClientRuntime(
                     )
                     val historicalMessages = mutableListOf<ClientMessage>()
                     mutex.withLock {
+                        var projectionChanged = false
                         for (event in remote.events) {
-                            decodeHistoricalMessage(event, sessionId)?.let(historicalMessages::add)
+                            decodeHistoricalMessage(event, sessionId)?.let { projection ->
+                                projection.message?.let(historicalMessages::add)
+                                projectionChanged = projectionChanged || projection.checkpointChanged
+                            }
                         }
                         eventHub.upsertMessages(
                             sessionId,
                             historicalMessages,
                             refreshedSnapshot(),
                         )
-                        commitMatrixMlp3Projection("timeline_page")
+                        if (projectionChanged) {
+                            commitMatrixMlp3Projection("timeline_page")
+                        }
                     }
                     imported += historicalMessages.size
                     initializedHistoryRelations += sessionId
@@ -722,6 +761,15 @@ class NativeClientRuntime(
         PairingSecurity.verifyOffer(offer, now = now())
         assertOfferRoute(offer)
         val activeTrust = trust
+        diagnostics.record(
+            "matrix.workspace_device_authorization.transport_gate",
+            mapOf(
+                "trusted" to (activeTrust != null).toString(),
+                "checked" to workspaceAuthorizationChecked.toString(),
+                "revoked" to workspaceAuthorizationRevoked.toString(),
+                "cached_project" to workspaceProjectionProgress().hasUsableProject.toString(),
+            ),
+        )
         val repairingSession = activeTrust != null
         if (activeTrust != null) {
             check(MatrixSessionRepairPolicy.required(activeTrust, matrix.publicSession())) {
@@ -976,6 +1024,8 @@ class NativeClientRuntime(
             trustStore.save(nextTrust)
             trust = nextTrust
             trustStorageBlocked = false
+            workspaceAuthorizationChecked = true
+            workspaceAuthorizationRevoked = false
             gatewayStateSynchronized = MatrixSessionRepairPolicy.retainSynchronizedGatewayState(
                 repairingSession = pending.repairingSession,
                 synchronizedBeforeTrustCommit = synchronizedBeforeTrustCommit,
@@ -1116,11 +1166,7 @@ class NativeClientRuntime(
         return mutex.withLock {
             val activeTrust = trust
                 ?: throw NativeTrustRequiredException("Pair the Gateway before sending commands.")
-            check(
-                gatewayState != null &&
-                gatewayStateSynchronized &&
-                matrix.commandTransportReady
-            ) { "Gateway command transport is not synchronized yet." }
+            requireCommandTransportSynchronized(validatedPayload.operation, "enqueue")
             CommandAuthorizationPolicy.requireAuthorized(
                 validatedPayload,
                 activeTrust.certificate.allowedOperations,
@@ -1188,11 +1234,28 @@ class NativeClientRuntime(
     )
 
     suspend fun recoverCommand(commandId: String): DurableReceipt {
+        if (workspaceAuthorizationRevoked) {
+            throw NativeTrustRequiredException(
+                "This device authorization was revoked. Reauthorize it with a new invitation.",
+            )
+        }
         val current = outbox.resolveCurrent(commandId)
-            ?: throw UnknownCommandException("Command was not found.")
+            ?: throw UnknownCommandException(
+                if (outbox.wasReleased(commandId)) {
+                    "Command was already completed or retired locally."
+                } else {
+                    "Command was not found."
+                },
+                if (outbox.wasReleased(commandId)) {
+                    UnknownCommandReason.ALREADY_RELEASED
+                } else {
+                    UnknownCommandReason.MISSING
+                },
+            )
         if (retireProjectionSatisfiedCommand(current.commandId, cancelScheduledRecovery = true)) {
             throw UnknownCommandException(
                 "The command's requested session state is already authoritative.",
+                UnknownCommandReason.PROJECTED_STATE,
             )
         }
         val targetProjectId = outbox.projectId(current.commandId)
@@ -1219,6 +1282,7 @@ class NativeClientRuntime(
             }
             throw UnknownCommandException(
                 "The command target project is no longer part of this Workspace.",
+                UnknownCommandReason.TARGET_REMOVED,
             )
         }
         diagnostics.record(
@@ -1352,6 +1416,8 @@ class NativeClientRuntime(
         cancelGatewayConvergenceFallback()
         workspaceDirectoryConvergenceJob?.cancel()
         workspaceDirectoryConvergenceJob = null
+        workspaceAuthorizationCheckJob?.cancel()
+        workspaceAuthorizationCheckJob = null
         sessionReadReceiptSyncEnabled = false
         synchronized(sessionReadReceiptScheduleLock) {
             sessionReadReceiptReconciliationRequested = false
@@ -1376,6 +1442,8 @@ class NativeClientRuntime(
             trust = null
             trustStorageBlocked = false
             pairingStorageBlocked = false
+            workspaceAuthorizationChecked = true
+            workspaceAuthorizationRevoked = false
             gatewayState = null
             pendingPairing = null
             cancelPendingPairingExpiry()
@@ -1397,6 +1465,8 @@ class NativeClientRuntime(
         cancelGatewayConvergenceFallback()
         workspaceDirectoryConvergenceJob?.cancel()
         workspaceDirectoryConvergenceJob = null
+        workspaceAuthorizationCheckJob?.cancel()
+        workspaceAuthorizationCheckJob = null
         transfers.clear()
         matrixMlp3Inbox.flushProjected()
         matrix.close()
@@ -1428,30 +1498,17 @@ class NativeClientRuntime(
         transportIdentity = identity
         pairingTransportIdentityReady.complete(identity)
         sessionReadReceiptSyncEnabled = true
-        gatewayStateSynchronized = trust != null && workspaceProjectionProgress().hasUsableProject
+        gatewayStateSynchronized = authenticatedGatewayCacheUsable()
         refreshSnapshot(publishLifecycle = true)
-        if (trust != null) {
-            scheduleWorkspaceDirectoryConvergence()
-            // A durable cache makes startup usable offline, but it is not proof
-            // that the SDK timeline delivered the latest terminal event. Every
-            // fresh trusted transport performs one coalesced, bounded baseline
-            // refresh so a missed completion cannot remain "running" forever.
-            startMatrixMlp3ProjectionRefresh()
-            scheduleSessionReadReceiptReconciliation()
-            scope.launch {
-                mutex.withLock {
-                    runCatching { recoverGatewayTransportSnapshotLocked() }
-                        .onFailure { error ->
-                            diagnostics.record(
-                                "gateway.transport.recovery.failure",
-                                mapOf("error" to diagnosticErrorName(error)),
-                            )
-                    }
-                    replayMatrixMlp3InboxLocked()
-                    matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
-                    schedulePendingCommandRecoveries(immediate = true)
-                }
+        val activeTrust = trust
+        if (activeTrust != null) {
+            if (!workspaceAuthorizationChecked) {
+                startWorkspaceAuthorizationCheck(activeTrust)
             }
+            // Matrix is durable transport, while the Gateway remains the
+            // execution authority. A delayed current-state read must not make
+            // an otherwise usable, signed local route look disconnected.
+            resumeTrustedTransportAfterAuthorization()
         } else if (
             pendingPairing?.repairingSession == true &&
             !pairingStorageBlocked &&
@@ -1461,23 +1518,113 @@ class NativeClientRuntime(
         }
     }
 
-    override suspend fun onDecryptedEvent(event: MatrixDecryptedEvent) {
-        mutex.withLock {
-            val isV3 = isMatrixMlp3RawEvent(event.rawJson)
-            if (isV3 && !matrixMlp3Inbox.put(event)) {
-                diagnostics.record(
-                    "matrix.v3_event.duplicate_ignored",
-                    mapOf("kind" to malinkApplicationEventKind(event.rawJson)),
-                )
-                return@withLock
+    private fun startWorkspaceAuthorizationCheck(expectedTrust: GatewayTrust) {
+        synchronized(authoritativeStateRefreshLock) {
+            if (workspaceAuthorizationCheckJob?.isActive == true) return
+            workspaceAuthorizationCheckJob = scope.launch {
+                var attempt = 0
+                while (isActive && !workspaceAuthorizationChecked) {
+                    val result = runCatching {
+                        val certificate = expectedTrust.certificate
+                        val event = matrix.loadWorkspaceDeviceRevocation(
+                            certificate.gatewayTransport.roomId,
+                            "${certificate.deviceId}.${certificate.certificateId}",
+                        )
+                        mutex.withLock {
+                            val currentTrust = trust
+                            if (
+                                currentTrust?.certificate?.certificateId !=
+                                expectedTrust.certificate.certificateId
+                            ) {
+                                return@withLock false
+                            }
+                            event?.let { processMatrixEvent(it) }
+                            workspaceAuthorizationChecked = true
+                            gatewayStateSynchronized = authenticatedGatewayCacheUsable()
+                            refreshSnapshot(publishLifecycle = true)
+                            !workspaceAuthorizationRevoked
+                        }
+                    }
+                    if (result.getOrDefault(false)) {
+                        resumeTrustedTransportAfterAuthorization()
+                        break
+                    }
+                    if (workspaceAuthorizationChecked || trust !== expectedTrust) break
+                    diagnostics.record(
+                        "matrix.workspace_device_authorization.check_failure",
+                        mapOf(
+                            "attempt" to (attempt + 1).toString(),
+                            "error" to diagnosticErrorName(result.exceptionOrNull()!!),
+                        ),
+                    )
+                    attempt += 1
+                    delay(authoritativeStateRefreshRetryDelayMs(attempt))
+                }
             }
+        }
+    }
+
+    private fun resumeTrustedTransportAfterAuthorization() {
+        if (!workspaceAuthorizationAllowsCommands()) return
+        // Give durable foreground actions the first live-transport slot. The
+        // baseline Workspace refresh and optional profile recovery below are
+        // read-only repair work and must not delay a signed command result.
+        schedulePendingCommandRecoveries(immediate = true)
+        scheduleWorkspaceDirectoryConvergence()
+        // A durable cache makes startup usable offline, but it is not proof
+        // that the SDK timeline delivered the latest terminal event. Every
+        // fresh trusted transport performs one coalesced baseline refresh so a
+        // missed completion cannot remain "running" forever.
+        startMatrixMlp3ProjectionRefresh()
+        scheduleSessionReadReceiptReconciliation()
+        scope.launch {
+            runCatching { recoverGatewayTransportSnapshot() }
+                .onFailure { error ->
+                    diagnostics.record(
+                        "gateway.transport.recovery.failure",
+                        buildMap {
+                            put("error", diagnosticErrorName(error))
+                            if (error is MalinkSecurityException) {
+                                put("code", error.code.name)
+                            }
+                        },
+                    )
+                }
+            mutex.withLock {
+                if (!workspaceAuthorizationAllowsCommands()) return@withLock
+                replayMatrixMlp3InboxLocked()
+                matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
+            }
+        }
+    }
+
+    override suspend fun onDecryptedEvent(event: MatrixDecryptedEvent) {
+        val isV3 = isMatrixMlp3RawEvent(event.rawJson)
+        // A verified physical event already retained by the encrypted
+        // projection needs no second raw-inbox write. It is still applied
+        // below: authoritative state must be able to rebuild an entity that a
+        // bounded local projection evicted. If the id itself was compacted,
+        // the event safely follows the normal persist-before-verify path.
+        val needsRawInbox = isV3 &&
+            !matrixMlp3Projection.hasSeenPhysicalEvent(event.eventId)
+        // Persist a new application event before projection, but reject an
+        // event that is already pending without entering the global runtime
+        // mutex. Current Room State recovery can legitimately return dozens
+        // of the same deferred encrypted events on every read. Queuing those
+        // duplicates behind commands made an otherwise durable send appear
+        // stuck even though neither verification nor projection had work to
+        // do for them.
+        if (needsRawInbox && !matrixMlp3Inbox.put(event)) {
+            return
+        }
+        mutex.withLock {
             try {
                 processMatrixEvent(event)
                 if (isV3) matrixMlp3Inbox.projected(event.eventId)
             } catch (error: MatrixMlp3EventDeferredException) {
                 diagnostics.record(
                     "matrix.v3_event.deferred",
-                    mapOf("reason" to diagnosticErrorName(error)),
+                    mapOf("reason" to error.reason),
                 )
             } catch (error: CancellationException) {
                 throw error
@@ -1565,6 +1712,7 @@ class NativeClientRuntime(
             publishCommand(outbox.get(commandId) ?: return@withLock null)
             claimed
         } ?: return@transmit
+        var matrixAccepted = false
         try {
             val content = signedCommandContent(transmission)
             val roomId = commandRoomId(transmission)
@@ -1573,13 +1721,40 @@ class NativeClientRuntime(
                 "malink.v3.command.${transmission.commandId}",
                 roomId,
             )
+            matrixAccepted = true
+            // Matrix durability belongs to the command outbox, which has its
+            // own synchronization. Record and expose it immediately instead
+            // of waiting behind an unrelated Room State projection batch.
+            // A signed terminal may win this race; recordPublished then
+            // deliberately becomes a no-op and cannot regress terminal state.
+            if (outbox.recordPublished(transmission.commandId, matrixEventId)) {
+                outbox.get(transmission.commandId)?.let(::publishCommand)
+            }
             mutex.withLock {
-                if (outbox.recordPublished(transmission.commandId, matrixEventId)) {
-                    outbox.get(transmission.commandId)?.let(::publishCommand)
-                }
                 applyOwnMatrixMlp3Command(content, matrixEventId, transmission.issuedAt, roomId)
             }
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Exception) {
+            if (matrixAccepted) {
+                // The command is already durable in Matrix. Failure to build
+                // the local optimistic projection must never relabel that send
+                // as uncertain or create another transport attempt. Recover
+                // the authoritative signed result from the Gateway journal.
+                outbox.get(commandId)
+                    ?.takeIf {
+                        it.state in setOf(DurableState.PUBLISHED, DurableState.RUNNING)
+                    }
+                    ?.let(::startPublishedCommandResultRecovery)
+                diagnostics.record(
+                    "command.local_projection.failure",
+                    mapOf(
+                        "action" to (transmission.payload.string("operation") ?: "unknown"),
+                        "error" to diagnosticErrorName(error),
+                    ),
+                )
+                return@transmit
+            }
             val remainsCurrent = mutex.withLock {
                 val current = outbox.get(commandId)
                 if (current == null || current.state.isTerminal) return@withLock false
@@ -1599,6 +1774,15 @@ class NativeClientRuntime(
     }
 
     private fun schedulePendingCommandRecoveries(immediate: Boolean) {
+        // A reconciliation reply must be observed by the live timeline. Sending
+        // before the SDK has opened every bound application timeline can race
+        // the reply into the initial Reset snapshot, where historical events
+        // are intentionally not replayed as new live traffic. onTransportReady
+        // invokes this method again after the live listeners are installed.
+        if (!matrix.commandTransportReady) {
+            diagnostics.record("command.recovery.waiting_for_live_timeline")
+            return
+        }
         outbox.list().forEach { command ->
             retireProjectionSatisfiedCommand(command.commandId, cancelScheduledRecovery = true)
         }
@@ -1793,6 +1977,18 @@ class NativeClientRuntime(
     }
 
     private fun startPublishedCommandResultRecovery(command: DurableView) {
+        // Keep direct user retries subject to the same ordering guarantee as
+        // startup recovery. An early reply cannot be recovered reliably until
+        // the SDK's live application timelines are ready to receive it.
+        if (!matrix.commandTransportReady) {
+            diagnostics.record(
+                "command.reconciliation.waiting_for_live_timeline",
+                mapOf(
+                    "action" to (outbox.operation(command.commandId)?.wireName ?: "unknown"),
+                ),
+            )
+            return
+        }
         synchronized(publishedCommandRecoveryJobs) {
             if (publishedCommandRecoveryJobs[command.commandId]?.isActive == true) return
             val recoveryNow = now()
@@ -2314,7 +2510,6 @@ class NativeClientRuntime(
     private fun startMatrixMlp3ProjectionRefresh() {
         synchronized(authoritativeStateRefreshLock) {
             if (authoritativeStateRefreshJob?.isActive == true) {
-                diagnostics.record("matrix.v3_projection.refresh_coalesced")
                 return
             }
             authoritativeStateRefreshJob = scope.launch {
@@ -2323,9 +2518,10 @@ class NativeClientRuntime(
                 var threadDirectoryAttempted = false
                 while (
                     isActive &&
-                    trust != null
+                    trust != null &&
+                    !workspaceAuthorizationRevoked
                 ) {
-                    if (trust == null) break
+                    if (trust == null || workspaceAuthorizationRevoked) break
                     var refreshed = false
                     runCatching {
                         // Current Room State owns project completeness. Retry
@@ -2337,7 +2533,12 @@ class NativeClientRuntime(
                             roomIds = targetRoomIds,
                             includeThreadDirectory = false,
                         )
-                        mutex.withLock { replayMatrixMlp3InboxLocked() }
+                        mutex.withLock {
+                            replayMatrixMlp3InboxLocked()
+                            workspaceAuthorizationChecked = true
+                            gatewayStateSynchronized = authenticatedGatewayCacheUsable()
+                            refreshSnapshot(publishLifecycle = true)
+                        }
                     }
                         .onSuccess {
                             refreshed = true
@@ -2377,16 +2578,30 @@ class NativeClientRuntime(
                             "catalog_incomplete" to incompleteCatalogProjects.size.toString(),
                         ),
                     )
-                    if (progress.complete && incompleteCatalogProjects.isEmpty() && refreshed) {
-                        diagnostics.record("matrix.v3_projection.converged")
+                    if (!shouldRetryMatrixMlp3ProjectionRefresh(refreshed, progress)) {
+                        diagnostics.record(
+                            if (
+                                refreshed &&
+                                progress.complete &&
+                                incompleteCatalogProjects.isEmpty()
+                            ) {
+                                "matrix.v3_projection.converged"
+                            } else {
+                                "matrix.v3_projection.refresh_idle"
+                            },
+                            mapOf(
+                                "read_succeeded" to refreshed.toString(),
+                                "usable" to progress.hasUsableProject.toString(),
+                            ),
+                        )
                         break
                     }
-                    if (trust == null) break
+                    if (trust == null || workspaceAuthorizationRevoked) break
                     completedAttempts += 1
                     val delayMs = authoritativeStateRefreshRetryDelayMs(completedAttempts)
                     targetRoomIds = mutex.withLock {
                         workspaceProjectRoomIds(
-                            progress.missingProjectIds + incompleteCatalogProjects,
+                            progress.missingProjectIds,
                         )
                     }.ifEmpty { null }
                     diagnostics.record(
@@ -2551,11 +2766,12 @@ class NativeClientRuntime(
         val currentTrust = mutex.withLock {
             val activeTrust = trust
                 ?: throw NativeTrustRequiredException("Pair the Gateway before sending commands.")
-            check(
-                gatewayState != null &&
-                    gatewayStateSynchronized &&
-                    matrix.commandTransportReady
-            ) { "Gateway command transport is not synchronized yet." }
+            if (workspaceAuthorizationRevoked) {
+                throw NativeTrustRequiredException(
+                    "This device authorization was revoked. Reauthorize it with a new invitation.",
+                )
+            }
+            requireCommandTransportSynchronized(operation, "capability")
             activeTrust
         }
         CommandAuthorizationPolicy.requireAuthorized(
@@ -2571,6 +2787,10 @@ class NativeClientRuntime(
         val eventType = root.string("type") ?: return
         if (eventType == MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE) {
             acceptWorkspaceGatewayDirectory(content)
+            return
+        }
+        if (eventType == MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE) {
+            acceptWorkspaceDeviceRevocation(content)
             return
         }
         if (processMatrixMlp3Event(event, root, content, eventType)) return
@@ -2642,8 +2862,15 @@ class NativeClientRuntime(
                 expectedCertificateId = activeTrust.certificate.certificateId,
             )
             matrixMlp3ProjectKeys.save(grant)
+            val grantProjectId = grant.projectId
             grant.wipe()
-            diagnostics.record("matrix.v3_project_keys.accepted")
+            diagnostics.record(
+                "matrix.v3_project_keys.accepted",
+                mapOf(
+                    "room" to diagnosticOpaqueId(roomId),
+                    "project" to diagnosticOpaqueId(grantProjectId),
+                ),
+            )
             matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
             scope.launch {
                 mutex.withLock { replayMatrixMlp3InboxLocked() }
@@ -2671,11 +2898,13 @@ class NativeClientRuntime(
                     roomId,
                 )
             }
+            val pointerProjectId = pointer.string("projectId")
+                ?: throw IllegalArgumentException("The MLP/3 pointer project ID is missing.")
             val keys = matrixMlp3ProjectKeys.valueForRoom(
                 roomId,
-                pointer.string("projectId"),
+                pointerProjectId,
             )
-                ?: throw MatrixMlp3EventDeferredException("project_key_grant_pending")
+                ?: throw missingProjectKeyGrant(roomId, pointerProjectId, eventType)
             try {
                 require(pointer.string("projectId") == keys.projectId) {
                     "The MLP/3 project pointer targets another project."
@@ -2704,10 +2933,12 @@ class NativeClientRuntime(
         }
         val extension = content["io.malink"] as? JsonObject
             ?: throw IllegalArgumentException("The MLP/3 extension is missing.")
+        val envelopeProjectId = extension.objectValue("envelope").string("projectId")
+            ?: throw IllegalArgumentException("The MLP/3 envelope project ID is missing.")
         val keys = matrixMlp3ProjectKeys.valueForRoom(
             roomId,
-            extension.objectValue("envelope").string("projectId"),
-        ) ?: throw MatrixMlp3EventDeferredException("project_key_grant_pending")
+            envelopeProjectId,
+        ) ?: throw missingProjectKeyGrant(roomId, envelopeProjectId, eventType)
         val opened = try {
             MatrixMlp3Protocol.openContent(extension, roomId, keys.projectId, keys)
         } finally {
@@ -2769,7 +3000,9 @@ class NativeClientRuntime(
         }
         result.terminal?.let(::recordMatrixMlp3Terminal)
         result.taskNotification?.let(taskNotificationCoordinator::accept)
-        commitMatrixMlp3Projection("gateway_event")
+        if (result.changed || result.checkpointChanged) {
+            commitMatrixMlp3Projection("gateway_event")
+        }
         if (
             protocolPayload.string("type") in setOf(
                 "provider.catalog.page",
@@ -3035,6 +3268,36 @@ class NativeClientRuntime(
         scheduleWorkspaceDirectoryConvergence(bindings)
     }
 
+    private fun acceptWorkspaceDeviceRevocation(signed: JsonObject) {
+        val activeTrust = trust
+            ?: throw MatrixMlp3EventDeferredException("gateway_trust_pending")
+        val revocation = MatrixMlp3Protocol.verifyWorkspaceDeviceRevocation(
+            signed,
+            activeTrust.gatewayKey,
+            activeTrust.gatewayId,
+        )
+        workspaceAuthorizationChecked = true
+        if (
+            revocation.string("deviceId") != deviceId ||
+            revocation.string("certificateId") != activeTrust.certificate.certificateId
+        ) {
+            return
+        }
+        if (workspaceAuthorizationRevoked) return
+        workspaceAuthorizationRevoked = true
+        gatewayStateSynchronized = false
+        cancelAllCommandTransmissions()
+        cancelAllCommandRecoveries()
+        cancelAllPublishedCommandResultRecoveries()
+        sessionReadReceiptSyncEnabled = false
+        matrixMlp3CommandContent.clear()
+        diagnostics.record(
+            "matrix.workspace_device_authorization.revoked",
+            mapOf("reason" to (revocation.string("reason")?.take(160) ?: "unspecified")),
+        )
+        refreshSnapshot(publishLifecycle = true)
+    }
+
     private fun scheduleWorkspaceDirectoryConvergence(
         initialBindings: List<id.my.anciety.malink.matrix.MatrixRoomBinding>? = null,
     ) {
@@ -3146,13 +3409,45 @@ class NativeClientRuntime(
     }
 
     private fun acceptMatrixMlp3GatewayState(snapshot: JsonObject) {
-        if (snapshot.toString().toByteArray().size > MAX_BRIDGE_EVENT_PAYLOAD_BYTES) return
+        val encodedBytes = snapshot.toString().toByteArray(Charsets.UTF_8).size
+        if (encodedBytes > MAX_BRIDGE_EVENT_PAYLOAD_BYTES) {
+            if (!gatewayStateBridgeLimitReported) {
+                gatewayStateBridgeLimitReported = true
+                diagnostics.record(
+                    "matrix.gateway_state.bridge_limit_exceeded",
+                    mapOf(
+                        "received" to encodedBytes.toString(),
+                        "limit" to MAX_BRIDGE_EVENT_PAYLOAD_BYTES.toString(),
+                    ),
+                )
+                snapshot.forEach { (key, value) ->
+                    diagnostics.record(
+                        "matrix.gateway_state.bridge_part",
+                        mapOf(
+                            "kind" to key.take(160),
+                            "received" to value.toString()
+                                .toByteArray(Charsets.UTF_8).size.toString(),
+                        ),
+                    )
+                }
+            }
+            gatewayStateSynchronized = false
+            refreshSnapshot(publishLifecycle = true)
+            return
+        }
+        gatewayStateBridgeLimitReported = false
         val changed = gatewayState != snapshot
         val synchronizedBefore = gatewayStateSynchronized
         gatewayState = snapshot
-        gatewayStateSynchronized = trust != null && workspaceProjectionProgress().hasUsableProject
+        gatewayStateSynchronized = authenticatedGatewayCacheUsable()
         if (changed) {
-            eventHub.publish(
+            // The raw inbox is committed before verification and the complete
+            // encrypted MLP projection is checkpointed immediately after this
+            // callback. Persisting the same multi-project snapshot again in
+            // the bridge replay/history file delayed visible lifecycle changes
+            // by seconds. Keep this event replayable for the live native
+            // process; restart restoration reads matrixMlp3ProjectionStore.
+            eventHub.publishTransient(
                 ClientEventType.GATEWAY_STATE_CHANGED,
                 snapshot,
                 refreshedSnapshot(),
@@ -3232,10 +3527,34 @@ class NativeClientRuntime(
         }
     }
 
+    private fun missingProjectKeyGrant(
+        roomId: String,
+        projectId: String,
+        eventType: String,
+    ): MatrixMlp3EventDeferredException {
+        diagnostics.record(
+            "matrix.v3_project_keys.missing",
+            mapOf(
+                "room" to diagnosticOpaqueId(roomId),
+                "project" to diagnosticOpaqueId(projectId),
+                "event" to eventType.take(80),
+                "known_projects" to matrixMlp3ProjectKeys.projectIds().size.toString(),
+            ),
+        )
+        return MatrixMlp3EventDeferredException("project_key_grant_pending")
+    }
+
+    private fun diagnosticOpaqueId(value: String): String =
+        Base64Url.encode(
+            MessageDigest.getInstance("SHA-256")
+                .digest(value.toByteArray(Charsets.UTF_8))
+                .copyOfRange(0, 6),
+        )
+
     private suspend fun decodeHistoricalMessage(
         event: MatrixDecryptedEvent,
         expectedSessionId: String,
-    ): ClientMessage? {
+    ): HistoricalMessageProjection? {
         val verified = verifyHistoricalMlp3Event(event, expectedSessionId) ?: return null
         val projected = matrixMlp3Projection.applyGatewayEvent(
             verified.protocolEvent,
@@ -3249,7 +3568,10 @@ class NativeClientRuntime(
         // Explicit user-requested history pagination may rebuild messages and
         // local command state, but it must never alert for old turns. Only the
         // persisted raw-inbox/live event path accepts task notifications.
-        return projected.messages.singleOrNull()?.copy(historical = true)
+        return HistoricalMessageProjection(
+            message = projected.messages.singleOrNull()?.copy(historical = true),
+            checkpointChanged = projected.changed || projected.checkpointChanged,
+        )
     }
 
     private fun verifyHistoricalMlp3Event(
@@ -3380,9 +3702,13 @@ class NativeClientRuntime(
         )
     }
 
-    private suspend fun recoverGatewayTransportSnapshotLocked() {
-        val activeTrust = trust ?: return
-        val current = activeTrust.transportTrust.currentTransport
+    private suspend fun recoverGatewayTransportSnapshot() {
+        // Profile I/O can take up to the Matrix request timeout. Never perform
+        // it while holding the runtime mutex: live command terminals must be
+        // able to settle create/archive/stop while this optional transport
+        // rotation recovery is still in flight.
+        val expectedTrust = mutex.withLock { trust } ?: return
+        val current = expectedTrust.transportTrust.currentTransport
         val profile = matrix.profileProperty(current.userId, GATEWAY_TRANSPORT_PROFILE_FIELD) ?: return
         require(profile.keys == setOf("version", "signed_snapshot")) {
             "Gateway transport recovery profile has an invalid shape."
@@ -3391,21 +3717,33 @@ class NativeClientRuntime(
         val signed = GatewayTransportCodec.parseSnapshot(
             profile.objectValue("signed_snapshot").toString(),
         )
-        val nextTransport = try {
-            activeTrust.transportTrust.applySnapshot(signed, now())
-        } catch (error: MalinkSecurityException) {
-            if (error.code == id.my.anciety.malink.security.malink.SecurityErrorCode.REPLAY) return
-            throw error
+        mutex.withLock {
+            val activeTrust = trust ?: return@withLock
+            if (
+                activeTrust.gatewayId != expectedTrust.gatewayId ||
+                activeTrust.gatewayKey.keyId != expectedTrust.gatewayKey.keyId ||
+                activeTrust.certificate.certificateId != expectedTrust.certificate.certificateId
+            ) {
+                return@withLock
+            }
+            val nextTransport = try {
+                activeTrust.transportTrust.applySnapshot(signed, now())
+            } catch (error: MalinkSecurityException) {
+                if (error.code == id.my.anciety.malink.security.malink.SecurityErrorCode.REPLAY) {
+                    return@withLock
+                }
+                throw error
+            }
+            val next = activeTrust.copy(transportTrust = nextTransport)
+            trustStore.save(next)
+            trust = next
+            diagnostics.record("gateway.transport.recovery.accepted")
+            eventHub.publish(
+                ClientEventType.TRUST_CHANGED,
+                PublicClientJson.encodeTrust(publicTrust()),
+                refreshedSnapshot(),
+            )
         }
-        val next = activeTrust.copy(transportTrust = nextTransport)
-        trustStore.save(next)
-        trust = next
-        diagnostics.record("gateway.transport.recovery.accepted")
-        eventHub.publish(
-            ClientEventType.TRUST_CHANGED,
-            PublicClientJson.encodeTrust(publicTrust()),
-            refreshedSnapshot(),
-        )
     }
 
 
@@ -3751,10 +4089,13 @@ class NativeClientRuntime(
             status.phase == MatrixRuntimePhase.RETRY_WAIT -> LifecyclePhase.RECONNECTING
             status.phase == MatrixRuntimePhase.BLOCKED -> LifecyclePhase.BLOCKED
             activeTrust == null -> LifecyclePhase.UNPAIRED
+            workspaceAuthorizationRevoked -> LifecyclePhase.BLOCKED
             !matrix.commandTransportReady || !gatewayStateSynchronized -> LifecyclePhase.CONNECTING
             else -> LifecyclePhase.READY
         }
-        val detail = if (
+        val detail = if (phase == LifecyclePhase.BLOCKED && workspaceAuthorizationRevoked) {
+            "matrix_project_authorization_repair_required"
+        } else if (
             phase == LifecyclePhase.BLOCKED &&
             status.phase == MatrixRuntimePhase.WAITING_FOR_SESSION &&
             activeTrust != null
@@ -3772,6 +4113,48 @@ class NativeClientRuntime(
         }
         return ClientLifecycle(phase, status.since, detail)
     }
+
+    private fun workspaceAuthorizationAllowsCommands(): Boolean =
+        trust != null && !workspaceAuthorizationRevoked
+
+    private fun requireCommandTransportSynchronized(
+        operation: CommandOperation,
+        stage: String,
+    ) {
+        val stateAvailable = gatewayState != null
+        val projectionReady = gatewayStateSynchronized
+        val transportReady = matrix.commandTransportReady
+        if (!stateAvailable || !projectionReady || !transportReady) {
+            diagnostics.record(
+                "command.transport.not_ready",
+                mapOf(
+                    "action" to operation.wireName,
+                    "stage" to stage,
+                    "available" to stateAvailable.toString(),
+                    "projected" to projectionReady.toString(),
+                    "transport_ready" to transportReady.toString(),
+                ),
+            )
+        }
+        check(stateAvailable && projectionReady && transportReady) {
+            "Gateway command transport is not synchronized yet."
+        }
+    }
+
+    /**
+     * A previously verified encrypted projection and its durable project key
+     * remain usable while the current revocation check runs in the background.
+     * Matrix cannot prove the absence of a revocation to the execution
+     * authority; the Gateway still rejects revoked certificates. Serializing
+     * local readiness behind that transport read only made every APK restart
+     * wait for Matrix or all provider catalogs without adding authority.
+     */
+    private fun authenticatedGatewayCacheUsable(): Boolean =
+        workspaceAuthorizationAllowsCommands() &&
+            (
+                workspaceProjectionProgress().hasUsableProject ||
+                    (gatewayState != null && matrixMlp3ProjectKeys.isNotEmpty())
+            )
 
     private fun publishStatus(phase: LifecyclePhase, detail: String?) {
         eventHub.publishTransient(
@@ -3843,7 +4226,13 @@ class NativeClientRuntime(
             )
         }
         val public = publicCommand(command)
-        eventHub.publish(
+        // The encrypted command outbox is the durability authority. Rewriting
+        // the complete replay/history projection for every queued, published,
+        // and terminal transition added seconds of fsync latency while adding
+        // no recovery information. Keep this notification immediately
+        // replayable for the current native process; a process restart emits
+        // the same command state through the reconstructed snapshot.
+        eventHub.publishTransient(
             ClientEventType.COMMAND_CHANGED,
             PublicClientJson.encodeCommand(public),
             refreshedSnapshot(),
@@ -3976,6 +4365,7 @@ private fun isMatrixMlp3RawEvent(rawJson: String): Boolean = runCatching {
         MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
         MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
         MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
+        MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE,
         -> true
         "m.room.message" ->
             (root["content"] as? JsonObject)
@@ -4057,6 +4447,19 @@ internal fun authoritativeStateRefreshRetryDelayMs(completedAttempts: Int): Long
         else -> 60_000L
     }
 }
+
+/**
+ * A successful bounded Room State read is a snapshot, not a polling lane.
+ * Missing projects or provider catalogs can only become available through a
+ * later signed Matrix event (which schedules another coalesced refresh).
+ * Re-reading the same successful snapshot generated substantial duplicate
+ * traffic and starved foreground commands. When the read itself fails, only a
+ * client without any usable signed project cache needs the bounded retry lane.
+ */
+internal fun shouldRetryMatrixMlp3ProjectionRefresh(
+    readSucceeded: Boolean,
+    progress: MatrixMlp3WorkspaceProjectionProgress,
+): Boolean = !readSucceeded && !progress.hasUsableProject
 
 internal fun pairingRequestRetryDelayMs(completedRetries: Int): Long {
     require(completedRetries >= 0)

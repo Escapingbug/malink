@@ -4,12 +4,17 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 
-const PACKAGE_NAME = 'id.my.anciety.malink'
-const MAIN_ACTIVITY = `${PACKAGE_NAME}/.web.MainActivity`
-const APP_ORIGIN = 'https://escapingbug.github.io/malink/'
+const PACKAGE_NAME = process.env.MALINK_ANDROID_E2E_PACKAGE?.trim() || 'id.my.anciety.malink'
+const ACTIVITY_CLASS = process.env.MALINK_ANDROID_E2E_ACTIVITY?.trim() ||
+    'id.my.anciety.malink.web.MainActivity'
+const MAIN_ACTIVITY = `${PACKAGE_NAME}/${ACTIVITY_CLASS}`
+const APP_ORIGIN = process.env.MALINK_ANDROID_E2E_APP_ORIGIN?.trim() ||
+    'https://escapingbug.github.io/malink/'
 const ENABLE_ENV = 'MALINK_ANDROID_LIVE_E2E'
 const PHYSICAL_ENV = 'MALINK_ANDROID_ALLOW_PHYSICAL'
 const SERIAL_ENV = 'MALINK_ANDROID_SERIAL'
+const CLEANUP_SESSION_IDS_ENV = 'MALINK_ANDROID_CLEANUP_SESSION_IDS'
+const TARGET_GATEWAY_LABEL_ENV = 'MALINK_ANDROID_E2E_GATEWAY_LABEL'
 const DEFAULT_TIMEOUT_MS = 30_000
 // A business E2E must assert both perceived responsiveness and eventual
 // convergence. A queued Matrix operation may finish in the background, but
@@ -29,12 +34,17 @@ type CdpTarget = {
 type PageState = {
     online: boolean
     connection: string
+    deviceConnection: string
+    computerConnection: string
     activeSessionCount: number
     archivedSessionCount: number
     selectedTitle: string
     selectedProject: string
+    selectedSessionId: string
     activeProjects: string[]
     archivedProjects: string[]
+    activeSessionIds: string[]
+    archivedSessionIds: string[]
     archivedBanner: boolean
     recentMessagesVisible: boolean
     sessionCreatePending: boolean
@@ -213,52 +223,68 @@ class DevtoolsPage {
         throw new Error(`Timed out opening the enabled ${label} conversation action.`)
     }
 
-    async createSession(projectName: string): Promise<void> {
+    async createSession(targetGatewayLabel?: string): Promise<void> {
         await this.clickAria('New conversation')
         await this.waitFor(
             'the new-session dialog',
             state => state.dialogs.some(dialog => dialog.startsWith('Create a session')),
         )
-        const projectSelected = await this.evaluate<{ selected: boolean; cwd: string }>(`(() => {
-            const dialog = document.querySelector('.new-session-dialog');
-            if (!dialog) return { selected: false, cwd: '' };
-            const project = dialog.querySelector('select');
-            const projectNameInput = dialog.querySelector('input[placeholder="My project"]');
-            const cwdInput = dialog.querySelector('input[placeholder="/Users/me/Documents/project"]');
-            const originalCwd = cwdInput?.value || '';
-            const newProject = Array.from(project?.options || [])
-                .find(option => option.value === '__new_project__');
-            if (!project || !newProject || !projectNameInput || !cwdInput || !originalCwd) {
-                return { selected: false, cwd: originalCwd };
-            }
-            const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
-            setter?.call(project, newProject.value);
-            project.dispatchEvent(new Event('change', { bubbles: true }));
-            return { selected: true, cwd: originalCwd };
-        })()`)
-        assert.equal(projectSelected.selected, true, 'Could not select a disposable live E2E project')
-        await this.waitForEvaluation('enabled live E2E project name', async () => this.evaluate<boolean>(`(() => {
+        if (targetGatewayLabel) {
+            const selected = await this.evaluate<{ found: boolean; option: string }>(`(() => {
+                const normalized = value => String(value || '').replace(/\\s+/gu, ' ').trim();
                 const dialog = document.querySelector('.new-session-dialog');
-                const projectNameInput = dialog?.querySelector('input[placeholder="My project"]');
-                if (!projectNameInput || projectNameInput.disabled) return false;
-                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-                if (!setter) return false;
-                setter.call(projectNameInput, ${json(projectName)});
-                projectNameInput.dispatchEvent(new Event('input', { bubbles: true }));
-                return true;
-            })()`))
-        await this.waitForEvaluation('enabled live E2E working directory', async () => this.evaluate<boolean>(`(() => {
-                const dialog = document.querySelector('.new-session-dialog');
-                const cwdInput = dialog?.querySelector('input[placeholder="/Users/me/Documents/project"]');
-                if (!cwdInput || cwdInput.disabled) return false;
-                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-                if (!setter) return false;
-                setter.call(cwdInput, ${json(projectSelected.cwd)});
-                cwdInput.dispatchEvent(new Event('input', { bubbles: true }));
-                return true;
-            })()`))
+                const selects = Array.from(dialog?.querySelectorAll('select') || []);
+                const projectSelect = selects.find(select => Array.from(select.options)
+                    .some(option => normalized(option.textContent).includes(${json(`— ${targetGatewayLabel}`)})));
+                const option = projectSelect && Array.from(projectSelect.options)
+                    .find(candidate => normalized(candidate.textContent).includes(${json(`— ${targetGatewayLabel}`)}));
+                if (!projectSelect || !option) return { found: false, option: '' };
+                if (projectSelect.value !== option.value) {
+                    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+                    setter?.call(projectSelect, option.value);
+                    projectSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                return { found: true, option: normalized(option.textContent) };
+            })()`)
+            assert.equal(
+                selected.found,
+                true,
+                `No session project owned by ${targetGatewayLabel} was available`,
+            )
+            process.stdout.write(`  selected ${selected.option}\n`)
+        }
         await this.waitForButtonTextEnabled('Create session', '.new-session-dialog', 5_000)
         await this.clickButtonText('Create session', '.new-session-dialog')
+    }
+
+    async openActiveSession(sessionId: string): Promise<boolean> {
+        return this.evaluate<boolean>(`(() => {
+            const row = Array.from(document.querySelectorAll('button.session-row'))
+                .find(button => button.dataset.sessionId === ${json(sessionId)});
+            if (!row || row.disabled) return false;
+            row.click();
+            return true;
+        })()`)
+    }
+
+    async openArchivedSession(sessionId: string): Promise<boolean> {
+        const state = await this.state()
+        if (!state.archivedSessionIds.includes(sessionId)) {
+            const toggle = await this.evaluate<boolean>(`(() => {
+                const button = document.querySelector('button.archived-session-toggle');
+                if (!button || button.getAttribute('aria-expanded') === 'true') return false;
+                button.click();
+                return true;
+            })()`)
+            if (toggle) await delay(100)
+        }
+        return this.evaluate<boolean>(`(() => {
+            const row = Array.from(document.querySelectorAll('button.archived-session-row'))
+                .find(button => button.dataset.sessionId === ${json(sessionId)});
+            if (!row || row.disabled) return false;
+            row.click();
+            return true;
+        })()`)
     }
 
     async openActiveProjectSession(projectName: string): Promise<boolean> {
@@ -327,21 +353,33 @@ const PAGE_STATE_EXPRESSION = `(() => {
     const normalized = value => String(value || '').replace(/\\s+/gu, ' ').trim();
     const connectionButton = Array.from(document.querySelectorAll('button'))
         .find(button => button.getAttribute('aria-label')?.startsWith('Open connection settings'));
+    const connectionValues = Array.from(
+        connectionButton?.querySelectorAll('.connection-status-value') || [],
+    ).map(element => normalized(element.textContent));
     const activeProjects = Array.from(document.querySelectorAll('button.session-row'))
         .map(element => element.dataset.projectName || '');
     const archivedProjects = Array.from(document.querySelectorAll('button.archived-session-row'))
         .map(element => element.dataset.projectName || '');
+    const activeSessionIds = Array.from(document.querySelectorAll('button.session-row'))
+        .map(element => element.dataset.sessionId || '');
+    const archivedSessionIds = Array.from(document.querySelectorAll('button.archived-session-row'))
+        .map(element => element.dataset.sessionId || '');
     const selectedRow = document.querySelector('button.session-row.selected, button.archived-session-row.selected');
     const archivedCountText = document.querySelector('.archived-session-toggle b')?.textContent || '0';
     return {
         online: navigator.onLine,
         connection: connectionButton?.getAttribute('aria-label') || '',
+        deviceConnection: connectionValues[0] || '',
+        computerConnection: connectionValues[1] || '',
         activeSessionCount: document.querySelectorAll('button.session-row').length,
         archivedSessionCount: Number.parseInt(archivedCountText, 10) || 0,
         selectedTitle: normalized(document.querySelector('.conversation-heading h2')?.textContent),
         selectedProject: selectedRow?.dataset.projectName || '',
+        selectedSessionId: selectedRow?.dataset.sessionId || '',
         activeProjects,
         archivedProjects,
+        activeSessionIds,
+        archivedSessionIds,
         archivedBanner: Boolean(document.querySelector('.archived-session-banner')),
         recentMessagesVisible: document.body?.innerText.includes('Recent messages') || false,
         sessionCreatePending: Boolean(document.querySelector('.session-create-pending')),
@@ -374,8 +412,10 @@ const initialAirplaneMode = await airplaneMode(serial)
 assert.equal(initialAirplaneMode, false, 'The device must be online before live E2E starts')
 
 const runId = Date.now().toString(36).toUpperCase()
-const testProjects = [`${E2E_PROJECT_PREFIX}${runId} A`, `${E2E_PROJECT_PREFIX}${runId} B`]
+const testLabels = [`${runId} A`, `${runId} B`]
+const targetGatewayLabel = process.env[TARGET_GATEWAY_LABEL_ENV]?.trim()
 const pendingCleanup = new Set<string>()
+let baselineSessionIds = new Set<string>()
 let page: DevtoolsPage | undefined
 let forwardedPort: string | undefined
 
@@ -384,9 +424,41 @@ try {
     ;({ page, port: forwardedPort } = await restartAndAttach(serial, page, forwardedPort))
     let online = await page.waitFor(
         'the paired Gateway connection',
-        state => state.online && state.connection.endsWith('Connected'),
+        state => state.online && state.deviceConnection === 'Connected',
     )
     assertHealthy(online)
+    if (online.sessionCreatePending) {
+        process.stdout.write('  waiting for the saved session creation to reconcile\n')
+        online = await page.waitFor(
+            'the saved session creation to reach its signed terminal result',
+            state =>
+                state.deviceConnection === 'Connected' &&
+                !state.sessionCreatePending &&
+                !state.activeSessionIds.some(sessionId => sessionId.startsWith('local-session:')),
+            LIFECYCLE_TIMEOUT_MS,
+        )
+        assertHealthy(online)
+    }
+    const explicitCleanupSessionIds = (process.env[CLEANUP_SESSION_IDS_ENV] || '')
+        .split(',')
+        .map(value => value.trim())
+        .filter(Boolean)
+    for (const sessionId of explicitCleanupSessionIds) {
+        if (
+            online.activeSessionIds.includes(sessionId) ||
+            online.archivedSessionIds.includes(sessionId)
+        ) {
+            process.stdout.write(`  cleaning explicitly named session ${sessionId}\n`)
+            await cleanupSession(page, sessionId)
+            online = await page.waitFor(
+                `explicit cleanup of ${sessionId}`,
+                state =>
+                    state.deviceConnection === 'Connected' &&
+                    !state.activeSessionIds.includes(sessionId) &&
+                    !state.archivedSessionIds.includes(sessionId),
+            )
+        }
+    }
     const orphanedProjects = [...new Set([
         ...online.activeProjects,
         ...online.archivedProjects,
@@ -399,7 +471,7 @@ try {
         online = await page.waitFor(
             'orphaned E2E session cleanup',
             state =>
-                state.connection.endsWith('Connected') &&
+                state.deviceConnection === 'Connected' &&
                 !state.activeProjects.some(project => project.startsWith(E2E_PROJECT_PREFIX)) &&
                 !state.archivedProjects.some(project => project.startsWith(E2E_PROJECT_PREFIX)),
         )
@@ -409,13 +481,14 @@ try {
     assert.ok(online.selectedTitle, 'No current conversation was selected')
     const baselineSessionCount = online.activeSessionCount + online.archivedSessionCount
     const baselineTitle = online.selectedTitle
+    baselineSessionIds = new Set([...online.activeSessionIds, ...online.archivedSessionIds])
 
     process.stdout.write('[2/5] Cold-starting offline and verifying cached sessions/history...\n')
     await setAirplaneMode(serial, true)
     ;({ page, port: forwardedPort } = await restartAndAttach(serial, page, forwardedPort))
     const offline = await page.waitFor(
         'the offline cached UI',
-        state => !state.online && state.connection.includes('offline') && state.recentMessagesVisible,
+        state => !state.online && state.deviceConnection === 'Not connected' && state.recentMessagesVisible,
     )
     assertHealthy(offline)
     assert.equal(offline.activeSessionCount + offline.archivedSessionCount, baselineSessionCount)
@@ -425,49 +498,50 @@ try {
     await setAirplaneMode(serial, false)
     const recovered = await page.waitFor(
         'the recovered Gateway connection',
-        state => state.online && state.connection.endsWith('Connected'),
+        state => state.online && state.deviceConnection === 'Connected',
         45_000,
     )
     assertHealthy(recovered)
     assert.equal(recovered.activeSessionCount + recovered.archivedSessionCount, baselineSessionCount)
 
-    process.stdout.write('[4/5] Exercising create/archive/restore/delete twice...\n')
-    for (const [index, projectName] of testProjects.entries()) {
-        pendingCleanup.add(projectName)
-        await exerciseSessionLifecycle(
+    process.stdout.write('[4/5] Exercising create/archive durability twice...\n')
+    for (const [index, label] of testLabels.entries()) {
+        const sessionId = await exerciseSessionLifecycle(
             page,
             serial,
-            projectName,
+            label,
             baselineSessionCount,
+            baselineSessionIds,
+            createdSessionId => pendingCleanup.add(createdSessionId),
         )
         ;({ page, port: forwardedPort } = await restartAndAttach(serial, page, forwardedPort))
         const restarted = await page.waitFor(
-            `Gateway recovery after deleting ${projectName}`,
+            `Gateway recovery after archiving ${sessionId}`,
             state =>
-                state.connection.endsWith('Connected') &&
-                !state.activeProjects.includes(projectName) &&
-                !state.archivedProjects.includes(projectName),
+                state.deviceConnection === 'Connected' &&
+                !state.activeSessionIds.includes(sessionId) &&
+                state.activeSessionCount + state.archivedSessionCount === baselineSessionCount,
         )
         assertHealthy(restarted)
         assert.equal(
             restarted.activeSessionCount + restarted.archivedSessionCount,
             baselineSessionCount,
-            `Deleted session ${projectName} reappeared after process restart`,
+            `Archived session ${sessionId} reappeared after process restart`,
         )
         assert.equal(
-            await page.openActiveProjectSession(projectName),
+            await page.openActiveSession(sessionId),
             false,
-            `Deleted session ${projectName} remained actionable after restart`,
+            `Archived session ${sessionId} remained actionable after restart`,
         )
-        pendingCleanup.delete(projectName)
+        pendingCleanup.delete(sessionId)
         if (index === 0) {
-            process.stdout.write('  first deletion remained absent after process restart\n')
+            process.stdout.write('  first archive remained absent after process restart\n')
         }
     }
 
     process.stdout.write(
         '[5/5] PASS — immediate UI feedback, network recovery, process restart, ' +
-        'cached history, durable deletion, and lifecycle convergence passed.\n',
+        'cached history, durable archive removal, and lifecycle convergence passed.\n',
     )
 } catch (error) {
     if (page) {
@@ -484,9 +558,9 @@ try {
         })
     }
     if (page) {
-        for (const projectName of pendingCleanup) {
-            await cleanupProjectSession(page, projectName).catch(error => {
-                process.stderr.write(`Could not clean ${projectName}: ${formatError(error)}\n`)
+        for (const sessionId of pendingCleanup) {
+            await cleanupSession(page, sessionId).catch(error => {
+                process.stderr.write(`Could not clean ${sessionId}: ${formatError(error)}\n`)
             })
         }
         page.close()
@@ -499,14 +573,15 @@ try {
 async function exerciseSessionLifecycle(
     page: DevtoolsPage,
     serial: string,
-    projectName: string,
+    label: string,
     baselineSessionCount: number,
-): Promise<void> {
-    let durableCount = await durableCompletionCount(serial, 'create')
+    baselineSessionIds: Set<string>,
+    onCreated: (sessionId: string) => void,
+): Promise<string> {
     let startedAt = Date.now()
-    await page.createSession(projectName)
+    await page.createSession(targetGatewayLabel)
     const creationFeedback = await page.waitFor(
-        `immediate creation feedback for ${projectName}`,
+        `immediate creation feedback for ${label}`,
         state =>
             state.sessionCreatePending &&
             !state.dialogs.some(dialog => dialog.startsWith('Create a session')),
@@ -514,89 +589,66 @@ async function exerciseSessionLifecycle(
     )
     assertHealthy(creationFeedback)
     const created = await page.waitFor(
-        `created session in ${projectName}`,
+        `created session for ${label}`,
         state =>
-            state.activeProjects.includes(projectName) &&
-            state.selectedProject === projectName &&
+            Boolean(state.selectedSessionId) &&
+            !baselineSessionIds.has(state.selectedSessionId) &&
             state.selectedTitle === 'New session' &&
             !state.sessionCreatePending &&
             state.activeSessionCount + state.archivedSessionCount === baselineSessionCount + 1,
         LIFECYCLE_TIMEOUT_MS,
     )
     assertHealthy(created)
-    await assertDurablyCompleted(serial, 'create', durableCount)
-    recordLatency(projectName, 'create', startedAt)
+    const sessionId = created.selectedSessionId
+    onCreated(sessionId)
+    await assertDurablyCompleted(serial, 'create', startedAt)
+    recordLatency(label, 'create', startedAt)
 
-    durableCount = await durableCompletionCount(serial, 'archive')
     startedAt = Date.now()
     await page.clickConversationActionStrong('Archive session')
     const archived = await page.waitFor(
-        `archived session in ${projectName}`,
-        state => state.archivedBanner && state.archivedSessionCount > 0,
-        LIFECYCLE_TIMEOUT_MS,
-    )
-    assertHealthy(archived)
-    await assertDurablyCompleted(serial, 'archive', durableCount)
-    recordLatency(projectName, 'archive', startedAt)
-
-    durableCount = await durableCompletionCount(serial, 'restore')
-    startedAt = Date.now()
-    await page.waitForButtonTextEnabled('Restore')
-    await page.clickButtonText('Restore')
-    const restored = await page.waitFor(
-        `restored session in ${projectName}`,
-        state => state.activeProjects.includes(projectName) && !state.archivedBanner,
-        LIFECYCLE_TIMEOUT_MS,
-    )
-    assertHealthy(restored)
-    await assertDurablyCompleted(serial, 'restore', durableCount)
-    recordLatency(projectName, 'restore', startedAt)
-
-    durableCount = await durableCompletionCount(serial, 'delete')
-    startedAt = Date.now()
-    await deleteSelectedSession(page, projectName)
-    const deleted = await page.waitFor(
-        `deleted session in ${projectName}`,
+        `archived session ${sessionId} to leave Malink`,
         state =>
-            !state.activeProjects.includes(projectName) &&
-            !state.archivedProjects.includes(projectName) &&
+            !state.activeSessionIds.includes(sessionId) &&
             state.activeSessionCount + state.archivedSessionCount === baselineSessionCount,
         LIFECYCLE_TIMEOUT_MS,
     )
-    assertHealthy(deleted)
-    await assertDurablyCompleted(serial, 'delete', durableCount)
-    recordLatency(projectName, 'delete', startedAt)
+    assertHealthy(archived)
+    await assertDurablyCompleted(serial, 'archive', startedAt)
+    recordLatency(label, 'archive', startedAt)
+    return sessionId
 }
 
 async function assertDurablyCompleted(
     serial: string,
     action: 'create' | 'archive' | 'restore' | 'delete',
-    previousCount: number,
+    startedAt: number,
 ): Promise<void> {
-    const currentCount = await durableCompletionCount(serial, action)
-    assert.ok(
-        currentCount > previousCount,
+    const expected = `action=session.${action} available=true stage=succeeded`
+    const deadline = Date.now() + 5_000
+    while (Date.now() < deadline) {
+        const log = await adbMaybe(
+            serial,
+            'exec-out',
+            'run-as',
+            PACKAGE_NAME,
+            'sh',
+            '-c',
+            'cat files/diagnostics/native-previous.log files/diagnostics/native-current.log 2>/dev/null',
+        )
+        const completed = log.split(/\r?\n/u).some(line => {
+            const terminalEvent = line.includes('command.v3_completion.received') ||
+                line.includes('command.completion.')
+            if (!terminalEvent || !line.includes(expected)) return false
+            const occurredAt = Date.parse(line.split(/\s+/u, 1)[0] || '')
+            return Number.isFinite(occurredAt) && occurredAt >= startedAt
+        })
+        if (completed) return
+        await delay(100)
+    }
+    assert.fail(
         `The visible session.${action} state was published before its native command completed durably`,
     )
-}
-
-async function durableCompletionCount(
-    serial: string,
-    action: 'create' | 'archive' | 'restore' | 'delete',
-): Promise<number> {
-    const log = await adbMaybe(
-        serial,
-        'exec-out',
-        'run-as',
-        PACKAGE_NAME,
-        'sh',
-        '-c',
-        'cat files/diagnostics/native-previous.log files/diagnostics/native-current.log 2>/dev/null',
-    )
-    const expected = `action=session.${action} available=true stage=succeeded`
-    return log.split(/\r?\n/u).filter(line =>
-        line.includes('command.completion.') && line.includes(expected),
-    ).length
 }
 
 async function deleteSelectedSession(
@@ -647,6 +699,39 @@ async function cleanupProjectSession(page: DevtoolsPage, projectName: string): P
     assertHealthy(state)
 }
 
+async function cleanupSession(page: DevtoolsPage, sessionId: string): Promise<void> {
+    let state = await page.state()
+    if (
+        !state.activeSessionIds.includes(sessionId) &&
+        state.archivedSessionCount === 0
+    ) return
+
+    let opened = await page.openActiveSession(sessionId)
+    if (opened) {
+        await page.clickConversationActionStrong('Archive session')
+        await page.waitFor(
+            `archiving disposable session ${sessionId}`,
+            current => !current.activeSessionIds.includes(sessionId),
+            LIFECYCLE_TIMEOUT_MS,
+        )
+        return
+    } else {
+        opened = await page.openArchivedSession(sessionId)
+    }
+    if (!opened) return
+    state = await page.state()
+    const sessionCountBeforeDelete = state.activeSessionCount + state.archivedSessionCount
+    await deleteSelectedSession(page, sessionId)
+    await page.waitFor(
+        `cleanup of ${sessionId}`,
+        current =>
+            !current.activeSessionIds.includes(sessionId) &&
+            current.activeSessionCount + current.archivedSessionCount < sessionCountBeforeDelete,
+        LIFECYCLE_TIMEOUT_MS,
+    )
+    assertHealthy(await page.state())
+}
+
 function recordLatency(
     projectName: string,
     action: string,
@@ -663,7 +748,7 @@ function recordLatency(
 
 function assertHealthy(state: PageState): void {
     const unexpected = state.alerts.filter(alert =>
-        /history could not be restored|native bridge did not answer|matrix runtime failed|needs review|must be acknowledged|previous action|connected device did not respond|too many requests/iu.test(alert),
+        /history could not be restored|native bridge did not answer|matrix runtime failed|gateway command transport is not synchronized|needs review|must be acknowledged|previous action|connected device did not respond|too many requests/iu.test(alert),
     )
     assert.deepEqual(unexpected, [], `Blocking Malink alert appeared: ${unexpected.join(' | ')}`)
 }

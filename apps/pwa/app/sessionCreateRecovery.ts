@@ -156,13 +156,72 @@ export function sessionCreateCompletionMatchesRecovery(
   return recovery?.commandId === completion.commandId;
 }
 
+/**
+ * A projected session root is not proof that this device received the signed
+ * terminal result for its create command. Android applies the device's own
+ * Matrix command optimistically so the projection can contain the final
+ * session ID before the Gateway result arrives. Keep the durable create marker
+ * and its pending UI until that exact command has been consumed.
+ */
+export function canPromoteProjectedCreatedSession(
+  optimistic: Pick<OptimisticSessionRecord, "commandId">,
+  recovery: Pick<PendingSessionCreateRecovery, "commandId"> | null,
+): boolean {
+  return !optimistic.commandId || recovery?.commandId !== optimistic.commandId;
+}
+
+export type CommandRecoveryResolution =
+  | "missing"
+  | "already_released"
+  | "projected_state"
+  | "target_removed";
+
+/**
+ * New native runtimes distinguish authoritative local cleanup from an absent
+ * command. Older APKs only expose OPERATION_NOT_FOUND, which remains the
+ * conservative `missing` fallback.
+ */
+export function commandRecoveryResolution(
+  error: unknown,
+): CommandRecoveryResolution | null {
+  if (
+    !error ||
+    typeof error !== "object" ||
+    !("errorCode" in error) ||
+    (error as { errorCode?: unknown }).errorCode !== "OPERATION_NOT_FOUND"
+  ) {
+    return null;
+  }
+  const data = "data" in error
+    ? (error as { data?: unknown }).data
+    : undefined;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const details = "details" in data
+      ? (data as { details?: unknown }).details
+      : undefined;
+    if (details && typeof details === "object" && !Array.isArray(details)) {
+      const record = details as Record<string, unknown>;
+      if (
+        record.kind === "command_recovery_resolution" &&
+        (record.resolution === "missing" ||
+          record.resolution === "already_released" ||
+          record.resolution === "projected_state" ||
+          record.resolution === "target_removed")
+      ) {
+        return record.resolution;
+      }
+    }
+  }
+  return "missing";
+}
+
 export function isMissingSessionCreateRecoveryCommand(error: unknown): boolean {
-  return Boolean(
-    error &&
-      typeof error === "object" &&
-      "errorCode" in error &&
-      (error as { errorCode?: unknown }).errorCode === "OPERATION_NOT_FOUND",
-  );
+  return commandRecoveryResolution(error) === "missing";
+}
+
+export function isSettledCommandRecovery(error: unknown): boolean {
+  const resolution = commandRecoveryResolution(error);
+  return resolution !== null && resolution !== "missing";
 }
 
 export function isSessionCreateRecoveryUncertain(

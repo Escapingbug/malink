@@ -309,6 +309,16 @@ class DurableCommandOutbox internal constructor(
     @Synchronized
     fun projectId(commandId: String): String? = findCurrent(commandId)?.projectId
 
+    /**
+     * Released tombstones are the duplicate-execution authority. Exposing only
+     * their presence lets the bridge distinguish successful local cleanup from
+     * a genuinely unknown command without exposing persisted command data.
+     */
+    @Synchronized
+    fun wasReleased(commandId: String): Boolean = snapshot.released.any { released ->
+        released.commandId == commandId || commandId in released.retiredCommandIds
+    }
+
     @Synchronized
     fun list(): List<CommandView> = snapshot.commands.map(PersistedCommand::toView)
 

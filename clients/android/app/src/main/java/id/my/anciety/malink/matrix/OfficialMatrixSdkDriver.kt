@@ -263,7 +263,13 @@ class OfficialMatrixSdkDriver(
             diagnostics.record("matrix.driver.sync_service_building")
             val service = try {
                 built.syncService()
-                    .withSharePos(true)
+                    // This runtime is explicitly single-process. Restoring a
+                    // shared Sliding Sync position makes the first request a
+                    // 30-second long poll when no event changed, so the app
+                    // cannot install its live timeline listeners until that
+                    // idle poll returns. Start this process's room-list stream
+                    // without a persisted cross-process position instead.
+                    .withSharePos(false)
                     .withRoomListTimelineLimit(ROOM_LIST_TIMELINE_LIMIT)
                     .finish()
             } catch (error: Exception) {
@@ -523,8 +529,30 @@ class OfficialMatrixSdkDriver(
             sender = event.sender,
             rawJson = rawJson,
         )
-        if (!shouldDeliver) return null
-        if (!deliveredTimelineEvents.accept(eventId)) return null
+        val kind = malinkApplicationEventKind(rawJson)
+        if (!shouldDeliver) {
+            if (kind != "unknown") {
+                diagnostics.record(
+                    "matrix.application_timeline.event_filtered",
+                    mapOf(
+                        "kind" to kind,
+                        "gateway_sender" to (event.sender == binding.gatewayUserId).toString(),
+                    ),
+                )
+            }
+            return null
+        }
+        if (!deliveredTimelineEvents.accept(eventId)) {
+            diagnostics.record(
+                "matrix.application_timeline.event_duplicate",
+                mapOf("kind" to kind),
+            )
+            return null
+        }
+        diagnostics.record(
+            "matrix.application_timeline.event_received",
+            mapOf("kind" to kind),
+        )
         return MatrixDecryptedEvent(
             roomId = binding.roomId,
             eventId = eventId,
@@ -543,9 +571,33 @@ class OfficialMatrixSdkDriver(
                 )
             val timeline = room.timeline()
             val listener = timeline.addListener(object : TimelineListener {
+                private var initialUpdate = true
+
                 override fun onUpdate(diff: List<TimelineDiff>) {
                     if (!active.get() || client !== expectedClient) return
-                    val events = diff.flatMap(::timelineItems)
+                    // addListener first publishes the timeline's existing
+                    // contents as a Reset. Those events are history, not live
+                    // transport. Replaying every room's initial window here
+                    // can put fresh command terminals behind many pointer
+                    // dereferences (each with a network timeout). Current Room
+                    // State and explicit pagination already own cold recovery,
+                    // so retain any concurrent non-Reset updates and start the
+                    // live lane from the next callback.
+                    val currentDiff = if (initialUpdate) {
+                        initialUpdate = false
+                        val retained = diff.filterNot { it is TimelineDiff.Reset }
+                        val skipped = diff.size - retained.size
+                        if (skipped > 0) {
+                            diagnostics.record(
+                                "matrix.application_timeline.initial_snapshot_skipped",
+                                mapOf("count" to skipped.toString()),
+                            )
+                        }
+                        retained
+                    } else {
+                        diff
+                    }
+                    val events = currentDiff.flatMap(::timelineItems)
                         .mapNotNull { captureTimelineEvent(binding, it) }
                     if (events.isEmpty()) return
                     callbackScope.launch(start = CoroutineStart.UNDISPATCHED) {

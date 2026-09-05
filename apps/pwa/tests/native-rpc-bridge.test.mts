@@ -198,8 +198,10 @@ test("keeps Matrix delivery outside the lock and rejects legacy revision conflic
   assert.ok(transmission, "Native command transmission must remain inspectable");
   assert.match(transmission, /commandSendMutex\.withLock transmit@\{/);
   assert.match(transmission, /val transmission = mutex\.withLock/);
-  assert.match(
-    transmission,
-    /}\s*\?: return@transmit\s*\n\s*try \{[\s\S]*?sendTrustedControlMessage/,
+  const stateLockExit = transmission.indexOf("} ?: return@transmit");
+  const matrixSend = transmission.indexOf("sendTrustedControlMessage");
+  assert.ok(
+    stateLockExit >= 0 && matrixSend > stateLockExit,
+    "Matrix delivery must begin only after the native state lock is released",
   );
 });

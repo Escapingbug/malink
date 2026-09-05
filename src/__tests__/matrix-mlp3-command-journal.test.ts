@@ -224,7 +224,7 @@ describe('SqliteMlp3CommandJournal', () => {
     await reopened.close()
   })
 
-  it('retains exact pending delivery data, then compacts delivered prompt payloads', async () => {
+  it('retains the terminal event for client recovery while compacting delivered commands', async () => {
     const root = await mkdtemp(join(tmpdir(), 'malink-v3-sqlite-journal-'))
     const jsonlPath = join(root, 'journal.jsonl')
     const sqlitePath = join(root, 'journal.sqlite')
@@ -261,7 +261,9 @@ describe('SqliteMlp3CommandJournal', () => {
       const row = database.prepare(`
         SELECT terminal_json FROM commands WHERE operation = 'prompt.submit'
       `).get() as { terminal_json: string }
-      expect(JSON.parse(row.terminal_json)).not.toHaveProperty('event')
+      expect(JSON.parse(row.terminal_json)).toMatchObject({
+        event: { payload: { type: 'turn.completed' } },
+      })
     } finally {
       database.close()
     }

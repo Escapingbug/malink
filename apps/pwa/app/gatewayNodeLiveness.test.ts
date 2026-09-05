@@ -10,6 +10,7 @@ import {
 
 describe("foreground Gateway liveness probes", () => {
   const ready = {
+    userInspecting: true,
     visible: true,
     networkOnline: true,
     matrixConnected: true,
@@ -22,6 +23,7 @@ describe("foreground Gateway liveness probes", () => {
   });
 
   it("does not run in the background or without a network", () => {
+    expect(gatewayForegroundProbeDue({ ...ready, userInspecting: false })).toBe(false);
     expect(gatewayForegroundProbeDue({ ...ready, visible: false })).toBe(false);
     expect(gatewayForegroundProbeDue({ ...ready, networkOnline: false })).toBe(false);
     expect(gatewayForegroundProbeDue({ ...ready, matrixConnected: false })).toBe(false);

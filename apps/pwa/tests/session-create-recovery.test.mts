@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  canPromoteProjectedCreatedSession,
   clearPendingSessionCreateRecovery,
+  commandRecoveryResolution,
   completedSessionCreateTarget,
   isMissingSessionCreateRecoveryCommand,
+  isSettledCommandRecovery,
   isSessionCreateRecoveryUncertain,
   pendingSessionCreateRecoveryFromOptimistic,
   readPendingSessionCreateRecovery,
@@ -117,6 +120,30 @@ test("consumes only a late terminal result for the persisted create command", ()
   );
 });
 
+test("does not promote an optimistic session from Matrix projection before its signed terminal result", () => {
+  assert.equal(
+    canPromoteProjectedCreatedSession(
+      { commandId: recovery.commandId },
+      recovery,
+    ),
+    false,
+  );
+  assert.equal(
+    canPromoteProjectedCreatedSession(
+      { commandId: recovery.commandId },
+      { ...recovery, commandId: "newer-command" },
+    ),
+    true,
+  );
+  assert.equal(
+    canPromoteProjectedCreatedSession(
+      { commandId: recovery.commandId },
+      null,
+    ),
+    true,
+  );
+});
+
 test("routes a late authenticated create result into idempotent consumption", async () => {
   const app = await readFile(
     new URL("../app/MalinkApp.tsx", import.meta.url),
@@ -135,6 +162,26 @@ test("routes a late authenticated create result into idempotent consumption", as
   assert.match(
     consumer,
     /pendingSessionCreateRecoveryRef\.current\?\.commandId !== commandId[\s\S]*?return;/,
+  );
+});
+
+test("converges a released create marker from the authenticated projected session", async () => {
+  const app = await readFile(
+    new URL("../app/MalinkApp.tsx", import.meta.url),
+    "utf8",
+  );
+  const recovery = app.slice(
+    app.indexOf("function continuePendingSessionCreate"),
+    app.indexOf("function cancelAutomaticConnectionRecovery"),
+  );
+  assert.match(recovery, /isSettledCommandRecovery\(error\)/);
+  assert.match(
+    recovery,
+    /knownGatewaySessionIdsRef\.current\.has\(projectedSessionId\)[\s\S]*?promoteOptimisticSession\(projectedSessionId, connection\)/,
+  );
+  assert.match(
+    recovery,
+    /forgetPendingSessionCreate\(activeCommandId\)/,
   );
 });
 
@@ -298,6 +345,35 @@ test("stops restoring a local create marker when the native command no longer ex
     false,
   );
   assert.equal(isMissingSessionCreateRecoveryCommand(new Error("missing")), false);
+});
+
+test("distinguishes authoritative native cleanup from a genuinely missing command", () => {
+  const alreadyReleased = {
+    errorCode: "OPERATION_NOT_FOUND",
+    data: {
+      details: {
+        kind: "command_recovery_resolution",
+        resolution: "already_released",
+      },
+    },
+  };
+  const projected = {
+    errorCode: "OPERATION_NOT_FOUND",
+    data: {
+      details: {
+        kind: "command_recovery_resolution",
+        resolution: "projected_state",
+      },
+    },
+  };
+
+  assert.equal(commandRecoveryResolution(alreadyReleased), "already_released");
+  assert.equal(commandRecoveryResolution(projected), "projected_state");
+  assert.equal(isSettledCommandRecovery(alreadyReleased), true);
+  assert.equal(isMissingSessionCreateRecoveryCommand(alreadyReleased), false);
+  assert.equal(isMissingSessionCreateRecoveryCommand({
+    errorCode: "OPERATION_NOT_FOUND",
+  }), true);
 });
 
 test("stops restoring an old browser marker when its durable command no longer exists", () => {

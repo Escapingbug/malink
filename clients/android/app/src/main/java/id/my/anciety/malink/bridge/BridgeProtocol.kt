@@ -1044,7 +1044,15 @@ class BridgeDispatcher(
     } catch (error: UnknownSubscriptionException) {
         BridgeProtocol.failure(request.id, BridgeError.OPERATION_NOT_FOUND, error.message.orEmpty())
     } catch (error: UnknownCommandException) {
-        BridgeProtocol.failure(request.id, BridgeError.OPERATION_NOT_FOUND, error.message.orEmpty())
+        BridgeProtocol.failure(
+            request.id,
+            BridgeError.OPERATION_NOT_FOUND,
+            error.message.orEmpty(),
+            details = buildJsonObject {
+                put("kind", "command_recovery_resolution")
+                put("resolution", error.reason.wireName)
+            },
+        )
     } catch (error: InvalidSubscriptionCursorException) {
         BridgeProtocol.failure(request.id, BridgeError.CURSOR_EXPIRED, error.message.orEmpty(), true)
     } catch (error: HistoryCursorInvalidException) {

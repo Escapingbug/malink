@@ -214,9 +214,11 @@ import {
   type PwaIndexedDbUpgradeProgress,
 } from "./indexedDbUpgrade";
 import {
+  canPromoteProjectedCreatedSession,
   clearPendingSessionCreateRecovery,
   completedSessionCreateTarget,
   isMissingSessionCreateRecoveryCommand,
+  isSettledCommandRecovery,
   isSessionCreateRecoveryUncertain,
   pendingSessionCreateRecoveryFromOptimistic,
   readPendingSessionCreateRecovery,
@@ -3892,6 +3894,7 @@ function MalinkAppRuntime() {
   }, [connectionStatus]);
 
   useEffect(() => {
+    if (!gatewayUpdateDialogOpen) return;
     const probeTargets = gatewayNodeProbeTargets.filter((target) =>
       target.canProbe && target.targetProjectId
     );
@@ -3914,6 +3917,7 @@ function MalinkAppRuntime() {
       for (const target of probeTargets) {
         const current = gatewayNodeLivenessRef.current[target.gatewayNodeId];
         if (!gatewayForegroundProbeDue({
+          userInspecting: gatewayUpdateDialogOpen,
           visible,
           networkOnline,
           matrixConnected,
@@ -3949,7 +3953,7 @@ function MalinkAppRuntime() {
     // The probe function intentionally reads the current client and command
     // refs. Restart only when routes or Matrix connectivity change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionStatus, gatewayNodeProbeTargets]);
+  }, [connectionStatus, gatewayNodeProbeTargets, gatewayUpdateDialogOpen]);
 
   useEffect(() => {
     const knownNodeIds = new Set(
@@ -6013,6 +6017,38 @@ function MalinkAppRuntime() {
         ) {
           return;
         }
+        if (isSettledCommandRecovery(error)) {
+          const draft = optimisticSessionRef.current;
+          const projectedSessionId = draft?.remoteSessionId;
+          forgetPendingSessionCreate(activeCommandId);
+          if (
+            draft &&
+            projectedSessionId &&
+            knownGatewaySessionIdsRef.current.has(projectedSessionId)
+          ) {
+            // A previous page already consumed and released the signed
+            // terminal result, but crashed before clearing its browser-only
+            // draft marker. The authenticated native projection is now the
+            // durable proof of success, so converge the same local row instead
+            // of leaving it in an impossible recovery loop.
+            promoteOptimisticSession(projectedSessionId, connection);
+            recoverUiNotice("session:create");
+          } else if (draft) {
+            markOptimisticSessionFailed(
+              draft.localSessionId,
+              "The previous creation check already finished on this device, but no matching conversation exists. Remove this local placeholder, then create the conversation again.",
+            );
+            showUiNotice(
+              "session:create",
+              "session",
+              "warning",
+              "The old creation check is finished and will not be retried. No matching conversation was found; remove the placeholder to continue.",
+            );
+          } else {
+            clearPendingSessionCreateUi();
+          }
+          return;
+        }
         if (isMissingSessionCreateRecoveryCommand(error)) {
           forgetPendingSessionCreate(activeCommandId);
           const draft = optimisticSessionRef.current;
@@ -6433,7 +6469,11 @@ function MalinkAppRuntime() {
             const pendingDraft = optimisticSessionRef.current;
             if (
               pendingDraft?.remoteSessionId &&
-              nextSessionIds.has(pendingDraft.remoteSessionId)
+              nextSessionIds.has(pendingDraft.remoteSessionId) &&
+              canPromoteProjectedCreatedSession(
+                pendingDraft,
+                pendingSessionCreateRecoveryRef.current,
+              )
             ) {
               promoteOptimisticSession(
                 pendingDraft.remoteSessionId,
@@ -10587,6 +10627,15 @@ function MalinkAppRuntime() {
             forgetRecoveredNativeCommand(commandId, currentCommandId);
             return;
           }
+          if (isSettledCommandRecovery(error)) {
+            clearBackgroundRecoveredNativeCommandNotice(
+              commandId,
+              currentCommandId,
+            );
+            forgetRecoveredNativeCommand(commandId, currentCommandId);
+            recoverUiNotice("command:startup-recovery");
+            return;
+          }
           if (error instanceof CommandCompletionTimeoutError) {
             try {
               const completion = await connection.observeCommandCompletion(
@@ -10607,6 +10656,15 @@ function MalinkAppRuntime() {
             } catch (observationError) {
               if (isMissingSessionCreateRecoveryCommand(observationError)) {
                 reportMissingBackgroundRecoveredNativeCommand(
+                  commandId,
+                  currentCommandId,
+                );
+                forgetRecoveredNativeCommand(commandId, currentCommandId);
+                recoverUiNotice("command:startup-recovery");
+                return;
+              }
+              if (isSettledCommandRecovery(observationError)) {
+                clearBackgroundRecoveredNativeCommandNotice(
                   commandId,
                   currentCommandId,
                 );

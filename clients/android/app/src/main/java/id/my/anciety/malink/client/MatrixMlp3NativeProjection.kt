@@ -3,6 +3,7 @@ package id.my.anciety.malink.client
 import id.my.anciety.malink.client.events.ClientMessage
 import id.my.anciety.malink.client.events.ClientMessageFormat
 import id.my.anciety.malink.client.events.ClientMessageKind
+import id.my.anciety.malink.client.events.MAX_BRIDGE_EVENT_PAYLOAD_BYTES
 import id.my.anciety.malink.client.events.PublicClientJson
 import id.my.anciety.malink.client.events.SessionReadUpdate
 import id.my.anciety.malink.client.events.ToolCategory
@@ -41,7 +42,19 @@ internal data class MatrixMlp3NativeProjectionResult(
     val terminal: MatrixMlp3NativeTerminal? = null,
     val taskNotification: MatrixMlp3TaskNotification? = null,
     val changed: Boolean = false,
+    val checkpointChanged: Boolean = false,
 )
+
+private enum class PublicSessionCommandEncoding {
+    INLINE,
+    CATALOG,
+    OMIT,
+}
+
+private enum class PublicProjectCapabilityEncoding {
+    INLINE,
+    CATALOG,
+}
 
 internal data class MatrixMlp3WorkspaceProjectionProgress(
     val expectedProjectIds: Set<String>?,
@@ -265,6 +278,7 @@ internal class MatrixMlp3NativeProjection(
     private val sessions = linkedMapOf<String, Session>()
     private val inboxFiles = linkedMapOf<String, InboxFile>()
     private val seenEvents = mutableSetOf<String>()
+    private val seenPhysicalEvents = mutableSetOf<String>()
     private val seenCommands = mutableSetOf<String>()
     private val assistantMessageVersions = linkedMapOf<AssistantMessageKey, Long>()
     private val taskNotificationPreviews = linkedMapOf<String, TaskNotificationPreview>()
@@ -373,6 +387,27 @@ internal class MatrixMlp3NativeProjection(
 
     @Synchronized
     fun applyGatewayEvent(
+        event: JsonObject,
+        physicalEventId: String,
+        threadRootHint: String?,
+    ): MatrixMlp3NativeProjectionResult {
+        val firstPhysicalObservation = physicalEventId !in seenPhysicalEvents
+        val result = applyGatewayEventOnce(event, physicalEventId, threadRootHint)
+        if (firstPhysicalObservation) {
+            // Mark only after the complete authenticated event was accepted.
+            // A validation failure must remain retryable/quarantinable. The
+            // event is still re-applied on later reads so it can rebuild an
+            // entity evicted from the bounded materialized projection.
+            seenPhysicalEvents += physicalEventId
+        }
+        return if (firstPhysicalObservation) {
+            result.copy(checkpointChanged = true)
+        } else {
+            result
+        }
+    }
+
+    private fun applyGatewayEventOnce(
         event: JsonObject,
         physicalEventId: String,
         threadRootHint: String?,
@@ -779,41 +814,40 @@ internal class MatrixMlp3NativeProjection(
             "session.ready" -> if (sessionId != null && projectId != null) {
                 val projection = payload.requiredObject("projection")
                 val current = sessions[sessionId]
-                if (
+                val projectionIsStale =
                     current != null &&
                     (current.stateVersion > projection.requiredPositiveLong("stateVersion") ||
                         (current.stateVersion == projection.requiredPositiveLong("stateVersion") &&
                             current.updatedAt > projection.requiredLong("updatedAt")))
-                ) {
-                    return MatrixMlp3NativeProjectionResult()
-                }
-                sessions[sessionId] = decodeSession(
-                    sessionId = sessionId,
-                    projectId = projectId,
-                    threadRootEventId = current?.threadRootEventId.orEmpty()
-                        .ifEmpty { threadRootHint.orEmpty() },
-                    projection = projection,
-                    provider = payload.requiredString("provider", 256),
-                    model = payload.optionalString("model", 256),
-                    reasoningEffort = payload.optionalString("reasoningEffort", 64),
-                    permissionMode = payload.requiredString("permissionMode", 128),
-                ).copy(
-                    controlValues = payload["controls"] as? JsonObject
-                        ?: current?.controlValues
-                        ?: JsonObject(emptyMap()),
-                )
-                val initial = payload["initialPrompt"] as? JsonObject
-                val rootCommandId = payload.optionalString("rootCommandId", 256)
-                if (initial != null && rootCommandId != null) {
-                    messages = listOf(userMessage(
-                        rootCommandId,
-                        sessionId,
-                        sessions[sessionId]?.threadRootEventId.orEmpty().ifEmpty { physicalEventId },
-                        occurredAt,
-                        initial.optionalString("text", Int.MAX_VALUE).orEmpty(),
-                        payload.optionalString("originDeviceId", 256),
-                        initial,
-                    ))
+                if (!projectionIsStale) {
+                    sessions[sessionId] = decodeSession(
+                        sessionId = sessionId,
+                        projectId = projectId,
+                        threadRootEventId = current?.threadRootEventId.orEmpty()
+                            .ifEmpty { threadRootHint.orEmpty() },
+                        projection = projection,
+                        provider = payload.requiredString("provider", 256),
+                        model = payload.optionalString("model", 256),
+                        reasoningEffort = payload.optionalString("reasoningEffort", 64),
+                        permissionMode = payload.requiredString("permissionMode", 128),
+                    ).copy(
+                        controlValues = payload["controls"] as? JsonObject
+                            ?: current?.controlValues
+                            ?: JsonObject(emptyMap()),
+                    )
+                    val initial = payload["initialPrompt"] as? JsonObject
+                    val rootCommandId = payload.optionalString("rootCommandId", 256)
+                    if (initial != null && rootCommandId != null) {
+                        messages = listOf(userMessage(
+                            rootCommandId,
+                            sessionId,
+                            sessions[sessionId]?.threadRootEventId.orEmpty().ifEmpty { physicalEventId },
+                            occurredAt,
+                            initial.optionalString("text", Int.MAX_VALUE).orEmpty(),
+                            payload.optionalString("originDeviceId", 256),
+                            initial,
+                        ))
+                    }
                 }
             }
             "turn.queued" -> if (sessionId != null) {
@@ -962,6 +996,65 @@ internal class MatrixMlp3NativeProjection(
         val visible = sessions.values
             .filter { it.lifecycle == "active" }
             .sortedWith(compareByDescending<Session> { it.updatedAt }.thenBy { it.id })
+        val inline = publicSnapshot(
+            activeProject,
+            visible,
+            PublicSessionCommandEncoding.INLINE,
+            PublicProjectCapabilityEncoding.INLINE,
+        )
+        if (inline.toString().toByteArray(Charsets.UTF_8).size <= MAX_BRIDGE_EVENT_PAYLOAD_BYTES) {
+            return inline
+        }
+        val catalog = publicSnapshot(
+            activeProject,
+            visible,
+            PublicSessionCommandEncoding.CATALOG,
+            PublicProjectCapabilityEncoding.CATALOG,
+        )
+        if (catalog.toString().toByteArray(Charsets.UTF_8).size <= MAX_BRIDGE_EVENT_PAYLOAD_BYTES) {
+            return catalog
+        }
+        return publicSnapshot(
+            activeProject,
+            visible,
+            PublicSessionCommandEncoding.OMIT,
+            PublicProjectCapabilityEncoding.CATALOG,
+        )
+    }
+
+    /**
+     * The browser-facing snapshot is also a bounded native-bridge event. ACP
+     * command catalogs are commonly identical across every session and can be
+     * tens of KiB, so repeating them makes an otherwise small session list
+     * cross the bridge limit. Compact only when necessary: current PWAs expand
+     * the catalog references, while older cached PWAs degrade to hiding the
+     * optional command palette instead of losing the entire state update.
+     */
+    private fun publicSnapshot(
+        activeProject: Project,
+        visible: List<Session>,
+        commandEncoding: PublicSessionCommandEncoding,
+        capabilityEncoding: PublicProjectCapabilityEncoding,
+    ): JsonObject {
+        val availableCommandCatalog = linkedMapOf<JsonArray, Int>()
+        if (commandEncoding == PublicSessionCommandEncoding.CATALOG) {
+            visible.forEach { session ->
+                availableCommandCatalog.getOrPut(session.availableCommands) {
+                    availableCommandCatalog.size
+                }
+            }
+        }
+        val capabilitiesByProject = projects.values.associate { project ->
+            project.id to capabilitiesForProject(project)
+        }
+        val projectCapabilityCatalog = linkedMapOf<JsonObject, Int>()
+        if (capabilityEncoding == PublicProjectCapabilityEncoding.CATALOG) {
+            capabilitiesByProject.values.forEach { capabilities ->
+                projectCapabilityCatalog.getOrPut(capabilities) {
+                    projectCapabilityCatalog.size
+                }
+            }
+        }
         val latestVersion = maxOf(1L, visible.maxOfOrNull { it.stateVersion } ?: 1L)
         val latestTimestamp = maxOf(
             visible.maxOfOrNull { it.updatedAt } ?: 0L,
@@ -982,9 +1075,22 @@ internal class MatrixMlp3NativeProjection(
             put("current_session_id", JsonNull)
             put("sessions", buildJsonArray {
                 visible.forEach { session ->
-                    add(publicSession(session, projects[session.projectId] ?: activeProject))
+                    add(publicSession(
+                        session,
+                        projects[session.projectId] ?: activeProject,
+                        commandEncoding,
+                        availableCommandCatalog,
+                    ))
                 }
             })
+            if (commandEncoding == PublicSessionCommandEncoding.CATALOG) {
+                put("session_array_catalogs", buildJsonObject {
+                    put(
+                        "available_commands",
+                        JsonArray(availableCommandCatalog.keys.toList()),
+                    )
+                })
+            }
             put("inbox_files", buildJsonArray {
                 inboxFiles.values.sortedByDescending { it.receivedAt }.forEach { file ->
                     add(buildJsonObject {
@@ -996,13 +1102,31 @@ internal class MatrixMlp3NativeProjection(
                     })
                 }
             })
-            put("workspace", publicProject(activeProject))
+            put("workspace", publicProject(
+                activeProject,
+                capabilitiesByProject.getValue(activeProject.id),
+                capabilityEncoding,
+                projectCapabilityCatalog,
+            ))
             put("projects", buildJsonArray {
-                projects.values.sortedBy(Project::id).forEach { add(publicProject(it)) }
+                projects.values.sortedBy(Project::id).forEach { project ->
+                    add(publicProject(
+                        project,
+                        capabilitiesByProject.getValue(project.id),
+                        capabilityEncoding,
+                        projectCapabilityCatalog,
+                    ))
+                }
             })
+            if (capabilityEncoding == PublicProjectCapabilityEncoding.CATALOG) {
+                put(
+                    "project_capability_catalogs",
+                    JsonArray(projectCapabilityCatalog.keys.toList()),
+                )
+            }
             put(
                 "capabilities",
-                capabilitiesForProject(activeProject),
+                capabilitiesByProject.getValue(activeProject.id),
             )
             put(
                 "native_client_releases",
@@ -1015,7 +1139,13 @@ internal class MatrixMlp3NativeProjection(
         }
     }
 
-    private fun publicProject(project: Project): JsonObject = buildJsonObject {
+    private fun publicProject(
+        project: Project,
+        capabilities: JsonObject = capabilitiesForProject(project),
+        capabilityEncoding: PublicProjectCapabilityEncoding =
+            PublicProjectCapabilityEncoding.INLINE,
+        projectCapabilityCatalog: Map<JsonObject, Int> = emptyMap(),
+    ): JsonObject = buildJsonObject {
         put("project_id", project.id)
         put("project_name", project.name)
         put("cwd", project.cwd)
@@ -1026,10 +1156,13 @@ internal class MatrixMlp3NativeProjection(
         put("control_values", project.controlValues)
         put("default_extensions", project.defaultExtensions)
         put("extension_defaults_revision", project.extensionDefaultsRevision)
-        put(
-            "capabilities",
-            capabilitiesForProject(project),
-        )
+        when (capabilityEncoding) {
+            PublicProjectCapabilityEncoding.INLINE -> put("capabilities", capabilities)
+            PublicProjectCapabilityEncoding.CATALOG -> put(
+                "capabilities_ref",
+                projectCapabilityCatalog.getValue(capabilities),
+            )
+        }
     }
 
     private fun capabilitiesForProject(project: Project): JsonObject =
@@ -1617,6 +1750,15 @@ internal class MatrixMlp3NativeProjection(
     @Synchronized
     fun projectedProjectIds(): Set<String> = projects.keys.toSet()
 
+    /**
+     * Physical Matrix event ids survive in the encrypted acceleration
+     * projection. A current-state refresh may return the same verified event
+     * many times; callers can avoid rewriting it into the raw inbox again.
+     * Evicted ids simply take the normal durable verification path again.
+     */
+    @Synchronized
+    fun hasSeenPhysicalEvent(eventId: String): Boolean = eventId in seenPhysicalEvents
+
     @Synchronized
     fun projectedWorkspaceCapabilityProjectIds(): Set<String> = projectCapabilities.keys.toSet()
 
@@ -1678,6 +1820,10 @@ internal class MatrixMlp3NativeProjection(
         val retainedSessionIds = sessions.keys
         taskNotificationPreviews.entries.removeAll { it.value.sessionId !in retainedSessionIds }
         completionObservations.entries.removeAll { it.value.sessionId !in retainedSessionIds }
+        // The next bounded Room State read may need to rebuild an entity that
+        // this directory transition just evicted. Physical ids are only an
+        // inbox-write optimization, never authority to suppress replay.
+        seenPhysicalEvents.clear()
     }
 
     @Synchronized
@@ -1691,6 +1837,7 @@ internal class MatrixMlp3NativeProjection(
         sessions.clear()
         inboxFiles.clear()
         seenEvents.clear()
+        seenPhysicalEvents.clear()
         seenCommands.clear()
         assistantMessageVersions.clear()
         taskNotificationPreviews.clear()
@@ -1742,6 +1889,8 @@ internal class MatrixMlp3NativeProjection(
             }
         }
         val retainedSeenEvents = seenEvents.toList().takeLast(policy.seenEventLimit)
+        val retainedSeenPhysicalEvents = seenPhysicalEvents.toList()
+            .takeLast(policy.seenEventLimit)
         val retainedSeenCommands = seenCommands.toList().takeLast(policy.seenCommandLimit)
         val retainedAssistantVersions = assistantMessageVersions.entries
             .toList()
@@ -1754,7 +1903,7 @@ internal class MatrixMlp3NativeProjection(
             .filter { it.sessionId in retainedSessionIds }
             .takeLast(MAX_TASK_NOTIFICATION_PREVIEWS)
         val value = buildJsonObject {
-            put("schemaVersion", 22)
+            put("schemaVersion", 23)
             put("projectCapabilities", buildJsonArray {
                 projectCapabilities.entries.sortedBy { it.key }.forEach { (projectId, capabilities) ->
                     add(buildJsonObject {
@@ -1848,6 +1997,10 @@ internal class MatrixMlp3NativeProjection(
                 }
             })
             put("seenEvents", JsonArray(retainedSeenEvents.map(::JsonPrimitive)))
+            put(
+                "seenPhysicalEvents",
+                JsonArray(retainedSeenPhysicalEvents.map(::JsonPrimitive)),
+            )
             put("seenCommands", JsonArray(retainedSeenCommands.map(::JsonPrimitive)))
             put("assistantMessageVersions", buildJsonArray {
                 retainedAssistantVersions.forEach { (key, version) ->
@@ -1988,8 +2141,8 @@ internal class MatrixMlp3NativeProjection(
             encodedBytes = encodedBytes,
             totalSessions = sessions.size,
             retainedSessions = retainedSessions.size,
-            totalSeenEvents = seenEvents.size,
-            retainedSeenEvents = retainedSeenEvents.size,
+            totalSeenEvents = seenEvents.size + seenPhysicalEvents.size,
+            retainedSeenEvents = retainedSeenEvents.size + retainedSeenPhysicalEvents.size,
             totalSeenCommands = seenCommands.size,
             retainedSeenCommands = retainedSeenCommands.size,
             totalAssistantVersions = assistantMessageVersions.size,
@@ -2001,7 +2154,7 @@ internal class MatrixMlp3NativeProjection(
 
     private fun restore(value: JsonObject) {
         val schemaVersion = value.requiredLong("schemaVersion")
-        require(schemaVersion in 1L..22L)
+        require(schemaVersion in 1L..23L)
         val legacyWorkspaceCapabilities = if (schemaVersion == 1L || schemaVersion >= 9L) {
             null
         } else {
@@ -2455,6 +2608,12 @@ internal class MatrixMlp3NativeProjection(
         }
         (value["seenEvents"] as? JsonArray).orEmpty().takeLast(MAX_SEEN_IDS).forEach {
             seenEvents += it.jsonPrimitive.content
+        }
+        if (schemaVersion >= 23L) {
+            (value["seenPhysicalEvents"] as? JsonArray)
+                .orEmpty()
+                .takeLast(MAX_SEEN_IDS)
+                .forEach { seenPhysicalEvents += it.jsonPrimitive.content }
         }
         if (schemaVersion < 22L) {
             // Schema 21 stored catalogs only by provider. In a multi-project
@@ -3258,7 +3417,12 @@ internal class MatrixMlp3NativeProjection(
         semantic = JsonObject(semantic + ("physicalEventId" to JsonPrimitive(physicalEventId))),
     )
 
-    private fun publicSession(session: Session, project: Project): JsonObject = buildJsonObject {
+    private fun publicSession(
+        session: Session,
+        project: Project,
+        commandEncoding: PublicSessionCommandEncoding = PublicSessionCommandEncoding.INLINE,
+        availableCommandCatalog: Map<JsonArray, Int> = emptyMap(),
+    ): JsonObject = buildJsonObject {
         put("id", session.id)
         put("title", session.title)
         put("updated_at", session.updatedAt)
@@ -3284,7 +3448,16 @@ internal class MatrixMlp3NativeProjection(
         (session.reasoningEffort ?: project.reasoningEffort)?.let { put("reasoning_effort", it) }
         session.activeTurnId?.let { put("active_turn_id", it) }
         put("extensions", session.extensions)
-        put("available_commands", session.availableCommands)
+        when (commandEncoding) {
+            PublicSessionCommandEncoding.INLINE ->
+                put("available_commands", session.availableCommands)
+            PublicSessionCommandEncoding.CATALOG ->
+                put(
+                    "available_commands_ref",
+                    availableCommandCatalog.getValue(session.availableCommands),
+                )
+            PublicSessionCommandEncoding.OMIT -> Unit
+        }
         put("control_values", session.controlValues)
         put("controls", session.controls)
         session.providerHistory?.let { binding ->

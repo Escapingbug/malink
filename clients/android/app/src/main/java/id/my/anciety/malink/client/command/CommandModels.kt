@@ -189,7 +189,17 @@ class CommandIdempotencyConflictException(message: String) : IllegalArgumentExce
 
 class ReleasedCommandException(message: String) : IllegalStateException(message)
 
-class UnknownCommandException(message: String) : IllegalArgumentException(message)
+enum class UnknownCommandReason(val wireName: String) {
+    MISSING("missing"),
+    ALREADY_RELEASED("already_released"),
+    PROJECTED_STATE("projected_state"),
+    TARGET_REMOVED("target_removed"),
+}
+
+class UnknownCommandException(
+    message: String,
+    val reason: UnknownCommandReason = UnknownCommandReason.MISSING,
+) : IllegalArgumentException(message)
 
 internal const val MAX_PAYLOAD_BYTES = 256 * 1024
 internal const val MAX_RESULT_BYTES = 256 * 1024

@@ -5,6 +5,7 @@ import id.my.anciety.malink.security.malink.MLP3_MATRIX_PROJECT_POINTER_EVENT_TY
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE
+import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URI
@@ -64,6 +65,9 @@ internal fun isMalinkApplicationControlEvent(rawJson: String): Boolean = runCatc
         MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE ->
             root["state_key"]?.jsonPrimitive?.contentOrNull?.isNotBlank() == true &&
                 content["directory"] is JsonObject && content["signature"] is JsonObject
+        MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE ->
+            root["state_key"]?.jsonPrimitive?.contentOrNull?.isNotBlank() == true &&
+                content["revocation"] is JsonObject && content["signature"] is JsonObject
         "m.room.message" -> {
             val extension = content["io.malink"] as? JsonObject ?: return@runCatching false
             extension["version"]?.jsonPrimitive?.intOrNull == 3 &&
@@ -108,6 +112,8 @@ internal fun malinkApplicationEventKind(rawJson: String): String = runCatching {
             return@runCatching "v3_provider_catalog"
         MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE ->
             return@runCatching "workspace_gateway_directory"
+        MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE ->
+            return@runCatching "workspace_device_revocation"
     }
     val extension = root["content"]
         ?.jsonObject
@@ -402,6 +408,7 @@ class MatrixApplicationRoomStateClient(
                     if (
                         eventType !in MLP3_CURRENT_STATE_EVENT_TYPES ||
                         (eventType != MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE &&
+                            eventType != MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE &&
                             event["sender"]?.jsonPrimitive?.contentOrNull != binding.gatewayUserId) ||
                         !isMalinkApplicationControlEvent(event.toString())
                     ) return@mapNotNull null
@@ -424,6 +431,34 @@ class MatrixApplicationRoomStateClient(
             MALINK_MATRIX_GATEWAY_STATE_EVENT_TYPE,
             session.roomBinding.gatewayId,
         )
+    }
+
+    /**
+     * Reads the one state key that can revoke the active application
+     * certificate. This is intentionally independent of the much larger
+     * project projection baseline so cold start does not wait for every
+     * provider catalog page before proving command authorization.
+     */
+    suspend fun currentWorkspaceDeviceRevocation(
+        session: StoredMatrixSession,
+        roomId: String,
+        stateKey: String,
+    ): MatrixDecryptedEvent? {
+        require(session.roomBindings.any { it.roomId == roomId }) {
+            "Unknown Matrix Workspace control room."
+        }
+        val homeserver = MatrixIdentifiers.normalizeHomeserver(session.homeserverUrl)
+        return try {
+            currentStateEvent(
+                session,
+                homeserver,
+                roomId,
+                MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE,
+                stateKey,
+            )
+        } catch (error: MatrixApplicationReadException) {
+            if (error.status == 404) null else throw error
+        }
     }
 
     suspend fun currentDirectory(
@@ -506,6 +541,7 @@ class MatrixApplicationRoomStateClient(
             MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
             MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
             MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
+            MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE,
         )
     }
 }

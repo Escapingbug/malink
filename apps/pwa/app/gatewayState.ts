@@ -309,6 +309,29 @@ export function parseGatewayStateExtension(
     throw new Error("The authenticated Gateway state snapshot is malformed.");
   }
 
+  let sessionArrayCatalogs: Record<string, unknown> | undefined;
+  if (extension.session_array_catalogs !== undefined) {
+    sessionArrayCatalogs = asRecord(extension.session_array_catalogs) ?? undefined;
+    if (!sessionArrayCatalogs) {
+      throw new Error("The authenticated Gateway session catalogs are malformed.");
+    }
+  }
+  const availableCommandCatalogs = sessionArrayCatalogs === undefined
+    ? undefined
+    : Array.isArray(sessionArrayCatalogs.available_commands)
+      ? sessionArrayCatalogs.available_commands.map(parseProviderCommands)
+      : (() => {
+          throw new Error("The authenticated Gateway command catalogs are malformed.");
+        })();
+
+  const projectCapabilityCatalogs = extension.project_capability_catalogs === undefined
+    ? undefined
+    : Array.isArray(extension.project_capability_catalogs)
+      ? extension.project_capability_catalogs.map(parseGatewayCapabilities)
+      : (() => {
+          throw new Error("The authenticated Gateway project capability catalogs are malformed.");
+        })();
+
   const parsedSessions: GatewaySessionSummary[] = extension.sessions.map((value) => {
     const session = asRecord(value);
     if (
@@ -378,6 +401,13 @@ export function parseGatewayStateExtension(
         ? session.status
         : "idle";
     const providerHistory = parseProviderHistorySummary(session.provider_history);
+    const availableCommands = session.available_commands === undefined &&
+      session.available_commands_ref !== undefined
+      ? availableCommandCatalog(
+          availableCommandCatalogs,
+          session.available_commands_ref,
+        )
+      : parseProviderCommands(session.available_commands);
     return {
       id: session.id,
       title: session.title,
@@ -417,16 +447,20 @@ export function parseGatewayStateExtension(
       projectName: session.project_name,
       cwd: session.cwd,
       extensions: parseSessionExtensionSummaries(session.extensions),
-      availableCommands: parseProviderCommands(session.available_commands),
+      availableCommands,
       ...(providerHistory ? { providerHistory } : {}),
     };
   });
 
-  const workspace = parseGatewayWorkspaceState(extension.workspace);
+  const workspace = parseGatewayWorkspaceState(
+    extension.workspace,
+    projectCapabilityCatalogs,
+  );
   const projects = extension.projects === undefined
     ? undefined
     : Array.isArray(extension.projects)
-      ? extension.projects.map(parseGatewayWorkspaceState)
+      ? extension.projects.map(value =>
+          parseGatewayWorkspaceState(value, projectCapabilityCatalogs))
       : (() => { throw new Error("The authenticated Gateway project list is malformed."); })();
   if (projects && new Set(projects.map(project => project.projectId)).size !== projects.length) {
     throw new Error("The authenticated Gateway project list contains duplicate IDs.");
@@ -559,7 +593,10 @@ function parseProviderHistorySummary(
   };
 }
 
-function parseGatewayWorkspaceState(input: unknown): GatewayWorkspaceState {
+function parseGatewayWorkspaceState(
+  input: unknown,
+  capabilityCatalogs?: GatewayCapabilities[],
+): GatewayWorkspaceState {
   const workspace = asRecord(input);
   if (
     !workspace || typeof workspace.cwd !== "string" || workspace.cwd.length === 0 ||
@@ -580,6 +617,12 @@ function parseGatewayWorkspaceState(input: unknown): GatewayWorkspaceState {
     : isPositiveInteger(workspace.extension_defaults_revision)
       ? workspace.extension_defaults_revision
       : (() => { throw new Error("The authenticated Gateway extension defaults revision is malformed."); })();
+  const capabilities = workspace.capabilities === undefined &&
+    workspace.capabilities_ref !== undefined
+    ? projectCapabilityCatalog(capabilityCatalogs, workspace.capabilities_ref)
+    : workspace.capabilities === undefined
+      ? undefined
+      : parseGatewayCapabilities(workspace.capabilities);
   return {
     projectId: workspace.project_id,
     projectName: workspace.project_name,
@@ -599,10 +642,25 @@ function parseGatewayWorkspaceState(input: unknown): GatewayWorkspaceState {
         }),
     ...(defaultExtensions === undefined ? {} : { defaultExtensions }),
     ...(extensionDefaultsRevision === undefined ? {} : { extensionDefaultsRevision }),
-    ...(workspace.capabilities === undefined
-      ? {}
-      : { capabilities: parseGatewayCapabilities(workspace.capabilities) }),
+    ...(capabilities === undefined ? {} : { capabilities }),
   };
+}
+
+function projectCapabilityCatalog(
+  catalogs: GatewayCapabilities[] | undefined,
+  reference: unknown,
+): GatewayCapabilities {
+  if (
+    !catalogs ||
+    !Number.isInteger(reference) ||
+    (reference as number) < 0 ||
+    (reference as number) >= catalogs.length
+  ) {
+    throw new Error(
+      "The authenticated Gateway project capability catalog reference is invalid.",
+    );
+  }
+  return catalogs[reference as number] as GatewayCapabilities;
 }
 
 function parseProviderControls(input: unknown): ProviderControl[] {
@@ -1097,6 +1155,21 @@ function parseProviderCommands(value: unknown): ProviderCommand[] {
       inputHint: command.inputHint,
     };
   });
+}
+
+function availableCommandCatalog(
+  catalogs: ProviderCommand[][] | undefined,
+  reference: unknown,
+): ProviderCommand[] {
+  if (
+    !catalogs ||
+    !Number.isInteger(reference) ||
+    (reference as number) < 0 ||
+    (reference as number) >= catalogs.length
+  ) {
+    throw new Error("The authenticated Gateway command catalog reference is invalid.");
+  }
+  return catalogs[reference as number] as ProviderCommand[];
 }
 
 function parseSessionExtensionBindings(value: unknown): SessionExtensionBinding[] {

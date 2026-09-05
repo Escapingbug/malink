@@ -145,6 +145,13 @@ class MatrixApplicationControlClientTest {
               "content":${timelineContent()}
             }
         """.trimIndent()))
+        assertTrue(isMalinkApplicationControlEvent("""
+            {
+              "type":"io.malink.workspace.device_revocation.v1",
+              "state_key":"device.certificate",
+              "content":{"revocation":{},"signature":{}}
+            }
+        """.trimIndent()))
     }
 
     @Test
@@ -356,6 +363,51 @@ class MatrixApplicationControlClientTest {
         assertEquals(1, endpoints.size)
         assertTrue(endpoints.single().rawPath.contains("%21room-b%3Aexample.org"))
         assertFalse(endpoints.single().rawPath.contains("%21room%3Aexample.org/state"))
+    }
+
+    @Test
+    fun `authorization check reads one exact device revocation state key`() = runBlocking {
+        lateinit var endpoint: URI
+        val client = MatrixApplicationRoomStateClient(
+            MatrixApplicationReadTransport { target, _ ->
+                endpoint = target
+                MatrixHttpResponse(
+                    200,
+                    """{"revocation":{},"signature":{}}""".toByteArray(),
+                )
+            },
+        )
+
+        val event = client.currentWorkspaceDeviceRevocation(
+            storedSession(),
+            "!room:example.org",
+            "device-1.certificate-1",
+        )
+
+        assertEquals("io.malink.workspace.device_revocation.v1", event?.let {
+            Json.parseToJsonElement(it.rawJson).jsonObject.getValue("type").jsonPrimitive.content
+        })
+        assertTrue(endpoint.rawPath.endsWith(
+            "/state/io.malink.workspace.device_revocation.v1/device-1.certificate-1",
+        ))
+    }
+
+    @Test
+    fun `authorization check treats an absent revocation as active`() = runBlocking {
+        val client = MatrixApplicationRoomStateClient(
+            MatrixApplicationReadTransport { _, _ ->
+                MatrixHttpResponse(404, "{}".toByteArray())
+            },
+        )
+
+        assertEquals(
+            null,
+            client.currentWorkspaceDeviceRevocation(
+                storedSession(),
+                "!room:example.org",
+                "device-1.certificate-1",
+            ),
+        )
     }
 
     @Test
