@@ -15,6 +15,7 @@ type Props = {
   disabled?: boolean;
   compact?: boolean;
   allowProviderDefault?: boolean;
+  onReviewIssue?: () => void;
   onChange(values: ProviderControlValues): void;
 };
 
@@ -25,6 +26,7 @@ export function ProviderControls({
   disabled = false,
   compact = false,
   allowProviderDefault = surface !== "session-active",
+  onReviewIssue,
   onChange,
 }: Props) {
   const available = controls.filter(control => control.surfaces.includes(surface));
@@ -62,9 +64,20 @@ export function ProviderControls({
             data-control-id={control.id}
           >
             {presentedControl.status === "loading" ? (
-              <ControlDiagnostic control={presentedControl} loading compact={compact} />
+              <ControlDiagnostic
+                control={presentedControl}
+                surface={surface}
+                loading
+                compact={compact}
+                onReviewIssue={onReviewIssue}
+              />
             ) : presentedControl.status === "error" ? (
-              <ControlDiagnostic control={presentedControl} compact={compact} />
+              <ControlDiagnostic
+                control={presentedControl}
+                surface={surface}
+                compact={compact}
+                onReviewIssue={onReviewIssue}
+              />
             ) : (
               <>
                 {control.renderer === "toggle" ? (
@@ -125,7 +138,12 @@ export function ProviderControls({
                   </label>
                 )}
                 {control.status === "stale" && (
-                  <ControlDiagnostic control={control} compact={compact} />
+                  <ControlDiagnostic
+                    control={control}
+                    surface={surface}
+                    compact={compact}
+                    onReviewIssue={onReviewIssue}
+                  />
                 )}
               </>
             )}
@@ -163,7 +181,7 @@ function expiredLoadingControl(control: ProviderControl): ProviderControl {
     status: "error",
     error: {
       code: "catalog_timeout",
-      message: "Model choices have not finished syncing. Malink will recover this project's signed catalog automatically.",
+      message: "Model choices are taking longer than expected to restore.",
       retryable: true,
     },
   };
@@ -171,38 +189,56 @@ function expiredLoadingControl(control: ProviderControl): ProviderControl {
 
 function ControlDiagnostic({
   control,
+  surface,
   loading = false,
   compact = false,
+  onReviewIssue,
 }: {
   control: ProviderControl;
+  surface: ProviderControlSurface;
   loading?: boolean;
   compact?: boolean;
+  onReviewIssue?: () => void;
 }) {
   const stale = control.status === "stale";
   const retry = control.retryAt
     ? ` Automatic retry ${new Date(control.retryAt).toLocaleTimeString()}.`
     : "";
+  const canUseProviderDefault = surface === "session-create";
+  const title = loading
+    ? `Syncing ${control.label.toLowerCase()} choices…`
+    : stale
+      ? `${control.label} choices may be out of date`
+      : control.error?.code === "catalog_timeout"
+        ? `${control.label} choices are delayed`
+        : `${control.label} choices unavailable`;
+  const fallback = canUseProviderDefault
+    ? " You can create the session now with the provider default."
+    : surface === "session-active"
+      ? " The current session and model keep working."
+      : " Existing project settings remain unchanged.";
+  const nextStep = control.error?.code === "authentication_required"
+    ? " Sign in to the provider on the Gateway computer to restore these choices."
+    : control.error?.code === "executable_not_found"
+      ? " Start or repair the provider on the Gateway computer to restore these choices."
+      : " Keep Malink connected; if this persists, review Settings and export diagnostics.";
   return (
     <div
       className="provider-control-diagnostic"
-      role={loading || stale ? "status" : "alert"}
+      role="status"
     >
       {loading && <span className="button-spinner" aria-hidden="true" />}
       <span>
         <strong>
-          {loading
-            ? `Loading ${control.label.toLowerCase()}…`
-            : stale
-              ? `${control.label} choices may be out of date`
-              : `${control.label} unavailable`}
+          {title}
         </strong>
         {!compact && (
           <small>
             {loading
-              ? "Waiting for the Gateway…"
+              ? `Malink is restoring the signed list from Matrix.${fallback}`
               : stale
-                ? `${control.error?.message ?? "Using the last available choices."}${retry}`
-                : `${control.error?.message ?? "The provider could not load this control."}${retry}`}
+                ? `${control.error?.message ?? "Using the last available choices."}${retry} The current choice remains usable.`
+                : `${control.error?.message ?? "The provider could not load this control."}${retry}${fallback}${nextStep}`}
           </small>
         )}
         {!compact && !loading && control.error?.detail && (
@@ -210,6 +246,15 @@ function ControlDiagnostic({
             <summary>Technical details</summary>
             <pre>{control.error.detail}</pre>
           </details>
+        )}
+        {!compact && !loading && onReviewIssue && (
+          <button
+            type="button"
+            className="provider-control-review"
+            onClick={onReviewIssue}
+          >
+            Review settings
+          </button>
         )}
       </span>
     </div>

@@ -444,7 +444,10 @@ internal class MatrixMlp3NativeProjection(
         }
 
         if (type == "provider.catalog.page") {
-            if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
+            // Catalog Room State is entity-versioned and safe to replay. An
+            // older client may have recorded the logical ID before it knew how
+            // to materialize the catalog, so seenEvents cannot suppress this
+            // repair path.
             val catalogProjectId = requireNotNull(projectId) {
                 "The Provider Catalog page does not identify its project."
             }
@@ -485,20 +488,21 @@ internal class MatrixMlp3NativeProjection(
                 pageIndex,
             )
             val current = providerCatalogPages[key]
-            if (current == null || isNewerCatalogEvent(
+            val changed = current == null || isNewerCatalogEvent(
                 current.occurredAt,
                 current.logicalEventId,
                 occurredAt,
                 eventId,
-            )) {
+            )
+            if (changed) {
                 providerCatalogPages[key] = page
                 pruneProviderCatalogPages(catalogProjectId, providerId)
             }
-            return MatrixMlp3NativeProjectionResult(changed = true)
+            seenEvents.add(eventId)
+            return MatrixMlp3NativeProjectionResult(changed = changed)
         }
 
         if (type == "provider.catalog.manifest") {
-            if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
             val catalogProjectId = requireNotNull(projectId) {
                 "The Provider Catalog manifest does not identify its project."
             }
@@ -541,16 +545,18 @@ internal class MatrixMlp3NativeProjection(
             )
             val manifestKey = providerCatalogManifestKey(catalogProjectId, providerId)
             val current = providerCatalogManifests[manifestKey]
-            if (current == null || isNewerCatalogEvent(
+            val changed = current == null || isNewerCatalogEvent(
                 current.occurredAt,
                 current.logicalEventId,
                 occurredAt,
                 eventId,
-            )) {
+            )
+            if (changed) {
                 providerCatalogManifests[manifestKey] = manifest
                 pruneProviderCatalogPages(catalogProjectId, providerId)
             }
-            return MatrixMlp3NativeProjectionResult(changed = true)
+            seenEvents.add(eventId)
+            return MatrixMlp3NativeProjectionResult(changed = changed)
         }
 
         if (type == "gateway.update.status") {

@@ -605,6 +605,21 @@ check.
 Liveness remains
 presentation evidence only; it neither authorizes execution nor prevents a
 durable command from waiting for its owning Gateway to return.
+Replace-in-place Matrix state such as Provider Catalog pages is recovered by
+its authenticated entity revision, not by the generic timeline seen-event set.
+A client version that did not yet project an event may still have recorded its
+logical ID; that optimization must never suppress authoritative replay after an
+upgrade. Optional controls degrade to the provider default while their catalog
+is restored. The UI describes that fallback as usable progress or a warning,
+not as a blocking provider failure.
+
+Every warning or error retained in the notification center must provide a route
+to the product surface that owns recovery, or a working diagnostic export when
+no client action can change the external prerequisite. Dismissal is presentation
+only and must not be labelled as recovery. Automatic-recovery copy is allowed
+only while the owning runtime exposes observable progress and removes the notice
+after convergence; an expired attempt must state the usable fallback and the
+next diagnostic step instead of promising indefinite recovery.
 When a directory route stays unavailable, its computer card offers two
 product-level outcomes after bounded automatic recovery: add that computer
 again, or explicitly continue without it. The second action must travel through

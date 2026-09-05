@@ -37,8 +37,9 @@ test("renders loading as progress and failures as actionable diagnostics", () =>
     onChange() {},
   }));
   assert.match(loading, /button-spinner/);
-  assert.match(loading, /Loading model/);
-  assert.match(loading, /Waiting for the Gateway/);
+  assert.match(loading, /Syncing model choices/);
+  assert.match(loading, /restoring the signed list from Matrix/);
+  assert.match(loading, /create the session now with the provider default/);
   assert.doesNotMatch(loading, /Expected within|by \d/);
 
   const failed = renderToStaticMarkup(createElement(ProviderControls, {
@@ -59,7 +60,8 @@ test("renders loading as progress and failures as actionable diagnostics", () =>
     values: {},
     onChange() {},
   }));
-  assert.match(failed, /Model unavailable/);
+  assert.match(failed, /Model choices unavailable/);
+  assert.match(failed, /create the session now with the provider default/);
   assert.match(failed, /Technical details/);
   assert.match(failed, /spawn agent ENOENT/);
 });
@@ -80,8 +82,9 @@ test("turns an expired loading snapshot into a visible timeout", () => {
     onChange() {},
   }));
   assert.doesNotMatch(html, /button-spinner|Loading model/);
-  assert.match(html, /Model unavailable/);
-  assert.match(html, /recover this project&#x27;s signed catalog automatically/);
+  assert.match(html, /Model choices are delayed/);
+  assert.match(html, /current session and model keep working/);
+  assert.match(html, /review Settings and export diagnostics/);
   assert.doesNotMatch(html, /catalog_timeout|expired at/);
 });
 
@@ -171,7 +174,7 @@ test("keeps a missing paginated provider catalog visible while recovery continue
     values: {},
     onChange() {},
   }));
-  assert.match(html, /Loading model/);
+  assert.match(html, /Syncing model choices/);
 });
 
 test("does not require Provider Catalog state for legacy embedded models", () => {
@@ -293,7 +296,7 @@ test("keeps stale choices usable while explaining that they may be outdated", ()
   }));
   assert.match(html, /Cached model/);
   assert.match(html, /choices may be out of date/);
-  assert.doesNotMatch(html, /Model unavailable/);
+  assert.doesNotMatch(html, /Model choices unavailable/);
 });
 
 test("submits only values offered by ready controls on the current surface", () => {

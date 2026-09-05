@@ -82,6 +82,58 @@ test("shows the owning Gateway for every project session route", () => {
   assert.doesNotMatch(html, /not exposed by this provider/);
 });
 
+test("keeps session creation actionable while model choices recover", () => {
+  const office = gatewayProjectOwner("gateway-a", "Office Gateway", "alice-macbook");
+  const workspace = {
+    projectId: "project-office",
+    projectName: "Malink",
+    cwd: "/work/malink",
+    provider: "codex",
+    permissionMode: "default",
+    capabilities: {
+      models: [],
+      providers: [{
+        id: "codex",
+        name: "Codex",
+        models: [],
+        canListSessions: false,
+        canInspectSessions: false,
+        controls: [{
+          id: "model",
+          label: "Model",
+          renderer: "select" as const,
+          surfaces: ["session-create" as const],
+          status: "loading" as const,
+          checkedAt: Date.now(),
+          deadlineAt: Date.now() + 30_000,
+        }],
+      }],
+      controls: [],
+      permissionModes: [{ id: "default", name: "Default" }],
+      canCreateSession: true,
+      canSelectSession: false,
+      sessionExtensions: [],
+    },
+  };
+  const html = renderToStaticMarkup(createElement(NewSessionDialog, {
+    open: true,
+    busy: false,
+    fallbackGateway: office,
+    projectGateways: new Map([[workspace.projectId, office]]),
+    workspace,
+    models: [],
+    providers: [],
+    extensions: [],
+    onClose() {},
+    onReviewProviderIssue() {},
+    onCreate() {},
+  }));
+
+  assert.match(html, /Syncing model choices/);
+  assert.match(html, /Create with provider default/);
+  assert.doesNotMatch(html, /Model unavailable/);
+});
+
 test("keeps dismissal available while project creation continues", () => {
   const html = renderToStaticMarkup(createElement(NewProjectDialog, {
     open: true,

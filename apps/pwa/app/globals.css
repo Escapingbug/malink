@@ -5766,6 +5766,19 @@ select:focus-visible {
   cursor: pointer;
 }
 
+.provider-control-review {
+  width: fit-content;
+  margin-top: 5px;
+  padding: 5px 8px;
+  border: 1px solid #d8d4e8;
+  border-radius: 7px;
+  background: #fff;
+  color: var(--violet-dark);
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .provider-control-diagnostic pre {
   overflow: auto;
   max-height: 100px;

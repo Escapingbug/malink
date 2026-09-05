@@ -10,6 +10,7 @@ export type UiNoticeScope =
   | "update";
 
 export type UiNoticeSeverity = "info" | "success" | "warning" | "error";
+export type UiNoticeReviewTarget = "settings" | "conversation";
 
 export type UiNotice = {
   /** Stable identity such as `session:create` or `attachment:upload`. */
@@ -137,6 +138,34 @@ export function globalUiNotices(state: UiNoticeState): UiNotice[] {
 export function allUiNotices(state: UiNoticeState): UiNotice[] {
   return Object.values(state)
     .sort((left, right) => right.createdAt - left.createdAt);
+}
+
+/**
+ * Every attention notice must lead either to the surface that owns recovery or
+ * to diagnostics. This centralized route prevents a new error call site from
+ * silently becoming a dead-end `Clear` button in the notification center.
+ */
+export function uiNoticeReviewTarget(
+  scope: UiNoticeScope,
+): UiNoticeReviewTarget | null {
+  switch (scope) {
+    case "connection":
+    case "pairing":
+    case "update":
+      return "settings";
+    case "history":
+    case "session":
+    case "composer":
+    case "attachment":
+      return "conversation";
+    case "background":
+    case "diagnostics":
+      return null;
+  }
+}
+
+export function uiNoticeNeedsDiagnostics(severity: UiNoticeSeverity): boolean {
+  return severity === "warning" || severity === "error";
 }
 
 function defaultAutoDismissMs(severity: UiNoticeSeverity): number | null {

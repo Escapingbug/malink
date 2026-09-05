@@ -7,7 +7,25 @@ import {
   noticesForScope,
   reduceUiNotices,
   shouldShowGlobalNotice,
+  uiNoticeNeedsDiagnostics,
+  uiNoticeReviewTarget,
 } from "../app/uiNotices.ts";
+
+test("routes every notice scope to recovery or diagnostics", () => {
+  assert.equal(uiNoticeReviewTarget("connection"), "settings");
+  assert.equal(uiNoticeReviewTarget("pairing"), "settings");
+  assert.equal(uiNoticeReviewTarget("update"), "settings");
+  assert.equal(uiNoticeReviewTarget("history"), "conversation");
+  assert.equal(uiNoticeReviewTarget("session"), "conversation");
+  assert.equal(uiNoticeReviewTarget("composer"), "conversation");
+  assert.equal(uiNoticeReviewTarget("attachment"), "conversation");
+  assert.equal(uiNoticeReviewTarget("background"), null);
+  assert.equal(uiNoticeReviewTarget("diagnostics"), null);
+  assert.equal(uiNoticeNeedsDiagnostics("error"), true);
+  assert.equal(uiNoticeNeedsDiagnostics("warning"), true);
+  assert.equal(uiNoticeNeedsDiagnostics("info"), false);
+  assert.equal(uiNoticeNeedsDiagnostics("success"), false);
+});
 
 test("scopes preserve unrelated operation notices", () => {
   const connection = reduceUiNotices(EMPTY_UI_NOTICE_STATE, {

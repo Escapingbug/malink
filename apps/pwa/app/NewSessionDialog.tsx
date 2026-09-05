@@ -55,6 +55,7 @@ type Props = {
   defaultExtensions?: SessionExtensionBinding[];
   canUpdateProjectDefaults?: boolean;
   onClose(): void;
+  onReviewProviderIssue?(): void;
   onCreate(input: NewSessionInput): void;
 };
 
@@ -76,6 +77,7 @@ function NewSessionDialogContent({
   defaultExtensions = [],
   canUpdateProjectDefaults = false,
   onClose,
+  onReviewProviderIssue,
   onCreate,
 }: Props) {
   const availableWorkspaces = workspaces.length > 0 ? workspaces : [workspace];
@@ -168,6 +170,12 @@ function NewSessionDialogContent({
         (typeof value === "string" && value.trim().length > 0);
     });
   });
+  const creatingWithProviderDefault = providerControls.some(control =>
+    control.id === "model"
+    && control.surfaces.includes("session-create")
+    && control.status !== "ready"
+    && control.status !== "stale",
+  );
 
   if (!open) return null;
   const chooseWorkspace = (next: GatewayWorkspaceState) => {
@@ -397,6 +405,7 @@ function NewSessionDialogContent({
             surface="session-create"
             values={controlValues}
             disabled={busy}
+            onReviewIssue={onReviewProviderIssue}
             onChange={setControlValues}
           />
 
@@ -513,7 +522,11 @@ function NewSessionDialogContent({
                 !extensionConfigValid
               }
             >
-              {busy ? <BusyActionLabel>Creating…</BusyActionLabel> : "Create session"}
+              {busy
+                ? <BusyActionLabel>Creating…</BusyActionLabel>
+                : creatingWithProviderDefault
+                  ? "Create with provider default"
+                  : "Create session"}
             </button>
           </footer>
         </form>

@@ -404,6 +404,8 @@ import {
   reduceUiNotices,
   type UiNoticeScope,
   type UiNoticeSeverity,
+  uiNoticeNeedsDiagnostics,
+  uiNoticeReviewTarget,
 } from "./uiNotices";
 import { UiNoticeList } from "./UiNoticeList";
 import {
@@ -12127,18 +12129,47 @@ function MalinkAppRuntime() {
     action();
   };
   const notificationCenterItems: NotificationCenterItem[] = centerUiNotices.map(
-    (notice) => ({
-      key: `ui:${notice.key}`,
-      severity: notice.severity,
-      title: uiNoticeTitle(notice.scope, notice.key),
-      detail: notice.message,
-      active: notice.active,
-      meta: `${notice.hidden ? "Hidden" : "Visible"} · ${formatRecoveryTimestamp(notice.createdAt)}`,
-      actions: [{
-        label: "Clear",
-        onClick: () => clearUiNotice(notice.key),
-      }],
-    }),
+    (notice) => {
+      const reviewTarget = uiNoticeReviewTarget(notice.scope);
+      const reviewAction = reviewTarget === "settings"
+        ? {
+            label: "Review settings",
+            primary: true,
+            onClick: closeNotificationsThen(() => setSettingsOpen(true)),
+          }
+        : reviewTarget === "conversation"
+          ? {
+              label: "Review conversation",
+              primary: true,
+              onClick: closeNotificationsThen(() => {
+                setPrimaryView("chats");
+                setMobileChatOpen(true);
+              }),
+            }
+          : null;
+      return {
+        key: `ui:${notice.key}`,
+        severity: notice.severity,
+        title: uiNoticeTitle(notice.scope, notice.key),
+        detail: notice.message,
+        active: notice.active,
+        meta: `${notice.hidden ? "Hidden" : "Visible"} · ${formatRecoveryTimestamp(notice.createdAt)}`,
+        actions: [
+          ...(reviewAction ? [reviewAction] : []),
+          ...(uiNoticeNeedsDiagnostics(notice.severity)
+            ? [{
+                label: diagnosticExportBusy ? "Exporting diagnostics…" : "Export diagnostics",
+                disabled: diagnosticExportBusy,
+                onClick: exportConnectionDiagnostics,
+              }]
+            : []),
+          {
+            label: "Dismiss",
+            onClick: () => clearUiNotice(notice.key),
+          },
+        ],
+      };
+    },
   );
 
   for (const command of recoveredNativeCommandNotices) {
@@ -12435,6 +12466,15 @@ function MalinkAppRuntime() {
       severity: "error",
       title: "Permission verification failed",
       detail: privilegeTotpError,
+      actions: [{
+        label: "Review verification",
+        primary: true,
+        onClick: () => setNotificationCenterOpen(false),
+      }, {
+        label: diagnosticExportBusy ? "Exporting diagnostics…" : "Export diagnostics",
+        disabled: diagnosticExportBusy,
+        onClick: exportConnectionDiagnostics,
+      }],
     });
   }
   if (nativeUpdateState && [
@@ -14327,6 +14367,7 @@ function MalinkAppRuntime() {
                   values={activeProviderControlValues}
                   disabled={!sessionReady || settingsUpdateBusy}
                   compact
+                  onReviewIssue={() => setSettingsOpen(true)}
                   onChange={(nextValues) => {
                     const changedControls = activeProviderControls.filter(control =>
                       nextValues[control.id] !== activeProviderControlValues[control.id]
@@ -14561,6 +14602,10 @@ function MalinkAppRuntime() {
           onClose={() => {
             if (!projectSettingsBusy) setProjectSettingsProjectId(null);
           }}
+          onReviewProviderIssue={() => {
+            setProjectSettingsProjectId(null);
+            setSettingsOpen(true);
+          }}
           onSave={(input) => void updateProjectSettings(input)}
           onDelete={() => void deleteProject()}
         />
@@ -14602,6 +14647,8 @@ function MalinkAppRuntime() {
       <NotificationCenter
         open={notificationCenterOpen}
         items={notificationCenterItems}
+        diagnosticExportBusy={diagnosticExportBusy}
+        onExportDiagnostics={exportConnectionDiagnostics}
         onClose={() => setNotificationCenterOpen(false)}
       />
 
@@ -14622,6 +14669,10 @@ function MalinkAppRuntime() {
           canUpdateProjectDefaults
           onClose={() => {
             if (!newSessionBusy) setNewSessionOpen(false);
+          }}
+          onReviewProviderIssue={() => {
+            setNewSessionOpen(false);
+            setSettingsOpen(true);
           }}
           onCreate={(input) => void createSession(input)}
         />

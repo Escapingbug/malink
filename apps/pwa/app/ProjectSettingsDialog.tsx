@@ -27,6 +27,7 @@ type Props = {
   canDelete: boolean;
   hasSessions: boolean;
   onClose(): void;
+  onReviewProviderIssue?(): void;
   onSave(input: ProjectSettingsInput): void;
   onDelete(): void;
 };
@@ -45,6 +46,7 @@ function ProjectSettingsDialogContent({
   canDelete,
   hasSessions,
   onClose,
+  onReviewProviderIssue,
   onSave,
   onDelete,
 }: Props) {
@@ -199,6 +201,7 @@ function ProjectSettingsDialogContent({
               surface="project-default"
               values={controlValues}
               disabled={busy}
+              onReviewIssue={onReviewProviderIssue}
               onChange={setControlValues}
             />
             <small className="project-identity-note">

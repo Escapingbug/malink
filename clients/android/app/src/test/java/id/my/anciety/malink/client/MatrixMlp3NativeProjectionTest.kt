@@ -187,6 +187,42 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `current caches recover catalogs even when old dedupe IDs remain`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(workspaceSnapshot(1, "inline-old"), "\$workspace", null)
+        projection.applyGatewayEvent(providerCatalogManifest(1, 1), "\$manifest", null)
+        projection.applyGatewayEvent(
+            providerCatalogPage(0, "model-new", pageCount = 1),
+            "\$page",
+            null,
+        )
+        val current = projection.durableState()
+        val poisoned = JsonObject(current + mapOf(
+            "providerCatalogPages" to JsonArray(emptyList()),
+            "providerCatalogManifests" to JsonArray(emptyList()),
+        ))
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = poisoned,
+        )
+
+        restored.applyGatewayEvent(providerCatalogManifest(1, 1), "\$manifest-retry", null)
+        restored.applyGatewayEvent(
+            providerCatalogPage(0, "model-new", pageCount = 1),
+            "\$page-retry",
+            null,
+        )
+        assertEquals(
+            "model-new",
+            restored.snapshot()!!.getValue("capabilities").jsonObject
+                .getValue("models").jsonArray.single().jsonObject
+                .getValue("id").jsonPrimitive.content,
+        )
+    }
+
+    @Test
     fun `split schema twenty projection variants preserve sessions during upgrade`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)

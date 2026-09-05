@@ -69,6 +69,62 @@ describe("MatrixMlp3Projection", () => {
     });
   });
 
+  it("repairs catalogs whose logical IDs were poisoned by an older client", () => {
+    const projection = new MatrixMlp3Projection();
+    const common = {
+      kind: "malink.event" as const,
+      version: 3 as const,
+      workspaceId: "workspace-a",
+      projectId: "project-a",
+      occurredAt: 10,
+    };
+    const page: Mlp3Event = {
+      ...common,
+      eventId: "catalog-page",
+      payload: {
+        type: "provider.catalog.page",
+        providerId: "codex",
+        catalog: "models",
+        revision: "r".repeat(43),
+        pageIndex: 0,
+        pageCount: 1,
+        items: [{ id: "model-a", name: "Model A" }],
+      },
+    };
+    const manifest: Mlp3Event = {
+      ...common,
+      eventId: "catalog-manifest",
+      payload: {
+        type: "provider.catalog.manifest",
+        providerId: "codex",
+        catalog: "models",
+        revision: "r".repeat(43),
+        status: "ready",
+        itemCount: 1,
+        pageCount: 1,
+      },
+    };
+    projection.applyEvent(page, "$page");
+    projection.applyEvent(manifest, "$manifest");
+    const poisoned = {
+      ...projection.durableState(),
+      providerCatalogPages: [],
+      providerCatalogManifests: [],
+    };
+    const restored = new MatrixMlp3Projection();
+    restored.restore(poisoned);
+
+    expect(restored.seenLogicalEvents.has(page.eventId)).toBe(true);
+    expect(restored.seenLogicalEvents.has(manifest.eventId)).toBe(true);
+    expect(restored.applyEvent(page, "$page-replayed")).toBe(true);
+    expect(restored.applyEvent(manifest, "$manifest-replayed")).toBe(true);
+    expect(restored.providerModelCatalogs()[0]).toMatchObject({
+      providerId: "codex",
+      complete: true,
+      models: [{ id: "model-a" }],
+    });
+  });
+
   it("converges per session despite out-of-order events and physical relation changes", () => {
     const projection = new MatrixMlp3Projection();
     projection.applyCommand(createCommand("a"), "$root-original", 1);

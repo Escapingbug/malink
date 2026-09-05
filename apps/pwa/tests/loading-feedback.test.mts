@@ -294,6 +294,40 @@ test("shows motion for active notification-center operations", () => {
   assert.match(html, /Closing this panel never cancels/);
 });
 
+test("never leaves an attention notification without a diagnostic action", () => {
+  const html = renderToStaticMarkup(createElement(NotificationCenter, {
+    open: true,
+    items: [{
+      key: "unexpected-error",
+      severity: "error",
+      title: "Something needs attention",
+      detail: "The operation could not continue.",
+    }],
+    onExportDiagnostics() {},
+    onClose() {},
+  }));
+
+  assert.match(html, /Export diagnostics/);
+});
+
+test("keeps diagnostics available beside a recovery action", () => {
+  const html = renderToStaticMarkup(createElement(NotificationCenter, {
+    open: true,
+    items: [{
+      key: "recoverable-error",
+      severity: "warning",
+      title: "Connection needs attention",
+      detail: "Review the connection before trying again.",
+      actions: [{ label: "Review settings", onClick() {} }],
+    }],
+    onExportDiagnostics() {},
+    onClose() {},
+  }));
+
+  assert.match(html, /Review settings/);
+  assert.match(html, /Export diagnostics/);
+});
+
 test("shows motion while project creation is still running", () => {
   const html = renderToStaticMarkup(createElement(NewProjectDialog, {
     open: true,

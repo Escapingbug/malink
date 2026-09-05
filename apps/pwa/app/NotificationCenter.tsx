@@ -25,6 +25,8 @@ export type NotificationCenterItem = {
 type Props = {
   open: boolean;
   items: NotificationCenterItem[];
+  diagnosticExportBusy?: boolean;
+  onExportDiagnostics?(): void;
   onClose(): void;
 };
 
@@ -33,7 +35,13 @@ export function NotificationCenter(props: Props) {
   return <NotificationCenterContent {...props} />;
 }
 
-function NotificationCenterContent({ open, items, onClose }: Props) {
+function NotificationCenterContent({
+  open,
+  items,
+  diagnosticExportBusy = false,
+  onExportDiagnostics,
+  onClose,
+}: Props) {
   const panelRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   useDialogFocus({
@@ -83,8 +91,27 @@ function NotificationCenterContent({ open, items, onClose }: Props) {
               <strong>Nothing needs your attention</strong>
               <p>New errors, updates, and interrupted actions will appear here.</p>
             </div>
-          ) : items.map((item) => (
-            <article
+          ) : items.map((item) => {
+            const suppliedActions = item.actions ?? [];
+            const hasDiagnosticAction = suppliedActions.some(action =>
+              action.label.startsWith("Export diagnostics")
+              || action.label.startsWith("Exporting diagnostics"),
+            );
+            const actions = [
+              ...suppliedActions,
+              ...((item.severity === "warning" || item.severity === "error")
+                && onExportDiagnostics
+                && !hasDiagnosticAction
+                ? [{
+                    label: diagnosticExportBusy
+                      ? "Exporting diagnostics…"
+                      : "Export diagnostics",
+                    disabled: diagnosticExportBusy,
+                    onClick: onExportDiagnostics,
+                  }]
+                : []),
+            ];
+            return <article
               key={item.key}
               className={`notification-center-item notification-center-item-${item.severity}${item.active ? " notification-center-item-active" : ""}`}
               role={item.severity === "error" ? "alert" : "status"}
@@ -108,9 +135,9 @@ function NotificationCenterContent({ open, items, onClose }: Props) {
                 <strong>{item.title}</strong>
                 <p>{item.detail}</p>
                 {item.meta && <small>{item.meta}</small>}
-                {item.actions && item.actions.length > 0 && (
+                {actions.length > 0 && (
                   <div className="notification-center-item-actions">
-                    {item.actions.map((action) => (
+                    {actions.map((action) => (
                       <button
                         key={action.label}
                         type="button"
@@ -124,8 +151,8 @@ function NotificationCenterContent({ open, items, onClose }: Props) {
                   </div>
                 )}
               </div>
-            </article>
-          ))}
+            </article>;
+          })}
         </div>
 
         <footer>

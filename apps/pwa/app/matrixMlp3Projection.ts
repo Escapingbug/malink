@@ -411,14 +411,17 @@ export class MatrixMlp3Projection {
       return true;
     }
     if (payload.type === "provider.catalog.page") {
-      if (this.seenLogicalEvents.has(event.eventId)) return false;
-      this.seenLogicalEvents.add(event.eventId);
+      // Provider Catalog state is replace-in-place and entity-versioned. Older
+      // clients could record these logical IDs before they knew how to project
+      // the catalog, so the generic seen-event set is not authoritative here.
+      // Re-applying the same state is safe and repairs those poisoned caches.
       const key = providerCatalogPageKey(
         payload.providerId,
         payload.revision,
         payload.pageIndex,
       );
       const current = this.providerCatalogPages.get(key);
+      let changed = false;
       if (!current || isNewerCatalogEvent(current, event)) {
         this.providerCatalogPages.set(key, {
           logicalEventId: event.eventId,
@@ -430,13 +433,14 @@ export class MatrixMlp3Projection {
           occurredAt: event.occurredAt,
         });
         this.pruneProviderCatalogPages(payload.providerId);
+        changed = true;
       }
-      return true;
+      this.seenLogicalEvents.add(event.eventId);
+      return changed;
     }
     if (payload.type === "provider.catalog.manifest") {
-      if (this.seenLogicalEvents.has(event.eventId)) return false;
-      this.seenLogicalEvents.add(event.eventId);
       const current = this.providerCatalogManifests.get(payload.providerId);
+      let changed = false;
       if (!current || isNewerCatalogEvent(current, event)) {
         this.providerCatalogManifests.set(payload.providerId, {
           logicalEventId: event.eventId,
@@ -449,8 +453,10 @@ export class MatrixMlp3Projection {
           occurredAt: event.occurredAt,
         });
         this.pruneProviderCatalogPages(payload.providerId);
+        changed = true;
       }
-      return true;
+      this.seenLogicalEvents.add(event.eventId);
+      return changed;
     }
     if (payload.type === "gateway.update.status" && !event.causationCommandId) {
       if ((this.gatewayUpdateObservation?.observedAt ?? -1) >= event.occurredAt) return false;
