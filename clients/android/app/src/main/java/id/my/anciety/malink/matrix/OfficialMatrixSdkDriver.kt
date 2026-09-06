@@ -332,6 +332,25 @@ class OfficialMatrixSdkDriver(
             service.start()
             lifecycle.markStarted()
             diagnostics.record("matrix.driver.sync_started")
+            // restoreSession() hydrates Room handles from the encrypted SDK
+            // store. When every authorized room is already present, install
+            // the live timelines immediately instead of waiting for the first
+            // Sliding Sync room-list response (an idle response can take tens
+            // of seconds). New devices and incomplete caches keep the original
+            // sync-progress barrier above.
+            val restoredRoomIds = activeSession.roomBindings.map(MatrixRoomBinding::roomId)
+            if (restoredBoundRoomsAvailable(restoredRoomIds) { built.getRoom(it) != null }) {
+                diagnostics.record(
+                    "matrix.driver.restored_rooms_ready",
+                    mapOf("count" to restoredRoomIds.size.toString()),
+                )
+                scheduleInitialSyncFinalization(
+                    built,
+                    transportIdentity,
+                    onTransportReady,
+                    waitForBackgroundEncryption = false,
+                )
+            }
         } catch (error: Exception) {
             active.set(false)
             diagnostics.record("matrix.driver.start_failure", errorAttributes(error))
@@ -649,11 +668,12 @@ class OfficialMatrixSdkDriver(
         expectedClient: Client,
         identity: MatrixTransportIdentity,
         onTransportReady: (MatrixTransportIdentity) -> Unit,
+        waitForBackgroundEncryption: Boolean = true,
     ) {
         if (transportReadyPublished.get() || !firstSyncWorkScheduled.compareAndSet(false, true)) return
         callbackScope.launch {
             try {
-                if (!finalizeInitialSync(expectedClient)) {
+                if (!finalizeInitialSync(expectedClient, waitForBackgroundEncryption)) {
                     firstSyncWorkScheduled.set(false)
                     return@launch
                 }
@@ -674,22 +694,34 @@ class OfficialMatrixSdkDriver(
         }
     }
 
-    private suspend fun finalizeInitialSync(expectedClient: Client): Boolean {
+    private suspend fun finalizeInitialSync(
+        expectedClient: Client,
+        waitForBackgroundEncryption: Boolean,
+    ): Boolean {
         if (syncedBoundRoomReady.isCompleted) return true
         if (!firstSyncFinalizing.compareAndSet(false, true)) return false
         try {
-            diagnostics.record("matrix.encryption.initializing")
-            try {
-                withTimeout(E2EE_INITIALIZATION_TIMEOUT_MS) {
-                    expectedClient.encryption().waitForE2eeInitializationTasks()
+            if (waitForBackgroundEncryption) {
+                diagnostics.record("matrix.encryption.initializing")
+                try {
+                    withTimeout(E2EE_INITIALIZATION_TIMEOUT_MS) {
+                        expectedClient.encryption().waitForE2eeInitializationTasks()
+                    }
+                } catch (_: TimeoutCancellationException) {
+                    throw IllegalStateException(
+                        "Matrix E2EE initialization did not finish after native sliding sync.",
+                    )
                 }
-            } catch (_: TimeoutCancellationException) {
-                throw IllegalStateException(
-                    "Matrix E2EE initialization did not finish after native sliding sync.",
-                )
+                diagnostics.record("matrix.encryption.ready")
+            } else {
+                // restoreSession() already recreated the OlmMachine and the
+                // caller verified its own Ed25519 identity before reaching
+                // this path. The remaining SDK setup_e2ee task configures
+                // cross-signing, backups, and recovery in the background; it
+                // is not a prerequisite for opening restored encrypted rooms.
+                diagnostics.record("matrix.encryption.restored_ready")
             }
             if (!active.get() || client !== expectedClient) return false
-            diagnostics.record("matrix.encryption.ready")
             try {
                 withTimeout(BOUND_ROOM_READY_TIMEOUT_MS) {
                     while (

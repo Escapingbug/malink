@@ -10,6 +10,19 @@ import org.matrix.rustcomponents.sdk.SyncServiceState
 
 class MatrixSyncServiceLifecycleTest {
     @Test
+    fun `restored room readiness requires every authorized room`() {
+        val available = setOf("room-a", "room-b")
+
+        assertTrue(
+            restoredBoundRoomsAvailable(listOf("room-a", "room-b"), available::contains),
+        )
+        assertFalse(
+            restoredBoundRoomsAvailable(listOf("room-a", "room-c"), available::contains),
+        )
+        assertFalse(restoredBoundRoomsAvailable(emptyList(), available::contains))
+    }
+
+    @Test
     fun `native readiness joins invited rooms and rejects unusable memberships`() {
         assertEquals(
             MatrixBoundRoomMembershipAction.READY,

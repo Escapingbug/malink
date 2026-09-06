@@ -792,6 +792,7 @@ class MatrixConnectionRuntime(
                             val current = mutex.withLock {
                                 if (driver === nextDriver && driverGeneration == generation) {
                                     sdkTimelineReady = true
+                                    accept(MatrixRuntimeEvent.TransportReady)
                                     true
                                 } else {
                                     false

@@ -27,6 +27,8 @@ sealed interface MatrixRuntimeEvent {
 
     data object SyncStarted : MatrixRuntimeEvent
 
+    data object TransportReady : MatrixRuntimeEvent
+
     data object SyncUpdated : MatrixRuntimeEvent
 
     data object NetworkLost : MatrixRuntimeEvent
@@ -75,6 +77,11 @@ class MatrixRuntimeStateMachine(
             }
             MatrixRuntimeEvent.SyncStarted ->
                 state(MatrixRuntimePhase.CONNECTING, "matrix_first_sync_waiting")
+            MatrixRuntimeEvent.TransportReady -> if (status.phase == MatrixRuntimePhase.CONNECTING) {
+                state(MatrixRuntimePhase.SYNCING, "matrix_transport_ready")
+            } else {
+                status
+            }
             MatrixRuntimeEvent.SyncUpdated ->
                 state(MatrixRuntimePhase.SYNCING, "matrix_sync_active")
             MatrixRuntimeEvent.NetworkLost -> if (

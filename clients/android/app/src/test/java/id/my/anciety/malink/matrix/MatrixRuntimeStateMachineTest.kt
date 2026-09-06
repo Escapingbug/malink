@@ -39,6 +39,19 @@ class MatrixRuntimeStateMachineTest {
     }
 
     @Test
+    fun `restored transport becomes active without overriding offline state`() {
+        assertPhase(MatrixRuntimePhase.RESTORING, MatrixRuntimeEvent.Start(true, true))
+        assertPhase(MatrixRuntimePhase.CONNECTING, MatrixRuntimeEvent.SessionReady(true))
+        assertPhase(MatrixRuntimePhase.CONNECTING, MatrixRuntimeEvent.SyncStarted)
+        assertPhase(MatrixRuntimePhase.SYNCING, MatrixRuntimeEvent.TransportReady)
+        assertEquals("matrix_transport_ready", machine.status.detailCode)
+
+        assertPhase(MatrixRuntimePhase.OFFLINE, MatrixRuntimeEvent.NetworkLost)
+        assertPhase(MatrixRuntimePhase.OFFLINE, MatrixRuntimeEvent.TransportReady)
+        assertEquals("network_unavailable", machine.status.detailCode)
+    }
+
+    @Test
     fun `missing session waits for bootstrap and explicit stop wins`() {
         assertPhase(MatrixRuntimePhase.WAITING_FOR_SESSION, MatrixRuntimeEvent.Start(false, true))
         assertPhase(MatrixRuntimePhase.BOOTSTRAPPING, MatrixRuntimeEvent.BootstrapStarted)

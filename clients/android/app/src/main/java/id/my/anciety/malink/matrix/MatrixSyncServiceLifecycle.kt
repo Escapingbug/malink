@@ -8,6 +8,11 @@ internal class MatrixSyncServiceFailure(
     val stage: String,
 ) : IllegalStateException("The Matrix sync service stopped at $stage.")
 
+internal fun restoredBoundRoomsAvailable(
+    roomIds: Collection<String>,
+    roomAvailable: (String) -> Boolean,
+): Boolean = roomIds.isNotEmpty() && roomIds.all(roomAvailable)
+
 /**
  * Converts the two Matrix SyncService state streams into the smaller lifecycle
  * contract needed by the persistent Android runtime.
