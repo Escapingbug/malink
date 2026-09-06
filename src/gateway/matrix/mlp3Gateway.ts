@@ -1191,6 +1191,7 @@ export class MatrixMlp3GatewayRunner {
       || command.operation === 'gateway.restart'
       ? null
       : command.operation === 'gateway.update.stage'
+        || command.operation === 'gateway.update.apply'
         || command.operation === 'gateway.update.prepare'
         || command.operation === 'gateway.update.promote'
         || command.operation === 'gateway.update.discard'

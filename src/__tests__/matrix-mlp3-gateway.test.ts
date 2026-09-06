@@ -10,8 +10,9 @@ import {
   MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
   mlp3CurrentPointerSchema,
   mlp3ProjectKeyGrantStateSchema,
-  type GatewayRestartStatus,
   type GatewayDeploymentStatus,
+  type GatewayRestartStatus,
+  type GatewayUpdateStatus,
   type Mlp3Command,
   type Mlp3Event,
   type SessionExtensionDescriptor,
@@ -651,7 +652,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         deviceId: 'phone-1',
         publicKey: phoneKeys.publicJwk,
         allowedRoomIds: [roomId],
-        allowedOperations: ['session.create'],
+        allowedOperations: ['session.create', 'gateway.update'],
         matrixUserId: '@phone:example.org',
         matrixDeviceId: 'PHONE',
         matrixDeviceKeys: ['matrix-phone-key'],
@@ -660,15 +661,47 @@ describe('MatrixMlp3GatewayRunner', () => {
       }],
       replayLedgerPath: join(directory, 'replay'),
       commandExecutionTimeoutMs: 1_000,
+      gatewayUpdateExecutionTimeoutMs: 5_000,
       applicationSecurity: {
         gatewayDeviceId: 'workspace-timeout',
         gatewayKeyPair: await exportDeviceKeyPair(gatewayKeys),
         envelopeReplayLedgerPath: join(directory, 'security'),
       },
     }
+    const slowApplyStarted = deferred<void>()
+    const releaseSlowApply = deferred<void>()
+    let updateStatus: GatewayUpdateStatus = {
+      version: 1,
+      phase: 'staged',
+      updateId: 'update-slow-apply',
+      releaseId: 'release-slow-apply',
+      targetBuildId: 'gateway-release-slow-apply',
+      currentBuildId: 'gateway-current',
+      activationMode: 'rollback-safe',
+      updatedAt: Date.now(),
+    }
     const runner = new MatrixMlp3GatewayRunner(config, {
       client,
       assertDirectoryAccess: async () => accessGate.promise,
+      gatewayUpdateSupervisor: {
+        status: async () => updateStatus,
+        stage: async () => updateStatus,
+        async scheduleApply() {
+          slowApplyStarted.resolve()
+          await releaseSlowApply.promise
+          updateStatus = {
+            ...updateStatus,
+            phase: 'scheduled',
+            updatedAt: Date.now(),
+          }
+          return updateStatus
+        },
+        agentInstruction: async () => { throw new Error('not used') },
+        beginAgentUpdate: async () => { throw new Error('not used') },
+        failAgentUpdate: async () => { throw new Error('not used') },
+        restartStatus: async () => ({ version: 1, phase: 'idle', updatedAt: Date.now() }),
+        scheduleRestart: async () => ({ version: 1, phase: 'idle', updatedAt: Date.now() }),
+      },
       sessionFactory: (room, port, session) => {
         if (session.id === 'session-timeout') {
           throw new Error('timed-out creation must not build a runtime')
@@ -810,6 +843,38 @@ describe('MatrixMlp3GatewayRunner', () => {
       expect.objectContaining({ payload: expect.objectContaining({ type: 'session.ready' }) }),
     ]))
     expect(client.retiredRooms).toHaveLength(retiredRoomsBeforeRestore + 1)
+
+    const slowApplyCommand: Mlp3Command = {
+      kind: 'malink.command',
+      version: 3,
+      commandId: 'gateway-update-apply-slow',
+      workspaceId: 'workspace-timeout',
+      projectId,
+      deviceId: 'phone-1',
+      certificateId: 'certificate-timeout',
+      createdAt: Date.now(),
+      operation: 'gateway.update.apply',
+      payload: {
+        operation: 'gateway.update.apply',
+        releaseId: 'release-slow-apply',
+        mode: 'when_idle',
+      },
+    }
+    await sendCommand(slowApplyCommand, '$gateway-update-apply-slow')
+    await slowApplyStarted.promise
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 1_100))
+    expect((await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === slowApplyCommand.commandId
+      && event.payload.type === 'command.rejected'
+      && event.payload.code === 'gateway_execution_timeout'
+    )).toBe(false)
+    releaseSlowApply.resolve()
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === slowApplyCommand.commandId
+        && event.payload.type === 'gateway.update.status'
+        && event.payload.status.phase === 'scheduled'
+      ))
     await runner.stop()
     clearProviderRegistryForTesting()
   }, 10_000)
