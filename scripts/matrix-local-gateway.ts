@@ -66,6 +66,7 @@ import type {
 import { createSessionExtensionRegistryFromEnvironment } from '../src/runtime/sessionExtensionConfig.js'
 import { UnixSocketPrivilegeExecutor } from '../src/privilege/index.js'
 import { GatewayUpdateSupervisorClient } from '../src/ops/gatewayUpdateSupervisorServer.js'
+import { deploymentSourceShadowRoomIds } from '../src/ops/gatewayDeploymentShadow.js'
 import {
     assertLocalDirectoryAccess,
     probeLocalDirectoryAccess,
@@ -82,9 +83,13 @@ const dataDirectory = process.env.MALINK_MATRIX_DATA_DIR
     ?? join(process.cwd(), 'dev', 'matrix', 'gateway-data')
 const adminSocketPath = process.env.MALINK_GATEWAY_ADMIN_SOCKET
     ?? join(dataDirectory, 'admin.sock')
-const blueGreenDeployment = process.env.MALINK_GATEWAY_BLUE_GREEN === '1'
 const isolatedDeploymentCandidate =
     process.env.MALINK_GATEWAY_DEPLOYMENT_CANDIDATE === '1'
+const shadowSourceGatewayNodeId =
+    process.env.MALINK_GATEWAY_SHADOW_SOURCE_NODE_ID?.trim()
+if (isolatedDeploymentCandidate && !shadowSourceGatewayNodeId) {
+    throw new Error('An isolated Gateway candidate requires its source Gateway node ID')
+}
 const handoffPending = process.env.MALINK_GATEWAY_HANDOFF_PENDING === '1'
 const shadowRoomIds = process.env.MALINK_GATEWAY_SHADOW_ROOMS_FILE?.trim()
     ? await readJson<string[]>(process.env.MALINK_GATEWAY_SHADOW_ROOMS_FILE.trim())
@@ -325,7 +330,9 @@ async function publishLocalWorkspaceDirectory(): Promise<void> {
         {
             computerName: gatewayProfile.computerName,
             buildId: gatewayBuildId,
-            ...(gatewayUpdateSupervisor && !blueGreenDeployment ? { onlineUpdate: true } : {}),
+            ...(gatewayUpdateSupervisor && !isolatedDeploymentCandidate
+                ? { onlineUpdate: true }
+                : {}),
         },
     )
 }
@@ -465,12 +472,12 @@ async function performWorkspaceControlSync(): Promise<void> {
         throw failure
     }
     const roomIds = workspaceDirectoryRoomIds(directory)
-    if (blueGreenDeployment) {
-        runner?.setShadowRoomIds(directory.directory.gateways
-            .filter(gateway => gateway.gatewayNodeId !== identity.gatewayNodeId)
-            .flatMap(gateway => gateway.projects ?? [])
-            .map(project => project.roomId)
-            .filter(roomId => !localRoomIds.includes(roomId)))
+    if (isolatedDeploymentCandidate) {
+        runner?.setShadowRoomIds(deploymentSourceShadowRoomIds(
+            directory.directory.gateways,
+            shadowSourceGatewayNodeId!,
+            localRoomIds,
+        ))
     }
     // The Gateway bootstrap route is the stable Workspace control lane for
     // this node. Every authorized client and Gateway account joins it through
@@ -649,7 +656,7 @@ const config: MatrixGatewayConfig = {
     },
     crypto: cryptoConfig,
     rooms: configuredRooms,
-    ...(blueGreenDeployment ? { shadowRoomIds } : {}),
+    ...(isolatedDeploymentCandidate ? { shadowRoomIds } : {}),
     trustedDevices,
     replayLedgerPath: join(dataDirectory, 'gateway-replay.jsonl'),
     applicationSecurity: {

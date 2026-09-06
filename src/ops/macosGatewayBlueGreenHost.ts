@@ -812,6 +812,7 @@ export class MacosGatewayBlueGreenHost {
       MALINK_GATEWAY_BUILD_ID: state.buildId,
       MALINK_GATEWAY_BLUE_GREEN: '1',
       MALINK_GATEWAY_DEPLOYMENT_CANDIDATE: '1',
+      MALINK_GATEWAY_SHADOW_SOURCE_NODE_ID: state.sourceGatewayNodeId,
       MALINK_GATEWAY_SHADOW_ROOMS_FILE: join(dataDirectory, 'gateway-shadow-rooms.json'),
       ...(handoffPending ? { MALINK_GATEWAY_HANDOFF_PENDING: '1' } : {}),
     })
