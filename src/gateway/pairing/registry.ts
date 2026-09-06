@@ -7,7 +7,11 @@ import type {
   SignedPairingResponse,
   SignedWorkspaceDeviceGrant,
 } from '@malink/protocol'
-import { canonicalJson, signedWorkspaceDeviceGrantSchema } from '@malink/protocol'
+import {
+  canonicalJson,
+  matrixTransportBindingSchema,
+  signedWorkspaceDeviceGrantSchema,
+} from '@malink/protocol'
 
 export interface StoredPairingOffer {
   signedOffer: SignedPairingOffer
@@ -463,6 +467,31 @@ export class FileTrustedDeviceRegistry {
         },
         changed: false,
       }
+    })
+  }
+
+  /**
+   * Rebinds only an isolated deployment copy to its new Gateway node
+   * transport. The candidate is discovered through the root-signed Workspace
+   * directory, not a device-only rotation from the active node. Its private
+   * registry later becomes authoritative if that candidate is promoted.
+   */
+  async adoptGatewayTransportForIsolatedDeployment(
+    nextInput: MatrixTransportBinding,
+  ): Promise<void> {
+    const next = matrixTransportBindingSchema.parse(nextInput)
+    await this.file.transaction(initialState, (state) => {
+      validateState(state)
+      const changed = !state.gatewayTransport
+        || canonicalJson(state.gatewayTransport) !== canonicalJson(next)
+        || Object.values(state.trustedDevices).some(record =>
+          canonicalJson(record.gatewayTransport) !== canonicalJson(next))
+      if (!changed) return { result: undefined, changed: false }
+      state.gatewayTransport = structuredClone(next)
+      for (const record of Object.values(state.trustedDevices)) {
+        record.gatewayTransport = structuredClone(next)
+      }
+      return { result: undefined, changed: true }
     })
   }
 

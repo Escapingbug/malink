@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -28,6 +28,7 @@ import {
   GatewayPairingService,
   listenForMatrixPairingRequests,
   publishMatrixTransportSnapshot,
+  synchronizeMatrixTransportRecovery,
 } from '@/gateway/pairing'
 
 const temporaryDirectories: string[] = []
@@ -88,6 +89,54 @@ describe('long-lived Matrix pairing recovery', () => {
     await expect(registry.getGatewayTransportHead()).resolves.toMatchObject({
       lastSnapshotIssuedAt: expect.any(Number),
     })
+  })
+
+  it('does not rotate or publish the active transport head from an isolated candidate', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-candidate-transport-state-'))
+    temporaryDirectories.push(directory)
+    const registryPath = join(directory, 'registry.json')
+    const activeTransport = {
+      homeserver: 'http://localhost:8008',
+      roomId: '!active:localhost',
+      userId: '@gateway:localhost',
+      deviceId: 'GATEWAY_ACTIVE',
+      ed25519: 'gateway-active-ed25519',
+    }
+    const candidateTransport = {
+      ...activeTransport,
+      roomId: '!trial:localhost',
+      deviceId: 'GATEWAY_CANDIDATE',
+      ed25519: 'gateway-candidate-ed25519',
+    }
+    await writeFile(registryPath, `${JSON.stringify({
+      version: 1,
+      offers: {},
+      pending: {},
+      trustedDevices: {},
+      gatewayTransport: activeTransport,
+    })}\n`)
+    const identity = await new FileGatewayIdentityStore(
+      join(directory, 'identity.json'),
+    ).loadOrCreate('gateway-one')
+    const registry = new FileTrustedDeviceRegistry(registryPath)
+    const service = new GatewayPairingService(
+      identity,
+      registry,
+      new PairingOfferGuard(new FileReplayStore(join(directory, 'offers.json'))),
+    )
+    const client = new FakePairingClient()
+
+    await expect(synchronizeMatrixTransportRecovery({
+      client,
+      service,
+      registry,
+      nextTransport: candidateTransport,
+      trustedDevices: [],
+      isolatedDeploymentCandidate: true,
+    })).resolves.toEqual({ rotated: false, snapshotPublished: false })
+
+    expect(client.profile).toBeNull()
+    await expect(registry.getGatewayTransport()).resolves.toEqual(candidateTransport)
   })
 
   it('resends the exact persisted response for an already approved request', async () => {

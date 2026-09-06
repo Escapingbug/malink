@@ -27,8 +27,7 @@ import {
     DeviceInvitationCoordinator,
     GatewayPairingService,
     listenForMatrixPairingRequests,
-    announceMatrixDeviceRotation,
-    publishMatrixTransportSnapshot,
+    synchronizeMatrixTransportRecovery,
     ensurePortableWorkspaceGrant,
     trustedDeviceFromRecord,
     trustedDeviceFromWorkspaceGrant,
@@ -84,6 +83,8 @@ const dataDirectory = process.env.MALINK_MATRIX_DATA_DIR
 const adminSocketPath = process.env.MALINK_GATEWAY_ADMIN_SOCKET
     ?? join(dataDirectory, 'admin.sock')
 const blueGreenDeployment = process.env.MALINK_GATEWAY_BLUE_GREEN === '1'
+const isolatedDeploymentCandidate =
+    process.env.MALINK_GATEWAY_DEPLOYMENT_CANDIDATE === '1'
 const handoffPending = process.env.MALINK_GATEWAY_HANDOFF_PENDING === '1'
 const shadowRoomIds = process.env.MALINK_GATEWAY_SHADOW_ROOMS_FILE?.trim()
     ? await readJson<string[]>(process.env.MALINK_GATEWAY_SHADOW_ROOMS_FILE.trim())
@@ -399,23 +400,24 @@ if (clientBootstrap.requiresStartupPairing) {
             + 'Matrix account; existing authorization remains active pending user-approved migration.\n',
         )
     }
-    const rotated = await announceMatrixDeviceRotation({
+    const transportRecovery = await synchronizeMatrixTransportRecovery({
         client,
         service: pairingService,
         registry,
         nextTransport: currentTransport,
         trustedDevices: active,
+        isolatedDeploymentCandidate,
     })
-    if (rotated) {
+    if (transportRecovery.rotated) {
         process.stdout.write('Gateway Matrix transport key rotated and signed automatically.\n')
     }
-    await publishMatrixTransportSnapshot({
-        client,
-        service: pairingService,
-        registry,
-        transport: currentTransport,
-    })
-    process.stdout.write('Published the durable Gateway profile recovery snapshot.\n')
+    if (transportRecovery.snapshotPublished) {
+        process.stdout.write('Published the durable Gateway profile recovery snapshot.\n')
+    } else {
+        process.stdout.write(
+            'Skipped active Gateway transport recovery publication for an isolated candidate.\n',
+        )
+    }
     if (process.env.MALINK_PAIR_NEW_DEVICE === '1') {
         if (!pwaAppUrl) {
             throw new Error(

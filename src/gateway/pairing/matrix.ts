@@ -84,6 +84,36 @@ export async function announceMatrixDeviceRotation(options: {
 }
 
 /**
+ * Converges the durable transport recovery anchors for an active Gateway.
+ * An isolated blue/green candidate intentionally owns a different trial room
+ * and node descriptor, so it must not reinterpret the copied active transport
+ * head as a device-only rotation or overwrite the shared Matrix profile.
+ */
+export async function synchronizeMatrixTransportRecovery(options: {
+  client: MatrixGatewayClient
+  service: GatewayPairingService
+  registry: FileTrustedDeviceRegistry
+  nextTransport: MatrixTransportBinding
+  trustedDevices: TrustedDeviceRecord[]
+  isolatedDeploymentCandidate?: boolean
+}): Promise<{ rotated: boolean; snapshotPublished: boolean }> {
+  if (options.isolatedDeploymentCandidate) {
+    await options.registry.adoptGatewayTransportForIsolatedDeployment(
+      options.nextTransport,
+    )
+    return { rotated: false, snapshotPublished: false }
+  }
+  const rotated = await announceMatrixDeviceRotation(options)
+  await publishMatrixTransportSnapshot({
+    client: options.client,
+    service: options.service,
+    registry: options.registry,
+    transport: options.nextTransport,
+  })
+  return { rotated, snapshotPublished: true }
+}
+
+/**
  * Publishes a root-signed, overwrite-in-place recovery anchor. Unlike the
  * encrypted timeline rotation event, the Gateway's extended Matrix profile
  * remains fetchable after a PWA was offline across any number of restarts.
