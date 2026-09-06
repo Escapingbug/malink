@@ -495,26 +495,26 @@ function GatewayUpdateDialogContent({
                               ? recovery.label
                               : "Update when idle"}
                       </button>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        disabled={!connected || active}
-                        aria-busy={active && activeMode === "force" ? true : undefined}
-                        onClick={() => setForceConfirmationNodeId(node.gatewayNodeId)}
-                      >
-                        {active && activeMode === "force"
-                          ? stagedPublishedRelease
-                            ? "Scheduling restart now…"
-                            : "Preparing restart…"
-                          : node.blueGreenUpdate
-                            ? "Prepare candidate now…"
-                          : recovery.kind === "retry"
-                            ? "Try again and restart now…"
-                            : recovery.kind === "start" &&
-                                recovery.label === "Prepare latest update"
-                              ? "Prepare latest and restart now…"
-                              : "Install and restart now…"}
-                      </button>
+                      {!node.blueGreenUpdate && (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={!connected || active}
+                          aria-busy={active && activeMode === "force" ? true : undefined}
+                          onClick={() => setForceConfirmationNodeId(node.gatewayNodeId)}
+                        >
+                          {active && activeMode === "force"
+                            ? stagedPublishedRelease
+                              ? "Scheduling restart now…"
+                              : "Preparing restart…"
+                            : recovery.kind === "retry"
+                              ? "Try again and restart now…"
+                              : recovery.kind === "start" &&
+                                  recovery.label === "Prepare latest update"
+                                ? "Prepare latest and restart now…"
+                                : "Install and restart now…"}
+                        </button>
+                      )}
                       {!connected && (
                         <p className="gateway-update-action-status" role="status">
                           Reconnect this Malink client before installing the update.

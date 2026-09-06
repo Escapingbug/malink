@@ -107,6 +107,36 @@ test("starts the durable update directly without a live-status preflight", () =>
   assert.doesNotMatch(html, /primary-button" disabled/);
 });
 
+test("prepares a blue-green candidate without offering a destructive restart path", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [{
+      ...nodes[0]!,
+      computerId: "computer-office",
+      blueGreenUpdate: true,
+    }],
+    runtimeByNode: {
+      "node-office": { state: "unchecked" },
+    },
+    activeGatewayNodeIds: new Set(),
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onPromote() {},
+    onDiscard() {},
+    onOpenProject() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  assert.match(html, />Prepare candidate Gateway<\/button>/);
+  assert.doesNotMatch(html, /Prepare candidate now|restart now|Stop work/);
+  assert.equal(html.match(/class="primary-button"/g)?.length, 1);
+});
+
 test("explains why install actions are unavailable while disconnected", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
     open: true,
