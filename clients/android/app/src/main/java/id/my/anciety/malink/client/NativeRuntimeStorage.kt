@@ -39,6 +39,7 @@ class NativeRuntimeFiles(context: Context, deviceScope: String) {
     val timelineKeys = File(root, "matrix-timeline-keys.enc")
     val matrixMlp3ProjectKeys = File(root, "matrix-v3-project-keys.enc")
     val matrixMlp3Inbox = File(root, "matrix-v3-inbox.enc")
+    val matrixMlp3InboxRecords = File(root, "matrix-v3-inbox-records")
     val matrixMlp3TaskNotifications = File(root, "matrix-v3-task-notifications.enc")
     val matrixMlp3Projection = File(root, "matrix-v3-projection.enc")
     val pairing = File(root, "pairing-transaction.enc")
@@ -80,6 +81,9 @@ class NativeRuntimeFiles(context: Context, deviceScope: String) {
             stateManifest,
         ).forEach { file ->
             AtomicFile(file).delete()
+        }
+        check(matrixMlp3InboxRecords.deleteRecursively()) {
+            "Native MLP/3 inbox records could not be cleared."
         }
         clearTransferScratch()
     }

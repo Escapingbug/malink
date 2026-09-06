@@ -16,6 +16,8 @@ import {
 export type NativeBridgeMessageEvent = { data: unknown };
 
 export const NATIVE_BRIDGE_DEFAULT_TIMEOUT_MS = 15_000;
+export const NATIVE_CLIENT_START_TIMEOUT_MS = 60_000;
+export const NATIVE_CLIENT_SESSION_TIMEOUT_MS = 60_000;
 export const NATIVE_HISTORY_PAGE_TIMEOUT_MS = 60_000;
 export const NATIVE_PAIRING_COMPLETE_TIMEOUT_MS = 10 * 60_000;
 export const NATIVE_COMMAND_CONFLICT_TIMEOUT_MS = 60_000;
@@ -23,6 +25,17 @@ export const NATIVE_COMMAND_SEND_TIMEOUT_MS = 3 * 60_000;
 
 export function nativeBridgeRequestTimeoutMs(method: RequestMethod): number {
   switch (method) {
+    case "malink.client.start":
+      // The Android runtime validates and decrypts preserved local state before
+      // it can return a snapshot. A large but valid encrypted inbox may exceed
+      // the ordinary interactive-RPC deadline on a cold process start.
+      return NATIVE_CLIENT_START_TIMEOUT_MS;
+    case "malink.client.session":
+      // Session discovery deliberately waits for the Android service to open
+      // its encrypted stores. Treating that cold-start restore like an
+      // ordinary interactive read can misclassify an intact paired device as
+      // unconfigured before the native runtime is ready.
+      return NATIVE_CLIENT_SESSION_TIMEOUT_MS;
     case "malink.history.page":
       // Android bounds the Matrix relations operation at 45 seconds. Keep the
       // Web deadline strictly above it so the native timeout/error response is

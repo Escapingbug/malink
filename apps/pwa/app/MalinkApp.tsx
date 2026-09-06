@@ -3449,10 +3449,11 @@ function MalinkAppRuntime() {
     return true;
   }
 
-  function observeSessionActivityUpdatedAt(
+  function observeSessionActivityWatermark(
     sessionId: string,
-    updatedAt: number,
+    watermark: AgentActivityWatermark,
   ): void {
+    const { updatedAt } = watermark;
     if (!Number.isSafeInteger(updatedAt) || updatedAt < 0) return;
     setSessionActivityUpdatedAt((current) => {
       const previous = current.get(sessionId);
@@ -4705,13 +4706,17 @@ function MalinkAppRuntime() {
       isLiveMessageDelivery(incoming) &&
       (incoming.kind === "user" || incomingIsAgentActivity)
     ) {
+      const incomingActivityWatermark = agentActivityWatermarkForEvent(incoming);
       const activityIsCurrent = observeAgentActivityWatermark(
         sessionId,
-        agentActivityWatermarkForEvent(incoming),
+        incomingActivityWatermark,
       );
       if (activityIsCurrent) {
         if (incomingIsAgentActivity) {
-          observeSessionActivityUpdatedAt(sessionId, incoming.timestamp);
+          // Streamed message bubbles keep their first timestamp so their
+          // transcript position remains stable. The projection watermark is
+          // the latest authoritative Agent update and must drive this clock.
+          observeSessionActivityWatermark(sessionId, incomingActivityWatermark);
         }
         setSessionAgentActivity(sessionId, (current) => {
           if (incoming.kind === "user") {

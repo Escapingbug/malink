@@ -253,6 +253,7 @@ class NativeClientRuntime(
     private val matrixMlp3Inbox = openNativeStateStore("matrix-v3-raw-inbox") {
         AtomicEncryptedMatrixMlp3InboxStore(
             files.matrixMlp3Inbox,
+            files.matrixMlp3InboxRecords,
             cipher,
             deviceId,
         ).also {
@@ -396,6 +397,8 @@ class NativeClientRuntime(
     @Volatile private var workspaceDirectoryConvergenceJob: Job? = null
     @Volatile private var workspaceAuthorizationCheckJob: Job? = null
     @Volatile private var sessionReadReceiptReconciliationJob: Job? = null
+    private var matrixMlp3InboxReplayActive = false
+    private var matrixMlp3ProjectionPersistenceDeferred = false
     private val sessionReadReceiptScheduleLock = Any()
     private var sessionReadReceiptReconciliationRequested = false
     private var sessionReadReceiptInspectionRequested = false
@@ -1614,8 +1617,19 @@ class NativeClientRuntime(
         // duplicates behind commands made an otherwise durable send appear
         // stuck even though neither verification nor projection had work to
         // do for them.
-        if (needsRawInbox && !matrixMlp3Inbox.put(event)) {
-            return
+        if (needsRawInbox) {
+            val inserted = try {
+                matrixMlp3Inbox.put(event)
+            } catch (error: Exception) {
+                diagnostics.record(
+                    "matrix.v3_inbox.persist_failed",
+                    mapOf(
+                        "error" to diagnosticErrorName(error),
+                    ),
+                )
+                throw error
+            }
+            if (!inserted) return
         }
         mutex.withLock {
             try {
@@ -3554,23 +3568,45 @@ class NativeClientRuntime(
     }
 
     private suspend fun replayMatrixMlp3InboxLocked() {
-        drainMatrixMlp3Inbox(matrixMlp3Inbox) { record ->
-            try {
-                processMatrixEvent(record.event)
-                matrixMlp3Inbox.projected(record.event.eventId)
-                MatrixMlp3InboxProjectionStep.ADVANCED
-            } catch (_: MatrixMlp3EventDeferredException) {
-                MatrixMlp3InboxProjectionStep.DEFERRED
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                matrixMlp3Inbox.quarantine(record.event.eventId, error)
-                diagnostics.record(
-                    "matrix.v3_event.quarantined",
-                    mapOf("error" to diagnosticErrorName(error)),
-                )
-                MatrixMlp3InboxProjectionStep.ADVANCED
+        check(!matrixMlp3InboxReplayActive) { "The MLP/3 inbox is already replaying." }
+        val pendingAtStart = matrixMlp3Inbox.pending().size
+        diagnostics.record(
+            "matrix.v3_inbox.replay_started",
+            mapOf("pending" to pendingAtStart.toString()),
+        )
+        matrixMlp3InboxReplayActive = true
+        try {
+            drainMatrixMlp3Inbox(matrixMlp3Inbox) { record ->
+                try {
+                    processMatrixEvent(record.event)
+                    matrixMlp3Inbox.projected(record.event.eventId)
+                    MatrixMlp3InboxProjectionStep.ADVANCED
+                } catch (_: MatrixMlp3EventDeferredException) {
+                    MatrixMlp3InboxProjectionStep.DEFERRED
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    matrixMlp3Inbox.quarantine(record.event.eventId, error)
+                    diagnostics.record(
+                        "matrix.v3_event.quarantined",
+                        mapOf("error" to diagnosticErrorName(error)),
+                    )
+                    MatrixMlp3InboxProjectionStep.ADVANCED
+                }
             }
+        } finally {
+            matrixMlp3InboxReplayActive = false
+            if (matrixMlp3ProjectionPersistenceDeferred) {
+                matrixMlp3ProjectionPersistenceDeferred = false
+                commitMatrixMlp3Projection("inbox_replay")
+            }
+            diagnostics.record(
+                "matrix.v3_inbox.replay_completed",
+                mapOf(
+                    "pending_before" to pendingAtStart.toString(),
+                    "pending_after" to matrixMlp3Inbox.pending().size.toString(),
+                ),
+            )
         }
     }
 
@@ -3665,6 +3701,14 @@ class NativeClientRuntime(
 
     private fun commitMatrixMlp3Projection(reason: String) {
         matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
+        if (matrixMlp3InboxReplayActive) {
+            // Replay can contain thousands of already-durable events. Rewriting
+            // the bounded acceleration cache for each one holds the runtime
+            // mutex for minutes on a large inbox; the final replay state is the
+            // only cache image that matters.
+            matrixMlp3ProjectionPersistenceDeferred = true
+            return
+        }
         // ClientEventHub/raw-inbox persistence remains authoritative. This
         // encrypted projection is a bounded acceleration cache; failing to
         // rewrite it must not turn an authenticated Matrix event into poison.

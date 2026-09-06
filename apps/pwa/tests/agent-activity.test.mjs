@@ -105,6 +105,23 @@ test("rejects activity callbacks older than an authoritative terminal state", ()
   assert.equal(isStaleAgentActivityWatermark(terminal, sameTerminal), false);
 });
 
+test("uses the latest projection update for a long-running streamed reply", () => {
+  const startedAt = Date.now() - 60 * 60_000;
+  const latestReplyAt = Date.now();
+
+  assert.deepEqual(agentActivityWatermarkForEvent({
+    // The message bubble deliberately keeps its initial transcript position.
+    timestamp: startedAt,
+    raw: {
+      type: "assistant.message",
+      projection: { stateVersion: 8, updatedAt: latestReplyAt },
+    },
+  }), {
+    stateVersion: 8,
+    updatedAt: latestReplyAt,
+  });
+});
+
 test("uses timestamps for old native hosts and preserves the version fence", () => {
   const terminal = { stateVersion: 17, updatedAt: 1_000 };
   const delayedUser = agentActivityWatermarkForEvent({ timestamp: 999, raw: {} });

@@ -4,6 +4,8 @@ import test from "node:test";
 import { NATIVE_BRIDGE_LIMITS } from "@malink/native-bridge";
 import {
   NATIVE_BRIDGE_DEFAULT_TIMEOUT_MS,
+  NATIVE_CLIENT_SESSION_TIMEOUT_MS,
+  NATIVE_CLIENT_START_TIMEOUT_MS,
   NATIVE_COMMAND_CONFLICT_TIMEOUT_MS,
   NATIVE_COMMAND_SEND_TIMEOUT_MS,
   NATIVE_HISTORY_PAGE_TIMEOUT_MS,
@@ -149,12 +151,22 @@ test("does not poison future handoffs when an unmanaged owner is attached", asyn
   replacement.close();
 });
 
-test("allows native Matrix response time for history, pairing, renewal, and conflict recovery", () => {
+test("allows native restore, history, pairing, renewal, and conflict recovery time", () => {
   assert.equal(NATIVE_BRIDGE_DEFAULT_TIMEOUT_MS, 15_000);
+  assert.equal(NATIVE_CLIENT_SESSION_TIMEOUT_MS, 60_000);
+  assert.equal(NATIVE_CLIENT_START_TIMEOUT_MS, 60_000);
   assert.equal(NATIVE_COMMAND_CONFLICT_TIMEOUT_MS, 60_000);
   assert.equal(NATIVE_HISTORY_PAGE_TIMEOUT_MS, 60_000);
   assert.equal(NATIVE_PAIRING_COMPLETE_TIMEOUT_MS, 10 * 60_000);
   assert.equal(NATIVE_COMMAND_SEND_TIMEOUT_MS, 3 * 60_000);
+  assert.equal(
+    nativeBridgeRequestTimeoutMs("malink.client.start"),
+    NATIVE_CLIENT_START_TIMEOUT_MS,
+  );
+  assert.equal(
+    nativeBridgeRequestTimeoutMs("malink.client.session"),
+    NATIVE_CLIENT_SESSION_TIMEOUT_MS,
+  );
   assert.equal(
     nativeBridgeRequestTimeoutMs("malink.command.resolveConflict"),
     NATIVE_COMMAND_CONFLICT_TIMEOUT_MS,

@@ -77,15 +77,18 @@ class MatrixMlp3NativeStorageTest {
         events.forEach { assertTrue(store.put(it)) }
         assertTrue(blob.bytes!!.size > 4 * 1024 * 1024)
 
-        store.quarantine(events.first().eventId, IllegalArgumentException("poison"))
+        events.forEach { event ->
+            store.quarantine(event.eventId, IllegalArgumentException("poison"))
+        }
+        assertTrue(blob.bytes!!.size < 32 * 1024)
 
         val restored = AtomicEncryptedMatrixMlp3InboxStore(
             blob,
             JvmAesGcmCipher(),
             "account-a",
         )
-        assertEquals(events.drop(1).map { it.eventId }, restored.pending().map { it.event.eventId })
-        assertFalse(restored.put(events.first()))
+        assertTrue(restored.pending().isEmpty())
+        events.forEach { event -> assertFalse(restored.put(event)) }
     }
 
     @Test
@@ -121,6 +124,120 @@ class MatrixMlp3NativeStorageTest {
     }
 
     @Test
+    fun `legacy inbox stays sealed while new events use a bounded encrypted segment`() {
+        val legacy = MemoryMatrixMlp3BlobStore()
+        val records = MemoryMatrixMlp3RecordBlobStore()
+        val cipher = JvmAesGcmCipher()
+        val first = event("\$first", "{\"body\":\"${"x".repeat(256 * 1024)}\"}")
+        val second = event("\$second", "{\"kind\":\"event\"}")
+        AtomicEncryptedMatrixMlp3InboxStore(legacy, cipher, "account-a").also {
+            assertTrue(it.put(first))
+            assertTrue(it.put(second))
+        }
+        assertTrue(legacy.bytes!!.size > 256 * 1024)
+
+        val segmented = AtomicEncryptedMatrixMlp3InboxStore(
+            legacy,
+            records,
+            cipher,
+            "account-a",
+        )
+        assertTrue(legacy.bytes!!.size > 256 * 1024)
+        assertEquals(0, records.bytes.size)
+        assertEquals(0, records.writeCount)
+
+        val third = event("\$third", "{\"kind\":\"terminal\"}")
+        assertTrue(segmented.put(third))
+        assertEquals(1, records.writeCount)
+        assertEquals(1, records.bytes.size)
+        assertEquals(2, legacy.writeCount)
+        segmented.projected(third.eventId)
+        assertEquals(1, records.bytes.size)
+        segmented.flushProjected()
+        assertEquals(0, records.bytes.size)
+
+        val restored = AtomicEncryptedMatrixMlp3InboxStore(
+            legacy,
+            records,
+            cipher,
+            "account-a",
+        )
+        assertEquals(listOf(first.eventId, second.eventId), restored.pending().map { it.event.eventId })
+        assertFalse(restored.put(first))
+        assertEquals(1, records.writeCount)
+    }
+
+    @Test
+    fun `active inbox segments rotate before later writes can rewrite a large backlog`() {
+        val legacy = MemoryMatrixMlp3BlobStore()
+        val segments = MemoryMatrixMlp3RecordBlobStore()
+        val cipher = JvmAesGcmCipher()
+        val store = AtomicEncryptedMatrixMlp3InboxStore(
+            legacy,
+            segments,
+            cipher,
+            "account-a",
+        )
+        val raw = "{\"body\":\"${"x".repeat(140 * 1024)}\"}"
+        val first = event("\$first", raw)
+        val second = event("\$second", raw)
+
+        assertTrue(store.put(first))
+        assertEquals(1, segments.writeCount)
+        assertEquals(1, segments.bytes.size)
+        assertTrue(store.put(second))
+        assertEquals(2, segments.writeCount)
+        assertEquals(2, segments.bytes.size)
+        assertNull(legacy.bytes)
+
+        store.projected(first.eventId)
+        store.flushProjected()
+        assertEquals(1, segments.bytes.size)
+        assertEquals(
+            listOf(second.eventId),
+            AtomicEncryptedMatrixMlp3InboxStore(
+                legacy,
+                segments,
+                cipher,
+                "account-a",
+            ).pending().map { it.event.eventId },
+        )
+    }
+
+    @Test
+    fun `new input replaces an empty segment awaiting batched cleanup`() {
+        val legacy = MemoryMatrixMlp3BlobStore()
+        val segments = MemoryMatrixMlp3RecordBlobStore()
+        val cipher = JvmAesGcmCipher()
+        val store = AtomicEncryptedMatrixMlp3InboxStore(
+            legacy,
+            segments,
+            cipher,
+            "account-a",
+        )
+        val first = event("\$first", "{\"kind\":\"event\"}")
+        val second = event("\$second", "{\"kind\":\"event\"}")
+
+        assertTrue(store.put(first))
+        store.projected(first.eventId)
+        assertTrue(store.put(second))
+        assertEquals(2, segments.writeCount)
+        assertEquals(1, segments.bytes.size)
+
+        store.flushProjected()
+        assertEquals(1, segments.bytes.size)
+        assertEquals(
+            listOf(second.eventId),
+            AtomicEncryptedMatrixMlp3InboxStore(
+                legacy,
+                segments,
+                cipher,
+                "account-a",
+            ).pending().map { it.event.eventId },
+        )
+    }
+
+    @Test
     fun `a later key grant unlocks an earlier deferred event`() = runBlocking {
         val blob = MemoryMatrixMlp3BlobStore()
         val store = AtomicEncryptedMatrixMlp3InboxStore(blob, JvmAesGcmCipher(), "account-a")
@@ -151,6 +268,7 @@ class MatrixMlp3NativeStorageTest {
 
         assertEquals(listOf("\$dependent", "\$grant", "\$dependent"), attempts)
         assertTrue(store.pending().isEmpty())
+        assertNull(blob.bytes)
     }
 
     @Test
@@ -494,6 +612,26 @@ class MatrixMlp3NativeStorageTest {
 
         override fun delete() {
             bytes = null
+        }
+    }
+
+    private class MemoryMatrixMlp3RecordBlobStore : MatrixMlp3RecordBlobStore {
+        val bytes = linkedMapOf<String, ByteArray>()
+        var writeCount = 0
+
+        override fun readAll(): Map<String, ByteArray> = bytes.mapValues { it.value.copyOf() }
+
+        override fun write(key: String, bytes: ByteArray) {
+            writeCount += 1
+            this.bytes[key] = bytes.copyOf()
+        }
+
+        override fun delete(key: String) {
+            bytes.remove(key)
+        }
+
+        override fun clear() {
+            bytes.clear()
         }
     }
 
