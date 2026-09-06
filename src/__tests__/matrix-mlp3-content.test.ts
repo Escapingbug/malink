@@ -573,6 +573,26 @@ describe('GatewayMlp3ContentLayer', () => {
         projection,
       },
     }, transport)
+    const finalTool = await layer.enqueueEvent(room, {
+      kind: 'malink.event',
+      version: 3,
+      eventId: 'tool-final',
+      workspaceId: 'workspace-1',
+      projectId: gatewayProjectIdentity(room.cwd).id,
+      sessionId: 'session-1',
+      causationCommandId: 'command-1',
+      occurredAt: 53,
+      payload: {
+        type: 'assistant.message',
+        messageId: 'final-tool',
+        messageVersion: 1,
+        body: 'Final tool snapshot',
+        format: 'plain',
+        final: true,
+        projection,
+        ui: { kind: 'tool_group', version: 1, groupId: 'final-tools', tools: [] },
+      },
+    }, transport)
     const terminal = await layer.enqueueEvent(room, {
       kind: 'malink.event',
       version: 3,
@@ -592,6 +612,7 @@ describe('GatewayMlp3ContentLayer', () => {
     release()
 
     await expect(finalResponse.confirmation).resolves.toEqual({ eventId: '$assistant-final' })
+    await expect(finalTool.confirmation).resolves.toEqual({ eventId: '$tool-final' })
     await expect(terminal.confirmation).resolves.toEqual({ eventId: '$turn-terminal' })
     await expect(latest.confirmation).resolves.toEqual({ eventId: '$bulk-latest' })
     // Forty-eight intermediate progress snapshots never reach Matrix. This is
@@ -600,6 +621,7 @@ describe('GatewayMlp3ContentLayer', () => {
     expect(deliveryOrder).toEqual([
       'bulk-old',
       'assistant-final',
+      'tool-final',
       'turn-terminal',
       ...olderControlIds,
       'bulk-latest',
@@ -686,7 +708,27 @@ describe('GatewayMlp3ContentLayer', () => {
       legacyPart('latest-part-1', 2, 1, 3),
       legacyPart('latest-part-2', 1, 2, 3),
     ]
-    for (const event of [...oldParts, ...latestParts]) {
+    const finalTool: Mlp3Event = {
+      kind: 'malink.event',
+      version: 3,
+      eventId: 'final-tool',
+      workspaceId: 'workspace-1',
+      projectId: gatewayProjectIdentity(room.cwd).id,
+      sessionId: 'session-1',
+      causationCommandId: 'command-1',
+      occurredAt: 2,
+      payload: {
+        type: 'assistant.message',
+        messageId: 'final-tool',
+        messageVersion: 1,
+        body: 'Final tool snapshot',
+        format: 'plain',
+        final: true,
+        projection,
+        ui: { kind: 'tool_group', version: 1, groupId: 'final-tools', tools: [] },
+      },
+    }
+    for (const event of [...oldParts, ...latestParts, finalTool]) {
       try {
         const queued = await first.enqueueEvent(room, event, unavailable)
         void queued.confirmation.catch(() => undefined)
@@ -726,10 +768,13 @@ describe('GatewayMlp3ContentLayer', () => {
       return { eventId: `$${logicalEventId}` }
     }
     await recovered.provisionProject(room, restoredTransport)
-    await waitFor(() => deliveredLogicalIds.length === 3)
+    await waitFor(() => deliveredLogicalIds.length === 4)
     recovered.stopRetries()
 
-    expect(deliveredLogicalIds).toEqual(latestParts.map(event => event.eventId))
+    expect(deliveredLogicalIds).toEqual([
+      finalTool.eventId,
+      ...latestParts.map(event => event.eventId),
+    ])
     const durableWal = await readFile(outboxPath, 'utf8')
     expect(durableWal).toContain('newer_logical_version')
   })

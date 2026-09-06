@@ -970,7 +970,7 @@ function eventDeliveryMetadata(event: Mlp3Event): MatrixMlp3DeliveryMetadata {
       // use the same priority so the scheduler preserves their enqueue order
       // instead of letting turn.completed overtake the notification preview.
       priority: ui?.kind === 'tool_group'
-        ? 'bulk'
+        ? payload.final && event.causationCommandId ? 'urgent' : 'bulk'
         : payload.final && event.causationCommandId ? 'urgent' : 'normal',
       ...(event.sessionId
         ? {

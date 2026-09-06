@@ -592,7 +592,7 @@ describe('MatrixMlp3Port', () => {
     expect(oversizedPresentationEnvelope.plaintext.value.event.payload).not.toHaveProperty('ui')
   })
 
-  it('stages a final tool snapshot without waiting for physical Matrix confirmation', async () => {
+  it('stages a final tool snapshot urgently without waiting for physical Matrix confirmation', async () => {
     const confirmation = new Promise<{ eventId: string }>(() => {})
     let deliveryPriority: string | undefined
     const contentLayer = {
@@ -643,7 +643,7 @@ describe('MatrixMlp3Port', () => {
     }, { terminal: true, finalSnapshot: true })).resolves.toMatchObject({
       messageId: 'tool-group-1',
     })
-    expect(deliveryPriority).toBe('normal')
+    expect(deliveryPriority).toBe('urgent')
   })
 
   it('serializes a passive integration entry into assistant UI metadata', async () => {

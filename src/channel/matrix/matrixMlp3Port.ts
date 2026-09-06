@@ -175,7 +175,7 @@ export class MatrixMlp3Port implements ChannelPort {
       }, {
         occurredAt: this.messageTimestamp(messageId),
         ...(liveToolGroup && context.finalSnapshot
-          ? { priority: 'normal' as const }
+          ? { priority: 'urgent' as const }
           : {}),
       })
       this.observeAssistantDelivery(
@@ -251,7 +251,7 @@ export class MatrixMlp3Port implements ChannelPort {
       }, {
         occurredAt: this.messageTimestamp(messageId),
         ...(toolGroup && context.finalSnapshot
-          ? { priority: 'normal' as const }
+          ? { priority: 'urgent' as const }
           : {}),
         ...(physicalTarget
           ? {
