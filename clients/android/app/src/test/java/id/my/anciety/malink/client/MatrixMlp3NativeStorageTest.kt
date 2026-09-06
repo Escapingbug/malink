@@ -69,6 +69,26 @@ class MatrixMlp3NativeStorageTest {
     }
 
     @Test
+    fun `quarantining an inbox larger than four MiB remains encrypted and restartable`() {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val store = AtomicEncryptedMatrixMlp3InboxStore(blob, JvmAesGcmCipher(), "account-a")
+        val raw = "{\"body\":\"${"x".repeat(430 * 1024)}\"}"
+        val events = (0 until 10).map { index -> event("\$large-$index", raw) }
+        events.forEach { assertTrue(store.put(it)) }
+        assertTrue(blob.bytes!!.size > 4 * 1024 * 1024)
+
+        store.quarantine(events.first().eventId, IllegalArgumentException("poison"))
+
+        val restored = AtomicEncryptedMatrixMlp3InboxStore(
+            blob,
+            JvmAesGcmCipher(),
+            "account-a",
+        )
+        assertEquals(events.drop(1).map { it.eventId }, restored.pending().map { it.event.eventId })
+        assertFalse(restored.put(events.first()))
+    }
+
+    @Test
     fun `projected inbox cleanup is coalesced until new input or lifecycle flush`() {
         val blob = MemoryMatrixMlp3BlobStore()
         val store = AtomicEncryptedMatrixMlp3InboxStore(blob, JvmAesGcmCipher(), "account-a")

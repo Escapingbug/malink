@@ -52,11 +52,33 @@ test("formats a live, compact age for the last session activity", () => {
 
 test("only semantic Agent events may advance a session activity watermark", () => {
   assert.equal(isAgentActivityEvent({ type: "assistant.message" }), true);
+  assert.equal(isAgentActivityEvent({
+    type: "assistant.message",
+    ui: { kind: "artifact_materialization", version: 1 },
+  }), false);
   assert.equal(isAgentActivityEvent({ type: "turn.completed" }), true);
   assert.equal(isAgentActivityEvent({ kind: "status", state: "idle" }), true);
   assert.equal(isAgentActivityEvent({ kind: "decision_request" }), true);
   assert.equal(isAgentActivityEvent({ kind: "collaboration_command" }), false);
   assert.equal(isAgentActivityEvent({ kind: "status", state: "unknown" }), false);
+});
+
+test("materializing a referenced file never revives settled Agent activity", () => {
+  const materialized = {
+    type: "assistant.message",
+    ui: {
+      kind: "artifact_materialization",
+      version: 1,
+      status: "materialized",
+      referenceId: "reference-1",
+    },
+  };
+
+  assert.equal(reduceAgentActivity(null, materialized), null);
+  assert.equal(
+    reduceAgentActivity(STOPPING_AGENT_ACTIVITY, materialized),
+    STOPPING_AGENT_ACTIVITY,
+  );
 });
 
 test("rejects activity callbacks older than an authoritative terminal state", () => {

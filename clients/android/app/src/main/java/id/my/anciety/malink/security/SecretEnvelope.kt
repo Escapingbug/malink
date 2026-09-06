@@ -18,7 +18,11 @@ object SecretEnvelope {
     private const val VERSION: Byte = 1
     private const val HEADER_BYTES = 10
     private const val MAX_IV_BYTES = 32
-    private const val MAX_CIPHERTEXT_BYTES = 4 * 1024 * 1024
+    // The durable MLP/3 raw inbox is explicitly bounded to 32 MiB of
+    // plaintext. AES-GCM appends a 16-byte authentication tag, so the shared
+    // encrypted envelope must be able to represent that store's documented
+    // maximum instead of crashing as soon as it grows past 4 MiB.
+    private const val MAX_CIPHERTEXT_BYTES = 32 * 1024 * 1024 + 16
 
     fun encode(payload: EncryptedPayload): ByteArray {
         require(payload.iv.size in 12..MAX_IV_BYTES) { "Invalid encrypted envelope IV." }

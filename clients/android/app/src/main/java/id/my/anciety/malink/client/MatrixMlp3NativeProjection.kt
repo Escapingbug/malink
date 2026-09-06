@@ -818,9 +818,13 @@ internal class MatrixMlp3NativeProjection(
             )
         }
         if (
-            type == "session.lifecycle" &&
             sessionId != null &&
-            payload.requiredString("state", 32) == "deleted"
+            (
+                (type == "session.lifecycle" &&
+                    payload.requiredString("state", 32) == "deleted") ||
+                    (type == "command.rejected" &&
+                        payload.requiredString("code", 128) == "session_not_found")
+                )
         ) {
             sessions.remove(sessionId)
             assistantMessageVersions.keys.removeAll { it.sessionId == sessionId }

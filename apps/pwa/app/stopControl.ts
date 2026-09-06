@@ -43,3 +43,31 @@ export function latestPendingPromptCommandId(
   }
   return latest;
 }
+
+/**
+ * A Gateway snapshot can still describe the pre-cancel running state while
+ * the signed cancel command is in flight. Preserve that local stop request so
+ * the button stays disabled until a terminal result or idle state arrives.
+ */
+export function reconcileStoppingSessionIds(
+  current: ReadonlySet<string>,
+  sessions: readonly { id: string; status: string }[],
+  pendingPromptSessionIds: ReadonlySet<string> = new Set(),
+): Set<string> {
+  const sessionsById = new Map(sessions.map(session => [session.id, session]));
+  const next = new Set(
+    sessions
+      .filter(session => session.status === "stopping")
+      .map(session => session.id),
+  );
+  for (const sessionId of current) {
+    const session = sessionsById.get(sessionId);
+    if (
+      session &&
+      (session.status === "running" || pendingPromptSessionIds.has(sessionId))
+    ) {
+      next.add(sessionId);
+    }
+  }
+  return next;
+}

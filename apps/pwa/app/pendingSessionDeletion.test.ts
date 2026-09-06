@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   pendingSessionLifecycleIds,
   reconcilePendingSessionDeletions,
+  sessionArchiveSucceeded,
   sessionLifecycleRouteKey,
   sessionsAvailableForAutomaticSelection,
   setSessionDeletionPending,
@@ -14,6 +15,18 @@ describe("pending session deletion", () => {
     expect(
       sessionsAvailableForAutomaticSelection([{ id: "last" }], pending),
     ).toEqual([]);
+  });
+
+  it("treats an authoritative missing session as an already-complete archive", () => {
+    expect(sessionArchiveSucceeded({ outcome: "succeeded" })).toBe(true);
+    expect(sessionArchiveSucceeded({
+      outcome: "failed",
+      error: { code: "session_not_found" },
+    })).toBe(true);
+    expect(sessionArchiveSucceeded({
+      outcome: "failed",
+      error: { code: "execution_failed" },
+    })).toBe(false);
   });
 
   it("keeps overlapping deletions independent and can restore a failed one", () => {

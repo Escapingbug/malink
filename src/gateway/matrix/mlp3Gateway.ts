@@ -2760,7 +2760,7 @@ export class MatrixMlp3GatewayRunner {
     const sessionId = command.sessionId
     if (!sessionId) throw new Error('Lifecycle command is missing its session ID')
     const record = project.project.sessions.find(candidate => candidate.id === sessionId)
-    if (!record) throw new Error(`Unknown Malink session ${sessionId}`)
+    if (!record) throw new Mlp3SessionNotFoundError(sessionId)
     if (command.payload.state === 'active' && record.lifecycle !== 'active') {
       throw new Error('Deleted sessions cannot be restored; continue them from Provider History')
     }
@@ -3388,7 +3388,7 @@ export class MatrixMlp3GatewayRunner {
     if (!sessionId) throw new Error('Provider History command is missing its session ID')
     const record = project.project.sessions.find(candidate => candidate.id === sessionId)
     if (!record || record.lifecycle === 'deleted') {
-      throw new Error(`Unknown Malink session ${sessionId}`)
+      throw new Mlp3SessionNotFoundError(sessionId)
     }
     const binding = record.providerHistory
     if (!binding) throw new Error(`Session ${sessionId} has no Provider History room`)
@@ -3685,7 +3685,11 @@ export class MatrixMlp3GatewayRunner {
       eventId: logicalEventId(command, stage),
       workspaceId: this.config.gatewayId,
       projectId: project.project.projectId,
-      ...(record ? { sessionId: record.id } : {}),
+      ...(record
+        ? { sessionId: record.id }
+        : command.sessionId
+          ? { sessionId: command.sessionId }
+          : {}),
       occurredAt: this.now(),
       causationCommandId: command.commandId,
       payload,
@@ -4257,7 +4261,13 @@ export class MatrixMlp3GatewayRunner {
   ): Mlp3SessionRuntime {
     if (!sessionId) throw new Error('Command is missing its session ID')
     const runtime = project.sessions.get(sessionId)
-    if (!runtime) throw new Error(`Malink session ${sessionId} is not active`)
+    if (!runtime) {
+      const record = project.project.sessions.find(candidate => candidate.id === sessionId)
+      if (!record || record.lifecycle === 'deleted') {
+        throw new Mlp3SessionNotFoundError(sessionId)
+      }
+      throw new Error(`Malink session ${sessionId} is not active`)
+    }
     return runtime
   }
 
@@ -5740,6 +5750,16 @@ class GatewayCommandExecutionTimeoutError extends Error {
   constructor(operation: string, timeoutMs: number) {
     super(`Gateway ${operation} execution timed out after ${timeoutMs}ms`)
     this.name = 'GatewayCommandExecutionTimeoutError'
+  }
+}
+
+class Mlp3SessionNotFoundError extends Error {
+  readonly commandCode = 'session_not_found'
+  readonly retryable = false
+
+  constructor(sessionId: string) {
+    super(`Unknown Malink session ${sessionId}`)
+    this.name = 'Mlp3SessionNotFoundError'
   }
 }
 

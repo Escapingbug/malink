@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   latestPendingPromptCommandId,
+  reconcileStoppingSessionIds,
   selectStopControlTarget,
   stopRequestAccepted,
 } from "../app/stopControl.ts";
@@ -10,6 +11,34 @@ test("accepts both cancel-command terminal shapes as a successful stop", () => {
   assert.equal(stopRequestAccepted({ outcome: "succeeded" }), true);
   assert.equal(stopRequestAccepted({ outcome: "cancelled" }), true);
   assert.equal(stopRequestAccepted({ outcome: "failed" }), false);
+});
+
+test("keeps Stop disabled while a pre-cancel running snapshot races the command", () => {
+  const current = new Set(["session-a"]);
+
+  assert.deepEqual(
+    [...reconcileStoppingSessionIds(current, [
+      { id: "session-a", status: "running" },
+    ])],
+    ["session-a"],
+  );
+  assert.deepEqual(
+    [...reconcileStoppingSessionIds(current, [
+      { id: "session-a", status: "idle" },
+    ])],
+    [],
+  );
+});
+
+test("keeps a queued-message stop disabled until its command settles", () => {
+  const current = new Set(["session-a"]);
+  const idle = [{ id: "session-a", status: "idle" }];
+
+  assert.deepEqual(
+    [...reconcileStoppingSessionIds(current, idle, new Set(["session-a"]))],
+    ["session-a"],
+  );
+  assert.deepEqual([...reconcileStoppingSessionIds(current, idle)], []);
 });
 
 test("lets a local submission be stopped before older queued or active work", () => {

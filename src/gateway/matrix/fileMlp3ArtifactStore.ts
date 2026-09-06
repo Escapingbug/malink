@@ -688,6 +688,21 @@ function artifactMimeType(path: string): string {
     case '.svg': return 'image/svg+xml'
     case '.pdf': return 'application/pdf'
     case '.json': return 'application/json'
+    case '.css': return 'text/css'
+    case '.html':
+    case '.htm': return 'text/html'
+    case '.js':
+    case '.jsx':
+    case '.mjs':
+    case '.cjs': return 'text/javascript'
+    case '.ts':
+    case '.tsx':
+    case '.mts':
+    case '.cts': return 'text/typescript'
+    case '.xml': return 'application/xml'
+    case '.yaml':
+    case '.yml': return 'application/yaml'
+    case '.toml': return 'application/toml'
     case '.md':
     case '.markdown': return 'text/markdown'
     case '.txt':

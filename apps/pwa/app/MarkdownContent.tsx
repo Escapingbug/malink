@@ -1,7 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import ReactMarkdown, {
+  defaultUrlTransform,
+  type Components,
+} from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
   MalinkArtifactReference,
@@ -22,6 +33,19 @@ type MarkdownContentProps = {
     reference: MalinkArtifactReference,
   ): Promise<"materialized" | "changed">;
 };
+
+type ArtifactContextValue = {
+  references: ReadonlyMap<string, MalinkArtifactReference>;
+  attachments: ReadonlyMap<string, MalinkAttachment>;
+  connection: MalinkClient | null;
+  onMaterializeArtifact?: MarkdownContentProps["onMaterializeArtifact"];
+};
+
+const ArtifactContext = createContext<ArtifactContextValue>({
+  references: new Map(),
+  attachments: new Map(),
+  connection: null,
+});
 
 function MarkdownCodeBlock({ children }: { children: ReactNode }) {
   const blockRef = useRef<HTMLPreElement>(null);
@@ -77,76 +101,113 @@ export function MarkdownContent({
     () => new Map(attachments.map(attachment => [attachment.id, attachment])),
     [attachments],
   );
-
-  function artifactControl(referenceId: string, label: ReactNode, image: boolean) {
-    const reference = references.get(referenceId);
-    if (!reference) return <span className="artifact-reference-error">Unavailable file reference</span>;
-    return (
-      <ArtifactReference
-        reference={reference}
-        attachment={attachmentMap.get(referenceId)}
-        connection={connection}
-        image={image}
-        onMaterialize={onMaterializeArtifact}
-      >
-        {label}
-      </ArtifactReference>
-    );
-  }
+  const artifactContext = useMemo<ArtifactContextValue>(() => ({
+    references,
+    attachments: attachmentMap,
+    connection,
+    onMaterializeArtifact,
+  }), [attachmentMap, connection, onMaterializeArtifact, references]);
 
   return (
-    <div className="markdown-content">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        skipHtml
-        urlTransform={(url) =>
-          url.startsWith(ARTIFACT_SCHEME) || isPotentialLocalFileDestination(url)
-            ? url
-            : defaultUrlTransform(url)
-        }
-        components={{
-          pre({ children }) {
-            return <MarkdownCodeBlock>{children}</MarkdownCodeBlock>;
-          },
-          a({ children, href, ...props }) {
-            const referenceId = artifactReferenceId(href);
-            if (referenceId) return artifactControl(referenceId, children, false);
-            if (isPotentialLocalFileDestination(href)) {
-              return <UnavailableLocalReference>{children}</UnavailableLocalReference>;
-            }
-            if (!href) {
-              return <span className="markdown-link-unavailable">{children}</span>;
-            }
-            return (
-              <a
-                {...props}
-                href={href}
-                rel="noopener noreferrer"
-                target="_blank"
-              >
-                {children}
-              </a>
-            );
-          },
-          img({ alt, src }) {
-            const referenceId = artifactReferenceId(src);
-            if (referenceId) {
-              return artifactControl(referenceId, alt || "Referenced image", true);
-            }
-            if (isPotentialLocalFileDestination(src)) {
-              return <UnavailableLocalReference image>{alt || "Referenced image"}</UnavailableLocalReference>;
-            }
-            // Remote Markdown images stay in the browser pipeline. Application
-            // attachments always use verified, short-lived blob URLs below.
-            return <img alt={alt ?? ""} src={src} />;
-          },
-        }}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
+    <ArtifactContext.Provider value={artifactContext}>
+      <div className="markdown-content">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          skipHtml
+          urlTransform={markdownUrlTransform}
+          components={MARKDOWN_COMPONENTS}
+        >
+          {content}
+        </ReactMarkdown>
+      </div>
+    </ArtifactContext.Provider>
   );
 }
+
+function ArtifactControl({
+  referenceId,
+  image,
+  children,
+}: {
+  referenceId: string;
+  image: boolean;
+  children: ReactNode;
+}) {
+  const context = useContext(ArtifactContext);
+  const reference = context.references.get(referenceId);
+  if (!reference) {
+    return <span className="artifact-reference-error">Unavailable file reference</span>;
+  }
+  return (
+    <ArtifactReference
+      reference={reference}
+      attachment={context.attachments.get(referenceId)}
+      connection={context.connection}
+      image={image}
+      onMaterialize={context.onMaterializeArtifact}
+    >
+      {children}
+    </ArtifactReference>
+  );
+}
+
+function markdownUrlTransform(url: string): string {
+  return url.startsWith(ARTIFACT_SCHEME) || isPotentialLocalFileDestination(url)
+    ? url
+    : defaultUrlTransform(url);
+}
+
+const MARKDOWN_COMPONENTS = {
+  pre({ children }) {
+    return <MarkdownCodeBlock>{children}</MarkdownCodeBlock>;
+  },
+  a({ children, href, ...props }) {
+    const referenceId = artifactReferenceId(href);
+    if (referenceId) {
+      return (
+        <ArtifactControl referenceId={referenceId} image={false}>
+          {children}
+        </ArtifactControl>
+      );
+    }
+    if (isPotentialLocalFileDestination(href)) {
+      return <UnavailableLocalReference>{children}</UnavailableLocalReference>;
+    }
+    if (!href) {
+      return <span className="markdown-link-unavailable">{children}</span>;
+    }
+    return (
+      <a
+        {...props}
+        href={href}
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        {children}
+      </a>
+    );
+  },
+  img({ alt, src }) {
+    const referenceId = artifactReferenceId(src);
+    if (referenceId) {
+      return (
+        <ArtifactControl referenceId={referenceId} image>
+          {alt || "Referenced image"}
+        </ArtifactControl>
+      );
+    }
+    if (isPotentialLocalFileDestination(src)) {
+      return (
+        <UnavailableLocalReference image>
+          {alt || "Referenced image"}
+        </UnavailableLocalReference>
+      );
+    }
+    // Remote Markdown images stay in the browser pipeline. Application
+    // attachments always use verified, short-lived blob URLs below.
+    return <img alt={alt ?? ""} src={src} />;
+  },
+} satisfies Components;
 
 function UnavailableLocalReference({
   image = false,
@@ -294,7 +355,7 @@ async function openAttachment(
   try {
     const blob = await connection.downloadAttachment(attachment);
     if (
-      isTextPreview(attachment.mimeType)
+      isTextArtifactPreview(attachment.mimeType, attachment.name)
       && blob.size <= MAX_INLINE_TEXT_PREVIEW_BYTES
     ) {
       setPreview({ kind: "text", text: await blob.text() });
@@ -366,10 +427,23 @@ function isPotentialLocalFileDestination(value: string | undefined): boolean {
   return !scheme || scheme === "file";
 }
 
-function isTextPreview(mimeType: string): boolean {
+const TEXT_ARTIFACT_EXTENSIONS = new Set([
+  ".c", ".cc", ".conf", ".cpp", ".cs", ".css", ".go", ".h", ".hpp",
+  ".html", ".ini", ".java", ".js", ".jsx", ".kt", ".kts", ".mjs",
+  ".php", ".properties", ".py", ".rb", ".rs", ".sh", ".sql", ".swift",
+  ".toml", ".ts", ".tsx", ".vue", ".xml", ".yaml", ".yml",
+]);
+
+export function isTextArtifactPreview(mimeType: string, name: string): boolean {
+  const normalizedName = name.trim().toLowerCase();
+  const extensionIndex = normalizedName.lastIndexOf(".");
+  const extension = extensionIndex >= 0 ? normalizedName.slice(extensionIndex) : "";
   return mimeType.startsWith("text/")
     || mimeType === "application/json"
-    || mimeType.endsWith("+json");
+    || mimeType.endsWith("+json")
+    || mimeType === "application/xml"
+    || mimeType.endsWith("+xml")
+    || TEXT_ARTIFACT_EXTENSIONS.has(extension);
 }
 
 function previewKind(mimeType: string): "image" | "pdf" | "audio" | "video" | null {

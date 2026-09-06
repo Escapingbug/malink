@@ -77,6 +77,7 @@ export function shouldApplyAgentActivity(
 export function isAgentActivityEvent(raw: unknown): boolean {
   const event = asRecord(raw);
   if (!event) return false;
+  if (isArtifactMaterializationEvent(event)) return false;
   if (event.kind === "status") {
     return [
       "starting",
@@ -205,6 +206,10 @@ export function reduceAgentActivity(
 ): AgentActivity | null {
   const event = asRecord(raw);
   if (!event) return current;
+  // Materializing a reference replaces an existing assistant message after the
+  // turn has already settled. It is a file-transfer terminal, not fresh Agent
+  // output, and must not revive a completed session's activity indicator.
+  if (isArtifactMaterializationEvent(event)) return current;
 
   if (event.kind === "status") {
     switch (event.activity_phase ?? event.state) {
@@ -313,6 +318,13 @@ function optionalNonemptyString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim();
   return normalized || undefined;
+}
+
+function isArtifactMaterializationEvent(
+  event: Record<string, unknown>,
+): boolean {
+  if (event.type !== "assistant.message") return false;
+  return asRecord(event.ui)?.kind === "artifact_materialization";
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

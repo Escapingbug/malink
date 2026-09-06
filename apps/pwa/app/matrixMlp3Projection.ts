@@ -623,17 +623,14 @@ export class MatrixMlp3Projection {
     if (event.sessionId && "projection" in payload) {
       this.applySessionProjection(event, payload.projection, physicalEventId, threadRootHint);
     }
-    if (payload.type === "session.lifecycle" && payload.state === "deleted" && event.sessionId) {
-      this.sessions.delete(event.sessionId);
-      for (const [logicalId, message] of this.messages) {
-        if (message.sessionId === event.sessionId) this.messages.delete(logicalId);
-      }
-      for (const [logicalId, message] of this.providerHistoryMessages) {
-        if (message.sessionId === event.sessionId) this.providerHistoryMessages.delete(logicalId);
-      }
-      for (const [pageId, page] of this.providerHistoryPages) {
-        if (page.sessionId === event.sessionId) this.providerHistoryPages.delete(pageId);
-      }
+    if (
+      event.sessionId
+      && (
+        (payload.type === "session.lifecycle" && payload.state === "deleted")
+        || (payload.type === "command.rejected" && payload.code === "session_not_found")
+      )
+    ) {
+      this.removeSessionProjection(event.sessionId);
     }
     if (payload.type === "session.ready" && event.sessionId && event.projectId) {
       const current = this.sessions.get(event.sessionId);
@@ -772,7 +769,11 @@ export class MatrixMlp3Projection {
         payload,
       });
     }
-    if (payload.type === "command.rejected" && event.sessionId) {
+    if (
+      payload.type === "command.rejected"
+      && event.sessionId
+      && payload.code !== "session_not_found"
+    ) {
       this.messages.set(`command-rejected:${payload.commandId}`, {
         logicalId: `command-rejected:${payload.commandId}`,
         physicalEventId,
@@ -812,6 +813,19 @@ export class MatrixMlp3Projection {
     }
     if (event.sessionId) this.reconcileCompletedTurn(event.sessionId);
     return true;
+  }
+
+  private removeSessionProjection(sessionId: string): void {
+    this.sessions.delete(sessionId);
+    for (const [logicalId, message] of this.messages) {
+      if (message.sessionId === sessionId) this.messages.delete(logicalId);
+    }
+    for (const [logicalId, message] of this.providerHistoryMessages) {
+      if (message.sessionId === sessionId) this.providerHistoryMessages.delete(logicalId);
+    }
+    for (const [pageId, page] of this.providerHistoryPages) {
+      if (page.sessionId === sessionId) this.providerHistoryPages.delete(pageId);
+    }
   }
 
   providerModelCatalogs(): V3ProjectedProviderModelCatalog[] {

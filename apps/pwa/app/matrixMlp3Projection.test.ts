@@ -254,6 +254,37 @@ describe("MatrixMlp3Projection", () => {
     expect(projection.visibleSessions().map(session => session.sessionId)).toEqual(["session-b"]);
   });
 
+  it("repairs a stale session when the Gateway reports it is already absent", () => {
+    const projection = new MatrixMlp3Projection();
+    projection.applyCommand(createCommand("a"), "$root-a");
+    projection.applyCommand(createCommand("b"), "$root-b");
+
+    projection.applyEvent({
+      kind: "malink.event",
+      version: 3,
+      eventId: "missing-session-a",
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      sessionId: "session-a",
+      occurredAt: 3,
+      causationCommandId: "archive-missing-a",
+      payload: {
+        type: "command.rejected",
+        commandId: "archive-missing-a",
+        code: "session_not_found",
+        message: "Unknown Malink session session-a",
+        retryable: false,
+      },
+    }, "$missing-a");
+
+    expect(projection.visibleSessions().map(session => session.sessionId)).toEqual(["session-b"]);
+    expect(projection.sessionMessages("session-a")).toEqual([]);
+    expect(projection.completions.get("archive-missing-a")).toMatchObject({
+      outcome: "rejected",
+      sessionId: "session-a",
+    });
+  });
+
   it("removes a deleted project's local materialized view and settles the command", () => {
     const projection = new MatrixMlp3Projection();
     projection.applyCommand(createCommand("a"), "$root-a");

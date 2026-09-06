@@ -25,6 +25,23 @@ afterEach(async () => {
 })
 
 describe('MLP/3 artifact references', () => {
+  it('marks source files as text so Android can preview referenced code', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'Component.tsx'), 'export const Component = () => <div />\n')
+    const store = new FileMlp3ArtifactStore(join(root, 'artifacts.json'), 'workspace-1')
+    await store.initialize()
+
+    const prepared = await store.prepare(context(root), 'source-message', {
+      format: 'markdown',
+      text: '[Component](Component.tsx)',
+    })
+
+    expect(prepared.references).toMatchObject([{
+      name: 'Component.tsx',
+      mimeType: 'text/typescript',
+    }])
+  })
+
   it('rewrites bounded local links, deduplicates stat metadata, and eagerly uploads a small image', async () => {
     const root = await temporaryDirectory()
     const cwd = join(root, 'project')

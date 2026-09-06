@@ -2,7 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MarkdownContent } from "../app/MarkdownContent.tsx";
+import {
+  MarkdownContent,
+  isTextArtifactPreview,
+} from "../app/MarkdownContent.tsx";
+
+test("previews source references even when an older Gateway used a binary MIME type", () => {
+  assert.equal(
+    isTextArtifactPreview("application/octet-stream", "ToolActivityCard.tsx"),
+    true,
+  );
+  assert.equal(isTextArtifactPreview("application/zip", "archive.zip"), false);
+});
 
 test("does not navigate unverified local Markdown links", () => {
   const html = renderToStaticMarkup(createElement(MarkdownContent, {

@@ -264,6 +264,7 @@ import {
 } from "./projectCreateRecovery";
 import {
   pendingSessionLifecycleIds,
+  sessionArchiveSucceeded,
   sessionLifecycleRouteKey,
   sessionsAvailableForAutomaticSelection,
 } from "./pendingSessionDeletion";
@@ -478,6 +479,7 @@ import {
 } from "./turnTimeline";
 import {
   latestPendingPromptCommandId,
+  reconcileStoppingSessionIds,
   selectStopControlTarget,
   stopRequestAccepted,
 } from "./stopControl";
@@ -6514,12 +6516,17 @@ function MalinkAppRuntime() {
                 )
                 .map((session) => session.id),
             );
-            const stoppingIds = new Set(
-              nextGatewayState.sessions
-                .filter((session) => session.status === "stopping")
-                .map((session) => session.id),
+            const promptPendingSessionIds = new Set([
+              ...pendingPromptSessionIdsRef.current,
+              ...activePromptCommandsRef.current.values(),
+            ]);
+            const stoppingIds = reconcileStoppingSessionIds(
+              stoppingSessionIdsRef.current,
+              nextGatewayState.sessions,
+              promptPendingSessionIds,
             );
             setRunningSessionIds(runningIds);
+            stoppingSessionIdsRef.current = stoppingIds;
             setStoppingSessionIds(stoppingIds);
             setAgentActivitiesBySession((current) => {
               const next = new Map<string, AgentActivity>();
@@ -6836,6 +6843,7 @@ function MalinkAppRuntime() {
     setConnectionError(null);
     setPairingError(null);
     setRunningSessionIds(new Set());
+    stoppingSessionIdsRef.current = new Set();
     setStoppingSessionIds(new Set());
     setAgentActivitiesBySession(new Map());
     setSessionActivityUpdatedAt(new Map());
@@ -11168,7 +11176,7 @@ function MalinkAppRuntime() {
     if (recovery?.timer != null) window.clearTimeout(recovery.timer);
     sessionLifecycleRecoveriesRef.current.delete(sent.commandId);
     try {
-      if (completion.outcome !== "succeeded") {
+      if (!sessionArchiveSucceeded(completion)) {
         await onFailed?.();
         showUiNotice(
           `session:${action}`,

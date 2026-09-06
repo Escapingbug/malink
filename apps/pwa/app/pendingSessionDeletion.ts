@@ -48,3 +48,12 @@ export function pendingSessionLifecycleIds(
 ): Set<string> {
   return new Set(actions.keys());
 }
+
+/** A stale client tombstone and an already-absent Gateway session converge to the same result. */
+export function sessionArchiveSucceeded(completion: {
+  outcome: string;
+  error?: { code: string };
+}): boolean {
+  return completion.outcome === "succeeded"
+    || completion.error?.code === "session_not_found";
+}

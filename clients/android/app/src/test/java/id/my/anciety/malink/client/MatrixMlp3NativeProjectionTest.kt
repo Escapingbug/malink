@@ -576,6 +576,47 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `missing session rejection repairs a stale native session projection`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady("session-a", stateVersion = 1, title = "Session A", updatedAt = 100),
+            "\$root-a",
+            "\$root-a",
+        )
+        projection.applyGatewayEvent(
+            sessionReady("session-b", stateVersion = 1, title = "Session B", updatedAt = 101),
+            "\$root-b",
+            "\$root-b",
+        )
+
+        val result = projection.applyGatewayEvent(
+            event(
+                eventId = "missing-session-a",
+                projectId = "project-1",
+                sessionId = "session-a",
+                causationCommandId = "archive-missing-a",
+                payload = buildJsonObject {
+                    put("type", "command.rejected")
+                    put("commandId", "archive-missing-a")
+                    put("code", "session_not_found")
+                    put("message", "Unknown Malink session session-a")
+                    put("retryable", false)
+                },
+            ),
+            "\$missing-a",
+            "\$root-a",
+        )
+
+        val sessions = projection.snapshot()!!.getValue("sessions").jsonArray
+        assertEquals(listOf("Session B"), sessions.map { sessionTitle(it.jsonObject) })
+        assertNull(projection.threadRootEventId("session-a"))
+        assertEquals("archive-missing-a", result.terminal?.commandId)
+        assertEquals("session-a", result.terminal?.sessionId)
+        assertEquals("session_not_found", result.terminal?.errorCode)
+    }
+
+    @Test
     fun `replayed own session create cannot overwrite a newer Gateway terminal`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)

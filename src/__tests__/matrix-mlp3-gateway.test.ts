@@ -2642,6 +2642,25 @@ describe('MatrixMlp3GatewayRunner', () => {
     await waitFor(async () => !(await archiveState.project(roomId)).sessions.some(session =>
       session.id === 'session-a'
     ))
+    await send({
+      ...base,
+      commandId: 'archive-already-absent',
+      sessionId: 'session-a',
+      operation: 'session.set_lifecycle',
+      payload: { operation: 'session.set_lifecycle', state: 'archived' },
+    }, '$archive-already-absent')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'archive-already-absent'))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'archive-already-absent'
+    )).toMatchObject({
+      sessionId: 'session-a',
+      payload: {
+        type: 'command.rejected',
+        code: 'session_not_found',
+        retryable: false,
+      },
+    })
     await send(archiveA, '$archive-a-recovery')
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).filter(event =>
       event.causationCommandId === 'archive-a'

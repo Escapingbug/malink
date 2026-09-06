@@ -3020,8 +3020,13 @@ class NativeClientRuntime(
             scheduleWorkspaceDirectoryConvergence()
         }
         if (
-            protocolPayload.string("type") == "session.lifecycle"
-            && protocolPayload.string("state") == "deleted"
+            (
+                protocolPayload.string("type") == "session.lifecycle"
+                    && protocolPayload.string("state") == "deleted"
+                ) || (
+                protocolPayload.string("type") == "command.rejected"
+                    && protocolPayload.string("code") == "session_not_found"
+                )
         ) {
             protocolEvent.string("sessionId")?.let { deletedSessionId ->
                 initializedHistoryRelations.remove(deletedSessionId)
