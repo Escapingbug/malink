@@ -165,7 +165,15 @@ export class GatewayMlp3ContentLayer {
   ): Promise<void> {
     this.transports.set(room.roomId, transport)
     const devices = await this.activeDevices(room.roomId)
-    if (devices.length === 0) return
+    if (devices.length === 0) {
+      // A delivery was encrypted for the authorization that existed when it
+      // entered the WAL. It remains valid even when no current device is able
+      // to receive a newly generated key grant. Always wake durable recovery;
+      // otherwise a legacy/revoked-device transition can strand the outbox
+      // forever and subsequently block a safe Gateway handoff.
+      this.retryPendingInBackground(room.roomId, transport)
+      return
+    }
     const ring = await this.projectKeys.ensureRoom(
       room.roomId,
       devices.map(device => device.deviceId),
@@ -177,9 +185,7 @@ export class GatewayMlp3ContentLayer {
     // Recovery traffic must not hold Gateway startup behind a homeserver
     // token bucket. The durable outbox continues in the background while new
     // authoritative snapshots can be staged immediately.
-    void this.retryPending(room.roomId, transport).catch(error => {
-      this.onLog?.(`[mlp3/matrix] outbox recovery paused: ${formatError(error)}`)
-    })
+    this.retryPendingInBackground(room.roomId, transport)
   }
 
   /**
@@ -579,6 +585,12 @@ export class GatewayMlp3ContentLayer {
       }
       void this.deliver(delivery, transport).catch(() => undefined)
     }
+  }
+
+  private retryPendingInBackground(roomId: string, transport: MatrixTransport): void {
+    void this.retryPending(roomId, transport).catch(error => {
+      this.onLog?.(`[mlp3/matrix] outbox recovery paused: ${formatError(error)}`)
+    })
   }
 
   private async classifyPendingEvents(

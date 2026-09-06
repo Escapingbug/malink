@@ -47,6 +47,7 @@ import {
   gatewayMaintenanceSessionId,
   MatrixMlp3GatewayRunner,
 } from '@/gateway/matrix/mlp3Gateway'
+import { FileMatrixMlp3Outbox } from '@/gateway/matrix/fileMatrixMlp3Outbox'
 import {
   FileMlp3RuntimeStateStore,
   type PersistedMlp3Session,
@@ -197,6 +198,71 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(() => runner.setShadowRoomIds([roomId])).toThrow('locally owned')
     expect(client.delivered).toHaveLength(0)
     expect(client.state.size).toBe(0)
+    await runner.stop()
+  })
+
+  it('reopens a live Gateway when its durable deployment queue cannot seal', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-seal-rollback-'))
+    const gatewayKeys = await generateDeviceKeyPair()
+    const client = new TestMatrixClient()
+    const roomId = '!seal-project:example.org'
+    const securityPath = join(directory, 'security')
+    const outbox = new FileMatrixMlp3Outbox(`${securityPath}.v3-outbox.jsonl`)
+    await outbox.initialize()
+    const pending = outbox.createEvent({
+      roomId,
+      transactionId: 'blocked-deployment-delivery',
+      content: { msgtype: 'm.notice', body: 'durable pending result' },
+      createdAt: 1,
+    })
+    await outbox.stage(pending)
+    const blocked = client.blockTimelineTransaction(pending.transactionId)
+    const runner = new MatrixMlp3GatewayRunner({
+      gatewayId: 'workspace-seal',
+      gatewayNodeId: 'gateway-node-seal',
+      connection: {
+        baseUrl: 'https://matrix.example.org',
+        accessToken: 'gateway-token',
+        userId: '@gateway:example.org',
+        deviceId: 'GATEWAY',
+      },
+      crypto: {
+        backend: 'memory',
+        databasePrefix: 'seal-test',
+        allowInMemoryForTesting: true,
+      },
+      rooms: [{
+        roomId,
+        conversationId: roomId,
+        cwd: '/seal-repo',
+        providerName: 'test',
+      }],
+      trustedDevices: [],
+      replayLedgerPath: join(directory, 'replay'),
+      applicationSecurity: {
+        gatewayDeviceId: 'workspace-seal',
+        gatewayKeyPair: await exportDeviceKeyPair(gatewayKeys),
+        envelopeReplayLedgerPath: securityPath,
+      },
+    }, {
+      client,
+      listTrustedDevices: async () => [],
+      deploymentSealTimeoutMs: 20,
+    })
+
+    await runner.start()
+    await blocked.started.promise
+    await expect(runner.sealForDeployment('when_idle')).rejects.toThrow(
+      '1 outbox and 0 inbox record(s) pending',
+    )
+    await expect(runner.healthSnapshot()).resolves.toMatchObject({
+      deploymentFenced: false,
+      pendingOutboxDeliveries: 1,
+    })
+    expect(runner.getState()).toBe('running')
+
+    blocked.release.resolve()
+    await waitFor(async () => (await runner.healthSnapshot()).pendingOutboxDeliveries === 0)
     await runner.stop()
   })
 
@@ -1775,6 +1841,29 @@ describe('MatrixMlp3GatewayRunner', () => {
         && event.payload.status.phase === 'trial'
       ))
     expect(gatewayUpdateCalls).toContain('prepare:release-2')
+
+    await send({
+      ...base,
+      commandId: 'gateway-update-promote-1',
+      operation: 'gateway.update.promote',
+      payload: {
+        operation: 'gateway.update.promote',
+        updateId: 'deployment-update-1',
+        mode: 'when_idle',
+      },
+    }, '$gateway-update-promote-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'gateway-update-promote-1'
+        && event.payload.type === 'gateway.deployment.status'
+        && event.payload.status.phase === 'draining'
+      ))
+    expect(gatewayUpdateCalls).toContain('promote:deployment-update-1:when_idle')
+    // Scheduling is not the handoff itself. The active Gateway stays usable
+    // until the host later invokes its explicit deployment seal endpoint.
+    await expect(runner.healthSnapshot()).resolves.toMatchObject({
+      deploymentFenced: false,
+    })
 
     await send({
       ...base,

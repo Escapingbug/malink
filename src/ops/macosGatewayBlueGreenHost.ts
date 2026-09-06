@@ -97,6 +97,10 @@ export interface MacosGatewayBlueGreenHostDependencies {
   launchctl?: (arguments_: readonly string[]) => Promise<void>
   isServiceLoaded?: (service: string) => Promise<boolean>
   readStatus?: (socketPath: string) => Promise<GatewayAdminStatus>
+  sealForDeployment?: (
+    socketPath: string,
+    mode: 'when_idle' | 'force',
+  ) => Promise<void>
   buildHandoff?: typeof buildGatewayDeploymentHandoff
   onCommitted?: () => void
   onLog?: (message: string) => void
@@ -344,16 +348,11 @@ export class MacosGatewayBlueGreenHost {
     )
     state.updatedAt = this.now()
     await this.writeDeployment(state)
-    await Promise.all([
-      new GatewayAdminClient({
-        socketPath: this.config.activeAdminSocketPath,
-        timeoutMs: this.config.healthTimeoutMs ?? 180_000,
-      }).sealForDeployment(transition.mode),
-      new GatewayAdminClient({
-        socketPath: state.candidateAdminSocket,
-        timeoutMs: this.config.healthTimeoutMs ?? 180_000,
-      }).sealForDeployment(transition.mode),
-    ])
+    // Seal the disposable candidate first. If it cannot drain, production is
+    // never touched. Sealing both slots concurrently could stop the active
+    // Gateway just before the candidate rejected its own handoff.
+    await this.sealForDeployment(state.candidateAdminSocket, transition.mode)
+    await this.sealForDeployment(this.config.activeAdminSocketPath, transition.mode)
     state.phase = 'sealed'
     state.updatedAt = this.now()
     await this.writeDeployment(state)
@@ -451,19 +450,25 @@ export class MacosGatewayBlueGreenHost {
       delete state.handoffDirectory
     }
     await this.writeCandidateLaunchAgent(state, state.candidateDirectory, false)
-    await Promise.all([
-      this.restartService(this.config.activeServiceLabel, this.config.activeLaunchAgentPath),
-      this.startService(state.candidateServiceLabel, state.candidateLaunchAgent),
-    ])
+    const activeExpected = {
+      gatewayNodeId: state.sourceGatewayNodeId,
+      buildId: transition.active.buildId,
+      projectCount: state.sourceProjectCount,
+      sessionCount: state.sourceSessionCount,
+      requireRunning: true,
+      deploymentFenced: false,
+    } as const
+    const activeStatus = await this.readStatus(this.config.activeAdminSocketPath)
+      .catch(() => undefined)
+    if (!activeStatus || this.healthMismatch(activeStatus, activeExpected)) {
+      await this.restartService(
+        this.config.activeServiceLabel,
+        this.config.activeLaunchAgentPath,
+      )
+    }
+    await this.startService(state.candidateServiceLabel, state.candidateLaunchAgent)
     const [sourceHealth, candidateHealth] = await Promise.all([
-      this.waitForHealth(this.config.activeAdminSocketPath, {
-        gatewayNodeId: state.sourceGatewayNodeId,
-        buildId: transition.active.buildId,
-        projectCount: state.sourceProjectCount,
-        sessionCount: state.sourceSessionCount,
-        requireRunning: true,
-        deploymentFenced: false,
-      }),
+      this.waitForHealth(this.config.activeAdminSocketPath, activeExpected),
       this.waitForHealth(state.candidateAdminSocket, {
         gatewayNodeId: state.candidateGatewayNodeId,
         buildId: state.buildId,
@@ -844,37 +849,8 @@ export class MacosGatewayBlueGreenHost {
     while (this.now() < deadline) {
       try {
         const status = await this.readStatus(socketPath)
-        if (status.gatewayNodeId !== expected.gatewayNodeId) {
-          throw new Error(`Gateway reported another node ${status.gatewayNodeId}`)
-        }
-        if (status.buildId !== expected.buildId) {
-          throw new Error(`Gateway reported build ${status.buildId ?? '(missing)'}`)
-        }
-        if (expected.requireRunning && status.state !== 'running') {
-          throw new Error(`Gateway reported ${status.state}`)
-        }
-        if (
-          expected.projectCount !== undefined
-          && status.projectCount !== expected.projectCount
-        ) throw new Error('Gateway did not open the complete expected project set')
-        if (
-          expected.sessionCount !== undefined
-          && status.sessionCount !== expected.sessionCount
-        ) throw new Error('Gateway did not open the complete expected session set')
-        if (
-          expected.deploymentFenced !== undefined
-          && status.deploymentFenced !== expected.deploymentFenced
-        ) throw new Error('Gateway deployment command fence is in the wrong state')
-        if (status.matrixReady !== true || typeof status.lastMatrixSyncAt !== 'number') {
-          throw new Error('Gateway Matrix synchronization is not ready')
-        }
-        if (this.now() - status.lastMatrixSyncAt > (this.config.syncFreshnessMs ?? 45_000)) {
-          throw new Error('Gateway Matrix synchronization is stale')
-        }
-        if (
-          expected.shadowRoomCount !== undefined
-          && status.shadowRoomCount !== expected.shadowRoomCount
-        ) throw new Error('Candidate is not shadowing every active project room')
+        const mismatch = this.healthMismatch(status, expected)
+        if (mismatch) throw mismatch
         return status
       } catch (error) {
         lastError = error
@@ -890,14 +866,22 @@ export class MacosGatewayBlueGreenHost {
     await this.stopService(label)
     let lastError: unknown = new Error('launchctl bootstrap did not run')
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      try {
-        await this.launchctl(['bootstrap', domain, plistPath])
-        await this.launchctl(['kickstart', '-k', service])
-        return
-      } catch (error) {
-        lastError = error
-        await this.sleep(250 * (attempt + 1))
+      if (!await this.isServiceLoaded(service)) {
+        try {
+          await this.launchctl(['bootstrap', domain, plistPath])
+        } catch (error) {
+          lastError = error
+        }
       }
+      if (await this.isServiceLoaded(service)) {
+        try {
+          await this.launchctl(['kickstart', '-k', service])
+          return
+        } catch (error) {
+          lastError = error
+        }
+      }
+      await this.sleep(250 * (attempt + 1))
     }
     throw lastError
   }
@@ -909,11 +893,79 @@ export class MacosGatewayBlueGreenHost {
   private async stopService(label: string): Promise<void> {
     const domain = `gui/${this.config.uid ?? process.getuid?.() ?? 0}`
     const service = `${domain}/${label}`
+    let lastError: unknown
     try {
       await this.launchctl(['bootout', service])
     } catch (error) {
-      if (await this.isServiceLoaded(service)) throw error
+      lastError = error
     }
+    // launchd can return before the service label disappears. Starting the
+    // replacement plist during that window produces bootstrap exit 5, so
+    // observe the actual registry state instead of treating bootout as a
+    // synchronous barrier.
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (!await this.isServiceLoaded(service)) return
+      await this.sleep(100)
+    }
+    throw lastError ?? new Error(`launchd service ${label} remained loaded after bootout`)
+  }
+
+  private async sealForDeployment(
+    socketPath: string,
+    mode: 'when_idle' | 'force',
+  ): Promise<void> {
+    if (this.dependencies.sealForDeployment) {
+      await this.dependencies.sealForDeployment(socketPath, mode)
+      return
+    }
+    await new GatewayAdminClient({
+      socketPath,
+      timeoutMs: this.config.healthTimeoutMs ?? 180_000,
+    }).sealForDeployment(mode)
+  }
+
+  private healthMismatch(
+    status: GatewayAdminStatus,
+    expected: {
+      gatewayNodeId: string
+      buildId: string
+      shadowRoomCount?: number
+      projectCount?: number
+      sessionCount?: number
+      requireRunning: boolean
+      deploymentFenced?: boolean
+    },
+  ): Error | null {
+    if (status.gatewayNodeId !== expected.gatewayNodeId) {
+      return new Error(`Gateway reported another node ${status.gatewayNodeId}`)
+    }
+    if (status.buildId !== expected.buildId) {
+      return new Error(`Gateway reported build ${status.buildId ?? '(missing)'}`)
+    }
+    if (expected.requireRunning && status.state !== 'running') {
+      return new Error(`Gateway reported ${status.state}`)
+    }
+    if (expected.projectCount !== undefined && status.projectCount !== expected.projectCount) {
+      return new Error('Gateway did not open the complete expected project set')
+    }
+    if (expected.sessionCount !== undefined && status.sessionCount !== expected.sessionCount) {
+      return new Error('Gateway did not open the complete expected session set')
+    }
+    if (
+      expected.deploymentFenced !== undefined
+      && status.deploymentFenced !== expected.deploymentFenced
+    ) return new Error('Gateway deployment command fence is in the wrong state')
+    if (status.matrixReady !== true || typeof status.lastMatrixSyncAt !== 'number') {
+      return new Error('Gateway Matrix synchronization is not ready')
+    }
+    if (this.now() - status.lastMatrixSyncAt > (this.config.syncFreshnessMs ?? 45_000)) {
+      return new Error('Gateway Matrix synchronization is stale')
+    }
+    if (
+      expected.shadowRoomCount !== undefined
+      && status.shadowRoomCount !== expected.shadowRoomCount
+    ) return new Error('Candidate is not shadowing every active project room')
+    return null
   }
 
   private readStatus(socketPath: string): Promise<GatewayAdminStatus> {

@@ -181,6 +181,7 @@ const ARCHIVED_SESSION_CLEANUP_RETRY_MIN_MS = 60_000
 const ARCHIVED_SESSION_CLEANUP_RETRY_MAX_MS = 15 * 60_000
 const GATEWAY_UPDATE_STATUS_MONITOR_INTERVAL_MS = 1_000
 const GATEWAY_UPDATE_STATUS_MONITOR_MAX_FAILURES = 30
+const DEFAULT_DEPLOYMENT_SEAL_TIMEOUT_MS = 2 * 60_000
 
 export interface MatrixMlp3GatewayDependencies {
   client?: MatrixGatewayClient
@@ -196,6 +197,8 @@ export interface MatrixMlp3GatewayDependencies {
   now?: () => number
   onLog?: (message: string) => void
   onRejected?: (event: MatrixIncomingEvent, error: unknown) => void
+  /** Test/host override for the bounded durable-delivery drain before handoff. */
+  deploymentSealTimeoutMs?: number
   isTrustedDeviceActive?: (deviceId: string) => Promise<boolean>
   listTrustedDevices?: () => Promise<readonly import('./config').MatrixGatewayTrustedDevice[]>
   sessionExtensionRegistry?: SessionExtensionRegistry
@@ -643,26 +646,47 @@ export class MatrixMlp3GatewayRunner {
     if (this.state !== 'running') {
       throw new Error(`Cannot seal Gateway deployment while ${this.state}`)
     }
-    if (this.updateDrainState === 'open') this.updateDrainState = 'waiting'
-    if (mode === 'force') {
-      await this.interruptActiveTurnsForMaintenance('forced Gateway handoff')
-    }
-    while (this.activeTurnCount() > 0 || this.activeCommands.size > 0) {
-      await new Promise(resolveDelay => setTimeout(resolveDelay, 100))
-      if (this.state !== 'running') {
-        throw new Error('Gateway stopped before its deployment handoff was sealed')
+    const previousDrainState = this.updateDrainState
+    if (previousDrainState === 'open') this.updateDrainState = 'waiting'
+    try {
+      if (mode === 'force') {
+        await this.interruptActiveTurnsForMaintenance('forced Gateway handoff')
       }
+      while (this.activeTurnCount() > 0 || this.activeCommands.size > 0) {
+        await new Promise(resolveDelay => setTimeout(resolveDelay, 100))
+        if (this.state !== 'running') {
+          throw new Error('Gateway stopped before its deployment handoff was sealed')
+        }
+      }
+      this.updateDrainState = 'sealed'
+      await this.eventChain
+      const deadline = Date.now()
+        + (this.dependencies.deploymentSealTimeoutMs ?? DEFAULT_DEPLOYMENT_SEAL_TIMEOUT_MS)
+      let health = await this.healthSnapshot()
+      while (health.pendingOutboxDeliveries > 0 || health.pendingInboxEvents > 0) {
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `Gateway deployment cannot seal with ${health.pendingOutboxDeliveries} outbox `
+            + `and ${health.pendingInboxEvents} inbox record(s) pending`,
+          )
+        }
+        await new Promise(resolveDelay => setTimeout(resolveDelay, 100))
+        if (this.state !== 'running') {
+          throw new Error('Gateway stopped before its durable handoff queue drained')
+        }
+        health = await this.healthSnapshot()
+      }
+      await this.stop()
+    } catch (error) {
+      // A failed pre-commit seal must leave a live Gateway exactly as usable
+      // as it was before the attempt. The coordinator can then roll back the
+      // other slot without marooning this process behind a command fence.
+      if (this.state === 'running') {
+        this.updateDrainState = previousDrainState
+        if (previousDrainState === 'open') this.resumeDeferredUpdateCommands()
+      }
+      throw error
     }
-    this.updateDrainState = 'sealed'
-    await this.eventChain
-    const health = await this.healthSnapshot()
-    if (health.pendingOutboxDeliveries > 0 || health.pendingInboxEvents > 0) {
-      throw new Error(
-        `Gateway deployment cannot seal with ${health.pendingOutboxDeliveries} outbox `
-        + `and ${health.pendingInboxEvents} inbox record(s) pending`,
-      )
-    }
-    await this.stop()
   }
 
   async healthSnapshot(): Promise<{
@@ -1618,7 +1642,6 @@ export class MatrixMlp3GatewayRunner {
       throw new Error('Another Gateway maintenance action is already draining this runtime')
     }
     this.updateDrainState = 'waiting'
-    let scheduled = false
     try {
       if (command.payload.mode === 'force') {
         await this.interruptActiveTurnsForMaintenance('forced Gateway promotion')
@@ -1635,7 +1658,10 @@ export class MatrixMlp3GatewayRunner {
         command.payload.updateId,
         command.payload.mode,
       )
-      scheduled = ['draining', 'transferring', 'committing', 'steady'].includes(status.phase)
+      // schedulePromote returns while the coordinator is only waiting for its
+      // activation time. Keep this runtime open until the host actually calls
+      // sealForDeployment; otherwise a candidate-side preflight failure makes
+      // the still-live production Gateway appear offline for ordinary work.
       await this.settleAndDeliver(
         project,
         command,
@@ -1649,7 +1675,7 @@ export class MatrixMlp3GatewayRunner {
       await this.publishGatewayDeploymentStatus(status)
       if (status.phase !== 'steady') void this.monitorGatewayDeploymentTransition(command.payload.updateId)
     } finally {
-      if (!scheduled) {
+      if (this.state === 'running') {
         this.updateDrainState = 'open'
         this.resumeDeferredUpdateCommands()
       }
@@ -1657,7 +1683,7 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private async monitorGatewayDeploymentTransition(updateId: string): Promise<void> {
-    while (this.state === 'running' && this.updateDrainState === 'sealed') {
+    while (this.state === 'running') {
       await new Promise(resolveDelay => setTimeout(resolveDelay, 500))
       const readStatus = this.dependencies.gatewayUpdateSupervisor?.deploymentStatus
       if (!readStatus) return

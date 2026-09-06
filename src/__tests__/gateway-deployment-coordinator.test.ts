@@ -254,6 +254,45 @@ describe('GatewayDeploymentCoordinator', () => {
     expect(persisted).not.toHaveProperty('commitStarted')
   })
 
+  it('automatically retries a persisted pre-commit repair on startup', async () => {
+    const rollbackPreCommit = vi.fn(async transition => ({
+      active: transition.active,
+      candidate: transition.candidate,
+    }))
+    const fixture = await coordinatorFixture({ rollbackPreCommit })
+    await writeFile(fixture.statePath, `${JSON.stringify({
+      version: 1,
+      status: {
+        version: 1,
+        strategy: 'blue-green-v1',
+        maxDeployments: 2,
+        computerId: 'computer-1',
+        generation: 0,
+        phase: 'repair_required',
+        active,
+        candidate: {
+          gatewayNodeId: 'gateway-new',
+          releaseId: 'release-new',
+          buildId: 'build-new',
+          projectCount: 1,
+          sessionCount: 0,
+        },
+        updateId: 'update-1',
+        detail: 'pre-commit rollback was interrupted',
+        updatedAt: 10,
+      },
+    })}\n`, { mode: 0o600 })
+
+    await fixture.coordinator.initialize()
+
+    expect(rollbackPreCommit).toHaveBeenCalledOnce()
+    await expect(fixture.coordinator.status()).resolves.toMatchObject({
+      phase: 'trial',
+      active: { gatewayNodeId: 'gateway-old' },
+      candidate: { gatewayNodeId: 'gateway-new' },
+    })
+  })
+
   it('discards only candidate state and keeps the active generation', async () => {
     const discardCandidate = vi.fn(async () => undefined)
     const fixture = await coordinatorFixture({ discardCandidate })

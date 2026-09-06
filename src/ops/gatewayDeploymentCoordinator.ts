@@ -85,8 +85,20 @@ export class GatewayDeploymentCoordinator {
       if (
         state.status.phase === 'steady'
         || state.status.phase === 'trial'
-        || state.status.phase === 'repair_required'
       ) return
+      if (state.status.phase === 'repair_required') {
+        if (!transition) return
+        if (state.commitStarted) {
+          await this.recoverCommit(state.status, transition)
+        } else {
+          await this.rollbackToTrial(
+            state.status,
+            transition,
+            'Interrupted pre-commit repair was rolled back to trial',
+          )
+        }
+        return
+      }
       if (state.status.phase === 'draining' && state.scheduledPromotion) {
         this.armPromotion(state.scheduledPromotion.scheduledAt)
         return

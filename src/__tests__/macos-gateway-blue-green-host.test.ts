@@ -1,7 +1,7 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FileGatewayIdentityStore } from '@/gateway/pairing'
 import {
   inspectGatewayDeploymentSlot,
@@ -17,6 +17,188 @@ afterEach(async () => {
 })
 
 describe('MacosGatewayBlueGreenHost', () => {
+  it('never seals production when the disposable candidate cannot seal', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-blue-green-seal-order-'))
+    temporaryDirectories.push(directory)
+    const installRoot = join(directory, 'install')
+    await mkdir(installRoot, { recursive: true })
+    const activeSocket = join(directory, 'active.sock')
+    const candidateSocket = join(directory, 'candidate.sock')
+    const sealed: string[] = []
+    const sealForDeployment = vi.fn(async (socketPath: string) => {
+      sealed.push(socketPath)
+      if (socketPath === candidateSocket) throw new Error('candidate outbox is not drained')
+    })
+    const host = new MacosGatewayBlueGreenHost({
+      installRoot,
+      activeDataDirectory: join(directory, 'active'),
+      activeAdminSocketPath: activeSocket,
+      activeLaunchAgentPath: join(directory, 'active.plist'),
+      activeServiceLabel: 'id.my.anciety.malink.test',
+      updateSocketPath: join(directory, 'update.sock'),
+      platform: 'darwin',
+    }, {
+      sealForDeployment,
+      readStatus: async socketPath => gatewayStatus(
+        socketPath === activeSocket ? 'gateway-old' : 'gateway-new',
+        socketPath === activeSocket ? 'build-old' : 'build-new',
+      ),
+    })
+    await writeFile(join(installRoot, 'deployment-host-state.json'), `${JSON.stringify({
+      version: 1,
+      deployment: {
+        version: 1,
+        phase: 'trial',
+        updateId: 'update-1',
+        sourceGatewayNodeId: 'gateway-old',
+        candidateGatewayNodeId: 'gateway-new',
+        workspaceId: 'workspace-1',
+        releaseId: 'release-new',
+        buildId: 'build-new',
+        releaseDirectory: join(installRoot, 'releases', 'release-new'),
+        candidateDirectory: join(installRoot, 'deployments', 'update-1', 'candidate-data'),
+        candidateAdminSocket: candidateSocket,
+        candidateLaunchAgent: join(installRoot, 'deployments', 'update-1', 'candidate.plist'),
+        candidateServiceLabel: 'id.my.anciety.malink.test.candidate',
+        sourceProjectCount: 1,
+        sourceSessionCount: 2,
+        candidateProjectCount: 1,
+        candidateSessionCount: 0,
+        updatedAt: Date.now(),
+      },
+    })}\n`, { mode: 0o600 })
+
+    await expect(host.drainDeployments({
+      updateId: 'update-1',
+      computerId: 'computer-1',
+      generation: 0,
+      mode: 'when_idle',
+      active: {
+        gatewayNodeId: 'gateway-old',
+        releaseId: 'release-old',
+        buildId: 'build-old',
+        projectCount: 1,
+        sessionCount: 2,
+      },
+      candidate: {
+        gatewayNodeId: 'gateway-new',
+        releaseId: 'release-new',
+        buildId: 'build-new',
+        projectCount: 1,
+        sessionCount: 0,
+      },
+    })).rejects.toThrow('candidate outbox is not drained')
+
+    expect(sealed).toEqual([candidateSocket])
+  })
+
+  it('waits for launchd unload and leaves an already-healthy active Gateway running', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-blue-green-launchd-rollback-'))
+    temporaryDirectories.push(directory)
+    const installRoot = join(directory, 'install')
+    const activePlist = join(directory, 'active.plist')
+    const activeSocket = join(directory, 'active.sock')
+    const candidateSocket = join(directory, 'candidate.sock')
+    const candidateLabel = 'id.my.anciety.malink.test.candidate'
+    const candidateService = `gui/501/${candidateLabel}`
+    await mkdir(installRoot, { recursive: true })
+    await writeFile(activePlist, launchAgentPlist('id.my.anciety.malink.test'), 'utf8')
+    let candidateLoaded = true
+    let unloadPolls = 0
+    const launchctlCalls: string[][] = []
+    const sleep = vi.fn(async () => undefined)
+    const host = new MacosGatewayBlueGreenHost({
+      installRoot,
+      activeDataDirectory: join(directory, 'active'),
+      activeAdminSocketPath: activeSocket,
+      activeLaunchAgentPath: activePlist,
+      activeServiceLabel: 'id.my.anciety.malink.test',
+      updateSocketPath: join(directory, 'update.sock'),
+      platform: 'darwin',
+      uid: 501,
+    }, {
+      sleep,
+      launchctl: async arguments_ => {
+        launchctlCalls.push([...arguments_])
+        if (arguments_[0] === 'bootout' && arguments_[1] === candidateService) {
+          if (candidateLoaded) unloadPolls = 2
+          return
+        }
+        if (arguments_[0] === 'bootstrap') {
+          if (candidateLoaded) throw new Error('bootstrap exited with 5')
+          candidateLoaded = true
+        }
+      },
+      isServiceLoaded: async service => {
+        if (service !== candidateService) return true
+        if (unloadPolls > 0) {
+          unloadPolls -= 1
+          if (unloadPolls === 0) candidateLoaded = false
+        }
+        return candidateLoaded
+      },
+      readStatus: async socketPath => gatewayStatus(
+        socketPath === activeSocket ? 'gateway-old' : 'gateway-new',
+        socketPath === activeSocket ? 'build-old' : 'build-new',
+      ),
+    })
+    await writeFile(join(installRoot, 'deployment-host-state.json'), `${JSON.stringify({
+      version: 1,
+      deployment: {
+        version: 1,
+        phase: 'trial',
+        updateId: 'update-1',
+        sourceGatewayNodeId: 'gateway-old',
+        candidateGatewayNodeId: 'gateway-new',
+        workspaceId: 'workspace-1',
+        releaseId: 'release-new',
+        buildId: 'build-new',
+        releaseDirectory: join(installRoot, 'releases', 'release-new'),
+        candidateDirectory: join(installRoot, 'deployments', 'update-1', 'candidate-data'),
+        candidateAdminSocket: candidateSocket,
+        candidateLaunchAgent: join(installRoot, 'deployments', 'update-1', 'candidate.plist'),
+        candidateServiceLabel: candidateLabel,
+        sourceProjectCount: 1,
+        sourceSessionCount: 2,
+        candidateProjectCount: 1,
+        candidateSessionCount: 0,
+        updatedAt: Date.now(),
+      },
+    })}\n`, { mode: 0o600 })
+    const transition = {
+      updateId: 'update-1',
+      computerId: 'computer-1',
+      generation: 0,
+      active: {
+        gatewayNodeId: 'gateway-old',
+        releaseId: 'release-old',
+        buildId: 'build-old',
+        projectCount: 1,
+        sessionCount: 2,
+      },
+      candidate: {
+        gatewayNodeId: 'gateway-new',
+        releaseId: 'release-new',
+        buildId: 'build-new',
+        projectCount: 1,
+        sessionCount: 0,
+      },
+    }
+
+    await expect(host.rollbackPreCommit(transition)).resolves.toMatchObject({
+      active: { gatewayNodeId: 'gateway-old' },
+      candidate: { gatewayNodeId: 'gateway-new' },
+    })
+
+    expect(sleep).toHaveBeenCalled()
+    expect(launchctlCalls.some(arguments_ =>
+      arguments_.some(value => value.includes('id.my.anciety.malink.test'))
+      && !arguments_.some(value => value.includes(candidateLabel))
+    )).toBe(false)
+    expect(launchctlCalls).toContainEqual(['bootstrap', 'gui/501', expect.any(String)])
+    expect(launchctlCalls).toContainEqual(['kickstart', '-k', candidateService])
+  })
+
   it('treats a discarded already-cleaned candidate as success', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-blue-green-idempotent-discard-'))
     temporaryDirectories.push(directory)
@@ -112,3 +294,41 @@ describe('MacosGatewayBlueGreenHost', () => {
     })).toThrow('requires macOS launchd')
   })
 })
+
+function gatewayStatus(gatewayNodeId: string, buildId: string) {
+  return {
+    version: 1 as const,
+    gatewayId: 'workspace-1',
+    workspaceId: 'workspace-1',
+    gatewayNodeId,
+    gatewayShortId: gatewayNodeId,
+    gatewayName: gatewayNodeId,
+    state: 'running',
+    pid: 1,
+    startedAt: Date.now(),
+    activeDeviceCount: 1,
+    openInvitationCount: 0,
+    buildId,
+    projectCount: 1,
+    sessionCount: gatewayNodeId === 'gateway-old' ? 2 : 0,
+    shadowRoomCount: gatewayNodeId === 'gateway-new' ? 1 : 0,
+    deploymentFenced: false,
+    matrixReady: true,
+    lastMatrixSyncAt: Date.now(),
+  }
+}
+
+function launchAgentPlist(label: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key>
+  <array><string>/host</string><string>/old/ops/matrix-local-gateway.js</string></array>
+  <key>EnvironmentVariables</key><dict></dict>
+  <key>StandardOutPath</key><string>/tmp/gateway.log</string>
+  <key>StandardErrorPath</key><string>/tmp/gateway.error.log</string>
+</dict>
+</plist>
+`
+}

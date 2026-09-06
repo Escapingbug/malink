@@ -26,6 +26,43 @@ import { FileMatrixMlp3Outbox } from '@/gateway/matrix/fileMatrixMlp3Outbox'
 import { gatewayProjectIdentity } from '@/gateway/matrix/project'
 
 describe('GatewayMlp3ContentLayer', () => {
+  it('retries an already-encrypted outbox after every recipient becomes inactive', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-recipientless-retry-'))
+    const securityPath = join(directory, 'security')
+    const outbox = new FileMatrixMlp3Outbox(`${securityPath}.v3-outbox.jsonl`)
+    await outbox.initialize()
+    const pending = outbox.createEvent({
+      roomId: '!project:example.org',
+      transactionId: 'durable-before-revocation',
+      content: { msgtype: 'm.notice', body: 'already encrypted durable event' },
+      createdAt: 1,
+    })
+    await outbox.stage(pending)
+
+    const gateway = await generateDeviceKeyPair()
+    const layer = new GatewayMlp3ContentLayer('workspace-1', {
+      gatewayDeviceId: 'workspace-1',
+      gatewayKeyPair: await exportDeviceKeyPair(gateway),
+      envelopeReplayLedgerPath: securityPath,
+    }, [])
+    await layer.initialize()
+    const transport = new InMemoryMatrixTransport()
+
+    await layer.provisionProject({
+      roomId: pending.roomId,
+      conversationId: pending.roomId,
+      cwd: '/repo',
+      providerName: 'test',
+    }, transport)
+    await waitFor(() => (
+      transport.delivered.some(delivery => delivery.transactionId === pending.transactionId)
+      && layer.outboxHealth().pending === 0
+    ))
+    layer.stopRetries()
+
+    expect(layer.outboxHealth().pending).toBe(0)
+  })
+
   it('publishes one durable key grant and one project event for every active device set', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-v3-content-'))
     const gateway = await generateDeviceKeyPair()
