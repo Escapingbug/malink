@@ -332,6 +332,113 @@ class ClientEventHubTest {
     }
 
     @Test
+    fun `streaming projections coalesce in memory and never leak into a later durable journal`() {
+        val persistence = CountingPersistence()
+        val hub = hub(persistence = persistence)
+        val anchor = hub.publish(ClientEventType.TRUST_CHANGED, JsonPrimitive("anchor"))
+        val listener = RecordingListener()
+        val subscription = hub.subscribe(anchor.cursor, listener = listener)
+        hub.activate(subscription.subscriptionId, subscription.barrierCursor)
+        val savesBeforeStreaming = persistence.saveCount
+
+        repeat(100) { index ->
+            val gateway = buildJsonObject {
+                put("revision", index)
+                put("workspace", "g".repeat(8 * 1024))
+            }
+            hub.publishTransient(
+                ClientEventType.GATEWAY_STATE_CHANGED,
+                gateway,
+                hub.snapshot().copy(gatewayState = gateway),
+            )
+            hub.upsertMessageTransient(
+                "session-1",
+                message("streamed-agent-1", 1, text = "token-$index"),
+            )
+        }
+
+        assertEquals(savesBeforeStreaming, persistence.saveCount)
+        assertEquals(200, listener.events.size)
+        val replay = hub.subscribe(anchor.cursor, listener = RecordingListener())
+        assertTrue(replay is SubscriptionBootstrap.Replay)
+        replay as SubscriptionBootstrap.Replay
+        assertEquals(
+            listOf(ClientEventType.GATEWAY_STATE_CHANGED, ClientEventType.MESSAGE_UPSERTED),
+            replay.events.map(ClientEvent::type),
+        )
+        assertEquals(
+            "token-99",
+            hub.historyPage("session-1", limit = 10).messages.single().text,
+        )
+
+        hub.publish(ClientEventType.ATTACHMENT_CHANGED, JsonPrimitive("checkpoint"))
+        assertEquals(savesBeforeStreaming + 1, persistence.saveCount)
+        val persistedBytes = requireNotNull(persistence.load())
+        val persisted = try {
+            ClientEventStateCodec.decode(persistedBytes)
+        } finally {
+            persistedBytes.fill(0)
+        }
+        assertEquals(
+            listOf(ClientEventType.TRUST_CHANGED, ClientEventType.ATTACHMENT_CHANGED),
+            persisted.events.map { it.event.type },
+        )
+    }
+
+    @Test
+    fun `upgrade collapses replaceable projections accidentally persisted by older builds`() {
+        val gatewayEvents = (1L..50L).map { sequence ->
+            StoredClientEvent(
+                sequence,
+                ClientEvent(
+                    eventId = "event-gateway-$sequence",
+                    cursor = "cursor-gateway-$sequence",
+                    occurredAt = sequence,
+                    type = ClientEventType.GATEWAY_STATE_CHANGED,
+                    payload = buildJsonObject { put("revision", sequence) },
+                ),
+            )
+        }
+        val messageEvents = (51L..100L).map { sequence ->
+            StoredClientEvent(
+                sequence,
+                ClientEvent(
+                    eventId = "event-message-$sequence",
+                    cursor = "cursor-message-$sequence",
+                    occurredAt = sequence,
+                    type = ClientEventType.MESSAGE_UPSERTED,
+                    payload = PublicClientJson.encodeMessage(
+                        message("streamed-agent-1", 1, text = "token-$sequence"),
+                    ),
+                ),
+            )
+        }
+        val legacy = PersistedClientEventState(
+            headSequence = 100,
+            headCursor = "cursor-message-100",
+            historySequence = 0,
+            events = gatewayEvents + messageEvents,
+            history = emptyList(),
+            snapshot = snapshot().copy(cursor = "cursor-message-100"),
+        )
+        val persistence = InMemoryClientEventPersistence(ClientEventStateCodec.encode(legacy))
+
+        val restored = hub(persistence = persistence)
+
+        val restoredBytes = requireNotNull(persistence.load())
+        val normalized = try {
+            ClientEventStateCodec.decode(restoredBytes)
+        } finally {
+            restoredBytes.fill(0)
+        }
+        assertEquals(
+            listOf(ClientEventType.GATEWAY_STATE_CHANGED, ClientEventType.MESSAGE_UPSERTED),
+            normalized.events.map { it.event.type },
+        )
+        assertEquals("cursor-message-100", restored.snapshot().cursor)
+    }
+
+    @Test
     fun `late gateway history is ordered by timestamp with sequence tie break`() {
         val hub = hub()
         hub.upsertMessage("session-1", message("newest", 300), occurredAt = 300)

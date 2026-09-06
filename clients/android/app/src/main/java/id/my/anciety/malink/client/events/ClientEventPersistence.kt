@@ -110,7 +110,12 @@ class EncryptedAtomicClientEventPersistence(
     override fun clear() = atomicFile.delete()
 }
 
-internal data class StoredClientEvent(val sequence: Long, val event: ClientEvent)
+/** `transient` is process-only metadata and is deliberately never serialized. */
+internal data class StoredClientEvent(
+    val sequence: Long,
+    val event: ClientEvent,
+    val transient: Boolean = false,
+)
 
 internal data class StoredHistoryMessage(
     val sequence: Long,

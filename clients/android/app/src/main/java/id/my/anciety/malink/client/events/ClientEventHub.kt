@@ -2,7 +2,10 @@ package id.my.anciety.malink.client.events
 
 import java.security.SecureRandom
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 fun interface OpaqueCursorGenerator {
@@ -191,8 +194,10 @@ class ClientEventHub(
                 type = type,
                 payload = payload,
             )
-            val events = (state.events + StoredClientEvent(nextSequence, event))
-                .takeLast(maxReplayEvents)
+            val events = appendReplayEvents(
+                state.events,
+                listOf(StoredClientEvent(nextSequence, event, transient = !durable)),
+            )
             val baseSnapshot = snapshot ?: state.snapshot
             val updated = state.copy(
                 headSequence = nextSequence,
@@ -231,13 +236,101 @@ class ClientEventHub(
         message: ClientMessage,
         snapshot: ClientSnapshot? = null,
         occurredAt: Long = now(),
-    ): ClientEvent? = upsertMessagesInternal(
+    ): ClientEvent? = upsertMessageTransientInternal(
         sessionId = sessionId,
-        messages = listOf(message),
+        message = message,
         snapshot = snapshot,
         occurredAt = occurredAt,
-        durable = false,
-    ).singleOrNull()
+    )
+
+    /**
+     * Streaming updates replace one logical bubble. Avoid rebuilding and
+     * sorting the complete multi-session history, and retain only the latest
+     * replay projection for that bubble. A lagging subscriber whose cursor
+     * crossed a removed projection receives the current snapshot normally.
+     */
+    private fun upsertMessageTransientInternal(
+        sessionId: String,
+        message: ClientMessage,
+        snapshot: ClientSnapshot?,
+        occurredAt: Long,
+    ): ClientEvent? {
+        requireOpaqueId(sessionId, "sessionId")
+        require(message.sessionId == null || message.sessionId == sessionId) {
+            "Message session id does not match its history partition."
+        }
+
+        val event: ClientEvent
+        val targets: List<String>
+        synchronized(lock) {
+            val existingIndex = state.history.indexOfFirst { stored ->
+                stored.sessionId == sessionId && stored.message.eventId == message.eventId
+            }
+            val acceptedMessage = if (existingIndex >= 0) {
+                preferLiveMessage(state.history[existingIndex].message, message)
+            } else {
+                message
+            }
+            if (existingIndex >= 0 && state.history[existingIndex].message == acceptedMessage) {
+                return null
+            }
+
+            var nextHistorySequence = state.historySequence
+            val updatedHistory = if (existingIndex >= 0) {
+                state.history.toMutableList().also { history ->
+                    history[existingIndex] = history[existingIndex].copy(message = acceptedMessage)
+                    if (
+                        acceptedMessage.timestamp != state.history[existingIndex].message.timestamp
+                    ) {
+                        history.sortWith(HISTORY_ORDER)
+                    }
+                }
+            } else {
+                nextHistorySequence = Math.addExact(nextHistorySequence, 1L)
+                val historyCursor = nextUniqueCursor(
+                    state.history.mapTo(mutableSetOf()) { it.cursor } + state.headCursor,
+                )
+                boundHistory(
+                    state.history + StoredHistoryMessage(
+                        sequence = nextHistorySequence,
+                        cursor = historyCursor,
+                        sessionId = sessionId,
+                        message = acceptedMessage,
+                    ),
+                )
+            }
+
+            val nextEventSequence = Math.addExact(state.headSequence, 1L)
+            val headCursor = nextUniqueCursor(
+                state.events.mapTo(mutableSetOf()) { it.event.cursor } + state.headCursor,
+            )
+            event = ClientEvent(
+                eventId = "evt.${headCursor.removePrefix("c1.")}",
+                cursor = headCursor,
+                occurredAt = occurredAt,
+                type = ClientEventType.MESSAGE_UPSERTED,
+                payload = PublicClientJson.encodeMessage(acceptedMessage),
+            )
+            val updated = state.copy(
+                headSequence = nextEventSequence,
+                headCursor = headCursor,
+                historySequence = nextHistorySequence,
+                events = appendReplayEvents(
+                    state.events,
+                    listOf(StoredClientEvent(nextEventSequence, event, transient = true)),
+                ),
+                history = updatedHistory,
+                snapshot = (snapshot ?: state.snapshot).copy(
+                    cursor = headCursor,
+                    generatedAt = now(),
+                ),
+            )
+            state = updated
+            targets = subscriptions.values.filter { it.active }.map { it.id }
+        }
+        targets.forEach(::deliverAvailable)
+        return event
+    }
 
     /**
      * Atomically deduplicates a history page, persists it once, and then
@@ -331,7 +424,7 @@ class ClientEventHub(
                 headSequence = nextEventSequence,
                 headCursor = headCursor,
                 historySequence = nextHistorySequence,
-                events = (state.events + storedEvents).takeLast(maxReplayEvents),
+                events = appendReplayEvents(state.events, storedEvents),
                 history = boundHistory(mutableHistory),
                 snapshot = baseSnapshot.copy(cursor = headCursor, generatedAt = now()),
             )
@@ -617,7 +710,10 @@ class ClientEventHub(
 
     private fun normalize(loaded: PersistedClientEventState): PersistedClientEventState {
         val normalized = loaded.copy(
-            events = loaded.events.takeLast(maxReplayEvents),
+            // Builds before transient metadata was explicit could accidentally
+            // persist hundreds of replaceable projections during the next
+            // durable update. Collapse that legacy journal once on upgrade.
+            events = compactLegacyReplayEvents(loaded.events).takeLast(maxReplayEvents),
             history = boundHistory(loaded.history),
             snapshot = loaded.snapshot.copy(cursor = loaded.headCursor),
         )
@@ -639,7 +735,13 @@ class ClientEventHub(
     )
 
     private fun persist(value: PersistedClientEventState): PersistedClientEventState {
-        var candidate = value.copy(history = value.history.sortedWith(HISTORY_ORDER))
+        var candidate = value.copy(
+            // Process-only projections must not become durable merely because
+            // an unrelated command or attachment is checkpointed later.
+            events = value.events.filterNot(StoredClientEvent::transient)
+                .takeLast(maxReplayEvents),
+            history = value.history.sortedWith(HISTORY_ORDER),
+        )
         while (true) {
             val bytes = ClientEventStateCodec.encode(candidate)
             val fits = bytes.size <= maxPersistedStateBytes
@@ -653,18 +755,94 @@ class ClientEventHub(
             }
             bytes.fill(0)
 
-            val oldestEvent = candidate.events.firstOrNull()
-            val oldestHistory = candidate.history.firstOrNull()
-            candidate = when {
-                oldestEvent == null && oldestHistory == null -> throw IllegalArgumentException(
+            val itemCount = candidate.events.size + candidate.history.size
+            if (itemCount == 0) {
+                throw IllegalArgumentException(
                     "Client snapshot exceeds the encrypted event-state byte budget.",
                 )
+            }
+            val overflow = bytes.size - maxPersistedStateBytes
+            val evictionCount = maxOf(
+                1,
+                ((itemCount.toLong() * overflow) / bytes.size).toInt(),
+            ).coerceAtMost(itemCount)
+            candidate = evictOldest(candidate, evictionCount)
+        }
+    }
+
+    private fun appendReplayEvents(
+        existing: List<StoredClientEvent>,
+        additions: List<StoredClientEvent>,
+    ): List<StoredClientEvent> {
+        var result = existing
+        additions.forEach { addition ->
+            val additionKey = replayProjectionKey(addition.event)
+            if (additionKey != null) {
+                result = result.filterNot { stored ->
+                    replayProjectionKey(stored.event) == additionKey &&
+                        (addition.transient || stored.transient)
+                }
+            }
+            result = result + addition
+        }
+        return result.takeLast(maxReplayEvents)
+    }
+
+    /**
+     * Replay entries are projections, not execution authority. Retaining every
+     * intermediate token or Gateway snapshot made one durable command update
+     * serialize hundreds of obsolete multi-hundred-KiB JSON trees. Keep the
+     * newest value per replaceable projection; a cursor gap falls back to the
+     * complete current snapshot.
+     */
+    private fun compactLegacyReplayEvents(
+        events: List<StoredClientEvent>,
+    ): List<StoredClientEvent> {
+        if (events.size < 2) return events
+        val seen = mutableSetOf<String>()
+        val retained = ArrayDeque<StoredClientEvent>()
+        events.asReversed().forEach { stored ->
+            val key = replayProjectionKey(stored.event)
+            if (key == null || seen.add(key)) retained.addFirst(stored)
+        }
+        return retained.toList()
+    }
+
+    private fun replayProjectionKey(event: ClientEvent): String? = when (event.type) {
+        ClientEventType.STATUS_CHANGED -> "status"
+        ClientEventType.GATEWAY_STATE_CHANGED -> "gateway"
+        ClientEventType.COMMAND_CHANGED -> event.payload.objectString("commandId")
+            ?.let { "command:$it" }
+        ClientEventType.MESSAGE_UPSERTED -> event.payload.objectString("eventId")
+            ?.let { "message:$it" }
+        else -> null
+    }
+
+    private fun JsonElement.objectString(name: String): String? =
+        (this as? JsonObject)?.get(name)?.jsonPrimitive?.contentOrNull
+
+    private fun evictOldest(
+        state: PersistedClientEventState,
+        count: Int,
+    ): PersistedClientEventState {
+        var eventIndex = 0
+        var historyIndex = 0
+        repeat(count) {
+            val oldestEvent = state.events.getOrNull(eventIndex)
+            val oldestHistory = state.history.getOrNull(historyIndex)
+            when {
+                oldestEvent == null && oldestHistory == null -> return@repeat
                 oldestHistory == null || (
-                    oldestEvent != null && oldestEvent.event.occurredAt <= oldestHistory.message.timestamp
-                ) -> candidate.copy(events = candidate.events.drop(1))
-                else -> candidate.copy(history = candidate.history.drop(1))
+                    oldestEvent != null &&
+                        oldestEvent.event.occurredAt <= oldestHistory.message.timestamp
+                ) -> eventIndex += 1
+                else -> historyIndex += 1
             }
         }
+        return state.copy(
+            events = state.events.drop(eventIndex),
+            history = state.history.drop(historyIndex),
+        )
     }
 
     private fun encodedSize(value: PersistedClientEventState): Int {
