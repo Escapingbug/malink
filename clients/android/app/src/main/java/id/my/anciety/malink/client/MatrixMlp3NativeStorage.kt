@@ -200,6 +200,7 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
             loadedSegments
         }
         val restored = linkedMapOf<String, MatrixMlp3InboxRecord>()
+        val obsoleteSegmentKeys = linkedSetOf<String>()
         val compactedLegacy = legacy.map(::compactQuarantinedRecord)
         compactedLegacy.forEach { record ->
             val previous = restored.putIfAbsent(record.event.eventId, record)
@@ -214,15 +215,43 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
             }.thenBy(LoadedSegment::key))
             .forEach { segment ->
                 val compacted = segment.records.map(::compactQuarantinedRecord)
+                val retained = mutableListOf<MatrixMlp3InboxRecord>()
                 compacted.forEach { record ->
-                    val previous = restored.putIfAbsent(record.event.eventId, record)
-                    require(previous == null || previous == record) {
-                        "The MLP/3 inbox contains conflicting durable records."
+                    val eventId = record.event.eventId
+                    val previous = restored[eventId]
+                    when {
+                        previous == null -> {
+                            restored[eventId] = record
+                            retained += record
+                            segmentKeyByEventId[eventId] = segment.key
+                        }
+                        legacyEventIds.remove(eventId) -> {
+                            val reconciled = reconcileInboxRecords(previous, record)
+                            restored[eventId] = reconciled
+                            retained += reconciled
+                            segmentKeyByEventId[eventId] = segment.key
+                            legacyCleanupPending = true
+                        }
+                        else -> {
+                            val reconciled = reconcileInboxRecords(previous, record)
+                            val ownerKey = requireNotNull(segmentKeyByEventId[eventId])
+                            val owner = segmentsByKey.getValue(ownerKey)
+                            val ownerIndex = owner.indexOfFirst { it.event.eventId == eventId }
+                            require(ownerIndex >= 0)
+                            if (owner[ownerIndex] != reconciled) {
+                                owner[ownerIndex] = reconciled
+                                dirtySegmentKeys += ownerKey
+                            }
+                            restored[eventId] = reconciled
+                        }
                     }
-                    if (previous == null) segmentKeyByEventId[record.event.eventId] = segment.key
                 }
-                segmentsByKey[segment.key] = compacted.toMutableList()
-                if (compacted != segment.records) persistSegment(segment.key, compacted)
+                if (retained.isEmpty()) {
+                    obsoleteSegmentKeys += segment.key
+                } else {
+                    segmentsByKey[segment.key] = retained
+                    if (retained != segment.records) dirtySegmentKeys += segment.key
+                }
             }
         // Quarantine is a bounded deduplication ledger. Once an event has been
         // rejected, retaining its potentially 512 KiB raw body has no recovery
@@ -232,7 +261,19 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
         records = restored.values.toMutableList()
         recordPlaintextBytes = records.sumOf { encodedRecordSize(it).toLong() }
         require(recordPlaintextBytes <= MAX_STORE_BYTES)
-        if (compactedLegacy != legacy) saveLegacy()
+        // Persist every surviving owner before clearing an older duplicate.
+        // A crash or write failure can therefore leave extra copies for the
+        // next startup to reconcile, but can never discard the strongest
+        // quarantine state or the only copy of an event.
+        dirtySegmentKeys.toList().forEach { segmentKey ->
+            persistSegment(segmentKey, segmentsByKey.getValue(segmentKey))
+            dirtySegmentKeys.remove(segmentKey)
+        }
+        if (compactedLegacy != legacy || legacyCleanupPending) {
+            saveLegacy()
+            legacyCleanupPending = false
+        }
+        obsoleteSegmentKeys.forEach { segmentKey -> recordBlobs?.delete(segmentKey) }
     }
 
     @Synchronized
@@ -482,10 +523,7 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
     private fun consolidateIndividualRecords(loaded: List<LoadedSegment>): List<LoadedSegment> {
         val unique = linkedMapOf<String, MatrixMlp3InboxRecord>()
         loaded.flatMap(LoadedSegment::records).forEach { record ->
-            val previous = unique.putIfAbsent(record.event.eventId, record)
-            require(previous == null || previous == record) {
-                "The MLP/3 inbox contains conflicting durable records."
-            }
+            unique.merge(record.event.eventId, record, ::reconcileInboxRecords)
         }
         val groups = mutableListOf<MutableList<MatrixMlp3InboxRecord>>()
         var currentBytes = 0L
@@ -663,6 +701,17 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
         const val MAX_PENDING_EVENTS = 10_000
         const val MAX_QUARANTINED_EVENTS = 100
         const val MAX_STORE_BYTES = 32 * 1024 * 1024
+        val NON_AUTHORITATIVE_MATRIX_EVENT_FIELDS = setOf(
+            "age",
+            "event_id",
+            "origin_server_ts",
+            "prev_content",
+            "replaces_state",
+            "room_id",
+            "sender",
+            "unsigned",
+            "user_id",
+        )
     }
 
     private fun compactQuarantinedRecord(record: MatrixMlp3InboxRecord): MatrixMlp3InboxRecord =
@@ -674,6 +723,77 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
         } else {
             record
         }
+
+    private fun reconcileInboxRecords(
+        first: MatrixMlp3InboxRecord,
+        second: MatrixMlp3InboxRecord,
+    ): MatrixMlp3InboxRecord {
+        require(first.event.eventId == second.event.eventId)
+        require(
+            first.event.roomId == second.event.roomId &&
+                first.event.sender == second.event.sender &&
+                first.event.timestamp == second.event.timestamp,
+        ) { "The MLP/3 inbox contains conflicting durable records." }
+        val firstCompacted = first.status == MatrixMlp3InboxStatus.QUARANTINED &&
+            first.event.rawJson == QUARANTINED_EVENT_PLACEHOLDER
+        val secondCompacted = second.status == MatrixMlp3InboxStatus.QUARANTINED &&
+            second.event.rawJson == QUARANTINED_EVENT_PLACEHOLDER
+        if (
+            first.event.rawJson != second.event.rawJson &&
+            !firstCompacted &&
+            !secondCompacted &&
+            !equivalentMatrixEventPayload(first.event, second.event)
+        ) {
+            throw IllegalArgumentException("The MLP/3 inbox contains conflicting durable records.")
+        }
+        if (
+            first.status == MatrixMlp3InboxStatus.PENDING &&
+            second.status == MatrixMlp3InboxStatus.PENDING
+        ) {
+            require(first.errorCode == null && second.errorCode == null) {
+                "The MLP/3 inbox contains conflicting durable records."
+            }
+            return second
+        }
+        val errorCode = sequenceOf(first, second)
+            .filter { it.status == MatrixMlp3InboxStatus.QUARANTINED }
+            .mapNotNull(MatrixMlp3InboxRecord::errorCode)
+            .minOrNull()
+        return MatrixMlp3InboxRecord(
+            event = first.event.copy(rawJson = QUARANTINED_EVENT_PLACEHOLDER),
+            status = MatrixMlp3InboxStatus.QUARANTINED,
+            errorCode = errorCode,
+        )
+    }
+
+    private fun equivalentMatrixEventPayload(
+        first: MatrixDecryptedEvent,
+        second: MatrixDecryptedEvent,
+    ): Boolean =
+        runCatching {
+            fun authoritative(event: MatrixDecryptedEvent): JsonObject {
+                val root = Json.parseToJsonElement(event.rawJson).jsonObject
+                fun requireIdentity(field: String, expected: String) {
+                    root[field]?.let { value -> require(value.jsonPrimitive.content == expected) }
+                }
+                requireIdentity("event_id", event.eventId)
+                requireIdentity("room_id", event.roomId)
+                requireIdentity("sender", event.sender)
+                requireIdentity("user_id", event.sender)
+                root["origin_server_ts"]?.let { value ->
+                    require(value.jsonPrimitive.longOrNull == event.timestamp)
+                }
+                // Matrix SDK timeline JSON can lift legacy unsigned transport
+                // metadata to the event root, while /messages leaves it under
+                // unsigned or omits it. None of these fields is projected as
+                // current application content. Redundant identity fields are
+                // accepted only after matching the durable event above.
+                return JsonObject(
+                    root.filterKeys { field -> field !in NON_AUTHORITATIVE_MATRIX_EVENT_FIELDS },
+                )
+            }
+            authoritative(first) == authoritative(second)
+        }.getOrDefault(false)
 }
 
 /**

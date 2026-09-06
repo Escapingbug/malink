@@ -99,6 +99,23 @@ describe('GatewayMlp3ContentLayer', () => {
       rel_type: 'm.thread',
       event_id: '$root:example.org',
     })
+    expect(transport.delivered[0]?.content['m.new_content']).toBeUndefined()
+
+    await layer.sendEvent(room, { ...event, eventId: 'event-2' }, transport, {
+      relation: {
+        rel_type: 'm.replace',
+        event_id: '$previous:example.org',
+      },
+    })
+    expect(transport.delivered[1]?.content['m.relates_to']).toEqual({
+      rel_type: 'm.replace',
+      event_id: '$previous:example.org',
+    })
+    expect(transport.delivered[1]?.content['m.new_content']).toEqual({
+      msgtype: 'm.notice',
+      body: 'Encrypted Malink event',
+    })
+    expect(transport.delivered[1]?.content[MALINK_MATRIX_EXTENSION]).toBeDefined()
 
     const snapshot: Mlp3Event = {
       kind: 'malink.event',

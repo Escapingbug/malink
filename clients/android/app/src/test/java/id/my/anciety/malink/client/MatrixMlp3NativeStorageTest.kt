@@ -168,6 +168,214 @@ class MatrixMlp3NativeStorageTest {
     }
 
     @Test
+    fun `reupgrade gives an exact duplicate one segmented durable owner`() {
+        val legacy = MemoryMatrixMlp3BlobStore()
+        val segments = MemoryMatrixMlp3RecordBlobStore()
+        val cipher = JvmAesGcmCipher()
+        val duplicate = event("\$duplicate", "{\"kind\":\"event\"}")
+        AtomicEncryptedMatrixMlp3InboxStore(legacy, segments, cipher, "account-a").also {
+            assertTrue(it.put(duplicate))
+        }
+        AtomicEncryptedMatrixMlp3InboxStore(legacy, cipher, "account-a").also {
+            assertTrue(it.put(duplicate))
+        }
+
+        val upgraded = AtomicEncryptedMatrixMlp3InboxStore(
+            legacy,
+            segments,
+            cipher,
+            "account-a",
+        )
+        assertNull(legacy.bytes)
+        assertEquals(listOf(duplicate.eventId), upgraded.pending().map { it.event.eventId })
+
+        upgraded.projected(duplicate.eventId)
+        upgraded.flushProjected()
+        assertTrue(segments.bytes.isEmpty())
+        assertTrue(
+            AtomicEncryptedMatrixMlp3InboxStore(legacy, segments, cipher, "account-a")
+                .pending()
+                .isEmpty(),
+        )
+    }
+
+    @Test
+    fun `reupgrade keeps quarantine over a legacy pending duplicate`() {
+        val legacy = MemoryMatrixMlp3BlobStore()
+        val segments = MemoryMatrixMlp3RecordBlobStore()
+        val cipher = JvmAesGcmCipher()
+        val duplicate = event("\$quarantined-duplicate", "{\"kind\":\"poison\"}")
+        AtomicEncryptedMatrixMlp3InboxStore(legacy, segments, cipher, "account-a").also {
+            assertTrue(it.put(duplicate))
+            it.quarantine(duplicate.eventId, IllegalArgumentException("poison"))
+        }
+        AtomicEncryptedMatrixMlp3InboxStore(legacy, cipher, "account-a").also {
+            assertTrue(it.put(duplicate))
+        }
+
+        val upgraded = AtomicEncryptedMatrixMlp3InboxStore(
+            legacy,
+            segments,
+            cipher,
+            "account-a",
+        )
+        assertNull(legacy.bytes)
+        assertTrue(upgraded.pending().isEmpty())
+        assertFalse(upgraded.put(duplicate))
+        AtomicEncryptedMatrixMlp3InboxStore(legacy, segments, cipher, "account-a")
+            .validateStoredState()
+    }
+
+    @Test
+    fun `segment reconciliation writes the quarantine owner before removing a duplicate`() {
+        val cipher = JvmAesGcmCipher()
+        val largeRaw = """{"body":"${"x".repeat(140 * 1024)}"}"""
+        fun segmentKey(firstEventId: String): String {
+            val segments = MemoryMatrixMlp3RecordBlobStore()
+            AtomicEncryptedMatrixMlp3InboxStore(
+                MemoryMatrixMlp3BlobStore(),
+                segments,
+                cipher,
+                "account-a",
+            ).put(event(firstEventId, largeRaw))
+            return segments.bytes.keys.single()
+        }
+        val ownerIds = listOf("\$owner-a", "\$owner-b").sortedBy(::segmentKey)
+        val duplicate = event("\$crash-safe-duplicate", """{"body":"same"}""")
+        fun seededSegment(ownerId: String, quarantineDuplicate: Boolean) =
+            MemoryMatrixMlp3RecordBlobStore().also { segments ->
+                AtomicEncryptedMatrixMlp3InboxStore(
+                    MemoryMatrixMlp3BlobStore(),
+                    segments,
+                    cipher,
+                    "account-a",
+                ).also { store ->
+                    assertTrue(store.put(event(ownerId, largeRaw)))
+                    assertTrue(store.put(duplicate))
+                    if (quarantineDuplicate) {
+                        store.quarantine(duplicate.eventId, IllegalArgumentException("poison"))
+                    }
+                }
+            }
+        val pendingOwner = seededSegment(ownerIds[0], quarantineDuplicate = false)
+        val quarantineOwner = seededSegment(ownerIds[1], quarantineDuplicate = true)
+        val combined = MemoryMatrixMlp3RecordBlobStore().also { segments ->
+            segments.bytes.putAll(pendingOwner.bytes)
+            segments.bytes.putAll(quarantineOwner.bytes)
+            segments.failWrites = true
+        }
+
+        assertThrows(IllegalStateException::class.java) {
+            AtomicEncryptedMatrixMlp3InboxStore(
+                MemoryMatrixMlp3BlobStore(),
+                combined,
+                cipher,
+                "account-a",
+            )
+        }
+        assertEquals(2, combined.bytes.size)
+
+        combined.failWrites = false
+        val restored = AtomicEncryptedMatrixMlp3InboxStore(
+            MemoryMatrixMlp3BlobStore(),
+            combined,
+            cipher,
+            "account-a",
+        )
+        assertFalse(restored.pending().any { it.event.eventId == duplicate.eventId })
+        assertFalse(restored.put(duplicate))
+    }
+
+    @Test
+    fun `reupgrade accepts equivalent pending Matrix JSON with changed transient metadata`() {
+        val legacy = MemoryMatrixMlp3BlobStore()
+        val segments = MemoryMatrixMlp3RecordBlobStore()
+        val cipher = JvmAesGcmCipher()
+        AtomicEncryptedMatrixMlp3InboxStore(legacy, segments, cipher, "account-a").also {
+            assertTrue(
+                it.put(
+                    event(
+                        "\$equivalent",
+                        """{"type":"m.room.message","content":{"body":"same"},"room_id":"!room:example.org","user_id":"@gateway:example.org","age":1,"prev_content":{"body":"old-a"},"replaces_state":"${'$'}old-state","unsigned":{"age":1}}""",
+                    ),
+                ),
+            )
+        }
+        AtomicEncryptedMatrixMlp3InboxStore(legacy, cipher, "account-a").also {
+            assertTrue(
+                it.put(
+                    event(
+                        "\$equivalent",
+                        """{"unsigned":{"age":2},"prev_content":{"body":"old-b"},"age":2,"content":{"body":"same"},"type":"m.room.message"}""",
+                    ),
+                ),
+            )
+        }
+
+        val upgraded = AtomicEncryptedMatrixMlp3InboxStore(
+            legacy,
+            segments,
+            cipher,
+            "account-a",
+        )
+        assertNull(legacy.bytes)
+        assertEquals(listOf("\$equivalent"), upgraded.pending().map { it.event.eventId })
+        upgraded.projected("\$equivalent")
+        upgraded.flushProjected()
+        assertTrue(segments.bytes.isEmpty())
+    }
+
+    @Test
+    fun `reupgrade rejects redundant raw identity that disagrees with the durable event`() {
+        val legacy = MemoryMatrixMlp3BlobStore()
+        val segments = MemoryMatrixMlp3RecordBlobStore()
+        val cipher = JvmAesGcmCipher()
+        AtomicEncryptedMatrixMlp3InboxStore(legacy, segments, cipher, "account-a").also {
+            assertTrue(
+                it.put(
+                    event(
+                        "\$identity-conflict",
+                        """{"type":"m.room.message","content":{"body":"same"},"user_id":"@other:example.org"}""",
+                    ),
+                ),
+            )
+        }
+        AtomicEncryptedMatrixMlp3InboxStore(legacy, cipher, "account-a").also {
+            assertTrue(
+                it.put(
+                    event(
+                        "\$identity-conflict",
+                        """{"type":"m.room.message","content":{"body":"same"}}""",
+                    ),
+                ),
+            )
+        }
+
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            AtomicEncryptedMatrixMlp3InboxStore(legacy, segments, cipher, "account-a")
+        }
+        assertEquals("The MLP/3 inbox contains conflicting durable records.", error.message)
+    }
+
+    @Test
+    fun `reupgrade rejects different pending payloads for one event id`() {
+        val legacy = MemoryMatrixMlp3BlobStore()
+        val segments = MemoryMatrixMlp3RecordBlobStore()
+        val cipher = JvmAesGcmCipher()
+        AtomicEncryptedMatrixMlp3InboxStore(legacy, segments, cipher, "account-a").also {
+            assertTrue(it.put(event("\$conflict", "{\"body\":\"first\"}")))
+        }
+        AtomicEncryptedMatrixMlp3InboxStore(legacy, cipher, "account-a").also {
+            assertTrue(it.put(event("\$conflict", "{\"body\":\"second\"}")))
+        }
+
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            AtomicEncryptedMatrixMlp3InboxStore(legacy, segments, cipher, "account-a")
+        }
+        assertEquals("The MLP/3 inbox contains conflicting durable records.", error.message)
+    }
+
+    @Test
     fun `active inbox segments rotate before later writes can rewrite a large backlog`() {
         val legacy = MemoryMatrixMlp3BlobStore()
         val segments = MemoryMatrixMlp3RecordBlobStore()
@@ -618,11 +826,13 @@ class MatrixMlp3NativeStorageTest {
     private class MemoryMatrixMlp3RecordBlobStore : MatrixMlp3RecordBlobStore {
         val bytes = linkedMapOf<String, ByteArray>()
         var writeCount = 0
+        var failWrites = false
 
         override fun readAll(): Map<String, ByteArray> = bytes.mapValues { it.value.copyOf() }
 
         override fun write(key: String, bytes: ByteArray) {
             writeCount += 1
+            if (failWrites) throw IllegalStateException("simulated record write failure")
             this.bytes[key] = bytes.copyOf()
         }
 

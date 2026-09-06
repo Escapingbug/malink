@@ -439,6 +439,14 @@ export class GatewayMlp3ContentLayer {
     const content: MatrixRoomMessageContent = {
       msgtype: 'm.notice',
       body: 'Encrypted Malink event',
+      ...(relation?.['rel_type'] === 'm.replace'
+        ? {
+            'm.new_content': {
+              msgtype: 'm.notice',
+              body: 'Encrypted Malink event',
+            },
+          }
+        : {}),
       ...(relation ? { 'm.relates_to': structuredClone(relation) } : {}),
       [MALINK_MATRIX_EXTENSION]: { version: 3, envelope },
     }
