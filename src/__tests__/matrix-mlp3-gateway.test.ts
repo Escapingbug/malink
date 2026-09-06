@@ -2643,6 +2643,12 @@ describe('MatrixMlp3GatewayRunner', () => {
     ])
     expect(causalEvents.find(event => event.payload.type === 'turn.started')?.payload)
       .toMatchObject({ projection: { activity: 'working' } })
+    const causalAssistant = causalEvents.find(event => event.payload.type === 'assistant.message')
+    if (causalAssistant?.payload.type !== 'assistant.message') {
+      throw new Error('Causal assistant event was not delivered')
+    }
+    expect(causalAssistant.payload.projection.updatedAt)
+      .toBeGreaterThanOrEqual(causalAssistant.occurredAt)
     expect(causalEvents.findIndex(event => event.payload.type === 'assistant.message'))
       .toBeLessThan(causalEvents.findIndex(event => event.payload.type === 'turn.completed'))
 

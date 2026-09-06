@@ -227,7 +227,7 @@ class MatrixMlp3NativeStorageTest {
     }
 
     @Test
-    fun `segment reconciliation writes the quarantine owner before removing a duplicate`() {
+    fun `individual event key keeps one deterministic owner across store copies`() {
         val cipher = JvmAesGcmCipher()
         val largeRaw = """{"body":"${"x".repeat(140 * 1024)}"}"""
         fun segmentKey(firstEventId: String): String {
@@ -262,20 +262,8 @@ class MatrixMlp3NativeStorageTest {
         val combined = MemoryMatrixMlp3RecordBlobStore().also { segments ->
             segments.bytes.putAll(pendingOwner.bytes)
             segments.bytes.putAll(quarantineOwner.bytes)
-            segments.failWrites = true
         }
 
-        assertThrows(IllegalStateException::class.java) {
-            AtomicEncryptedMatrixMlp3InboxStore(
-                MemoryMatrixMlp3BlobStore(),
-                combined,
-                cipher,
-                "account-a",
-            )
-        }
-        assertEquals(2, combined.bytes.size)
-
-        combined.failWrites = false
         val restored = AtomicEncryptedMatrixMlp3InboxStore(
             MemoryMatrixMlp3BlobStore(),
             combined,
@@ -284,6 +272,7 @@ class MatrixMlp3NativeStorageTest {
         )
         assertFalse(restored.pending().any { it.event.eventId == duplicate.eventId })
         assertFalse(restored.put(duplicate))
+        assertEquals(3, combined.bytes.size)
     }
 
     @Test
@@ -376,7 +365,7 @@ class MatrixMlp3NativeStorageTest {
     }
 
     @Test
-    fun `active inbox segments rotate before later writes can rewrite a large backlog`() {
+    fun `new inbox events use independent encrypted records`() {
         val legacy = MemoryMatrixMlp3BlobStore()
         val segments = MemoryMatrixMlp3RecordBlobStore()
         val cipher = JvmAesGcmCipher()
@@ -400,6 +389,7 @@ class MatrixMlp3NativeStorageTest {
 
         store.projected(first.eventId)
         store.flushProjected()
+        assertEquals(2, segments.writeCount)
         assertEquals(1, segments.bytes.size)
         assertEquals(
             listOf(second.eventId),
@@ -413,7 +403,7 @@ class MatrixMlp3NativeStorageTest {
     }
 
     @Test
-    fun `new input replaces an empty segment awaiting batched cleanup`() {
+    fun `new input does not rewrite an empty record awaiting batched cleanup`() {
         val legacy = MemoryMatrixMlp3BlobStore()
         val segments = MemoryMatrixMlp3RecordBlobStore()
         val cipher = JvmAesGcmCipher()
@@ -430,9 +420,10 @@ class MatrixMlp3NativeStorageTest {
         store.projected(first.eventId)
         assertTrue(store.put(second))
         assertEquals(2, segments.writeCount)
-        assertEquals(1, segments.bytes.size)
+        assertEquals(2, segments.bytes.size)
 
         store.flushProjected()
+        assertEquals(2, segments.writeCount)
         assertEquals(1, segments.bytes.size)
         assertEquals(
             listOf(second.eventId),
@@ -446,7 +437,7 @@ class MatrixMlp3NativeStorageTest {
     }
 
     @Test
-    fun `projecting the first record keeps later records in the stable segment`() {
+    fun `projecting one independent record keeps the other record`() {
         val legacy = MemoryMatrixMlp3BlobStore()
         val segments = MemoryMatrixMlp3RecordBlobStore()
         val cipher = JvmAesGcmCipher()
@@ -461,13 +452,13 @@ class MatrixMlp3NativeStorageTest {
 
         assertTrue(store.put(first))
         assertTrue(store.put(second))
-        assertEquals(1, segments.bytes.size)
-        val stableSegmentKey = segments.bytes.keys.single()
+        assertEquals(2, segments.bytes.size)
 
         store.projected(first.eventId)
         store.flushProjected()
 
-        assertEquals(setOf(stableSegmentKey), segments.bytes.keys)
+        assertEquals(2, segments.writeCount)
+        assertEquals(1, segments.bytes.size)
         val restored = AtomicEncryptedMatrixMlp3InboxStore(
             legacy,
             segments,

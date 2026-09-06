@@ -4049,7 +4049,16 @@ export class MatrixMlp3GatewayRunner {
       projectId: project.project.projectId,
       sessionId: record.id,
       threadRootEventId: record.threadRootEventId,
-      projection: () => projection(record, activity.phase, this.extensions),
+      projection: () => ({
+        ...projection(record, activity.phase, this.extensions),
+        // Persisted session.updatedAt marks durable lifecycle transitions.
+        // Streaming assistant/tool events can continue for hours without a
+        // transition, so stamp their embedded projection at publication time
+        // as the authoritative last-Agent-activity watermark. Keeping the
+        // stateVersion unchanged still lets the next lifecycle transition
+        // supersede every streamed update deterministically.
+        updatedAt: Math.max(record.updatedAt, this.now()),
+      }),
       now: () => this.now(),
       onLog: this.dependencies.onLog,
       artifactReferences: {

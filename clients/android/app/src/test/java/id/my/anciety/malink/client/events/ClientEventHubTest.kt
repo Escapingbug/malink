@@ -304,6 +304,34 @@ class ClientEventHubTest {
     }
 
     @Test
+    fun `transient message upserts update live history without rewriting durable history`() {
+        val persistence = CountingPersistence()
+        val hub = hub(persistence = persistence)
+        val listener = RecordingListener()
+        val subscription = hub.subscribe(null, listener = listener)
+        hub.activate(subscription.subscriptionId, subscription.barrierCursor)
+        val savesBefore = persistence.saveCount
+
+        val event = hub.upsertMessageTransient(
+            "session-1",
+            message("streamed-agent-1", 1, text = "partial"),
+        )
+
+        assertNotNull(event)
+        assertEquals(savesBefore, persistence.saveCount)
+        assertEquals(
+            listOf("streamed-agent-1"),
+            hub.historyPage("session-1", limit = 10).messages.map { it.eventId },
+        )
+        assertEquals(listOf(event), listener.events)
+        val restored = hub(
+            persistence = persistence,
+            cursorGenerator = CountingCursorGenerator(),
+        )
+        assertTrue(restored.historyPage("session-1", limit = 10).messages.isEmpty())
+    }
+
+    @Test
     fun `late gateway history is ordered by timestamp with sequence tie break`() {
         val hub = hub()
         hub.upsertMessage("session-1", message("newest", 300), occurredAt = 300)

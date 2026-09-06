@@ -158,7 +158,6 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
     private data class LoadedSegment(
         val key: String,
         val records: List<MatrixMlp3InboxRecord>,
-        val individualSchema: Boolean = false,
     )
 
     internal constructor(blob: MatrixMlp3BlobStore, cipher: SecretCipher, scope: String) :
@@ -181,24 +180,22 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
     private val legacyAssociatedData = "malink.matrix-v3-inbox.v1\u0000$scope".toByteArray()
     private val recordAssociatedDataPrefix =
         "malink.matrix-v3-inbox-record.v1\u0000$scope\u0000".toByteArray()
-    private var records = mutableListOf<MatrixMlp3InboxRecord>()
+    private var records = linkedMapOf<String, MatrixMlp3InboxRecord>()
     private val legacyEventIds = mutableSetOf<String>()
-    private val segmentsByKey = linkedMapOf<String, MutableList<MatrixMlp3InboxRecord>>()
+    private val segmentsByKey =
+        linkedMapOf<String, LinkedHashMap<String, MatrixMlp3InboxRecord>>()
     private val segmentKeyByEventId = mutableMapOf<String, String>()
     private val dirtySegmentKeys = linkedSetOf<String>()
-    private var activeSegmentKey: String? = null
     private var legacyCleanupPending = false
+    private val recordEncodedBytesByEventId = mutableMapOf<String, Int>()
     private var recordPlaintextBytes = 0L
+    private var pendingRecordCount = 0
     private var projectedCleanupPending = false
 
     init {
         val legacy = loadLegacy()
         val loadedSegments = loadSegments()
-        val durableSegments = if (loadedSegments.any(LoadedSegment::individualSchema)) {
-            consolidateIndividualRecords(loadedSegments)
-        } else {
-            loadedSegments
-        }
+        val durableSegments = loadedSegments
         val restored = linkedMapOf<String, MatrixMlp3InboxRecord>()
         val obsoleteSegmentKeys = linkedSetOf<String>()
         val compactedLegacy = legacy.map(::compactQuarantinedRecord)
@@ -236,10 +233,10 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
                             val reconciled = reconcileInboxRecords(previous, record)
                             val ownerKey = requireNotNull(segmentKeyByEventId[eventId])
                             val owner = segmentsByKey.getValue(ownerKey)
-                            val ownerIndex = owner.indexOfFirst { it.event.eventId == eventId }
-                            require(ownerIndex >= 0)
-                            if (owner[ownerIndex] != reconciled) {
-                                owner[ownerIndex] = reconciled
+                            val ownerRecord = owner[eventId]
+                            require(ownerRecord != null)
+                            if (ownerRecord != reconciled) {
+                                owner[eventId] = reconciled
                                 dirtySegmentKeys += ownerKey
                             }
                             restored[eventId] = reconciled
@@ -249,7 +246,10 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
                 if (retained.isEmpty()) {
                     obsoleteSegmentKeys += segment.key
                 } else {
-                    segmentsByKey[segment.key] = retained
+                    segmentsByKey[segment.key] = retained.associateByTo(
+                        linkedMapOf(),
+                        { it.event.eventId },
+                    )
                     if (retained != segment.records) dirtySegmentKeys += segment.key
                 }
             }
@@ -258,15 +258,20 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
         // value and makes every later persist rewrite megabytes of poison data.
         // Compact records written by older APKs as soon as the encrypted store
         // is opened; event identity and the bounded diagnostic code remain.
-        records = restored.values.toMutableList()
-        recordPlaintextBytes = records.sumOf { encodedRecordSize(it).toLong() }
+        records = restored
+        records.values.forEach { record ->
+            val encodedBytes = encodedRecordSize(record)
+            recordEncodedBytesByEventId[record.event.eventId] = encodedBytes
+            recordPlaintextBytes += encodedBytes
+            if (record.status == MatrixMlp3InboxStatus.PENDING) pendingRecordCount += 1
+        }
         require(recordPlaintextBytes <= MAX_STORE_BYTES)
         // Persist every surviving owner before clearing an older duplicate.
         // A crash or write failure can therefore leave extra copies for the
         // next startup to reconcile, but can never discard the strongest
         // quarantine state or the only copy of an event.
         dirtySegmentKeys.toList().forEach { segmentKey ->
-            persistSegment(segmentKey, segmentsByKey.getValue(segmentKey))
+            persistSegment(segmentKey, segmentsByKey.getValue(segmentKey).values.toList())
             dirtySegmentKeys.remove(segmentKey)
         }
         if (compactedLegacy != legacy || legacyCleanupPending) {
@@ -278,11 +283,11 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
 
     @Synchronized
     fun put(event: MatrixDecryptedEvent): Boolean {
-        if (records.any { it.event.eventId == event.eventId }) return false
+        if (records.containsKey(event.eventId)) return false
         require(event.rawJson.toByteArray().size <= MAX_EVENT_BYTES) {
             "The MLP/3 raw event is too large."
         }
-        require(records.count { it.status == MatrixMlp3InboxStatus.PENDING } < MAX_PENDING_EVENTS) {
+        require(pendingRecordCount < MAX_PENDING_EVENTS) {
             "The MLP/3 raw inbox is full."
         }
         val record = MatrixMlp3InboxRecord(event, MatrixMlp3InboxStatus.PENDING)
@@ -291,64 +296,56 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
             "The MLP/3 raw inbox is too large."
         }
         if (recordBlobs != null) {
-            var currentKey = activeSegmentKey
-            if (currentKey != null && segmentsByKey[currentKey].isNullOrEmpty()) {
-                // The previous event is already durable in ClientEventHub. Drop
-                // its now-empty segment before accepting the next raw event so
-                // a force-stopped process cannot accumulate one encrypted file
-                // per successfully projected live update.
-                recordBlobs.delete(currentKey)
-                segmentsByKey.remove(currentKey)
-                dirtySegmentKeys.remove(currentKey)
-                activeSegmentKey = null
-                currentKey = null
+            // Each new event owns one append-only encrypted record. Rewriting a
+            // shared JSON segment for every concurrent Matrix callback amplified
+            // a 32 MiB recovery backlog into continuous 50-150 MiB allocations
+            // and starved the projection mutex. Existing v2 segments remain
+            // readable and are compacted once at the next replay boundary.
+            val targetKey = recordKey(record.event.eventId)
+            require(targetKey !in segmentsByKey) {
+                "The MLP/3 inbox record key collides with an existing segment."
             }
-            val current = currentKey?.let(segmentsByKey::get).orEmpty()
-            val candidate = current + record
-            val rotate = current.isNotEmpty() && encodedSegmentSize(candidate) > MAX_ACTIVE_SEGMENT_BYTES
-            val startNewSegment = rotate || currentKey == null
-            val targetKey = if (startNewSegment) segmentKey(record.event.eventId) else currentKey
-            val targetRecords = if (startNewSegment) listOf(record) else candidate
-            persistSegment(targetKey, targetRecords)
-            segmentsByKey[targetKey] = targetRecords.toMutableList()
+            persistIndividualRecord(targetKey, record)
+            segmentsByKey[targetKey] = linkedMapOf(record.event.eventId to record)
             segmentKeyByEventId[event.eventId] = targetKey
             dirtySegmentKeys.remove(targetKey)
-            activeSegmentKey = targetKey
-            records += record
+            records[event.eventId] = record
         } else {
-            records += record
+            records[event.eventId] = record
             legacyEventIds += event.eventId
             try {
                 saveLegacy()
             } catch (error: Exception) {
-                records.removeAt(records.lastIndex)
+                records.remove(event.eventId)
                 legacyEventIds.remove(event.eventId)
                 throw error
             }
         }
+        recordEncodedBytesByEventId[event.eventId] = encodedBytes.toInt()
         recordPlaintextBytes += encodedBytes
+        pendingRecordCount += 1
         projectedCleanupPending = false
         return true
     }
 
     @Synchronized
-    fun pending(): List<MatrixMlp3InboxRecord> = records
+    fun pending(): List<MatrixMlp3InboxRecord> = records.values
         .filter { it.status == MatrixMlp3InboxStatus.PENDING }
 
     @Synchronized
     fun projected(eventId: String) {
-        val index = records.indexOfFirst { it.event.eventId == eventId }
-        if (index < 0) return
-        val record = records[index]
+        val record = records.remove(eventId) ?: return
         val segmentKey = segmentKeyByEventId.remove(eventId)
         if (segmentKey != null) {
-            segmentsByKey.getValue(segmentKey).removeAll { it.event.eventId == eventId }
+            segmentsByKey.getValue(segmentKey).remove(eventId)
             dirtySegmentKeys += segmentKey
         } else if (legacyEventIds.remove(eventId)) {
             legacyCleanupPending = true
         }
-        records.removeAt(index)
-        recordPlaintextBytes -= encodedRecordSize(record).toLong()
+        recordPlaintextBytes -= requireNotNull(
+            recordEncodedBytesByEventId.remove(eventId),
+        ).toLong()
+        if (record.status == MatrixMlp3InboxStatus.PENDING) pendingRecordCount -= 1
         if (recordBlobs == null) {
             projectedCleanupPending = true
         }
@@ -356,49 +353,52 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
 
     @Synchronized
     fun quarantine(eventId: String, error: Throwable) {
-        val index = records.indexOfFirst { it.event.eventId == eventId }
-        if (index < 0) return
-        val current = records[index]
+        val current = records[eventId] ?: return
         val updated = compactQuarantinedRecord(current.copy(
             status = MatrixMlp3InboxStatus.QUARANTINED,
             errorCode = error.javaClass.simpleName.take(160),
         ))
-        records[index] = updated
-        recordPlaintextBytes += encodedRecordSize(updated) - encodedRecordSize(current)
+        val currentEncodedBytes = requireNotNull(recordEncodedBytesByEventId[eventId])
+        val updatedEncodedBytes = encodedRecordSize(updated)
+        records[eventId] = updated
+        recordEncodedBytesByEventId[eventId] = updatedEncodedBytes
+        recordPlaintextBytes += (updatedEncodedBytes - currentEncodedBytes).toLong()
+        if (current.status == MatrixMlp3InboxStatus.PENDING) pendingRecordCount -= 1
         val affectedSegments = linkedSetOf<String>()
         var legacyChanged = false
         segmentKeyByEventId[eventId]?.let { segmentKey ->
             val segment = segmentsByKey.getValue(segmentKey)
-            val segmentIndex = segment.indexOfFirst { it.event.eventId == eventId }
-            segment[segmentIndex] = updated
+            require(segment.containsKey(eventId))
+            segment[eventId] = updated
             affectedSegments += segmentKey
         } ?: run {
             legacyChanged = eventId in legacyEventIds
         }
-        val quarantined = records.indices
-            .filter { records[it].status == MatrixMlp3InboxStatus.QUARANTINED }
+        val quarantined = records.values
+            .filter { it.status == MatrixMlp3InboxStatus.QUARANTINED }
+            .map { it.event.eventId }
         if (quarantined.size > MAX_QUARANTINED_EVENTS) {
-            val remove = quarantined.take(quarantined.size - MAX_QUARANTINED_EVENTS).toSet()
-            remove.forEach { recordIndex ->
-                val removed = records[recordIndex]
-                recordPlaintextBytes -= encodedRecordSize(removed).toLong()
+            val remove = quarantined.take(quarantined.size - MAX_QUARANTINED_EVENTS)
+            remove.forEach { removedEventId ->
+                val removed = requireNotNull(records.remove(removedEventId))
+                recordPlaintextBytes -= requireNotNull(
+                    recordEncodedBytesByEventId.remove(removed.event.eventId),
+                ).toLong()
                 val removedSegment = segmentKeyByEventId.remove(removed.event.eventId)
                 if (removedSegment != null) {
-                    segmentsByKey.getValue(removedSegment)
-                        .removeAll { it.event.eventId == removed.event.eventId }
+                    segmentsByKey.getValue(removedSegment).remove(removed.event.eventId)
                     affectedSegments += removedSegment
                 } else if (legacyEventIds.remove(removed.event.eventId)) {
                     legacyChanged = true
                 }
             }
-            records = records.filterIndexed { recordIndex, _ -> recordIndex !in remove }.toMutableList()
         }
         if (recordBlobs == null || legacyChanged) {
             saveLegacy()
             legacyCleanupPending = false
         }
         affectedSegments.forEach { segmentKey ->
-            persistSegment(segmentKey, segmentsByKey.getValue(segmentKey))
+            persistSegment(segmentKey, segmentsByKey.getValue(segmentKey).values.toList())
             dirtySegmentKeys.remove(segmentKey)
         }
         projectedCleanupPending = false
@@ -418,7 +418,7 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
             legacyCleanupPending = false
         }
         dirtySegmentKeys.toList().forEach { segmentKey ->
-            persistSegment(segmentKey, segmentsByKey.getValue(segmentKey))
+            persistSegment(segmentKey, segmentsByKey.getValue(segmentKey).values.toList())
             dirtySegmentKeys.remove(segmentKey)
         }
         projectedCleanupPending = false
@@ -437,9 +437,10 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
         segmentsByKey.clear()
         segmentKeyByEventId.clear()
         dirtySegmentKeys.clear()
-        activeSegmentKey = null
+        recordEncodedBytesByEventId.clear()
         legacyCleanupPending = false
         recordPlaintextBytes = 0
+        pendingRecordCount = 0
         projectedCleanupPending = false
         blob.delete()
         recordBlobs?.clear()
@@ -499,7 +500,7 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
                         require(recordKey(record.event.eventId) == key) {
                             "The MLP/3 inbox record key does not match its event."
                         }
-                        LoadedSegment(key, listOf(record), individualSchema = true)
+                        LoadedSegment(key, listOf(record))
                     }
                     2L -> {
                         require(root.keys == setOf("schemaVersion", "records"))
@@ -521,41 +522,6 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
                 plaintext.fill(0)
             }
         }
-
-    private fun consolidateIndividualRecords(loaded: List<LoadedSegment>): List<LoadedSegment> {
-        val unique = linkedMapOf<String, MatrixMlp3InboxRecord>()
-        loaded.flatMap(LoadedSegment::records).forEach { record ->
-            unique.merge(record.event.eventId, record, ::reconcileInboxRecords)
-        }
-        val groups = mutableListOf<MutableList<MatrixMlp3InboxRecord>>()
-        var currentBytes = 0L
-        unique.values
-            .sortedWith(compareBy<MatrixMlp3InboxRecord> { it.event.timestamp }.thenBy { it.event.eventId })
-            .forEach { record ->
-                val current = groups.lastOrNull()
-                val recordBytes = encodedRecordSize(record).toLong()
-                if (
-                    current == null ||
-                    currentBytes + recordBytes > MAX_SEALED_SEGMENT_BYTES
-                ) {
-                    groups += mutableListOf(record)
-                    currentBytes = recordBytes
-                } else {
-                    current += record
-                    currentBytes += recordBytes
-                }
-            }
-        val migrated = groups.map { group ->
-            val key = segmentKey(group.first().event.eventId)
-            persistSegment(key, group)
-            LoadedSegment(key, group)
-        }
-        val retainedKeys = migrated.mapTo(mutableSetOf(), LoadedSegment::key)
-        loaded.map(LoadedSegment::key).toSet()
-            .filterNot(retainedKeys::contains)
-            .forEach(requireNotNull(recordBlobs)::delete)
-        return migrated
-    }
 
     private fun decodeRecord(value: kotlinx.serialization.json.JsonElement): MatrixMlp3InboxRecord {
         val record = value as? JsonObject
@@ -603,15 +569,6 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
         }
     }
 
-    private fun encodedSegmentSize(records: List<MatrixMlp3InboxRecord>): Int {
-        val encoded = encodeSegment(records)
-        return try {
-            encoded.size
-        } finally {
-            encoded.fill(0)
-        }
-    }
-
     private fun encodeSegment(records: List<MatrixMlp3InboxRecord>): ByteArray {
         require(records.isNotEmpty())
         return CanonicalJson.bytes(buildJsonObject {
@@ -627,10 +584,33 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
         if (records.isEmpty()) {
             target.delete(key)
             segmentsByKey.remove(key)
-            if (activeSegmentKey == key) activeSegmentKey = null
             return
         }
         val plaintext = encodeSegment(records)
+        val encrypted = try {
+            val envelope = cipher.encrypt(plaintext, recordAssociatedData(key))
+            try {
+                SecretEnvelope.encode(envelope)
+            } finally {
+                envelope.iv.fill(0)
+                envelope.ciphertext.fill(0)
+            }
+        } finally {
+            plaintext.fill(0)
+        }
+        try {
+            target.write(key, encrypted)
+        } finally {
+            encrypted.fill(0)
+        }
+    }
+
+    private fun persistIndividualRecord(key: String, record: MatrixMlp3InboxRecord) {
+        val target = requireNotNull(recordBlobs)
+        val plaintext = CanonicalJson.bytes(buildJsonObject {
+            put("schemaVersion", 1)
+            put("record", encodeRecordValue(record))
+        }).also { require(it.size <= MAX_RECORD_BYTES) }
         val encrypted = try {
             val envelope = cipher.encrypt(plaintext, recordAssociatedData(key))
             try {
@@ -653,16 +633,14 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
         MessageDigest.getInstance("SHA-256").digest(eventId.toByteArray(Charsets.UTF_8)),
     )
 
-    private fun segmentKey(firstEventId: String): String = recordKey("segment\u0000$firstEventId")
-
     private fun recordAssociatedData(key: String): ByteArray =
         recordAssociatedDataPrefix + key.toByteArray(Charsets.UTF_8)
 
     private fun saveLegacy() {
         val legacyRecords = if (recordBlobs == null) {
-            records
+            records.values
         } else {
-            records.filter { it.event.eventId in legacyEventIds }
+            records.values.filter { it.event.eventId in legacyEventIds }
         }
         if (legacyRecords.isEmpty()) {
             blob.delete()
@@ -697,8 +675,6 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
         const val QUARANTINED_EVENT_PLACEHOLDER = "{}"
         const val MAX_EVENT_BYTES = 512 * 1024
         const val MAX_RECORD_BYTES = MAX_EVENT_BYTES + 4 * 1024
-        const val MAX_ACTIVE_SEGMENT_BYTES = 256 * 1024
-        const val MAX_SEALED_SEGMENT_BYTES = 4L * 1024 * 1024
         const val MAX_PENDING_EVENTS = 10_000
         const val MAX_QUARANTINED_EVENTS = 100
         const val MAX_STORE_BYTES = 32 * 1024 * 1024

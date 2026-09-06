@@ -1581,6 +1581,13 @@ class NativeClientRuntime(
         startMatrixMlp3ProjectionRefresh()
         scheduleSessionReadReceiptReconciliation()
         scope.launch {
+            mutex.withLock {
+                if (!workspaceAuthorizationAllowsCommands()) return@withLock
+                replayMatrixMlp3InboxLocked()
+                matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
+            }
+        }
+        scope.launch {
             runCatching { recoverGatewayTransportSnapshot() }
                 .onFailure { error ->
                     diagnostics.record(
@@ -1593,11 +1600,6 @@ class NativeClientRuntime(
                         },
                     )
                 }
-            mutex.withLock {
-                if (!workspaceAuthorizationAllowsCommands()) return@withLock
-                replayMatrixMlp3InboxLocked()
-                matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
-            }
         }
     }
 
@@ -1631,10 +1633,14 @@ class NativeClientRuntime(
             }
             if (!inserted) return
         }
+        var projected = false
         mutex.withLock {
             try {
                 processMatrixEvent(event)
-                if (isV3) matrixMlp3Inbox.projected(event.eventId)
+                if (isV3) {
+                    matrixMlp3Inbox.projected(event.eventId)
+                    projected = true
+                }
             } catch (error: MatrixMlp3EventDeferredException) {
                 diagnostics.record(
                     "matrix.v3_event.deferred",
@@ -1664,6 +1670,14 @@ class NativeClientRuntime(
                     throw error
                 }
             }
+        }
+        if (projected) {
+            // The live projection cache is durable before processMatrixEvent
+            // returns. Remove its independent raw record immediately so a
+            // busy timeline cannot leave thousands of empty files for the next
+            // cold start. Replay keeps its own removals batched until the final
+            // projection checkpoint.
+            matrixMlp3Inbox.flushProjected()
         }
     }
 
@@ -3051,7 +3065,14 @@ class NativeClientRuntime(
         }
         result.messages.forEach { message ->
             val sessionId = message.sessionId ?: return@forEach
-            eventHub.upsertMessage(sessionId, message, refreshedSnapshot())
+            // MLP/3 already has a persist-before-project raw inbox and a
+            // separately encrypted projection checkpoint. Persisting the
+            // complete multi-megabyte bridge replay/history file for every
+            // streamed token caused continuous large-object GC and could
+            // starve file references and terminal lifecycle events. Keep the
+            // live bridge update in memory; command/lifecycle publications
+            // and restart restoration retain their existing durable paths.
+            eventHub.upsertMessageTransient(sessionId, message, refreshedSnapshot())
         }
         result.progressedCommandId?.let { commandId ->
             if (outbox.recordProgress(commandId, protocolEvent.string("sessionId"))) {

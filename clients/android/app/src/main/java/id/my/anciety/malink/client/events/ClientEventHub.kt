@@ -221,6 +221,25 @@ class ClientEventHub(
     ).singleOrNull()
 
     /**
+     * Applies and delivers a live message upsert without rewriting the whole
+     * encrypted replay/history file. The authenticated Matrix projection is
+     * checkpointed separately and remains the restart authority for this
+     * transient update.
+     */
+    fun upsertMessageTransient(
+        sessionId: String,
+        message: ClientMessage,
+        snapshot: ClientSnapshot? = null,
+        occurredAt: Long = now(),
+    ): ClientEvent? = upsertMessagesInternal(
+        sessionId = sessionId,
+        messages = listOf(message),
+        snapshot = snapshot,
+        occurredAt = occurredAt,
+        durable = false,
+    ).singleOrNull()
+
+    /**
      * Atomically deduplicates a history page, persists it once, and then
      * delivers the corresponding message.upserted events in cursor order.
      */
@@ -229,6 +248,20 @@ class ClientEventHub(
         messages: List<ClientMessage>,
         snapshot: ClientSnapshot? = null,
         occurredAt: Long = now(),
+    ): List<ClientEvent> = upsertMessagesInternal(
+        sessionId = sessionId,
+        messages = messages,
+        snapshot = snapshot,
+        occurredAt = occurredAt,
+        durable = true,
+    )
+
+    private fun upsertMessagesInternal(
+        sessionId: String,
+        messages: List<ClientMessage>,
+        snapshot: ClientSnapshot?,
+        occurredAt: Long,
+        durable: Boolean,
     ): List<ClientEvent> {
         requireOpaqueId(sessionId, "sessionId")
         messages.forEach { message ->
@@ -302,7 +335,7 @@ class ClientEventHub(
                 history = boundHistory(mutableHistory),
                 snapshot = baseSnapshot.copy(cursor = headCursor, generatedAt = now()),
             )
-            state = persist(updated)
+            state = if (durable) persist(updated) else updated
             emitted = events
             targets = subscriptions.values.filter { it.active }.map { it.id }
         }
