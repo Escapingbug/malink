@@ -1,5 +1,6 @@
 import type {
   GatewayUpdateStatus,
+  GatewayDeploymentStatus,
   SignedWorkspaceGatewayDirectory,
 } from "@malink/protocol";
 import type { GatewayReleaseBuild } from "./buildInfo";
@@ -13,6 +14,8 @@ export type GatewayUpdatePlanNode = {
   buildObservedAt?: number;
   targetProjectId?: string;
   onlineUpdate: boolean;
+  computerId?: string;
+  blueGreenUpdate?: boolean;
   state: "current" | "available" | "manual" | "unrouted" | "unknown";
 };
 
@@ -138,10 +141,15 @@ export function gatewayUpdatePlan(input: {
   directory: SignedWorkspaceGatewayDirectory | undefined;
   knownProjectIds: ReadonlySet<string>;
   release: GatewayReleaseBuild | null;
+  deployments?: Readonly<Record<string, GatewayDeploymentStatus>>;
 }): GatewayUpdatePlanNode[] {
   if (!input.directory || !input.release) return [];
   const release = input.release;
   return input.directory.directory.gateways.map((gateway) => {
+    const deployment = Object.values(input.deployments ?? {}).find(status =>
+      status.active.gatewayNodeId === gateway.gatewayNodeId
+      || status.candidate?.gatewayNodeId === gateway.gatewayNodeId,
+    );
     const route = (gateway.projects ?? []).find((candidate) =>
       input.knownProjectIds.has(candidate.projectId),
     );
@@ -150,15 +158,21 @@ export function gatewayUpdatePlan(input: {
       gatewayName: gateway.gatewayName,
       ...(gateway.computerName ? { computerName: gateway.computerName } : {}),
       ...(gateway.buildId ? { currentBuildId: gateway.buildId } : {}),
-      ...(gateway.buildId ? { buildObservedAt: gateway.issuedAt } : {}),
+      ...(gateway.buildId && gateway.issuedAt !== undefined
+        ? { buildObservedAt: gateway.issuedAt }
+        : {}),
       ...(route ? { targetProjectId: route.projectId } : {}),
-      onlineUpdate: gateway.onlineUpdate === true,
+      onlineUpdate: gateway.onlineUpdate === true || Boolean(deployment),
+      ...(deployment ? {
+        computerId: deployment.computerId,
+        blueGreenUpdate: true,
+      } : {}),
     };
     if (gateway.buildId === release.buildId) {
       return { ...base, state: "current" as const };
     }
     if (!gateway.buildId) return { ...base, state: "unknown" as const };
-    if (gateway.onlineUpdate !== true) {
+    if (gateway.onlineUpdate !== true && !deployment) {
       return { ...base, state: "manual" as const };
     }
     if (!route) return { ...base, state: "unrouted" as const };

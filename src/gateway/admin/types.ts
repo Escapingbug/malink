@@ -195,6 +195,9 @@ export interface GatewayAdminStatus {
   openInvitationCount: number
   buildId?: string
   runtimeEpoch?: string
+  projectCount?: number
+  sessionCount?: number
+  deploymentFenced?: boolean
   activeTurns?: number
   activeCommands?: number
   expiredCommandExecutions?: number
@@ -205,6 +208,8 @@ export interface GatewayAdminStatus {
   outboxWalBytes?: number
   pendingInboxEvents?: number
   quarantinedInboxEvents?: number
+  shadowInboxEvents?: number
+  shadowRoomCount?: number
   matrixReady?: boolean | null
   lastMatrixSyncAt?: number | null
 }

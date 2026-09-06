@@ -343,6 +343,9 @@ export class NativeBridgeClient implements MalinkClient {
     const receipt = await this.#sendWhenOutboxAvailable(payload, idempotencyKey, projectId);
     const completionTimeoutMs = payload.operation === "gateway.update.stage"
       || payload.operation === "gateway.update.apply"
+      || payload.operation === "gateway.update.prepare"
+      || payload.operation === "gateway.update.promote"
+      || payload.operation === "gateway.update.discard"
       || payload.operation === "gateway.restart"
       ? null
       : DEFAULT_COMMAND_TIMEOUT_MS;
@@ -1515,6 +1518,10 @@ function parseCommandOperation(input: unknown): CommandPayload["operation"] | un
     case "gateway.update.stage":
     case "gateway.update.apply":
     case "gateway.update.status":
+    case "gateway.update.prepare":
+    case "gateway.update.promote":
+    case "gateway.update.discard":
+    case "gateway.deployment.status":
     case "gateway.restart":
     case "gateway.restart.status":
       return input;

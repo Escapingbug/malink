@@ -39,6 +39,7 @@ import {
   type GatewayFilesystemPreflightRequest,
   type GatewayFilesystemPreflightResponse,
 } from './types.js'
+import type { MatrixLoginTokenIssueResult } from '@/gateway/pairing'
 
 const MAX_BODY_BYTES = 32 * 1024
 const DEFAULT_RATE_LIMIT = 5
@@ -64,6 +65,9 @@ export interface GatewayAdminServerOptions {
   buildId?: string
   getGatewayDiagnostics?: () => Promise<{
     runtimeEpoch: string
+    projectCount: number
+    sessionCount: number
+    deploymentFenced: boolean
     activeTurns: number
     activeCommands: number
     expiredCommandExecutions?: number
@@ -74,6 +78,8 @@ export interface GatewayAdminServerOptions {
     outboxWalBytes?: number
     pendingInboxEvents: number
     quarantinedInboxEvents: number
+    shadowInboxEvents?: number
+    shadowRoomCount?: number
     matrixReady: boolean | null
     lastMatrixSyncAt: number | null
   }>
@@ -102,6 +108,8 @@ export interface GatewayAdminServerOptions {
   preflightFilesystem?: (
     request: GatewayFilesystemPreflightRequest,
   ) => Promise<GatewayFilesystemPreflightResponse>
+  sealForDeployment?: (mode: 'when_idle' | 'force') => Promise<void>
+  issueDeploymentMatrixLogin?: () => Promise<MatrixLoginTokenIssueResult>
   now?: () => number
   rateLimitPerMinute?: number
   onLog?: (message: string) => void
@@ -163,6 +171,43 @@ export async function startGatewayAdminServer(
 
       if (request.method === 'GET' && path === '/v1/status') {
         sendJson(response, 200, await statusResponse(options, startedAt, now()))
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/deployment/seal') {
+        if (!options.sealForDeployment) {
+          throw new AdminHttpError(
+            503,
+            'gateway_deployment_seal_unavailable',
+            'Gateway deployment sealing is unavailable',
+          )
+        }
+        const body = await readJsonBody(request)
+        const mode = deploymentSealMode(body)
+        await options.sealForDeployment(mode)
+        sendJson(response, 200, { ok: true, mode })
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/deployment/matrix-login') {
+        if (!options.issueDeploymentMatrixLogin) {
+          throw new AdminHttpError(
+            503,
+            'gateway_deployment_matrix_login_unavailable',
+            'Gateway deployment Matrix login is unavailable',
+          )
+        }
+        sendJson(response, 200, await options.issueDeploymentMatrixLogin())
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/deployment/sync') {
+        if (!options.syncGatewayState) {
+          throw new AdminHttpError(
+            503,
+            'gateway_deployment_sync_unavailable',
+            'Gateway deployment state synchronization is unavailable',
+          )
+        }
+        await options.syncGatewayState()
+        sendJson(response, 200, { ok: true })
         return
       }
       if (request.method === 'PUT' && path === '/v1/profile') {
@@ -574,6 +619,22 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   } catch (error) {
     throw new AdminHttpError(400, 'invalid_json', 'Request body is not valid JSON')
   }
+}
+
+function deploymentSealMode(body: unknown): 'when_idle' | 'force' {
+  if (
+    typeof body !== 'object'
+    || body === null
+    || !('mode' in body)
+    || (body.mode !== 'when_idle' && body.mode !== 'force')
+  ) {
+    throw new AdminHttpError(
+      400,
+      'invalid_deployment_seal_mode',
+      'Deployment seal mode must be when_idle or force',
+    )
+  }
+  return body.mode
 }
 
 function mapError(error: unknown): AdminHttpError {

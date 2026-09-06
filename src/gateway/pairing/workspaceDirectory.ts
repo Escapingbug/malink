@@ -259,6 +259,71 @@ export class FileWorkspaceGatewayDirectory {
     return this.verifyStored(result ?? await this.signCurrent(now))
   }
 
+  /**
+   * Atomically moves every source route to this node and tombstones the source.
+   * The caller must already hold the host's exclusive blue/green handoff lease.
+   */
+  async promoteLocalOwnership(
+    sourceGatewayNodeId: string,
+    projects: readonly WorkspaceProjectRoute[],
+    runtime: { computerName: string; buildId: string },
+    now = Date.now(),
+  ): Promise<SignedWorkspaceGatewayDirectory> {
+    if (!sourceGatewayNodeId || sourceGatewayNodeId === this.identity.gatewayNodeId) {
+      throw new Error('Gateway ownership promotion requires another source node')
+    }
+    const normalizedProjects = [...projects]
+      .map(project => structuredClone(project))
+      .sort((left, right) =>
+        left.projectId.localeCompare(right.projectId)
+        || left.roomId.localeCompare(right.roomId))
+    const result = await this.file.transaction(
+      () => initialState(this.identity.workspaceId),
+      state => {
+        validateState(state, this.identity.workspaceId)
+        const local = state.gateways[this.identity.gatewayNodeId]
+        if (!local) throw new Error('Candidate Gateway descriptor is unavailable')
+        const removed = new Set(state.removedGatewayNodeIds ?? [])
+        const source = state.gateways[sourceGatewayNodeId]
+        if (!source && !removed.has(sourceGatewayNodeId)) {
+          throw new Error(`Source Gateway ${sourceGatewayNodeId} is unavailable`)
+        }
+        const next = workspaceGatewayDescriptorSchema.parse({
+          gatewayNodeId: local.gatewayNodeId,
+          workspaceId: local.workspaceId,
+          gatewayName: local.gatewayName,
+          computerName: runtime.computerName,
+          buildId: runtime.buildId,
+          transport: local.transport,
+          publicKey: local.publicKey,
+          ...(normalizedProjects.length > 0 ? { projects: normalizedProjects } : {}),
+          issuedAt: now,
+        })
+        const alreadyPromoted = !source
+          && removed.has(sourceGatewayNodeId)
+          && canonicalJson(descriptorSemantics(local))
+            === canonicalJson(descriptorSemantics(next))
+        if (alreadyPromoted) {
+          return {
+            result: state.signed?.directory.revision === state.revision
+              ? structuredClone(state.signed)
+              : undefined,
+            changed: false,
+          }
+        }
+        delete state.gateways[sourceGatewayNodeId]
+        removed.add(sourceGatewayNodeId)
+        state.removedGatewayNodeIds = [...removed].sort()
+        state.gateways[this.identity.gatewayNodeId] = next
+        state.revision += 1
+        state.signed = undefined
+        validateState(state, this.identity.workspaceId)
+        return { result: undefined, changed: true }
+      },
+    )
+    return this.verifyStored(result ?? await this.signCurrent(now))
+  }
+
   async load(): Promise<SignedWorkspaceGatewayDirectory | undefined> {
     const current = await this.file.transaction(
       () => initialState(this.identity.workspaceId),

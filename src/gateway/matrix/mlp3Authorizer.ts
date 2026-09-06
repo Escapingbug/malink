@@ -56,6 +56,10 @@ const CURRENT_WORKSPACE_MEMBER_OPERATIONS = [
   'gateway.update.stage',
   'gateway.update.apply',
   'gateway.update.status',
+  'gateway.update.prepare',
+  'gateway.update.promote',
+  'gateway.update.discard',
+  'gateway.deployment.status',
   'gateway.restart',
   'gateway.restart.status',
 ] as const satisfies readonly Mlp3CommandOperation[]
@@ -176,6 +180,10 @@ function v3AllowedOperations(
         result.add('gateway.update.stage')
         result.add('gateway.update.apply')
         result.add('gateway.update.status')
+        result.add('gateway.update.prepare')
+        result.add('gateway.update.promote')
+        result.add('gateway.update.discard')
+        result.add('gateway.deployment.status')
         result.add('gateway.restart')
         result.add('gateway.restart.status')
         break

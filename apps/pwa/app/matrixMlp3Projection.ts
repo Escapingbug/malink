@@ -7,6 +7,7 @@ import type {
   NativeClientRelease,
   GatewayEnrollmentPending,
   GatewayUpdateStatus,
+  GatewayDeploymentStatus,
   ProviderControlValues,
   SessionExtensionBinding,
   SessionExtensionDescriptor,
@@ -21,13 +22,14 @@ import {
   signedWorkspaceGatewayDirectorySchema,
   gatewayEnrollmentPendingSchema,
   gatewayUpdateStatusSchema,
+  gatewayDeploymentStatusSchema,
   matrixModelCapabilitySchema,
   providerControlErrorSchema,
   providerControlValuesSchema,
 } from "@malink/protocol";
 import { gatewayMaintenanceSessionActivityOutcome } from "./gatewayState";
 
-export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 12 as const;
+export const MATRIX_MLP3_PROJECTION_STATE_VERSION = 13 as const;
 
 export type V3ProjectedSession = Mlp3SessionProjection & {
   sessionId: string;
@@ -167,6 +169,27 @@ export type GatewayUpdateObservation = {
   status: GatewayUpdateStatus;
 };
 
+export type GatewayDeploymentObservation = {
+  observedAt: number;
+  status: GatewayDeploymentStatus;
+};
+
+function isNewerDeploymentObservation(
+  current: GatewayDeploymentObservation | null,
+  observedAt: number,
+  incoming: GatewayDeploymentStatus,
+): boolean {
+  if (!current) return true;
+  if (incoming.computerId !== current.status.computerId) return observedAt > current.observedAt;
+  if (incoming.generation !== current.status.generation) {
+    return incoming.generation > current.status.generation;
+  }
+  if (incoming.updatedAt !== current.status.updatedAt) {
+    return incoming.updatedAt > current.status.updatedAt;
+  }
+  return observedAt > current.observedAt;
+}
+
 export type MatrixMlp3ProjectionState = {
   version: typeof MATRIX_MLP3_PROJECTION_STATE_VERSION;
   workspace: V3WorkspaceProjection | null;
@@ -180,6 +203,7 @@ export type MatrixMlp3ProjectionState = {
   inboxFiles: V3ProjectedInboxFile[];
   completions: Mlp3CommandCompletion[];
   gatewayUpdateObservation: GatewayUpdateObservation | null;
+  gatewayDeploymentObservation: GatewayDeploymentObservation | null;
   seenLogicalEvents: string[];
 };
 
@@ -199,6 +223,7 @@ export class MatrixMlp3Projection {
   readonly inboxFiles = new Map<string, V3ProjectedInboxFile>();
   readonly completions = new Map<string, Mlp3CommandCompletion>();
   gatewayUpdateObservation: GatewayUpdateObservation | null = null;
+  gatewayDeploymentObservation: GatewayDeploymentObservation | null = null;
   readonly seenLogicalEvents = new Set<string>();
   workspace: V3WorkspaceProjection | null = null;
   project: V3ProjectProjection | null = null;
@@ -215,6 +240,7 @@ export class MatrixMlp3Projection {
     this.inboxFiles.clear();
     this.completions.clear();
     this.gatewayUpdateObservation = null;
+    this.gatewayDeploymentObservation = null;
     this.seenLogicalEvents.clear();
   }
 
@@ -232,6 +258,7 @@ export class MatrixMlp3Projection {
       inboxFiles: [...this.inboxFiles.values()],
       completions: [...this.completions.values()],
       gatewayUpdateObservation: this.gatewayUpdateObservation,
+      gatewayDeploymentObservation: this.gatewayDeploymentObservation,
       seenLogicalEvents: [...this.seenLogicalEvents],
     });
   }
@@ -264,6 +291,7 @@ export class MatrixMlp3Projection {
       this.completions.set(completion.commandId, completion);
     }
     this.gatewayUpdateObservation = state.gatewayUpdateObservation;
+    this.gatewayDeploymentObservation = state.gatewayDeploymentObservation;
     for (const logicalId of state.seenLogicalEvents) this.seenLogicalEvents.add(logicalId);
     // Version four could persist a terminal command together with a stale
     // working session. Reconcile from the durable completion on every restore
@@ -473,6 +501,18 @@ export class MatrixMlp3Projection {
       this.reconcileGatewayMaintenanceSession(payload.status, event.projectId);
       return true;
     }
+    if (payload.type === "gateway.deployment.status" && !event.causationCommandId) {
+      if (!isNewerDeploymentObservation(
+        this.gatewayDeploymentObservation,
+        event.occurredAt,
+        payload.status,
+      )) return false;
+      this.gatewayDeploymentObservation = {
+        observedAt: event.occurredAt,
+        status: structuredClone(payload.status),
+      };
+      return true;
+    }
     if (this.seenLogicalEvents.has(event.eventId)) return false;
     this.seenLogicalEvents.add(event.eventId);
     if (payload.type === "project.deleted" && event.projectId) {
@@ -569,6 +609,16 @@ export class MatrixMlp3Projection {
         }
         this.reconcileGatewayMaintenanceSession(payload.status, event.projectId);
       }
+    }
+    if (payload.type === "gateway.deployment.status" && isNewerDeploymentObservation(
+      this.gatewayDeploymentObservation,
+      event.occurredAt,
+      payload.status,
+    )) {
+      this.gatewayDeploymentObservation = {
+        observedAt: event.occurredAt,
+        status: structuredClone(payload.status),
+      };
     }
     if (event.sessionId && "projection" in payload) {
       this.applySessionProjection(event, payload.projection, physicalEventId, threadRootHint);
@@ -1049,6 +1099,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
       && projectionVersion !== 10
       && projectionVersion !== 11
       && projectionVersion !== 12
+      && projectionVersion !== 13
     )
   ) {
     throw new Error("Unsupported MLP/3 projection version.");
@@ -1294,6 +1345,20 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
           };
         })()
     : null;
+  const gatewayDeploymentObservation = projectionVersion >= 13
+    ? value.gatewayDeploymentObservation === null
+      ? null
+      : (() => {
+          const observation = record(value.gatewayDeploymentObservation);
+          if (!observation || !integer(observation.observedAt)) {
+            throw new Error("The Gateway deployment observation is invalid.");
+          }
+          return {
+            observedAt: observation.observedAt,
+            status: gatewayDeploymentStatusSchema.parse(observation.status),
+          };
+        })()
+    : null;
   const seenLogicalEvents = boundedArray(value.seenLogicalEvents, "logical events")
     .map(item => {
       if (!text(item)) throw new Error("The MLP/3 logical event ID is invalid.");
@@ -1355,6 +1420,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
     inboxFiles,
     completions,
     gatewayUpdateObservation,
+    gatewayDeploymentObservation,
     seenLogicalEvents,
   };
 }
@@ -1591,6 +1657,8 @@ function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
       // terminal releases the durable command before the Gateway actually
       // schedules the update.
       if (event.payload.status.phase === "waiting_for_idle") return null;
+      return { commandId, outcome: "succeeded", ...(event.sessionId ? { sessionId: event.sessionId } : {}), event };
+    case "gateway.deployment.status":
       return { commandId, outcome: "succeeded", ...(event.sessionId ? { sessionId: event.sessionId } : {}), event };
     case "gateway.restart.status":
       if (event.payload.status.phase === "waiting_for_idle") return null;

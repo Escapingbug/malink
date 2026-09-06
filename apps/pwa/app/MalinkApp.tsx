@@ -22,6 +22,7 @@ import {
   providerSessionEntrySchema,
   gatewayRestartStatusSchema,
   gatewayUpdateStatusSchema,
+  gatewayDeploymentStatusSchema,
   type MalinkAttachment,
   type MalinkArtifactReference,
   type CommandPayload,
@@ -29,6 +30,7 @@ import {
   type GatewayRestartMode,
   type GatewayRestartStatus,
   type GatewayUpdateStatus,
+  type GatewayDeploymentStatus,
   type ProviderHistoryMessage,
   type ProviderSessionEntry,
   type ProviderControlValues,
@@ -1904,7 +1906,12 @@ function MalinkAppRuntime() {
   const gatewayNodeProbeFlightsRef = useRef(new Set<string>());
   const gatewayRestartActiveNodeIdsRef = useRef(new Set<string>());
   const executeGatewayUpdateRef = useRef<(
-    payload: Extract<CommandPayload, { operation: `gateway.update.${string}` }>,
+    payload: Extract<CommandPayload, {
+      operation:
+        | "gateway.update.stage"
+        | "gateway.update.apply"
+        | "gateway.update.status";
+    }>,
     targetProjectId: string,
     timeoutMs?: number,
   ) => Promise<GatewayUpdateStatus>>(async () => {
@@ -2792,7 +2799,17 @@ function MalinkAppRuntime() {
       directory: gatewayState?.gatewayDirectory,
       knownProjectIds: knownGatewayProjectIds,
       release: gatewayRelease,
-    }), [gatewayRelease, gatewayState?.gatewayDirectory, knownGatewayProjectIds]);
+      deployments: Object.fromEntries(
+        Object.entries(gatewayState?.gatewayDeployments ?? {}).map(
+          ([computerId, observation]) => [computerId, observation.deployment],
+        ),
+      ),
+    }), [
+      gatewayRelease,
+      gatewayState?.gatewayDeployments,
+      gatewayState?.gatewayDirectory,
+      knownGatewayProjectIds,
+    ]);
   const gatewayUpdateReleaseKey = gatewayRelease
     ? `${gatewayRelease.releaseId}\0${gatewayRelease.buildId}`
     : null;
@@ -5393,7 +5410,7 @@ function MalinkAppRuntime() {
     );
     const projectId = sessionId
       ? openedSession?.projectId ?? requestedProjectId ?? null
-      : null;
+      : requestedProjectId ?? null;
     const sessionChanged = selectedSessionIdRef.current !== sessionId ||
       selectedProjectIdRef.current !== projectId;
     selectedSessionIdRef.current = sessionId;
@@ -8253,6 +8270,63 @@ function MalinkAppRuntime() {
         return Promise.race([execution, observation.promise])
           .finally(() => observation.cancel());
       };
+      const deployment = node.computerId
+        ? gatewayStateRef.current?.gatewayDeployments?.[node.computerId]?.deployment
+        : undefined;
+      if (node.blueGreenUpdate) {
+        if (deployment?.phase === "trial") {
+          showUiNotice(
+            `gateway-update:${node.gatewayNodeId}`,
+            "connection",
+            "info",
+            `${node.gatewayName} already has a candidate ready for trial. Use its project normally, then choose Switch all work or Discard candidate.`,
+            10_000,
+          );
+          return;
+        }
+        const staged = continuePublishedRelease && knownStatus
+          ? knownStatus
+          : await executeWithSignedBoundary({
+              operation: "gateway.update.stage",
+              releaseId: gatewayRelease.releaseId,
+            }, target.targetProjectId);
+        if (
+          staged.phase !== "staged"
+          || staged.releaseId !== gatewayRelease.releaseId
+          || staged.targetBuildId !== gatewayRelease.buildId
+        ) {
+          throw new Error(
+            `${node.gatewayName} did not finish staging the requested release `
+            + `(reported ${staged.phase}).`,
+          );
+        }
+        const prepared = await executeGatewayDeployment({
+          operation: "gateway.update.prepare",
+          releaseId: gatewayRelease.releaseId,
+        }, target.targetProjectId);
+        setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({
+          ...current,
+          state: "unchecked",
+          status: latestGatewayUpdateStatus(current.status, staged),
+          commandFailureCode: undefined,
+          commandFailureRetryable: undefined,
+        }));
+        clearGatewayUpdateIntent(
+          window.localStorage,
+          matrixConfig.gatewayId,
+          node.gatewayNodeId,
+        );
+        showUiNotice(
+          `gateway-update:${node.gatewayNodeId}`,
+          "connection",
+          "success",
+          prepared.phase === "trial"
+            ? `Candidate ${prepared.candidate?.buildId ?? gatewayRelease.buildId} is running beside the current Gateway. It will stay available until you explicitly switch or discard it.`
+            : `Candidate preparation started (${prepared.phase}).`,
+          12_000,
+        );
+        return;
+      }
       const status = continuePublishedRelease && knownStatus
         ? await executeWithSignedBoundary({
             operation: "gateway.update.apply",
@@ -8337,6 +8411,73 @@ function MalinkAppRuntime() {
     }
   }
 
+  async function changeGatewayDeployment(
+    node: GatewayUpdatePlanNode,
+    action: "promote" | "discard",
+    mode: "when_idle" | "force" = "when_idle",
+  ): Promise<void> {
+    const deployment = node.computerId
+      ? gatewayStateRef.current?.gatewayDeployments?.[node.computerId]?.deployment
+      : undefined;
+    if (!deployment?.updateId || deployment.phase !== "trial" || !node.targetProjectId) {
+      showUiNotice(
+        `gateway-deployment:${node.gatewayNodeId}`,
+        "connection",
+        "warning",
+        "The candidate is no longer in a switchable trial state. Refresh its signed status before trying again.",
+      );
+      return;
+    }
+    const activeNodeIds = new Set(gatewayUpdateActiveNodeIdsRef.current);
+    activeNodeIds.add(node.gatewayNodeId);
+    gatewayUpdateActiveNodeIdsRef.current = activeNodeIds;
+    setGatewayUpdateActiveNodeIds(activeNodeIds);
+    setGatewayUpdateActiveModesByNode(current => ({
+      ...current,
+      [node.gatewayNodeId]: mode,
+    }));
+    try {
+      const result = await executeGatewayDeployment(action === "promote"
+        ? {
+            operation: "gateway.update.promote",
+            updateId: deployment.updateId,
+            mode,
+          }
+        : {
+            operation: "gateway.update.discard",
+            updateId: deployment.updateId,
+          }, node.targetProjectId);
+      showUiNotice(
+        `gateway-deployment:${node.gatewayNodeId}`,
+        "connection",
+        "success",
+        action === "promote"
+          ? `All projects and saved sessions are switching to the verified candidate. The old Gateway stops only after takeover commits.`
+          : result.phase === "steady"
+            ? "The candidate Gateway was discarded. The current Gateway was not interrupted."
+            : `Candidate discard started (${result.phase}).`,
+        12_000,
+      );
+    } catch (error) {
+      showUiNotice(
+        `gateway-deployment:${node.gatewayNodeId}`,
+        "connection",
+        "warning",
+        `The Gateway deployment request failed: ${formatUiError(error)}`,
+      );
+    } finally {
+      const remaining = new Set(gatewayUpdateActiveNodeIdsRef.current);
+      remaining.delete(node.gatewayNodeId);
+      gatewayUpdateActiveNodeIdsRef.current = remaining;
+      setGatewayUpdateActiveNodeIds(remaining);
+      setGatewayUpdateActiveModesByNode(current => {
+        const next = { ...current };
+        delete next[node.gatewayNodeId];
+        return next;
+      });
+    }
+  }
+
   function openGatewayUpdateSession(projectId: string, sessionId: string): void {
     setGatewayUpdateDialogOpen(false);
     setPrimaryView("chats");
@@ -8344,8 +8485,20 @@ function MalinkAppRuntime() {
     activateLocalSession(sessionId, malinkClientRef.current, true, false, projectId);
   }
 
+  function openGatewayTrialProject(projectId: string): void {
+    setGatewayUpdateDialogOpen(false);
+    setPrimaryView("chats");
+    setMobileChatOpen(true);
+    activateLocalSession(null, malinkClientRef.current, true, false, projectId);
+  }
+
   async function executeGatewayUpdate(
-    payload: Extract<CommandPayload, { operation: `gateway.update.${string}` }>,
+    payload: Extract<CommandPayload, {
+      operation:
+        | "gateway.update.stage"
+        | "gateway.update.apply"
+        | "gateway.update.status";
+    }>,
     targetProjectId: string | undefined,
     timeoutMs?: number,
   ) {
@@ -8406,6 +8559,71 @@ function MalinkAppRuntime() {
         })
       : current);
     return mergedStatus;
+  }
+
+  async function executeGatewayDeployment(
+    payload: Extract<CommandPayload, {
+      operation:
+        | "gateway.update.prepare"
+        | "gateway.update.promote"
+        | "gateway.update.discard"
+        | "gateway.deployment.status";
+    }>,
+    targetProjectId: string | undefined,
+  ): Promise<GatewayDeploymentStatus> {
+    let commandId: string | null = null;
+    try {
+      const sent = await sendRealCommand(payload, targetProjectId, {
+        autoRetryRevisionConflict: true,
+        propagateFailure: true,
+      });
+      if (!sent) throw new Error("The connected client could not send the Gateway deployment request.");
+      commandId = sent.commandId;
+      const completion = await waitForCommandCompletion(
+        sent.completion,
+        payload.operation === "gateway.deployment.status" ? 60_000 : null,
+      );
+      if (completion.outcome !== "succeeded") {
+        throw new GatewayUpdateCommandFailure(
+          completion.error?.message ?? "The Gateway deployment request did not complete.",
+          completion.error?.code ?? "gateway_deployment_failed",
+          completion.error?.retryable === true,
+        );
+      }
+      const status = gatewayDeploymentStatusSchema.parse(completion.result);
+      setGatewayState(current => {
+        if (!current) return current;
+        const prior = current.gatewayDeployments?.[status.computerId];
+        if (
+          prior
+          && (
+            prior.deployment.generation > status.generation
+            || (
+              prior.deployment.generation === status.generation
+              && prior.deployment.updatedAt > status.updatedAt
+            )
+          )
+        ) return current;
+        return {
+          ...current,
+          gatewayDeployments: {
+            ...(current.gatewayDeployments ?? {}),
+            [status.computerId]: {
+              version: 1,
+              computerId: status.computerId,
+              observedAt: Date.now(),
+              deployment: status,
+            },
+          },
+        };
+      });
+      return status;
+    } finally {
+      if (commandId) {
+        completedCommandResultsRef.current.delete(commandId);
+        await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
+      }
+    }
   }
 
   async function waitForConnectedCommandWindow(timeoutMs = 10_000): Promise<boolean> {
@@ -14591,8 +14809,16 @@ function MalinkAppRuntime() {
           livenessByNode={gatewayNodeLivenessById}
           activeGatewayNodeIds={gatewayUpdateActiveNodeIds}
           activeGatewayModesByNode={gatewayUpdateActiveModesByNode}
+          deploymentsByComputer={Object.fromEntries(
+            Object.entries(gatewayState?.gatewayDeployments ?? {}).map(
+              ([computerId, observation]) => [computerId, observation.deployment],
+            ),
+          )}
           onClose={() => setGatewayUpdateDialogOpen(false)}
           onStart={(node, mode) => void startGatewayUpdateNode(node, mode)}
+          onPromote={(node, mode) => void changeGatewayDeployment(node, "promote", mode)}
+          onDiscard={(node) => void changeGatewayDeployment(node, "discard")}
+          onOpenProject={openGatewayTrialProject}
           onOpenSession={openGatewayUpdateSession}
           onArchiveSession={(node, sessionId) =>
             void archiveGatewayMaintenanceSession(node, sessionId)

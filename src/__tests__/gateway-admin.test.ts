@@ -443,6 +443,8 @@ describe('Gateway local admin', () => {
         revocationReason: 'lost device',
       }),
     ])
+    await expect(client.syncDeploymentState()).resolves.toEqual({ ok: true })
+    expect(syncGatewayState).toHaveBeenCalledTimes(2)
   })
 
   it('rejects browser-origin requests and invitation floods', async () => {

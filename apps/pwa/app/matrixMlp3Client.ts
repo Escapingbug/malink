@@ -984,6 +984,40 @@ function toMlp3Command(
         operation: "gateway.update.status",
         payload: { operation: "gateway.update.status" },
       };
+    case "gateway.update.prepare":
+      return {
+        ...common,
+        operation: "gateway.update.prepare",
+        payload: {
+          operation: "gateway.update.prepare",
+          releaseId: payload.releaseId,
+        },
+      };
+    case "gateway.update.promote":
+      return {
+        ...common,
+        operation: "gateway.update.promote",
+        payload: {
+          operation: "gateway.update.promote",
+          updateId: payload.updateId,
+          mode: payload.mode ?? "when_idle",
+        },
+      };
+    case "gateway.update.discard":
+      return {
+        ...common,
+        operation: "gateway.update.discard",
+        payload: {
+          operation: "gateway.update.discard",
+          updateId: payload.updateId,
+        },
+      };
+    case "gateway.deployment.status":
+      return {
+        ...common,
+        operation: "gateway.deployment.status",
+        payload: { operation: "gateway.deployment.status" },
+      };
     case "gateway.restart":
       return {
         ...common,

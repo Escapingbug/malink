@@ -84,12 +84,16 @@ test("keeps the explicit intent until the update command succeeds", () => {
     source.indexOf("function openGatewayUpdateSession"),
   );
   const writeIndex = flow.indexOf("writeGatewayUpdateIntent(");
+  const prepareIndex = flow.indexOf("const prepared = await executeGatewayDeployment");
   const executeIndex = flow.indexOf("const status = continuePublishedRelease");
-  const clearIndex = flow.indexOf("clearGatewayUpdateIntent(");
+  const firstClearIndex = flow.indexOf("clearGatewayUpdateIntent(");
+  const lastClearIndex = flow.lastIndexOf("clearGatewayUpdateIntent(");
   const catchFlow = flow.slice(flow.indexOf("} catch (error) {"));
   assert.ok(writeIndex >= 0, "the explicit update intent must be persisted");
+  assert.ok(prepareIndex > writeIndex, "candidate preparation must start after persistence");
+  assert.ok(firstClearIndex > prepareIndex, "successful candidate preparation must clear the intent");
   assert.ok(executeIndex > writeIndex, "the update must start after persistence");
-  assert.ok(clearIndex > executeIndex, "success must clear the intent after execution");
+  assert.ok(lastClearIndex > executeIndex, "success must clear the intent after execution");
   assert.equal(
     catchFlow.includes("clearGatewayUpdateIntent("),
     false,

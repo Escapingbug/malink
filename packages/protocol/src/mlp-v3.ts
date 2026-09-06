@@ -7,6 +7,7 @@ import { signedWorkspaceGatewayDirectorySchema } from './workspace-authorization
 import { gatewayRestartStatusSchema } from './gateway-lifecycle.js'
 import { gatewayEnrollmentPendingSchema } from './gateway-enrollment.js'
 import { gatewayUpdateStatusSchema } from './gateway-release.js'
+import { gatewayDeploymentStatusSchema } from './gateway-deployment.js'
 import {
   attachmentSchema,
   artifactReferenceSchema,
@@ -499,6 +500,28 @@ const gatewayUpdateApplyPayloadSchema = z
 const gatewayUpdateStatusPayloadSchema = z
   .object({ operation: z.literal('gateway.update.status') })
   .strict()
+const gatewayUpdatePreparePayloadSchema = z
+  .object({
+    operation: z.literal('gateway.update.prepare'),
+    releaseId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u),
+  })
+  .strict()
+const gatewayUpdatePromotePayloadSchema = z
+  .object({
+    operation: z.literal('gateway.update.promote'),
+    updateId: opaqueId,
+    mode: z.enum(['when_idle', 'force']).default('when_idle'),
+  })
+  .strict()
+const gatewayUpdateDiscardPayloadSchema = z
+  .object({
+    operation: z.literal('gateway.update.discard'),
+    updateId: opaqueId,
+  })
+  .strict()
+const gatewayDeploymentStatusPayloadSchema = z
+  .object({ operation: z.literal('gateway.deployment.status') })
+  .strict()
 const gatewayRestartPayloadSchema = z
   .object({
     operation: z.literal('gateway.restart'),
@@ -534,6 +557,10 @@ export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   gatewayUpdateStagePayloadSchema,
   gatewayUpdateApplyPayloadSchema,
   gatewayUpdateStatusPayloadSchema,
+  gatewayUpdatePreparePayloadSchema,
+  gatewayUpdatePromotePayloadSchema,
+  gatewayUpdateDiscardPayloadSchema,
+  gatewayDeploymentStatusPayloadSchema,
   gatewayRestartPayloadSchema,
   gatewayRestartStatusPayloadSchema,
 ])
@@ -698,6 +725,30 @@ export const mlp3CommandSchema = z.union([
     sessionId: z.undefined().optional(),
     operation: z.literal('gateway.update.status'),
     payload: gatewayUpdateStatusPayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('gateway.update.prepare'),
+    payload: gatewayUpdatePreparePayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('gateway.update.promote'),
+    payload: gatewayUpdatePromotePayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('gateway.update.discard'),
+    payload: gatewayUpdateDiscardPayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('gateway.deployment.status'),
+    payload: gatewayDeploymentStatusPayloadSchema,
   }).strict(),
   z.object({
     ...projectCommandCommon,
@@ -1250,6 +1301,12 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
     .object({
       type: z.literal('gateway.update.status'),
       status: gatewayUpdateStatusSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('gateway.deployment.status'),
+      status: gatewayDeploymentStatusSchema,
     })
     .strict(),
   z

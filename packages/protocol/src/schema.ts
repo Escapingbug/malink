@@ -744,6 +744,28 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('gateway.update.prepare'),
+      releaseId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('gateway.update.promote'),
+      updateId: opaqueId,
+      mode: z.enum(['when_idle', 'force']).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('gateway.update.discard'),
+      updateId: opaqueId,
+    })
+    .strict(),
+  z
+    .object({ operation: z.literal('gateway.deployment.status') })
+    .strict(),
+  z
+    .object({
       operation: z.literal('gateway.restart'),
       mode: z.enum(['when_idle', 'force']).optional(),
     })

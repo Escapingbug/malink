@@ -22,6 +22,7 @@ import type {
   RenameGatewayRequest,
   RevokeDeviceRequest,
 } from './types.js'
+import type { MatrixLoginTokenIssueResult } from '@/gateway/pairing'
 
 export class GatewayAdminClientError extends Error {
   constructor(
@@ -48,6 +49,20 @@ export class GatewayAdminClient {
 
   status(): Promise<GatewayAdminStatus> {
     return this.request('GET', '/v1/status')
+  }
+
+  sealForDeployment(
+    mode: 'when_idle' | 'force',
+  ): Promise<{ ok: true; mode: 'when_idle' | 'force' }> {
+    return this.request('POST', '/v1/deployment/seal', { mode })
+  }
+
+  issueDeploymentMatrixLogin(): Promise<MatrixLoginTokenIssueResult> {
+    return this.request('POST', '/v1/deployment/matrix-login')
+  }
+
+  syncDeploymentState(): Promise<{ ok: true }> {
+    return this.request('POST', '/v1/deployment/sync')
   }
 
   renameGateway(gatewayName: string): Promise<GatewayAdminIdentity> {

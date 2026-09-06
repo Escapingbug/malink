@@ -10,13 +10,16 @@ import { chmod, lstat, mkdir, unlink } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import {
   gatewayUpdateStatusSchema,
+  gatewayDeploymentStatusSchema,
   gatewayRestartModeSchema,
   gatewayRestartStatusSchema,
   type GatewayRestartMode,
   type GatewayRestartStatus,
   type GatewayUpdateStatus,
+  type GatewayDeploymentStatus,
 } from '@malink/protocol'
 import type { GatewayUpdateSupervisor } from './gatewayUpdateSupervisor.js'
+import type { GatewayDeploymentCoordinator } from './gatewayDeploymentCoordinator.js'
 import type {
   GatewayAgentUpdateBeginResult,
   GatewayAgentUpdateInstruction,
@@ -32,6 +35,7 @@ export interface GatewayUpdateSupervisorServer {
 export async function startGatewayUpdateSupervisorServer(input: {
   socketPath: string
   supervisor: GatewayUpdateSupervisor
+  deploymentCoordinator?: GatewayDeploymentCoordinator
   onLog?: (message: string) => void
 }): Promise<GatewayUpdateSupervisorServer> {
   await prepareSocketPath(input.socketPath)
@@ -42,6 +46,43 @@ export async function startGatewayUpdateSupervisorServer(input: {
       const path = new URL(request.url ?? '/', 'http://localhost').pathname
       if (request.method === 'GET' && path === '/v1/status') {
         sendJson(response, 200, await input.supervisor.status())
+        return
+      }
+      if (request.method === 'GET' && path === '/v1/deployments/status') {
+        sendJson(response, 200, await requireDeploymentCoordinator(input).status())
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/deployments/prepare') {
+        const releaseId = releaseIdFromBody(await readJsonBody(request))
+        const release = await input.supervisor.status()
+        if (
+          release.releaseId !== releaseId
+          || release.phase !== 'staged'
+          || !release.targetBuildId
+        ) {
+          throw new SupervisorHttpError(
+            409,
+            'gateway_update_state_conflict',
+            `Gateway release ${releaseId} must be fully staged before candidate preparation`,
+          )
+        }
+        sendJson(response, 202, await requireDeploymentCoordinator(input).prepare({
+          releaseId,
+          buildId: release.targetBuildId,
+        }))
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/deployments/promote') {
+        const body = deploymentPromotionFromBody(await readJsonBody(request))
+        sendJson(response, 202, await requireDeploymentCoordinator(input).schedulePromote(
+          body.updateId,
+          body.mode,
+        ))
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/deployments/discard') {
+        const updateId = deploymentUpdateIdFromBody(await readJsonBody(request))
+        sendJson(response, 202, await requireDeploymentCoordinator(input).discard(updateId))
         return
       }
       if (request.method === 'GET' && path === '/v1/gateway/restart') {
@@ -139,6 +180,29 @@ export class GatewayUpdateSupervisorClient {
 
   status(): Promise<GatewayUpdateStatus> {
     return this.request('GET', '/v1/status').then(value => gatewayUpdateStatusSchema.parse(value))
+  }
+
+  deploymentStatus(): Promise<GatewayDeploymentStatus> {
+    return this.request('GET', '/v1/deployments/status')
+      .then(value => gatewayDeploymentStatusSchema.parse(value))
+  }
+
+  prepareCandidate(releaseId: string): Promise<GatewayDeploymentStatus> {
+    return this.request('POST', '/v1/deployments/prepare', { releaseId })
+      .then(value => gatewayDeploymentStatusSchema.parse(value))
+  }
+
+  promoteCandidate(
+    updateId: string,
+    mode: 'when_idle' | 'force',
+  ): Promise<GatewayDeploymentStatus> {
+    return this.request('POST', '/v1/deployments/promote', { updateId, mode })
+      .then(value => gatewayDeploymentStatusSchema.parse(value))
+  }
+
+  discardCandidate(updateId: string): Promise<GatewayDeploymentStatus> {
+    return this.request('POST', '/v1/deployments/discard', { updateId })
+      .then(value => gatewayDeploymentStatusSchema.parse(value))
   }
 
   restartStatus(): Promise<GatewayRestartStatus> {
@@ -270,6 +334,51 @@ class GatewayUpdateSupervisorRequestError extends Error {
       ? code
       : 'gateway_update_supervisor_failed'
   }
+}
+
+function requireDeploymentCoordinator(input: {
+  deploymentCoordinator?: GatewayDeploymentCoordinator
+}): GatewayDeploymentCoordinator {
+  if (!input.deploymentCoordinator) {
+    throw new SupervisorHttpError(
+      503,
+      'gateway_blue_green_unavailable',
+      'Blue/green Gateway updates are not installed on this computer',
+    )
+  }
+  return input.deploymentCoordinator
+}
+
+function deploymentPromotionFromBody(input: unknown): {
+  updateId: string
+  mode: 'when_idle' | 'force'
+} {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new SupervisorHttpError(400, 'invalid_request')
+  }
+  const value = input as Record<string, unknown>
+  if (
+    Object.keys(value).length !== 2
+    || typeof value.updateId !== 'string'
+    || value.updateId.length < 1
+    || value.updateId.length > 256
+    || (value.mode !== 'when_idle' && value.mode !== 'force')
+  ) throw new SupervisorHttpError(400, 'invalid_request')
+  return { updateId: value.updateId, mode: value.mode }
+}
+
+function deploymentUpdateIdFromBody(input: unknown): string {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new SupervisorHttpError(400, 'invalid_request')
+  }
+  const value = input as Record<string, unknown>
+  if (
+    Object.keys(value).length !== 1
+    || typeof value.updateId !== 'string'
+    || value.updateId.length < 1
+    || value.updateId.length > 256
+  ) throw new SupervisorHttpError(400, 'invalid_request')
+  return value.updateId
 }
 
 function releaseIdFromBody(input: unknown): string {

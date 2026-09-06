@@ -125,6 +125,48 @@ test("returns an exact routed target only for an online-update node", () => {
   assert.equal(gatewayUpdateTarget(manual!), null);
 });
 
+test("recognizes a blue-green capable node without the legacy onlineUpdate flag", () => {
+  const [node] = gatewayUpdatePlan({
+    directory: {
+      directory: {
+        gateways: [
+          gateway("node-old", "Office Mac", "gateway-old-arm64", false, "project-old"),
+        ],
+      },
+    } as unknown as SignedWorkspaceGatewayDirectory,
+    knownProjectIds: new Set(["project-old"]),
+    release,
+    deployments: {
+      "computer-1": {
+        version: 1,
+        strategy: "blue-green-v1",
+        maxDeployments: 2,
+        computerId: "computer-1",
+        generation: 0,
+        phase: "steady",
+        active: {
+          gatewayNodeId: "node-old",
+          buildId: "gateway-old-arm64",
+          projectCount: 1,
+          sessionCount: 2,
+        },
+        updatedAt: 10,
+      },
+    },
+  });
+
+  assert.deepEqual(node, {
+    gatewayNodeId: "node-old",
+    gatewayName: "Office Mac",
+    currentBuildId: "gateway-old-arm64",
+    targetProjectId: "project-old",
+    onlineUpdate: true,
+    computerId: "computer-1",
+    blueGreenUpdate: true,
+    state: "available",
+  });
+});
+
 test("creates the maintenance session and schedules the confirmed Gateway", async () => {
   const commands: Array<{ operation: string; projectId: string }> = [];
   const result = await triggerGatewayUpdate({

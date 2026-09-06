@@ -662,6 +662,24 @@ from the current page as well as the next startup snapshot.
 
 ## Gateway online-update boundary
 
+The update availability model is a temporary blue/green pair on one physical
+computer: at most one active Gateway and one fully usable candidate. Existing
+projects stay on the active deployment during user-directed trial work. One
+explicit computer-level promotion drains both deployments, transfers every old
+project and persisted session in a generation-bound handoff, commits all route
+ownership to the candidate, and starts the merged candidate as the sole owner.
+The writers are stopped only inside that user-requested promotion transaction;
+a pre-commit failure restores the old active deployment. A trial has no timeout,
+a third deployment is forbidden, and no per-session partial promotion is
+allowed. The detailed contract is in
+[`gateway-blue-green-updates.md`](gateway-blue-green-updates.md).
+
+Installed Gateways that do not publish the blue/green capability continue to
+use the restart-in-place compatibility flow below. Cached release bytes or a
+validation process are never presented as a usable second Gateway.
+
+### Restart-in-place compatibility details
+
 The Gateway process does not update itself. An independently launched,
 owner-only supervisor constructs a complete signed release, reusing verified
 files from the active release and downloading only changed files. It verifies

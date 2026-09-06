@@ -2429,6 +2429,48 @@ class NativeClientRuntime(
                 v3SessionId = null
                 v3Payload = buildJsonObject { put("operation", v3Operation) }
             }
+            "gateway.update.prepare" -> {
+                v3Operation = operation
+                v3SessionId = null
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    put(
+                        "releaseId",
+                        raw.string("releaseId")
+                            ?: throw IllegalArgumentException("Gateway release ID is missing."),
+                    )
+                }
+            }
+            "gateway.update.promote" -> {
+                v3Operation = operation
+                v3SessionId = null
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    put(
+                        "updateId",
+                        raw.string("updateId")
+                            ?: throw IllegalArgumentException("Gateway update ID is missing."),
+                    )
+                    put("mode", raw.string("mode") ?: "when_idle")
+                }
+            }
+            "gateway.update.discard" -> {
+                v3Operation = operation
+                v3SessionId = null
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    put(
+                        "updateId",
+                        raw.string("updateId")
+                            ?: throw IllegalArgumentException("Gateway update ID is missing."),
+                    )
+                }
+            }
+            "gateway.deployment.status" -> {
+                v3Operation = operation
+                v3SessionId = null
+                v3Payload = buildJsonObject { put("operation", v3Operation) }
+            }
             "gateway.restart" -> {
                 v3Operation = operation
                 v3SessionId = null

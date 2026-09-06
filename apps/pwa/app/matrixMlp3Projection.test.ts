@@ -892,6 +892,60 @@ describe("MatrixMlp3Projection", () => {
     });
   });
 
+  it("persists the newest computer-scoped two-Gateway deployment", () => {
+    const projection = new MatrixMlp3Projection();
+    const deployment = (generation: number, phase: "trial" | "steady"): Mlp3Event => ({
+      kind: "malink.event",
+      version: 3,
+      eventId: `gateway-deployment-${generation}-${phase}`,
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      occurredAt: 30 + generation,
+      payload: {
+        type: "gateway.deployment.status",
+        status: {
+          version: 1,
+          strategy: "blue-green-v1",
+          maxDeployments: 2,
+          computerId: "computer-1",
+          generation,
+          phase,
+          active: {
+            gatewayNodeId: phase === "steady" ? "gateway-new" : "gateway-old",
+            buildId: phase === "steady" ? "build-new" : "build-old",
+            projectCount: 2,
+            sessionCount: 3,
+          },
+          ...(phase === "trial" ? {
+            updateId: "update-1",
+            candidate: {
+              gatewayNodeId: "gateway-new",
+              releaseId: "release-new",
+              buildId: "build-new",
+              projectCount: 1,
+              sessionCount: 1,
+            },
+          } : {}),
+          updatedAt: 30 + generation,
+        },
+      },
+    });
+
+    expect(projection.applyEvent(deployment(0, "trial"), "$trial")).toBe(true);
+    expect(projection.applyEvent(deployment(1, "steady"), "$steady")).toBe(true);
+    expect(projection.applyEvent(deployment(0, "trial"), "$stale")).toBe(false);
+    expect(projection.gatewayDeploymentObservation?.status).toMatchObject({
+      generation: 1,
+      phase: "steady",
+      active: { gatewayNodeId: "gateway-new" },
+    });
+
+    const restored = new MatrixMlp3Projection();
+    restored.restore(projection.durableState());
+    expect(restored.gatewayDeploymentObservation)
+      .toEqual(projection.gatewayDeploymentObservation);
+  });
+
   it("projects extension defaults and resolves an interaction on every device", () => {
     const projection = new MatrixMlp3Projection();
     projection.applyEvent(projectSnapshot(), "$project");

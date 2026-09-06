@@ -27,6 +27,7 @@ import {
   type GatewayRestartMode,
   type GatewayRestartStatus,
   type GatewayUpdateStatus,
+  type GatewayDeploymentStatus,
 } from '@malink/protocol'
 import type {
   GatewayAgentUpdateBeginResult,
@@ -302,6 +303,13 @@ export interface MatrixMlp3GatewayDependencies {
     ): Promise<GatewayUpdateStatus>
     restartStatus(): Promise<GatewayRestartStatus>
     scheduleRestart(mode: GatewayRestartMode): Promise<GatewayRestartStatus>
+    deploymentStatus?(): Promise<GatewayDeploymentStatus>
+    prepareCandidate?(releaseId: string): Promise<GatewayDeploymentStatus>
+    promoteCandidate?(
+      updateId: string,
+      mode: 'when_idle' | 'force',
+    ): Promise<GatewayDeploymentStatus>
+    discardCandidate?(updateId: string): Promise<GatewayDeploymentStatus>
   }
 }
 
@@ -350,6 +358,8 @@ export interface PublishNativeClientReleaseResult {
 export class MatrixMlp3GatewayRunner {
   private readonly client: MatrixGatewayClient
   private readonly inbox: FileMatrixEventInbox
+  private readonly shadowInbox: FileMatrixEventInbox | null
+  private readonly shadowRoomIds: Set<string>
   private readonly journal: Mlp3CommandJournal
   private readonly runtimeState: FileMlp3RuntimeStateStore
   private readonly nativeClientReleases: FileNativeClientReleaseStore
@@ -386,6 +396,7 @@ export class MatrixMlp3GatewayRunner {
   private readonly runtimeEpoch = randomUUID()
   private readonly providerHistorySnapshots: FileProviderHistorySnapshotStore
   private gatewayNodeStatusFingerprint: string | null = null
+  private gatewayDeploymentStatusFingerprint: string | null = null
   private gatewayNodeStatusLastPublishedAt = 0
   private gatewayNodeStatusControlRoomId: string | null | undefined
   private gatewayUpdateStatusMonitorTimer: ReturnType<typeof setTimeout> | null = null
@@ -402,12 +413,20 @@ export class MatrixMlp3GatewayRunner {
     private readonly dependencies: MatrixMlp3GatewayDependencies = {},
   ) {
     validateMatrixGatewayConfig(config)
+    if (config.startFenced) this.updateDrainState = 'sealed'
     this.client = dependencies.client
       ?? createMatrixJsSdkGatewayClient(config.connection, dependencies.onLog)
     this.inbox = new FileMatrixEventInbox(
       `${config.replayLedgerPath}.v3-matrix-inbox.json`,
       config.startupEventQueueLimit ?? 10_000,
     )
+    this.shadowRoomIds = new Set(config.shadowRoomIds ?? [])
+    this.shadowInbox = config.shadowRoomIds !== undefined
+      ? new FileMatrixEventInbox(
+          `${config.replayLedgerPath}.v3-matrix-shadow-inbox.json`,
+          config.startupEventQueueLimit ?? 10_000,
+        )
+      : null
     this.journal = new SqliteMlp3CommandJournal(
       `${config.replayLedgerPath}.v3-commands.sqlite`,
       `${config.replayLedgerPath}.v3-commands.jsonl`,
@@ -451,6 +470,25 @@ export class MatrixMlp3GatewayRunner {
 
   getState(): MatrixMlp3GatewayState {
     return this.state
+  }
+
+  /**
+   * Keeps a blue/green peer's rooms durably observed without granting this
+   * deployment execution authority over them. Workspace Directory ownership
+   * may change while a trial remains open, so this set is intentionally live.
+   */
+  setShadowRoomIds(roomIds: readonly string[]): void {
+    if (!this.shadowInbox && roomIds.length > 0) {
+      throw new Error('Gateway shadow inbox was not enabled at startup')
+    }
+    const localRoomIds = new Set(this.projects.keys())
+    const next = new Set(roomIds)
+    if (next.size !== roomIds.length || [...next].some(roomId =>
+      !roomId.trim() || localRoomIds.has(roomId))) {
+      throw new Error('Gateway shadow rooms are invalid or locally owned')
+    }
+    this.shadowRoomIds.clear()
+    for (const roomId of next) this.shadowRoomIds.add(roomId)
   }
 
   async receiveWorkspaceFile(
@@ -510,6 +548,7 @@ export class MatrixMlp3GatewayRunner {
     this.archivedSessionCleanupAbortController = new AbortController()
     try {
       await this.inbox.initialize()
+      await this.shadowInbox?.initialize()
       await this.journal.initialize()
       await this.runtimeState.initialize(this.config.rooms)
       await this.nativeClientReleases.initialize()
@@ -599,8 +638,38 @@ export class MatrixMlp3GatewayRunner {
     return this.inbox.counts()
   }
 
+  async sealForDeployment(mode: 'when_idle' | 'force'): Promise<void> {
+    if (this.state === 'stopped') return
+    if (this.state !== 'running') {
+      throw new Error(`Cannot seal Gateway deployment while ${this.state}`)
+    }
+    if (this.updateDrainState === 'open') this.updateDrainState = 'waiting'
+    if (mode === 'force') {
+      await this.interruptActiveTurnsForMaintenance('forced Gateway handoff')
+    }
+    while (this.activeTurnCount() > 0 || this.activeCommands.size > 0) {
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 100))
+      if (this.state !== 'running') {
+        throw new Error('Gateway stopped before its deployment handoff was sealed')
+      }
+    }
+    this.updateDrainState = 'sealed'
+    await this.eventChain
+    const health = await this.healthSnapshot()
+    if (health.pendingOutboxDeliveries > 0 || health.pendingInboxEvents > 0) {
+      throw new Error(
+        `Gateway deployment cannot seal with ${health.pendingOutboxDeliveries} outbox `
+        + `and ${health.pendingInboxEvents} inbox record(s) pending`,
+      )
+    }
+    await this.stop()
+  }
+
   async healthSnapshot(): Promise<{
     runtimeEpoch: string
+    projectCount: number
+    sessionCount: number
+    deploymentFenced: boolean
     activeTurns: number
     activeCommands: number
     expiredCommandExecutions: number
@@ -611,10 +680,13 @@ export class MatrixMlp3GatewayRunner {
     outboxWalBytes: number
     pendingInboxEvents: number
     quarantinedInboxEvents: number
+    shadowInboxEvents: number
+    shadowRoomCount: number
     matrixReady: boolean | null
     lastMatrixSyncAt: number | null
   }> {
     const inbox = await this.inbox.counts()
+    const shadowInbox = await this.shadowInbox?.counts()
     const unfinished = await this.journal.unfinished()
     const outbox = this.content.outboxHealth(this.now())
     const matrix = this.client.getSyncHealth?.()
@@ -626,6 +698,12 @@ export class MatrixMlp3GatewayRunner {
     }
     return {
       runtimeEpoch: this.runtimeEpoch,
+      projectCount: this.projects.size,
+      sessionCount: [...this.projects.values()].reduce(
+        (count, project) => count + project.sessions.size,
+        0,
+      ),
+      deploymentFenced: this.updateDrainState === 'sealed',
       activeTurns,
       activeCommands: this.activeCommands.size,
       expiredCommandExecutions: this.expiredCommandExecutions.size,
@@ -638,6 +716,8 @@ export class MatrixMlp3GatewayRunner {
       outboxWalBytes: outbox.walBytes,
       pendingInboxEvents: inbox.pending,
       quarantinedInboxEvents: inbox.quarantined,
+      shadowInboxEvents: (shadowInbox?.pending ?? 0) + (shadowInbox?.quarantined ?? 0),
+      shadowRoomCount: this.shadowRoomIds.size,
       matrixReady: matrix?.ready ?? null,
       lastMatrixSyncAt: matrix?.lastSyncAt ?? null,
     }
@@ -869,6 +949,10 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private async receiveEvent(event: MatrixIncomingEvent): Promise<void> {
+    if (this.shadowRoomIds.has(event.roomId)) {
+      await this.shadowInbox?.stage(event, this.now())
+      return
+    }
     await this.inbox.stage(event, this.now())
     if (this.state === 'running') this.enqueue(event)
   }
@@ -988,6 +1072,7 @@ export class MatrixMlp3GatewayRunner {
     if (this.updateDrainState === 'sealed') return true
     if (
       command.operation === 'gateway.update.status'
+      || command.operation === 'gateway.deployment.status'
       || command.operation === 'gateway.restart.status'
     ) return false
     return command.operation !== 'turn.cancel' && command.operation !== 'decision.answer'
@@ -1106,6 +1191,9 @@ export class MatrixMlp3GatewayRunner {
       || command.operation === 'gateway.restart'
       ? null
       : command.operation === 'gateway.update.stage'
+        || command.operation === 'gateway.update.prepare'
+        || command.operation === 'gateway.update.promote'
+        || command.operation === 'gateway.update.discard'
         ? this.config.gatewayUpdateExecutionTimeoutMs
           ?? DEFAULT_GATEWAY_UPDATE_EXECUTION_TIMEOUT_MS
         : this.config.commandExecutionTimeoutMs
@@ -1217,6 +1305,18 @@ export class MatrixMlp3GatewayRunner {
         return
       case 'gateway.update.status':
         await this.reportGatewayUpdateStatus(project, command)
+        return
+      case 'gateway.update.prepare':
+        await this.prepareGatewayCandidate(project, command)
+        return
+      case 'gateway.update.promote':
+        await this.promoteGatewayCandidate(project, command)
+        return
+      case 'gateway.update.discard':
+        await this.discardGatewayCandidate(project, command)
+        return
+      case 'gateway.deployment.status':
+        await this.reportGatewayDeploymentStatus(project, command)
         return
       case 'gateway.restart':
         await this.restartGateway(project, command)
@@ -1480,6 +1580,149 @@ export class MatrixMlp3GatewayRunner {
     )
   }
 
+  private async prepareGatewayCandidate(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.update.prepare'>,
+  ): Promise<void> {
+    const prepare = this.requireGatewayUpdateSupervisor().prepareCandidate
+    if (!prepare) {
+      throw new Error('This computer does not support temporary dual-Gateway updates')
+    }
+    const status = await prepare.call(
+      this.requireGatewayUpdateSupervisor(),
+      command.payload.releaseId,
+    )
+    await this.settleAndDeliver(
+      project,
+      command,
+      this.eventFor(project, undefined, command, 'gateway-candidate-prepared', {
+        type: 'gateway.deployment.status',
+        status,
+      }),
+      'succeeded',
+      status,
+    )
+    await this.publishGatewayDeploymentStatus(status)
+  }
+
+  private async promoteGatewayCandidate(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.update.promote'>,
+  ): Promise<void> {
+    const promote = this.requireGatewayUpdateSupervisor().promoteCandidate
+    if (!promote) {
+      throw new Error('This computer does not support temporary dual-Gateway updates')
+    }
+    if (this.updateDrainState !== 'open') {
+      throw new Error('Another Gateway maintenance action is already draining this runtime')
+    }
+    this.updateDrainState = 'waiting'
+    let scheduled = false
+    try {
+      if (command.payload.mode === 'force') {
+        await this.interruptActiveTurnsForMaintenance('forced Gateway promotion')
+      }
+      while (this.activeTurnCount() > 0 || this.otherActiveCommandCount(command) > 0) {
+        await new Promise(resolveDelay => setTimeout(resolveDelay, 500))
+        if (this.state !== 'running') {
+          throw new Error('Gateway stopped while waiting to promote its candidate')
+        }
+      }
+      this.updateDrainState = 'sealed'
+      const status = await promote.call(
+        this.requireGatewayUpdateSupervisor(),
+        command.payload.updateId,
+        command.payload.mode,
+      )
+      scheduled = ['draining', 'transferring', 'committing', 'steady'].includes(status.phase)
+      await this.settleAndDeliver(
+        project,
+        command,
+        this.eventFor(project, undefined, command, 'gateway-candidate-promoted', {
+          type: 'gateway.deployment.status',
+          status,
+        }),
+        'succeeded',
+        status,
+      )
+      await this.publishGatewayDeploymentStatus(status)
+      if (status.phase !== 'steady') void this.monitorGatewayDeploymentTransition(command.payload.updateId)
+    } finally {
+      if (!scheduled) {
+        this.updateDrainState = 'open'
+        this.resumeDeferredUpdateCommands()
+      }
+    }
+  }
+
+  private async monitorGatewayDeploymentTransition(updateId: string): Promise<void> {
+    while (this.state === 'running' && this.updateDrainState === 'sealed') {
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 500))
+      const readStatus = this.dependencies.gatewayUpdateSupervisor?.deploymentStatus
+      if (!readStatus) return
+      const current = await readStatus.call(this.dependencies.gatewayUpdateSupervisor).catch(error => {
+        this.log(`[mlp3/matrix] Gateway deployment status unavailable: ${formatError(error)}`)
+        return undefined
+      })
+      if (!current) continue
+      await this.publishGatewayDeploymentStatus(current).catch(error => {
+        this.log(`[mlp3/matrix] Gateway deployment status publication failed: ${formatError(error)}`)
+      })
+      if (current.phase === 'trial' && current.updateId === updateId) {
+        this.updateDrainState = 'open'
+        this.resumeDeferredUpdateCommands()
+        return
+      }
+      if (current.phase === 'repair_required' || current.phase === 'steady') return
+    }
+  }
+
+  private async discardGatewayCandidate(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.update.discard'>,
+  ): Promise<void> {
+    const discard = this.requireGatewayUpdateSupervisor().discardCandidate
+    if (!discard) {
+      throw new Error('This computer does not support temporary dual-Gateway updates')
+    }
+    const status = await discard.call(
+      this.requireGatewayUpdateSupervisor(),
+      command.payload.updateId,
+    )
+    await this.settleAndDeliver(
+      project,
+      command,
+      this.eventFor(project, undefined, command, 'gateway-candidate-discarded', {
+        type: 'gateway.deployment.status',
+        status,
+      }),
+      'succeeded',
+      status,
+    )
+    await this.publishGatewayDeploymentStatus(status)
+  }
+
+  private async reportGatewayDeploymentStatus(
+    project: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.deployment.status'>,
+  ): Promise<void> {
+    const readStatus = this.requireGatewayUpdateSupervisor().deploymentStatus
+    if (!readStatus) {
+      throw new Error('This computer does not support temporary dual-Gateway updates')
+    }
+    const status = await readStatus.call(this.requireGatewayUpdateSupervisor())
+    await this.settleAndDeliver(
+      project,
+      command,
+      this.eventFor(project, undefined, command, 'gateway-deployment-status', {
+        type: 'gateway.deployment.status',
+        status,
+      }),
+      'succeeded',
+      status,
+    )
+  }
+
   private async restartGateway(
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'gateway.restart'>,
@@ -1679,10 +1922,51 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private async publishGatewayUpdateStatus(): Promise<GatewayUpdateStatus | undefined> {
+    await this.publishGatewayDeploymentStatus().catch(error => {
+      this.log(`[mlp3/matrix] Gateway deployment status publication failed: ${formatError(error)}`)
+    })
     return await this.publishGatewayNodeStatus().catch(error => {
       this.log(`[mlp3/matrix] Gateway node status publication failed: ${formatError(error)}`)
       return undefined
     })
+  }
+
+  private async publishGatewayDeploymentStatus(
+    knownStatus?: GatewayDeploymentStatus,
+  ): Promise<GatewayDeploymentStatus | undefined> {
+    if (this.state !== 'running') return undefined
+    const readStatus = this.dependencies.gatewayUpdateSupervisor?.deploymentStatus
+    if (!knownStatus && !readStatus) return undefined
+    const status = knownStatus ?? await readStatus?.call(
+      this.dependencies.gatewayUpdateSupervisor,
+    )
+    if (!status) return undefined
+    const fingerprint = canonicalJson(status as JsonValue)
+    if (fingerprint === this.gatewayDeploymentStatusFingerprint) return status
+    const project = await this.gatewayNodeStatusProject()
+    if (!project) return status
+    const observedAt = Math.max(this.now(), this.gatewayNodeStatusLastPublishedAt + 1)
+    const event: Mlp3Event = {
+      kind: 'malink.event',
+      version: 3,
+      eventId: logicalGatewayDeploymentStatusEventId(
+        this.config.gatewayId,
+        status.computerId,
+        status.generation,
+        observedAt,
+      ),
+      workspaceId: this.config.gatewayId,
+      projectId: project.project.projectId,
+      occurredAt: observedAt,
+      payload: {
+        type: 'gateway.deployment.status',
+        status,
+      },
+    }
+    await this.content.queueEvent(project.config, event, this.client)
+    this.gatewayDeploymentStatusFingerprint = fingerprint
+    this.gatewayNodeStatusLastPublishedAt = observedAt
+    return status
   }
 
   private scheduleGatewayUpdateStatusMonitor(
@@ -5200,6 +5484,20 @@ function logicalGatewayNodeStatusEventId(
 ): string {
   return createHash('sha256')
     .update(`malink-v3-gateway-node-status\0${workspaceId}\0${gatewayNodeId}\0${observedAt}`)
+    .digest('base64url')
+}
+
+function logicalGatewayDeploymentStatusEventId(
+  workspaceId: string,
+  computerId: string,
+  generation: number,
+  observedAt: number,
+): string {
+  return createHash('sha256')
+    .update(
+      `malink-v3-gateway-deployment-status\0${workspaceId}\0${computerId}\0`
+      + `${generation}\0${observedAt}`,
+    )
     .digest('base64url')
 }
 

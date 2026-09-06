@@ -105,7 +105,33 @@ update-discovery failure; it must not duplicate healthy computer cards.
 
 ## Workspace computer updates
 
-The user chooses the restart policy before installation:
+The update model keeps the current Gateway usable while a second version
+runs temporarily on the same computer. The computer card groups both versions
+under one stable computer identity and never presents them as two unrelated
+computers.
+
+The normal journey is:
+
+1. **Prepare candidate** — download, build, validate, and start the new Gateway
+   without interrupting the current Gateway.
+2. **Try candidate** — explicitly create work on either the current or candidate
+   version. Existing sessions remain on the current version.
+3. Choose **Switch all work** or **Discard candidate**. There is no automatic
+   timeout or automatic promotion.
+4. **Switch all work** waits for or explicitly cancels running turns, drains
+   accepted delivery work, briefly closes both Gateway writers for one
+   consistent transfer, and verifies the new sole owner. A failure before the
+   ownership commit restores the old Gateway. **Discard candidate** affects only
+   candidate-owned trial work.
+
+A computer has at most one current and one candidate Gateway. While a candidate
+exists, the UI does not offer another update, a third version, or per-session
+migration. The switch confirmation shows how many projects and sessions will
+move and makes clear that none will remain on the old version.
+
+Older installed Gateways that do not publish the blue/green capability retain
+the compatibility restart-in-place flow. In that flow, the user chooses the
+restart policy before installation:
 
 - **Update when idle** prepares the release, waits for current Agent work, then
   restarts and verifies the computer.

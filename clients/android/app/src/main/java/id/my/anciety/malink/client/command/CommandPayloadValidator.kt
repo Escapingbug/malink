@@ -33,6 +33,10 @@ enum class CommandOperation(val wireName: String) {
     GATEWAY_UPDATE_STAGE("gateway.update.stage"),
     GATEWAY_UPDATE_APPLY("gateway.update.apply"),
     GATEWAY_UPDATE_STATUS("gateway.update.status"),
+    GATEWAY_UPDATE_PREPARE("gateway.update.prepare"),
+    GATEWAY_UPDATE_PROMOTE("gateway.update.promote"),
+    GATEWAY_UPDATE_DISCARD("gateway.update.discard"),
+    GATEWAY_DEPLOYMENT_STATUS("gateway.deployment.status"),
     GATEWAY_RESTART("gateway.restart"),
     GATEWAY_RESTART_STATUS("gateway.restart.status"),
     ;
@@ -45,6 +49,7 @@ enum class CommandOperation(val wireName: String) {
 
 internal val CommandOperation.isGatewayStatusProbe: Boolean
     get() = this == CommandOperation.GATEWAY_UPDATE_STATUS ||
+        this == CommandOperation.GATEWAY_DEPLOYMENT_STATUS ||
         this == CommandOperation.GATEWAY_RESTART_STATUS
 
 sealed interface ValidatedCommandPayload {
@@ -291,6 +296,7 @@ data class GatewayRetireCommandPayload(
 data class GatewayUpdateCommandPayload(
     override val operation: CommandOperation,
     val releaseId: String?,
+    val updateId: String?,
     val mode: String?,
     val allowForwardOnly: Boolean?,
 ) : ValidatedCommandPayload {
@@ -300,7 +306,11 @@ data class GatewayUpdateCommandPayload(
         require(
             operation == CommandOperation.GATEWAY_UPDATE_STAGE ||
                 operation == CommandOperation.GATEWAY_UPDATE_APPLY ||
-                operation == CommandOperation.GATEWAY_UPDATE_STATUS,
+                operation == CommandOperation.GATEWAY_UPDATE_STATUS ||
+                operation == CommandOperation.GATEWAY_UPDATE_PREPARE ||
+                operation == CommandOperation.GATEWAY_UPDATE_PROMOTE ||
+                operation == CommandOperation.GATEWAY_UPDATE_DISCARD ||
+                operation == CommandOperation.GATEWAY_DEPLOYMENT_STATUS,
         ) { "Gateway update operation is invalid." }
     }
 }
@@ -352,6 +362,10 @@ object CommandPayloadValidator {
             CommandOperation.GATEWAY_UPDATE_STAGE,
             CommandOperation.GATEWAY_UPDATE_APPLY,
             CommandOperation.GATEWAY_UPDATE_STATUS,
+            CommandOperation.GATEWAY_UPDATE_PREPARE,
+            CommandOperation.GATEWAY_UPDATE_PROMOTE,
+            CommandOperation.GATEWAY_UPDATE_DISCARD,
+            CommandOperation.GATEWAY_DEPLOYMENT_STATUS,
             -> validateGatewayUpdate(value, operation)
             CommandOperation.GATEWAY_RESTART,
             CommandOperation.GATEWAY_RESTART_STATUS,
@@ -658,9 +672,31 @@ object CommandPayloadValidator {
         value: JsonObject,
         operation: CommandOperation,
     ): GatewayUpdateCommandPayload {
-        if (operation == CommandOperation.GATEWAY_UPDATE_STATUS) {
+        if (
+            operation == CommandOperation.GATEWAY_UPDATE_STATUS ||
+            operation == CommandOperation.GATEWAY_DEPLOYMENT_STATUS
+        ) {
             value.requireExactKeys(setOf("operation"))
-            return GatewayUpdateCommandPayload(operation, null, null, null)
+            return GatewayUpdateCommandPayload(operation, null, null, null, null)
+        }
+        if (
+            operation == CommandOperation.GATEWAY_UPDATE_PROMOTE ||
+            operation == CommandOperation.GATEWAY_UPDATE_DISCARD
+        ) {
+            value.requireExactKeys(
+                required = setOf("operation", "updateId"),
+                optional = if (operation == CommandOperation.GATEWAY_UPDATE_PROMOTE) {
+                    setOf("mode")
+                } else {
+                    emptySet()
+                },
+            )
+            val updateId = value.requiredOpaqueId("updateId")
+            val mode = value.optionalBoundedString("mode", 32)
+            require(mode == null || mode == "when_idle" || mode == "force") {
+                "Gateway update mode is invalid."
+            }
+            return GatewayUpdateCommandPayload(operation, null, updateId, mode, null)
         }
         value.requireExactKeys(
             required = setOf("operation", "releaseId"),
@@ -680,7 +716,7 @@ object CommandPayloadValidator {
         require(allowForwardOnly == null || allowForwardOnly) {
             "Gateway forward-only confirmation must be true when present."
         }
-        return GatewayUpdateCommandPayload(operation, releaseId, mode, allowForwardOnly)
+        return GatewayUpdateCommandPayload(operation, releaseId, null, mode, allowForwardOnly)
     }
 
     private fun validateGatewayRestart(
@@ -915,6 +951,10 @@ internal fun requiredCertificateOperation(operation: CommandOperation): PairingO
         CommandOperation.GATEWAY_UPDATE_STAGE,
         CommandOperation.GATEWAY_UPDATE_APPLY,
         CommandOperation.GATEWAY_UPDATE_STATUS,
+        CommandOperation.GATEWAY_UPDATE_PREPARE,
+        CommandOperation.GATEWAY_UPDATE_PROMOTE,
+        CommandOperation.GATEWAY_UPDATE_DISCARD,
+        CommandOperation.GATEWAY_DEPLOYMENT_STATUS,
         CommandOperation.GATEWAY_RESTART,
         CommandOperation.GATEWAY_RESTART_STATUS,
         -> PairingOperation.GATEWAY_UPDATE

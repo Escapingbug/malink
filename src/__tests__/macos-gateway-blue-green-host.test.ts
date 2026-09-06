@@ -1,0 +1,69 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { FileGatewayIdentityStore } from '@/gateway/pairing'
+import {
+  inspectGatewayDeploymentSlot,
+  MacosGatewayBlueGreenHost,
+} from '@/ops/macosGatewayBlueGreenHost'
+
+const temporaryDirectories: string[] = []
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map(path =>
+    rm(path, { recursive: true, force: true })))
+})
+
+describe('MacosGatewayBlueGreenHost', () => {
+  it('inspects the exact active deployment identity, projects, and sessions', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-blue-green-slot-'))
+    temporaryDirectories.push(directory)
+    await new FileGatewayIdentityStore(join(directory, 'gateway-identity.json'))
+      .loadOrCreate('workspace-1', 1)
+    await writeFile(join(directory, 'gateway-projects.json'), `${JSON.stringify({
+      version: 1,
+      gatewayNodeId: 'workspace-1',
+      projects: [
+        { projectId: 'project-1' },
+        { projectId: 'project-2' },
+      ],
+    })}\n`, { mode: 0o600 })
+    await writeFile(
+      join(directory, 'gateway-replay.jsonl.v3-runtime-state.json'),
+      `${JSON.stringify({
+        version: 3,
+        workspaceId: 'workspace-1',
+        projects: {
+          '!one:example.org': { sessions: [{ id: 'session-1' }] },
+          '!two:example.org': { sessions: [{ id: 'session-2' }, { id: 'session-3' }] },
+        },
+      })}\n`,
+      { mode: 0o600 },
+    )
+
+    await expect(inspectGatewayDeploymentSlot({
+      dataDirectory: directory,
+      releaseId: 'release-1',
+      buildId: 'build-1',
+    })).resolves.toEqual({
+      gatewayNodeId: 'workspace-1',
+      releaseId: 'release-1',
+      buildId: 'build-1',
+      projectCount: 2,
+      sessionCount: 3,
+    })
+  })
+
+  it('refuses to host launchd deployments on another platform', () => {
+    expect(() => new MacosGatewayBlueGreenHost({
+      installRoot: '/tmp/malink-test-install',
+      activeDataDirectory: '/tmp/malink-test-data',
+      activeAdminSocketPath: '/tmp/malink-test-admin.sock',
+      activeLaunchAgentPath: '/tmp/malink-test.plist',
+      activeServiceLabel: 'id.my.anciety.malink.test',
+      updateSocketPath: '/tmp/malink-test-update.sock',
+      platform: 'linux',
+    })).toThrow('requires macOS launchd')
+  })
+})

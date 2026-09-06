@@ -83,6 +83,16 @@ const dataDirectory = process.env.MALINK_MATRIX_DATA_DIR
     ?? join(process.cwd(), 'dev', 'matrix', 'gateway-data')
 const adminSocketPath = process.env.MALINK_GATEWAY_ADMIN_SOCKET
     ?? join(dataDirectory, 'admin.sock')
+const blueGreenDeployment = process.env.MALINK_GATEWAY_BLUE_GREEN === '1'
+const handoffPending = process.env.MALINK_GATEWAY_HANDOFF_PENDING === '1'
+const shadowRoomIds = process.env.MALINK_GATEWAY_SHADOW_ROOMS_FILE?.trim()
+    ? await readJson<string[]>(process.env.MALINK_GATEWAY_SHADOW_ROOMS_FILE.trim())
+    : []
+if (
+    !Array.isArray(shadowRoomIds)
+    || shadowRoomIds.some(roomId => typeof roomId !== 'string' || !roomId.trim())
+    || new Set(shadowRoomIds).size !== shadowRoomIds.length
+) throw new Error('Gateway shadow room configuration is invalid')
 await assertGatewayAdminSocketUnclaimed(adminSocketPath)
 // This lock is acquired before Matrix login, replay state, or the command
 // journal is opened. A candidate validation process can therefore never share
@@ -314,12 +324,12 @@ async function publishLocalWorkspaceDirectory(): Promise<void> {
         {
             computerName: gatewayProfile.computerName,
             buildId: gatewayBuildId,
-            ...(gatewayUpdateSupervisor ? { onlineUpdate: true } : {}),
+            ...(gatewayUpdateSupervisor && !blueGreenDeployment ? { onlineUpdate: true } : {}),
         },
     )
 }
 
-await publishLocalWorkspaceDirectory()
+if (!handoffPending) await publishLocalWorkspaceDirectory()
 const gatewayEnrollmentCoordinator = new FileGatewayEnrollmentCoordinator(
     join(dataDirectory, 'gateway-enrollments.json'),
     identity,
@@ -453,6 +463,13 @@ async function performWorkspaceControlSync(): Promise<void> {
         throw failure
     }
     const roomIds = workspaceDirectoryRoomIds(directory)
+    if (blueGreenDeployment) {
+        runner?.setShadowRoomIds(directory.directory.gateways
+            .filter(gateway => gateway.gatewayNodeId !== identity.gatewayNodeId)
+            .flatMap(gateway => gateway.projects ?? [])
+            .map(project => project.roomId)
+            .filter(roomId => !localRoomIds.includes(roomId)))
+    }
     // The Gateway bootstrap route is the stable Workspace control lane for
     // this node. Every authorized client and Gateway account joins it through
     // the signed directory, so root-signed control documents do not need an
@@ -573,6 +590,12 @@ const stopWorkspaceControl = client.onRoomEvent(event => {
         merge = async () => { await workspaceAuthorization.mergeRevocation(event.content) }
     }
     if (!merge) return
+    if (handoffPending) {
+        void merge().catch(error => {
+            process.stderr.write(`[workspace-control] rejected fenced update: ${formatError(error)}\n`)
+        })
+        return
+    }
     void synchronizeWorkspaceControl(merge).catch(error => {
         process.stderr.write(`[workspace-control] rejected update: ${formatError(error)}\n`)
     })
@@ -624,6 +647,7 @@ const config: MatrixGatewayConfig = {
     },
     crypto: cryptoConfig,
     rooms: configuredRooms,
+    ...(blueGreenDeployment ? { shadowRoomIds } : {}),
     trustedDevices,
     replayLedgerPath: join(dataDirectory, 'gateway-replay.jsonl'),
     applicationSecurity: {
@@ -644,6 +668,9 @@ const config: MatrixGatewayConfig = {
         60_000,
         'MALINK_MATRIX_GATEWAY_HEARTBEAT_INTERVAL_MS',
     ),
+    ...(handoffPending
+        ? { startFenced: true }
+        : {}),
 }
 runner = new MatrixMlp3GatewayRunner(config, {
     client,
@@ -1001,14 +1028,18 @@ runner = new MatrixMlp3GatewayRunner(config, {
 })
 
 await runner.start()
-void synchronizeWorkspaceControl().catch(error => {
-    process.stderr.write(`[workspace-control] initial synchronization deferred: ${formatError(error)}\n`)
-})
-const workspaceControlTimer = setInterval(() => {
-    void synchronizeWorkspaceControl(publishLocalWorkspaceDirectory).catch(error => {
-        process.stderr.write(`[workspace-control] synchronization failed: ${formatError(error)}\n`)
+if (!handoffPending) {
+    void synchronizeWorkspaceControl().catch(error => {
+        process.stderr.write(`[workspace-control] initial synchronization deferred: ${formatError(error)}\n`)
     })
-}, config.workspaceControlIntervalMs ?? 60_000)
+}
+const workspaceControlTimer = handoffPending
+    ? undefined
+    : setInterval(() => {
+        void synchronizeWorkspaceControl(publishLocalWorkspaceDirectory).catch(error => {
+            process.stderr.write(`[workspace-control] synchronization failed: ${formatError(error)}\n`)
+        })
+    }, config.workspaceControlIntervalMs ?? 60_000)
 const adminServer = await startGatewayAdminServer({
     socketPath: adminSocketPath,
     gatewayId: identity.gatewayId,
@@ -1038,6 +1069,11 @@ const adminServer = await startGatewayAdminServer({
     getGatewayState: () => runner?.getState() ?? 'starting',
     buildId: gatewayBuildId,
     getGatewayDiagnostics: () => runner!.healthSnapshot(),
+    sealForDeployment: mode => runner!.sealForDeployment(mode),
+    issueDeploymentMatrixLogin: () => gatewayLoginTokenIssuer.issue({
+        homeserver: fixture.homeserver,
+        offerExpiresAt: Date.now() + 2 * 60_000,
+    }),
     syncGatewayState: async () => {
         await runner?.syncState()
     },
@@ -1153,7 +1189,7 @@ const stopped = new Promise<{ failure: Error | null; forced: boolean }>(resolve 
     requestStop = (failure?: Error): void => {
         if (stopping) return
         stopping = true
-        clearInterval(workspaceControlTimer)
+        if (workspaceControlTimer) clearInterval(workspaceControlTimer)
         const shutdown = adminServer.stop()
             .catch(error => {
                 process.stderr.write(

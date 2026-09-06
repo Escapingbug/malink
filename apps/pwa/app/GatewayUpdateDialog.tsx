@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import type { GatewayUpdateStatus } from "@malink/protocol";
+import type { GatewayDeploymentStatus, GatewayUpdateStatus } from "@malink/protocol";
 import type { GatewayReleaseBuild } from "./buildInfo";
 import { useDialogFocus } from "./dialogFocus";
 import {
@@ -51,8 +51,12 @@ type Props = {
   livenessByNode?: Readonly<Record<string, GatewayNodeLiveness>>;
   activeGatewayNodeIds: ReadonlySet<string>;
   activeGatewayModesByNode?: Readonly<Record<string, "when_idle" | "force">>;
+  deploymentsByComputer?: Readonly<Record<string, GatewayDeploymentStatus>>;
   onClose(): void;
   onStart(node: GatewayUpdatePlanNode, mode: "when_idle" | "force"): void;
+  onPromote(node: GatewayUpdatePlanNode, mode: "when_idle" | "force"): void;
+  onDiscard(node: GatewayUpdatePlanNode): void;
+  onOpenProject(projectId: string): void;
   onOpenSession(projectId: string, sessionId: string): void;
   onArchiveSession(node: GatewayUpdatePlanNode, sessionId: string): void;
   onExportDiagnostics(): void;
@@ -73,8 +77,12 @@ function GatewayUpdateDialogContent({
   livenessByNode = {},
   activeGatewayNodeIds,
   activeGatewayModesByNode = {},
+  deploymentsByComputer = {},
   onClose,
   onStart,
+  onPromote,
+  onDiscard,
+  onOpenProject,
   onOpenSession,
   onArchiveSession,
   onExportDiagnostics,
@@ -210,6 +218,15 @@ function GatewayUpdateDialogContent({
             const active = activeGatewayNodeIds.has(node.gatewayNodeId);
             const activeMode = activeGatewayModesByNode[node.gatewayNodeId];
             const forceConfirming = forceConfirmationNodeId === node.gatewayNodeId;
+            const deployment = node.computerId
+              ? deploymentsByComputer[node.computerId]
+              : undefined;
+            const deploymentOwner = deployment?.active.gatewayNodeId === node.gatewayNodeId;
+            const candidateTrial = deploymentOwner && deployment.phase === "trial";
+            const candidateNode = candidateTrial
+              ? nodes.find(candidate =>
+                  candidate.gatewayNodeId === deployment.candidate?.gatewayNodeId)
+              : undefined;
             return (
               <article
                 key={node.gatewayNodeId}
@@ -300,6 +317,58 @@ function GatewayUpdateDialogContent({
                 )}
 
                 <div className="gateway-update-node-actions">
+                  {deploymentOwner && deployment.phase !== "steady" && (
+                    <p className="gateway-update-action-status" role="status">
+                      {deployment.phase === "trial"
+                        ? `Candidate ${deployment.candidate?.buildId ?? "unknown"} is running beside the current Gateway. It stays available until you choose.`
+                        : deployment.detail ?? `Gateway deployment is ${deployment.phase}.`}
+                    </p>
+                  )}
+                  {candidateTrial && (
+                    <>
+                      {candidateNode?.targetProjectId ? (
+                        <button
+                          type="button"
+                          className="primary-button"
+                          disabled={!connected}
+                          onClick={() => onOpenProject(candidateNode.targetProjectId!)}
+                        >
+                          Use candidate Gateway
+                        </button>
+                      ) : (
+                        <p className="gateway-update-action-status" role="status">
+                          Candidate trial route is still synchronizing to this device.
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={!connected || active}
+                        aria-busy={active && activeMode !== "force"}
+                        onClick={() => onPromote(node, "when_idle")}
+                      >
+                        {active && activeMode !== "force"
+                          ? "Switching when idle…"
+                          : "Switch all work when idle"}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={!connected || active}
+                        onClick={() => setForceConfirmationNodeId(node.gatewayNodeId)}
+                      >
+                        Switch all work now…
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={!connected || active}
+                        onClick={() => onDiscard(node)}
+                      >
+                        Discard candidate
+                      </button>
+                    </>
+                  )}
                   {!targetInstalled && !statusWasSuperseded && runtime.maintenanceSessionId &&
                     node.targetProjectId && (
                     <button
@@ -397,7 +466,7 @@ function GatewayUpdateDialogContent({
                       ) : null}
                     </>
                   )}
-                  {node.state === "available" && updateActionAvailable && (
+                  {node.state === "available" && updateActionAvailable && !candidateTrial && (
                     <>
                       <button
                         type="button"
@@ -414,6 +483,8 @@ function GatewayUpdateDialogContent({
                                 recovery.kind === "retry"
                               ? recovery.busyLabel
                               : "Preparing update…"
+                          : node.blueGreenUpdate
+                            ? "Prepare candidate Gateway"
                           : stagedPublishedRelease
                             ? forwardOnlyConfirmation
                               ? "Confirm and install when idle"
@@ -435,6 +506,8 @@ function GatewayUpdateDialogContent({
                           ? stagedPublishedRelease
                             ? "Scheduling restart now…"
                             : "Preparing restart…"
+                          : node.blueGreenUpdate
+                            ? "Prepare candidate now…"
                           : recovery.kind === "retry"
                             ? "Try again and restart now…"
                             : recovery.kind === "start" &&
@@ -457,11 +530,11 @@ function GatewayUpdateDialogContent({
                     role="alert"
                     tabIndex={-1}
                   >
-                    <strong>Restart {owner.label} now?</strong>
+                    <strong>{candidateTrial ? "Switch all work now?" : `Restart ${owner.label} now?`}</strong>
                     <p>
-                      Malink will stop active Agent turns on this computer, finish preparing
-                      the verified update, restart the Gateway, and check that it reconnects.
-                      Queued commands remain saved.
+                      {candidateTrial
+                        ? "Malink will stop active Agent turns, merge every old and trial session into the verified candidate, and commit all project routes together. The old Gateway stops only after takeover validation."
+                        : "Malink will stop active Agent turns on this computer, finish preparing the verified update, restart the Gateway, and check that it reconnects. Queued commands remain saved."}
                     </p>
                     <span>
                       <button
@@ -477,10 +550,11 @@ function GatewayUpdateDialogContent({
                         disabled={!canRequestUpdate}
                         onClick={() => {
                           setForceConfirmationNodeId(null);
-                          onStart(node, "force");
+                          if (candidateTrial) onPromote(node, "force");
+                          else onStart(node, "force");
                         }}
                       >
-                        Stop work and restart
+                        {candidateTrial ? "Stop work and switch" : "Stop work and restart"}
                       </button>
                     </span>
                   </div>

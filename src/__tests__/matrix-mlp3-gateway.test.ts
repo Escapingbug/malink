@@ -11,6 +11,7 @@ import {
   mlp3CurrentPointerSchema,
   mlp3ProjectKeyGrantStateSchema,
   type GatewayRestartStatus,
+  type GatewayDeploymentStatus,
   type Mlp3Command,
   type Mlp3Event,
   type SessionExtensionDescriptor,
@@ -171,6 +172,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         providerName: 'test',
       }],
       trustedDevices: [],
+      shadowRoomIds: [],
       replayLedgerPath: join(directory, 'replay'),
       applicationSecurity: {
         gatewayDeviceId: 'workspace-empty',
@@ -184,6 +186,14 @@ describe('MatrixMlp3GatewayRunner', () => {
 
     await expect(runner.start()).resolves.toBeUndefined()
     expect(runner.getState()).toBe('running')
+    runner.setShadowRoomIds(['!peer-project:example.org'])
+    await expect(runner.healthSnapshot()).resolves.toMatchObject({
+      projectCount: 1,
+      sessionCount: 0,
+      shadowRoomCount: 1,
+      deploymentFenced: false,
+    })
+    expect(() => runner.setShadowRoomIds([roomId])).toThrow('locally owned')
     expect(client.delivered).toHaveLength(0)
     expect(client.state.size).toBe(0)
     await runner.stop()
@@ -1076,6 +1086,21 @@ describe('MatrixMlp3GatewayRunner', () => {
       phase: 'idle',
       updatedAt: 10,
     }
+    let gatewayDeploymentStatus: GatewayDeploymentStatus = {
+      version: 1,
+      strategy: 'blue-green-v1',
+      maxDeployments: 2,
+      computerId: 'computer-1',
+      generation: 0,
+      phase: 'steady',
+      active: {
+        gatewayNodeId: 'gateway-node-1',
+        buildId: 'build-1',
+        projectCount: 1,
+        sessionCount: 0,
+      },
+      updatedAt: 10,
+    }
     const webPushService: GatewayWebPushService = {
       initialize: async () => undefined,
       publicKey: () => 'B'.repeat(87),
@@ -1311,6 +1336,50 @@ describe('MatrixMlp3GatewayRunner', () => {
         } satisfies TopicSession
       },
       gatewayUpdateSupervisor: {
+        async deploymentStatus() {
+          gatewayUpdateCalls.push('deployment-status')
+          return structuredClone(gatewayDeploymentStatus)
+        },
+        async prepareCandidate(releaseId) {
+          gatewayUpdateCalls.push(`prepare:${releaseId}`)
+          gatewayDeploymentStatus = {
+            ...gatewayDeploymentStatus,
+            phase: 'trial',
+            updateId: 'deployment-update-1',
+            candidate: {
+              gatewayNodeId: 'gateway-node-2',
+              releaseId,
+              buildId: 'build-2',
+              projectCount: 1,
+              sessionCount: 0,
+            },
+            updatedAt: 20,
+          }
+          return structuredClone(gatewayDeploymentStatus)
+        },
+        async promoteCandidate(updateId, mode) {
+          gatewayUpdateCalls.push(`promote:${updateId}:${mode}`)
+          return {
+            ...gatewayDeploymentStatus,
+            phase: 'draining' as const,
+            detail: 'promotion scheduled',
+            updatedAt: 21,
+          }
+        },
+        async discardCandidate(updateId) {
+          gatewayUpdateCalls.push(`discard:${updateId}`)
+          gatewayDeploymentStatus = {
+            version: 1,
+            strategy: 'blue-green-v1',
+            maxDeployments: 2,
+            computerId: 'computer-1',
+            generation: 0,
+            phase: 'steady',
+            active: gatewayDeploymentStatus.active,
+            updatedAt: 22,
+          }
+          return structuredClone(gatewayDeploymentStatus)
+        },
         async status() {
           gatewayUpdateCalls.push('status')
           if (gatewayStageFailureReleaseId) {
@@ -1531,6 +1600,11 @@ describe('MatrixMlp3GatewayRunner', () => {
       event.payload.type === 'gateway.update.status'
       && event.causationCommandId === undefined
     )).toBe(false)
+    expect(idleEvents.some(event =>
+      event.payload.type === 'gateway.deployment.status'
+      && event.causationCommandId === undefined
+      && event.payload.status.phase === 'steady'
+    )).toBe(true)
 
     await expect(runner.publishNativeClientRelease(nativeRelease(42))).resolves.toMatchObject({
       changed: true,
@@ -1610,6 +1684,46 @@ describe('MatrixMlp3GatewayRunner', () => {
       certificateId: 'certificate-1',
       createdAt: 1,
     }
+
+    await send({
+      ...base,
+      commandId: 'gateway-deployment-status-1',
+      operation: 'gateway.deployment.status',
+      payload: { operation: 'gateway.deployment.status' },
+    }, '$gateway-deployment-status-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'gateway-deployment-status-1'
+        && event.payload.type === 'gateway.deployment.status'
+      ))
+
+    await send({
+      ...base,
+      commandId: 'gateway-update-prepare-1',
+      operation: 'gateway.update.prepare',
+      payload: { operation: 'gateway.update.prepare', releaseId: 'release-2' },
+    }, '$gateway-update-prepare-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'gateway-update-prepare-1'
+        && event.payload.type === 'gateway.deployment.status'
+        && event.payload.status.phase === 'trial'
+      ))
+    expect(gatewayUpdateCalls).toContain('prepare:release-2')
+
+    await send({
+      ...base,
+      commandId: 'gateway-update-discard-1',
+      operation: 'gateway.update.discard',
+      payload: { operation: 'gateway.update.discard', updateId: 'deployment-update-1' },
+    }, '$gateway-update-discard-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event =>
+        event.causationCommandId === 'gateway-update-discard-1'
+        && event.payload.type === 'gateway.deployment.status'
+        && event.payload.status.phase === 'steady'
+      ))
+    expect(gatewayUpdateCalls).toContain('discard:deployment-update-1')
 
     await send({
       ...base,

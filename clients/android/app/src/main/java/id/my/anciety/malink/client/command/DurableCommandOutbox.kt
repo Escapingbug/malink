@@ -58,6 +58,8 @@ class DurableCommandOutbox internal constructor(
                 command.payload["operation"] ==
                     JsonPrimitive(CommandOperation.GATEWAY_UPDATE_STATUS.wireName) ||
                 command.payload["operation"] ==
+                    JsonPrimitive(CommandOperation.GATEWAY_DEPLOYMENT_STATUS.wireName) ||
+                command.payload["operation"] ==
                     JsonPrimitive(CommandOperation.GATEWAY_RESTART_STATUS.wireName)
                 )
         }.take(MAX_RELEASED_TOMBSTONES - loaded.released.size)

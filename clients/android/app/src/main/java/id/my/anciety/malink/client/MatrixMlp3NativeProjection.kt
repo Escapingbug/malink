@@ -268,6 +268,11 @@ internal class MatrixMlp3NativeProjection(
         val status: JsonObject,
     )
 
+    private data class GatewayDeploymentObservation(
+        val observedAt: Long,
+        val status: JsonObject,
+    )
+
     private val projects = linkedMapOf<String, Project>()
     private val projectCapabilities = linkedMapOf<String, WorkspaceCapabilities>()
     private var workspaceGatewayDirectory: JsonObject? = null
@@ -275,6 +280,8 @@ internal class MatrixMlp3NativeProjection(
     private var gatewayUpdateStatus: JsonObject? = null
     private val gatewayUpdateObservationsByProject =
         linkedMapOf<String, GatewayUpdateObservation>()
+    private val gatewayDeploymentObservationsByComputer =
+        linkedMapOf<String, GatewayDeploymentObservation>()
     private val sessions = linkedMapOf<String, Session>()
     private val inboxFiles = linkedMapOf<String, InboxFile>()
     private val seenEvents = mutableSetOf<String>()
@@ -617,6 +624,23 @@ internal class MatrixMlp3NativeProjection(
             return MatrixMlp3NativeProjectionResult(
                 terminal = terminal(type, event, payload, causation, sessionId),
                 changed = globalStatusChanged || observationChanged || sessionChanged,
+            )
+        }
+
+        if (type == "gateway.deployment.status") {
+            if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
+            val status = payload.requiredObject("status")
+            validateGatewayDeploymentStatus(status)
+            val computerId = status.requiredString("computerId", 256)
+            val current = gatewayDeploymentObservationsByComputer[computerId]
+            val changed = isNewerGatewayDeploymentObservation(current, occurredAt, status)
+            if (changed) {
+                gatewayDeploymentObservationsByComputer[computerId] =
+                    GatewayDeploymentObservation(occurredAt, status)
+            }
+            return MatrixMlp3NativeProjectionResult(
+                terminal = terminal(type, event, payload, causation, sessionId),
+                changed = changed,
             )
         }
 
@@ -1061,6 +1085,7 @@ internal class MatrixMlp3NativeProjection(
             inboxFiles.values.maxOfOrNull { it.receivedAt } ?: 0L,
             gatewayUpdateStatus?.requiredLong("updatedAt") ?: 0L,
             gatewayUpdateObservationsByProject.values.maxOfOrNull { it.observedAt } ?: 0L,
+            gatewayDeploymentObservationsByComputer.values.maxOfOrNull { it.observedAt } ?: 0L,
         )
         return buildJsonObject {
             put("version", 1)
@@ -1136,6 +1161,17 @@ internal class MatrixMlp3NativeProjection(
             put("pending_gateway_enrollments", mergedPendingGatewayEnrollments())
             gatewayUpdateStatus?.let { put("gateway_update", it) }
             put("gateway_node_statuses", gatewayNodeStatuses())
+            put("gateway_deployments", buildJsonObject {
+                gatewayDeploymentObservationsByComputer.entries.sortedBy { it.key }
+                    .forEach { (computerId, observation) ->
+                        put(computerId, buildJsonObject {
+                            put("version", 1)
+                            put("computerId", computerId)
+                            put("observedAt", observation.observedAt)
+                            put("deployment", observation.status)
+                        })
+                    }
+            })
         }
     }
 
@@ -1834,6 +1870,7 @@ internal class MatrixMlp3NativeProjection(
         workspacePendingGatewayEnrollmentsByProject.clear()
         gatewayUpdateStatus = null
         gatewayUpdateObservationsByProject.clear()
+        gatewayDeploymentObservationsByComputer.clear()
         sessions.clear()
         inboxFiles.clear()
         seenEvents.clear()
@@ -1903,7 +1940,7 @@ internal class MatrixMlp3NativeProjection(
             .filter { it.sessionId in retainedSessionIds }
             .takeLast(MAX_TASK_NOTIFICATION_PREVIEWS)
         val value = buildJsonObject {
-            put("schemaVersion", 23)
+            put("schemaVersion", 24)
             put("projectCapabilities", buildJsonArray {
                 projectCapabilities.entries.sortedBy { it.key }.forEach { (projectId, capabilities) ->
                     add(buildJsonObject {
@@ -1928,6 +1965,15 @@ internal class MatrixMlp3NativeProjection(
                         put("status", observation.status)
                     })
                 }
+            })
+            put("gatewayDeploymentObservationsByComputer", buildJsonObject {
+                gatewayDeploymentObservationsByComputer.entries.sortedBy { it.key }
+                    .forEach { (computerId, observation) ->
+                        put(computerId, buildJsonObject {
+                            put("observedAt", observation.observedAt)
+                            put("status", observation.status)
+                        })
+                    }
             })
             put("projects", buildJsonArray {
                 projects.values.sortedBy(Project::id).forEach { activeProject ->
@@ -2154,7 +2200,7 @@ internal class MatrixMlp3NativeProjection(
 
     private fun restore(value: JsonObject) {
         val schemaVersion = value.requiredLong("schemaVersion")
-        require(schemaVersion in 1L..23L)
+        require(schemaVersion in 1L..24L)
         val legacyWorkspaceCapabilities = if (schemaVersion == 1L || schemaVersion >= 9L) {
             null
         } else {
@@ -2250,6 +2296,30 @@ internal class MatrixMlp3NativeProjection(
                     observation.requiredLong("observedAt").also { require(it >= 0) },
                     status,
                 )
+            }
+        }
+        if (schemaVersion >= 24L) {
+            val observations = value.requiredObject("gatewayDeploymentObservationsByComputer")
+            require(observations.size <= 256)
+            observations.entries.forEach { (computerId, element) ->
+                require(computerId.isNotBlank() && computerId.length <= 256)
+                val observation = element as? JsonObject
+                    ?: throw IllegalArgumentException("The Gateway deployment observation is invalid.")
+                observation.requireKeys(
+                    setOf("observedAt", "status"),
+                    emptySet(),
+                    "Gateway deployment observation",
+                )
+                val status = observation.requiredObject("status")
+                validateGatewayDeploymentStatus(status)
+                require(status.requiredString("computerId", 256) == computerId) {
+                    "The Gateway deployment observation belongs to another computer."
+                }
+                gatewayDeploymentObservationsByComputer[computerId] =
+                    GatewayDeploymentObservation(
+                        observation.requiredLong("observedAt").also { require(it >= 0) },
+                        status,
+                    )
             }
         }
         val restoredProjects = if (schemaVersion >= 7L) {
@@ -3197,6 +3267,12 @@ internal class MatrixMlp3NativeProjection(
                         result = status,
                     )
                 }
+            "gateway.deployment.status" -> MatrixMlp3NativeTerminal(
+                commandId,
+                "succeeded",
+                sessionId,
+                result = payload.requiredObject("status"),
+            )
             "gateway.restart.status" -> payload.requiredObject("status")
                 .takeUnless { it.requiredString("phase", 64) == "waiting_for_idle" }
                 ?.let { status ->
@@ -3357,6 +3433,89 @@ internal class MatrixMlp3NativeProjection(
         value.optionalString("maintenanceSessionId", 256)
         require(value.requiredLong("updatedAt") >= 0)
         value.optionalLong("activeTurns")?.let { require(it >= 0) }
+    }
+
+    private fun isNewerGatewayDeploymentObservation(
+        current: GatewayDeploymentObservation?,
+        observedAt: Long,
+        incoming: JsonObject,
+    ): Boolean {
+        if (current == null) return true
+        val incomingGeneration = incoming.requiredLong("generation")
+        val currentGeneration = current.status.requiredLong("generation")
+        if (incomingGeneration != currentGeneration) return incomingGeneration > currentGeneration
+        val incomingUpdatedAt = incoming.requiredLong("updatedAt")
+        val currentUpdatedAt = current.status.requiredLong("updatedAt")
+        if (incomingUpdatedAt != currentUpdatedAt) return incomingUpdatedAt > currentUpdatedAt
+        return observedAt > current.observedAt
+    }
+
+    private fun validateGatewayDeploymentStatus(value: JsonObject) {
+        value.requireKeys(
+            setOf(
+                "version",
+                "strategy",
+                "maxDeployments",
+                "computerId",
+                "generation",
+                "phase",
+                "active",
+                "updatedAt",
+            ),
+            setOf("candidate", "updateId", "activeTurns", "detail"),
+            "Gateway deployment status",
+        )
+        require(value.requiredLong("version") == 1L)
+        require(value.requiredString("strategy", 32) == "blue-green-v1")
+        require(value.requiredLong("maxDeployments") == 2L)
+        value.requiredString("computerId", 256)
+        require(value.requiredLong("generation") >= 0)
+        val phase = value.requiredOneOf(
+            "phase",
+            setOf(
+                "steady",
+                "preparing",
+                "trial",
+                "draining",
+                "transferring",
+                "committing",
+                "discarding",
+                "repair_required",
+            ),
+        )
+        val active = value.requiredObject("active")
+        validateGatewayDeploymentSlot(active)
+        val candidate = (value["candidate"] as? JsonObject)?.also(::validateGatewayDeploymentSlot)
+        val updateId = value.optionalString("updateId", 256)
+        val hasTransaction = phase != "steady" && phase != "repair_required"
+        require(!hasTransaction || (candidate != null && updateId != null)) {
+            "A Gateway deployment transaction requires its candidate and update ID."
+        }
+        require(phase != "steady" || (candidate == null && updateId == null)) {
+            "A steady Gateway computer cannot retain a candidate."
+        }
+        require(
+            candidate?.requiredString("gatewayNodeId", 256) !=
+                active.requiredString("gatewayNodeId", 256),
+        ) { "Active and candidate Gateway node IDs must differ." }
+        value.optionalLong("activeTurns")?.let { require(it >= 0) }
+        value.optionalString("detail", 4_096)?.let { require(it.isNotBlank()) }
+        require(value.requiredLong("updatedAt") >= 0)
+    }
+
+    private fun validateGatewayDeploymentSlot(value: JsonObject) {
+        value.requireKeys(
+            setOf("gatewayNodeId", "buildId", "projectCount", "sessionCount"),
+            setOf("releaseId"),
+            "Gateway deployment slot",
+        )
+        value.requiredString("gatewayNodeId", 256)
+        value.optionalString("releaseId", 128)?.let {
+            require(Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$").matches(it))
+        }
+        value.requiredString("buildId", 256)
+        require(value.requiredLong("projectCount") in 0..256)
+        require(value.requiredLong("sessionCount") >= 0)
     }
 
     private fun validateGatewayRestartStatus(value: JsonObject) {

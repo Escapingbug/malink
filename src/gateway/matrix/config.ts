@@ -91,6 +91,10 @@ export interface MatrixGatewayConfig {
     connection: MatrixGatewayConnectionConfig
     crypto: MatrixGatewayCryptoConfig
     rooms: MatrixGatewayRoomConfig[]
+    /** Rooms durably observed for a future ownership handoff but never executed. */
+    shadowRoomIds?: string[]
+    /** Starts Matrix-ready with business execution fenced for handoff validation. */
+    startFenced?: boolean
     trustedDevices: MatrixGatewayTrustedDevice[]
     replayLedgerPath: string
     applicationSecurity: MatrixGatewayApplicationSecurityConfig
@@ -168,9 +172,13 @@ export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
         throw new Error('Matrix crypto storageKey must be exactly 32 bytes')
     }
     if (config.rooms.length === 0) throw new Error('At least one Matrix room is required')
+    if (config.startFenced !== undefined && typeof config.startFenced !== 'boolean') {
+        throw new Error('startFenced must be a boolean')
+    }
 
     assertUnique(config.rooms.map(room => room.roomId), 'room ID')
     assertUnique(config.rooms.map(room => room.conversationId), 'conversation ID')
+    assertUnique(config.shadowRoomIds ?? [], 'shadow room ID')
     assertUnique(config.trustedDevices.map(device => device.deviceId), 'trusted device ID')
     assertUnique(
         config.trustedDevices.map(device => applicationPublicKeyFingerprint(device.publicKey)),
@@ -178,6 +186,12 @@ export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
     )
 
     const roomIds = new Set(config.rooms.map(room => room.roomId))
+    for (const shadowRoomId of config.shadowRoomIds ?? []) {
+        requireText(shadowRoomId, 'shadowRoomId')
+        if (roomIds.has(shadowRoomId)) {
+            throw new Error(`Owned room ${shadowRoomId} cannot also be a shadow room`)
+        }
+    }
     for (const room of config.rooms) {
         requireText(room.roomId, 'room.roomId')
         requireText(room.conversationId, 'room.conversationId')

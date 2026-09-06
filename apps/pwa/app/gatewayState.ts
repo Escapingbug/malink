@@ -3,6 +3,7 @@ import {
   signedWorkspaceGatewayDirectorySchema,
   gatewayEnrollmentPendingSchema,
   gatewayUpdateStatusSchema,
+  gatewayDeploymentStatusSchema,
   type MalinkAttachment,
   type JsonValue,
   SessionExtensionBinding,
@@ -11,6 +12,7 @@ import {
   ProviderCommand,
   type NativeClientRelease,
   type GatewayUpdateStatus,
+  type GatewayDeploymentStatus,
   type ProviderControl,
   type ProviderControlValues,
   providerControlSchema,
@@ -23,6 +25,13 @@ export type GatewayNodeStatusObservation = {
   gatewayNodeId: string;
   observedAt: number;
   update: GatewayUpdateStatus;
+};
+
+export type GatewayDeploymentStatusObservation = {
+  version: 1;
+  computerId: string;
+  observedAt: number;
+  deployment: GatewayDeploymentStatus;
 };
 
 export type GatewayCapabilityOption = {
@@ -136,6 +145,8 @@ export type GatewayStateSnapshot = {
   pendingGatewayEnrollments?: import('@malink/protocol').GatewayEnrollmentPending[];
   /** Latest shared signed semantic update observation for each Gateway node. */
   gatewayNodeStatuses?: Record<string, GatewayNodeStatusObservation>;
+  /** Temporary two-Gateway update topology, keyed by stable physical computer. */
+  gatewayDeployments?: Record<string, GatewayDeploymentStatusObservation>;
   gatewayUpdate?: GatewayUpdateStatus;
 };
 
@@ -541,7 +552,39 @@ export function parseGatewayStateExtension(
       : {
           gatewayNodeStatuses: parseGatewayNodeStatuses(extension.gateway_node_statuses),
         }),
+    ...(extension.gateway_deployments === undefined
+      ? {}
+      : {
+          gatewayDeployments: parseGatewayDeployments(extension.gateway_deployments),
+        }),
   });
+}
+
+function parseGatewayDeployments(
+  input: unknown,
+): Record<string, GatewayDeploymentStatusObservation> {
+  const values = asRecord(input);
+  if (!values) throw new Error("Gateway deployments are malformed.");
+  const parsed: Record<string, GatewayDeploymentStatusObservation> = {};
+  for (const [computerId, value] of Object.entries(values)) {
+    const observation = asRecord(value);
+    if (
+      observation?.version !== 1
+      || observation.computerId !== computerId
+      || !isNonnegativeInteger(observation.observedAt)
+    ) throw new Error("A Gateway deployment is stored under the wrong computer ID.");
+    const deployment = gatewayDeploymentStatusSchema.parse(observation.deployment);
+    if (deployment.computerId !== computerId) {
+      throw new Error("A Gateway deployment payload belongs to another computer.");
+    }
+    parsed[computerId] = {
+      version: 1,
+      computerId,
+      observedAt: observation.observedAt,
+      deployment,
+    };
+  }
+  return parsed;
 }
 
 function parseGatewayNodeStatuses(input: unknown): Record<string, GatewayNodeStatusObservation> {
@@ -966,6 +1009,9 @@ export function gatewayStateExtension(
     ...(state.gatewayNodeStatuses === undefined
       ? {}
       : { gateway_node_statuses: state.gatewayNodeStatuses }),
+    ...(state.gatewayDeployments === undefined
+      ? {}
+      : { gateway_deployments: state.gatewayDeployments }),
     capabilities: gatewayCapabilitiesExtension(state.capabilities),
   };
 }

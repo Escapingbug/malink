@@ -201,6 +201,11 @@ export async function installGatewayUpdateSupervisor(
     'MALINK_GATEWAY_HOST_APP',
     gatewayHost.appPath,
   )
+  await setLaunchAgentEnvironment(
+    resolve(options.gatewayLaunchAgent),
+    'MALINK_GATEWAY_BLUE_GREEN',
+    '1',
+  )
   const domain = `gui/${process.getuid?.() ?? 0}`
   await run('/bin/launchctl', [
     'bootout',

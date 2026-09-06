@@ -2254,6 +2254,7 @@ function gatewayState(
     (gateway.projects ?? []).some(route => route.projectId === project?.projectId)
   )?.gatewayNodeId;
   const updateObservation = protocol.projection.gatewayUpdateObservation;
+  const deploymentObservation = protocol.projection.gatewayDeploymentObservation;
   const gatewayNodeStatuses = gatewayNodeId && updateObservation
     ? {
         [gatewayNodeId]: {
@@ -2261,6 +2262,16 @@ function gatewayState(
           gatewayNodeId,
           observedAt: updateObservation.observedAt,
           update: structuredClone(updateObservation.status),
+        },
+      }
+    : {};
+  const gatewayDeployments = deploymentObservation
+    ? {
+        [deploymentObservation.status.computerId]: {
+          version: 1 as const,
+          computerId: deploymentObservation.status.computerId,
+          observedAt: deploymentObservation.observedAt,
+          deployment: structuredClone(deploymentObservation.status),
         },
       }
     : {};
@@ -2293,6 +2304,7 @@ function gatewayState(
       ...sessions.map(session => session.updatedAt),
       ...inboxFiles.map(file => file.receivedAt),
       ...Object.values(gatewayNodeStatuses).map(status => status.observedAt),
+      ...Object.values(gatewayDeployments).map(status => status.observedAt),
     ),
     currentSessionId: null,
     sessions: sessions.map(session => ({
@@ -2370,6 +2382,9 @@ function gatewayState(
     ...(Object.keys(gatewayNodeStatuses).length > 0
       ? { gatewayNodeStatuses }
       : {}),
+    ...(Object.keys(gatewayDeployments).length > 0
+      ? { gatewayDeployments }
+      : {}),
     ...(protocol.projection.workspace?.gatewayUpdate
       ? { gatewayUpdate: protocol.projection.workspace.gatewayUpdate }
       : {}),
@@ -2408,6 +2423,30 @@ function aggregateGatewayState(
     },
     {},
   );
+  const gatewayDeployments = states.reduce<NonNullable<GatewayStateSnapshot["gatewayDeployments"]>>(
+    (result, state) => {
+      for (const [computerId, observation] of Object.entries(state.gatewayDeployments ?? {})) {
+        const current = result[computerId];
+        if (
+          !current
+          || observation.deployment.generation > current.deployment.generation
+          || (
+            observation.deployment.generation === current.deployment.generation
+            && observation.deployment.updatedAt > current.deployment.updatedAt
+          )
+          || (
+            observation.deployment.generation === current.deployment.generation
+            && observation.deployment.updatedAt === current.deployment.updatedAt
+            && observation.observedAt > current.observedAt
+          )
+        ) {
+          result[computerId] = observation;
+        }
+      }
+      return result;
+    },
+    {},
+  );
   return {
     ...first,
     stateVersion: Math.max(...states.map(value => value.stateVersion)),
@@ -2425,6 +2464,9 @@ function aggregateGatewayState(
     pendingGatewayEnrollments,
     ...(Object.keys(gatewayNodeStatuses).length > 0
       ? { gatewayNodeStatuses }
+      : {}),
+    ...(Object.keys(gatewayDeployments).length > 0
+      ? { gatewayDeployments }
       : {}),
     ...(gatewayUpdate ? { gatewayUpdate } : {}),
   };

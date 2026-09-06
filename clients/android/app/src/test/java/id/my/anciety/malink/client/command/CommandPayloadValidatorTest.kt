@@ -125,6 +125,22 @@ class CommandPayloadValidatorTest {
                 put("operation", "gateway.update.status")
             },
             buildJsonObject {
+                put("operation", "gateway.update.prepare")
+                put("releaseId", "release-3")
+            },
+            buildJsonObject {
+                put("operation", "gateway.update.promote")
+                put("updateId", "update-3")
+                put("mode", "when_idle")
+            },
+            buildJsonObject {
+                put("operation", "gateway.update.discard")
+                put("updateId", "update-3")
+            },
+            buildJsonObject {
+                put("operation", "gateway.deployment.status")
+            },
+            buildJsonObject {
                 put("operation", "gateway.restart")
                 put("mode", "when_idle")
             },
@@ -435,6 +451,10 @@ class CommandPayloadValidatorTest {
                 CommandOperation.GATEWAY_UPDATE_STAGE,
                 CommandOperation.GATEWAY_UPDATE_APPLY,
                 CommandOperation.GATEWAY_UPDATE_STATUS,
+                CommandOperation.GATEWAY_UPDATE_PREPARE,
+                CommandOperation.GATEWAY_UPDATE_PROMOTE,
+                CommandOperation.GATEWAY_UPDATE_DISCARD,
+                CommandOperation.GATEWAY_DEPLOYMENT_STATUS,
                 CommandOperation.GATEWAY_RESTART,
                 CommandOperation.GATEWAY_RESTART_STATUS,
             )

@@ -256,7 +256,7 @@ class MatrixMlp3NativeProjectionTest {
         projection.applyGatewayEvent(turn("started", 2, "working"), "\$started", "\$root-a")
         projection.applyGatewayEvent(turn("completed", 3, "idle"), "\$completed", "\$root-a")
         val current = projection.durableState()
-        assertEquals(23, current.getValue("schemaVersion").jsonPrimitive.content.toInt())
+        assertEquals(24, current.getValue("schemaVersion").jsonPrimitive.content.toInt())
 
         val providerCatalogOnly = JsonObject(current.filterKeys {
             it != "completionObservations"
@@ -1546,6 +1546,57 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `newest blue green Gateway deployment survives durable restore`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            event(
+                eventId = "gateway-deployment-trial-1",
+                projectId = "project-1",
+                causationCommandId = "gateway-update-prepare-1",
+                payload = gatewayDeploymentPayload(
+                    generation = 2,
+                    phase = "trial",
+                    updatedAt = 20,
+                    includeCandidate = true,
+                ),
+            ),
+            "\$gateway-deployment-trial",
+            null,
+        )
+        projection.applyGatewayEvent(
+            event(
+                eventId = "gateway-deployment-stale-1",
+                projectId = "project-1",
+                payload = gatewayDeploymentPayload(
+                    generation = 1,
+                    phase = "steady",
+                    updatedAt = 30,
+                    includeCandidate = false,
+                ),
+            ),
+            "\$gateway-deployment-stale",
+            null,
+        )
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        val observation = restored.snapshot()!!
+            .getValue("gateway_deployments").jsonObject
+            .getValue("computer-1").jsonObject
+        assertEquals("1", observation.getValue("version").jsonPrimitive.content)
+        assertEquals("computer-1", observation.getValue("computerId").jsonPrimitive.content)
+        assertEquals(
+            "trial",
+            observation.getValue("deployment").jsonObject
+                .getValue("phase").jsonPrimitive.content,
+        )
+    }
+
+    @Test
     fun `signed Gateway status settles its exact maintenance session`() {
         val projection = projection()
         val maintenanceSessionId = "gateway-update-node-office-release-2"
@@ -2035,6 +2086,41 @@ class MatrixMlp3NativeProjectionTest {
         gatewayId = { "gateway-1" },
         activeDeviceCount = { 2 },
     )
+
+    private fun gatewayDeploymentPayload(
+        generation: Long,
+        phase: String,
+        updatedAt: Long,
+        includeCandidate: Boolean,
+    ) = buildJsonObject {
+        put("type", "gateway.deployment.status")
+        put("status", buildJsonObject {
+            put("version", 1)
+            put("strategy", "blue-green-v1")
+            put("maxDeployments", 2)
+            put("computerId", "computer-1")
+            put("generation", generation)
+            put("phase", phase)
+            put("active", buildJsonObject {
+                put("gatewayNodeId", "gateway-active")
+                put("releaseId", "release-1")
+                put("buildId", "build-1")
+                put("projectCount", 1)
+                put("sessionCount", 2)
+            })
+            if (includeCandidate) {
+                put("candidate", buildJsonObject {
+                    put("gatewayNodeId", "gateway-candidate")
+                    put("releaseId", "release-2")
+                    put("buildId", "build-2")
+                    put("projectCount", 1)
+                    put("sessionCount", 0)
+                })
+                put("updateId", "update-1")
+            }
+            put("updatedAt", updatedAt)
+        })
+    }
 
     private fun projectSnapshot(
         projectId: String = "project-1",
