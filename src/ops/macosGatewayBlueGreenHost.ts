@@ -291,6 +291,11 @@ export class MacosGatewayBlueGreenHost {
   }
 
   async discardCandidate(transition: GatewayDeploymentTransition): Promise<void> {
+    // prepareCandidate owns best-effort cleanup of its partially created
+    // resources before it rejects. The coordinator deliberately follows with
+    // discardCandidate, so an already-cleared host transaction is success,
+    // not a second cleanup failure that requires operator repair.
+    if (!await this.readDeployment()) return
     const state = await this.requireDeployment(transition)
     if (isCommittedPhase(state.phase)) {
       throw new Error('A committed Gateway candidate cannot be discarded')

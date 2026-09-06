@@ -17,6 +17,39 @@ afterEach(async () => {
 })
 
 describe('MacosGatewayBlueGreenHost', () => {
+  it('treats a discarded already-cleaned candidate as success', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-blue-green-idempotent-discard-'))
+    temporaryDirectories.push(directory)
+    const host = new MacosGatewayBlueGreenHost({
+      installRoot: join(directory, 'install'),
+      activeDataDirectory: join(directory, 'active'),
+      activeAdminSocketPath: join(directory, 'active.sock'),
+      activeLaunchAgentPath: join(directory, 'active.plist'),
+      activeServiceLabel: 'id.my.anciety.malink.test',
+      updateSocketPath: join(directory, 'update.sock'),
+      platform: 'darwin',
+    })
+
+    await expect(host.discardCandidate({
+      updateId: 'update-1',
+      computerId: 'computer-1',
+      generation: 0,
+      active: {
+        gatewayNodeId: 'gateway-old',
+        buildId: 'build-old',
+        projectCount: 1,
+        sessionCount: 1,
+      },
+      candidate: {
+        gatewayNodeId: 'gateway-new',
+        releaseId: 'release-new',
+        buildId: 'build-new',
+        projectCount: 0,
+        sessionCount: 0,
+      },
+    })).resolves.toBeUndefined()
+  })
+
   it('keeps candidate admin sockets within the macOS Unix path limit', () => {
     const updateId = 'b8de49e1-ed61-4544-b229-8127fd2ed14c'
     const installRoot = '/Users/user/.local/share/malink-matrix'
