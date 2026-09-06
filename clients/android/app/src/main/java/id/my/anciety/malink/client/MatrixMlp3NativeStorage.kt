@@ -508,9 +508,11 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
                         require(values.isNotEmpty() && values.size <= MAX_PENDING_EVENTS + MAX_QUARANTINED_EVENTS)
                         val segmentRecords = values.map(::decodeRecord)
                         require(segmentRecords.map { it.event.eventId }.distinct().size == segmentRecords.size)
-                        require(segmentKey(segmentRecords.first().event.eventId) == key) {
-                            "The MLP/3 inbox segment key does not match its first event."
-                        }
+                        // A segment key is its stable encrypted-file identity. It
+                        // starts as a hash of the first event, but that event can
+                        // be projected before later records in the same segment.
+                        // Retaining the original key keeps the remaining records
+                        // crash-safe without rewriting or renaming the file.
                         LoadedSegment(key, segmentRecords)
                     }
                     else -> throw IllegalArgumentException("The MLP/3 inbox segment schema is invalid.")
@@ -628,7 +630,6 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
             if (activeSegmentKey == key) activeSegmentKey = null
             return
         }
-        require(segmentKey(records.first().event.eventId) == key)
         val plaintext = encodeSegment(records)
         val encrypted = try {
             val envelope = cipher.encrypt(plaintext, recordAssociatedData(key))

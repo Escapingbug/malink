@@ -446,6 +446,41 @@ class MatrixMlp3NativeStorageTest {
     }
 
     @Test
+    fun `projecting the first record keeps later records in the stable segment`() {
+        val legacy = MemoryMatrixMlp3BlobStore()
+        val segments = MemoryMatrixMlp3RecordBlobStore()
+        val cipher = JvmAesGcmCipher()
+        val first = event("\$first", "{\"kind\":\"first\"}")
+        val second = event("\$second", "{\"kind\":\"second\"}")
+        val store = AtomicEncryptedMatrixMlp3InboxStore(
+            legacy,
+            segments,
+            cipher,
+            "account-a",
+        )
+
+        assertTrue(store.put(first))
+        assertTrue(store.put(second))
+        assertEquals(1, segments.bytes.size)
+        val stableSegmentKey = segments.bytes.keys.single()
+
+        store.projected(first.eventId)
+        store.flushProjected()
+
+        assertEquals(setOf(stableSegmentKey), segments.bytes.keys)
+        val restored = AtomicEncryptedMatrixMlp3InboxStore(
+            legacy,
+            segments,
+            cipher,
+            "account-a",
+        )
+        assertEquals(listOf(second.eventId), restored.pending().map { it.event.eventId })
+        restored.projected(second.eventId)
+        restored.flushProjected()
+        assertTrue(segments.bytes.isEmpty())
+    }
+
+    @Test
     fun `a later key grant unlocks an earlier deferred event`() = runBlocking {
         val blob = MemoryMatrixMlp3BlobStore()
         val store = AtomicEncryptedMatrixMlp3InboxStore(blob, JvmAesGcmCipher(), "account-a")
