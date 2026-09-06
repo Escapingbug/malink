@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import {
   access,
@@ -147,6 +147,7 @@ export class MacosGatewayBlueGreenHost {
     try {
       await validateMacosGatewayRelease(state.releaseDirectory)
       await mkdir(state.candidateDirectory, { recursive: true, mode: 0o700 })
+      await mkdir(dirname(state.candidateAdminSocket), { recursive: true, mode: 0o700 })
       await this.copyFoundation(state.candidateDirectory)
 
       const sourceIdentity = await new FileGatewayIdentityStore(
@@ -295,6 +296,7 @@ export class MacosGatewayBlueGreenHost {
       throw new Error('A committed Gateway candidate cannot be discarded')
     }
     await this.stopService(state.candidateServiceLabel)
+    await rm(state.candidateAdminSocket, { force: true })
     await this.removeCandidateFromDirectory(state)
     await this.logoutCandidate(state.candidateDirectory)
     await rm(this.updateRoot(state.updateId), { recursive: true, force: true })
@@ -597,6 +599,7 @@ export class MacosGatewayBlueGreenHost {
     state.updatedAt = this.now()
     await this.writeDeployment(state)
     await rm(state.candidateLaunchAgent, { force: true })
+    await rm(state.candidateAdminSocket, { force: true })
     if (state.candidateDirectory !== this.activeDataDirectory) {
       await rm(state.candidateDirectory, { recursive: true, force: true })
     }
@@ -690,6 +693,7 @@ export class MacosGatewayBlueGreenHost {
   private async cleanupUncommitted(state: GatewayBlueGreenHostState): Promise<void> {
     if (isCommittedPhase(state.phase)) return
     await this.stopService(state.candidateServiceLabel).catch(() => undefined)
+    await rm(state.candidateAdminSocket, { force: true }).catch(() => undefined)
     await this.logoutCandidate(state.candidateDirectory).catch(() => undefined)
     await rm(this.updateRoot(state.updateId), { recursive: true, force: true })
     if (state.handoffDirectory) {
@@ -726,7 +730,10 @@ export class MacosGatewayBlueGreenHost {
       buildId: transition.candidate.buildId,
       releaseDirectory: join(this.installRoot, 'releases', transition.candidate.releaseId!),
       candidateDirectory: join(updateRoot, 'candidate-data'),
-      candidateAdminSocket: join(updateRoot, 'candidate-admin.sock'),
+      candidateAdminSocket: macosGatewayCandidateAdminSocketPath(
+        this.installRoot,
+        transition.updateId,
+      ),
       candidateLaunchAgent: join(updateRoot, 'candidate.plist'),
       candidateServiceLabel: candidateServiceLabel(
         this.config.activeServiceLabel,
@@ -974,6 +981,26 @@ export class MacosGatewayBlueGreenHost {
       if (!isNodeError(error, 'ENOENT')) this.log(`candidate Matrix logout deferred: ${formatError(error)}`)
     }
   }
+}
+
+/**
+ * macOS limits sockaddr_un paths to 103 bytes plus the trailing NUL. Keep the
+ * runtime socket outside the UUID-named deployment directory so a normal
+ * per-user install path cannot make an otherwise valid candidate unstartable.
+ */
+export function macosGatewayCandidateAdminSocketPath(
+  installRootInput: string,
+  updateId: string,
+): string {
+  requirePathSegment(updateId, 'Gateway update ID')
+  const digest = createHash('sha256').update(updateId).digest('hex').slice(0, 20)
+  const socketPath = join(resolve(installRootInput), 'run', `${digest}.sock`)
+  if (Buffer.byteLength(socketPath) > 103) {
+    throw new Error(
+      `Gateway install path is too long for a macOS Unix socket: ${socketPath}`,
+    )
+  }
+  return socketPath
 }
 
 export async function inspectGatewayDeploymentSlot(input: {

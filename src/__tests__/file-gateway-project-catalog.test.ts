@@ -41,6 +41,33 @@ describe('FileGatewayProjectCatalog', () => {
     })
   })
 
+  it('retains an explicit root project identity across configured-root refreshes', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-project-catalog-root-id-'))
+    const path = join(directory, 'projects.json')
+    const catalog = new FileGatewayProjectCatalog(path, 'gateway-node-1')
+    await catalog.initialize([{
+      roomId: '!root:example.org',
+      conversationId: 'root',
+      projectId: 'gateway-trial-update-1',
+      projectName: 'Gateway trial',
+      cwd: '/srv/shared-working-tree',
+      providerName: 'codex',
+    }])
+
+    const restarted = new FileGatewayProjectCatalog(path, 'gateway-node-1')
+    await restarted.initialize([{
+      roomId: '!root:example.org',
+      conversationId: 'root',
+      cwd: '/srv/shared-working-tree',
+      providerName: 'codex',
+    }])
+
+    await expect(restarted.list()).resolves.toEqual([expect.objectContaining({
+      projectId: 'gateway-trial-update-1',
+      projectName: 'Gateway trial',
+    })])
+  })
+
   it('rejects conflicting routes for an existing project identity', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-project-catalog-conflict-'))
     const catalog = new FileGatewayProjectCatalog(

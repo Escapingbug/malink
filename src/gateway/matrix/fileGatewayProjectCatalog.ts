@@ -36,6 +36,9 @@ export class FileGatewayProjectCatalog {
             continue
           }
           const replacement = structuredClone(room)
+          if (replacement.projectId === undefined && state.projects[index]?.projectId) {
+            replacement.projectId = state.projects[index].projectId
+          }
           if (replacement.projectName === undefined && state.projects[index]?.projectName) {
             replacement.projectName = state.projects[index].projectName
           }

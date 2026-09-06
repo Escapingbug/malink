@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { FileGatewayIdentityStore } from '@/gateway/pairing'
 import {
   inspectGatewayDeploymentSlot,
+  macosGatewayCandidateAdminSocketPath,
   MacosGatewayBlueGreenHost,
 } from '@/ops/macosGatewayBlueGreenHost'
 
@@ -16,6 +17,17 @@ afterEach(async () => {
 })
 
 describe('MacosGatewayBlueGreenHost', () => {
+  it('keeps candidate admin sockets within the macOS Unix path limit', () => {
+    const updateId = 'b8de49e1-ed61-4544-b229-8127fd2ed14c'
+    const installRoot = '/Users/user/.local/share/malink-matrix'
+    const legacyPath = join(installRoot, 'deployments', updateId, 'candidate-admin.sock')
+    const socketPath = macosGatewayCandidateAdminSocketPath(installRoot, updateId)
+
+    expect(Buffer.byteLength(legacyPath)).toBeGreaterThan(103)
+    expect(Buffer.byteLength(socketPath)).toBeLessThanOrEqual(103)
+    expect(socketPath).toMatch(/\/run\/[a-f0-9]{20}\.sock$/u)
+  })
+
   it('inspects the exact active deployment identity, projects, and sessions', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-blue-green-slot-'))
     temporaryDirectories.push(directory)
