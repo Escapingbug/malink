@@ -14,6 +14,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { canonicalJson, type JsonValue } from '@malink/protocol'
 import { mergeMatrixMlp3OutboxWals } from '@/gateway/matrix/fileMatrixMlp3Outbox'
+import { scratchSessionDirectory } from '@/gateway/matrix/scratchSessionPath'
 
 const PROJECT_CATALOG = 'gateway-projects.json'
 const RUNTIME_STATE = 'gateway-replay.jsonl.v3-runtime-state.json'
@@ -250,6 +251,9 @@ async function mergeRuntimeState(
         throw new Error(`Gateway handoff has duplicate session ID ${sessionId}`)
       }
       sessionIds.add(sessionId)
+      if (session.scope === 'scratch') {
+        session.cwd = scratchSessionDirectory(targetPath, sessionId)
+      }
       sessionCount += 1
     }
   }

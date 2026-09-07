@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, rm } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import {
   MALINK_MATRIX_EXTENSION,
   MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
@@ -74,6 +74,7 @@ import {
   type Mlp3CommandTerminal,
 } from './fileMlp3CommandJournal'
 import { SqliteMlp3CommandJournal } from './sqliteMlp3CommandJournal'
+import { scratchSessionDirectory } from './scratchSessionPath'
 import {
   FileMatrixEventInbox,
   matrixEventInboxKey,
@@ -4332,15 +4333,8 @@ export class MatrixMlp3GatewayRunner {
     return this.runtimeState.saveProject(project.project)
   }
 
-  private scratchRoot(): string {
-    return resolve(dirname(this.config.replayLedgerPath), 'scratch-sessions')
-  }
-
   private scratchSessionDirectory(sessionId: string): string {
-    const component = createHash('sha256')
-      .update(`malink-scratch-session\0${sessionId}`)
-      .digest('hex')
-    return join(this.scratchRoot(), component)
+    return scratchSessionDirectory(this.config.replayLedgerPath, sessionId)
   }
 
   private async removeScratchSessionDirectory(record: PersistedMlp3Session): Promise<void> {

@@ -1,6 +1,7 @@
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { FileMlp3RuntimeStateStore } from '@/gateway/matrix/fileMlp3RuntimeState'
 import { gatewayProjectIdentity } from '@/gateway/matrix/project'
@@ -110,6 +111,58 @@ describe('FileMlp3RuntimeStateStore', () => {
       extensionRevision: 1,
       inheritedFromProjectExtensionRevision: null,
       archiveCleanup: null,
+    })
+  })
+
+  it('re-homes scratch sessions when their persisted data root changes', async () => {
+    const path = join(await mkdtemp(join(tmpdir(), 'malink-v3-runtime-scratch-')), 'runtime.json')
+    const room = {
+      roomId: '!project:example.org',
+      conversationId: 'legacy-unused',
+      cwd: '/repo',
+      providerName: 'test',
+    }
+    const sessionId = 'gateway-update-node-legacy'
+    const store = new FileMlp3RuntimeStateStore(path, 'workspace-1')
+    await store.initialize([room])
+    await store.updateProject(room.roomId, project => {
+      project.sessions.push({
+        id: sessionId,
+        scope: 'scratch',
+        cwd: '/previous/data-root/scratch-sessions/stale',
+        sourceCommandId: 'command-1',
+        threadRootEventId: '$command-root',
+        title: 'Legacy maintenance session',
+        createdAt: 1,
+        updatedAt: 1,
+        stateVersion: 1,
+        lifecycle: 'active',
+        provider: 'test',
+        model: null,
+        reasoningEffort: null,
+        permissionMode: 'default',
+        controlValues: { permissionMode: 'default' },
+        providerControls: [],
+        providerSessionId: null,
+        providerHistory: null,
+        archiveCleanup: null,
+        extensions: [],
+        extensionRevision: 1,
+        inheritedFromProjectExtensionRevision: null,
+        availableCommands: [],
+      })
+    })
+
+    const recovered = new FileMlp3RuntimeStateStore(path, 'workspace-1')
+    await recovered.initialize([room])
+    const component = createHash('sha256')
+      .update(`malink-scratch-session\0${sessionId}`)
+      .digest('hex')
+    await expect(recovered.project(room.roomId)).resolves.toMatchObject({
+      sessions: [{
+        id: sessionId,
+        cwd: join(dirname(path), 'scratch-sessions', component),
+      }],
     })
   })
 })

@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import { AtomicJsonFile } from '@malink/security/node'
 import {
   matrixGatewayCapabilitiesSchema,
@@ -11,6 +12,7 @@ import {
 } from '@malink/protocol'
 import type { MatrixGatewayRoomConfig } from './config'
 import { gatewayProjectIdentity } from './project'
+import { scratchSessionDirectory } from './scratchSessionPath'
 
 export type Mlp3SessionLifecycle = 'active' | 'archived' | 'deleted'
 export type Mlp3SessionScope = 'project' | 'scratch'
@@ -89,12 +91,14 @@ interface V3RuntimeState {
  */
 export class FileMlp3RuntimeStateStore {
   private readonly file: AtomicJsonFile<V3RuntimeState>
+  private readonly scratchAnchorPath: string
 
   constructor(
     path: string,
     private readonly workspaceId: string,
   ) {
     this.file = new AtomicJsonFile(path)
+    this.scratchAnchorPath = path
   }
 
   async initialize(rooms: readonly MatrixGatewayRoomConfig[]): Promise<void> {
@@ -140,6 +144,17 @@ export class FileMlp3RuntimeStateStore {
               if (typeof session.cwd !== 'string' || !session.cwd) {
                 session.cwd = existing.cwd
                 changed = true
+              }
+              if (session.scope === 'scratch') {
+                const expected = scratchSessionDirectory(this.scratchAnchorPath, session.id)
+                if (resolve(session.cwd) !== expected) {
+                  // Scratch working directories are derived local state, not a
+                  // portable session identity. A blue/green handoff changes the
+                  // data root, so normalize older records before the runtime's
+                  // strict path check sees them.
+                  session.cwd = expected
+                  changed = true
+                }
               }
               if (!Number.isSafeInteger(session.extensionRevision)) {
                 session.extensionRevision = 1
