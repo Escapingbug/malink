@@ -42,6 +42,8 @@ export type GatewayUpdateNodeRuntime = {
   commandFailureRetryable?: boolean;
 };
 
+export type GatewayUpdateActiveAction = "when_idle" | "force" | "discard";
+
 type Props = {
   open: boolean;
   connected: boolean;
@@ -50,7 +52,7 @@ type Props = {
   runtimeByNode: Readonly<Record<string, GatewayUpdateNodeRuntime>>;
   livenessByNode?: Readonly<Record<string, GatewayNodeLiveness>>;
   activeGatewayNodeIds: ReadonlySet<string>;
-  activeGatewayModesByNode?: Readonly<Record<string, "when_idle" | "force">>;
+  activeGatewayModesByNode?: Readonly<Record<string, GatewayUpdateActiveAction>>;
   deploymentsByComputer?: Readonly<Record<string, GatewayDeploymentStatus>>;
   onClose(): void;
   onStart(node: GatewayUpdatePlanNode, mode: "when_idle" | "force"): void;
@@ -344,10 +346,10 @@ function GatewayUpdateDialogContent({
                         type="button"
                         className="secondary-button"
                         disabled={!connected || active}
-                        aria-busy={active && activeMode !== "force"}
+                        aria-busy={active && activeMode === "when_idle"}
                         onClick={() => onPromote(node, "when_idle")}
                       >
-                        {active && activeMode !== "force"
+                        {active && activeMode === "when_idle"
                           ? "Switching when idle…"
                           : "Switch all work when idle"}
                       </button>
@@ -355,17 +357,23 @@ function GatewayUpdateDialogContent({
                         type="button"
                         className="secondary-button"
                         disabled={!connected || active}
+                        aria-busy={active && activeMode === "force" ? true : undefined}
                         onClick={() => setForceConfirmationNodeId(node.gatewayNodeId)}
                       >
-                        Switch all work now…
+                        {active && activeMode === "force"
+                          ? "Switching all work now…"
+                          : "Switch all work now…"}
                       </button>
                       <button
                         type="button"
                         className="secondary-button"
                         disabled={!connected || active}
+                        aria-busy={active && activeMode === "discard" ? true : undefined}
                         onClick={() => onDiscard(node)}
                       >
-                        Discard candidate
+                        {active && activeMode === "discard"
+                          ? "Discarding candidate…"
+                          : "Discard candidate"}
                       </button>
                     </>
                   )}
@@ -662,7 +670,7 @@ export function gatewayUpdateRuntimeStateTitle(
   runtime: GatewayUpdateNodeRuntime,
   node: GatewayUpdatePlanNode,
   release: GatewayReleaseBuild,
-  activeMode?: "when_idle" | "force",
+  activeMode?: GatewayUpdateActiveAction,
 ): string {
   const status = gatewayUpdateStatusForPresentation(runtime.status, release, node);
   const stagedPublishedRelease = gatewayUpdateCanContinuePublishedRelease({
@@ -678,6 +686,9 @@ export function gatewayUpdateRuntimeStateTitle(
   }
   if (gatewayUpdateRequiresForwardOnlyConfirmation(status)) {
     return "Ready · confirmation required";
+  }
+  if (status?.phase === "staged" && activeMode === "discard") {
+    return "Discarding candidate";
   }
   if (status?.phase === "staged" && activeMode) {
     return "Applying selected restart time";
@@ -712,7 +723,7 @@ export function gatewayUpdateRuntimeStateDetail(
   node: GatewayUpdatePlanNode,
   release: GatewayReleaseBuild,
   connected: boolean,
-  activeMode?: "when_idle" | "force",
+  activeMode?: GatewayUpdateActiveAction,
 ): string {
   const status = gatewayUpdateStatusForPresentation(runtime.status, release, node);
   if (status?.phase === "failed" || status?.phase === "repair_required") {
@@ -725,6 +736,9 @@ export function gatewayUpdateRuntimeStateDetail(
   if (gatewayUpdateRequiresForwardOnlyConfirmation(status)) {
     const detail = "The update is prepared. Confirm the protected-data warning and choose when this computer may restart.";
     return detail;
+  }
+  if (status?.phase === "staged" && activeMode === "discard") {
+    return "Malink is removing the candidate. The current Gateway stays online and keeps its work.";
   }
   if (status?.phase === "staged" && activeMode) {
     return activeMode === "force"

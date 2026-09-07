@@ -1728,7 +1728,7 @@ function MalinkAppRuntime() {
   const [gatewayUpdateActiveNodeIds, setGatewayUpdateActiveNodeIds] =
     useState<Set<string>>(() => new Set());
   const [gatewayUpdateActiveModesByNode, setGatewayUpdateActiveModesByNode] =
-    useState<Record<string, "when_idle" | "force">>({});
+    useState<Record<string, "when_idle" | "force" | "discard">>({});
   const [gatewayUpdateRuntimeByNode, setGatewayUpdateRuntimeByNode] = useState<
     Record<string, GatewayUpdateNodeRuntime>
   >({});
@@ -8447,7 +8447,7 @@ function MalinkAppRuntime() {
     setGatewayUpdateActiveNodeIds(activeNodeIds);
     setGatewayUpdateActiveModesByNode(current => ({
       ...current,
-      [node.gatewayNodeId]: mode,
+      [node.gatewayNodeId]: action === "discard" ? "discard" : mode,
     }));
     try {
       const result = await executeGatewayDeployment(action === "promote"

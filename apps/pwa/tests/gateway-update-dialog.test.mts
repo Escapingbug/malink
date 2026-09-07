@@ -137,6 +137,80 @@ test("prepares a blue-green candidate without offering a destructive restart pat
   assert.equal(html.match(/class="primary-button"/g)?.length, 1);
 });
 
+test("reports candidate discard without claiming a switch is in progress", () => {
+  const activeNode = {
+    ...nodes[0]!,
+    computerId: "computer-office",
+    blueGreenUpdate: true,
+  };
+  const candidateNode = {
+    ...nodes[1]!,
+    gatewayNodeId: "node-candidate",
+    computerId: "computer-office",
+    targetProjectId: "project-candidate",
+  };
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true,
+    connected: true,
+    release,
+    nodes: [activeNode, candidateNode],
+    runtimeByNode: {
+      "node-office": {
+        state: "online",
+        status: {
+          version: 1,
+          phase: "staged",
+          releaseId: release.releaseId,
+          targetBuildId: release.buildId,
+          currentBuildId: "gateway-old-arm64",
+          updatedAt: 2,
+        },
+      },
+    },
+    deploymentsByComputer: {
+      "computer-office": {
+        version: 1,
+        strategy: "blue-green-v1",
+        maxDeployments: 2,
+        computerId: "computer-office",
+        generation: 1,
+        phase: "trial",
+        active: {
+          gatewayNodeId: "node-office",
+          buildId: "gateway-old-arm64",
+          projectCount: 1,
+          sessionCount: 1,
+        },
+        candidate: {
+          gatewayNodeId: "node-candidate",
+          releaseId: release.releaseId,
+          buildId: release.buildId,
+          projectCount: 1,
+          sessionCount: 0,
+        },
+        updateId: "update-1",
+        updatedAt: 3,
+      },
+    },
+    activeGatewayNodeIds: new Set(["node-office"]),
+    activeGatewayModesByNode: { "node-office": "discard" },
+    onClose() {},
+    onProbe() {},
+    onStart() {},
+    onPromote() {},
+    onDiscard() {},
+    onOpenProject() {},
+    onOpenSession() {},
+    onArchiveSession() {},
+    onExportDiagnostics() {},
+  }));
+
+  assert.match(html, /Discarding candidate/);
+  assert.match(html, /current Gateway stays online and keeps its work/);
+  assert.match(html, /aria-busy="true"[^>]*>Discarding candidate…<\/button>/);
+  assert.doesNotMatch(html, /Switching when idle|Applying selected restart time/);
+});
+
 test("explains why install actions are unavailable while disconnected", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
     open: true,
