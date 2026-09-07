@@ -14691,7 +14691,9 @@ function MalinkAppRuntime() {
         </div>
       )}
 
-      {pwaUpdateState.phase === "updated" && (
+      {pwaUpdateState.phase === "updated" &&
+        !composerOptionsOpen &&
+        !providerCommandsOpen && (
         <div className="pwa-update-toast" role="status" aria-live="polite">
           <span aria-hidden="true">✓</span>
           <span>
@@ -14712,7 +14714,9 @@ function MalinkAppRuntime() {
         gatewayUpdateNoticeKey &&
         dismissedGatewayUpdateNoticeKey !== gatewayUpdateNoticeKey &&
         !gatewayUpdateDialogOpen &&
-        !notificationCenterOpen && (
+        !notificationCenterOpen &&
+        !composerOptionsOpen &&
+        !providerCommandsOpen && (
         <div className="gateway-update-toast" role="status" aria-live="polite">
           <span aria-hidden="true">G</span>
           <span>
@@ -14748,7 +14752,9 @@ function MalinkAppRuntime() {
         connectionAttentionKey &&
         !hiddenAttentionKeys.has(connectionAttentionKey) &&
         !settingsOpen &&
-        !notificationCenterOpen && (
+        !notificationCenterOpen &&
+        !composerOptionsOpen &&
+        !providerCommandsOpen && (
         <div className="connection-toast" role="alert">
           <span>!</span>
           <button

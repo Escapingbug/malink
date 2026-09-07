@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -69,4 +70,21 @@ test("keeps non-model session options discoverable", () => {
   assert.match(html, /aria-label="Session options"/);
   assert.match(html, />Options</);
   assert.doesNotMatch(html, />Model</);
+});
+
+test("keeps compact provider controls usable inside the mobile session options panel", async () => {
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+
+  assert.match(
+    css,
+    /\.agent-controls \.provider-controls\.is-compact\s*{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s,
+  );
+  assert.match(
+    css,
+    /\.agent-controls \.provider-controls\.is-compact \.provider-control select\s*{[^}]*width:\s*100%;[^}]*max-width:\s*none;[^}]*font-size:\s*16px;/s,
+  );
+  assert.match(
+    css,
+    /\.agent-controls\s*{[^}]*z-index:\s*48;[^}]*max-height:\s*min\(60dvh,\s*360px\);[^}]*overflow-y:\s*auto;/s,
+  );
 });

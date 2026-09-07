@@ -10958,11 +10958,14 @@ body {
 
   .agent-controls {
     position: absolute;
-    z-index: 8;
+    z-index: 48;
     right: 8px;
     bottom: 58px;
     display: none;
     width: min(280px, calc(100vw - 32px));
+    max-height: min(60dvh, 360px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     gap: 5px;
     padding: 8px;
     border-radius: 12px;
@@ -10972,6 +10975,45 @@ body {
 
   .composer-options-open .agent-controls {
     display: grid;
+  }
+
+  .agent-controls .provider-controls.is-compact {
+    display: grid;
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .agent-controls .provider-controls.is-compact .provider-control {
+    width: 100%;
+  }
+
+  .agent-controls .provider-controls.is-compact .provider-control > label {
+    display: grid;
+    gap: 4px;
+  }
+
+  .agent-controls .provider-controls.is-compact .provider-control > label > span {
+    display: block;
+    color: #687185;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .agent-controls .provider-controls.is-compact .provider-control-select {
+    display: grid;
+    width: 100%;
+  }
+
+  .agent-controls .provider-controls.is-compact .provider-control select {
+    width: 100%;
+    max-width: none;
+    font-size: 16px;
+  }
+
+  .agent-controls .provider-controls.is-compact .provider-control-segmented {
+    width: 100%;
   }
 
   .agent-controls label,
