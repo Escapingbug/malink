@@ -1,5 +1,6 @@
 package id.my.anciety.malink.matrix
 
+import java.io.InputStream
 import java.net.URI
 import java.net.URLDecoder
 import kotlinx.coroutines.runBlocking
@@ -14,6 +15,34 @@ import org.junit.Test
 import org.matrix.rustcomponents.sdk.SlidingSyncVersion
 
 class MatrixApplicationControlClientTest {
+    @Test
+    fun `complete JSON reader returns without waiting for chunked response EOF`() {
+        val chunks = listOf(
+            " {\"message\":\"braces } ] stay in text\",".toByteArray(),
+            "\"items\":[1,{\"ok\":true}]} \n".toByteArray(),
+        )
+        var reads = 0
+        val input = object : InputStream() {
+            override fun read(): Int = error("The buffered read path is required.")
+
+            override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                if (reads >= chunks.size) {
+                    error("The reader waited for EOF after complete JSON.")
+                }
+                val chunk = chunks[reads++]
+                require(chunk.size <= length)
+                chunk.copyInto(buffer, offset)
+                return chunk.size
+            }
+        }
+
+        val body = readCompleteJsonContainer(input, maxBytes = 4_096)
+
+        assertEquals(chunks.joinToString("") { it.toString(Charsets.UTF_8) }, body.toString(Charsets.UTF_8))
+        assertEquals(2, reads)
+        assertTrue(Json.parseToJsonElement(body.toString(Charsets.UTF_8)).jsonObject.isNotEmpty())
+    }
+
     @Test
     fun `sends only a MLP3 project envelope as a room message with a stable transaction id`() =
         runBlocking {

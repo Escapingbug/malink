@@ -7,6 +7,7 @@ import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_POINTER_EVENT_
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE
 import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
@@ -172,21 +173,14 @@ class RestrictedHttpsMatrixApplicationControlTransport(
             connection.outputStream.use { it.write(body) }
             val status = connection.responseCode
             val input = if (status in 200..299) connection.inputStream else connection.errorStream
-            MatrixHttpResponse(status, input?.use { stream ->
-                val output = ByteArrayOutputStream()
-                val buffer = ByteArray(8 * 1024)
-                var total = 0
-                while (true) {
-                    val read = stream.read(buffer)
-                    if (read < 0) break
-                    total += read
-                    require(total <= MAX_RESPONSE_BYTES) {
-                        "Matrix control response is too large."
+            MatrixHttpResponse(
+                status,
+                input?.use { stream ->
+                    readCompleteJsonContainer(stream, MAX_RESPONSE_BYTES) {
+                        IllegalArgumentException("Matrix control response is too large.")
                     }
-                    output.write(buffer, 0, read)
-                }
-                output.toByteArray()
-            } ?: ByteArray(0))
+                } ?: ByteArray(0),
+            )
         } finally {
             connection.disconnect()
         }
@@ -217,23 +211,14 @@ class RestrictedHttpsMatrixApplicationReadTransport(
             connection.setRequestProperty("Authorization", "Bearer $accessToken")
             val status = connection.responseCode
             val input = if (status in 200..299) connection.inputStream else connection.errorStream
-            MatrixHttpResponse(status, input?.use { stream ->
-                val output = ByteArrayOutputStream()
-                val buffer = ByteArray(8 * 1024)
-                var total = 0
-                while (true) {
-                    val read = stream.read(buffer)
-                    if (read < 0) break
-                    total += read
-                    if (total > MAX_RESPONSE_BYTES) {
-                        throw MatrixApplicationResponseTooLargeException(
-                            MAX_RESPONSE_BYTES,
-                        )
+            MatrixHttpResponse(
+                status,
+                input?.use { stream ->
+                    readCompleteJsonContainer(stream, MAX_RESPONSE_BYTES) {
+                        MatrixApplicationResponseTooLargeException(MAX_RESPONSE_BYTES)
                     }
-                    output.write(buffer, 0, read)
-                }
-                output.toByteArray()
-            } ?: ByteArray(0))
+                } ?: ByteArray(0),
+            )
         } finally {
             connection.disconnect()
         }
@@ -241,6 +226,91 @@ class RestrictedHttpsMatrixApplicationReadTransport(
 
     private companion object {
         const val MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+    }
+}
+
+/**
+ * Matrix responses are JSON objects or arrays. Some homeserver/proxy paths
+ * leave a chunked response open after the complete JSON value has arrived.
+ * Waiting for EOF turns a successful request into a read timeout, so recognize
+ * the end of the root JSON container while scanning each byte only once.
+ */
+internal fun readCompleteJsonContainer(
+    input: InputStream,
+    maxBytes: Int,
+    tooLarge: () -> Throwable = { MatrixApplicationResponseTooLargeException(maxBytes) },
+): ByteArray {
+    require(maxBytes > 0)
+    val output = ByteArrayOutputStream()
+    val detector = CompleteJsonContainerDetector()
+    val buffer = ByteArray(8 * 1024)
+    var total = 0
+    while (true) {
+        val read = input.read(buffer)
+        if (read < 0) return output.toByteArray()
+        total += read
+        if (total > maxBytes) throw tooLarge()
+        output.write(buffer, 0, read)
+        if (detector.accept(buffer, read)) return output.toByteArray()
+    }
+}
+
+private class CompleteJsonContainerDetector {
+    private val expectedClosers = ArrayDeque<Byte>()
+    private var started = false
+    private var inString = false
+    private var escaped = false
+    private var complete = false
+    private var invalid = false
+
+    fun accept(bytes: ByteArray, length: Int): Boolean {
+        for (index in 0 until length) {
+            val value = bytes[index]
+            if (complete) {
+                if (!value.isJsonWhitespace()) invalid = true
+                continue
+            }
+            if (!started) {
+                if (value.isJsonWhitespace()) continue
+                started = true
+                when (value.toInt().toChar()) {
+                    '{' -> expectedClosers.addLast('}'.code.toByte())
+                    '[' -> expectedClosers.addLast(']'.code.toByte())
+                    else -> invalid = true
+                }
+                continue
+            }
+            if (invalid) continue
+            if (inString) {
+                if (escaped) {
+                    escaped = false
+                } else {
+                    when (value.toInt().toChar()) {
+                        '\\' -> escaped = true
+                        '"' -> inString = false
+                    }
+                }
+                continue
+            }
+            when (value.toInt().toChar()) {
+                '"' -> inString = true
+                '{' -> expectedClosers.addLast('}'.code.toByte())
+                '[' -> expectedClosers.addLast(']'.code.toByte())
+                '}', ']' -> {
+                    if (expectedClosers.removeLastOrNull() != value) {
+                        invalid = true
+                    } else if (expectedClosers.isEmpty()) {
+                        complete = true
+                    }
+                }
+            }
+        }
+        return complete && !invalid
+    }
+
+    private fun Byte.isJsonWhitespace(): Boolean = when (toInt().toChar()) {
+        ' ', '\t', '\r', '\n' -> true
+        else -> false
     }
 }
 
