@@ -1092,18 +1092,22 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             const signal = options.signal
                 ? AbortSignal.any([options.signal, timeoutController.signal])
                 : timeoutController.signal
+            const abortWait = rejectWhenAborted(signal)
             let response: Response
             let body: unknown
             try {
-                response = await this.fetchImpl(url, {
-                    method,
-                    headers: {
-                        authorization: `Bearer ${this.connection.accessToken}`,
-                        ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
-                    },
-                    ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
-                    signal,
-                })
+                response = await Promise.race([
+                    this.fetchImpl(url, {
+                        method,
+                        headers: {
+                            authorization: `Bearer ${this.connection.accessToken}`,
+                            ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
+                        },
+                        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+                        signal,
+                    }),
+                    abortWait.promise,
+                ])
                 // Receiving response headers does not complete the request. Keep
                 // the same deadline active while consuming the body so a stalled
                 // homeserver response cannot hold the account-wide room-write
@@ -1112,7 +1116,10 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                 // chunked body. Matrix mutation responses are bounded JSON values,
                 // so accept a complete object as soon as it is parseable and
                 // cancel the unread tail instead of retrying an accepted txn.
-                body = await readMatrixResponseBody(response, method !== 'GET')
+                body = await Promise.race([
+                    readMatrixResponseBody(response, method !== 'GET'),
+                    abortWait.promise,
+                ])
             } catch (error) {
                 if (
                     options.retryTransient
@@ -1138,6 +1145,7 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                 }
                 throw error
             } finally {
+                abortWait.dispose()
                 clearTimeout(timeout)
             }
             if (response.ok) {
@@ -1454,6 +1462,25 @@ function safeJson(text: string): unknown {
         return JSON.parse(text)
     } catch {
         return { raw: text }
+    }
+}
+
+function rejectWhenAborted(signal: AbortSignal): {
+    promise: Promise<never>
+    dispose(): void
+} {
+    let rejectAbort!: (reason: unknown) => void
+    const promise = new Promise<never>((_resolve, reject) => {
+        rejectAbort = reject
+    })
+    const onAbort = () => rejectAbort(
+        signal.reason ?? new DOMException('This operation was aborted', 'AbortError'),
+    )
+    if (signal.aborted) onAbort()
+    else signal.addEventListener('abort', onAbort, { once: true })
+    return {
+        promise,
+        dispose: () => signal.removeEventListener('abort', onAbort),
     }
 }
 

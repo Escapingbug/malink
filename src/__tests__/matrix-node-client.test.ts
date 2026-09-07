@@ -663,6 +663,90 @@ describe('MatrixNodeSdkGatewayClient', () => {
         expect(calls).toBe(2)
     })
 
+    it('releases the room write lane when fetch ignores abort', async () => {
+        let calls = 0
+        const fetchMock = vi.fn(async () => {
+            calls += 1
+            if (calls === 1) return new Promise<Response>(() => undefined)
+            return jsonResponse({ event_id: '$after-ignored-fetch-abort' })
+        }) as unknown as typeof fetch
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test',
+            accessToken: 'token',
+            userId: '@gateway:example.test',
+            deviceId: 'STABLE_DEVICE',
+        }, 20, undefined, fetchMock)
+        const state = (stateKey: string) => client.setApplicationRoomState({
+            roomId: '!room:example.test',
+            eventType: MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
+            stateKey,
+            content: {
+                version: 2,
+                kind: 'state_envelope',
+                state_envelope: {
+                    envelope: {
+                        eventType: MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
+                        stateKey,
+                    },
+                    signature: {},
+                },
+            },
+        })
+
+        await expect(state('ignored-fetch-abort')).rejects.toMatchObject({ name: 'AbortError' })
+        await expect(state('recovered')).resolves.toMatchObject({
+            eventId: '$after-ignored-fetch-abort',
+        })
+        expect(calls).toBe(2)
+    })
+
+    it('releases the room write lane when a streamed body ignores abort', async () => {
+        let calls = 0
+        const fetchMock = vi.fn(async () => {
+            calls += 1
+            if (calls === 1) {
+                return new Response(new ReadableStream<Uint8Array>({
+                    start() {
+                        // Deliberately never emit data or close. A real proxy
+                        // can leave a successful chunked response in this state.
+                    },
+                }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                })
+            }
+            return jsonResponse({ event_id: '$after-ignored-body-abort' })
+        }) as unknown as typeof fetch
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test',
+            accessToken: 'token',
+            userId: '@gateway:example.test',
+            deviceId: 'STABLE_DEVICE',
+        }, 20, undefined, fetchMock)
+        const state = (stateKey: string) => client.setApplicationRoomState({
+            roomId: '!room:example.test',
+            eventType: MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
+            stateKey,
+            content: {
+                version: 2,
+                kind: 'state_envelope',
+                state_envelope: {
+                    envelope: {
+                        eventType: MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
+                        stateKey,
+                    },
+                    signature: {},
+                },
+            },
+        })
+
+        await expect(state('ignored-body-abort')).rejects.toMatchObject({ name: 'AbortError' })
+        await expect(state('recovered')).resolves.toMatchObject({
+            eventId: '$after-ignored-body-abort',
+        })
+        expect(calls).toBe(2)
+    })
+
     it('accepts a complete mutation result without waiting for chunked response EOF', async () => {
         let calls = 0
         let bodyCancelled = false
