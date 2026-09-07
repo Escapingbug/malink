@@ -26,6 +26,7 @@ import { loginMatrixGatewayWithToken } from '@/gateway/matrix/login'
 import { validateMacosGatewayRelease } from './macosGatewayRelease.js'
 import {
   buildGatewayDeploymentHandoff,
+  seedGatewayDeploymentCandidateWebPush,
 } from './gatewayDeploymentHandoff.js'
 import type { GatewayDeploymentTransition } from './gatewayDeploymentCoordinator.js'
 
@@ -157,6 +158,10 @@ export class MacosGatewayBlueGreenHost {
       await mkdir(state.candidateDirectory, { recursive: true, mode: 0o700 })
       await mkdir(dirname(state.candidateAdminSocket), { recursive: true, mode: 0o700 })
       await this.copyFoundation(state.candidateDirectory)
+      await seedGatewayDeploymentCandidateWebPush(
+        this.activeDataDirectory,
+        state.candidateDirectory,
+      )
 
       const sourceIdentity = await new FileGatewayIdentityStore(
         join(this.activeDataDirectory, 'gateway-identity.json'),

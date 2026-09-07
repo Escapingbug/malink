@@ -49,6 +49,27 @@ export interface GatewayDeploymentHandoffResult {
 }
 
 /**
+ * Gives an isolated trial Gateway the Workspace's existing Web Push identity
+ * without copying production subscriptions or pending notifications into a
+ * second live sender.
+ */
+export async function seedGatewayDeploymentCandidateWebPush(
+  sourceDirectory: string,
+  candidateDirectory: string,
+): Promise<void> {
+  const source = await readOptionalRecord(join(resolve(sourceDirectory), WEB_PUSH))
+  if (!source) return
+  const normalized = normalizedWebPushState(source, 'source')
+  await writePrivateJson(join(resolve(candidateDirectory), WEB_PUSH), {
+    version: 1,
+    vapid: normalized.vapid,
+    subscriptions: {},
+    pending: {},
+    completedEventIds: [],
+  })
+}
+
+/**
  * Builds promoted state without modifying either deployment directory. Both
  * Gateways must have closed their writable stores before this function runs.
  */
@@ -430,29 +451,66 @@ async function mergeWebPush(sourcePath: string, targetPath: string): Promise<voi
     await writePrivateJson(targetPath, source)
     return
   }
-  if (source.version !== 1 || target.version !== 1 || !sameJson(source.vapid, target.vapid)) {
+  if (source.version !== 1 || target.version !== 1) {
     throw new Error('Gateway Web Push identity is not handoff-compatible')
   }
+  const sourceState = normalizedWebPushState(source, 'source')
+  const targetState = normalizedWebPushState(target, 'candidate')
+  if (!sameJson(sourceState.vapid, targetState.vapid)) {
+    // Older blue/green hosts let each trial generate a distinct VAPID key.
+    // Those candidate subscriptions are cryptographically bound to that key
+    // and cannot be sent with the production identity. Preserve the active
+    // source state wholesale; clients can subscribe the promoted node again.
+    await writePrivateJson(targetPath, { version: 1, ...sourceState })
+    return
+  }
   const subscriptions = mergeLatestUpdatedRecords(
-    requireRecord(source.subscriptions, 'source Web Push subscriptions'),
-    requireRecord(target.subscriptions, 'candidate Web Push subscriptions'),
+    sourceState.subscriptions,
+    targetState.subscriptions,
   )
   const pending = mergeRecords(
-    requireRecord(source.pending, 'source Web Push pending events'),
-    requireRecord(target.pending, 'candidate Web Push pending events'),
+    sourceState.pending,
+    targetState.pending,
     'Web Push pending event',
   )
   const completedEventIds = [...new Set([
-    ...requireStringArray(source.completedEventIds, 'source completed Web Push events'),
-    ...requireStringArray(target.completedEventIds, 'candidate completed Web Push events'),
+    ...sourceState.completedEventIds,
+    ...targetState.completedEventIds,
   ])].slice(-512)
   await writePrivateJson(targetPath, {
     version: 1,
-    vapid: target.vapid,
+    vapid: targetState.vapid,
     subscriptions,
     pending,
     completedEventIds,
   })
+}
+
+function normalizedWebPushState(
+  value: Record<string, unknown>,
+  label: string,
+): {
+  vapid: Record<string, unknown>
+  subscriptions: Record<string, unknown>
+  pending: Record<string, unknown>
+  completedEventIds: string[]
+} {
+  if (value.version !== 1) {
+    throw new Error(`Gateway handoff ${label} Web Push state is invalid`)
+  }
+  const vapid = requireRecord(value.vapid, `${label} Web Push identity`)
+  requireString(vapid.subject, `${label} Web Push subject`)
+  requireString(vapid.publicKey, `${label} Web Push public key`)
+  requireString(vapid.privateKey, `${label} Web Push private key`)
+  return {
+    vapid: structuredClone(vapid),
+    subscriptions: requireRecord(value.subscriptions, `${label} Web Push subscriptions`),
+    pending: requireRecord(value.pending, `${label} Web Push pending events`),
+    completedEventIds: requireStringArray(
+      value.completedEventIds,
+      `${label} completed Web Push events`,
+    ),
+  }
 }
 
 function mergeRecords(

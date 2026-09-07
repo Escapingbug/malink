@@ -4,7 +4,11 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { FileMatrixMlp3Outbox } from '@/gateway/matrix/fileMatrixMlp3Outbox'
-import { buildGatewayDeploymentHandoff } from '@/ops/gatewayDeploymentHandoff'
+import { FileGatewayWebPushService } from '@/gateway/matrix/webPush'
+import {
+  buildGatewayDeploymentHandoff,
+  seedGatewayDeploymentCandidateWebPush,
+} from '@/ops/gatewayDeploymentHandoff'
 
 const temporaryDirectories: string[] = []
 
@@ -150,7 +154,105 @@ describe('Gateway deployment handoff', () => {
       code: 'ENOENT',
     })
   })
+
+  it('seeds the candidate Web Push identity without duplicating live delivery state', async () => {
+    const fixture = await handoffFixture()
+    await writeJson(join(fixture.source, 'gateway-replay.jsonl.v3-web-push.json'), webPushState(
+      'source',
+      { device: { endpoint: 'https://push.example/source', updatedAt: 1 } },
+      { event: { payload: {}, targets: [], attempts: 0, nextAttemptAt: 1 } },
+      ['completed'],
+    ))
+
+    await seedGatewayDeploymentCandidateWebPush(fixture.source, fixture.candidate)
+
+    const candidatePath = join(
+      fixture.candidate,
+      'gateway-replay.jsonl.v3-web-push.json',
+    )
+    await expect(readJson(candidatePath)).resolves.toEqual(webPushState('source', {}, {}, []))
+    const service = new FileGatewayWebPushService(candidatePath, {
+      sender: { sendNotification: async () => undefined },
+    })
+    await service.initialize()
+    expect(service.publicKey()).toBe('A'.repeat(87))
+    await service.flush()
+    service.stop()
+  })
+
+  it('keeps the active Web Push state when an older candidate has another identity', async () => {
+    const fixture = await handoffFixture()
+    await seedDeployment(fixture.source, {
+      gatewayNodeId: 'gateway-old',
+      roomId: '!old:example.test',
+      projectId: 'project-old',
+      sessionId: 'session-old',
+      providerSessionId: 'provider-old',
+      commandKey: '["workspace-1","device","certificate","command-old"]',
+    })
+    await seedDeployment(fixture.candidate, {
+      gatewayNodeId: 'gateway-new',
+      roomId: '!new:example.test',
+      projectId: 'project-new',
+      sessionId: 'session-new',
+      providerSessionId: 'provider-new',
+      commandKey: '["workspace-1","device","certificate","command-new"]',
+    })
+    const source = webPushState(
+      'source',
+      { device: { endpoint: 'https://push.example/source', updatedAt: 1 } },
+      { event: { payload: {}, targets: [], attempts: 0, nextAttemptAt: 1 } },
+      ['source-completed'],
+    )
+    await writeJson(join(
+      fixture.source,
+      'gateway-replay.jsonl.v3-web-push.json',
+    ), source)
+    await writeJson(join(
+      fixture.candidate,
+      'gateway-replay.jsonl.v3-web-push.json',
+    ), webPushState(
+      'candidate',
+      { device: { endpoint: 'https://push.example/candidate', updatedAt: 2 } },
+      { candidate: { payload: {}, targets: [], attempts: 0, nextAttemptAt: 2 } },
+      ['candidate-completed'],
+    ))
+
+    const result = await buildGatewayDeploymentHandoff({
+      sourceDirectory: fixture.source,
+      candidateDirectory: fixture.candidate,
+      transactionRoot: fixture.transactions,
+      updateId: 'update-web-push',
+      candidateGatewayNodeId: 'gateway-new',
+      workspaceId: 'workspace-1',
+    })
+
+    await expect(readJson(join(
+      result.targetDirectory,
+      'gateway-replay.jsonl.v3-web-push.json',
+    ))).resolves.toEqual(source)
+  })
 })
+
+function webPushState(
+  identity: string,
+  subscriptions: Record<string, unknown>,
+  pending: Record<string, unknown>,
+  completedEventIds: string[],
+): Record<string, unknown> {
+  const keyByte = identity === 'source' ? 'A' : 'B'
+  return {
+    version: 1,
+    vapid: {
+      subject: 'mailto:notifications@malink.dev',
+      publicKey: keyByte.repeat(87),
+      privateKey: keyByte.toLowerCase().repeat(43),
+    },
+    subscriptions,
+    pending,
+    completedEventIds,
+  }
+}
 
 async function handoffFixture(): Promise<{
   root: string

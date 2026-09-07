@@ -139,6 +139,9 @@ command gate:
 4. Copy only the Workspace signing and authorization foundation into the
    isolated candidate directory. Active runtime state is never opened for
    writing by the candidate; the target release creates its own trial stores.
+   Web Push keeps the Workspace's existing VAPID identity, but the trial starts
+   with empty subscription and delivery collections so it cannot replay the
+   active Gateway's pending notifications.
 5. Start the candidate against its isolated deployment data and require local
    health, a fresh Matrix sync, a readable inbox and command journal, provider
    startup, and shadow readiness for every active route.
@@ -182,7 +185,10 @@ does not enumerate or rewrite sessions.
    records with the candidate's trial-owned state. A duplicate command key is
    accepted only when its fingerprint and durable outcome match exactly. A
    duplicate delivery ID is accepted only when its exact retained ciphertext
-   agrees; a durable terminal receipt wins over pending state.
+   agrees; a durable terminal receipt wins over pending state. The active
+   Gateway remains authoritative for Web Push when an older candidate generated
+   another VAPID identity, because subscriptions created for different VAPID
+   keys are not cryptographically interchangeable.
 6. Validate the merged state using the target release and require its inherited
    inbox and outbox to reach zero while the command fence remains closed. No
    source or candidate directory is changed in place.
