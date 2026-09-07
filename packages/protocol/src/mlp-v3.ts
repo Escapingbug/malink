@@ -1380,6 +1380,13 @@ export const mlp3TimelineContentSchema = z
   .object({
     msgtype: z.literal('m.notice'),
     body: z.literal('Encrypted Malink event'),
+    'm.new_content': z
+      .object({
+        msgtype: z.literal('m.notice'),
+        body: z.literal('Encrypted Malink event'),
+      })
+      .strict()
+      .optional(),
     'm.relates_to': z.record(z.string(), jsonValueSchema).optional(),
     [MALINK_MATRIX_EXTENSION]: z
       .object({

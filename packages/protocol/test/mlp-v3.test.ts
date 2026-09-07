@@ -3,11 +3,43 @@ import {
   mlp3CommandSchema,
   mlp3EventSchema,
   mlp3ProjectKeyGrantPlaintextSchema,
+  mlp3TimelineContentSchema,
   providerSessionEntrySchema,
 } from '../src/mlp-v3.js'
 import { matrixGatewayCapabilitiesSchema } from '../src/matrix-native.js'
 
 describe('Malink Protocol v3 (MLP/3)', () => {
+  it('accepts the bounded Matrix replacement body used by encrypted timeline edits', () => {
+    expect(mlp3TimelineContentSchema.parse({
+      msgtype: 'm.notice',
+      body: 'Encrypted Malink event',
+      'm.new_content': {
+        msgtype: 'm.notice',
+        body: 'Encrypted Malink event',
+      },
+      'm.relates_to': {
+        rel_type: 'm.replace',
+        event_id: '$previous:example.org',
+      },
+      'io.malink': {
+        version: 3,
+        envelope: {
+          kind: 'malink.project-envelope',
+          version: 3,
+          roomId: '!project:example.org',
+          projectId: 'project-1',
+          keyId: 'key-1',
+          logicalEventId: 'event-2',
+          nonce: 'A'.repeat(16),
+          ciphertext: 'B'.repeat(22),
+        },
+      },
+    })['m.new_content']).toEqual({
+      msgtype: 'm.notice',
+      body: 'Encrypted Malink event',
+    })
+  })
+
   it('carries a bounded passive client integration entry inside an encrypted assistant event', () => {
     const event = {
       kind: 'malink.event' as const,
