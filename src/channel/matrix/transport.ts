@@ -37,6 +37,8 @@ export interface MatrixApplicationTimelineEventRequest {
     content: MatrixRoomMessageContent
     /** Stable homeserver transaction ID for durable, idempotent retries. */
     transactionId: string
+    /** Cancels this individual durable-delivery attempt without changing its txn ID. */
+    signal?: AbortSignal
 }
 
 export interface MatrixApplicationControlEventRequest {
@@ -45,6 +47,8 @@ export interface MatrixApplicationControlEventRequest {
     content: MatrixRoomMessageContent
     /** Stable homeserver transaction ID for durable, idempotent retries. */
     transactionId: string
+    /** Cancels this individual durable-delivery attempt without changing its txn ID. */
+    signal?: AbortSignal
 }
 
 export interface MatrixApplicationStateEventRequest {
@@ -52,6 +56,8 @@ export interface MatrixApplicationStateEventRequest {
     eventType: string
     stateKey: string
     content: Record<string, unknown>
+    /** Cancels this individual durable-delivery attempt. */
+    signal?: AbortSignal
 }
 
 export interface MatrixSendEventRequest {

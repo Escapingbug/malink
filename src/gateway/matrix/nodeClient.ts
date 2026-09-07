@@ -636,10 +636,15 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             const response = await this.matrixRequest<{ event_id: string }>(
                 'PUT',
                 matrixStatePath(request.roomId, request.eventType, request.stateKey),
-                { body: request.content, retryRateLimit: true, paceRoomWrite: true },
+                {
+                    body: request.content,
+                    retryRateLimit: true,
+                    paceRoomWrite: true,
+                    signal: request.signal,
+                },
             )
             return { eventId: requireEventId(response) }
-        })
+        }, request.signal)
     }
 
     async prepareRoomThread(roomId: string, rootEventId: string): Promise<void> {
@@ -1058,15 +1063,21 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
         eventType: string
         transactionId: string
         content: Record<string, unknown>
+        signal?: AbortSignal
     }): Promise<MatrixSendEventResult> {
         return this.withRoomSendLock(async () => {
             const response = await this.matrixRequest<{ event_id: string }>(
                 'PUT',
                 `/_matrix/client/v3/rooms/${encodeURIComponent(request.roomId)}/send/${encodeURIComponent(request.eventType)}/${encodeURIComponent(request.transactionId)}`,
-                { body: request.content, retryRateLimit: true, paceRoomWrite: true },
+                {
+                    body: request.content,
+                    retryRateLimit: true,
+                    paceRoomWrite: true,
+                    signal: request.signal,
+                },
             )
             return { eventId: requireEventId(response) }
-        })
+        }, request.signal)
     }
 
     private async matrixRequest<T = Record<string, unknown>>(

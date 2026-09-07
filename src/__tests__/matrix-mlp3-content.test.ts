@@ -127,6 +127,83 @@ describe('GatewayMlp3ContentLayer', () => {
     layer.stopRetries()
   })
 
+  it('aborts a stalled attempt and retries the same transaction without a sync echo', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-cancelled-attempt-'))
+    const gateway = await generateDeviceKeyPair()
+    const phone = await generateDeviceKeyPair()
+    const room = {
+      roomId: '!project:example.org',
+      conversationId: 'conversation-1',
+      cwd: '/repo',
+      providerName: 'test',
+    }
+    const logs: string[] = []
+    const layer = new GatewayMlp3ContentLayer('workspace-1', {
+      gatewayDeviceId: 'workspace-1',
+      gatewayKeyPair: await exportDeviceKeyPair(gateway),
+      envelopeReplayLedgerPath: join(directory, 'security'),
+      deliveryAttemptTimeoutMs: 20,
+    }, [{
+      deviceId: 'phone-1',
+      publicKey: phone.publicJwk,
+      allowedRoomIds: [room.roomId],
+      allowedOperations: ['prompt'],
+      matrixUserId: '@owner:example.org',
+      matrixDeviceId: 'PHONE',
+      matrixDeviceKeys: ['matrix-phone-key'],
+      certificateExpiresAt: Date.now() + 60_000,
+      sequenceEpoch: 'certificate-1',
+    }], undefined, message => logs.push(message))
+    await layer.initialize()
+    const transport = new InMemoryMatrixTransport()
+    await layer.provisionProject(room, transport)
+    const transactionIds: string[] = []
+    let abortedAttempts = 0
+    const deliverNormally = transport.sendApplicationTimelineEvent.bind(transport)
+    transport.sendApplicationTimelineEvent = request => {
+      transactionIds.push(request.transactionId)
+      if (transactionIds.length > 1) return deliverNormally(request)
+      return new Promise((_resolve, reject) => {
+        request.signal?.addEventListener('abort', () => {
+          abortedAttempts += 1
+          reject(request.signal?.reason)
+        }, { once: true })
+      })
+    }
+
+    const queued = await layer.enqueueEvent(room, {
+      kind: 'malink.event',
+      version: 3,
+      eventId: 'event-retried-after-abort',
+      workspaceId: 'workspace-1',
+      projectId: gatewayProjectIdentity(room.cwd).id,
+      sessionId: 'session-1',
+      occurredAt: 1,
+      payload: {
+        type: 'session.ready',
+        provider: 'test',
+        permissionMode: 'default',
+        projection: {
+          title: 'Session',
+          lifecycle: 'active',
+          activity: 'idle',
+          updatedAt: 1,
+          stateVersion: 1,
+        },
+      },
+    }, transport)
+
+    await expect(queued.confirmation).resolves.toMatchObject({
+      eventId: expect.any(String),
+    })
+    expect(abortedAttempts).toBe(1)
+    expect(transactionIds).toHaveLength(2)
+    expect(new Set(transactionIds).size).toBe(1)
+    expect(layer.outboxHealth().pending).toBe(0)
+    expect(logs.some(message => message.includes('did not settle within 20ms'))).toBe(true)
+    layer.stopRetries()
+  })
+
   it('retries an already-encrypted outbox after every recipient becomes inactive', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-v3-recipientless-retry-'))
     const securityPath = join(directory, 'security')

@@ -1031,9 +1031,7 @@ runner = new MatrixMlp3GatewayRunner(config, {
             `[matrix-gateway] rejected ${event.eventId}: ${formatError(error)}\n`,
         )
     },
-    ...(deterministicE2eProvider
-        ? { onLog: (message: string) => process.stderr.write(`${message}\n`) }
-        : {}),
+    onLog: (message: string) => process.stderr.write(`${message}\n`),
 })
 
 await runner.start()

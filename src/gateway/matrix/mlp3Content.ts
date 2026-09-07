@@ -824,7 +824,7 @@ export class GatewayMlp3ContentLayer {
       }
       try {
         const result = await deliveryAttempt(
-          this.sendDelivery(job.delivery, job.transport),
+          signal => this.sendDelivery(job.delivery, job.transport, signal),
           this.config.deliveryAttemptTimeoutMs ?? DEFAULT_MLP3_DELIVERY_ATTEMPT_TIMEOUT_MS,
           job.delivery.deliveryId,
         )
@@ -853,6 +853,7 @@ export class GatewayMlp3ContentLayer {
   private async sendDelivery(
     delivery: MatrixMlp3Delivery,
     transport: MatrixTransport,
+    signal?: AbortSignal,
   ): Promise<MatrixSendEventResult> {
     if (delivery.kind === 'event') {
       if (!transport.sendApplicationTimelineEvent) {
@@ -863,6 +864,7 @@ export class GatewayMlp3ContentLayer {
         eventType: 'm.room.message',
         content: delivery.content as MatrixRoomMessageContent,
         transactionId: delivery.transactionId,
+        signal,
       })
     }
     if (!transport.setApplicationRoomState) {
@@ -873,6 +875,7 @@ export class GatewayMlp3ContentLayer {
       eventType: delivery.eventType,
       stateKey: delivery.stateKey,
       content: delivery.content,
+      signal,
     })
   }
 
@@ -1147,18 +1150,23 @@ function contentBytes(content: Record<string, unknown>): number {
 }
 
 async function deliveryAttempt<T>(
-  operation: Promise<T>,
+  operation: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
   deliveryId: string,
 ): Promise<T> {
+  const controller = new AbortController()
   let timeout: ReturnType<typeof setTimeout> | undefined
   try {
     return await Promise.race([
-      operation,
+      operation(controller.signal),
       new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error(
-          `Matrix delivery ${deliveryId} did not settle within ${timeoutMs}ms`,
-        )), timeoutMs)
+        timeout = setTimeout(() => {
+          const error = new Error(
+            `Matrix delivery ${deliveryId} did not settle within ${timeoutMs}ms`,
+          )
+          controller.abort(error)
+          reject(error)
+        }, timeoutMs)
         timeout.unref?.()
       }),
     ])

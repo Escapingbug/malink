@@ -700,6 +700,68 @@ describe('MatrixNodeSdkGatewayClient', () => {
         expect(calls).toBe(2)
     })
 
+    it('cancels one application timeline attempt and releases the room write lane', async () => {
+        let calls = 0
+        let firstRequestAborted = false
+        const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+            calls += 1
+            if (calls === 1) {
+                return new Promise<Response>((_resolve, reject) => {
+                    const rejectAbort = () => {
+                        firstRequestAborted = true
+                        reject(init?.signal?.reason ?? new DOMException('Aborted', 'AbortError'))
+                    }
+                    if (init?.signal?.aborted) rejectAbort()
+                    else init?.signal?.addEventListener('abort', rejectAbort, { once: true })
+                })
+            }
+            return jsonResponse({ event_id: '$after-attempt-abort' })
+        }) as unknown as typeof fetch
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test',
+            accessToken: 'token',
+            userId: '@gateway:example.test',
+            deviceId: 'STABLE_DEVICE',
+        }, 30_000, undefined, fetchMock)
+        const content = {
+            msgtype: 'm.notice',
+            body: 'Encrypted Malink event',
+            'io.malink': {
+                version: 3,
+                envelope: {
+                    kind: 'malink.project-envelope',
+                    version: 3,
+                    roomId: '!room:example.test',
+                    projectId: 'project-1',
+                    keyId: 'key-1',
+                    logicalEventId: 'event-1',
+                    nonce: 'AAAAAAAAAAAAAAAA',
+                    ciphertext: 'AAAAAAAAAAAAAAAAAAAAAA',
+                },
+            },
+        }
+        const controller = new AbortController()
+        const stalled = client.sendApplicationTimelineEvent({
+            roomId: '!room:example.test',
+            eventType: 'm.room.message',
+            content,
+            transactionId: 'stable-transaction',
+            signal: controller.signal,
+        })
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+        controller.abort(new Error('durable delivery attempt expired'))
+
+        await expect(stalled).rejects.toThrow('durable delivery attempt expired')
+        expect(firstRequestAborted).toBe(true)
+        await expect(client.sendApplicationTimelineEvent({
+            roomId: '!room:example.test',
+            eventType: 'm.room.message',
+            content,
+            transactionId: 'stable-transaction',
+        })).resolves.toEqual({ eventId: '$after-attempt-abort' })
+        expect(calls).toBe(2)
+    })
+
     it('releases the room write lane when a streamed body ignores abort', async () => {
         let calls = 0
         const fetchMock = vi.fn(async () => {
