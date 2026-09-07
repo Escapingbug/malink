@@ -8,4 +8,4 @@ allowBuilds:
   unrs-resolver: true
   workerd: true
 minimumReleaseAgeExclude:
-  - '@agentclientprotocol/codex-acp@1.7.0'
+  - '@agentclientprotocol/codex-acp@1.10.0'

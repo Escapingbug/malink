@@ -61,8 +61,8 @@ describe('CodexProvider', () => {
         }
         const codex = testRequire('@openai/codex/package.json') as { version: string }
 
-        expect(codexAcp.version).toBe('1.7.0')
-        expect(codex.version).toBe('0.148.0')
+        expect(codexAcp.version).toBe('1.10.0')
+        expect(codex.version).toBe('0.153.4')
     })
 
     it('ignores an ambient codex-acp on PATH', async () => {
@@ -102,8 +102,8 @@ describe('CodexProvider', () => {
         const modelsReader = vi.fn().mockResolvedValue(JSON.stringify({
                 models: [
                     {
-                        slug: 'gpt-5.5',
-                        display_name: 'GPT-5.5',
+                        slug: 'gpt-6-astra',
+                        display_name: 'GPT-6-Astra',
                         visibility: 'list',
                         default_reasoning_level: 'medium',
                         supported_reasoning_levels: [
@@ -125,8 +125,8 @@ describe('CodexProvider', () => {
         unsubscribe()
         expect(provider.getAvailableModels()).toEqual([
             {
-                id: 'gpt-5.5',
-                name: 'GPT-5.5',
+                id: 'gpt-6-astra',
+                name: 'GPT-6-Astra',
                 provider: 'openai',
                 defaultReasoningLevel: 'medium',
                 supportedReasoningLevels: [
@@ -215,7 +215,7 @@ describe('parseCodexModels', () => {
     it('parses visible Codex model catalog entries', () => {
         expect(parseCodexModels(JSON.stringify({
             models: [
-                { slug: 'gpt-5.5', display_name: 'GPT-5.5', visibility: 'list' },
+                { slug: 'gpt-6-astra', display_name: 'GPT-6-Astra', visibility: 'list' },
                 {
                     slug: 'gpt-5.3-codex',
                     name: 'GPT-5.3 Codex',
@@ -228,7 +228,7 @@ describe('parseCodexModels', () => {
                 { slug: 'internal', display_name: 'Internal', visibility: 'hidden' },
             ],
         }))).toEqual([
-            { id: 'gpt-5.5', name: 'GPT-5.5', provider: 'openai' },
+            { id: 'gpt-6-astra', name: 'GPT-6-Astra', provider: 'openai' },
             {
                 id: 'gpt-5.3-codex',
                 name: 'GPT-5.3 Codex',
