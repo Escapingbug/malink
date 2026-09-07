@@ -1478,7 +1478,12 @@ async function readMatrixResponseBody(
             text += decoder.decode(part.value, { stream: true })
             const parsed = completeJsonContainer(text)
             if (!parsed.complete) continue
-            await reader.cancel().catch(() => undefined)
+            // Returning the accepted Matrix result must not depend on the
+            // transport finishing cancellation. Undici can keep the cancel
+            // promise pending while a proxy leaves a chunked response open,
+            // which would otherwise strand the durable outbox delivery even
+            // though the complete event_id has already arrived.
+            void reader.cancel().catch(() => undefined)
             return parsed.value
         }
     } finally {

@@ -678,6 +678,7 @@ describe('MatrixNodeSdkGatewayClient', () => {
                     },
                     cancel() {
                         bodyCancelled = true
+                        return new Promise<void>(() => undefined)
                     },
                 }), {
                     status: 200,
