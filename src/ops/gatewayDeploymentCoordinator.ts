@@ -82,10 +82,11 @@ export class GatewayDeploymentCoordinator {
     await this.serialize(async () => {
       const state = await this.readState()
       const transition = transitionFromStatus(state.status)
-      if (
-        state.status.phase === 'steady'
-        || state.status.phase === 'trial'
-      ) return
+      if (state.status.phase === 'steady') {
+        await this.reconcileSteadyActive(state)
+        return
+      }
+      if (state.status.phase === 'trial') return
       if (state.status.phase === 'repair_required') {
         if (!transition) return
         if (state.commitStarted) {
@@ -380,6 +381,28 @@ export class GatewayDeploymentCoordinator {
       }
   }
 
+  private async reconcileSteadyActive(
+    state: GatewayDeploymentCoordinatorState,
+  ): Promise<void> {
+    const inspected = gatewayDeploymentSlotSchema.parse(this.config.active)
+    if (sameDeploymentSlot(state.status.active, inspected)) return
+    const identityChanged = !sameDeploymentIdentity(state.status.active, inspected)
+    await this.writeState(current => {
+      if (current.status.phase !== 'steady') return
+      current.status = gatewayDeploymentStatusSchema.parse({
+        ...current.status,
+        generation: current.status.generation + (identityChanged ? 1 : 0),
+        active: inspected,
+        detail: identityChanged
+          ? 'Active Gateway reconciled with the installed release'
+          : current.status.detail,
+        updatedAt: this.now(),
+      })
+      delete current.commitStarted
+      delete current.scheduledPromotion
+    })
+  }
+
   private armPromotion(scheduledAt: number): void {
     if (this.promotionTimer || this.promotionOperation) return
     const timer = setTimeout(() => {
@@ -659,6 +682,24 @@ function assertMatchingSlot(
     || actual.releaseId !== expected.releaseId
     || actual.buildId !== expected.buildId
   ) throw new Error(`${label} does not match the durable update transaction`)
+}
+
+function sameDeploymentIdentity(
+  left: GatewayDeploymentSlot,
+  right: GatewayDeploymentSlot,
+): boolean {
+  return left.gatewayNodeId === right.gatewayNodeId
+    && left.releaseId === right.releaseId
+    && left.buildId === right.buildId
+}
+
+function sameDeploymentSlot(
+  left: GatewayDeploymentSlot,
+  right: GatewayDeploymentSlot,
+): boolean {
+  return sameDeploymentIdentity(left, right)
+    && left.projectCount === right.projectCount
+    && left.sessionCount === right.sessionCount
 }
 
 function assertUpdate(

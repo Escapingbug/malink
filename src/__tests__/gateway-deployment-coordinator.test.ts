@@ -293,6 +293,68 @@ describe('GatewayDeploymentCoordinator', () => {
     })
   })
 
+  it('reconciles a steady deployment after an external release activation', async () => {
+    const fixture = await coordinatorFixture()
+    await writeFile(fixture.statePath, `${JSON.stringify({
+      version: 1,
+      status: {
+        version: 1,
+        strategy: 'blue-green-v1',
+        maxDeployments: 2,
+        computerId: 'computer-1',
+        generation: 3,
+        phase: 'steady',
+        active: {
+          ...active,
+          releaseId: 'release-stale',
+          buildId: 'build-stale',
+          projectCount: 9,
+          sessionCount: 12,
+        },
+        detail: 'Candidate Gateway was discarded',
+        updatedAt: 10,
+      },
+    })}\n`, { mode: 0o600 })
+
+    await fixture.coordinator.initialize()
+
+    await expect(fixture.coordinator.status()).resolves.toMatchObject({
+      phase: 'steady',
+      generation: 4,
+      active,
+      detail: 'Active Gateway reconciled with the installed release',
+    })
+  })
+
+  it('refreshes steady slot counts without inventing a deployment generation', async () => {
+    const fixture = await coordinatorFixture()
+    await writeFile(fixture.statePath, `${JSON.stringify({
+      version: 1,
+      status: {
+        version: 1,
+        strategy: 'blue-green-v1',
+        maxDeployments: 2,
+        computerId: 'computer-1',
+        generation: 3,
+        phase: 'steady',
+        active: {
+          ...active,
+          projectCount: 9,
+          sessionCount: 12,
+        },
+        updatedAt: 10,
+      },
+    })}\n`, { mode: 0o600 })
+
+    await fixture.coordinator.initialize()
+
+    await expect(fixture.coordinator.status()).resolves.toMatchObject({
+      phase: 'steady',
+      generation: 3,
+      active,
+    })
+  })
+
   it('discards only candidate state and keeps the active generation', async () => {
     const discardCandidate = vi.fn(async () => undefined)
     const fixture = await coordinatorFixture({ discardCandidate })
