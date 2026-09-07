@@ -21,6 +21,28 @@ test("omits controls the provider does not advertise", () => {
   assert.doesNotMatch(html, /unsupported|not exposed|Model|Reasoning/i);
 });
 
+test("keeps Provider default available for an active session after choosing a model", () => {
+  const html = renderToStaticMarkup(createElement(ProviderControls, {
+    controls: [{
+      id: "model",
+      label: "Model",
+      renderer: "select",
+      surfaces: ["session-active"],
+      status: "ready",
+      options: [
+        { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
+        { value: "gpt-6-astra", label: "GPT-6-Astra" },
+      ],
+    }],
+    surface: "session-active",
+    values: { model: "gpt-6-astra" },
+    onChange() {},
+  }));
+
+  assert.match(html, /<option value="">Provider default<\/option>/);
+  assert.match(html, /<option value="gpt-6-astra" selected="">GPT-6-Astra<\/option>/);
+});
+
 test("renders loading as progress and failures as actionable diagnostics", () => {
   const loading = renderToStaticMarkup(createElement(ProviderControls, {
     controls: [{

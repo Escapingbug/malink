@@ -546,6 +546,7 @@ type SessionSettingsUpdate = {
   sessionId: string;
   label: string;
   changes: ProviderControlValues;
+  cleared: Array<"model" | "reasoningEffort">;
 };
 
 type SendRealCommandOptions = {
@@ -3072,10 +3073,13 @@ function MalinkAppRuntime() {
     ...(activeWorkspace?.permissionMode
       ? { permissionMode: activeWorkspace.permissionMode }
       : {}),
-    ...(sessionSettingsUpdate && sessionSettingsUpdate.sessionId === selected?.id
-      ? sessionSettingsUpdate.changes
-      : {}),
   };
+  if (sessionSettingsUpdate?.sessionId === selected?.id) {
+    Object.assign(activeProviderControlValues, sessionSettingsUpdate.changes);
+    sessionSettingsUpdate.cleared.forEach((id) => {
+      delete activeProviderControlValues[id];
+    });
+  }
 
   function showUiNotice(
     key: string,
@@ -12240,16 +12244,19 @@ function MalinkAppRuntime() {
 
   async function updateSessionControls(
     changes: ProviderControlValues,
+    cleared: Array<"model" | "reasoningEffort">,
     label: string,
   ): Promise<void> {
     const sessionId = selectedSessionIdRef.current;
     if (!sessionId || sessionSettingsUpdate) return;
-    const update = { sessionId, changes, label };
+    const update = { sessionId, changes, cleared, label };
     setSessionSettingsUpdate(update);
     const payload: CommandPayload = {
       operation: "session.settings",
       sessionId,
-      controls: changes,
+      ...(Object.keys(changes).length > 0 ? { controls: changes } : {}),
+      ...(cleared.includes("model") ? { model: null } : {}),
+      ...(cleared.includes("reasoningEffort") ? { reasoningEffort: null } : {}),
     };
     try {
       const sent = await sendRealCommand(payload, undefined, {
@@ -14569,17 +14576,26 @@ function MalinkAppRuntime() {
                   compact
                   onReviewIssue={() => setSettingsOpen(true)}
                   onChange={(nextValues) => {
-                    const changedControls = activeProviderControls.filter(control =>
-                      nextValues[control.id] !== activeProviderControlValues[control.id]
-                      && nextValues[control.id] !== undefined
-                    );
-                    const changes = Object.fromEntries(changedControls.map(control => [
-                      control.id,
-                      nextValues[control.id]!,
-                    ]));
+                    const clearable = new Set(["model", "reasoningEffort"]);
+                    const changedControls = activeProviderControls.filter(control => {
+                      const next = nextValues[control.id];
+                      return next !== activeProviderControlValues[control.id]
+                        && (next !== undefined || clearable.has(control.id));
+                    });
+                    const changes: ProviderControlValues = {};
+                    const cleared: Array<"model" | "reasoningEffort"> = [];
+                    changedControls.forEach((control) => {
+                      const next = nextValues[control.id];
+                      if (next !== undefined) {
+                        changes[control.id] = next;
+                      } else if (control.id === "model" || control.id === "reasoningEffort") {
+                        cleared.push(control.id);
+                      }
+                    });
                     if (changedControls.length > 0) {
                       void updateSessionControls(
                         changes,
+                        cleared,
                         changedControls.map(control => control.label).join(" and "),
                       );
                     }

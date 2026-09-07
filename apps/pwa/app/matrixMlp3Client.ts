@@ -716,7 +716,7 @@ export class MatrixMlp3ReadModelRepairError extends Error {
   }
 }
 
-function toMlp3Command(
+export function toMlp3Command(
   payload: CommandPayload,
   config: MatrixMlp3ClientConfig,
   deviceId: string,
@@ -810,8 +810,10 @@ function toMlp3Command(
         payload: {
           operation: "session.update",
           patch: {
-            ...(payload.model ? { model: payload.model } : {}),
-            ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
+            ...(payload.model === undefined ? {} : { model: payload.model }),
+            ...(payload.reasoningEffort === undefined
+              ? {}
+              : { reasoningEffort: payload.reasoningEffort }),
             ...(payload.permissionMode ? { permissionMode: payload.permissionMode } : {}),
             ...(payload.controls ? { controls: payload.controls } : {}),
           },

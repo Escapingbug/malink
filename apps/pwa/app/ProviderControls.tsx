@@ -52,7 +52,13 @@ export function ProviderControls({
           && (control.renderer === "select" || control.renderer === "segmented")
           && options.length === 0
         ) return null;
-        const value = effectiveValues[control.id];
+        const providerDefaultAvailable = allowProviderDefault || (
+          surface === "session-active"
+          && (control.id === "model" || control.id === "reasoningEffort")
+        );
+        const value = providerDefaultAvailable && values[control.id] === undefined
+          ? undefined
+          : effectiveValues[control.id];
         const loadingExpired = control.status === "loading"
           && control.deadlineAt !== undefined
           && control.deadlineAt <= now;
@@ -130,7 +136,7 @@ export function ProviderControls({
                         value={value}
                         disabled={disabled}
                         compact={compact}
-                        allowProviderDefault={allowProviderDefault}
+                        allowProviderDefault={providerDefaultAvailable}
                         onSelect={value => update(control, value)}
                       />
                     )}

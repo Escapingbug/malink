@@ -808,14 +808,24 @@ internal class MatrixMlp3NativeProjection(
             )
         }
 
+        var sessionProjectionApplied = false
         if (sessionId != null && payload["projection"] is JsonObject) {
-            applySessionProjection(
+            sessionProjectionApplied = applySessionProjection(
                 sessionId,
                 projectId,
                 payload.requiredObject("projection"),
                 physicalEventId,
                 threadRootHint,
             )
+        }
+        if (type == "session.updated") {
+            requireNotNull(sessionId) { "A session update must identify its session." }
+            require(payload["projection"] is JsonObject) {
+                "A session update must contain its projection."
+            }
+            val patch = payload.requiredObject("patch")
+            validateSessionSettingsPatch(patch)
+            if (sessionProjectionApplied) applySessionSettingsPatch(sessionId, patch)
         }
         if (
             sessionId != null &&
@@ -2794,6 +2804,7 @@ internal class MatrixMlp3NativeProjection(
         const val DEFAULT_DURABLE_TARGET_BYTES = 6 * 1024 * 1024
         const val MIN_DURABLE_TARGET_BYTES = 256 * 1024
         const val MAX_DURABLE_TARGET_BYTES = 8 * 1024 * 1024
+        val PROVIDER_CONTROL_ID = Regex("^[A-Za-z0-9][A-Za-z0-9._-]*$")
         val ACTIVE_SESSION_ACTIVITIES = setOf("queued", "working", "attention")
         val DURABLE_RETENTION_POLICIES = listOf(
             DurableRetentionPolicy(
@@ -2865,7 +2876,7 @@ internal class MatrixMlp3NativeProjection(
         projection: JsonObject,
         physicalEventId: String?,
         threadRootHint: String?,
-    ) {
+    ): Boolean {
         val nextVersion = projection.requiredPositiveLong("stateVersion")
         val current = sessions[sessionId]
         val nextUpdatedAt = projection.requiredLong("updatedAt")
@@ -2873,7 +2884,7 @@ internal class MatrixMlp3NativeProjection(
             current != null &&
             (current.stateVersion > nextVersion ||
                 (current.stateVersion == nextVersion && current.updatedAt > nextUpdatedAt))
-        ) return
+        ) return false
         val resolvedThreadRootEventId = current?.threadRootEventId.orEmpty()
             .ifEmpty { threadRootHint.orEmpty() }
         val hasVerifiedReceiptTarget =
@@ -2912,6 +2923,121 @@ internal class MatrixMlp3NativeProjection(
             ?.status
             ?: gatewayUpdateStatus
         updateStatus?.let { reconcileGatewayMaintenanceSession(it, resolvedProjectId) }
+        return true
+    }
+
+    /**
+     * `projection` owns the session lifecycle while the adjacent `patch` owns
+     * the resulting provider settings. Keep both in the same durable Android
+     * materialized view so a successful model change cannot visually revert
+     * when the WebView reads its next native snapshot.
+     */
+    private fun applySessionSettingsPatch(sessionId: String, patch: JsonObject) {
+        val current = sessions[sessionId] ?: return
+        val patchedControls = patch["controls"] as? JsonObject
+        val controlValues = current.controlValues.toMutableMap()
+        patchedControls?.forEach { (id, value) -> controlValues[id] = value }
+
+        var model = current.model
+        if ("model" in patch) {
+            if (patch["model"] === JsonNull) {
+                model = null
+                controlValues.remove("model")
+            } else {
+                model = patch.requiredString("model", 256)
+                controlValues["model"] = JsonPrimitive(model)
+            }
+        } else {
+            patchedControls?.stringControl("model")?.let {
+                model = it
+                controlValues["model"] = JsonPrimitive(it)
+            }
+        }
+
+        var reasoningEffort = current.reasoningEffort
+        if ("reasoningEffort" in patch) {
+            if (patch["reasoningEffort"] === JsonNull) {
+                reasoningEffort = null
+                controlValues.remove("reasoningEffort")
+            } else {
+                reasoningEffort = patch.requiredString("reasoningEffort", 64)
+                controlValues["reasoningEffort"] = JsonPrimitive(reasoningEffort)
+            }
+        } else {
+            patchedControls?.stringControl("reasoningEffort")?.let {
+                reasoningEffort = it
+                controlValues["reasoningEffort"] = JsonPrimitive(it)
+            }
+        }
+
+        var permissionMode = current.permissionMode
+        val patchedPermissionMode = when {
+            "permissionMode" in patch -> patch.requiredOneOf(
+                "permissionMode",
+                setOf("default", "accept_edits", "plan", "bypass_permissions"),
+            )
+            else -> patchedControls?.stringControl("permissionMode")
+        }
+        if (patchedPermissionMode != null) {
+            permissionMode = patchedPermissionMode
+            controlValues["permissionMode"] = JsonPrimitive(patchedPermissionMode)
+        }
+
+        sessions[sessionId] = current.copy(
+            model = model,
+            reasoningEffort = reasoningEffort,
+            permissionMode = permissionMode,
+            controlValues = JsonObject(controlValues),
+        )
+    }
+
+    private fun validateSessionSettingsPatch(patch: JsonObject) {
+        patch.requireKeys(
+            required = emptySet(),
+            optional = setOf(
+                "title",
+                "model",
+                "reasoningEffort",
+                "permissionMode",
+                "extensions",
+                "controls",
+            ),
+            label = "Session settings patch",
+        )
+        require(patch.isNotEmpty()) { "A session settings patch must not be empty." }
+        patch["title"]?.let { patch.requiredString("title", 512) }
+        patch["model"]?.takeUnless { it === JsonNull }
+            ?.let { patch.requiredString("model", 256) }
+        patch["reasoningEffort"]?.takeUnless { it === JsonNull }
+            ?.let { patch.requiredString("reasoningEffort", 64) }
+        patch["permissionMode"]?.let {
+            patch.requiredOneOf(
+                "permissionMode",
+                setOf("default", "accept_edits", "plan", "bypass_permissions"),
+            )
+        }
+        patch["extensions"]?.let { patch.requiredArray("extensions", 8) }
+        patch["controls"]?.let {
+            validateProviderControlValues(patch.requiredObject("controls"))
+        }
+    }
+
+    private fun validateProviderControlValues(values: JsonObject) {
+        require(values.size <= 64 && values.toString().length <= 32 * 1024) {
+            "Provider control values are too large."
+        }
+        values.forEach { (id, element) ->
+            require(PROVIDER_CONTROL_ID.matches(id)) { "Provider control ID is invalid." }
+            val value = element as? JsonPrimitive
+                ?: throw IllegalArgumentException("Provider control $id has an invalid value.")
+            if (value.isString) {
+                require(value.content.length <= 4_096) { "Provider control $id is too long." }
+            } else {
+                require(value.booleanOrNull != null) {
+                    "Provider control $id must be a string or boolean."
+                }
+            }
+        }
     }
 
     private fun reconcileGatewayMaintenanceSession(
@@ -4076,6 +4202,11 @@ private fun JsonObject.optionalString(key: String, maximum: Int): String? {
     val primitive = get(key) as? JsonPrimitive ?: return null
     require(primitive.isString)
     return primitive.content.also { require(it.length <= maximum) }
+}
+
+private fun JsonObject.stringControl(key: String): String? {
+    val primitive = get(key) as? JsonPrimitive ?: return null
+    return primitive.takeIf(JsonPrimitive::isString)?.content
 }
 
 private fun JsonObject.requiredLong(key: String): Long {

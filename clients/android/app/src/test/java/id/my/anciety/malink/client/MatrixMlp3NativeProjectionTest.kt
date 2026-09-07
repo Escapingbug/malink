@@ -76,6 +76,93 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `session settings patches update Android state and survive durable restore`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        projection.applyGatewayEvent(
+            sessionReady(
+                sessionId = "session-settings",
+                stateVersion = 1,
+                title = "Settings",
+                updatedAt = 100,
+                model = "model-old",
+                reasoningEffort = "medium",
+            ),
+            "\$ready-settings",
+            "\$ready-settings",
+        )
+        projection.applyGatewayEvent(
+            sessionUpdated(
+                sessionId = "session-settings",
+                stateVersion = 2,
+                updatedAt = 200,
+                eventId = "settings-model-new",
+                patch = buildJsonObject {
+                    put("controls", buildJsonObject {
+                        put("model", "gpt-6-astra")
+                        put("reasoningEffort", "high")
+                    })
+                },
+            ),
+            "\$settings-model-new",
+            "\$ready-settings",
+        )
+
+        val changed = projection.snapshot()!!.getValue("sessions").jsonArray.single().jsonObject
+        assertEquals("gpt-6-astra", changed.getValue("model").jsonPrimitive.content)
+        assertEquals("high", changed.getValue("reasoning_effort").jsonPrimitive.content)
+        assertEquals(
+            "gpt-6-astra",
+            changed.getValue("control_values").jsonObject
+                .getValue("model").jsonPrimitive.content,
+        )
+
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" },
+            activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        val restoredSession = restored.snapshot()!!
+            .getValue("sessions").jsonArray.single().jsonObject
+        assertEquals("gpt-6-astra", restoredSession.getValue("model").jsonPrimitive.content)
+        assertEquals("high", restoredSession.getValue("reasoning_effort").jsonPrimitive.content)
+
+        restored.applyGatewayEvent(
+            sessionUpdated(
+                sessionId = "session-settings",
+                stateVersion = 3,
+                updatedAt = 300,
+                eventId = "settings-provider-default",
+                patch = buildJsonObject {
+                    put("model", JsonNull)
+                    put("reasoningEffort", JsonNull)
+                    put("controls", buildJsonObject {})
+                },
+            ),
+            "\$settings-provider-default",
+            "\$ready-settings",
+        )
+        // A later replay of an older state version must not regress the
+        // provider-default selection that was just confirmed.
+        restored.applyGatewayEvent(
+            sessionUpdated(
+                sessionId = "session-settings",
+                stateVersion = 2,
+                updatedAt = 250,
+                eventId = "settings-stale-replay",
+                patch = buildJsonObject { put("model", "model-stale") },
+            ),
+            "\$settings-stale-replay",
+            "\$ready-settings",
+        )
+        val reset = restored.snapshot()!!.getValue("sessions").jsonArray.single().jsonObject
+        assertNull(reset["model"])
+        assertNull(reset["reasoning_effort"])
+        assertFalse("model" in reset.getValue("control_values").jsonObject)
+        assertFalse("reasoningEffort" in reset.getValue("control_values").jsonObject)
+    }
+
+    @Test
     fun `provider catalogs remain isolated per project and report incomplete recovery targets`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project-1", null)
@@ -2315,6 +2402,8 @@ class MatrixMlp3NativeProjectionTest {
         cwd: String = "/workspace/project",
         projectId: String = "project-1",
         providerHistory: JsonObject? = null,
+        model: String? = null,
+        reasoningEffort: String? = null,
     ) = event(
         eventId = "ready-$sessionId-$stateVersion",
         projectId = projectId,
@@ -2324,6 +2413,14 @@ class MatrixMlp3NativeProjectionTest {
             put("type", "session.ready")
             put("provider", "codex")
             put("permissionMode", "default")
+            model?.let { put("model", it) }
+            reasoningEffort?.let { put("reasoningEffort", it) }
+            if (model != null || reasoningEffort != null) {
+                put("controls", buildJsonObject {
+                    model?.let { put("model", it) }
+                    reasoningEffort?.let { put("reasoningEffort", it) }
+                })
+            }
             put("projection", sessionProjection(stateVersion, title, "active", "idle", updatedAt).let {
                 JsonObject(it + mapOf(
                     "scope" to kotlinx.serialization.json.JsonPrimitive(scope),
@@ -2332,6 +2429,27 @@ class MatrixMlp3NativeProjectionTest {
                     "providerHistory" to providerHistory,
                 ))
             })
+        },
+    )
+
+    private fun sessionUpdated(
+        sessionId: String,
+        stateVersion: Long,
+        updatedAt: Long,
+        eventId: String,
+        patch: JsonObject,
+    ) = event(
+        eventId = eventId,
+        projectId = "project-1",
+        sessionId = sessionId,
+        causationCommandId = "command-$eventId",
+        payload = buildJsonObject {
+            put("type", "session.updated")
+            put(
+                "projection",
+                sessionProjection(stateVersion, "Settings", "active", "idle", updatedAt),
+            )
+            put("patch", patch)
         },
     )
 

@@ -443,8 +443,8 @@ object CommandPayloadValidator {
         require(value.keys.any(settings::contains)) { "At least one session setting is required." }
         return SessionSettingsCommandPayload(
             sessionId = value.requiredOpaqueId("sessionId"),
-            model = value.optionalBoundedString("model", 256),
-            reasoningEffort = value.optionalBoundedString("reasoningEffort", 64),
+            model = value.optionalNullableBoundedString("model", 256),
+            reasoningEffort = value.optionalNullableBoundedString("reasoningEffort", 64),
             permissionMode = value.optionalString("permissionMode")?.let(CommandPermissionMode::fromWireName),
             controls = value.optionalProviderControls("controls"),
             cwd = value.optionalBoundedString("cwd", 4_096),

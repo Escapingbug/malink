@@ -17,10 +17,38 @@ import type { TrustedGateway } from "./pairing";
 import {
   MatrixMlp3ProtocolClient,
   MemoryMatrixMlp3ClientStore,
+  toMlp3Command,
   type MatrixMlp3ClientTransport,
 } from "./matrixMlp3Client";
 
 describe("MatrixMlp3ProtocolClient", () => {
+  it("encodes active-session Provider default resets as nullable MLP patches", () => {
+    const command = toMlp3Command(
+      {
+        operation: "session.settings",
+        sessionId: "session-1",
+        model: null,
+        reasoningEffort: null,
+      },
+      {
+        workspaceId: "workspace-1",
+        roomId: "!project:example.org",
+        projectId: "project-1",
+      },
+      "device-1",
+      "certificate-1",
+    );
+
+    expect(command).toMatchObject({
+      sessionId: "session-1",
+      operation: "session.update",
+      payload: {
+        operation: "session.update",
+        patch: { model: null, reasoningEffort: null },
+      },
+    });
+  });
+
   it("does not impose a local deadline on a durable completion waiter", async () => {
     const store = new MemoryMatrixMlp3ClientStore();
     const client = new MatrixMlp3ProtocolClient(

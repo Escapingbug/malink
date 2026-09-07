@@ -1,6 +1,7 @@
 package id.my.anciety.malink.client.command
 
 import id.my.anciety.malink.security.malink.PairingOperation
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
@@ -302,6 +303,14 @@ class CommandPayloadValidatorTest {
                     put("reasoningEffort", "x".repeat(64))
                 },
             ) is SessionSettingsCommandPayload,
+        )
+        assertTrue(
+            CommandPayloadValidator.validate(buildJsonObject {
+                put("operation", "session.settings")
+                put("sessionId", "session-1")
+                put("model", JsonNull)
+                put("reasoningEffort", JsonNull)
+            }) is SessionSettingsCommandPayload,
         )
     }
 

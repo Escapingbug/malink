@@ -136,6 +136,12 @@ describe('protocol schemas', () => {
       controls: { mode: 'agent' },
     })).toMatchObject({ controls: { mode: 'agent' } })
     expect(commandPayloadSchema.parse({
+      operation: 'session.settings',
+      sessionId: 'session-1',
+      model: null,
+      reasoningEffort: null,
+    })).toMatchObject({ model: null, reasoningEffort: null })
+    expect(commandPayloadSchema.parse({
       operation: 'project.settings',
       controls: { model: 'auto' },
     })).toMatchObject({ controls: { model: 'auto' } })
