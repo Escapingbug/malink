@@ -122,6 +122,7 @@ import {
 } from "./GatewayUpdateDialog";
 import { PrivilegeTotpDialog } from "./PrivilegeTotpDialog";
 import { ProviderControls } from "./ProviderControls";
+import { SessionOptionsButton } from "./SessionOptionsButton";
 import {
   activeProviderControls as mergeActiveProviderControls,
   legacyProviderControls,
@@ -14512,16 +14513,14 @@ function MalinkAppRuntime() {
               >
                 {attachmentBusy ? "…" : "+"}
               </button>
-              <button
-                type="button"
-                className="composer-options-button"
-                aria-label="Agent options"
-                aria-expanded={composerOptionsOpen}
-                aria-controls="composer-agent-options"
-                onClick={() => setComposerOptionsOpen((open) => !open)}
-              >
-                <span aria-hidden="true">•••</span>
-              </button>
+              {activeProviderControls.length > 0 && (
+                <SessionOptionsButton
+                  controls={activeProviderControls}
+                  values={activeProviderControlValues}
+                  expanded={composerOptionsOpen}
+                  onClick={() => setComposerOptionsOpen((open) => !open)}
+                />
+              )}
               {(selected?.availableCommands.length ?? 0) > 0 && (
                 <button
                   type="button"

@@ -5508,6 +5508,31 @@ select:focus-visible {
   font-weight: 700;
 }
 
+.session-options-button-copy {
+  display: grid;
+  min-width: 0;
+  text-align: left;
+}
+
+.session-options-button-copy small {
+  color: #9299a8;
+  font-size: 8px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.session-options-button-copy strong {
+  overflow: hidden;
+  font-size: 10px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-options-button-caret {
+  font-size: 9px;
+}
+
 .provider-commands-button {
   display: grid;
 }
@@ -10916,6 +10941,14 @@ body {
 
   .composer-options-button {
     display: grid;
+  }
+
+  .session-options-button {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 5px;
+    width: auto;
+    max-width: min(142px, 42vw);
+    padding: 0 9px;
   }
 
   .composer-options-button[aria-expanded="true"] {
