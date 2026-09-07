@@ -92,6 +92,101 @@ describe('MacosGatewayBlueGreenHost', () => {
     expect(sealed).toEqual([candidateSocket])
   })
 
+  it('stops an idle legacy active Gateway and preserves its durable outbox for takeover', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-blue-green-outbox-takeover-'))
+    temporaryDirectories.push(directory)
+    const installRoot = join(directory, 'install')
+    const activeSocket = join(directory, 'active.sock')
+    const candidateSocket = join(directory, 'candidate.sock')
+    const activeLabel = 'id.my.anciety.malink.test'
+    const candidateLabel = `${activeLabel}.candidate`
+    await mkdir(installRoot, { recursive: true })
+    const activeSeal = new Promise<void>(() => undefined)
+    const sealForDeployment = vi.fn((socketPath: string) =>
+      socketPath === activeSocket ? activeSeal : Promise.resolve())
+    const launchctl = vi.fn(async () => undefined)
+    const host = new MacosGatewayBlueGreenHost({
+      installRoot,
+      activeDataDirectory: join(directory, 'active'),
+      activeAdminSocketPath: activeSocket,
+      activeLaunchAgentPath: join(directory, 'active.plist'),
+      activeServiceLabel: activeLabel,
+      updateSocketPath: join(directory, 'update.sock'),
+      durableQueueQuiescenceMs: 0,
+      platform: 'darwin',
+      uid: 501,
+    }, {
+      sealForDeployment,
+      launchctl,
+      isServiceLoaded: async () => false,
+      readStatus: async socketPath => ({
+        ...gatewayStatus(
+          socketPath === activeSocket ? 'gateway-old' : 'gateway-new',
+          socketPath === activeSocket ? 'build-old' : 'build-new',
+        ),
+        activeTurns: 0,
+        activeCommands: 0,
+        pendingOutboxDeliveries: socketPath === activeSocket ? 19 : 0,
+        pendingInboxEvents: 0,
+      }),
+    })
+    await writeHostState(installRoot, {
+      activeSocket,
+      candidateSocket,
+      candidateLabel,
+    })
+
+    await expect(host.drainDeployments(deploymentTransition())).resolves.toMatchObject({
+      active: { gatewayNodeId: 'gateway-old' },
+      candidate: { gatewayNodeId: 'gateway-new' },
+    })
+
+    expect(sealForDeployment).toHaveBeenNthCalledWith(1, candidateSocket, 'when_idle')
+    expect(sealForDeployment).toHaveBeenNthCalledWith(2, activeSocket, 'when_idle')
+    expect(launchctl).toHaveBeenCalledWith(['bootout', `gui/501/${activeLabel}`])
+  })
+
+  it('does not take over an active Gateway with unprocessed inbox commands', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-blue-green-inbox-fence-'))
+    temporaryDirectories.push(directory)
+    const installRoot = join(directory, 'install')
+    const activeSocket = join(directory, 'active.sock')
+    const candidateSocket = join(directory, 'candidate.sock')
+    const candidateLabel = 'id.my.anciety.malink.test.candidate'
+    await mkdir(installRoot, { recursive: true })
+    const sealForDeployment = vi.fn(async () => undefined)
+    const host = new MacosGatewayBlueGreenHost({
+      installRoot,
+      activeDataDirectory: join(directory, 'active'),
+      activeAdminSocketPath: activeSocket,
+      activeLaunchAgentPath: join(directory, 'active.plist'),
+      activeServiceLabel: 'id.my.anciety.malink.test',
+      updateSocketPath: join(directory, 'update.sock'),
+      platform: 'darwin',
+    }, {
+      sealForDeployment,
+      readStatus: async socketPath => ({
+        ...gatewayStatus(
+          socketPath === activeSocket ? 'gateway-old' : 'gateway-new',
+          socketPath === activeSocket ? 'build-old' : 'build-new',
+        ),
+        pendingOutboxDeliveries: socketPath === activeSocket ? 19 : 0,
+        pendingInboxEvents: socketPath === activeSocket ? 1 : 0,
+      }),
+    })
+    await writeHostState(installRoot, {
+      activeSocket,
+      candidateSocket,
+      candidateLabel,
+    })
+
+    await expect(host.drainDeployments(deploymentTransition())).rejects.toThrow(
+      '1 inbox record(s) pending',
+    )
+    expect(sealForDeployment).toHaveBeenCalledTimes(1)
+    expect(sealForDeployment).toHaveBeenCalledWith(candidateSocket, 'when_idle')
+  })
+
   it('waits for launchd unload and leaves an already-healthy active Gateway running', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-blue-green-launchd-rollback-'))
     temporaryDirectories.push(directory)
@@ -315,6 +410,58 @@ function gatewayStatus(gatewayNodeId: string, buildId: string) {
     deploymentFenced: false,
     matrixReady: true,
     lastMatrixSyncAt: Date.now(),
+  }
+}
+
+async function writeHostState(
+  installRoot: string,
+  input: { activeSocket: string; candidateSocket: string; candidateLabel: string },
+): Promise<void> {
+  await writeFile(join(installRoot, 'deployment-host-state.json'), `${JSON.stringify({
+    version: 1,
+    deployment: {
+      version: 1,
+      phase: 'trial',
+      updateId: 'update-1',
+      sourceGatewayNodeId: 'gateway-old',
+      candidateGatewayNodeId: 'gateway-new',
+      workspaceId: 'workspace-1',
+      releaseId: 'release-new',
+      buildId: 'build-new',
+      releaseDirectory: join(installRoot, 'releases', 'release-new'),
+      candidateDirectory: join(installRoot, 'deployments', 'update-1', 'candidate-data'),
+      candidateAdminSocket: input.candidateSocket,
+      candidateLaunchAgent: join(installRoot, 'deployments', 'update-1', 'candidate.plist'),
+      candidateServiceLabel: input.candidateLabel,
+      sourceProjectCount: 1,
+      sourceSessionCount: 2,
+      candidateProjectCount: 1,
+      candidateSessionCount: 0,
+      updatedAt: Date.now(),
+    },
+  })}\n`, { mode: 0o600 })
+}
+
+function deploymentTransition() {
+  return {
+    updateId: 'update-1',
+    computerId: 'computer-1',
+    generation: 0,
+    mode: 'when_idle' as const,
+    active: {
+      gatewayNodeId: 'gateway-old',
+      releaseId: 'release-old',
+      buildId: 'build-old',
+      projectCount: 1,
+      sessionCount: 2,
+    },
+    candidate: {
+      gatewayNodeId: 'gateway-new',
+      releaseId: 'release-new',
+      buildId: 'build-new',
+      projectCount: 1,
+      sessionCount: 0,
+    },
   }
 }
 

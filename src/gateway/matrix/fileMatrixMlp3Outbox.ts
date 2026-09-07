@@ -75,6 +75,12 @@ export interface FileMatrixMlp3OutboxOptions {
   compactAfterEntries?: number
 }
 
+export interface MatrixMlp3OutboxMergeResult {
+  deliveryCount: number
+  pendingCount: number
+  terminalCount: number
+}
+
 const DEFAULT_COMPACT_AFTER_BYTES = 8 * 1024 * 1024
 const DEFAULT_COMPACT_AFTER_ENTRIES = 10_000
 
@@ -494,6 +500,88 @@ export class FileMatrixMlp3Outbox {
   }
 }
 
+/**
+ * Merge closed Gateway outbox WALs into one compact WAL. Delivery IDs are the
+ * durable Matrix idempotency identity, so a terminal record always wins over
+ * a matching pending record. Conflicting payloads or terminal receipts are a
+ * split-brain signal and abort the deployment handoff.
+ */
+export async function mergeMatrixMlp3OutboxWals(
+  sourcePaths: readonly string[],
+  targetPath: string,
+): Promise<MatrixMlp3OutboxMergeResult> {
+  const deliveries = new Map<string, MatrixMlp3Delivery>()
+  const classifications = new Map<string, ClassifiedEntry>()
+  const terminals = new Map<string, DeliveredEntry | SupersededEntry>()
+
+  for (const sourcePath of sourcePaths) {
+    let text: string
+    try {
+      text = await readFile(sourcePath, 'utf8')
+    } catch (error) {
+      if (isMissingFile(error)) continue
+      throw error
+    }
+    for (const [index, line] of text.split(/\r?\n/u).entries()) {
+      if (!line.trim()) continue
+      const entry = parseEntry(JSON.parse(line), index + 1)
+      if (entry.status === 'pending') {
+        const existing = deliveries.get(entry.delivery.deliveryId)
+        if (existing && canonicalValue(existing) !== canonicalValue(entry.delivery)) {
+          throw new Error(
+            `Conflicting MLP/3 Matrix delivery ${entry.delivery.deliveryId} during handoff`,
+          )
+        }
+        deliveries.set(entry.delivery.deliveryId, structuredClone(entry.delivery))
+        continue
+      }
+      if (entry.status === 'classified') {
+        const existing = classifications.get(entry.deliveryId)
+        if (existing && canonicalValue(existing.metadata) !== canonicalValue(entry.metadata)) {
+          throw new Error(
+            `Conflicting MLP/3 Matrix delivery classification ${entry.deliveryId} during handoff`,
+          )
+        }
+        if (!existing || entry.classifiedAt >= existing.classifiedAt) {
+          classifications.set(entry.deliveryId, structuredClone(entry))
+        }
+        continue
+      }
+      const existing = terminals.get(entry.deliveryId)
+      if (existing && !sameTerminal(existing, entry)) {
+        throw new Error(
+          `Conflicting MLP/3 Matrix delivery receipt ${entry.deliveryId} during handoff`,
+        )
+      }
+      if (!existing || terminalTimestamp(entry) >= terminalTimestamp(existing)) {
+        terminals.set(entry.deliveryId, structuredClone(entry))
+      }
+    }
+  }
+
+  const entries: OutboxEntry[] = []
+  const deliveryIds = [...new Set([
+    ...deliveries.keys(),
+    ...terminals.keys(),
+  ])].sort()
+  for (const deliveryId of deliveryIds) {
+    const delivery = deliveries.get(deliveryId)
+    if (delivery) {
+      entries.push({ version: 3, status: 'pending', delivery })
+      const classification = classifications.get(deliveryId)
+      if (classification) entries.push(classification)
+    }
+    const terminal = terminals.get(deliveryId)
+    if (terminal) entries.push(terminal)
+  }
+  await writeWalAtomically(targetPath, entries)
+  return {
+    deliveryCount: deliveries.size,
+    pendingCount: [...deliveries.keys()].filter(deliveryId => !terminals.has(deliveryId)).length,
+    terminalCount: terminals.size,
+  }
+}
+
 function deliveryPriority(delivery: MatrixMlp3Delivery): number {
   if (delivery.kind === 'state' || delivery.priority === 'urgent') return 0
   if (delivery.priority === 'control') return 1
@@ -539,6 +627,50 @@ function digest(value: unknown): string {
     .digest('hex')
 }
 
+function canonicalValue(value: unknown): string {
+  return canonicalJson(jsonValueSchema.parse(value))
+}
+
+function sameTerminal(
+  left: DeliveredEntry | SupersededEntry,
+  right: DeliveredEntry | SupersededEntry,
+): boolean {
+  return left.status === right.status
+    && (left.status !== 'delivered'
+      || (right.status === 'delivered' && left.eventId === right.eventId))
+}
+
+function terminalTimestamp(entry: DeliveredEntry | SupersededEntry): number {
+  return entry.status === 'delivered' ? entry.deliveredAt : entry.supersededAt
+}
+
+async function writeWalAtomically(path: string, entries: readonly OutboxEntry[]): Promise<void> {
+  const encoded = entries.length === 0
+    ? ''
+    : `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`
+  await mkdir(dirname(path), { recursive: true })
+  const temporaryPath = `${path}.merge-${process.pid}-${Date.now()}`
+  try {
+    const handle = await open(temporaryPath, 'wx', 0o600)
+    try {
+      await handle.writeFile(encoded, 'utf8')
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+    await rename(temporaryPath, path)
+    const directoryHandle = await open(dirname(path), 'r')
+    try {
+      await directoryHandle.sync()
+    } finally {
+      await directoryHandle.close()
+    }
+  } catch (error) {
+    await rm(temporaryPath, { force: true }).catch(() => undefined)
+    throw error
+  }
+}
+
 function parseEntry(value: unknown, line: number): OutboxEntry {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`Invalid MLP/3 Matrix outbox entry at line ${line}`)
@@ -574,18 +706,20 @@ function parseEntry(value: unknown, line: number): OutboxEntry {
   ) {
     return entry as ClassifiedEntry
   }
-  if (
-    (entry.status === 'delivered' || entry.status === 'superseded')
-    && typeof entry.deliveryId === 'string'
-  ) {
+  if (entry.status === 'delivered' && typeof entry.deliveryId === 'string') {
+    if (typeof entry.eventId !== 'string' || !Number.isSafeInteger(entry.deliveredAt)) {
+      throw new Error(`Invalid delivered MLP/3 Matrix delivery at line ${line}`)
+    }
+    return entry as DeliveredEntry
+  }
+  if (entry.status === 'superseded' && typeof entry.deliveryId === 'string') {
     if (
-      entry.status === 'superseded'
-      && entry.reason !== undefined
-      && typeof entry.reason !== 'string'
+      !Number.isSafeInteger(entry.supersededAt)
+      || (entry.reason !== undefined && typeof entry.reason !== 'string')
     ) {
       throw new Error(`Invalid superseded MLP/3 Matrix delivery at line ${line}`)
     }
-    return entry as DeliveredEntry | SupersededEntry
+    return entry as SupersededEntry
   }
   throw new Error(`Invalid terminal MLP/3 Matrix delivery at line ${line}`)
 }

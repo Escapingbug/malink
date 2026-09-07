@@ -2,7 +2,10 @@ import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { FileMatrixMlp3Outbox } from '@/gateway/matrix/fileMatrixMlp3Outbox'
+import {
+  FileMatrixMlp3Outbox,
+  mergeMatrixMlp3OutboxWals,
+} from '@/gateway/matrix/fileMatrixMlp3Outbox'
 
 describe('FileMatrixMlp3Outbox', () => {
   it('uses one WAL for events and state while coalescing only replaceable state', async () => {
@@ -92,6 +95,72 @@ describe('FileMatrixMlp3Outbox', () => {
     const recovered = new FileMatrixMlp3Outbox(path)
     await recovered.initialize()
     expect(recovered.pending()).toEqual([event])
+  })
+
+  it('merges closed deployment WALs and lets a terminal receipt retire a duplicate', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-outbox-merge-'))
+    const sourcePath = join(directory, 'source.jsonl')
+    const candidatePath = join(directory, 'candidate.jsonl')
+    const mergedPath = join(directory, 'merged.jsonl')
+    const source = new FileMatrixMlp3Outbox(sourcePath)
+    const candidate = new FileMatrixMlp3Outbox(candidatePath)
+    await Promise.all([source.initialize(), candidate.initialize()])
+    const duplicate = source.createEvent({
+      roomId: '!project:example.org',
+      transactionId: 'same-transaction',
+      content: { body: 'same-ciphertext' },
+      createdAt: 1,
+    })
+    const inherited = source.createEvent({
+      roomId: '!project:example.org',
+      transactionId: 'source-pending',
+      content: { body: 'source-ciphertext' },
+      createdAt: 2,
+    })
+    await source.stage(duplicate)
+    await source.stage(inherited)
+    await candidate.stage(duplicate)
+    await candidate.markDelivered(duplicate.deliveryId, '$already-delivered', 3)
+
+    await expect(mergeMatrixMlp3OutboxWals(
+      [candidatePath, sourcePath],
+      mergedPath,
+    )).resolves.toEqual({
+      deliveryCount: 2,
+      pendingCount: 1,
+      terminalCount: 1,
+    })
+    const merged = new FileMatrixMlp3Outbox(mergedPath)
+    await merged.initialize()
+    expect(merged.pending()).toEqual([inherited])
+    expect(merged.deliveredEventId(duplicate.deliveryId)).toBe('$already-delivered')
+  })
+
+  it('rejects conflicting ciphertext for one handoff transaction identity', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-outbox-conflict-'))
+    const sourcePath = join(directory, 'source.jsonl')
+    const candidatePath = join(directory, 'candidate.jsonl')
+    const mergedPath = join(directory, 'merged.jsonl')
+    const source = new FileMatrixMlp3Outbox(sourcePath)
+    const candidate = new FileMatrixMlp3Outbox(candidatePath)
+    await Promise.all([source.initialize(), candidate.initialize()])
+    await source.stage(source.createEvent({
+      roomId: '!project:example.org',
+      transactionId: 'same-transaction',
+      content: { body: 'source-ciphertext' },
+      createdAt: 1,
+    }))
+    await candidate.stage(candidate.createEvent({
+      roomId: '!project:example.org',
+      transactionId: 'same-transaction',
+      content: { body: 'candidate-ciphertext' },
+      createdAt: 1,
+    }))
+
+    await expect(mergeMatrixMlp3OutboxWals(
+      [candidatePath, sourcePath],
+      mergedPath,
+    )).rejects.toThrow('Conflicting MLP/3 Matrix delivery')
   })
 
   it('keeps the first exact ciphertext for one Matrix transaction id', async () => {

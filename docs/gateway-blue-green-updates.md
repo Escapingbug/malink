@@ -164,23 +164,28 @@ does not enumerate or rewrite sessions.
 2. Close both business-command gates. In the default mode, wait for active Agent
    turns and accepted commands to settle. An explicit force mode cancels turns;
    a running turn is never described as migrated.
-3. Require both Matrix delivery outboxes to be empty and both durable inboxes to
-   be readable. Keep shadow ingestion active until the source has sealed its
-   final input watermark.
-4. Seal both deployments and make them close their writable stores while the
-   processes remain coordinator-fenced. Acquire exclusive locks for both data
-   directories. A quiescent-state handoff manifest hashes every transferred
-   file and records the source journal generation and per-room shadow
-   watermark. The old process can reopen its unchanged stores if a pre-commit
-   step fails; it is not terminated yet.
+3. Require both durable inboxes to be empty. Normally both Matrix delivery
+   outboxes drain before the switch. If a legacy source sender cannot retire an
+   already-persisted delivery, fence its command gate and preserve that WAL for
+   target-side takeover instead of deleting the delivery or blocking its own
+   upgrade.
+4. Seal the candidate and make both deployments close their writable stores.
+   A source using durable-queue takeover is gracefully stopped only after its
+   active turns and commands reach zero; shutdown awaits its event chain and
+   execution tasks. A quiescent-state handoff manifest hashes every transferred
+   file. The old process can reopen its unchanged stores if a pre-commit step
+   fails.
 5. Build new target state in a third, transaction-private directory. Merge the
    source project catalog, runtime metadata, provider session IDs, command
    journal, replay ledger, timeline key rings, provider-history metadata,
-   artifacts, scratch-session data, and any pending inbox records with the
-   candidate's trial-owned state. A duplicate command key is accepted only when
-   its fingerprint and durable outcome match exactly.
-6. Validate the merged state using the target release. No source or candidate
-   directory is changed in place.
+   artifacts, scratch-session data, Matrix delivery WAL, and any pending inbox
+   records with the candidate's trial-owned state. A duplicate command key is
+   accepted only when its fingerprint and durable outcome match exactly. A
+   duplicate delivery ID is accepted only when its exact retained ciphertext
+   agrees; a durable terminal receipt wins over pending state.
+6. Validate the merged state using the target release and require its inherited
+   inbox and outbox to reach zero while the command fence remains closed. No
+   source or candidate directory is changed in place.
 7. Atomically install the merged target directory, restart the candidate against
    it, and require it to acknowledge the complete route set and next ownership
    generation while its business-command gate remains closed. It must reconcile

@@ -13,6 +13,7 @@ import {
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { canonicalJson, type JsonValue } from '@malink/protocol'
+import { mergeMatrixMlp3OutboxWals } from '@/gateway/matrix/fileMatrixMlp3Outbox'
 
 const PROJECT_CATALOG = 'gateway-projects.json'
 const RUNTIME_STATE = 'gateway-replay.jsonl.v3-runtime-state.json'
@@ -24,6 +25,7 @@ const ARTIFACTS = 'gateway-replay.jsonl.v3-artifacts.json'
 const PROVIDER_HISTORY = 'gateway-replay.jsonl.v3-provider-history-snapshots.json'
 const NATIVE_RELEASES = 'gateway-replay.jsonl.v3-client-releases.json'
 const WEB_PUSH = 'gateway-replay.jsonl.v3-web-push.json'
+const OUTBOX = 'envelope-replay.json.v3-outbox.jsonl'
 
 const REPLAY_STORES = [
   'gateway-replay.jsonl',
@@ -93,6 +95,10 @@ export async function buildGatewayDeploymentHandoff(input: {
       join(targetDirectory, INBOX),
       join(candidateDirectory, SHADOW_INBOX),
     ], join(targetDirectory, INBOX))
+    await mergeMatrixMlp3OutboxWals([
+      join(candidateDirectory, OUTBOX),
+      join(sourceDirectory, OUTBOX),
+    ], join(targetDirectory, OUTBOX))
     await writePrivateJson(join(targetDirectory, SHADOW_INBOX), {
       version: 1,
       records: {},

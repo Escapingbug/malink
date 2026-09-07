@@ -86,6 +86,7 @@ export interface MacosGatewayBlueGreenHostConfig {
   updateSocketPath: string
   healthTimeoutMs?: number
   syncFreshnessMs?: number
+  durableQueueQuiescenceMs?: number
   platform?: NodeJS.Platform
   uid?: number
 }
@@ -352,7 +353,7 @@ export class MacosGatewayBlueGreenHost {
     // never touched. Sealing both slots concurrently could stop the active
     // Gateway just before the candidate rejected its own handoff.
     await this.sealForDeployment(state.candidateAdminSocket, transition.mode)
-    await this.sealForDeployment(this.config.activeAdminSocketPath, transition.mode)
+    await this.sealActiveForDeployment(state, sourceBefore, transition.mode)
     state.phase = 'sealed'
     state.updatedAt = this.now()
     await this.writeDeployment(state)
@@ -404,6 +405,8 @@ export class MacosGatewayBlueGreenHost {
         sessionCount: result.sessionCount,
         requireRunning: true,
         deploymentFenced: true,
+        pendingOutboxDeliveries: 0,
+        pendingInboxEvents: 0,
       })
     } finally {
       await this.stopService(state.candidateServiceLabel)
@@ -842,6 +845,8 @@ export class MacosGatewayBlueGreenHost {
       sessionCount?: number
       requireRunning: boolean
       deploymentFenced?: boolean
+      pendingOutboxDeliveries?: number
+      pendingInboxEvents?: number
     },
   ): Promise<GatewayAdminStatus> {
     const deadline = this.now() + (this.config.healthTimeoutMs ?? 180_000)
@@ -924,6 +929,81 @@ export class MacosGatewayBlueGreenHost {
     }).sealForDeployment(mode)
   }
 
+  private async sealActiveForDeployment(
+    state: GatewayBlueGreenHostState,
+    status: GatewayAdminStatus | undefined,
+    mode: 'when_idle' | 'force',
+  ): Promise<void> {
+    const pendingOutbox = status?.pendingOutboxDeliveries ?? 0
+    const pendingInbox = status?.pendingInboxEvents ?? 0
+    if (pendingOutbox === 0 && pendingInbox === 0) {
+      await this.sealForDeployment(this.config.activeAdminSocketPath, mode)
+      return
+    }
+    if (pendingInbox > 0) {
+      throw new Error(
+        `Gateway deployment cannot hand off with ${pendingInbox} inbox record(s) pending`,
+      )
+    }
+
+    this.log(
+      `preserving ${pendingOutbox} active outbox delivery record(s) for candidate takeover`,
+    )
+    let sealSettled = false
+    let sealError: unknown
+    void this.sealForDeployment(this.config.activeAdminSocketPath, mode).then(
+      () => { sealSettled = true },
+      error => {
+        sealSettled = true
+        sealError = error
+      },
+    )
+
+    const deadline = this.now() + (this.config.healthTimeoutMs ?? 180_000)
+    let idleSince: number | undefined
+    while (this.now() < deadline) {
+      if (sealSettled) {
+        if (sealError) throw sealError
+        return
+      }
+      let current: GatewayAdminStatus
+      try {
+        current = await this.readStatus(this.config.activeAdminSocketPath)
+      } catch (error) {
+        // A normally drained Gateway closes its admin socket immediately
+        // before the seal request resolves. Give that promise one microtask
+        // to publish its outcome before treating the missing socket as loss.
+        await Promise.resolve()
+        if (sealSettled && !sealError) return
+        throw error
+      }
+      if (
+        current.gatewayNodeId !== state.sourceGatewayNodeId
+        || current.state !== 'running'
+      ) {
+        throw new Error('Active Gateway identity or runtime state changed while sealing')
+      }
+      if ((current.activeTurns ?? 0) === 0 && (current.activeCommands ?? 0) === 0) {
+        idleSince ??= this.now()
+        if (
+          this.now() - idleSince
+          >= (this.config.durableQueueQuiescenceMs ?? 750)
+        ) {
+          // The legacy seal request has already fenced command execution. A
+          // graceful launchd stop awaits its event chain and execution tasks;
+          // the closed WAL can then be merged and drained by the candidate.
+          await this.stopService(this.config.activeServiceLabel)
+          this.log('active Gateway stopped with its durable outbox preserved')
+          return
+        }
+      } else {
+        idleSince = undefined
+      }
+      await this.sleep(100)
+    }
+    throw new Error('Active Gateway did not quiesce for durable queue handoff')
+  }
+
   private healthMismatch(
     status: GatewayAdminStatus,
     expected: {
@@ -934,6 +1014,8 @@ export class MacosGatewayBlueGreenHost {
       sessionCount?: number
       requireRunning: boolean
       deploymentFenced?: boolean
+      pendingOutboxDeliveries?: number
+      pendingInboxEvents?: number
     },
   ): Error | null {
     if (status.gatewayNodeId !== expected.gatewayNodeId) {
@@ -955,6 +1037,14 @@ export class MacosGatewayBlueGreenHost {
       expected.deploymentFenced !== undefined
       && status.deploymentFenced !== expected.deploymentFenced
     ) return new Error('Gateway deployment command fence is in the wrong state')
+    if (
+      expected.pendingOutboxDeliveries !== undefined
+      && status.pendingOutboxDeliveries !== expected.pendingOutboxDeliveries
+    ) return new Error('Gateway durable outbox did not reach the expected state')
+    if (
+      expected.pendingInboxEvents !== undefined
+      && status.pendingInboxEvents !== expected.pendingInboxEvents
+    ) return new Error('Gateway durable inbox did not reach the expected state')
     if (status.matrixReady !== true || typeof status.lastMatrixSyncAt !== 'number') {
       return new Error('Gateway Matrix synchronization is not ready')
     }

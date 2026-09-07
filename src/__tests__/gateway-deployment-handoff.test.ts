@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
+import { FileMatrixMlp3Outbox } from '@/gateway/matrix/fileMatrixMlp3Outbox'
 import { buildGatewayDeploymentHandoff } from '@/ops/gatewayDeploymentHandoff'
 
 const temporaryDirectories: string[] = []
@@ -70,6 +71,16 @@ describe('Gateway deployment handoff', () => {
     ])
     expect(JSON.stringify(runtime)).toContain('provider-old')
     expect(JSON.stringify(runtime)).toContain('provider-new')
+    const outbox = new FileMatrixMlp3Outbox(join(
+      result.targetDirectory,
+      'envelope-replay.json.v3-outbox.jsonl',
+    ))
+    await outbox.initialize()
+    expect(outbox.pending().flatMap(delivery =>
+      delivery.kind === 'event' ? [delivery.transactionId] : []).sort()).toEqual([
+      'transaction-gateway-new',
+      'transaction-gateway-old',
+    ])
     const inbox = await readJson(join(
       result.targetDirectory,
       'gateway-replay.jsonl.v3-matrix-inbox.json',
@@ -212,6 +223,17 @@ async function seedDeployment(directory: string, input: {
     },
   })
   createJournal(join(directory, 'gateway-replay.jsonl.v3-commands.sqlite'), input.commandKey)
+  const outbox = new FileMatrixMlp3Outbox(join(
+    directory,
+    'envelope-replay.json.v3-outbox.jsonl',
+  ))
+  await outbox.initialize()
+  await outbox.stage(outbox.createEvent({
+    roomId: input.roomId,
+    transactionId: `transaction-${input.gatewayNodeId}`,
+    content: { msgtype: 'm.notice', body: `pending from ${input.gatewayNodeId}` },
+    createdAt: 1,
+  }))
 }
 
 function createJournal(path: string, commandKey: string): void {
