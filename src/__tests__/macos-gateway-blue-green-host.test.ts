@@ -216,7 +216,9 @@ describe('MacosGatewayBlueGreenHost', () => {
       launchctl: async arguments_ => {
         launchctlCalls.push([...arguments_])
         if (arguments_[0] === 'bootout' && arguments_[1] === candidateService) {
-          if (candidateLoaded) unloadPolls = 2
+          // launchd may keep a job registered beyond the old two-second wait
+          // while its process completes the configured graceful-exit window.
+          if (candidateLoaded) unloadPolls = 25
           return
         }
         if (arguments_[0] === 'bootstrap') {

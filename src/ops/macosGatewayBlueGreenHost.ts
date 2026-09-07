@@ -36,6 +36,9 @@ const FOUNDATION_FILES = [
   'privilege-client.json',
 ] as const
 
+const LAUNCHD_STOP_POLL_INTERVAL_MS = 100
+const LAUNCHD_STOP_TIMEOUT_MS = 30_000
+
 type HostPhase =
   | 'preparing'
   | 'trial'
@@ -908,9 +911,10 @@ export class MacosGatewayBlueGreenHost {
     // replacement plist during that window produces bootstrap exit 5, so
     // observe the actual registry state instead of treating bootout as a
     // synchronous barrier.
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    const attempts = Math.ceil(LAUNCHD_STOP_TIMEOUT_MS / LAUNCHD_STOP_POLL_INTERVAL_MS)
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       if (!await this.isServiceLoaded(service)) return
-      await this.sleep(100)
+      await this.sleep(LAUNCHD_STOP_POLL_INTERVAL_MS)
     }
     throw lastError ?? new Error(`launchd service ${label} remained loaded after bootout`)
   }
