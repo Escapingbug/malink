@@ -1093,7 +1093,7 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                 ? AbortSignal.any([options.signal, timeoutController.signal])
                 : timeoutController.signal
             let response: Response
-            let text: string
+            let body: unknown
             try {
                 response = await this.fetchImpl(url, {
                     method,
@@ -1107,8 +1107,12 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                 // Receiving response headers does not complete the request. Keep
                 // the same deadline active while consuming the body so a stalled
                 // homeserver response cannot hold the account-wide room-write
-                // lane forever and starve durable MLP/3 outbox recovery.
-                text = await response.text()
+                // lane forever and starve durable MLP/3 outbox recovery. Some
+                // proxies deliver a complete mutation result but never finish the
+                // chunked body. Matrix mutation responses are bounded JSON values,
+                // so accept a complete object as soon as it is parseable and
+                // cancel the unread tail instead of retrying an accepted txn.
+                body = await readMatrixResponseBody(response, method !== 'GET')
             } catch (error) {
                 if (
                     options.retryTransient
@@ -1136,7 +1140,6 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             } finally {
                 clearTimeout(timeout)
             }
-            const body = text ? safeJson(text) : {}
             if (response.ok) {
                 if (options.paceRoomWrite) this.roomLastSuccessfulWriteAt = Date.now()
                 return body as T
@@ -1451,6 +1454,52 @@ function safeJson(text: string): unknown {
         return JSON.parse(text)
     } catch {
         return { raw: text }
+    }
+}
+
+async function readMatrixResponseBody(
+    response: Response,
+    finishOnCompleteJson: boolean,
+): Promise<unknown> {
+    if (!finishOnCompleteJson || !response.body) {
+        const text = await response.text()
+        return text ? safeJson(text) : {}
+    }
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let text = ''
+    try {
+        while (true) {
+            const part = await reader.read()
+            if (part.done) {
+                text += decoder.decode()
+                return text ? safeJson(text) : {}
+            }
+            text += decoder.decode(part.value, { stream: true })
+            const parsed = completeJsonContainer(text)
+            if (!parsed.complete) continue
+            await reader.cancel().catch(() => undefined)
+            return parsed.value
+        }
+    } finally {
+        reader.releaseLock()
+    }
+}
+
+function completeJsonContainer(text: string):
+    | { complete: false }
+    | { complete: true; value: object } {
+    const trimmed = text.trim()
+    if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) {
+        return { complete: false }
+    }
+    try {
+        const value: unknown = JSON.parse(trimmed)
+        return value !== null && typeof value === 'object'
+            ? { complete: true, value }
+            : { complete: false }
+    } catch {
+        return { complete: false }
     }
 }
 

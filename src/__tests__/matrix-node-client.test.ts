@@ -662,6 +662,62 @@ describe('MatrixNodeSdkGatewayClient', () => {
         })
         expect(calls).toBe(2)
     })
+
+    it('accepts a complete mutation result without waiting for chunked response EOF', async () => {
+        let calls = 0
+        let bodyCancelled = false
+        const encoded = new TextEncoder().encode(JSON.stringify({ event_id: '$accepted' }))
+        const fetchMock = vi.fn(async () => {
+            calls += 1
+            if (calls === 1) {
+                return new Response(new ReadableStream<Uint8Array>({
+                    start(controller) {
+                        const split = Math.floor(encoded.length / 2)
+                        controller.enqueue(encoded.slice(0, split))
+                        controller.enqueue(encoded.slice(split))
+                    },
+                    cancel() {
+                        bodyCancelled = true
+                    },
+                }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                })
+            }
+            return jsonResponse({ event_id: '$after-accepted' })
+        }) as unknown as typeof fetch
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test',
+            accessToken: 'token',
+            userId: '@gateway:example.test',
+            deviceId: 'STABLE_DEVICE',
+        }, 20, undefined, fetchMock)
+        const state = (stateKey: string) => client.setApplicationRoomState({
+            roomId: '!room:example.test',
+            eventType: MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
+            stateKey,
+            content: {
+                version: 2,
+                kind: 'state_envelope',
+                state_envelope: {
+                    envelope: {
+                        eventType: MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
+                        stateKey,
+                    },
+                    signature: {},
+                },
+            },
+        })
+
+        await expect(state('accepted-without-eof')).resolves.toEqual({
+            eventId: '$accepted',
+        })
+        expect(bodyCancelled).toBe(true)
+        await expect(state('next-write')).resolves.toEqual({
+            eventId: '$after-accepted',
+        })
+        expect(calls).toBe(2)
+    })
 })
 
 async function temporaryDirectory(): Promise<string> {
