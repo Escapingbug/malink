@@ -165,6 +165,58 @@ describe("MatrixMlp3Projection", () => {
     });
   });
 
+  it("applies the authoritative session settings patch before completing the command", () => {
+    const projection = new MatrixMlp3Projection();
+    const create = createCommand("a");
+    create.payload = {
+      operation: "session.create",
+      title: "A",
+      model: "model-old",
+      reasoningEffort: "medium",
+      controls: { model: "model-old", reasoningEffort: "medium" },
+    };
+    projection.applyCommand(create, "$root-a", 1);
+    projection.applyEvent({
+      kind: "malink.event",
+      version: 3,
+      eventId: "session-model-updated",
+      workspaceId: "workspace-1",
+      projectId: "project-1",
+      sessionId: "session-a",
+      occurredAt: 2,
+      causationCommandId: "change-model",
+      payload: {
+        type: "session.updated",
+        projection: {
+          title: "A",
+          lifecycle: "active",
+          activity: "idle",
+          updatedAt: 2,
+          stateVersion: 2,
+        },
+        patch: {
+          controls: { model: "model-new", reasoningEffort: "high" },
+        },
+      },
+    }, "$session-model-updated", "$root-a");
+
+    expect(projection.sessions.get("session-a")).toMatchObject({
+      model: "model-new",
+      reasoningEffort: "high",
+      controlValues: { model: "model-new", reasoningEffort: "high" },
+    });
+    expect(projection.completions.get("change-model")).toMatchObject({
+      outcome: "succeeded",
+    });
+
+    const restored = new MatrixMlp3Projection();
+    restored.restore(projection.durableState());
+    expect(restored.sessions.get("session-a")).toMatchObject({
+      model: "model-new",
+      reasoningEffort: "high",
+    });
+  });
+
   it("deduplicates command retries and retains history beyond an arbitrary sync window", () => {
     const projection = new MatrixMlp3Projection();
     const command = createCommand("a");

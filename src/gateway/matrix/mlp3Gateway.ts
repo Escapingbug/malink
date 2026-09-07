@@ -2786,8 +2786,12 @@ export class MatrixMlp3GatewayRunner {
       type: 'session.updated',
       projection: terminalProjection(runtime.record, runtime.activity.phase, this.extensions),
       patch: patch.extensions === undefined
-        ? patch
-        : { ...patch, extensions: runtime.record.extensions },
+        ? { ...patch, controls: { ...runtime.record.controlValues } }
+        : {
+            ...patch,
+            extensions: runtime.record.extensions,
+            controls: { ...runtime.record.controlValues },
+          },
     })
     await this.settleAndDeliver(project, command, updated, 'succeeded')
   }
@@ -5101,7 +5105,26 @@ function availableProviderControls(
     : []
   const controls = new Map<string, ProviderControl>()
   for (const control of advertised) controls.set(control.id, structuredClone(control))
-  for (const control of additional) controls.set(control.id, structuredClone(control))
+  for (const control of additional) {
+    const current = controls.get(control.id)
+    if (
+      current
+      && [MODEL_CONTROL_ID, REASONING_CONTROL_ID].includes(control.id)
+      && (current.options?.length ?? 0) > 0
+    ) {
+      // Provider-wide model catalogs can change after a session was created.
+      // Keep the active session's current value, but never let its persisted
+      // ACP control snapshot replace the current catalog options. Otherwise a
+      // newly published model is visible to clients and then rejected here by
+      // the stale session-local list.
+      controls.set(control.id, {
+        ...current,
+        ...(control.value === undefined ? {} : { value: control.value }),
+      })
+      continue
+    }
+    controls.set(control.id, structuredClone(control))
+  }
   return [...controls.values()]
 }
 

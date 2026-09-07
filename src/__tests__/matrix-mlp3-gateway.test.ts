@@ -1257,21 +1257,55 @@ describe('MatrixMlp3GatewayRunner', () => {
         name: 'Selectable model',
         defaultReasoningLevel: 'high',
         supportedReasoningLevels: [{ effort: 'high' }],
+      }, {
+        id: 'model-added-after-session-create',
+        name: 'Newly available model',
+        defaultReasoningLevel: 'high',
+        supportedReasoningLevels: [{ effort: 'high' }],
       }],
       getAvailablePermissionModes: () => ['default'],
       getProviderControls: () => [{
-        id: 'verbosity',
-        label: 'Verbosity',
-        renderer: 'select',
-        surfaces: ['project-default', 'session-create', 'session-active'],
-        updateEffect: 'next-turn',
-        status: 'ready',
-        options: [
-          { value: 'concise', label: 'Concise' },
-          { value: 'detailed', label: 'Detailed' },
-        ],
-        defaultValue: 'concise',
-      }],
+          id: 'model',
+          label: 'Model',
+          renderer: 'select',
+          surfaces: ['project-default', 'session-create', 'session-active'],
+          updateEffect: 'next-turn',
+          status: 'ready',
+          options: [
+            { value: 'model-selectable', label: 'Selectable model' },
+            {
+              value: 'model-added-after-session-create',
+              label: 'Newly available model',
+            },
+          ],
+        }, {
+          id: 'reasoningEffort',
+          label: 'Reasoning effort',
+          renderer: 'select',
+          surfaces: ['project-default', 'session-create', 'session-active'],
+          updateEffect: 'next-turn',
+          status: 'ready',
+          options: [{
+            value: 'high',
+            label: 'high',
+            when: {
+              controlId: 'model',
+              values: ['model-selectable', 'model-added-after-session-create'],
+            },
+          }],
+        }, {
+          id: 'verbosity',
+          label: 'Verbosity',
+          renderer: 'select',
+          surfaces: ['project-default', 'session-create', 'session-active'],
+          updateEffect: 'next-turn',
+          status: 'ready',
+          options: [
+            { value: 'concise', label: 'Concise' },
+            { value: 'detailed', label: 'Detailed' },
+          ],
+          defaultValue: 'concise',
+        }],
       listSessions: async () => [{
         sessionId: 'provider-session-1',
         title: 'Provider-owned work',
@@ -1376,6 +1410,18 @@ describe('MatrixMlp3GatewayRunner', () => {
       sessionFactory: (room, port, session) => {
         if (session.id === 'session-recovery-failure') {
           throw new Error('simulated recovered-session runtime failure')
+        }
+        if (session.id === 'session-a') {
+          Object.assign(session, { providerControls: [{
+            id: 'model',
+            label: 'Model',
+            renderer: 'select',
+            surfaces: ['project-default', 'session-create', 'session-active'],
+            updateEffect: 'next-turn',
+            status: 'ready',
+            options: [{ value: 'model-selectable', label: 'Selectable model' }],
+            value: 'model-selectable',
+          }] })
         }
         sessionExtensions.set(session.id, session.extensions)
         sessionCwds.set(session.id, room.cwd)
@@ -1709,7 +1755,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         && event.payload.items.some(model => model.id === 'model-selectable')
       ) && catalogEvents.some(event =>
         event.payload.type === 'provider.catalog.manifest'
-        && event.payload.itemCount === 1
+        && event.payload.itemCount === 2
       )
     })
     await waitFor(() => Promise.resolve([...client.state.values()].some(state =>
@@ -2342,6 +2388,24 @@ describe('MatrixMlp3GatewayRunner', () => {
       && event.payload.type === 'session.updated'
     )?.payload).toMatchObject({
       projection: { controls: [{ id: 'verbosity', value: 'concise' }] },
+    })
+    await send({
+      ...base,
+      commandId: 'session-new-catalog-model-1',
+      sessionId: 'session-a',
+      operation: 'session.update',
+      payload: {
+        operation: 'session.update',
+        patch: { controls: { model: 'model-added-after-session-create' } },
+      },
+    }, '$session-new-catalog-model-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === 'session-new-catalog-model-1'))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'session-new-catalog-model-1'
+      && event.payload.type === 'session.updated'
+    )?.payload).toMatchObject({
+      patch: { controls: { model: 'model-added-after-session-create' } },
     })
     await send({
       ...base,

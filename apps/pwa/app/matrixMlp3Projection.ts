@@ -961,6 +961,9 @@ export class MatrixMlp3Projection {
       && physicalEventId !== threadRootEventId
       && threadRootHint === threadRootEventId,
     );
+    const settingsPatch = event.payload.type === "session.updated"
+      ? event.payload.patch
+      : undefined;
     const projected: V3ProjectedSession = {
       sessionId,
       projectId: event.projectId ?? current?.projectId ?? "",
@@ -976,6 +979,7 @@ export class MatrixMlp3Projection {
         readReceiptThreadRootEventId: threadRootEventId,
       } : {}),
     };
+    if (settingsPatch) applyProjectedSessionSettings(projected, settingsPatch);
     if (!hasVerifiedReceiptTarget) {
       delete projected.readReceiptEventId;
       delete projected.readReceiptThreadRootEventId;
@@ -1603,6 +1607,59 @@ function mergeProjectedControlValues(
     if (control.value !== undefined) values[control.id] = control.value;
   }
   return values;
+}
+
+type SessionUpdatedPatch = Extract<
+  Mlp3Event["payload"],
+  { type: "session.updated" }
+>["patch"];
+
+function applyProjectedSessionSettings(
+  session: V3ProjectedSession,
+  patch: SessionUpdatedPatch,
+): void {
+  session.controlValues = {
+    ...(session.controlValues ?? {}),
+    ...(patch.controls ?? {}),
+  };
+
+  const model = patch.model !== undefined
+    ? patch.model
+    : typeof patch.controls?.model === "string"
+      ? patch.controls.model
+      : undefined;
+  if (model === null) {
+    delete session.model;
+    delete session.controlValues.model;
+  } else if (model !== undefined) {
+    session.model = model;
+    session.controlValues.model = model;
+  }
+
+  const reasoningEffort = patch.reasoningEffort !== undefined
+    ? patch.reasoningEffort
+    : typeof patch.controls?.reasoningEffort === "string"
+      ? patch.controls.reasoningEffort
+      : undefined;
+  if (reasoningEffort === null) {
+    delete session.reasoningEffort;
+    delete session.controlValues.reasoningEffort;
+  } else if (reasoningEffort !== undefined) {
+    session.reasoningEffort = reasoningEffort;
+    session.controlValues.reasoningEffort = reasoningEffort;
+  }
+
+  const permissionMode = patch.permissionMode
+    ?? (typeof patch.controls?.permissionMode === "string"
+      ? patch.controls.permissionMode
+      : undefined);
+  if (permissionMode !== undefined) {
+    session.permissionMode = permissionMode;
+    session.controlValues.permissionMode = permissionMode;
+  }
+  if (patch.extensions !== undefined) {
+    session.extensionBindings = structuredClone(patch.extensions);
+  }
 }
 
 function boundedArray(value: unknown, name: string): unknown[] {
