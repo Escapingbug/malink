@@ -973,6 +973,18 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private async receiveEvent(event: MatrixIncomingEvent): Promise<void> {
+    if (
+      event.sender === this.config.connection.userId
+      && event.eventType === 'm.room.message'
+      && !event.encrypted
+      && await this.content.confirmTimelineDelivery(
+        event.roomId,
+        event.eventId,
+        event.content,
+      )
+    ) {
+      this.log(`[mlp3/matrix] confirmed delivery ${event.eventId} from Matrix sync`)
+    }
     if (this.shadowRoomIds.has(event.roomId)) {
       await this.shadowInbox?.stage(event, this.now())
       return

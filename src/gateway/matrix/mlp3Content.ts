@@ -75,6 +75,7 @@ interface MatrixDeliveryJob {
 }
 
 export const MAX_MLP3_MATRIX_TIMELINE_CONTENT_BYTES = 40 * 1024
+const DEFAULT_MLP3_DELIVERY_ATTEMPT_TIMEOUT_MS = 30_000
 
 export class MatrixMlp3ContentTooLargeError extends Error {
   constructor(readonly contentBytes: number) {
@@ -138,6 +139,35 @@ export class GatewayMlp3ContentLayer {
 
   outboxHealth(now = Date.now()): MatrixMlp3OutboxHealth {
     return this.outbox.health(now)
+  }
+
+  /**
+   * Treat an exact self-authored timeline echo as a durable Matrix receipt.
+   * A homeserver can accept an idempotent transaction while its HTTP response
+   * is lost or left open. The subsequent /sync echo is then stronger evidence
+   * than the missing response and must retire the matching WAL entry.
+   */
+  async confirmTimelineDelivery(
+    roomId: string,
+    eventId: string,
+    content: Record<string, unknown>,
+  ): Promise<boolean> {
+    const encoded = canonicalJson(content as JsonValue)
+    const delivery = this.outbox.pending(roomId).find(candidate =>
+      candidate.kind === 'event'
+      && canonicalJson(candidate.content as JsonValue) === encoded
+    )
+    if (!delivery) return false
+    await this.outbox.markDelivered(delivery.deliveryId, eventId)
+    const result = { eventId }
+    this.resolveConfirmation(delivery.deliveryId, result)
+    this.retryAttempts.delete(roomId)
+    const queued = this.deliveryQueue.get(delivery.deliveryId)
+    if (queued) {
+      this.deliveryQueue.delete(delivery.deliveryId)
+      this.finishDeliveryJob(queued, undefined, result)
+    }
+    return true
   }
 
   authorizeAuxiliaryRoom(roomId: string, sourceRoomId: string): void {
@@ -793,7 +823,11 @@ export class GatewayMlp3ContentLayer {
         continue
       }
       try {
-        const result = await this.sendDelivery(job.delivery, job.transport)
+        const result = await deliveryAttempt(
+          this.sendDelivery(job.delivery, job.transport),
+          this.config.deliveryAttemptTimeoutMs ?? DEFAULT_MLP3_DELIVERY_ATTEMPT_TIMEOUT_MS,
+          job.delivery.deliveryId,
+        )
         await this.outbox.markDelivered(job.delivery.deliveryId, result.eventId)
         this.resolveConfirmation(job.delivery.deliveryId, result)
         this.retryAttempts.delete(job.delivery.roomId)
@@ -805,6 +839,10 @@ export class GatewayMlp3ContentLayer {
           await this.supersedePermanentDelivery(job.delivery, error)
           continue
         }
+        this.onLog?.(
+          `[mlp3/matrix] delivery ${job.delivery.deliveryId} attempt failed; `
+          + `durable retry scheduled: ${formatError(normalized)}`,
+        )
         this.pauseQueuedAttempts(normalized)
         this.scheduleRetry(job.delivery.roomId, job.transport)
         return
@@ -1106,6 +1144,27 @@ function assertTimelineContentSize(content: MatrixRoomMessageContent): void {
 
 function contentBytes(content: Record<string, unknown>): number {
   return canonicalJsonBytes(content as JsonValue).byteLength
+}
+
+async function deliveryAttempt<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  deliveryId: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(
+          `Matrix delivery ${deliveryId} did not settle within ${timeoutMs}ms`,
+        )), timeoutMs)
+        timeout.unref?.()
+      }),
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
 }
 
 function isOversizedTimelineDelivery(delivery: MatrixMlp3Delivery): boolean {

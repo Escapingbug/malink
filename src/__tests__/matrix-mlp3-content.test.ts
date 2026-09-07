@@ -26,6 +26,107 @@ import { FileMatrixMlp3Outbox } from '@/gateway/matrix/fileMatrixMlp3Outbox'
 import { gatewayProjectIdentity } from '@/gateway/matrix/project'
 
 describe('GatewayMlp3ContentLayer', () => {
+  it('confirms an accepted delivery from its exact Matrix sync echo', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-sync-confirmation-'))
+    const gateway = await generateDeviceKeyPair()
+    const phone = await generateDeviceKeyPair()
+    const room = {
+      roomId: '!project:example.org',
+      conversationId: 'conversation-1',
+      cwd: '/repo',
+      providerName: 'test',
+    }
+    const layer = new GatewayMlp3ContentLayer('workspace-1', {
+      gatewayDeviceId: 'workspace-1',
+      gatewayKeyPair: await exportDeviceKeyPair(gateway),
+      envelopeReplayLedgerPath: join(directory, 'security'),
+      deliveryAttemptTimeoutMs: 20,
+    }, [{
+      deviceId: 'phone-1',
+      publicKey: phone.publicJwk,
+      allowedRoomIds: [room.roomId],
+      allowedOperations: ['prompt'],
+      matrixUserId: '@owner:example.org',
+      matrixDeviceId: 'PHONE',
+      matrixDeviceKeys: ['matrix-phone-key'],
+      certificateExpiresAt: Date.now() + 60_000,
+      sequenceEpoch: 'certificate-1',
+    }])
+    await layer.initialize()
+    const transport = new InMemoryMatrixTransport()
+    await layer.provisionProject(room, transport)
+    let acceptedContent: Record<string, unknown> | undefined
+    const deliverNormally = transport.sendApplicationTimelineEvent.bind(transport)
+    transport.sendApplicationTimelineEvent = async request => {
+      if (!acceptedContent) {
+        acceptedContent = structuredClone(request.content)
+        return new Promise(() => undefined)
+      }
+      return deliverNormally(request)
+    }
+    const queued = await layer.enqueueEvent(room, {
+      kind: 'malink.event',
+      version: 3,
+      eventId: 'event-with-lost-http-response',
+      workspaceId: 'workspace-1',
+      projectId: gatewayProjectIdentity(room.cwd).id,
+      sessionId: 'session-1',
+      occurredAt: 1,
+      payload: {
+        type: 'session.ready',
+        provider: 'test',
+        permissionMode: 'default',
+        projection: {
+          title: 'Session',
+          lifecycle: 'active',
+          activity: 'idle',
+          updatedAt: 1,
+          stateVersion: 1,
+        },
+      },
+    }, transport)
+    await waitFor(() => acceptedContent !== undefined)
+    expect(layer.outboxHealth().pending).toBe(1)
+
+    await expect(layer.confirmTimelineDelivery(
+      room.roomId,
+      '$accepted-event',
+      acceptedContent!,
+    )).resolves.toBe(true)
+    await expect(queued.confirmation).resolves.toEqual({ eventId: '$accepted-event' })
+    expect(layer.outboxHealth().pending).toBe(0)
+    const afterLostResponse = await layer.enqueueEvent(room, {
+      kind: 'malink.event',
+      version: 3,
+      eventId: 'event-after-lost-http-response',
+      workspaceId: 'workspace-1',
+      projectId: gatewayProjectIdentity(room.cwd).id,
+      sessionId: 'session-1',
+      occurredAt: 2,
+      payload: {
+        type: 'session.ready',
+        provider: 'test',
+        permissionMode: 'default',
+        projection: {
+          title: 'Session',
+          lifecycle: 'active',
+          activity: 'idle',
+          updatedAt: 2,
+          stateVersion: 2,
+        },
+      },
+    }, transport)
+    await expect(afterLostResponse.confirmation).resolves.toMatchObject({
+      eventId: expect.any(String),
+    })
+    await expect(layer.confirmTimelineDelivery(
+      room.roomId,
+      '$different-event',
+      { ...acceptedContent, body: 'different content' },
+    )).resolves.toBe(false)
+    layer.stopRetries()
+  })
+
   it('retries an already-encrypted outbox after every recipient becomes inactive', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-v3-recipientless-retry-'))
     const securityPath = join(directory, 'security')
