@@ -609,6 +609,59 @@ describe('MatrixNodeSdkGatewayClient', () => {
         await expect(state('second')).resolves.toMatchObject({ eventId: '$recovered' })
         expect(calls).toBe(2)
     })
+
+    it('times out a stalled response body and releases the room write lane', async () => {
+        let calls = 0
+        let bodyReadAborted = false
+        const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+            calls += 1
+            if (calls === 1) {
+                const signal = init?.signal
+                return {
+                    ok: true,
+                    status: 200,
+                    text: () => new Promise<string>((_resolve, reject) => {
+                        const rejectAbort = () => {
+                            bodyReadAborted = true
+                            reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'))
+                        }
+                        if (signal?.aborted) rejectAbort()
+                        else signal?.addEventListener('abort', rejectAbort, { once: true })
+                    }),
+                } as Response
+            }
+            return jsonResponse({ event_id: '$after-body-timeout' })
+        }) as unknown as typeof fetch
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test',
+            accessToken: 'token',
+            userId: '@gateway:example.test',
+            deviceId: 'STABLE_DEVICE',
+        }, 20, undefined, fetchMock)
+        const state = (stateKey: string) => client.setApplicationRoomState({
+            roomId: '!room:example.test',
+            eventType: MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
+            stateKey,
+            content: {
+                version: 2,
+                kind: 'state_envelope',
+                state_envelope: {
+                    envelope: {
+                        eventType: MALINK_MATRIX_SESSION_STATE_EVENT_TYPE,
+                        stateKey,
+                    },
+                    signature: {},
+                },
+            },
+        })
+
+        await expect(state('stalled')).rejects.toMatchObject({ name: 'AbortError' })
+        expect(bodyReadAborted).toBe(true)
+        await expect(state('recovered')).resolves.toMatchObject({
+            eventId: '$after-body-timeout',
+        })
+        expect(calls).toBe(2)
+    })
 })
 
 async function temporaryDirectory(): Promise<string> {

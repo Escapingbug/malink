@@ -1093,6 +1093,7 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                 ? AbortSignal.any([options.signal, timeoutController.signal])
                 : timeoutController.signal
             let response: Response
+            let text: string
             try {
                 response = await this.fetchImpl(url, {
                     method,
@@ -1103,6 +1104,11 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
                     signal,
                 })
+                // Receiving response headers does not complete the request. Keep
+                // the same deadline active while consuming the body so a stalled
+                // homeserver response cannot hold the account-wide room-write
+                // lane forever and starve durable MLP/3 outbox recovery.
+                text = await response.text()
             } catch (error) {
                 if (
                     options.retryTransient
@@ -1130,7 +1136,6 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
             } finally {
                 clearTimeout(timeout)
             }
-            const text = await response.text()
             const body = text ? safeJson(text) : {}
             if (response.ok) {
                 if (options.paceRoomWrite) this.roomLastSuccessfulWriteAt = Date.now()
