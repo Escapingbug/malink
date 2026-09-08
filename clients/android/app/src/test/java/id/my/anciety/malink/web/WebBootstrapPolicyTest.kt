@@ -44,6 +44,22 @@ class WebBootstrapPolicyTest {
         assertNull(parseWebBootstrapProbe(null))
         assertNull(parseWebBootstrapProbe("{}"))
         assertNull(parseWebBootstrapProbe("\"unknown|complete|empty|controlled\""))
+        assertEquals(
+            WebBootstrapProbe(
+                bridgeAvailable = true,
+                documentComplete = true,
+                rootPopulated = false,
+                serviceWorkerControlled = false,
+                startupPhase = "failed",
+                startupFailureCode = "ui-start-12abcdef",
+            ),
+            parseWebBootstrapProbe(
+                "\"bridge|complete|empty|uncontrolled|failed|ui-start-12abcdef\"",
+            ),
+        )
+        assertNull(parseWebBootstrapProbe(
+            "\"bridge|complete|empty|uncontrolled|failed|private-message\"",
+        ))
     }
 
     @Test
@@ -67,5 +83,32 @@ class WebBootstrapPolicyTest {
             ),
         )
         assertEquals("bridge_timeout", webBootstrapTimeoutReason(null))
+        assertEquals(
+            "interface_failed",
+            webBootstrapTimeoutReason(
+                WebBootstrapProbe(
+                    true,
+                    true,
+                    false,
+                    false,
+                    startupPhase = "failed",
+                    startupFailureCode = "ui-start-12abcdef",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `extracts only bounded startup failure codes from console output`() {
+        assertEquals(
+            "ui-start-12abcdef",
+            pwaStartupFailureCodeFromConsole(
+                "[malink/startup:ui-start-12abcdef] private exception text",
+            ),
+        )
+        assertNull(pwaStartupFailureCodeFromConsole("private exception text"))
+        assertNull(pwaStartupFailureCodeFromConsole(
+            "[malink/startup:ui-start-not-hex] private exception text",
+        ))
     }
 }

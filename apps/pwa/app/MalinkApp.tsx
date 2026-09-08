@@ -437,6 +437,7 @@ import type {
 import { CommandReviewRequiredError } from "./client/MalinkClient";
 import {
   NATIVE_MANAGED_ACCESS_TOKEN,
+  acknowledgeNativeUiStartupIfAvailable,
   advanceNativeAppUpdate,
   bootstrapNativeMatrixSessionIfAvailable,
   createMalinkClient,
@@ -446,6 +447,10 @@ import {
   signOutNativeMatrixSessionIfAvailable,
   resumeNativeMatrixSessionIfAvailable,
 } from "./client/createMalinkClient";
+import {
+  StartupRuntimeCommit,
+  markPwaStartupPhase,
+} from "./StartupRecoveryBoundary";
 import { injectedNativeBridgePort } from "./client/native/NativeRpcBridge";
 import { publicTrustFromWeb } from "./client/web/WebMalinkClient";
 import {
@@ -1325,6 +1330,12 @@ export function MalinkApp() {
 
   useEffect(() => {
     let active = true;
+    markPwaStartupPhase("preparing-state");
+    // A cold production render can be substantially slower than the bridge
+    // itself. Acknowledge the Android presentation host while the small,
+    // static upgrade gate is still visible; the durable Matrix client obtains
+    // its own lease only after this short handshake has closed.
+    void acknowledgeNativeUiStartupIfAvailable().catch(() => undefined);
     void (async () => {
       try {
         runPwaStateUpgrade(
@@ -1380,7 +1391,10 @@ export function MalinkApp() {
             });
           },
         );
-        if (active) setUpgrade({ phase: "ready" });
+        if (active) {
+          markPwaStartupPhase("rendering-workspace");
+          setUpgrade({ phase: "ready" });
+        }
       } catch (error) {
         if (!active) return;
         setUpgrade({
@@ -1510,7 +1524,11 @@ export function MalinkApp() {
       </main>
     );
   }
-  return <MalinkAppRuntime />;
+  return (
+    <StartupRuntimeCommit>
+      <MalinkAppRuntime />
+    </StartupRuntimeCommit>
+  );
 }
 
 const PWA_LOCAL_STATE_PROGRESS_LABELS: Readonly<Record<string, string>> = {

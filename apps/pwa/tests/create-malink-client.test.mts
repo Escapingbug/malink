@@ -11,6 +11,7 @@ import type {
 } from "../app/client/MalinkClient.ts";
 import {
   NATIVE_MANAGED_ACCESS_TOKEN,
+  acknowledgeNativeUiStartupIfAvailable,
   advanceNativeAppUpdate,
   bootstrapNativeMatrixSessionIfAvailable,
   createMalinkClient,
@@ -88,6 +89,28 @@ test("uses Web directly when no native host is injected", async () => {
   );
   assert.equal(client, webClient);
   assert.equal(webCreates, 1);
+});
+
+test("acknowledges the native UI before the workspace runtime owns the bridge", async () => {
+  const port = new HelloPort();
+  assert.equal(
+    await acknowledgeNativeUiStartupIfAvailable({
+      nativePort: () => port,
+      createBridge: (nativePort) => new NativeRpcBridge(nativePort),
+    }),
+    true,
+  );
+  assert.equal(port.onmessage, null);
+});
+
+test("does not invent a native UI acknowledgement in a browser", async () => {
+  assert.equal(
+    await acknowledgeNativeUiStartupIfAvailable({
+      nativePort: () => null,
+      createBridge: (nativePort) => new NativeRpcBridge(nativePort),
+    }),
+    false,
+  );
 });
 
 test("reads a negotiated PWA source without changing the shared hello envelope", () => {

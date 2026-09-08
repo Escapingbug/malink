@@ -51,6 +51,36 @@ const defaultDependencies: CreateMalinkClientDependencies = {
 };
 
 /**
+ * Proves that the hosted presentation can reach the Android bridge before the
+ * much larger workspace tree mounts. Android uses the first authenticated
+ * bridge request as its WebView bootstrap acknowledgement, so this prevents a
+ * slow cold render from being mistaken for a dead hosted interface.
+ *
+ * The lease is deliberately short-lived and negotiates no business
+ * capability. Matrix ownership and the durable native client are still
+ * established later by createMalinkClient().
+ */
+export async function acknowledgeNativeUiStartupIfAvailable(
+  dependencies: Pick<
+    CreateMalinkClientDependencies,
+    "nativePort" | "createBridge"
+  > = defaultDependencies,
+): Promise<boolean> {
+  const port = dependencies.nativePort();
+  if (!port) return false;
+  const bridge = await dependencies.createBridge(port);
+  try {
+    await bridge.hello({
+      webBuild: MALINK_BUILD_VERSION,
+      requiredCapabilities: [],
+    });
+    return true;
+  } finally {
+    bridge.close();
+  }
+}
+
+/**
  * Selects native only after every domain capability required by MalinkClient
  * was negotiated. An older/partial host remains usable, but the UI explicitly
  * reports that its Matrix transport is the foreground Web implementation.

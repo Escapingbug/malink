@@ -1079,6 +1079,8 @@ class MainActivity : ComponentActivity() {
                             (probe?.rootPopulated?.toString() ?: "unknown"),
                         "worker_controlled" to
                             (probe?.serviceWorkerControlled?.toString() ?: "unknown"),
+                        "phase" to (probe?.startupPhase ?: "unknown"),
+                        "code" to (probe?.startupFailureCode ?: "none"),
                         "trusted_page" to
                             trustedWebOrigin.isTrustedUrl(view.url).toString(),
                     ),
@@ -1196,6 +1198,7 @@ class MainActivity : ComponentActivity() {
         view.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(message: ConsoleMessage): Boolean {
                 if (message.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                    val startupFailureCode = pwaStartupFailureCodeFromConsole(message.message())
                     diagnostics.record(
                         "activity.web_console_error",
                         mapOf(
@@ -1204,6 +1207,7 @@ class MainActivity : ComponentActivity() {
                                 ?.replace(Regex("[^A-Za-z0-9._+-]"), "_")
                                 ?.take(120)
                                 .orEmpty(),
+                            "code" to (startupFailureCode ?: "none"),
                         ),
                     )
                 }
@@ -2304,7 +2308,9 @@ class MainActivity : ComponentActivity() {
               var worker = navigator.serviceWorker && navigator.serviceWorker.controller
                 ? "controlled"
                 : "uncontrolled";
-              return [bridge, complete, populated, worker].join("|");
+              var phase = document.documentElement.dataset.malinkStartupPhase || "unknown";
+              var failure = document.documentElement.dataset.malinkStartupFailure || "none";
+              return [bridge, complete, populated, worker, phase, failure].join("|");
             })();
         """.trimIndent()
         private val WEB_INTERFACE_RESET_SCRIPT = """
