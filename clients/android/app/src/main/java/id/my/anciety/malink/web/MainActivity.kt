@@ -105,6 +105,11 @@ import kotlinx.serialization.json.jsonObject
 import java.io.File
 import kotlin.coroutines.resume
 
+private sealed class NativeRecoveryOrigin {
+    data class General(val detail: String) : NativeRecoveryOrigin()
+    data class WebBootstrap(val reason: String) : NativeRecoveryOrigin()
+}
+
 class MainActivity : ComponentActivity() {
     private var serviceBinder: MalinkConnectionService.LocalBinder? = null
     private var serviceBound = false
@@ -144,6 +149,9 @@ class MainActivity : ComponentActivity() {
             .getOrNull()
     }
     private var pendingNativeUpdateInstall = false
+    private var pendingNativeRecoveryInstall: NativeRecoveryOrigin? = null
+    private var activeNativeRecoveryOrigin: NativeRecoveryOrigin? = null
+    private var nativeRecoveryUpdateWatch: Job? = null
     private var pendingWebPermissionRequest: PermissionRequest? = null
     private var pendingFileChooser: ValueCallback<Array<Uri>>? = null
     private var pendingCameraCaptureUri: Uri? = null
@@ -310,7 +318,18 @@ class MainActivity : ComponentActivity() {
         }
         if (pendingNativeUpdateInstall && packageManager.canRequestPackageInstalls()) {
             pendingNativeUpdateInstall = false
-            installNativeUpdate()
+            val recovery = pendingNativeRecoveryInstall.also {
+                pendingNativeRecoveryInstall = null
+            }
+            if (recovery == null) installNativeUpdate()
+            else installNativeUpdateFromRecovery(recovery)
+        } else {
+            activeNativeRecoveryOrigin?.let { recovery ->
+                updateManager?.status()?.let { status ->
+                    showNativeRecoveryUpdatePage(recovery, status)
+                    watchNativeRecoveryUpdate(recovery, status)
+                }
+            }
         }
         resumePersistentHost()
     }
@@ -332,6 +351,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         diagnostics.record("activity.destroyed")
+        nativeRecoveryUpdateWatch?.cancel()
         if (serviceBound || bindingRequested) {
             runCatching { unbindService(serviceConnection) }
             serviceBound = false
@@ -965,6 +985,7 @@ class MainActivity : ComponentActivity() {
     private fun acknowledgeWebBootstrap() {
         val current = webView ?: return
         if (webBootstrapReady) return
+        leaveNativeRecoveryUpdate()
         webBootstrapReady = true
         webBootstrapCriticalFailure = null
         webBootstrapLastProbe = null
@@ -1456,8 +1477,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun openNativeUpdateInstallPermission() {
+    private fun openNativeUpdateInstallPermission(
+        recoveryOrigin: NativeRecoveryOrigin? = null,
+    ) {
         pendingNativeUpdateInstall = true
+        pendingNativeRecoveryInstall = recoveryOrigin
         startActivity(
             Intent(
                 Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
@@ -1639,13 +1663,20 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showRecoveryPage(detail: String) {
+        leaveNativeRecoveryUpdate()
         stopWebBootstrap()
         showContent(messageView(
             title = "Malink is temporarily unavailable",
             detail = detail,
             action = "Retry",
-            secondaryAction = "Change static service",
-            onSecondaryAction = ::showStaticServiceSettings,
+            secondaryAction = "Check Official APK update",
+            onSecondaryAction = {
+                checkOfficialNativeUpdate(NativeRecoveryOrigin.General(detail))
+            },
+            tertiaryAction = "Export diagnostics",
+            onTertiaryAction = ::exportDiagnostics,
+            quaternaryAction = "Change static service",
+            onQuaternaryAction = ::showStaticServiceSettings,
         ) {
             if (serviceBinder == null) {
                 ensureHostBound()
@@ -1656,6 +1687,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showWebBootstrapRecoveryPage(reason: String) {
+        leaveNativeRecoveryUpdate()
         stopWebBootstrap()
         val bridgeMissing = reason == "bridge_missing"
         showContent(messageView(
@@ -1666,13 +1698,185 @@ class MainActivity : ComponentActivity() {
                 "queued actions, and conversation history intact.",
             action = "Reset interface and reload",
             primaryBusyOnClick = false,
-            secondaryAction = "Export diagnostics",
-            onSecondaryAction = ::exportDiagnostics,
-            tertiaryAction = if (bridgeMissing) "Open WebView settings" else "Change PWA address",
-            onTertiaryAction = if (bridgeMissing) ::openWebViewSettings else ::showStaticServiceSettings,
+            secondaryAction = "Check Official APK update",
+            onSecondaryAction = {
+                checkOfficialNativeUpdate(NativeRecoveryOrigin.WebBootstrap(reason))
+            },
+            tertiaryAction = "Export diagnostics",
+            onTertiaryAction = ::exportDiagnostics,
+            quaternaryAction = if (bridgeMissing) "Open WebView settings" else "Change PWA address",
+            onQuaternaryAction = if (bridgeMissing) ::openWebViewSettings else ::showStaticServiceSettings,
         ) {
             confirmWebInterfaceReset()
         })
+    }
+
+    private fun checkOfficialNativeUpdate(origin: NativeRecoveryOrigin) {
+        val manager = updateManager
+        if (manager == null) {
+            diagnostics.record("update.recovery_unavailable")
+            showContent(messageView(
+                title = "APK update check is unavailable",
+                detail = "The native update verifier could not start. Return to recovery and " +
+                    "export diagnostics; your account and app data have not been changed.",
+                action = "Back to recovery",
+                secondaryAction = "Export diagnostics",
+                onSecondaryAction = ::exportDiagnostics,
+            ) {
+                returnToNativeRecovery(origin)
+            })
+            return
+        }
+        activeNativeRecoveryOrigin = origin
+        diagnostics.record("update.recovery_check_requested")
+        val current = manager.status()
+        val status = if (
+            current.phase == NativeUpdatePhase.READY ||
+            current.phase == NativeUpdatePhase.PERMISSION_REQUIRED ||
+            current.phase == NativeUpdatePhase.INSTALLING
+        ) {
+            current
+        } else {
+            manager.requestOfficialReleaseCheck()
+        }
+        showNativeRecoveryUpdatePage(origin, status)
+        watchNativeRecoveryUpdate(origin, status)
+    }
+
+    private fun showNativeRecoveryUpdatePage(
+        origin: NativeRecoveryOrigin,
+        status: NativeUpdateStatus,
+    ) {
+        if (isFinishing || isDestroyed) return
+        activeNativeRecoveryOrigin = origin
+        val presentation = nativeRecoveryUpdatePresentation(status)
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(32), dp(32), dp(32), dp(32))
+            setBackgroundColor(0xFFF4F6FA.toInt())
+            addView(TextView(context).apply {
+                text = presentation.title
+                textSize = 22f
+                setTextColor(0xFF111827.toInt())
+                gravity = Gravity.CENTER
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ))
+            addView(TextView(context).apply {
+                text = presentation.detail
+                textSize = 15f
+                setTextColor(0xFF4B5563.toInt())
+                gravity = Gravity.CENTER
+                setPadding(0, dp(16), 0, dp(20))
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ))
+            if (presentation.showProgress) {
+                addView(ProgressBar(
+                    context,
+                    null,
+                    android.R.attr.progressBarStyleHorizontal,
+                ).apply {
+                    isIndeterminate = presentation.progressPercent == null
+                    max = 100
+                    presentation.progressPercent?.let { progress = it }
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(8),
+                ).apply {
+                    bottomMargin = dp(16)
+                })
+            }
+            presentation.actionLabel?.let { label ->
+                addView(Button(context).apply {
+                    text = label
+                    setOnClickListener {
+                        if (!isEnabled) return@setOnClickListener
+                        when (presentation.action) {
+                            NativeRecoveryUpdateAction.CHECK -> checkOfficialNativeUpdate(origin)
+                            NativeRecoveryUpdateAction.INSTALL -> {
+                                isEnabled = false
+                                text = "$label…"
+                                installNativeUpdateFromRecovery(origin)
+                            }
+                            NativeRecoveryUpdateAction.OPEN_INSTALL_PERMISSION ->
+                                openNativeUpdateInstallPermission(origin)
+                            NativeRecoveryUpdateAction.BACK -> returnToNativeRecovery(origin)
+                            NativeRecoveryUpdateAction.NONE -> Unit
+                        }
+                    }
+                })
+            }
+            if (presentation.action != NativeRecoveryUpdateAction.BACK) {
+                addView(Button(context).apply {
+                    text = "Back to UI recovery"
+                    setOnClickListener { returnToNativeRecovery(origin) }
+                })
+            }
+            addView(Button(context).apply {
+                text = "Export diagnostics"
+                setOnClickListener { exportDiagnostics() }
+            })
+        }
+        showContent(panel)
+    }
+
+    private fun watchNativeRecoveryUpdate(
+        origin: NativeRecoveryOrigin,
+        initial: NativeUpdateStatus,
+    ) {
+        nativeRecoveryUpdateWatch?.cancel()
+        if (!nativeRecoveryUpdateShouldPoll(initial)) return
+        val manager = updateManager ?: return
+        nativeRecoveryUpdateWatch = lifecycleScope.launch {
+            var displayed = initial
+            while (activeNativeRecoveryOrigin == origin) {
+                delay(NATIVE_RECOVERY_UPDATE_POLL_MS)
+                val current = manager.status()
+                if (current != displayed) {
+                    val previousPhase = displayed.phase
+                    displayed = current
+                    if (current.phase != previousPhase) {
+                        diagnostics.record(
+                            "update.recovery_phase_changed",
+                            mapOf("phase" to current.phase.wireName),
+                        )
+                    }
+                    showNativeRecoveryUpdatePage(origin, current)
+                }
+                if (!nativeRecoveryUpdateShouldPoll(current)) break
+            }
+        }
+    }
+
+    private fun installNativeUpdateFromRecovery(origin: NativeRecoveryOrigin) {
+        val manager = updateManager ?: return
+        activeNativeRecoveryOrigin = origin
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { manager.installReady() }
+            if (result.phase == NativeUpdatePhase.PERMISSION_REQUIRED) {
+                showNativeRecoveryUpdatePage(origin, result)
+            } else {
+                showNativeRecoveryUpdatePage(origin, result)
+                watchNativeRecoveryUpdate(origin, result)
+            }
+        }
+    }
+
+    private fun returnToNativeRecovery(origin: NativeRecoveryOrigin) {
+        when (origin) {
+            is NativeRecoveryOrigin.General -> showRecoveryPage(origin.detail)
+            is NativeRecoveryOrigin.WebBootstrap -> showWebBootstrapRecoveryPage(origin.reason)
+        }
+    }
+
+    private fun leaveNativeRecoveryUpdate() {
+        activeNativeRecoveryOrigin = null
+        nativeRecoveryUpdateWatch?.cancel()
+        nativeRecoveryUpdateWatch = null
     }
 
     private fun confirmWebInterfaceReset() {
@@ -1798,6 +2002,8 @@ class MainActivity : ComponentActivity() {
         onSecondaryAction: (() -> Unit)? = null,
         tertiaryAction: String? = null,
         onTertiaryAction: (() -> Unit)? = null,
+        quaternaryAction: String? = null,
+        onQuaternaryAction: (() -> Unit)? = null,
         onAction: () -> Unit,
     ): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -1844,6 +2050,12 @@ class MainActivity : ComponentActivity() {
             addView(Button(context).apply {
                 text = tertiaryAction
                 setOnClickListener { onTertiaryAction() }
+            })
+        }
+        if (quaternaryAction != null && onQuaternaryAction != null) {
+            addView(Button(context).apply {
+                text = quaternaryAction
+                setOnClickListener { onQuaternaryAction() }
             })
         }
     }
@@ -2080,6 +2292,7 @@ class MainActivity : ComponentActivity() {
         private const val WEB_BOOTSTRAP_PROBE_TIMEOUT_MS = 1_000L
         private const val WEB_INTERFACE_SCRIPT_RESET_GRACE_MS = 1_000L
         private const val WEB_INTERFACE_RESET_TIMEOUT_MS = 5_000L
+        private const val NATIVE_RECOVERY_UPDATE_POLL_MS = 250L
         private const val MAX_SAVED_QR_DIMENSION = 2_048
         private val WEB_BOOTSTRAP_PROBE_SCRIPT = """
             (function () {

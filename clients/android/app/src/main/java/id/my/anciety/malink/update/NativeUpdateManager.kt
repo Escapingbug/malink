@@ -7,6 +7,7 @@ import android.os.Build
 import androidx.core.app.NotificationManagerCompat
 import id.my.anciety.malink.BuildConfig
 import id.my.anciety.malink.bridge.BridgeProtocol
+import id.my.anciety.malink.config.StaticServiceEndpoint
 import id.my.anciety.malink.config.StaticServiceStore
 import id.my.anciety.malink.diagnostics.NativeDiagnosticLog
 import java.io.File
@@ -36,6 +37,7 @@ class NativeUpdateManager private constructor(context: Context) {
     private val staticCheckScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val requestedStaticCheckLock = Any()
     private var requestedStaticCheck: Job? = null
+    private var requestedStaticCheckEndpoint: String? = null
     @Volatile private var readyRelease: NativeClientRelease? = null
     @Volatile private var readyApk: File? = null
     @Volatile private var status = baseStatus()
@@ -52,7 +54,25 @@ class NativeUpdateManager private constructor(context: Context) {
      * join the same in-flight check instead of starting duplicate downloads.
      */
     fun requestStaticReleaseCheck(): NativeUpdateStatus = synchronized(requestedStaticCheckLock) {
-        if (requestedStaticCheck?.isActive == true) return@synchronized status
+        requestStaticReleaseCheck(staticServices.committed)
+    }
+
+    /**
+     * Recovery must remain usable when the selected hosted interface is the
+     * component that failed. The built-in Official endpoint is immutable APK
+     * configuration and does not depend on WebView, Matrix, or Gateway state.
+     */
+    fun requestOfficialReleaseCheck(): NativeUpdateStatus = synchronized(requestedStaticCheckLock) {
+        requestStaticReleaseCheck(staticServices.official)
+    }
+
+    private fun requestStaticReleaseCheck(
+        endpoint: StaticServiceEndpoint,
+    ): NativeUpdateStatus {
+        if (
+            requestedStaticCheck?.isActive == true &&
+            requestedStaticCheckEndpoint == endpoint.baseUrl
+        ) return status
         publish(status.copy(
             phase = NativeUpdatePhase.CHECKING,
             downloadedBytes = null,
@@ -62,24 +82,33 @@ class NativeUpdateManager private constructor(context: Context) {
         lateinit var launched: Job
         launched = staticCheckScope.launch(start = CoroutineStart.LAZY) {
             try {
-                checkStaticRelease(force = true)
+                checkStaticRelease(force = true, endpoint = endpoint)
             } finally {
                 synchronized(requestedStaticCheckLock) {
-                    if (requestedStaticCheck === launched) requestedStaticCheck = null
+                    if (requestedStaticCheck === launched) {
+                        requestedStaticCheck = null
+                        requestedStaticCheckEndpoint = null
+                    }
                 }
             }
         }
         requestedStaticCheck = launched
+        requestedStaticCheckEndpoint = endpoint.baseUrl
         launched.start()
-        status
+        return status
     }
 
     suspend fun checkStaticRelease(force: Boolean = false): NativeUpdateStatus =
+        checkStaticRelease(force = force, endpoint = staticServices.committed)
+
+    private suspend fun checkStaticRelease(
+        force: Boolean,
+        endpoint: StaticServiceEndpoint,
+    ): NativeUpdateStatus =
         staticCheckMutex.withLock {
             val now = System.currentTimeMillis()
             if (!staticReleaseCheckDue(now, store.lastStaticCheckAt, force)) return@withLock status
             store.lastStaticCheckAt = now
-            val endpoint = staticServices.committed
             diagnostics.record("update.static_check_started")
             try {
                 val manifest = http.readText(
@@ -89,7 +118,11 @@ class NativeUpdateManager private constructor(context: Context) {
                 val value = kotlinx.serialization.json.Json
                     .parseToJsonElement(manifest)
                     .jsonObject
-                acceptPublishedRelease(value, metadataAuthenticated = false).also { result ->
+                acceptPublishedReleaseFrom(
+                    value,
+                    metadataAuthenticated = false,
+                    staticService = endpoint,
+                ).also { result ->
                     if (result.phase == NativeUpdatePhase.FAILED) {
                         diagnostics.record(
                             "update.static_check_failed",
@@ -134,11 +167,21 @@ class NativeUpdateManager private constructor(context: Context) {
     suspend fun acceptPublishedRelease(
         value: JsonObject,
         metadataAuthenticated: Boolean = true,
+    ): NativeUpdateStatus = acceptPublishedReleaseFrom(
+        value = value,
+        metadataAuthenticated = metadataAuthenticated,
+        staticService = staticServices.committed,
+    )
+
+    private suspend fun acceptPublishedReleaseFrom(
+        value: JsonObject,
+        metadataAuthenticated: Boolean,
+        staticService: StaticServiceEndpoint,
     ): NativeUpdateStatus = mutex.withLock {
         publish(baseStatus(NativeUpdatePhase.CHECKING))
         diagnostics.record("update.release_received")
         try {
-            val parser = releaseParser()
+            val parser = releaseParser(staticService)
             val release = parser.parse(value)
             if (release.channel != UPDATE_CHANNEL) {
                 throw NativeClientReleaseException("release_channel_unsupported")
@@ -451,8 +494,10 @@ class NativeUpdateManager private constructor(context: Context) {
     private fun comparable(release: NativeClientRelease): NativeClientRelease =
         release.copy(encoded = "")
 
-    private fun releaseParser(): NativeClientReleaseParser = NativeClientReleaseParser(
-        staticService = staticServices.committed,
+    private fun releaseParser(
+        staticService: StaticServiceEndpoint = staticServices.committed,
+    ): NativeClientReleaseParser = NativeClientReleaseParser(
+        staticService = staticService,
         allowLoopbackHttp = BuildConfig.ALLOW_INSECURE_E2E_LOOPBACK,
     )
 

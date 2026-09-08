@@ -220,6 +220,16 @@ startup and every 24 hours:
 native-updates/channels/alpha/client-release.json
 ```
 
+If the hosted interface cannot bootstrap, its native recovery page also offers
+`Check Official APK update`. That user-initiated escape hatch reads the built-in
+Official GitHub Pages channel directly, so a broken WebView/PWA, a selected
+custom service, Matrix synchronization, Workspace authorization, and Gateway
+availability cannot hide a repair release. The recovery page remains native
+while it shows manifest lookup, APK download progress, verification, install
+permission, and Android's final installation confirmation. It never clears the
+native account or local stores, and it does not check or download until the user
+presses the action.
+
 When the manifest names a newer compatible build, Android downloads the
 immutable APK, resumes partial downloads, and shows a native notification when
 it is ready. The APK normally comes from the same selected base URL. It may
