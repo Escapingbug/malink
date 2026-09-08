@@ -1204,9 +1204,9 @@ class MainActivity : ComponentActivity() {
                         mapOf(
                             "line" to message.lineNumber().coerceAtLeast(0).toString(),
                             "source" to Uri.parse(message.sourceId()).lastPathSegment
-                                ?.replace(Regex("[^A-Za-z0-9._+-]"), "_")
+                                ?.replace(Regex("[^A-Za-z0-9._-]"), "_")
                                 ?.take(120)
-                                .orEmpty(),
+                                .orEmpty().ifEmpty { "unknown" },
                             "code" to (startupFailureCode ?: "none"),
                         ),
                     )

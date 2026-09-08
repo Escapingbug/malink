@@ -197,6 +197,56 @@ select:focus-visible {
   margin-top: 18px;
 }
 
+.upgrade-gate-actions > :is(button, a) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 12px 18px;
+  border: 1px solid #6858d6;
+  border-radius: 12px;
+  background: #fff;
+  color: #4937ac;
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.upgrade-gate-actions > button:first-child {
+  background: #6858d6;
+  color: #fff;
+}
+
+.upgrade-gate-actions > .danger-button {
+  border-color: #b42318;
+  color: #b42318;
+}
+
+.upgrade-gate-actions > :is(button, a):focus-visible {
+  outline: 3px solid #6858d6;
+  outline-offset: 3px;
+}
+
+.upgrade-gate-actions > :is(button, a):active:not(:disabled) {
+  box-shadow: inset 0 0 0 3px rgb(104 88 214 / 25%);
+}
+
+.upgrade-gate-actions > button:disabled {
+  border-color: #c6c8d0;
+  background: #ececf1;
+  color: #656979;
+  cursor: wait;
+}
+
+@media (max-width: 600px) {
+  .upgrade-gate-actions > :is(button, a) {
+    width: 100%;
+  }
+}
+
 .rail {
   position: relative;
   z-index: 3;

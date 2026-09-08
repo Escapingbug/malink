@@ -33,6 +33,7 @@ internal object DiagnosticLine {
         "keyed",
         "kind",
         "limit",
+        "line",
         "loaded",
         "main_frame",
         "missing",

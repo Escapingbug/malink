@@ -3092,7 +3092,7 @@ function MalinkAppRuntime() {
       ? { permissionMode: activeWorkspace.permissionMode }
       : {}),
   };
-  if (sessionSettingsUpdate?.sessionId === selected?.id) {
+  if (sessionSettingsUpdate && selected && sessionSettingsUpdate.sessionId === selected.id) {
     Object.assign(activeProviderControlValues, sessionSettingsUpdate.changes);
     sessionSettingsUpdate.cleared.forEach((id) => {
       delete activeProviderControlValues[id];

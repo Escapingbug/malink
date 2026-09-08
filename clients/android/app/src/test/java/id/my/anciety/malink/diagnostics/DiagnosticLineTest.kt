@@ -6,6 +6,18 @@ import org.junit.Test
 
 class DiagnosticLineTest {
     @Test
+    fun `web console startup failures survive diagnostic validation`() {
+        assertEquals(
+            "2026-09-08T07:35:52Z activity.web_console_error code=ui-start-12345678 line=119 source=index-C59YFnQB.js",
+            DiagnosticLine.encode(
+                "2026-09-08T07:35:52Z",
+                "activity.web_console_error",
+                mapOf("code" to "ui-start-12345678", "line" to "119", "source" to "index-C59YFnQB.js"),
+            ),
+        )
+    }
+
+    @Test
     fun `diagnostic fields are stable and sorted`() {
         assertEquals(
             "2026-08-04T12:00:00Z matrix.state detail=matrix_sync_active phase=SYNCING",
