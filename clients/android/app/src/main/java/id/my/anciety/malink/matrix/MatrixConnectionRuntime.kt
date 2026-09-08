@@ -857,7 +857,24 @@ class MatrixConnectionRuntime(
         // Live events come only from the SDK timeline. A cold projection reads
         // current bounded MLP/3 Room State on demand; this request never polls
         // and owns no independent Matrix sync cursor.
-        val batch = applicationRoomStateClient.currentMlp3(session, roomIds)
+        val knownRooms = session.roomBindings.map { it.roomId }
+        require(roomIds == null || roomIds.all { it in knownRooms }) {
+            "Unknown Matrix project room requested for projection recovery."
+        }
+        return recoverMatrixProjectRooms(
+            knownRooms.filter { roomIds == null || it in roomIds },
+            recover = { roomId -> refreshApplicationProjectionRoom(session, roomId) },
+            onFailure = { error ->
+                diagnostics.record("matrix.v3_projection.room_refresh_failure", errorAttributes(error))
+            },
+        )
+    }
+
+    private suspend fun refreshApplicationProjectionRoom(
+        session: StoredMatrixSession,
+        roomId: String,
+    ): Int {
+        val batch = applicationRoomStateClient.currentMlp3(session, setOf(roomId))
         val processed = processMatrixApplicationEventBatch(
             events = batch.events,
             onEvent = onDecryptedEvent,
