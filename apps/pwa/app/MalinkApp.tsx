@@ -551,6 +551,7 @@ type NativeCommandReviewNotice = MalinkCommandReview & {
 type SessionSettingsUpdate = {
   sessionId: string;
   confirmed?: boolean;
+  previousStateVersion?: number;
   label: string;
   changes: ProviderControlValues;
   cleared: Array<"model" | "reasoningEffort">;
@@ -12277,7 +12278,10 @@ function MalinkAppRuntime() {
   ): Promise<void> {
     const sessionId = selectedSessionIdRef.current;
     if (!sessionId || (sessionSettingsUpdate && !sessionSettingsUpdate.confirmed)) return;
-    const update = { sessionId, changes, cleared, label };
+    const update = {
+      sessionId, changes, cleared, label,
+      previousStateVersion: gatewayStateRef.current?.sessions.find(session => session.id === sessionId)?.stateVersion,
+    };
     setSessionSettingsUpdate(update);
     let confirmed = false;
     const payload: CommandPayload = {
