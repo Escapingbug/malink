@@ -5879,7 +5879,7 @@ select:focus-visible {
   gap: 5px;
 }
 
-.provider-controls.is-compact .provider-control > label > span,
+.provider-controls.is-compact .provider-control > label > .provider-control-label,
 .provider-controls.is-compact .provider-control > label > small,
 .provider-controls.is-compact .provider-control-segmented > small {
   display: none;

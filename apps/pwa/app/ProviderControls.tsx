@@ -121,7 +121,7 @@ export function ProviderControls({
                   </fieldset>
                 ) : (
                   <label>
-                    <span>{control.label}</span>
+                    <span className="provider-control-label">{control.label}</span>
                     {control.renderer === "text" ? (
                       <input
                         value={typeof value === "string" ? value : ""}

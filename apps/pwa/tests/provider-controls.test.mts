@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ProviderControls } from "../app/ProviderControls.tsx";
@@ -10,6 +11,23 @@ import {
   providerCatalogsCoverProviders,
   submittableProviderControlValues,
 } from "../app/providerControlCompatibility.ts";
+
+test("compact desktop controls hide label text without hiding the select wrapper", () => {
+  const html = renderToStaticMarkup(createElement(ProviderControls, {
+    controls: [{
+      id: "model", label: "Model", renderer: "select",
+      surfaces: ["session-active"], status: "ready",
+      options: [{ value: "gpt-6-astra", label: "GPT-6-Astra" }],
+    }],
+    surface: "session-active", compact: true,
+    values: { model: "gpt-6-astra" }, onChange() {},
+  }));
+  assert.match(html, /<span class="provider-control-label">Model<\/span>/);
+  assert.match(html, /<span class="provider-control-select"><select/);
+  const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.doesNotMatch(css, /\.provider-controls\.is-compact \.provider-control > label > span\s*,/);
+  assert.match(css, /\.provider-controls\.is-compact \.provider-control > label > \.provider-control-label,/);
+});
 
 test("omits controls the provider does not advertise", () => {
   const html = renderToStaticMarkup(createElement(ProviderControls, {
