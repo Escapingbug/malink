@@ -9,6 +9,15 @@ import type {
 } from "./presentation";
 
 describe("ToolActivityCard", () => {
+  it("does not claim completion when a non-latest group still has running tools", () => {
+    const html = renderToStaticMarkup(createElement(ToolActivityCard, {
+      live: false,
+      group: group([tool("command-1", "Bash", "execute", "updated", "echo ready")]),
+    }));
+    expect(html).toContain("Command running");
+    expect(html).toContain("Agent working");
+    expect(html).not.toContain("Activity completed");
+  });
   it("summarizes work by task outcome instead of raw call count", () => {
     const html = renderToStaticMarkup(
       createElement(ToolActivityCard, {

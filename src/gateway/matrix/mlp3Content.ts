@@ -75,7 +75,10 @@ interface MatrixDeliveryJob {
 }
 
 export const MAX_MLP3_MATRIX_TIMELINE_CONTENT_BYTES = 40 * 1024
-const DEFAULT_MLP3_DELIVERY_ATTEMPT_TIMEOUT_MS = 30_000
+// Application envelopes are small. A stalled request owns the serial sender
+// and blocks even urgent cancellation results; retry the retained transaction
+// promptly instead of holding every result behind a 30-second socket wait.
+const DEFAULT_MLP3_DELIVERY_ATTEMPT_TIMEOUT_MS = 5_000
 
 export class MatrixMlp3ContentTooLargeError extends Error {
   constructor(readonly contentBytes: number) {

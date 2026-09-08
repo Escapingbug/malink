@@ -61,6 +61,7 @@ export function ToolActivityCard({
     selectedStage?.tools.find((tool) => tool.id === selectedToolId) ??
     currentTool(selectedStage?.tools ?? []);
   const summary = toolStateSummary(tools);
+  const activityRunning = !terminalOutcome && (live || summary.running > 0);
   const detailsId = useMemo(
     () => `tool-activity-${safeDomId(group.groupId)}`,
     [group.groupId],
@@ -108,7 +109,7 @@ export function ToolActivityCard({
 
   return (
     <article
-      className={`tool-activity-card ${live ? "is-live" : "is-complete"} ${summary.failed > 0 ? "has-error" : ""}`}
+      className={`tool-activity-card ${activityRunning ? "is-live" : "is-complete"} ${summary.failed > 0 ? "has-error" : ""}`}
       aria-label={`Agent activity, ${summary.label}`}
     >
       <button
@@ -120,7 +121,7 @@ export function ToolActivityCard({
       >
         <ActivityStateMark phase={summary.phase} />
         <span className="tool-activity-copy">
-          <strong>{live ? "Agent working" : "Activity completed"}</strong>
+          <strong>{activityRunning ? "Agent working" : summary.failed > 0 ? "Activity failed" : "Activity completed"}</strong>
           <small>{toolActivityDescription(tools)}</small>
         </span>
         <span className="tool-activity-meta">

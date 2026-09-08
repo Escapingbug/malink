@@ -146,6 +146,7 @@ import {
 } from "./gatewayUiCache";
 import { MarkdownContent } from "./MarkdownContent";
 import { ToolActivityCard } from "./ToolActivityCard";
+import { sessionSettingsProjected } from "./sessionSettingsProjection";
 import { ToolFocusPanel } from "./ToolFocusPanel";
 import {
   ExtensionViewCard,
@@ -549,6 +550,7 @@ type NativeCommandReviewNotice = MalinkCommandReview & {
 
 type SessionSettingsUpdate = {
   sessionId: string;
+  confirmed?: boolean;
   label: string;
   changes: ProviderControlValues;
   cleared: Array<"model" | "reasoningEffort">;
@@ -1837,6 +1839,14 @@ function MalinkAppRuntime() {
     );
   const [sessionSettingsUpdate, setSessionSettingsUpdate] =
     useState<SessionSettingsUpdate | null>(null);
+  useEffect(() => {
+    if (!sessionSettingsUpdate?.confirmed) return;
+    const session = gatewayState?.sessions.find(value => value.id === sessionSettingsUpdate.sessionId);
+    if (!session) return;
+    if (sessionSettingsProjected(sessionSettingsUpdate, session)) {
+      setSessionSettingsUpdate(current => current === sessionSettingsUpdate ? null : current);
+    }
+  }, [gatewayState, sessionSettingsUpdate]);
   const [pendingSessionCreate, setPendingSessionCreate] =
     useState<NewSessionInput | null>(null);
   const [optimisticSession, setOptimisticSession] =
@@ -12266,9 +12276,10 @@ function MalinkAppRuntime() {
     label: string,
   ): Promise<void> {
     const sessionId = selectedSessionIdRef.current;
-    if (!sessionId || sessionSettingsUpdate) return;
+    if (!sessionId || (sessionSettingsUpdate && !sessionSettingsUpdate.confirmed)) return;
     const update = { sessionId, changes, cleared, label };
     setSessionSettingsUpdate(update);
+    let confirmed = false;
     const payload: CommandPayload = {
       operation: "session.settings",
       sessionId,
@@ -12287,6 +12298,10 @@ function MalinkAppRuntime() {
           completion.error?.message ?? "The setting update did not complete.",
         );
       }
+      // The command result can precede the native session projection. Keep the
+      // displayed selection until that projection contains the confirmed value.
+      confirmed = true;
+      setSessionSettingsUpdate(current => current === update ? { ...update, confirmed: true } : current);
       showUiNotice(
         "session:settings",
         "composer",
@@ -12302,11 +12317,11 @@ function MalinkAppRuntime() {
         formatUiError(error),
       );
     } finally {
-      setSessionSettingsUpdate((current) => current === update ? null : current);
+      if (!confirmed) setSessionSettingsUpdate((current) => current === update ? null : current);
     }
   }
 
-  const settingsUpdateBusy = sessionSettingsUpdate !== null;
+  const settingsUpdateBusy = sessionSettingsUpdate !== null && !sessionSettingsUpdate.confirmed;
   const journalReconciliationAvailable = nativeRuntime === null ||
     nativeRuntime.commandJournalReconciliation === true;
   const manualAndroidUpdateRequired =

@@ -127,7 +127,7 @@ describe('GatewayMlp3ContentLayer', () => {
     layer.stopRetries()
   })
 
-  it('aborts a stalled attempt and retries the same transaction without a sync echo', async () => {
+  it.each([20, undefined])('aborts a stalled attempt and retries the same transaction (timeout %s)', async timeoutMs => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-v3-cancelled-attempt-'))
     const gateway = await generateDeviceKeyPair()
     const phone = await generateDeviceKeyPair()
@@ -142,7 +142,7 @@ describe('GatewayMlp3ContentLayer', () => {
       gatewayDeviceId: 'workspace-1',
       gatewayKeyPair: await exportDeviceKeyPair(gateway),
       envelopeReplayLedgerPath: join(directory, 'security'),
-      deliveryAttemptTimeoutMs: 20,
+      ...(timeoutMs === undefined ? {} : { deliveryAttemptTimeoutMs: timeoutMs }),
     }, [{
       deviceId: 'phone-1',
       publicKey: phone.publicJwk,
@@ -200,9 +200,9 @@ describe('GatewayMlp3ContentLayer', () => {
     expect(transactionIds).toHaveLength(2)
     expect(new Set(transactionIds).size).toBe(1)
     expect(layer.outboxHealth().pending).toBe(0)
-    expect(logs.some(message => message.includes('did not settle within 20ms'))).toBe(true)
+    expect(logs.some(message => message.includes(`did not settle within ${timeoutMs ?? 5_000}ms`))).toBe(true)
     layer.stopRetries()
-  })
+  }, 10_000)
 
   it('retries an already-encrypted outbox after every recipient becomes inactive', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-v3-recipientless-retry-'))
