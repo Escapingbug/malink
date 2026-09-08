@@ -7,6 +7,7 @@ import {
   mlp3CommandSchema,
   type Mlp3Command,
   type Mlp3EventPayload,
+  type Mlp3Event,
 } from '@malink/protocol'
 import { SecurityError } from '@malink/security'
 import {
@@ -231,6 +232,24 @@ export class SqliteMlp3CommandJournal implements Mlp3CommandJournal {
       `).map(row => rowToRecord(row) as Mlp3CommandJournalRecord & {
         command: Extract<Mlp3Command, { operation: 'project.delete' }>
       })
+    })
+  }
+
+  archivedSessionEvent(workspaceId: string, projectId: string, sessionId: string): Promise<Mlp3Event | undefined> {
+    return this.serial(async () => {
+      const database = await this.requireDatabase()
+      const row = database.prepare(`
+        SELECT terminal_json FROM commands
+        WHERE operation = 'session.set_lifecycle' AND status = 'terminal'
+          AND json_extract(terminal_json, '$.outcome') = 'succeeded'
+          AND json_extract(terminal_json, '$.event.workspaceId') = ?
+          AND json_extract(terminal_json, '$.event.projectId') = ?
+          AND json_extract(terminal_json, '$.event.sessionId') = ?
+          AND json_extract(terminal_json, '$.event.payload.type') = 'session.lifecycle'
+          AND json_extract(terminal_json, '$.event.payload.state') = 'deleted'
+        ORDER BY terminal_at DESC LIMIT 1
+      `).get(workspaceId, projectId, sessionId) as { terminal_json: string } | undefined
+      return row ? parseTerminal(row.terminal_json).event : undefined
     })
   }
 

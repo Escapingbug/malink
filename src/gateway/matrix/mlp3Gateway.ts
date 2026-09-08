@@ -2815,7 +2815,20 @@ export class MatrixMlp3GatewayRunner {
     const sessionId = command.sessionId
     if (!sessionId) throw new Error('Lifecycle command is missing its session ID')
     const record = project.project.sessions.find(candidate => candidate.id === sessionId)
-    if (!record) throw new Mlp3SessionNotFoundError(sessionId)
+    if (!record) {
+      // Cleanup removes runtime metadata, not the durable proof of deletion.
+      // A second device can archive a stale projection under a new command ID.
+      const archived = command.payload.state !== 'active'
+        ? await this.journal.archivedSessionEvent(this.config.gatewayId, project.project.projectId, sessionId)
+        : undefined
+      if (archived?.payload.type !== 'session.lifecycle') throw new Mlp3SessionNotFoundError(sessionId)
+      const lifecycle = this.eventFor(project, undefined, command, 'session-lifecycle', {
+        ...archived.payload,
+        alreadyApplied: true,
+      })
+      await this.settleAndDeliver(project, command, lifecycle, 'succeeded')
+      return
+    }
     if (command.payload.state === 'active' && record.lifecycle !== 'active') {
       throw new Error('Deleted sessions cannot be restored; continue them from Provider History')
     }

@@ -106,6 +106,7 @@ export interface Mlp3CommandJournal {
   markDispatched(command: Mlp3Command, now?: number): Promise<void>
   settle(command: Mlp3Command, terminal: Mlp3CommandTerminal, now?: number): Promise<void>
   get(command: Mlp3Command): Promise<Mlp3CommandJournalRecord | undefined>
+  archivedSessionEvent(workspaceId: string, projectId: string, sessionId: string): Promise<Mlp3Event | undefined>
   unfinished(): Promise<Mlp3CommandJournalRecord[]>
   pendingTerminalDeliveries(): Promise<Mlp3CommandJournalRecord[]>
   terminalProjectDeletions(): Promise<Array<Mlp3CommandJournalRecord & {
@@ -137,6 +138,21 @@ export class FileMlp3CommandJournal implements Mlp3CommandJournal {
   }
 
   async close(): Promise<void> {}
+
+  archivedSessionEvent(workspaceId: string, projectId: string, sessionId: string): Promise<Mlp3Event | undefined> {
+    return this.serial(async () => {
+      if (!this.initialized) await this.load()
+      const record = [...this.records.values()].reverse().find(record => {
+        const event = record.terminal?.event
+        return record.command.operation === 'session.set_lifecycle'
+          && record.terminal?.outcome === 'succeeded'
+          && event?.workspaceId === workspaceId && event.projectId === projectId
+          && event.sessionId === sessionId && event.payload.type === 'session.lifecycle'
+          && event.payload.state === 'deleted'
+      })
+      return record?.terminal?.event ? structuredClone(record.terminal.event) : undefined
+    })
+  }
 
   getGeneration(): string {
     if (!this.initialized || !this.generation) {

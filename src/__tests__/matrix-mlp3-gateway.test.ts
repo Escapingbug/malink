@@ -2898,9 +2898,9 @@ describe('MatrixMlp3GatewayRunner', () => {
     )).toMatchObject({
       sessionId: 'session-a',
       payload: {
-        type: 'command.rejected',
-        code: 'session_not_found',
-        retryable: false,
+        type: 'session.lifecycle',
+        state: 'deleted',
+        alreadyApplied: true,
       },
     })
     await send(archiveA, '$archive-a-recovery')

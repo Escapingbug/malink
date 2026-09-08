@@ -68,6 +68,37 @@ function providerListCommand(): Mlp3Command {
   }
 }
 
+for (const Journal of [FileMlp3CommandJournal, SqliteMlp3CommandJournal]) {
+  it(`${Journal.name} retains scoped archive evidence after delivery and restart`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-archive-evidence-'))
+    const path = join(directory, 'journal.jsonl')
+    const openJournal = () => Journal === SqliteMlp3CommandJournal
+      ? new SqliteMlp3CommandJournal(`${path}.sqlite`, path)
+      : new FileMlp3CommandJournal(path)
+    let journal = openJournal()
+    const archive: Mlp3Command = {
+      ...command('archive-proof'), operation: 'session.set_lifecycle',
+      payload: { operation: 'session.set_lifecycle', state: 'archived' },
+    }
+    const event: Mlp3Event = {
+      ...terminalEvent(), causationCommandId: archive.commandId,
+      payload: { type: 'session.lifecycle', state: 'deleted',
+        projection: { title: 'Archived', lifecycle: 'archived', activity: 'idle', updatedAt: 3, stateVersion: 2 } },
+    }
+    await journal.claim(archive)
+    await journal.markDispatched(archive)
+    await journal.settle(archive, { outcome: 'succeeded', eventId: event.eventId, event })
+    await journal.markTerminalDelivered(archive, '$delivered')
+    await journal.close()
+    journal = openJournal()
+    expect(await journal.archivedSessionEvent('workspace-1', 'project-1', 'session-1')).toEqual(event)
+    expect(await journal.archivedSessionEvent('workspace-2', 'project-1', 'session-1')).toBeUndefined()
+    expect(await journal.archivedSessionEvent('workspace-1', 'project-2', 'session-1')).toBeUndefined()
+    expect(await journal.archivedSessionEvent('workspace-1', 'project-1', 'unknown')).toBeUndefined()
+    await journal.close()
+  })
+}
+
 function projectDeleteCommand(): Extract<Mlp3Command, { operation: 'project.delete' }> {
   return {
     kind: 'malink.command',
