@@ -37,6 +37,14 @@ describe('Gateway deployment handoff', () => {
       providerSessionId: 'provider-new',
       commandKey: '["workspace-1","device","certificate","command-new"]',
     })
+    const sourceRuntimePath = join(fixture.source, 'gateway-replay.jsonl.v3-runtime-state.json')
+    const sourceRuntime = await readJson(sourceRuntimePath)
+    const sourceProjects = sourceRuntime.projects as Record<string, { sessions: unknown[] }>
+    sourceProjects['!old:example.test']!.sessions.push(
+      { id: 'session-archived', lifecycle: 'archived', providerSessionId: 'retained-archive' },
+      { id: 'session-deleted', lifecycle: 'deleted', providerSessionId: 'retained-deleted' },
+    )
+    await writeJson(sourceRuntimePath, sourceRuntime)
     await writeJson(join(
       fixture.candidate,
       'gateway-replay.jsonl.v3-matrix-shadow-inbox.json',
@@ -76,6 +84,8 @@ describe('Gateway deployment handoff', () => {
     ])
     expect(JSON.stringify(runtime)).toContain('provider-old')
     expect(JSON.stringify(runtime)).toContain('provider-new')
+    expect(JSON.stringify(runtime)).toContain('retained-archive')
+    expect(JSON.stringify(runtime)).toContain('retained-deleted')
     const outbox = new FileMatrixMlp3Outbox(join(
       result.targetDirectory,
       'envelope-replay.json.v3-outbox.jsonl',
@@ -360,6 +370,7 @@ async function seedDeployment(directory: string, input: {
         provider: 'codex',
         sessions: [{
           id: input.sessionId,
+          lifecycle: 'active',
           ...(input.sessionScope ? { scope: input.sessionScope } : {}),
           ...(input.sessionCwd ? { cwd: input.sessionCwd } : {}),
           providerSessionId: input.providerSessionId,

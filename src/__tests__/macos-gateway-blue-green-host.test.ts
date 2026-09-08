@@ -359,8 +359,15 @@ describe('MacosGatewayBlueGreenHost', () => {
         version: 3,
         workspaceId: 'workspace-1',
         projects: {
-          '!one:example.org': { sessions: [{ id: 'session-1' }] },
-          '!two:example.org': { sessions: [{ id: 'session-2' }, { id: 'session-3' }] },
+          '!one:example.org': { sessions: [
+            { id: 'session-1', lifecycle: 'active' },
+            { id: 'archived-1', lifecycle: 'archived' },
+          ] },
+          '!two:example.org': { sessions: [
+            { id: 'session-2', lifecycle: 'active' },
+            { id: 'session-3', lifecycle: 'active' },
+            { id: 'deleted-1', lifecycle: 'deleted' },
+          ] },
         },
       })}\n`,
       { mode: 0o600 },

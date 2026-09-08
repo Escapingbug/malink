@@ -254,7 +254,9 @@ async function mergeRuntimeState(
       if (session.scope === 'scratch') {
         session.cwd = scratchSessionDirectory(targetPath, sessionId)
       }
-      sessionCount += 1
+      // Archived/deleted records must survive the handoff, but the runtime
+      // opens only active sessions. Health checks compare opened sessions.
+      if (session.lifecycle === 'active') sessionCount += 1
     }
   }
   await writePrivateJson(targetPath, { version: 3, workspaceId, projects })

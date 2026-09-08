@@ -1040,7 +1040,7 @@ export class MacosGatewayBlueGreenHost {
       return new Error('Gateway did not open the complete expected project set')
     }
     if (expected.sessionCount !== undefined && status.sessionCount !== expected.sessionCount) {
-      return new Error('Gateway did not open the complete expected session set')
+      return new Error(`Gateway did not open the complete expected session set: expected ${expected.sessionCount} active sessions, received ${status.sessionCount}`)
     }
     if (
       expected.deploymentFenced !== undefined
@@ -1180,7 +1180,9 @@ export async function inspectGatewayDeploymentSlot(input: {
     const projects = record(runtime.projects) ?? {}
     for (const value of Object.values(projects)) {
       const sessions = record(value)?.sessions
-      if (Array.isArray(sessions)) sessionCount += sessions.length
+      if (Array.isArray(sessions)) {
+        sessionCount += sessions.filter(session => record(session)?.lifecycle === 'active').length
+      }
     }
   } catch (error) {
     if (!isNodeError(error, 'ENOENT')) throw error
