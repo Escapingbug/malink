@@ -101,6 +101,11 @@ export function formatPairingFailure(
   gatewayName = "the Workspace computer",
 ): string {
   const raw = errorMessage(error).replace(/\s+/gu, " ").trim();
+  if (/first Matrix sync/iu.test(raw)) {
+    return "This browser did not finish synchronizing its secure connection. " +
+      "Your sign-in is saved. Keep this page open and retry secure setup. " +
+      "If it fails again, reload this page and retry the saved invitation; this does not mean the computer is offline.";
+  }
   const safeGatewayName = gatewayName.trim() || "the Workspace computer";
 
   if (/pairing request expired|signed response.*(?:did not|not).*arriv/iu.test(raw)) {

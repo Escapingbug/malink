@@ -85,10 +85,12 @@ import {
   resolveAuthoritativeProjectKeyGrant,
 } from "./projectKeyGrantRecovery";
 import { workspaceRouteNeedsJoin } from "./matrixWorkspaceRoute";
+import { MatrixStartupLifetime } from "./matrixStartupLifetime";
 import {
   MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_DETAIL,
   MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_MS,
   MATRIX_CRYPTO_LOADING_DETAIL,
+  matrixInitialSyncLimit,
 } from "./matrixStartup";
 import { parseOwnPrivateThreadReceipts } from "./matrixSessionReadReceipts";
 import {
@@ -98,7 +100,6 @@ import {
 
 const LOCAL_TIMEOUT_MS = 10_000;
 const MATRIX_HISTORY_REQUEST_TIMEOUT_MS = 30_000;
-const INITIAL_SYNC_LIMIT = 32;
 const CATCHUP_PRESENTATION_LIMIT_PER_SESSION = 30;
 const MAX_TRACKED_SESSION_READ_RECEIPTS = 5_000;
 const MATRIX_ACTIVE_SESSION_TAIL_RECOVERY_LIMIT = 64;
@@ -155,6 +156,7 @@ export async function connectMatrixMlp3(
     store: syncStore,
   });
   let stopped = false;
+  const startupLifetime = new MatrixStartupLifetime();
   let room: Room | null = null;
   let protocol: MatrixMlp3ProtocolClient | null = null;
   let projectId: string | null = null;
@@ -1454,6 +1456,7 @@ export async function connectMatrixMlp3(
   };
 
   const reportRecoveryFailure = (context: string, error: unknown): void => {
+    if (stopped) return;
     console.error(`[mlp3/matrix] ${context}`, error);
     if (error instanceof MatrixMlp3ReadModelRepairError) {
       readiness.failRecovery(error.code);
@@ -1466,34 +1469,41 @@ export async function connectMatrixMlp3(
   };
 
   const transportReady = (async () => {
-    await withMatrixTimeout(syncStore.startup(), LOCAL_TIMEOUT_MS, "The Matrix sync store did not open in time.");
-    startupSavedMatrixSyncToken = await syncStore.getSavedSyncToken();
+    await withMatrixTimeout(startupLifetime.run(() => syncStore.startup()), LOCAL_TIMEOUT_MS, "The Matrix sync store did not open in time.");
+    startupSavedMatrixSyncToken = await startupLifetime.run(() => syncStore.getSavedSyncToken());
     handlers.onStatus("connecting", MATRIX_CRYPTO_LOADING_DETAIL);
     await withMatrixTimeout(
-      client.initRustCrypto({ useIndexedDB: true, cryptoDatabasePrefix: cryptoScope }),
+      startupLifetime.run(() => client.initRustCrypto({ useIndexedDB: true, cryptoDatabasePrefix: cryptoScope })),
       MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_MS,
       MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_DETAIL,
     );
     const cryptoApi = client.getCrypto();
     if (!cryptoApi) throw new Error("Matrix encryption did not initialize.");
     const { AllDevicesIsolationMode } = await import("matrix-js-sdk/lib/crypto-api");
+    startupLifetime.assertActive();
     cryptoApi.globalBlacklistUnverifiedDevices = true;
     cryptoApi.setDeviceIsolationMode(new AllDevicesIsolationMode(false));
-    matrixDeviceKeys = await cryptoApi.getOwnDeviceKeys();
+    matrixDeviceKeys = await startupLifetime.run(() => cryptoApi.getOwnDeviceKeys());
     if (!matrixDeviceKeys) throw new Error("Matrix device keys are unavailable.");
     client.on(sdk.ClientEvent.Sync, onSync);
     client.on(sdk.ClientEvent.Event, onMatrixEvent);
     client.on(sdk.RoomEvent.Receipt, onReceipt);
-    await client.startClient({ initialSyncLimit: INITIAL_SYNC_LIMIT });
-    await waitForInitialSync(client, sdk.ClientEvent.Sync);
+    // New invitations need a live transport, not 32 historical messages from
+    // every room on the shared Workspace account. History is loaded separately.
+    await startupLifetime.run(() => client.startClient({
+      initialSyncLimit: matrixInitialSyncLimit(Boolean(trust), !startupSavedMatrixSyncToken),
+    }));
+    await waitForInitialSync(client, sdk.ClientEvent.Sync, 30_000, startupLifetime.controller.signal);
+    startupLifetime.assertActive();
     room = client.getRoom(config.roomId);
     if (!room) throw new Error("The bound Matrix project room is unavailable.");
     if (!client.isRoomEncrypted(config.roomId)) throw new Error("The Matrix project room is not encrypted.");
     room.on(sdk.RoomStateEvent.Events, onRoomState);
-    if (trust) await verifyAndPinGatewayDevice(client, trust.gatewayTransport);
+    if (trust) await startupLifetime.run(() => verifyAndPinGatewayDevice(client, trust!.gatewayTransport));
   })();
 
   const initialRecovery = transportReady.then(async () => {
+    startupLifetime.assertActive();
     if (!trust) {
       handlers.onStatus("connected");
       completeReady();
@@ -1541,11 +1551,13 @@ export async function connectMatrixMlp3(
     // This prevents a late stale-grant result from overwriting a successful
     // reauthorization performed by this same connection.
     await initialRecovery;
+    startupLifetime.assertActive();
     if (!matrixDeviceKeys) throw new Error("Matrix device keys are unavailable.");
     handlers.onStatus("securing", "Publishing this device’s encryption keys…");
     await waitForOwnMatrixDeviceKeys(config, matrixDeviceKeys, 30_000);
+    startupLifetime.assertActive();
     handlers.onStatus("securing", "Verifying the Gateway encryption identity…");
-    await verifyAndPinGatewayDevice(client, preview.transport);
+    await startupLifetime.run(() => verifyAndPinGatewayDevice(client, preview.transport));
     const paired = await completePairing(
       preview,
       identity,
@@ -1982,6 +1994,7 @@ export async function connectMatrixMlp3(
     stop() {
       if (stopped) return;
       stopped = true;
+      const startupStopped = startupLifetime.stop();
       if (workspaceRouteRecoveryTimer !== null) {
         clearTimeout(workspaceRouteRecoveryTimer);
         workspaceRouteRecoveryTimer = null;
@@ -1998,9 +2011,19 @@ export async function connectMatrixMlp3(
         value.room.off(sdk.RoomStateEvent.Events, onRoomState);
       }
       client.off(sdk.ClientEvent.Sync, onSync);
-      client.stopClient();
       handlers.onStatus("offline");
-      void flushAndReleaseMatrixSyncStore(syncDatabase, syncStore, cryptoLock);
+      // Retain the database lock until even a timed-out initialization settles.
+      // Otherwise it can finish against a disposed crypto object after retry.
+      const closing = startupStopped.then(() => {
+        client.stopClient();
+      });
+      void flushAndReleaseMatrixSyncStore(syncDatabase, {
+        async save() {
+          await closing;
+          await syncStore.save(true);
+        },
+        destroy: () => syncStore.destroy(),
+      }, cryptoLock).catch(error => console.error("[mlp3/matrix] connection cleanup failed", error));
     },
   };
 }

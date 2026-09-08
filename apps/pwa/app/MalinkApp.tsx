@@ -4324,6 +4324,7 @@ function MalinkAppRuntime() {
       return;
     }
     const recoverInterruptedStartup = () => {
+      if (pairingAbortRef.current !== null) return;
       const startup = matrixStartupRef.current;
       if (!startup) return;
       const visible = document.visibilityState === "visible";
@@ -6198,6 +6199,7 @@ function MalinkAppRuntime() {
   ) {
     if (
       !connectionRecoveryAllowedRef.current ||
+      pairingAbortRef.current !== null ||
       connectionRecoveryTimerRef.current !== null
     ) {
       return;
@@ -6215,7 +6217,7 @@ function MalinkAppRuntime() {
     setConnectionError(null);
     connectionRecoveryTimerRef.current = window.setTimeout(() => {
       connectionRecoveryTimerRef.current = null;
-      if (!connectionRecoveryAllowedRef.current) return;
+      if (!connectionRecoveryAllowedRef.current || pairingAbortRef.current !== null) return;
       void connectMalinkClient(config, false, true, true);
     }, delay);
   }
@@ -8698,6 +8700,7 @@ function MalinkAppRuntime() {
     setPairingBusy(true);
     setPairingError(null);
     setConnectionError(null);
+    let pairingConnection: MalinkClient | null = null;
     try {
       const transport = previewOverride.transport;
       const unresolvedConfig: MatrixConnectionConfig = {
@@ -8717,6 +8720,7 @@ function MalinkAppRuntime() {
       setMatrixConfig(configForPairing);
       const connection = await connectMalinkClient(configForPairing, false);
       if (!connection) return;
+      pairingConnection = connection;
       const trust = await connection.pair(
         encodePairingLink(previewOverride.signedOffer),
         browserDeviceName(),
@@ -8738,12 +8742,23 @@ function MalinkAppRuntime() {
       setPairingCompletion({ gatewayName: trust.gatewayName });
       setSettingsOpen(true);
     } catch (error) {
+      if (pairingAbortRef.current !== abort) return;
+      // This invitation owns its retry. Background connection replacement
+      // cannot resume the pair() promise, so stop it and retain the invitation.
+      connectionRecoveryAllowedRef.current = false;
+      cancelAutomaticConnectionRecovery();
+      if (pairingConnection && malinkClientRef.current === pairingConnection) {
+        malinkClientRef.current = null;
+        pairingConnection.dispose();
+      }
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         setPairingError(formatPairingFailure(error, previewOverride.gatewayName));
       }
     } finally {
-      if (pairingAbortRef.current === abort) pairingAbortRef.current = null;
-      setPairingBusy(false);
+      if (pairingAbortRef.current === abort) {
+        pairingAbortRef.current = null;
+        setPairingBusy(false);
+      }
     }
   }
   pairingRecoveryRef.current = confirmPairing;

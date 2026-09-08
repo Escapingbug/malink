@@ -923,27 +923,39 @@ export function waitForInitialSync(
   client: MatrixClient,
   syncEvent: string,
   timeoutMs = 30_000,
+  signal?: AbortSignal,
 ): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new DOMException("The Matrix connection was stopped.", "AbortError"));
   if (client.getSyncState() === "PREPARED" || client.getSyncState() === "SYNCING") {
     return Promise.resolve();
   }
   return new Promise((resolve, reject) => {
     const timeout = window.setTimeout(() => {
-      client.off(syncEvent as never, listener as never);
+      cleanup();
       reject(new Error("Timed out waiting for the first Matrix sync."));
     }, timeoutMs);
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      client.off(syncEvent as never, listener as never);
+      signal?.removeEventListener("abort", cancel);
+    };
+    const cancel = () => {
+      cleanup();
+      reject(new DOMException("The Matrix connection was stopped.", "AbortError"));
+    };
     const listener = (state: string) => {
       if (state === "PREPARED" || state === "SYNCING") {
-        window.clearTimeout(timeout);
-        client.off(syncEvent as never, listener as never);
+        cleanup();
         resolve();
+      } else if (state === "STOPPED") {
+        cancel();
       } else if (state === "ERROR") {
-        window.clearTimeout(timeout);
-        client.off(syncEvent as never, listener as never);
+        cleanup();
         reject(new Error("Matrix rejected the connection or access token."));
       }
     };
     client.on(syncEvent as never, listener as never);
+    signal?.addEventListener("abort", cancel, { once: true });
   });
 }
 
