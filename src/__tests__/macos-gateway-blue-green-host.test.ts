@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FileGatewayIdentityStore } from '@/gateway/pairing'
+import { gatewayProjectIdentity } from '@/gateway/matrix/project'
 import {
   inspectGatewayDeploymentSlot,
+  gatewayDeploymentOwnershipRoute,
   macosGatewayCandidateAdminSocketPath,
   MacosGatewayBlueGreenHost,
 } from '@/ops/macosGatewayBlueGreenHost'
@@ -17,6 +19,27 @@ afterEach(async () => {
 })
 
 describe('MacosGatewayBlueGreenHost', () => {
+  it('commits legacy derived IDs without overwriting explicit trial identity at the same cwd', () => {
+    const legacy = {
+      cwd: '/Users/user/Documents/malink',
+      roomId: '!source:example.org',
+      conversationId: '!source:example.org',
+      providerName: 'codex',
+    }
+    const source = gatewayDeploymentOwnershipRoute(legacy)
+    expect(source.projectId).toBe(gatewayProjectIdentity(legacy.cwd).id)
+    expect(source.projectId).toBe('project-023ZkyZrWZnrJsLl-ywK5x')
+    const trial = gatewayDeploymentOwnershipRoute({
+      ...legacy,
+      projectId: 'gateway-trial-c8456064-3b27-42c0-83a9-f1c224326f02',
+      roomId: '!trial:example.org',
+      conversationId: '!trial:example.org',
+    })
+    expect(trial.projectId).toBe('gateway-trial-c8456064-3b27-42c0-83a9-f1c224326f02')
+    expect(trial.projectId).not.toBe(source.projectId)
+    expect(() => gatewayDeploymentOwnershipRoute({ ...legacy, projectId: '' })).toThrow('project ID')
+  })
+
   it('never seals production when the disposable candidate cannot seal', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-blue-green-seal-order-'))
     temporaryDirectories.push(directory)

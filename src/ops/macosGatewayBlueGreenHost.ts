@@ -23,6 +23,7 @@ import {
   FileWorkspaceGatewayDirectory,
 } from '@/gateway/pairing'
 import { loginMatrixGatewayWithToken } from '@/gateway/matrix/login'
+import { gatewayProjectIdentity } from '@/gateway/matrix/project'
 import { validateMacosGatewayRelease } from './macosGatewayRelease.js'
 import {
   buildGatewayDeploymentHandoff,
@@ -644,11 +645,7 @@ export class MacosGatewayBlueGreenHost {
     )
     await directory.promoteLocalOwnership(
       state.sourceGatewayNodeId,
-      catalog.projects.map(project => ({
-        projectId: requiredString(project.projectId, 'project ID'),
-        roomId: requiredString(project.roomId, 'project room ID'),
-        conversationId: requiredString(project.conversationId, 'conversation ID'),
-      })),
+      catalog.projects.map(gatewayDeploymentOwnershipRoute),
       {
         computerName: requiredString(
           profile.computerName ?? profile.gatewayName,
@@ -1193,6 +1190,26 @@ export async function inspectGatewayDeploymentSlot(input: {
     buildId: input.buildId,
     projectCount: catalog.projects.length,
     sessionCount,
+  }
+}
+
+export function gatewayDeploymentOwnershipRoute(project: Record<string, unknown>): {
+  projectId: string
+  roomId: string
+  conversationId: string
+} {
+  // Legacy catalogs omit projectId. Resolve it exactly as the live Gateway
+  // does; trial projects may intentionally share cwd but have an explicit ID.
+  const projectId = project.projectId ?? gatewayProjectIdentity(
+    requiredString(project.cwd, 'project working directory'),
+    project.projectName === undefined
+      ? undefined
+      : requiredString(project.projectName, 'project name'),
+  ).id
+  return {
+    projectId: requiredString(projectId, 'project ID'),
+    roomId: requiredString(project.roomId, 'project room ID'),
+    conversationId: requiredString(project.conversationId, 'conversation ID'),
   }
 }
 
