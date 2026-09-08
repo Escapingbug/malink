@@ -159,9 +159,9 @@ function GatewayUpdateDialogContent({
         </div>
 
         <p className="gateway-update-explanation">
-          Choose when each computer may restart. Every request is saved for one
-          named Gateway, and its signed supervisor state is the source of truth.
-          You may close this panel while preparation or restart continues.
+          Prepare and try a candidate Gateway before choosing to switch all work.
+          Older computers retain their restart-based update controls. Signed
+          supervisor state is the source of truth; you may close this panel.
         </p>
 
         <div className="gateway-update-node-list">
@@ -209,6 +209,7 @@ function GatewayUpdateDialogContent({
                 (statusWasSuperseded && node.currentBuildId === release.buildId)) &&
               !knownUpdateFailure;
             const showUpdateProgress = Boolean(
+              !node.blueGreenUpdate &&
               !deploymentInProgress &&
               signedUpdateStatus &&
               signedUpdateStatus.phase !== "idle" &&
@@ -490,7 +491,9 @@ function GatewayUpdateDialogContent({
                         onClick={() => onStart(node, "when_idle")}
                       >
                         {active && activeMode !== "force"
-                          ? stagedPublishedRelease
+                          ? node.blueGreenUpdate
+                            ? "Preparing candidate Gateway…"
+                            : stagedPublishedRelease
                             ? "Scheduling when idle…"
                             : recovery.kind === "start" ||
                                 recovery.kind === "continue" ||
@@ -687,6 +690,9 @@ export function gatewayUpdateRuntimeStateTitle(
   if (status?.phase === "failed") return "Gateway update failed";
   if (status?.phase === "rolled_back") return "Gateway update rolled back";
   if (status?.currentBuildId === release.buildId) return "Gateway update complete";
+  if (node.blueGreenUpdate && status?.phase === "staged" && stagedPublishedRelease && activeMode !== "discard") {
+    return activeMode ? "Preparing candidate Gateway" : "Ready to prepare candidate Gateway";
+  }
   if (status?.phase === "staged" && !stagedPublishedRelease) {
     return "Newer Gateway update available";
   }
@@ -738,6 +744,10 @@ export function gatewayUpdateRuntimeStateDetail(
   }
   if (status?.currentBuildId === release.buildId) {
     return "The signed supervisor state confirms this build is installed. A delayed live-status check does not undo the completed update.";
+  }
+  if (node.blueGreenUpdate && status?.phase === "staged" &&
+    status.targetBuildId === release.buildId && activeMode !== "discard") {
+    return "The release is verified. Preparing a candidate keeps the current Gateway and its sessions online; switching all work is a separate explicit action.";
   }
   if (gatewayUpdateRequiresForwardOnlyConfirmation(status)) {
     const detail = "The update is prepared. Confirm the protected-data warning and choose when this computer may restart.";

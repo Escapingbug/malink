@@ -211,6 +211,23 @@ test("reports candidate discard without claiming a switch is in progress", () =>
   assert.doesNotMatch(html, /Switching when idle|Applying selected restart time/);
 });
 
+test("a staged blue-green release does not claim a restart is scheduled", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true, connected: true, release,
+    nodes: [{ ...nodes[0]!, computerId: "computer-office", blueGreenUpdate: true }],
+    runtimeByNode: { "node-office": { state: "online", status: {
+      version: 1, phase: "staged", releaseId: release.releaseId,
+      targetBuildId: release.buildId, currentBuildId: "gateway-old-arm64", updatedAt: 1,
+    } } },
+    activeGatewayNodeIds: new Set(["node-office"]),
+    activeGatewayModesByNode: { "node-office": "when_idle" },
+    onClose() {}, onStart() {}, onPromote() {}, onDiscard() {}, onOpenProject() {},
+    onOpenSession() {}, onArchiveSession() {}, onExportDiagnostics() {},
+  }));
+  assert.match(html, /Preparing candidate Gateway…/);
+  assert.doesNotMatch(html, /Scheduling when idle|Applying selected restart time|Restarting/);
+});
+
 for (const phase of ["preparing", "trial", "draining", "committing", "repair_required"] as const) {
   test(`deployment ${phase} supersedes an older staged release`, () => {
     const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
