@@ -171,6 +171,31 @@ class DiagnosticLineTest {
     }
 
     @Test
+    fun `web bootstrap diagnostics expose only bounded engine state`() {
+        assertEquals(
+            "2026-08-04T12:00:00Z activity.web_bootstrap_probe " +
+                "bridge=true document_complete=true package=com.android.webview " +
+                "root_populated=false string_message=true trusted_origin=true " +
+                "trusted_page=true version=140.0.1 worker_controlled=true",
+            DiagnosticLine.encode(
+                "2026-08-04T12:00:00Z",
+                "activity.web_bootstrap_probe",
+                mapOf(
+                    "bridge" to "true",
+                    "document_complete" to "true",
+                    "package" to "com.android.webview",
+                    "root_populated" to "false",
+                    "string_message" to "true",
+                    "trusted_origin" to "true",
+                    "trusted_page" to "true",
+                    "version" to "140.0.1",
+                    "worker_controlled" to "true",
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun `diagnostic output rejects free form secrets and multiline content`() {
         listOf(
             mapOf("detail" to "Bearer secret-token"),

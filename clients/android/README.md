@@ -21,6 +21,14 @@ one identity from being driven by both transports.
   file deployments and arrive without installing another APK.
 - AndroidX WebKit exposes an origin-restricted, main-frame-only JSON-RPC port.
   The application never uses `addJavascriptInterface`.
+- The Activity keeps a native loading surface until the hosted UI completes
+  its bridge handshake. A timeout first rebuilds the entire WebView and bridge,
+  rather than repeating a navigation in the same broken renderer. If that does
+  not recover, an explicit **Reset interface and reload** action unregisters
+  Service Workers and removes WebView cache/storage before rebuilding again.
+  This presentation reset does not touch the native Matrix account, device
+  authorization, command outbox, or conversation history. Diagnostics record
+  the WebView provider and only bounded bridge/DOM/worker booleans.
 - `MalinkConnectionService` owns Matrix SDK login, E2EE, native sliding sync,
   the bound
   room timeline, Malink trust, replay state, commands, history, and transfers.

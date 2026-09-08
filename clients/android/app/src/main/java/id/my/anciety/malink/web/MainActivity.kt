@@ -64,6 +64,9 @@ import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.webkit.WebStorageCompat
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import id.my.anciety.malink.BuildConfig
 import id.my.anciety.malink.R
 import id.my.anciety.malink.bridge.BridgeRuntime
@@ -116,6 +119,7 @@ class MainActivity : ComponentActivity() {
     private var webBootstrapReady = false
     private var webBootstrapRepairAttempted = false
     private var webBootstrapCriticalFailure: String? = null
+    private var webBootstrapLastProbe: WebBootstrapProbe? = null
     private var nativeBridge: NativeWebBridge? = null
     private var foreground = false
     private var webViewResumed = false
@@ -247,6 +251,7 @@ class MainActivity : ComponentActivity() {
         monitorPendingStaticServiceSwitch()
         configureEdgeToEdgeContent()
         diagnostics.record("activity.created")
+        recordWebViewProvider()
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 dispatchNativeBack()
@@ -264,6 +269,29 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIntent(intent)
+    }
+
+    private fun recordWebViewProvider() {
+        runCatching { WebViewCompat.getCurrentWebViewPackage(this) }
+            .onSuccess { provider ->
+                diagnostics.record(
+                    "activity.webview_provider",
+                    mapOf(
+                        "package" to (provider?.packageName ?: "unavailable")
+                            .replace(Regex("[^A-Za-z0-9._+-]"), "_")
+                            .take(120),
+                        "version" to (provider?.versionName ?: "unavailable")
+                            .replace(Regex("[^A-Za-z0-9._+-]"), "_")
+                            .take(120),
+                    ),
+                )
+            }
+            .onFailure { error ->
+                diagnostics.record(
+                    "activity.webview_provider_failed",
+                    mapOf("error" to error.javaClass.simpleName.take(120)),
+                )
+            }
     }
 
     override fun onStart() {
@@ -739,17 +767,21 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun replaceWebHostForStaticService() {
-        nativeBridge?.close()
-        nativeBridge = null
-        webView?.apply {
-            stopLoading()
-            loadUrl("about:blank")
-            clearHistory()
-            removeAllViews()
-            destroy()
-        }
-        webView = null
+        destroyWebHost(webView)
         showWebHost()
+    }
+
+    private fun destroyWebHost(view: WebView?) {
+        if (view == null) return
+        if (view === webView) {
+            nativeBridge?.close()
+            nativeBridge = null
+            webView = null
+        }
+        view.stopLoading()
+        view.clearHistory()
+        view.removeAllViews()
+        view.destroy()
     }
 
     private fun isStaticServiceSettingsUrl(uri: Uri): Boolean =
@@ -759,7 +791,11 @@ class MainActivity : ComponentActivity() {
             uri.query == null &&
             uri.fragment == null
 
-    private fun showWebHost(reloadExisting: Boolean = false) {
+    private fun showWebHost(
+        reloadExisting: Boolean = false,
+        initialUrl: String? = null,
+        resetBootstrapRepair: Boolean = true,
+    ) {
         val existing = webView
         when (webHostActionAfterServiceConnected(existing != null, reloadExisting)) {
             WebHostBindingAction.KEEP -> {
@@ -801,9 +837,9 @@ class MainActivity : ComponentActivity() {
         }
         nativeBridge = bridge
         showContent(created)
-        beginWebBootstrap(created, resetRepair = true)
+        beginWebBootstrap(created, resetRepair = resetBootstrapRepair)
         diagnostics.record("activity.web_host_created")
-        created.loadUrl(pendingWebAppUrl())
+        created.loadUrl(initialUrl ?: pendingWebAppUrl())
     }
 
     private fun configureEdgeToEdgeContent() {
@@ -866,6 +902,8 @@ class MainActivity : ComponentActivity() {
         val overlay = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
+            isClickable = true
+            isFocusable = true
             setPadding(dp(32), dp(32), dp(32), dp(32))
             setBackgroundColor(0xFFF4F6FA.toInt())
             addView(ProgressBar(context))
@@ -905,6 +943,7 @@ class MainActivity : ComponentActivity() {
         if (resetRepair) webBootstrapRepairAttempted = false
         webBootstrapReady = false
         webBootstrapCriticalFailure = null
+        webBootstrapLastProbe = null
         val generation = ++webBootstrapGeneration
         webBootstrapTimeout?.cancel()
         showWebLoading(
@@ -918,7 +957,7 @@ class MainActivity : ComponentActivity() {
         webBootstrapTimeout = lifecycleScope.launch {
             delay(WEB_BOOTSTRAP_TIMEOUT_MS)
             if (generation == webBootstrapGeneration && !webBootstrapReady) {
-                recoverWebBootstrap(view, "bridge_timeout")
+                recoverWebBootstrapAfterProbe(view, generation)
             }
         }
     }
@@ -928,6 +967,7 @@ class MainActivity : ComponentActivity() {
         if (webBootstrapReady) return
         webBootstrapReady = true
         webBootstrapCriticalFailure = null
+        webBootstrapLastProbe = null
         webBootstrapTimeout?.cancel()
         webBootstrapTimeout = null
         webBootstrapRepairAttempted = false
@@ -956,12 +996,81 @@ class MainActivity : ComponentActivity() {
             webBootstrapRepairAttempted = true
             diagnostics.record("activity.web_bootstrap_repair_started", mapOf("reason" to reason))
             view.clearCache(true)
-            beginWebBootstrap(view, resetRepair = false)
-            view.loadUrl(webRecoveryUrl())
+            val target = webRecoveryUrl()
+            destroyWebHost(view)
+            showWebHost(
+                initialUrl = target,
+                resetBootstrapRepair = false,
+            )
             return
         }
         diagnostics.record("activity.web_bootstrap_recovery_required", mapOf("reason" to reason))
         showWebBootstrapRecoveryPage(reason)
+    }
+
+    private fun recoverWebBootstrapAfterProbe(view: WebView, generation: Long) {
+        var completed = false
+        val finish: (WebBootstrapProbe?) -> Unit = { probe ->
+            if (
+                !completed &&
+                view === webView &&
+                generation == webBootstrapGeneration &&
+                !webBootstrapReady
+            ) {
+                completed = true
+                recoverWebBootstrap(
+                    view,
+                    webBootstrapTimeoutReason(probe ?: webBootstrapLastProbe),
+                )
+            }
+        }
+        probeWebBootstrap(view, "timeout", finish)
+        view.postDelayed(
+            { finish(webBootstrapLastProbe) },
+            WEB_BOOTSTRAP_PROBE_TIMEOUT_MS,
+        )
+    }
+
+    private fun probeWebBootstrap(
+        view: WebView,
+        stage: String,
+        onResult: ((WebBootstrapProbe?) -> Unit)? = null,
+    ) {
+        if (view !== webView || webBootstrapReady) return
+        val generation = webBootstrapGeneration
+        runCatching {
+            view.evaluateJavascript(WEB_BOOTSTRAP_PROBE_SCRIPT) { encoded ->
+                if (
+                    view !== webView ||
+                    generation != webBootstrapGeneration ||
+                    webBootstrapReady
+                ) return@evaluateJavascript
+                val probe = parseWebBootstrapProbe(encoded)
+                webBootstrapLastProbe = probe
+                diagnostics.record(
+                    "activity.web_bootstrap_probe",
+                    mapOf(
+                        "stage" to stage,
+                        "bridge" to (probe?.bridgeAvailable?.toString() ?: "unknown"),
+                        "document_complete" to
+                            (probe?.documentComplete?.toString() ?: "unknown"),
+                        "root_populated" to
+                            (probe?.rootPopulated?.toString() ?: "unknown"),
+                        "worker_controlled" to
+                            (probe?.serviceWorkerControlled?.toString() ?: "unknown"),
+                        "trusted_page" to
+                            trustedWebOrigin.isTrustedUrl(view.url).toString(),
+                    ),
+                )
+                onResult?.invoke(probe)
+            }
+        }.onFailure { error ->
+            diagnostics.record(
+                "activity.web_bootstrap_probe_failed",
+                mapOf("error" to error.javaClass.simpleName.take(120)),
+            )
+            onResult?.invoke(null)
+        }
     }
 
     private fun webRecoveryUrl(): String = Uri.parse(pendingWebAppUrl())
@@ -1003,6 +1112,7 @@ class MainActivity : ComponentActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 diagnostics.record("activity.web_page_finished")
+                probeWebBootstrap(view, "page_finished")
                 webBootstrapCriticalFailure?.let { reason ->
                     recoverWebBootstrap(view, reason)
                 }
@@ -1546,28 +1656,126 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showWebBootstrapRecoveryPage(reason: String) {
-        val current = webView
         stopWebBootstrap()
+        val bridgeMissing = reason == "bridge_missing"
         showContent(messageView(
             title = "Malink UI could not start",
             detail = webBootstrapFailureDetail(reason) +
-                " Malink already refreshed the interface cache once. Your account, background " +
-                "connection, queued actions, and local history are still intact.",
-            action = "Reload interface",
+                " Malink already rebuilt the WebView and secure bridge once. Resetting the hosted " +
+                "interface is the next recovery step; it keeps your native account, authorization, " +
+                "queued actions, and conversation history intact.",
+            action = "Reset interface and reload",
+            primaryBusyOnClick = false,
             secondaryAction = "Export diagnostics",
             onSecondaryAction = ::exportDiagnostics,
-            tertiaryAction = "Change PWA address",
-            onTertiaryAction = ::showStaticServiceSettings,
+            tertiaryAction = if (bridgeMissing) "Open WebView settings" else "Change PWA address",
+            onTertiaryAction = if (bridgeMissing) ::openWebViewSettings else ::showStaticServiceSettings,
         ) {
-            if (current == null || current !== webView) {
-                showWebHost()
-            } else {
-                showContent(current)
-                current.clearCache(true)
-                beginWebBootstrap(current, resetRepair = true)
-                current.loadUrl(webRecoveryUrl())
-            }
+            confirmWebInterfaceReset()
         })
+    }
+
+    private fun confirmWebInterfaceReset() {
+        AlertDialog.Builder(this)
+            .setTitle("Reset the hosted interface?")
+            .setMessage(
+                "This removes the PWA Service Worker, web cache, and interface preferences, then " +
+                    "loads a clean copy. Your native Matrix account, device authorization, queued " +
+                    "commands, and conversation history are not removed.",
+            )
+            .setPositiveButton("Reset and reload") { _, _ -> resetWebInterfaceData() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun resetWebInterfaceData() {
+        stopWebBootstrap()
+        val current = webView
+        current?.clearCache(true)
+        showWebLoading(
+            title = "Resetting Malink UI…",
+            detail = "Removing only the hosted interface data. Native account and history remain intact.",
+        )
+        diagnostics.record("activity.web_interface_reset_started")
+
+        var finished = false
+        val finishReset: (String) -> Unit = { method ->
+            if (!finished && !isFinishing && !isDestroyed) {
+                finished = true
+                diagnostics.record(
+                    "activity.web_interface_reset_completed",
+                    mapOf("stage" to method),
+                )
+                showWebHost(
+                    initialUrl = webRecoveryUrl(),
+                    resetBootstrapRepair = true,
+                )
+            }
+        }
+        contentHost.postDelayed(
+            { finishReset("completion_timeout") },
+            WEB_INTERFACE_RESET_TIMEOUT_MS,
+        )
+
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DELETE_BROWSING_DATA)) {
+            destroyWebHost(current)
+            runCatching {
+                WebStorageCompat.deleteBrowsingData(WebStorage.getInstance()) {
+                    finishReset("browsing_data")
+                }
+            }.onFailure { error ->
+                diagnostics.record(
+                    "activity.web_interface_reset_fallback",
+                    mapOf("error" to error.javaClass.simpleName.take(120)),
+                )
+                resetLegacyWebInterfaceData(null, finishReset)
+            }
+        } else {
+            diagnostics.record(
+                "activity.web_interface_reset_fallback",
+                mapOf("error" to "delete_browsing_data_unsupported"),
+            )
+            resetLegacyWebInterfaceData(current, finishReset)
+        }
+    }
+
+    private fun resetLegacyWebInterfaceData(
+        current: WebView?,
+        finishReset: (String) -> Unit,
+    ) {
+        runCatching {
+            current?.evaluateJavascript(WEB_INTERFACE_RESET_SCRIPT, null)
+        }.onFailure { error ->
+            diagnostics.record(
+                "activity.web_interface_script_reset_failed",
+                mapOf("error" to error.javaClass.simpleName.take(120)),
+            )
+        }
+        contentHost.postDelayed({
+            destroyWebHost(current)
+            WebStorage.getInstance().deleteAllData()
+            CookieManager.getInstance().removeAllCookies {
+                CookieManager.getInstance().flush()
+                finishReset("legacy_storage")
+            }
+        }, WEB_INTERFACE_SCRIPT_RESET_GRACE_MS)
+    }
+
+    private fun openWebViewSettings() {
+        val provider = runCatching { WebViewCompat.getCurrentWebViewPackage(this) }.getOrNull()
+        val packageName = provider?.packageName
+        if (packageName.isNullOrBlank()) {
+            Toast.makeText(
+                this,
+                "Android did not report the active WebView provider.",
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        startActivity(Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:$packageName"),
+        ))
     }
 
     private fun showDisconnectedPage() {
@@ -1585,6 +1793,7 @@ class MainActivity : ComponentActivity() {
         title: String,
         detail: String,
         action: String,
+        primaryBusyOnClick: Boolean = true,
         secondaryAction: String? = null,
         onSecondaryAction: (() -> Unit)? = null,
         tertiaryAction: String? = null,
@@ -1618,8 +1827,10 @@ class MainActivity : ComponentActivity() {
             text = action
             setOnClickListener {
                 if (!isEnabled) return@setOnClickListener
-                isEnabled = false
-                text = "$action…"
+                if (primaryBusyOnClick) {
+                    isEnabled = false
+                    text = "$action…"
+                }
                 onAction()
             }
         })
@@ -1866,7 +2077,48 @@ class MainActivity : ComponentActivity() {
         private const val KEY_NOTIFICATION_REQUESTED = "notification-permission-requested"
         private const val SERVICE_BIND_TIMEOUT_MS = 10_000L
         private const val WEB_BOOTSTRAP_TIMEOUT_MS = 15_000L
+        private const val WEB_BOOTSTRAP_PROBE_TIMEOUT_MS = 1_000L
+        private const val WEB_INTERFACE_SCRIPT_RESET_GRACE_MS = 1_000L
+        private const val WEB_INTERFACE_RESET_TIMEOUT_MS = 5_000L
         private const val MAX_SAVED_QR_DIMENSION = 2_048
+        private val WEB_BOOTSTRAP_PROBE_SCRIPT = """
+            (function () {
+              var port = window.malinkNative;
+              var bridge = port && typeof port.postMessage === "function" ? "bridge" : "missing";
+              var complete = document.readyState === "complete" ? "complete" : "incomplete";
+              var root = document.getElementById("root");
+              var populated = root && root.childElementCount > 0 ? "populated" : "empty";
+              var worker = navigator.serviceWorker && navigator.serviceWorker.controller
+                ? "controlled"
+                : "uncontrolled";
+              return [bridge, complete, populated, worker].join("|");
+            })();
+        """.trimIndent()
+        private val WEB_INTERFACE_RESET_SCRIPT = """
+            (function () {
+              try { localStorage.clear(); } catch (_) {}
+              try { sessionStorage.clear(); } catch (_) {}
+              var jobs = [];
+              try {
+                if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+                  jobs.push(navigator.serviceWorker.getRegistrations().then(function (registrations) {
+                    return Promise.all(registrations.map(function (registration) {
+                      return registration.unregister();
+                    }));
+                  }));
+                }
+              } catch (_) {}
+              try {
+                if (window.caches && window.caches.keys) {
+                  jobs.push(window.caches.keys().then(function (keys) {
+                    return Promise.all(keys.map(function (key) { return window.caches.delete(key); }));
+                  }));
+                }
+              } catch (_) {}
+              Promise.all(jobs).catch(function () {});
+              return "reset_started";
+            })();
+        """.trimIndent()
         const val ACTION_EXPORT_DIAGNOSTICS =
             "id.my.anciety.malink.action.EXPORT_DIAGNOSTICS"
         const val ACTION_STATIC_SERVICE_SETTINGS =

@@ -10,12 +10,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 class NativeWebBridge(
     private val webView: WebView,
     runtime: BridgeRuntime,
     private val trustedWebOrigin: TrustedWebOrigin,
-    diagnostics: DiagnosticRecorder = DiagnosticRecorder.None,
+    private val diagnostics: DiagnosticRecorder = DiagnosticRecorder.None,
 ) {
     @Volatile private var notificationSink: ((String) -> Unit)? = null
     private val dispatcher = BridgeDispatcher(
@@ -37,18 +38,34 @@ class NativeWebBridge(
         },
     )
     private val dispatchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val firstMessageRecorded = AtomicBoolean(false)
     private var installed = false
 
     fun install(): Boolean {
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return false
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            diagnostics.record("bridge.listener.unsupported")
+            return false
+        }
         WebViewCompat.addWebMessageListener(
             webView,
             BRIDGE_OBJECT_NAME,
             setOf(trustedWebOrigin.appOrigin),
         ) { _, message, sourceOrigin, isMainFrame, replyProxy ->
             val messageData = message.data
+            val trustedOrigin = trustedWebOrigin.isTrustedOrigin(sourceOrigin.toString())
+            if (firstMessageRecorded.compareAndSet(false, true)) {
+                diagnostics.record(
+                    "bridge.first_message_received",
+                    mapOf(
+                        "main_frame" to isMainFrame.toString(),
+                        "trusted_origin" to trustedOrigin.toString(),
+                        "string_message" to
+                            (message.type == WebMessageCompat.TYPE_STRING && messageData != null).toString(),
+                    ),
+                )
+            }
             val immediateFailure = when {
-                !isMainFrame || !trustedWebOrigin.isTrustedOrigin(sourceOrigin.toString()) ->
+                !isMainFrame || !trustedOrigin ->
                     BridgeProtocol.failure(
                         null,
                         BridgeError.UNAUTHORIZED_ORIGIN,
@@ -73,6 +90,7 @@ class NativeWebBridge(
             }
         }
         installed = true
+        diagnostics.record("bridge.listener.installed")
         return true
     }
 
