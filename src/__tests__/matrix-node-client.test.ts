@@ -19,6 +19,45 @@ afterEach(async () => {
 })
 
 describe('MatrixNodeSdkGatewayClient', () => {
+    it('retries an aborted sync request unless the sync lifecycle was stopped', async () => {
+        const directory = await temporaryDirectory()
+        let syncRequests = 0
+        const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+            if (!String(input).includes('/_matrix/client/v3/sync')) {
+                return jsonResponse({ one_time_key_counts: {} })
+            }
+            syncRequests += 1
+            if (syncRequests === 1) throw new DOMException('Request timed out', 'AbortError')
+            if (syncRequests === 2) return jsonResponse({
+                next_batch: 'recovered-after-request-timeout',
+                rooms: { join: {} },
+            })
+            return new Promise<Response>((_resolve, reject) => {
+                const signal = init?.signal
+                const aborted = () => reject(signal?.reason ?? new DOMException('Stopped', 'AbortError'))
+                if (signal?.aborted) aborted()
+                else signal?.addEventListener('abort', aborted, { once: true })
+            })
+        }) as unknown as typeof fetch
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test', accessToken: 'token',
+            userId: '@gateway:example.test', deviceId: 'STABLE_DEVICE',
+        }, 2_000, undefined, fetchMock)
+        await client.initializeCrypto({
+            backend: 'node-sqlite', storagePath: join(directory, 'crypto'),
+            storagePassword: 'test-only-passphrase', syncTokenPath: join(directory, 'sync.json'),
+        })
+        try {
+            await client.start()
+            await client.waitUntilReady()
+            await vi.waitFor(() => expect(syncRequests).toBe(3))
+        } finally {
+            await client.stop()
+        }
+        expect(syncRequests).toBe(3)
+        expect(JSON.parse(await readFile(join(directory, 'sync.json'), 'utf8'))).toBeTruthy()
+    })
+
     it('accepts application-encrypted Provider Catalog state', async () => {
         const fetchMock = vi.fn(async () => jsonResponse({ event_id: '$catalog' }))
         const client = new MatrixNodeSdkGatewayClient({

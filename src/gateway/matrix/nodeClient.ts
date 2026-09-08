@@ -769,7 +769,10 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                 this.resolveReady()
                 backoffMs = 500
             } catch (error) {
-                if (!this.started || signal.aborted || isAbortError(error)) return
+                // A per-request deadline also rejects with AbortError. Only
+                // the lifecycle signal means the sync service should stop;
+                // request timeouts must retry like other transport failures.
+                if (!this.started || signal.aborted) return
                 if (error instanceof MatrixHttpError && error.status === 400 && error.errcode === 'M_UNKNOWN_POS') {
                     this.onLog?.('[matrix-node] persisted sync cursor expired; starting a full sync')
                     this.syncToken = null
@@ -1579,10 +1582,6 @@ function isRetiredMatrixRoom(error: unknown): boolean {
             || error.errcode === 'M_FORBIDDEN'
             || error.errcode === 'M_NOT_FOUND'
         )
-}
-
-function isAbortError(error: unknown): boolean {
-    return error instanceof DOMException && error.name === 'AbortError'
 }
 
 function wait(durationMs: number, signal?: AbortSignal): Promise<void> {
