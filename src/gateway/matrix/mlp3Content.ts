@@ -897,6 +897,10 @@ export class GatewayMlp3ContentLayer {
   private pauseQueuedAttempts(error: Error): void {
     for (const job of this.deliveryQueue.values()) {
       this.finishDeliveryJob(job, error)
+      // The pump is global but retry ownership is per room. Pausing another
+      // room must retain a wake-up for its durable WAL, even if no new event
+      // arrives there (as during a fenced multi-project handoff).
+      this.scheduleRetry(job.delivery.roomId, job.transport)
     }
     this.deliveryQueue.clear()
   }

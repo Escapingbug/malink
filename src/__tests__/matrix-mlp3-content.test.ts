@@ -26,6 +26,51 @@ import { FileMatrixMlp3Outbox } from '@/gateway/matrix/fileMatrixMlp3Outbox'
 import { gatewayProjectIdentity } from '@/gateway/matrix/project'
 
 describe('GatewayMlp3ContentLayer', () => {
+  it('retries every paused room after one global delivery attempt times out', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-v3-multiroom-retry-'))
+    const gateway = await generateDeviceKeyPair()
+    const phone = await generateDeviceKeyPair()
+    const rooms = ['source', 'trial'].map(name => ({
+      roomId: `!${name}:example.org`, conversationId: name, cwd: `/${name}`, providerName: 'test',
+    }))
+    const layer = new GatewayMlp3ContentLayer('workspace-1', {
+      gatewayDeviceId: 'workspace-1', gatewayKeyPair: await exportDeviceKeyPair(gateway),
+      envelopeReplayLedgerPath: join(directory, 'security'), deliveryAttemptTimeoutMs: 100,
+    }, [{
+      deviceId: 'phone-1', publicKey: phone.publicJwk,
+      allowedRoomIds: rooms.map(room => room.roomId), allowedOperations: ['prompt'],
+      matrixUserId: '@owner:example.org', matrixDeviceId: 'PHONE',
+      matrixDeviceKeys: ['matrix-phone-key'], certificateExpiresAt: Date.now() + 60_000,
+      sequenceEpoch: 'certificate-1',
+    }])
+    await layer.initialize()
+    const transport = new InMemoryMatrixTransport()
+    for (const room of rooms) await layer.provisionProject(room, transport)
+    const send = transport.sendApplicationTimelineEvent.bind(transport)
+    const attempts: string[] = []
+    transport.sendApplicationTimelineEvent = request => {
+      attempts.push(request.roomId)
+      if (attempts.length === 1) return new Promise(() => undefined)
+      return send(request)
+    }
+    try {
+      for (const [index, room] of rooms.entries()) {
+        await layer.enqueueEvent(room, {
+          kind: 'malink.event', version: 3, eventId: `event-${index}`,
+          workspaceId: 'workspace-1', projectId: gatewayProjectIdentity(room.cwd).id,
+          sessionId: `session-${index}`, occurredAt: 1,
+          payload: { type: 'session.ready', provider: 'test', permissionMode: 'default',
+            projection: { title: 'Session', lifecycle: 'active', activity: 'idle', updatedAt: 1, stateVersion: 1 } },
+        }, transport)
+      }
+      await waitFor(() => layer.outboxHealth().pending === 0, 3_000)
+      expect(attempts.filter(room => room === rooms[0]!.roomId)).toHaveLength(2)
+      expect(attempts.filter(room => room === rooms[1]!.roomId)).toHaveLength(1)
+    } finally {
+      layer.stopRetries()
+    }
+  })
+
   it('confirms an accepted delivery from its exact Matrix sync echo', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-v3-sync-confirmation-'))
     const gateway = await generateDeviceKeyPair()
