@@ -41,6 +41,25 @@ required `/malink/` base path:
 pnpm --dir apps/pwa build:official
 ```
 
+Hashed files under `assets/` are immutable compatibility artifacts. A publish
+must add the new build and replace the mutable shell files, but must not delete
+assets referenced by an older cached `index.html` or Service Worker. Removing
+those files can strand an installed Android WebView on a blank page before it
+can discover the replacement build.
+
+Stage an Official build into a clean `gh-pages` worktree with the checked
+publisher helper, then review, commit, and push the staged changes:
+
+```bash
+deploy/pwa/stage-github-pages.sh \
+  apps/pwa/dist \
+  /absolute/path/to/gh-pages-worktree
+```
+
+The helper replaces mutable PWA shell files, merges new hashed assets, and
+preserves Gateway and Android update trees. It intentionally does not commit or
+push, so the operator can inspect the exact deployment diff first.
+
 For the root-hosted `rd.anciety.my.id` mirror, build explicitly with
 `pnpm --dir apps/pwa build:root`. Never publish one target's `dist/` directory
 to the other target: the generated JavaScript, stylesheet, update manifest,

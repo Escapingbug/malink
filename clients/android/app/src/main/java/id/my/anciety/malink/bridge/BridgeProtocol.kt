@@ -316,6 +316,9 @@ interface BridgeRuntime {
 
     suspend fun client(): NativeClientRuntime
 
+    /** The hosted application JavaScript successfully negotiated this bridge. */
+    suspend fun onWebUiLoaded() = Unit
+
     suspend fun snapshot(): ClientSnapshot
 
     suspend fun start(): ClientSnapshot
@@ -399,7 +402,11 @@ class BridgeDispatcher(
 
     private suspend fun dispatch(request: BridgeRequest): String = try {
         val result = when (request.method) {
-            "malink.bridge.hello" -> hello(request.params)
+            "malink.bridge.hello" -> {
+                val response = hello(request.params)
+                runtime.onWebUiLoaded()
+                response
+            }
             "malink.client.start" -> {
                 requireContext(request.params, mutation = true)
                 mutationResult(request) {

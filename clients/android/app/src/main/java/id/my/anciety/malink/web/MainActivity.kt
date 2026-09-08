@@ -12,6 +12,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -30,6 +31,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
+import android.webkit.ConsoleMessage
 import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
@@ -109,6 +111,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var contentHost: FrameLayout
     private var webView: WebView? = null
     private var webLoadingOverlay: View? = null
+    private var webBootstrapTimeout: Job? = null
+    private var webBootstrapGeneration = 0L
+    private var webBootstrapReady = false
+    private var webBootstrapRepairAttempted = false
+    private var webBootstrapCriticalFailure: String? = null
     private var nativeBridge: NativeWebBridge? = null
     private var foreground = false
     private var webViewResumed = false
@@ -308,6 +315,8 @@ class MainActivity : ComponentActivity() {
         nativeBackDispatchPending = false
         nativeBridge?.close()
         nativeBridge = null
+        webBootstrapTimeout?.cancel()
+        webBootstrapTimeout = null
         pendingWebPermissionRequest?.deny()
         pendingWebPermissionRequest = null
         pendingFileChooser?.onReceiveValue(null)
@@ -762,10 +771,7 @@ class MainActivity : ComponentActivity() {
             WebHostBindingAction.RELOAD -> {
                 checkNotNull(existing)
                 showContent(existing)
-                showWebLoading(
-                    title = "Refreshing Malink…",
-                    detail = "Restoring the secure interface and its current operation status.",
-                )
+                beginWebBootstrap(existing, resetRepair = true)
                 diagnostics.record("activity.web_host_reloading_after_bind")
                 val target = pendingWebAppUrl()
                 if (target == trustedWebOrigin.appUrl) existing.reload() else existing.loadUrl(target)
@@ -795,10 +801,7 @@ class MainActivity : ComponentActivity() {
         }
         nativeBridge = bridge
         showContent(created)
-        showWebLoading(
-            title = "Loading Malink…",
-            detail = "Connecting the secure interface to the native background service.",
-        )
+        beginWebBootstrap(created, resetRepair = true)
         diagnostics.record("activity.web_host_created")
         created.loadUrl(pendingWebAppUrl())
     }
@@ -897,6 +900,76 @@ class MainActivity : ComponentActivity() {
         webLoadingOverlay = null
     }
 
+    private fun beginWebBootstrap(view: WebView, resetRepair: Boolean) {
+        if (view !== webView) return
+        if (resetRepair) webBootstrapRepairAttempted = false
+        webBootstrapReady = false
+        webBootstrapCriticalFailure = null
+        val generation = ++webBootstrapGeneration
+        webBootstrapTimeout?.cancel()
+        showWebLoading(
+            title = if (webBootstrapRepairAttempted) "Repairing Malink UI…" else "Loading Malink…",
+            detail = if (webBootstrapRepairAttempted) {
+                "Refreshing the hosted interface without changing your account or local history."
+            } else {
+                "Connecting the secure interface to the native background service."
+            },
+        )
+        webBootstrapTimeout = lifecycleScope.launch {
+            delay(WEB_BOOTSTRAP_TIMEOUT_MS)
+            if (generation == webBootstrapGeneration && !webBootstrapReady) {
+                recoverWebBootstrap(view, "bridge_timeout")
+            }
+        }
+    }
+
+    private fun acknowledgeWebBootstrap() {
+        val current = webView ?: return
+        if (webBootstrapReady) return
+        webBootstrapReady = true
+        webBootstrapCriticalFailure = null
+        webBootstrapTimeout?.cancel()
+        webBootstrapTimeout = null
+        webBootstrapRepairAttempted = false
+        hideWebLoading(current)
+        diagnostics.record("activity.web_bootstrap_ready")
+    }
+
+    private fun stopWebBootstrap() {
+        webBootstrapGeneration += 1
+        webBootstrapTimeout?.cancel()
+        webBootstrapTimeout = null
+        webBootstrapCriticalFailure = null
+    }
+
+    private fun noteCriticalWebFailure(reason: String) {
+        if (webBootstrapReady || webView == null) return
+        webBootstrapCriticalFailure = reason
+        diagnostics.record("activity.web_bootstrap_resource_failed", mapOf("reason" to reason))
+    }
+
+    private fun recoverWebBootstrap(view: WebView, reason: String) {
+        if (view !== webView || webBootstrapReady) return
+        webBootstrapTimeout?.cancel()
+        webBootstrapTimeout = null
+        if (!webBootstrapRepairAttempted) {
+            webBootstrapRepairAttempted = true
+            diagnostics.record("activity.web_bootstrap_repair_started", mapOf("reason" to reason))
+            view.clearCache(true)
+            beginWebBootstrap(view, resetRepair = false)
+            view.loadUrl(webRecoveryUrl())
+            return
+        }
+        diagnostics.record("activity.web_bootstrap_recovery_required", mapOf("reason" to reason))
+        showWebBootstrapRecoveryPage(reason)
+    }
+
+    private fun webRecoveryUrl(): String = Uri.parse(pendingWebAppUrl())
+        .buildUpon()
+        .appendQueryParameter("native-ui-recovery", System.currentTimeMillis().toString())
+        .build()
+        .toString()
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun configureWebView(view: WebView) {
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
@@ -913,13 +986,26 @@ class MainActivity : ComponentActivity() {
             userAgentString = "$userAgentString MalinkNative/${BuildConfig.VERSION_NAME}"
         }
         view.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+                if (
+                    view === webView &&
+                    webBootstrapReady &&
+                    trustedWebOrigin.isTrustedUrl(url)
+                ) {
+                    beginWebBootstrap(view, resetRepair = true)
+                }
+                diagnostics.record("activity.web_page_started")
+            }
+
             override fun onPageCommitVisible(view: WebView, url: String) {
-                hideWebLoading(view)
                 diagnostics.record("activity.web_page_visible")
             }
 
             override fun onPageFinished(view: WebView, url: String) {
                 diagnostics.record("activity.web_page_finished")
+                webBootstrapCriticalFailure?.let { reason ->
+                    recoverWebBootstrap(view, reason)
+                }
             }
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -938,7 +1024,13 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame) showRecoveryPage("The online Malink UI could not be loaded.")
+                when {
+                    request.isForMainFrame ->
+                        recoverWebBootstrap(view, "main_resource_unavailable")
+                    trustedWebOrigin.isTrustedUrl(request.url.toString()) &&
+                        isCriticalWebBootstrapPath(request.url.path) ->
+                        noteCriticalWebFailure("critical_resource_unavailable")
+                }
             }
 
             override fun onReceivedHttpError(
@@ -946,8 +1038,13 @@ class MainActivity : ComponentActivity() {
                 request: WebResourceRequest,
                 errorResponse: WebResourceResponse,
             ) {
-                if (request.isForMainFrame && errorResponse.statusCode >= 400) {
-                    showRecoveryPage("The online Malink UI returned HTTP ${errorResponse.statusCode}.")
+                if (errorResponse.statusCode < 400) return
+                when {
+                    request.isForMainFrame ->
+                        recoverWebBootstrap(view, "main_http_${errorResponse.statusCode}")
+                    trustedWebOrigin.isTrustedUrl(request.url.toString()) &&
+                        isCriticalWebBootstrapPath(request.url.path) ->
+                        noteCriticalWebFailure("critical_http_${errorResponse.statusCode}")
                 }
             }
 
@@ -966,6 +1063,22 @@ class MainActivity : ComponentActivity() {
             }
         }
         view.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+                if (message.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                    diagnostics.record(
+                        "activity.web_console_error",
+                        mapOf(
+                            "line" to message.lineNumber().coerceAtLeast(0).toString(),
+                            "source" to Uri.parse(message.sourceId()).lastPathSegment
+                                ?.replace(Regex("[^A-Za-z0-9._+-]"), "_")
+                                ?.take(120)
+                                .orEmpty(),
+                        ),
+                    )
+                }
+                return super.onConsoleMessage(message)
+            }
+
             override fun onPermissionRequest(request: PermissionRequest) {
                 runOnUiThread {
                     if (
@@ -1416,6 +1529,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showRecoveryPage(detail: String) {
+        stopWebBootstrap()
         showContent(messageView(
             title = "Malink is temporarily unavailable",
             detail = detail,
@@ -1431,7 +1545,33 @@ class MainActivity : ComponentActivity() {
         })
     }
 
+    private fun showWebBootstrapRecoveryPage(reason: String) {
+        val current = webView
+        stopWebBootstrap()
+        showContent(messageView(
+            title = "Malink UI could not start",
+            detail = webBootstrapFailureDetail(reason) +
+                " Malink already refreshed the interface cache once. Your account, background " +
+                "connection, queued actions, and local history are still intact.",
+            action = "Reload interface",
+            secondaryAction = "Export diagnostics",
+            onSecondaryAction = ::exportDiagnostics,
+            tertiaryAction = "Change PWA address",
+            onTertiaryAction = ::showStaticServiceSettings,
+        ) {
+            if (current == null || current !== webView) {
+                showWebHost()
+            } else {
+                showContent(current)
+                current.clearCache(true)
+                beginWebBootstrap(current, resetRepair = true)
+                current.loadUrl(webRecoveryUrl())
+            }
+        })
+    }
+
     private fun showDisconnectedPage() {
+        stopWebBootstrap()
         showContent(messageView(
             title = "Malink is disconnected",
             detail = "The persistent native host has stopped and will not restart after reboot.",
@@ -1447,6 +1587,8 @@ class MainActivity : ComponentActivity() {
         action: String,
         secondaryAction: String? = null,
         onSecondaryAction: (() -> Unit)? = null,
+        tertiaryAction: String? = null,
+        onTertiaryAction: (() -> Unit)? = null,
         onAction: () -> Unit,
     ): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -1487,6 +1629,12 @@ class MainActivity : ComponentActivity() {
                 setOnClickListener { onSecondaryAction() }
             })
         }
+        if (tertiaryAction != null && onTertiaryAction != null) {
+            addView(Button(context).apply {
+                text = tertiaryAction
+                setOnClickListener { onTertiaryAction() }
+            })
+        }
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
@@ -1519,6 +1667,11 @@ class MainActivity : ComponentActivity() {
 
         override suspend fun client(): NativeClientRuntime =
             awaitServiceBinder().clientRuntime()
+
+        override suspend fun onWebUiLoaded() =
+            withContext(Dispatchers.Main.immediate) {
+                acknowledgeWebBootstrap()
+            }
 
         override suspend fun snapshot(): ClientSnapshot = client().snapshot()
 
@@ -1712,6 +1865,7 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val KEY_NOTIFICATION_REQUESTED = "notification-permission-requested"
         private const val SERVICE_BIND_TIMEOUT_MS = 10_000L
+        private const val WEB_BOOTSTRAP_TIMEOUT_MS = 15_000L
         private const val MAX_SAVED_QR_DIMENSION = 2_048
         const val ACTION_EXPORT_DIAGNOSTICS =
             "id.my.anciety.malink.action.EXPORT_DIAGNOSTICS"

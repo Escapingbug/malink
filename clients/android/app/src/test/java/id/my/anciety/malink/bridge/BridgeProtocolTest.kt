@@ -98,6 +98,8 @@ class BridgeProtocolTest {
         )
         val capabilities = response.getValue("capabilities").jsonObject
 
+        assertEquals(1, runtime.webUiLoads)
+
         assertEquals(
             setOf(
                 "background.foreground-service",
@@ -789,6 +791,7 @@ class BridgeProtocolTest {
         var loginTokenIssues = 0
         var updateChecks = 0
         var diagnosticExports = 0
+        var webUiLoads = 0
         var markReadFailure: Exception? = null
         val savedPngImages = mutableListOf<Pair<String, Int>>()
         val savedAuthorizationFiles = mutableListOf<Pair<String, String>>()
@@ -797,6 +800,10 @@ class BridgeProtocolTest {
         private var active = true
 
         override suspend fun client(): NativeClientRuntime = error("Not used by this protocol fixture.")
+
+        override suspend fun onWebUiLoaded() {
+            webUiLoads += 1
+        }
 
         override suspend fun snapshot() = ClientSnapshot(
             deviceId = nativeDeviceId,
