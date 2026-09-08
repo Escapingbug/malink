@@ -1809,6 +1809,7 @@ function MalinkAppRuntime() {
     );
   }, [approvedGatewayEnrollmentIds, pendingGatewayEnrollments]);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [newSessionProjectId, setNewSessionProjectId] = useState<string | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [projectSettingsProjectId, setProjectSettingsProjectId] = useState<string | null>(null);
   const [providerHistoryOpen, setProviderHistoryOpen] = useState(false);
@@ -2704,6 +2705,8 @@ function MalinkAppRuntime() {
   const activeProjectGateway = activeWorkspace
     ? projectGatewaysById.get(activeWorkspace.projectId) ?? fallbackProjectGateway
     : fallbackProjectGateway;
+  const newSessionWorkspace = allWorkspaceProjects.find(project =>
+    project.projectId === newSessionProjectId) ?? gatewayFilterDefaultWorkspace ?? gatewayState?.workspace;
   const projectSettingsWorkspace = projectSettingsProjectId
     ? gatewayState?.projects?.find(project => project.projectId === projectSettingsProjectId)
       ?? (gatewayState?.workspace.projectId === projectSettingsProjectId
@@ -8538,7 +8541,8 @@ function MalinkAppRuntime() {
     setGatewayUpdateDialogOpen(false);
     setPrimaryView("chats");
     setMobileChatOpen(true);
-    activateLocalSession(null, malinkClientRef.current, true, false, projectId);
+    setNewSessionProjectId(projectId);
+    setNewSessionOpen(true);
   }
 
   async function executeGatewayUpdate(
@@ -13026,7 +13030,7 @@ function MalinkAppRuntime() {
                     : !canCreateAnySession
                       ? "No project can start a conversation"
                       : "New conversation"}
-                  onClick={() => setNewSessionOpen(true)}
+                  onClick={() => { setNewSessionProjectId(null); setNewSessionOpen(true); }}
                   disabled={
                     newSessionBusy ||
                     Boolean(optimisticSession) ||
@@ -13657,7 +13661,7 @@ function MalinkAppRuntime() {
                 <small>Choose a project and agent to start working.</small>
                 <button
                   type="button"
-                  onClick={() => setNewSessionOpen(true)}
+                  onClick={() => { setNewSessionProjectId(null); setNewSessionOpen(true); }}
                   disabled={!canCreateAnySession || newSessionBusy}
                 >
                   {canCreateAnySession
@@ -14928,13 +14932,13 @@ function MalinkAppRuntime() {
           busy={newSessionBusy}
           fallbackGateway={fallbackProjectGateway}
           projectGateways={projectGatewaysById}
-          workspace={gatewayFilterDefaultWorkspace ?? gatewayState.workspace}
+          workspace={newSessionWorkspace ?? gatewayState.workspace}
           workspaces={allWorkspaceProjects}
           models={gatewayState.capabilities.models}
           providers={gatewayState.capabilities.providers}
           extensions={gatewayState.capabilities.sessionExtensions}
           defaultExtensions={
-            (gatewayFilterDefaultWorkspace ?? gatewayState.workspace).defaultExtensions
+            (newSessionWorkspace ?? gatewayState.workspace).defaultExtensions
           }
           canUpdateProjectDefaults
           onClose={() => {
