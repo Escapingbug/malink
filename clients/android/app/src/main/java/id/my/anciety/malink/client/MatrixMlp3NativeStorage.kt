@@ -283,6 +283,16 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
 
     @Synchronized
     fun put(event: MatrixDecryptedEvent): Boolean {
+        val existing = records[event.eventId]
+        if (existing?.status == MatrixMlp3InboxStatus.QUARANTINED &&
+            isLegacyTransientMatrixMlp3Quarantine(existing.errorCode)
+        ) {
+            // The old compacted record has no ciphertext left. A fresh Matrix
+            // delivery supplies it again, through the normal verify-before-use
+            // path. Removing this transient tombstone never accepts the event.
+            projected(event.eventId)
+            flushProjected()
+        }
         if (records.containsKey(event.eventId)) return false
         require(event.rawJson.toByteArray().size <= MAX_EVENT_BYTES) {
             "The MLP/3 raw event is too large."

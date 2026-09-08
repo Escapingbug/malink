@@ -1649,6 +1649,11 @@ class NativeClientRuntime(
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
+                if (isV3 && isRetryableMatrixMlp3ProjectionFailure(error)) {
+                    diagnostics.record("matrix.v3_event.deferred", mapOf("reason" to "transport_unavailable"))
+                    startMatrixMlp3ProjectionRefresh()
+                    return@withLock
+                }
                 diagnostics.record(
                     "matrix.native_event.rejected",
                     mapOf(
@@ -2593,6 +2598,7 @@ class NativeClientRuntime(
                 ) {
                     if (trust == null || workspaceAuthorizationRevoked) break
                     var refreshed = false
+                    var retryableInboxFailure = false
                     runCatching {
                         // Current Room State owns project completeness. Retry
                         // only rooms whose signed project/capability snapshots
@@ -2604,7 +2610,7 @@ class NativeClientRuntime(
                             includeThreadDirectory = false,
                         )
                         mutex.withLock {
-                            replayMatrixMlp3InboxLocked()
+                            retryableInboxFailure = replayMatrixMlp3InboxLocked()
                             workspaceAuthorizationChecked = true
                             gatewayStateSynchronized = authenticatedGatewayCacheUsable()
                             refreshSnapshot(publishLifecycle = true)
@@ -2648,7 +2654,9 @@ class NativeClientRuntime(
                             "catalog_incomplete" to incompleteCatalogProjects.size.toString(),
                         ),
                     )
-                    if (!shouldRetryMatrixMlp3ProjectionRefresh(refreshed, progress)) {
+                    if (!shouldRetryMatrixMlp3ProjectionRefresh(
+                            refreshed, progress, retryableInboxFailure, completedAttempts,
+                        )) {
                         diagnostics.record(
                             if (
                                 refreshed &&
@@ -3588,7 +3596,7 @@ class NativeClientRuntime(
         }
     }
 
-    private suspend fun replayMatrixMlp3InboxLocked() {
+    private suspend fun replayMatrixMlp3InboxLocked(): Boolean {
         check(!matrixMlp3InboxReplayActive) { "The MLP/3 inbox is already replaying." }
         val pendingAtStart = matrixMlp3Inbox.pending().size
         diagnostics.record(
@@ -3596,6 +3604,7 @@ class NativeClientRuntime(
             mapOf("pending" to pendingAtStart.toString()),
         )
         matrixMlp3InboxReplayActive = true
+        var retryableFailure = false
         try {
             drainMatrixMlp3Inbox(matrixMlp3Inbox) { record ->
                 try {
@@ -3607,6 +3616,11 @@ class NativeClientRuntime(
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
+                    if (isRetryableMatrixMlp3ProjectionFailure(error)) {
+                        retryableFailure = true
+                        diagnostics.record("matrix.v3_event.deferred", mapOf("reason" to "transport_unavailable"))
+                        return@drainMatrixMlp3Inbox MatrixMlp3InboxProjectionStep.DEFERRED
+                    }
                     matrixMlp3Inbox.quarantine(record.event.eventId, error)
                     diagnostics.record(
                         "matrix.v3_event.quarantined",
@@ -3629,6 +3643,8 @@ class NativeClientRuntime(
                 ),
             )
         }
+        if (retryableFailure) startMatrixMlp3ProjectionRefresh()
+        return retryableFailure
     }
 
     private fun missingProjectKeyGrant(
@@ -4567,11 +4583,17 @@ internal fun authoritativeStateRefreshRetryDelayMs(completedAttempts: Int): Long
  * Re-reading the same successful snapshot generated substantial duplicate
  * traffic and starved foreground commands. When the read itself fails, only a
  * client without any usable signed project cache needs the bounded retry lane.
+ * A pending event whose pointer read failed in transport is different: its
+ * ciphertext is already durable, so allow up to six replay attempts even when
+ * another project is usable. Invalid signatures never enter this retry lane.
  */
 internal fun shouldRetryMatrixMlp3ProjectionRefresh(
     readSucceeded: Boolean,
     progress: MatrixMlp3WorkspaceProjectionProgress,
-): Boolean = !readSucceeded && !progress.hasUsableProject
+    retryableInboxFailure: Boolean = false,
+    completedAttempts: Int = 0,
+): Boolean = (retryableInboxFailure && completedAttempts < 5) ||
+    (!readSucceeded && !progress.hasUsableProject)
 
 internal fun pairingRequestRetryDelayMs(completedRetries: Int): Long {
     require(completedRetries >= 0)

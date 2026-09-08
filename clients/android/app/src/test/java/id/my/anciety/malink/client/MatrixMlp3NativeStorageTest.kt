@@ -22,6 +22,25 @@ import org.junit.Test
 
 class MatrixMlp3NativeStorageTest {
     @Test
+    fun `fresh delivery restores legacy timeout quarantine after restart`() {
+        for (segmented in listOf(false, true)) {
+            val blob = MemoryMatrixMlp3BlobStore()
+            val records = if (segmented) MemoryMatrixMlp3RecordBlobStore() else null
+            val cipher = JvmAesGcmCipher()
+            val timedOut = event("\$timeout", "{\"type\":\"m.room.message\"}")
+            val store = AtomicEncryptedMatrixMlp3InboxStore(blob, records, cipher, "account-a")
+            store.put(timedOut)
+            store.quarantine(timedOut.eventId, java.net.SocketTimeoutException())
+            val restored = AtomicEncryptedMatrixMlp3InboxStore(blob, records, cipher, "account-a")
+            assertTrue(restored.put(timedOut))
+            assertEquals(listOf(timedOut), restored.pending().map { it.event })
+            assertFalse(restored.put(timedOut))
+            val restarted = AtomicEncryptedMatrixMlp3InboxStore(blob, records, cipher, "account-a")
+            assertEquals(listOf(timedOut), restarted.pending().map { it.event })
+        }
+    }
+
+    @Test
     fun `prepared command retry reuses the exact first signed ciphertext after restart`() {
         val blob = MemoryMatrixMlp3BlobStore()
         val first = buildJsonObject {

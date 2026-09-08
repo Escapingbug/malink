@@ -61,5 +61,8 @@ class NativeClientPowerPolicyTest {
 
         assertEquals(false, shouldRetryMatrixMlp3ProjectionRefresh(false, cached))
         assertEquals(true, shouldRetryMatrixMlp3ProjectionRefresh(false, empty))
+        assertEquals(true, shouldRetryMatrixMlp3ProjectionRefresh(true, cached, true, 0))
+        assertEquals(true, shouldRetryMatrixMlp3ProjectionRefresh(true, cached, true, 4))
+        assertEquals(false, shouldRetryMatrixMlp3ProjectionRefresh(true, cached, true, 5))
     }
 }
