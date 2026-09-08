@@ -1783,6 +1783,24 @@ describe('MatrixMlp3GatewayRunner', () => {
       && event.payload.status.phase === 'steady'
     )).toBe(true)
 
+    // The independent Supervisor can change deployment state without a client
+    // command, even after the legacy release-status monitor has become idle.
+    const originalDeployment = structuredClone(gatewayDeploymentStatus)
+    gatewayDeploymentStatus = {
+      ...gatewayDeploymentStatus,
+      phase: 'preparing',
+      updateId: 'external-prepare',
+      candidate: {
+        gatewayNodeId: 'external-candidate', buildId: 'build-2',
+        projectCount: 1, sessionCount: 0,
+      },
+      updatedAt: 2,
+    }
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.payload.type === 'gateway.deployment.status'
+        && event.payload.status.updateId === 'external-prepare'), 7_000)
+    gatewayDeploymentStatus = originalDeployment
+
     await expect(runner.publishNativeClientRelease(nativeRelease(42))).resolves.toMatchObject({
       changed: true,
       projectCount: 1,

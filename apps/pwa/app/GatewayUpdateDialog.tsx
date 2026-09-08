@@ -172,6 +172,11 @@ function GatewayUpdateDialogContent({
               node.computerName,
             );
             const runtime = runtimeByNode[node.gatewayNodeId] ?? { state: "unchecked" };
+            const deployment = node.computerId
+              ? deploymentsByComputer[node.computerId]
+              : undefined;
+            const deploymentOwner = deployment?.active.gatewayNodeId === node.gatewayNodeId;
+            const deploymentInProgress = deploymentOwner && deployment.phase !== "steady";
             const liveness = livenessByNode[node.gatewayNodeId];
             const signedUpdateStatus = gatewayUpdateStatusForPresentation(
               runtime.status,
@@ -204,6 +209,7 @@ function GatewayUpdateDialogContent({
                 (statusWasSuperseded && node.currentBuildId === release.buildId)) &&
               !knownUpdateFailure;
             const showUpdateProgress = Boolean(
+              !deploymentInProgress &&
               signedUpdateStatus &&
               signedUpdateStatus.phase !== "idle" &&
               signedUpdateStatus.phase !== "committed" &&
@@ -220,10 +226,6 @@ function GatewayUpdateDialogContent({
             const active = activeGatewayNodeIds.has(node.gatewayNodeId);
             const activeMode = activeGatewayModesByNode[node.gatewayNodeId];
             const forceConfirming = forceConfirmationNodeId === node.gatewayNodeId;
-            const deployment = node.computerId
-              ? deploymentsByComputer[node.computerId]
-              : undefined;
-            const deploymentOwner = deployment?.active.gatewayNodeId === node.gatewayNodeId;
             const candidateTrial = deploymentOwner && deployment.phase === "trial";
             const candidateNode = candidateTrial
               ? nodes.find(candidate =>
@@ -270,8 +272,12 @@ function GatewayUpdateDialogContent({
                 >
                   <span aria-hidden="true" />
                   <span>
-                    <strong>{gatewayUpdateRuntimeStateTitle(runtime, node, release, activeMode)}</strong>
-                    <small>{gatewayUpdateRuntimeStateDetail(
+                    <strong>{deploymentInProgress && activeMode !== "discard"
+                      ? `Gateway deployment: ${deployment.phase}`
+                      : gatewayUpdateRuntimeStateTitle(runtime, node, release, activeMode)}</strong>
+                    <small>{deploymentInProgress && activeMode !== "discard"
+                      ? deployment.detail ?? "The signed deployment state controls this computer's candidate and switch actions."
+                      : gatewayUpdateRuntimeStateDetail(
                       runtime,
                       node,
                       release,
@@ -474,7 +480,7 @@ function GatewayUpdateDialogContent({
                       ) : null}
                     </>
                   )}
-                  {node.state === "available" && updateActionAvailable && !candidateTrial && (
+                  {node.state === "available" && updateActionAvailable && !deploymentInProgress && (
                     <>
                       <button
                         type="button"

@@ -2015,8 +2015,12 @@ export class MatrixMlp3GatewayRunner {
     if (
       this.state !== 'running'
       || !this.dependencies.gatewayUpdateSupervisor
-      || this.gatewayUpdateStatusMonitorTimer
     ) return
+    // A command-triggered check must preempt the slower idle observation.
+    if (this.gatewayUpdateStatusMonitorTimer) {
+      clearTimeout(this.gatewayUpdateStatusMonitorTimer)
+      this.gatewayUpdateStatusMonitorTimer = null
+    }
     const timer = setTimeout(() => {
       if (this.gatewayUpdateStatusMonitorTimer === timer) {
         this.gatewayUpdateStatusMonitorTimer = null
@@ -2034,7 +2038,10 @@ export class MatrixMlp3GatewayRunner {
     if (
       this.state === 'running'
       && (
-        (update && [
+        // The independent coordinator may prepare/promote outside a Matrix
+        // command. Legacy release phases cannot end deployment observation.
+        this.dependencies.gatewayUpdateSupervisor?.deploymentStatus
+        || (update && [
           'staging',
           'agent_required',
           'agent_running',
@@ -2049,7 +2056,11 @@ export class MatrixMlp3GatewayRunner {
             GATEWAY_UPDATE_STATUS_MONITOR_MAX_FAILURES)
       )
     ) {
-      this.scheduleGatewayUpdateStatusMonitor()
+      this.scheduleGatewayUpdateStatusMonitor(
+        update && ['idle', 'staged', 'committed', 'failed', 'rolled_back'].includes(update.phase)
+          ? 5_000
+          : GATEWAY_UPDATE_STATUS_MONITOR_INTERVAL_MS,
+      )
     }
   }
 

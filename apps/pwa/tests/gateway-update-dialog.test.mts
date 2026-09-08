@@ -211,6 +211,32 @@ test("reports candidate discard without claiming a switch is in progress", () =>
   assert.doesNotMatch(html, /Switching when idle|Applying selected restart time/);
 });
 
+for (const phase of ["preparing", "trial", "draining", "committing", "repair_required"] as const) {
+  test(`deployment ${phase} supersedes an older staged release`, () => {
+    const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+      open: true, connected: true, release,
+      nodes: [{ ...nodes[0]!, computerId: "computer-office", blueGreenUpdate: true }],
+      runtimeByNode: { "node-office": { state: "online", status: {
+        version: 1, phase: "staged", releaseId: "older-release",
+        targetBuildId: "older-build", currentBuildId: "gateway-old-arm64", updatedAt: 1,
+      } } },
+      deploymentsByComputer: { "computer-office": {
+        version: 1, strategy: "blue-green-v1", maxDeployments: 2,
+        computerId: "computer-office", generation: 1, phase,
+        active: { gatewayNodeId: "node-office", buildId: "gateway-old-arm64", projectCount: 1, sessionCount: 1 },
+        candidate: { gatewayNodeId: "node-candidate", buildId: release.buildId,
+          projectCount: 1, sessionCount: 0 },
+        updateId: "update-1", updatedAt: 2,
+      } },
+      activeGatewayNodeIds: new Set(),
+      onClose() {}, onStart() {}, onPromote() {}, onDiscard() {}, onOpenProject() {},
+      onOpenSession() {}, onArchiveSession() {}, onExportDiagnostics() {},
+    }));
+    assert.doesNotMatch(html, /Prepare candidate Gateway|older prepared build|Newer Gateway update available/);
+    if (phase === "trial") assert.match(html, /Switch all work when idle/);
+  });
+}
+
 test("explains why install actions are unavailable while disconnected", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
     open: true,
