@@ -23,6 +23,30 @@ import org.junit.Test
 
 class MatrixMlp3NativeProjectionTest {
     @Test
+    fun `history rebuilds an evicted message after restart without replaying its command terminal`() {
+        val original = projection()
+        original.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        original.applyGatewayEvent(sessionReady("session-a", 1, "Session A", 100), "\$root", "\$root")
+        val reply = assistant("reply-v3", "reply", "Restored full reply", version = 3, commandId = "turn-1", final = true)
+        original.applyGatewayEvent(reply, "\$reply", "\$root")
+        original.applyGatewayEvent(turn("completed", 3, "idle"), "\$done", "\$root")
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" }, activeDeviceCount = { 2 }, initialState = original.durableState(),
+        )
+        val before = restored.durableState()
+        assertTrue(restored.applyGatewayEvent(reply, "\$reply", "\$root").messages.isEmpty())
+        val history = restored.applyHistoricalGatewayEvent(reply, "\$reply", "\$root")
+        assertEquals("Restored full reply", history.messages.single().text)
+        assertEquals(true, history.messages.single().historical)
+        assertNull(history.terminal)
+        assertNull(history.taskNotification)
+        assertEquals(before, restored.durableState())
+        assertTrue(restored.applyHistoricalGatewayEvent(
+            assistant("reply-v2", "reply", "Truncated", version = 2), "\$old", "\$root",
+        ).messages.isEmpty())
+    }
+
+    @Test
     fun `history cancellation evidence survives restart and stays scoped to the requested turn`() {
         val original = projection()
         original.applyGatewayEvent(projectSnapshot(), "\$project", null)

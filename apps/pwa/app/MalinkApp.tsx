@@ -11209,31 +11209,8 @@ function MalinkAppRuntime() {
       return;
     }
 
-    try {
-      await connection.releaseCommand(sent.commandId);
-    } catch (error) {
-      if (!isMissingSessionCreateRecoveryCommand(error)) {
-        const recovery = rememberSessionLifecycleRecovery(
-          sent.commandId,
-          action,
-          sessionId,
-          projectId,
-          onSucceeded,
-          onFailed,
-        );
-        showUiNotice(
-          `session:${action}:release`,
-          "session",
-          "warning",
-          "The completed action is saved, but its local recovery record still needs cleanup. Malink will retry it automatically.",
-        );
-        scheduleSessionLifecycleRecovery(recovery);
-        return;
-      }
-    }
-
-    completedCommandResultsRef.current.delete(sent.commandId);
-    forgetRecoveredNativeCommand(sent.commandId);
+    // A verified terminal ends the visible action. Local recovery-record
+    // cleanup must not keep an already archived conversation busy.
     const recovery = sessionLifecycleRecoveriesRef.current.get(sent.commandId);
     if (recovery?.timer != null) window.clearTimeout(recovery.timer);
     sessionLifecycleRecoveriesRef.current.delete(sent.commandId);
@@ -11269,6 +11246,32 @@ function MalinkAppRuntime() {
         return next;
       });
     }
+
+    try {
+      await connection.releaseCommand(sent.commandId);
+    } catch (error) {
+      if (!isMissingSessionCreateRecoveryCommand(error)) {
+        // Presentation callbacks have already run. Retry cleanup without
+        // reopening the history dialog or replaying failure side effects.
+        const cleanupRecovery = rememberSessionLifecycleRecovery(
+          sent.commandId,
+          action,
+          sessionId,
+          projectId,
+        );
+        showUiNotice(
+          `session:${action}:release`,
+          "session",
+          "warning",
+          "The completed action is saved, but its local recovery record still needs cleanup. Malink will retry it automatically.",
+        );
+        scheduleSessionLifecycleRecovery(cleanupRecovery);
+        return;
+      }
+    }
+    completedCommandResultsRef.current.delete(sent.commandId);
+    forgetRecoveredNativeCommand(sent.commandId);
+    recoverUiNotice(`session:${action}:release`);
   }
 
   async function archiveSession(sessionId: string, projectId?: string) {
@@ -13855,8 +13858,9 @@ function MalinkAppRuntime() {
             onDismiss={dismissUiNotice}
           />
           <div
-            className={`history-loader ${historyLoading ? "is-loading" : ""} ${historyError ? "has-error" : ""}`}
+            className={`history-loader ${historyLoading || historyCheckingRemote ? "is-loading" : ""} ${historyError ? "has-error" : ""}`}
             aria-live="polite"
+            aria-busy={historyLoading || historyCheckingRemote}
           >
             {historyLoading ? (
               <span>Loading earlier messages…</span>
@@ -13892,7 +13896,7 @@ function MalinkAppRuntime() {
           <div className="date-divider">
             <span>Recent messages</span>
           </div>
-          {historyLoading && messages.length === 0 && (
+          {(historyLoading || historyCheckingRemote) && messages.length === 0 && !historyError && (
             <div className="history-skeleton" aria-hidden="true" />
           )}
           {presentedTimeline.map((item, itemIndex) => {

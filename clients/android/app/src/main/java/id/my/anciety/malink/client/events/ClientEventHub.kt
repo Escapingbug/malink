@@ -440,6 +440,19 @@ class ClientEventHub(
 
     /** A paginated copy can fill a gap, but it cannot downgrade a live action to read-only history. */
     private fun preferLiveMessage(existing: ClientMessage, incoming: ClientMessage): ClientMessage {
+        // History can reconstruct an already-seen event after cache eviction.
+        // A reverse-ordered page must never replace a newer materialized body
+        // or completed tool with an older progressive version of the same id.
+        val versionField = when (existing.semantic?.get("type")?.jsonPrimitive?.contentOrNull) {
+            "assistant.message" -> "messageVersion"
+            "tool.activity" -> "toolVersion"
+            else -> null
+        }
+        if (versionField != null && existing.semantic?.get("type") == incoming.semantic?.get("type")) {
+            val oldVersion = existing.semantic?.get(versionField)?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+            val newVersion = incoming.semantic?.get(versionField)?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+            if (oldVersion != null && newVersion != null && newVersion < oldVersion) return existing
+        }
         val preferred = when {
             existing.historical == true && incoming.historical != true -> incoming
             existing.historical != true && incoming.historical == true -> existing

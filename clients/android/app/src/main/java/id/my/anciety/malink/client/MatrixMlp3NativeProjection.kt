@@ -415,6 +415,74 @@ internal class MatrixMlp3NativeProjection(
         }
     }
 
+    /** Rebuild evicted transcript data without replaying lifecycle side effects. */
+    @Synchronized
+    fun applyHistoricalGatewayEvent(
+        event: JsonObject,
+        physicalEventId: String,
+        threadRootHint: String?,
+    ): MatrixMlp3NativeProjectionResult {
+        val projected = applyGatewayEvent(event, physicalEventId, threadRootHint)
+        if (projected.messages.isNotEmpty()) return projected
+        val sessionId = event.optionalString("sessionId", 256) ?: return projected
+        if (sessions[sessionId]?.lifecycle != "active") return projected
+        val payload = event.requiredObject("payload")
+        val type = payload.requiredString("type", 128)
+        val occurredAt = event.requiredLong("occurredAt")
+        val commandId = event.optionalString("causationCommandId", 256)
+        val message = when (type) {
+            "assistant.message" -> {
+                val messageId = payload.requiredString("messageId", 256)
+                val part = payload.optionalInt("partIndex") ?: 0
+                val version = payload.requiredPositiveLong("messageVersion")
+                val newest = assistantMessageVersions[AssistantMessageKey(sessionId, messageId, part)]
+                if (newest != null && version < newest) return projected
+                val group = decodeMlp3ToolGroup(payload)
+                ClientMessage(
+                    eventId = "assistant:$messageId:$part", sender = gatewayId(), timestamp = occurredAt,
+                    encrypted = true,
+                    kind = if (group == null) ClientMessageKind.AGENT else ClientMessageKind.TOOL,
+                    format = if (payload.optionalString("format", 32) == "plain") ClientMessageFormat.PLAIN
+                        else ClientMessageFormat.MARKDOWN,
+                    text = payload.optionalString("body", Int.MAX_VALUE).orEmpty(),
+                    sessionId = sessionId, commandId = commandId, toolGroup = group, semantic = payload,
+                    attachments = (payload["attachments"] as? JsonArray)?.mapNotNull {
+                        runCatching { PublicClientJson.decodeAttachment(it) }.getOrNull()
+                    }?.takeIf { it.isNotEmpty() },
+                )
+            }
+            "turn.queued" -> userMessage(
+                payload.requiredString("turnId", 256), sessionId, physicalEventId, occurredAt,
+                payload.optionalString("text", Int.MAX_VALUE).orEmpty(),
+                payload.requiredString("originDeviceId", 256), payload,
+            )
+            "session.ready" -> {
+                val initial = payload["initialPrompt"] as? JsonObject ?: return projected
+                val rootCommandId = payload.optionalString("rootCommandId", 256) ?: return projected
+                userMessage(rootCommandId, sessionId,
+                    sessions[sessionId]?.threadRootEventId.orEmpty().ifEmpty { physicalEventId }, occurredAt,
+                    initial.optionalString("text", Int.MAX_VALUE).orEmpty(),
+                    payload.optionalString("originDeviceId", 256), initial)
+            }
+            "tool.activity" -> {
+                val group = toolActivityGroup(payload, occurredAt)
+                ClientMessage(eventId = "tool:${group.groupId}", sender = gatewayId(), timestamp = occurredAt,
+                    encrypted = true, kind = ClientMessageKind.TOOL, format = ClientMessageFormat.PLAIN,
+                    text = group.tools.single().name, sessionId = sessionId, commandId = commandId,
+                    toolGroup = group, semantic = payload)
+            }
+            "turn.failed" -> ClientMessage(
+                eventId = "turn-failed:${payload.requiredString("turnId", 256)}", sender = gatewayId(),
+                timestamp = occurredAt, encrypted = true, kind = ClientMessageKind.ERROR,
+                format = ClientMessageFormat.PLAIN, text = payload.requiredString("message", 8_192),
+                sessionId = sessionId, commandId = commandId ?: payload.requiredString("turnId", 256),
+                semantic = payload,
+            )
+            else -> return projected
+        }
+        return projected.copy(messages = listOf(message.copy(historical = true)))
+    }
+
     private fun applyGatewayEventOnce(
         event: JsonObject,
         physicalEventId: String,

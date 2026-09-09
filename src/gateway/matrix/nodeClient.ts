@@ -348,7 +348,11 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                 {
                     body: { reason: 'Malink session archived' },
                     retryRateLimit: true,
-                    retryTransient: true,
+                    // Archive cleanup has its own persisted retry authority.
+                    // Do not monopolize the live room-write lane for a 60s
+                    // transient retry loop while command terminals queue up.
+                    retryTransient: false,
+                    timeoutMs: Math.min(this.defaultReadyTimeoutMs, 3_000),
                     paceRoomWrite: true,
                     signal: options.signal,
                 },

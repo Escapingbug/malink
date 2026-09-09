@@ -3681,7 +3681,7 @@ class NativeClientRuntime(
         expectedSessionId: String,
     ): HistoricalMessageProjection? {
         val verified = verifyHistoricalMlp3Event(event, expectedSessionId) ?: return null
-        val projected = matrixMlp3Projection.applyGatewayEvent(
+        val projected = matrixMlp3Projection.applyHistoricalGatewayEvent(
             verified.protocolEvent,
             verified.physicalEventId,
             verified.threadRootHint,

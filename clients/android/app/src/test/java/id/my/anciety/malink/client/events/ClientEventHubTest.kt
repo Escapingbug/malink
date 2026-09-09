@@ -20,6 +20,26 @@ import org.junit.Test
 
 class ClientEventHubTest {
     @Test
+    fun `reverse historical pagination never replaces newer assistant or tool revisions`() {
+        for ((type, versionField) in listOf(
+            "assistant.message" to "messageVersion", "tool.activity" to "toolVersion",
+        )) {
+            val hub = hub()
+            val latest = message("same-event", 1, text = "complete").copy(
+                historical = true,
+                semantic = buildJsonObject { put("type", type); put(versionField, 3) },
+            )
+            val older = latest.copy(
+                text = "partial",
+                semantic = buildJsonObject { put("type", type); put(versionField, 2) },
+            )
+            hub.upsertMessage("session-1", latest)
+            assertTrue(hub.upsertMessages("session-1", listOf(older)).isEmpty())
+            assertEquals(latest, hub.historyPage("session-1").messages.single())
+        }
+    }
+
+    @Test
     fun `negotiated replay allowance may exceed retained journal`() {
         val hub = hub(maxReplayEvents = 3)
         val anchor = hub.publish(ClientEventType.STATUS_CHANGED, JsonPrimitive("anchor"))

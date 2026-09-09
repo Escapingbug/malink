@@ -273,6 +273,26 @@ describe('MatrixNodeSdkGatewayClient', () => {
         ]))
     })
 
+    it('yields failed background redaction to its durable cleanup retry authority', async () => {
+        let redactions = 0
+        const fetchMock = vi.fn(async (input: string | URL | Request) => {
+            const path = decodeURIComponent(new URL(String(input)).pathname)
+            if (path.includes('/relations/')) return jsonResponse({ chunk: [] })
+            if (path.includes('/redact/')) {
+                redactions += 1
+                throw new TypeError('fetch failed')
+            }
+            return jsonResponse({ event_id: '$live-write' })
+        })
+        const client = new MatrixNodeSdkGatewayClient({
+            baseUrl: 'https://matrix.example.test', accessToken: 'token',
+            userId: '@gateway:example.test', deviceId: 'STABLE_DEVICE',
+        }, 1_000, undefined, fetchMock as unknown as typeof fetch)
+        await expect(client.deleteRoomThread('!room:example.test', '$root'))
+            .rejects.toThrow('fetch failed')
+        expect(redactions).toBe(1)
+    })
+
     it('stops a background thread cleanup between idempotent Matrix writes', async () => {
         const controller = new AbortController()
         const fetchMock = vi.fn(async (input: string | URL | Request) => {
