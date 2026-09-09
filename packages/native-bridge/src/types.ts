@@ -501,6 +501,7 @@ export type AttachmentUploadOpenResult = {
 export type AttachmentUploadChunkResult = {
   transferId: string;
   index: number;
+  /** Cumulative bytes received across all acknowledged upload chunks. */
   receivedBytes: number;
   nextIndex: number;
 };

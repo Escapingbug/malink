@@ -1361,8 +1361,9 @@ function parseAttachmentUploadChunkResult(input: unknown) {
   const nextIndex = nonnegativeInteger(value.nextIndex, "upload.nextIndex");
   if (nextIndex < index + 1) invalidParams("upload.nextIndex must acknowledge the chunk.");
   const receivedBytes = nonnegativeInteger(value.receivedBytes, "upload.receivedBytes");
-  if (receivedBytes > NATIVE_BRIDGE_LIMITS.attachmentChunkBytes) {
-    invalidParams("upload.receivedBytes exceeds the chunk limit.");
+  // Native receipts report cumulative bytes, not the size of this chunk.
+  if (receivedBytes > NATIVE_BRIDGE_LIMITS.maxAttachmentBytes) {
+    invalidParams("upload.receivedBytes exceeds the attachment limit.");
   }
   return {
     transferId: opaqueId(value.transferId, "upload.transferId"),

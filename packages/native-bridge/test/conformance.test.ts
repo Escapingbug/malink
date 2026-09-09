@@ -615,6 +615,18 @@ describe("native bridge JSON-RPC conformance", () => {
     );
     expect("result" in chunk && chunk.result.receivedBytes).toBe(128);
 
+    for (const receivedBytes of [455 * 1024, 50 * 1024 * 1024]) {
+      const receipt = parseMethodRpcResponse(
+        "malink.attachment.upload.chunk",
+        response({ transferId: "transfer-1", index: 1, receivedBytes, nextIndex: 2 }),
+      );
+      expect("result" in receipt && receipt.result.receivedBytes).toBe(receivedBytes);
+    }
+    expect(() => parseMethodRpcResponse(
+      "malink.attachment.upload.chunk",
+      response({ transferId: "transfer-1", index: 1, receivedBytes: 50 * 1024 * 1024 + 1, nextIndex: 2 }),
+    )).toThrow(/attachment limit/);
+
     const digest = "a".repeat(43);
     const downloaded = parseMethodRpcResponse(
       "malink.attachment.download.read",
