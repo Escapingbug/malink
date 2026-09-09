@@ -1257,7 +1257,7 @@ function MatrixSettingsDialog({
                 <small role="status">
                   {diagnosticExportStatus === "started"
                     ? nativeHostDetected
-                      ? "Android diagnostic share sheet opened."
+                      ? "Diagnostic export opened. Choose a conversation or share externally."
                       : "Diagnostic report download started."
                     : nativeHostDetected
                       ? "The Android diagnostic share sheet could not be opened."

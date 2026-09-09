@@ -270,6 +270,11 @@ export class NativeBridgeClient implements MalinkClient {
     return true;
   }
 
+  async readDiagnostics(): Promise<File> {
+    const report = await this.bridge.request("malink.diagnostics.read", { context: this.bridge.context() });
+    return new File([report.text], report.filename, { type: "text/plain" });
+  }
+
   async savePngImage(filename: string, dataBase64: string): Promise<boolean> {
     if (this.helloResult.capabilities["client.image-save"]?.version !== 1) {
       return false;

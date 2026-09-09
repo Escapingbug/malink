@@ -258,6 +258,7 @@ function supervisorLaunchAgentPlist(options: ResolvedInstallOptions): string {
     MALINK_GATEWAY_ADMIN_SOCKET: options.gatewayAdminSocket,
     MALINK_GATEWAY_DATA_DIR: dirname(options.gatewayAdminSocket),
     MALINK_GATEWAY_UPDATE_SOCKET: options.updateSocket,
+    MALINK_GATEWAY_UPDATE_SUPERVISOR_LABEL: options.supervisorServiceLabel,
     MALINK_GATEWAY_BUILD_ID: options.currentBuildId,
     MALINK_GATEWAY_HOST_APP: options.gatewayHostApp,
   }

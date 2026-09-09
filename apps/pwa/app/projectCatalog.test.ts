@@ -6,6 +6,21 @@ import {
 } from "./projectCatalog";
 
 describe("canonicalGatewayProjects", () => {
+  it("labels candidate-owned projects and relabels every route after promotion", () => {
+    const gateways = [
+      { gatewayNodeId: "old", gatewayName: "Same Mac", projects: [{ projectId: "old-project" }] },
+      { gatewayNodeId: "new", gatewayName: "Same Mac", projects: [{ projectId: "trial-project" }] },
+    ];
+    const active = { gatewayNodeId: "old", buildId: "gateway-release-a" };
+    const candidate = { gatewayNodeId: "new", buildId: "gateway-release-b" };
+    const trial = gatewayProjectOwners(gateways, { computer: { deployment: { active, candidate } } });
+    expect(trial.get("old-project")?.label).toContain("Current Gateway · release-a");
+    expect(trial.get("trial-project")?.label).toContain("Candidate Gateway · release-b");
+    const promoted = gatewayProjectOwners([{ ...gateways[1]!, projects: [{ projectId: "old-project" }, { projectId: "trial-project" }] }],
+      { computer: { deployment: { active: candidate } } });
+    expect([...promoted.values()].every(owner => owner.deploymentLabel === "Current Gateway · release-b")).toBe(true);
+    expect(gatewayProjectOwners(gateways).get("old-project")?.deploymentLabel).toBeUndefined();
+  });
   const workspace = {
     projectId: "project-root",
     projectName: "Malink",

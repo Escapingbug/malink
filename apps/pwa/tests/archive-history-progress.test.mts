@@ -21,7 +21,7 @@ test("verified archive ends busy state before slow local cleanup, without repeat
   let busy = new Map([["project/session", "archive"]]);
   const recoveries = new Map();
   const notices: string[] = [];
-  let retry: any;
+  let retry: unknown[] | undefined;
   const deps = {
     waitForCommandCompletion: (value: unknown) => value,
     sessionLifecycleRecoveriesRef: { current: recoveries },

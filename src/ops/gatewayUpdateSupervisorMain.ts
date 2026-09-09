@@ -5,6 +5,7 @@ import { GatewayUpdateSupervisor } from './gatewayUpdateSupervisor.js'
 import { startGatewayUpdateSupervisorServer } from './gatewayUpdateSupervisorServer.js'
 import { FileGatewayComputerIdentityStore } from './gatewayComputerIdentity.js'
 import { GatewayDeploymentCoordinator } from './gatewayDeploymentCoordinator.js'
+import { requestMacosSupervisorReload } from './macosSupervisorReload.js'
 import {
   inspectGatewayDeploymentSlot,
   MacosGatewayBlueGreenHost,
@@ -21,9 +22,13 @@ const gatewayDataDirectory = optionalEnvironment('MALINK_GATEWAY_DATA_DIR')
 const updateSocketPath = process.env.MALINK_GATEWAY_UPDATE_SOCKET
   ?? join(installRoot, 'update-supervisor.sock')
 const reloadSupervisor = (): void => {
-  // launchd restarts this independent service from the newly active current
-  // release, so supervisor fixes take effect without touching Gateway state.
-  const reload = setTimeout(() => process.exit(0), 250)
+  // A clean exit alone may remain pending in launchd's on-demand-only mode.
+  // Explicitly reload only this service, never the business Gateway.
+  const reload = setTimeout(() => requestMacosSupervisorReload(
+    optionalEnvironment('MALINK_GATEWAY_UPDATE_SUPERVISOR_LABEL')
+      ?? optionalEnvironment('XPC_SERVICE_NAME')
+      ?? 'io.malink.gateway-update-supervisor',
+  ), 250)
   reload.unref?.()
 }
 const supervisor = new GatewayUpdateSupervisor({

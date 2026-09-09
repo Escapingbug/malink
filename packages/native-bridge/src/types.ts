@@ -594,6 +594,7 @@ export const REQUEST_METHODS = [
   "malink.update.check",
   "malink.update.install",
   "malink.diagnostics.export",
+  "malink.diagnostics.read",
   "malink.image.save",
   "malink.authorization.export",
   "malink.events.subscribe",
@@ -701,6 +702,7 @@ export type BridgeMethodParams = {
   "malink.update.check": IdempotentMutationParams;
   "malink.update.install": IdempotentMutationParams;
   "malink.diagnostics.export": ContextParams;
+  "malink.diagnostics.read": ContextParams;
   "malink.image.save": IdempotentMutationParams & {
     filename: string;
     mimeType: "image/png";
@@ -790,6 +792,7 @@ export type BridgeMethodResults = {
   "malink.update.check": NativeUpdateStatus;
   "malink.update.install": NativeUpdateStatus;
   "malink.diagnostics.export": DiagnosticsExportResult;
+  "malink.diagnostics.read": { filename: string; text: string };
   "malink.image.save": ImageSaveResult;
   "malink.authorization.export": AuthorizationExportResult;
   "malink.events.subscribe": EventsSubscribeResult;

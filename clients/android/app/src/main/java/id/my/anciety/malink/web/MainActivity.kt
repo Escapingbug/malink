@@ -101,6 +101,9 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.jsonObject
 import java.io.File
 import kotlin.coroutines.resume
@@ -1524,6 +1527,24 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun exportDiagnostics() {
+        if (webView != null) {
+            AlertDialog.Builder(this)
+                .setTitle("Export diagnostics")
+                .setItems(arrayOf("Add to a Malink conversation", "Share or save externally")) { _, choice ->
+                    if (choice == 0) {
+                        webView?.loadUrl("${trustedWebOrigin.appUrl.substringBefore('#')}#share-diagnostics")
+                    } else {
+                        exportDiagnosticsExternally()
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+            return
+        }
+        exportDiagnosticsExternally()
+    }
+
+    private fun exportDiagnosticsExternally() {
         runCatching {
             shareDiagnostics()
         }.onFailure { error ->
@@ -2243,6 +2264,12 @@ class MainActivity : ComponentActivity() {
 
         override suspend fun exportDiagnostics(): String =
             withContext(Dispatchers.Main.immediate) { shareDiagnostics() }
+
+        override suspend fun readDiagnostics(): JsonObject = withContext(Dispatchers.IO) {
+            val report = diagnostics.export()
+            check(report.length() <= 2 * 1024 * 1024) { "Diagnostic report exceeds the sharing limit" }
+            buildJsonObject { put("filename", report.name); put("text", report.readText(Charsets.UTF_8)) }
+        }
 
         override suspend fun savePngImage(filename: String, bytes: ByteArray): String =
             withContext(Dispatchers.IO) { savePngImageToPictures(filename, bytes) }

@@ -53,7 +53,15 @@ one identity from being driven by both transports.
   battery-saving or connection-mode selector. Refusing notification permission
   blocks native connection startup with a visible explanation.
 - The ongoing notification exposes **Export logs**. It creates a bounded text
-  report that can be shared directly to Telegram even when the hosted Web UI
+  report. With the UI available, choose **Add to a Malink conversation** to
+  select an authenticated project/session destination. The report is added to
+  that conversation's local attachment draft only: no upload or Agent command
+  occurs until the user enters text and presses Send. Existing conversation
+  drafts are preserved independently. **Share or save externally** retains the
+  Android system share sheet. Older APKs without `malink.diagnostics.read`
+  retain that external-share fallback without a bridge version increase.
+  The bounded
+  report can be shared directly to Telegram even when the hosted Web UI
   cannot connect. Reports contain the exact APK build, Android version, native
   lifecycle transitions, Matrix startup stages, timeouts, retries, and exception
   class names. Exported reports never include tokens, message content, room/user

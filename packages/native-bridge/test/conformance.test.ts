@@ -17,6 +17,18 @@ import {
 } from "../src/index.js";
 
 const context = { bridgeSessionId: "bridge-session-1" };
+describe("diagnostic draft export", () => {
+  it("reads a bounded report without a mutation or share-sheet action", () => {
+    expect(isMutationMethod("malink.diagnostics.read")).toBe(false);
+    expect(parseRpcRequest(request("malink.diagnostics.read", { context })).method).toBe("malink.diagnostics.read");
+    expect(parseMethodRpcResponse("malink.diagnostics.read", response({ filename: "diagnostics.txt", text: "sanitized report" })))
+      .toMatchObject({ result: { filename: "diagnostics.txt", text: "sanitized report" } });
+  });
+  it("rejects unexpected report fields and oversized content", () => {
+    expect(() => parseMethodRpcResponse("malink.diagnostics.read", response({ filename: "x", text: "report", token: "forbidden" }))).toThrow();
+    expect(() => parseMethodRpcResponse("malink.diagnostics.read", response({ filename: "x", text: "x".repeat(2 * 1024 * 1024 + 1) }))).toThrow();
+  });
+});
 const idempotencyKey = "550e8400-e29b-41d4-a716-446655440000";
 const webInstanceId = "550e8400-e29b-41d4-a716-446655440001";
 

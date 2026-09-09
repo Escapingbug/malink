@@ -1,4 +1,5 @@
 package id.my.anciety.malink.bridge
+import kotlinx.serialization.json.JsonObject
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
@@ -160,6 +161,12 @@ class BridgeProtocolTest {
             response.getValue("filename").jsonPrimitive.content,
         )
         assertEquals(1, runtime.diagnosticExports)
+        val report = successResult(dispatch(dispatcher, """
+            {"jsonrpc":"2.0","id":"diagnostics-read","method":"malink.diagnostics.read",
+             "params":{"context":{"bridgeSessionId":"$BRIDGE_SESSION_ID"}}}
+        """.trimIndent()))
+        assertEquals("sanitized report", report.getValue("text").jsonPrimitive.content)
+        assertEquals(1, runtime.diagnosticExports) // Reading never opens a share sheet or sends a command.
     }
 
     @Test
@@ -830,6 +837,11 @@ class BridgeProtocolTest {
         override suspend fun exportDiagnostics(): String {
             diagnosticExports += 1
             return "malink-native-diagnostics.txt"
+        }
+
+        override suspend fun readDiagnostics(): JsonObject = buildJsonObject {
+            put("filename", "malink-native-diagnostics.txt")
+            put("text", "sanitized report")
         }
 
         override suspend fun savePngImage(filename: String, bytes: ByteArray): String {

@@ -145,6 +145,7 @@ object BridgeProtocol {
         "malink.update.check",
         "malink.update.install",
         "malink.diagnostics.export",
+        "malink.diagnostics.read",
         "malink.image.save",
         "malink.authorization.export",
         "malink.events.subscribe",
@@ -357,6 +358,11 @@ interface BridgeRuntime {
         userAction = "update_native",
     )
 
+    suspend fun readDiagnostics(): JsonObject = throw BridgeRuntimeFailure(
+        BridgeError.CAPABILITY_UNAVAILABLE, "Diagnostic report reading is unavailable.",
+        userAction = "update_native",
+    )
+
     suspend fun savePngImage(filename: String, bytes: ByteArray): String =
         throw BridgeRuntimeFailure(
             BridgeError.CAPABILITY_UNAVAILABLE,
@@ -553,6 +559,11 @@ class BridgeDispatcher(
                     put("status", "share_opened")
                     put("filename", runtime.exportDiagnostics())
                 }
+            }
+            "malink.diagnostics.read" -> {
+                requireDiagnosticsCapability()
+                requireContext(request.params, mutation = false)
+                runtime.readDiagnostics()
             }
             "malink.image.save" -> {
                 requireImageSaveCapability()

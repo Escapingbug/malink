@@ -10,6 +10,7 @@ export type GatewayProjectOwner = {
   computerName: string;
   shortId: string;
   label: string;
+  deploymentLabel?: string;
 };
 
 type GatewayDirectorySource = {
@@ -21,6 +22,7 @@ type GatewayDirectorySource = {
 
 export function gatewayProjectOwners(
   gateways: readonly GatewayDirectorySource[],
+  observations: Record<string, { deployment: { active: { gatewayNodeId: string; buildId: string }; candidate?: { gatewayNodeId: string; buildId: string } } }> = {},
 ): Map<string, GatewayProjectOwner> {
   const owners = new Map<string, GatewayProjectOwner>();
   for (const gateway of gateways) {
@@ -29,6 +31,15 @@ export function gatewayProjectOwners(
       gateway.gatewayName,
       gateway.computerName,
     );
+    for (const { deployment } of Object.values(observations)) {
+      const candidate = deployment.candidate?.gatewayNodeId === gateway.gatewayNodeId;
+      const slot = candidate ? deployment.candidate
+        : deployment.active.gatewayNodeId === gateway.gatewayNodeId ? deployment.active : undefined;
+      if (!slot) continue;
+      owner.deploymentLabel = `${candidate ? "Candidate Gateway" : "Current Gateway"} · ${slot.buildId.replace(/^gateway-/, "")}`;
+      owner.label += ` · ${owner.deploymentLabel}`;
+      break;
+    }
     for (const project of gateway.projects ?? []) owners.set(project.projectId, owner);
   }
   return owners;

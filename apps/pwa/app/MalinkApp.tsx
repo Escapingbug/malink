@@ -37,6 +37,7 @@ import {
   type SessionExtensionDescriptor,
 } from "@malink/protocol";
 import type { NativeUpdateStatus } from "@malink/native-bridge";
+import { DiagnosticShareDialog } from "./DiagnosticShareDialog";
 import {
   CommandAcknowledgementTimeoutError,
   CommandCompletionTimeoutError,
@@ -1593,6 +1594,10 @@ function MalinkAppRuntime() {
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [diagnosticShareFile, setDiagnosticShareFile] = useState<File | null>(null);
+  const diagnosticRouteFlightRef = useRef(false);
+  const diagnosticDraftFilesRef = useRef(new WeakSet<File>());
+  const conversationDraftsRef = useRef(new Map<string, { text: string; files: File[] }>());
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [feedAwayFromLatest, setFeedAwayFromLatest] = useState(false);
@@ -1841,6 +1846,25 @@ function MalinkAppRuntime() {
     );
   const [sessionSettingsUpdate, setSessionSettingsUpdate] =
     useState<SessionSettingsUpdate | null>(null);
+  useEffect(() => {
+    const openDiagnosticShare = () => {
+      if (window.location.hash !== "#share-diagnostics" || diagnosticRouteFlightRef.current) return;
+      const connection = malinkClientRef.current;
+      if (!connection?.readDiagnostics) return;
+      diagnosticRouteFlightRef.current = true;
+      void connection.readDiagnostics().then(file => {
+        setDiagnosticShareFile(file);
+        setSettingsOpen(false);
+        setGatewayUpdateDialogOpen(false);
+        window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      }).catch(error => {
+        showUiNotice("diagnostics:read", "update", "error", formatUiError(error));
+      }).finally(() => { diagnosticRouteFlightRef.current = false; });
+    };
+    openDiagnosticShare();
+    window.addEventListener("hashchange", openDiagnosticShare);
+    return () => window.removeEventListener("hashchange", openDiagnosticShare);
+  }, [connectionStatus]);
   useEffect(() => {
     if (!sessionSettingsUpdate?.confirmed) return;
     const session = gatewayState?.sessions.find(value => value.id === sessionSettingsUpdate.sessionId);
@@ -2218,8 +2242,9 @@ function MalinkAppRuntime() {
   const projectGatewaysById = useMemo(
     () => gatewayProjectOwners(
       gatewayState?.gatewayDirectory?.directory.gateways ?? [],
+      gatewayState?.gatewayDeployments ?? {},
     ),
-    [gatewayState?.gatewayDirectory],
+    [gatewayState?.gatewayDirectory, gatewayState?.gatewayDeployments],
   );
   gatewayNodeByProjectRef.current = projectGatewaysById;
   const gatewayNodeBySession = new Map<string, string>();
@@ -2634,7 +2659,8 @@ function MalinkAppRuntime() {
     promptSubmitting: isPromptSubmitting,
     isStreaming,
     isStopping,
-    hasContent: Boolean(draft.trim() || pendingFiles.length > 0),
+    hasContent: Boolean(draft.trim() || (pendingFiles.length > 0 &&
+      !pendingFiles.some(file => diagnosticDraftFilesRef.current.has(file)))),
   });
   const composerState = optimisticSelected && optimisticSession
     ? optimisticSession.phase === "failed"
@@ -5458,6 +5484,13 @@ function MalinkAppRuntime() {
       : requestedProjectId ?? null;
     const sessionChanged = selectedSessionIdRef.current !== sessionId ||
       selectedProjectIdRef.current !== projectId;
+    if (sessionChanged) {
+      const oldKey = JSON.stringify([selectedProjectIdRef.current, selectedSessionIdRef.current]);
+      conversationDraftsRef.current.set(oldKey, { text: draft, files: pendingFiles });
+      const nextDraft = conversationDraftsRef.current.get(JSON.stringify([projectId, sessionId]));
+      setDraft(nextDraft?.text ?? "");
+      setPendingFiles(nextDraft?.files ?? []);
+    }
     selectedSessionIdRef.current = sessionId;
     selectedProjectIdRef.current = projectId;
     setSelectedSessionId(sessionId);
@@ -8934,6 +8967,17 @@ function MalinkAppRuntime() {
       });
       const connection = malinkClientRef.current;
       if (connection?.runtime === "native") {
+        if (connection.readDiagnostics) {
+          try {
+            setDiagnosticShareFile(await connection.readDiagnostics());
+            setSettingsOpen(false);
+            setGatewayUpdateDialogOpen(false);
+            return true;
+          } catch (error) {
+            showUiNotice("diagnostics:read", "update", "warning",
+              `In-app diagnostic sharing is unavailable: ${formatUiError(error)}. Opening Android sharing instead.`);
+          }
+        }
         if (!connection.exportDiagnostics || !(await connection.exportDiagnostics())) {
           throw new Error(
             "This APK cannot open the Android diagnostic share sheet. Update the APK and try again.",
@@ -11353,6 +11397,10 @@ function MalinkAppRuntime() {
   async function sendMessage(event?: FormEvent) {
     event?.preventDefault();
     const value = draft.trim();
+    if (!value && pendingFiles.some(file => diagnosticDraftFilesRef.current.has(file))) {
+      showUiNotice("diagnostics:message", "composer", "info", "Enter a message before sending the diagnostic attachment.");
+      return;
+    }
     if (!value && pendingFiles.length === 0) return;
     const sessionId = selectedSessionIdRef.current;
     if (!composerState.canSend || !sessionId) {
@@ -13718,6 +13766,32 @@ function MalinkAppRuntime() {
             }}
           />
         )}
+        {diagnosticShareFile && <DiagnosticShareDialog file={diagnosticShareFile}
+          sessions={visibleGatewaySessions.map(session => ({
+            key: JSON.stringify([session.projectId, session.id]),
+            label: `${session.title} — ${session.projectName} — ${(projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway).label}`,
+          }))}
+          onClose={() => setDiagnosticShareFile(null)}
+          onExternal={() => { void malinkClientRef.current?.exportDiagnostics?.().catch(error => {
+            showUiNotice("diagnostics:share", "update", "error", formatUiError(error));
+          }); setDiagnosticShareFile(null); }}
+          onAttach={key => {
+            const target = visibleGatewaySessions.find(s => JSON.stringify([s.projectId, s.id]) === key);
+            if (!target) return;
+            const same = selectedSessionIdRef.current === target.id && selectedProjectIdRef.current === target.projectId;
+            const existing = same ? pendingFiles : conversationDraftsRef.current.get(key)?.files ?? [];
+            if (existing.length >= MAX_MALINK_ATTACHMENTS || existing.reduce((n, f) => n + f.size, 0) + diagnosticShareFile.size > MAX_MALINK_PROMPT_ATTACHMENT_BYTES) {
+              showUiNotice("diagnostics:share", "attachment", "warning", "The selected conversation draft has no room for another attachment.");
+              return;
+            }
+            diagnosticDraftFilesRef.current.add(diagnosticShareFile);
+            chooseSession(target.id, target.projectId);
+            setPendingFiles([...existing, diagnosticShareFile]);
+            setDiagnosticShareFile(null);
+            setSettingsOpen(false);
+            setGatewayUpdateDialogOpen(false);
+            showUiNotice("diagnostics:draft", "composer", "info", "Diagnostic attachment added. Enter a message, then press Send. Nothing has been sent yet.");
+          }} />}
         <header className="conversation-header">
           <button
             className="mobile-back"
@@ -13731,6 +13805,11 @@ function MalinkAppRuntime() {
           </span>
           <div className="conversation-heading">
             <h2>{conversationTitle}</h2>
+            {activeProjectGateway.deploymentLabel && (
+              <small className="conversation-gateway-version" title={activeProjectGateway.label}>
+                {activeProjectGateway.deploymentLabel}
+              </small>
+            )}
             <span className="conversation-status">
               <span className="conversation-project-copy">
                 {activeWorkspace?.projectName || "Project"} · {activeProvider}

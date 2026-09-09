@@ -2506,6 +2506,15 @@ select:focus-visible {
     opacity var(--motion-fast) ease;
 }
 
+.conversation-gateway-version {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--violet);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .history-loader.is-loading {
   gap: 7px;
   color: #7163c0;
