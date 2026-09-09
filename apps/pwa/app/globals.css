@@ -10891,6 +10891,18 @@ body {
     display: grid;
   }
 
+  .conversation-header:has(.gateway-recovery-button) {
+    height: calc(100px + env(safe-area-inset-top));
+    padding-bottom: 42px;
+  }
+
+  .conversation-header .gateway-recovery-button {
+    position: absolute;
+    right: 11px;
+    bottom: 6px;
+    max-width: calc(100% - 22px);
+  }
+
   .chat-feed {
     gap: 8px;
     padding: 9px 8px 16px;

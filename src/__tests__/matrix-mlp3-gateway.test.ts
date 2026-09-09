@@ -1340,8 +1340,10 @@ describe('MatrixMlp3GatewayRunner', () => {
         lifecycle: async () => undefined,
       }),
     }
+    let deploymentClockOffset = 0
     const runner = new MatrixMlp3GatewayRunner(config, {
       client,
+      now: () => Date.now() + deploymentClockOffset,
       onLog: message => gatewayLogs.push(message),
       onRejected: (_event, error) => rejected.push(error),
       webPushService,
@@ -1804,6 +1806,13 @@ describe('MatrixMlp3GatewayRunner', () => {
       MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE)).some(event =>
         event.payload.type === 'gateway.deployment.status'
         && event.payload.status.updateId === 'external-prepare'))
+    const beforeRefresh = (await events(client, activeKey.key, roomId, projectId))
+      .filter(event => event.payload.type === 'gateway.deployment.status'
+        && event.payload.status.updateId === 'external-prepare').length
+    deploymentClockOffset = 31_000
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .filter(event => event.payload.type === 'gateway.deployment.status'
+        && event.payload.status.updateId === 'external-prepare').length > beforeRefresh, 7_000)
     gatewayDeploymentStatus = originalDeployment
 
     await expect(runner.publishNativeClientRelease(nativeRelease(42))).resolves.toMatchObject({
