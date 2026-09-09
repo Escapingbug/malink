@@ -7983,6 +7983,16 @@ select:focus-visible {
 .shared-file-dialog footer { flex-wrap: wrap; }
 .shared-file-dialog footer button { min-height: 48px; flex: 1; font-size: 13px; }
 .shared-file-dialog footer button:disabled { cursor: not-allowed; }
+.shared-file-dialog { overflow: hidden; grid-template-rows: auto; }
+.share-session-results { overflow-y: auto; max-height: 45dvh; min-height: 100px; overscroll-behavior: contain; }
+.share-session-group + .share-session-group { margin-top: 14px; }
+.share-group-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 10px; border-radius: 10px; background: #f0eefb; text-align: left; min-height: 48px; }
+.share-group-toggle small { display: block; font-size: 11px; color: #62677a; overflow-wrap: anywhere; }
+.share-session-choice { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 64px; padding: 10px; margin-top: 5px; border: 1px solid #e3e2ef; border-radius: 12px; background: white; text-align: left; }
+.share-session-choice:hover, .share-session-choice:focus-visible { background: #f3f0ff; border-color: var(--violet); outline: 2px solid var(--violet); outline-offset: -2px; }
+.share-session-title { flex: 1; min-width: 0; }
+.share-session-title strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-size: 13px; }
+.share-session-title small { display: block; margin-top: 4px; font-size: 11px; color: #62677a; }
 
 .new-session-dialog > header {
   display: flex;

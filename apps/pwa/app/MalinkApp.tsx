@@ -13764,7 +13764,11 @@ function MalinkAppRuntime() {
         {sharedFileBatch && <SharedFileDialog files={sharedFileBatch.files}
           sessions={visibleGatewaySessions.map(session => ({
             key: JSON.stringify([session.projectId, session.id]),
-            label: `${session.title} — ${session.projectName} — ${(projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway).label}`,
+            title: session.title,
+            projectId: session.projectId,
+            projectName: session.projectName,
+            computer: (projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway).label,
+            updatedAt: session.updatedAt,
           }))}
           onClose={() => { void malinkClientRef.current?.dismissSharedFiles?.(sharedFileBatch.batchId).then(() => setSharedFileBatch(null)).catch(error => showUiNotice("share:cancel", "attachment", "error", formatUiError(error))); }}
           onAttach={key => {
@@ -13783,6 +13787,7 @@ function MalinkAppRuntime() {
             setSharedFileBatch(null);
             setSettingsOpen(false);
             setGatewayUpdateDialogOpen(false);
+            window.requestAnimationFrame(() => window.requestAnimationFrame(() => composerTextareaRef.current?.focus()));
             showUiNotice("share:draft", "composer", "info", "Shared files added. Enter a message, then press Send. Nothing has been sent yet.");
           }} />}
         <header className="conversation-header">
