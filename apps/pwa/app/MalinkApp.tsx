@@ -4577,7 +4577,7 @@ function MalinkAppRuntime() {
       const trust = await loadTrustedGateway(identity);
       const savedTrusts = await loadTrustedGateways(identity);
       setSavedGateways(savedTrusts.map(publicTrustFromWeb));
-      const stored = loadMatrixConfig(trust?.gatewayId) ?? loadMatrixConfig() ?? emptyMatrixConfig;
+      const stored = loadMatrixConfig(trust?.gatewayNodeId ?? trust?.gatewayId) ?? loadMatrixConfig() ?? emptyMatrixConfig;
       if (trust) {
         clearPendingPairing();
         setTrustedGateway(publicTrustFromWeb(trust));

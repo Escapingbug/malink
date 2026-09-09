@@ -457,7 +457,7 @@ export async function loadTrustedGateway(
     ) {
       return null;
     }
-    return {
+    const verified: TrustedGateway = {
       ...parsed,
       gatewayNodeId: parsed.gatewayNodeId ?? parsed.gatewayId,
       ...(gatewayDirectory ? { gatewayDirectory } : {}),
@@ -467,9 +467,38 @@ export async function loadTrustedGateway(
       rotations,
       transportSnapshots,
     };
+    // Only implicit startup selection may move to another node. The directory
+    // and original authorization have both been verified above.
+    if (!gatewayId && directory && !directoryGateway) {
+      const replacement = selectDirectoryEntry(verified, directory.gateways);
+      if (!replacement) return null;
+      const recovered: TrustedGateway = {
+        ...verified,
+        gatewayNodeId: replacement.gatewayNodeId,
+        gatewayName: replacement.gatewayName,
+        gatewayTransport: replacement.transport,
+        rotations: [],
+        transportSnapshots: [],
+      };
+      saveTrustedGateway(recovered);
+      return recovered;
+    }
+    return verified;
   } catch {
     return null;
   }
+}
+
+function selectDirectoryEntry(
+  base: TrustedGateway,
+  gateways: SignedWorkspaceGatewayDirectory["directory"]["gateways"],
+) {
+  return gateways.find(gateway => gateway.gatewayNodeId === base.gatewayNodeId)
+    ?? [...gateways].sort((left, right) =>
+      Number(right.gatewayName === base.gatewayName) - Number(left.gatewayName === base.gatewayName)
+      || right.issuedAt - left.issuedAt
+      || left.gatewayNodeId.localeCompare(right.gatewayNodeId),
+    )[0];
 }
 
 function saveGatewayDirectoryProfiles(
@@ -492,7 +521,7 @@ function saveGatewayDirectoryProfiles(
   }
   writeTrustedGatewayProfiles({
     version: 1,
-    activeGatewayId: base.gatewayNodeId,
+    activeGatewayId: selectDirectoryEntry(base, signed.directory.gateways)?.gatewayNodeId ?? null,
     gateways,
   });
 }

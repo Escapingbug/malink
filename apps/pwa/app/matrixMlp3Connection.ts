@@ -140,7 +140,7 @@ export async function connectMatrixMlp3(
     window.localStorage,
     [config.homeserver, config.userId, config.gatewayId, identity.keyId].join("\u0000"),
   );
-  let trust = await loadTrustedGateway(identity, config.gatewayId || undefined);
+  let trust = await loadTrustedGateway(identity, config.gatewayNodeId || config.gatewayId || undefined);
   const sdk = await import("matrix-js-sdk");
   const syncDatabase = await matrixSyncDatabaseName(config);
   await waitForMatrixSyncStoreClose(syncDatabase);
