@@ -23,6 +23,37 @@ import org.junit.Test
 
 class MatrixMlp3NativeProjectionTest {
     @Test
+    fun `shared prompt attachments survive native user message projection`() {
+        val attachment = buildJsonObject {
+            put("id", "shared-file")
+            put("name", "diagnostics.txt")
+            put("mimeType", "text/plain")
+            put("size", 6)
+            put("sha256", "A".repeat(43))
+            put("media", buildJsonObject {
+                put("url", "mxc://example.org/report")
+                put("key", "B".repeat(43))
+                put("iv", "C".repeat(16))
+                put("sha256", "D".repeat(43))
+                put("size", 22)
+            })
+        }
+        val result = projection().applyOwnCommand(buildJsonObject {
+            put("commandId", "shared-prompt")
+            put("operation", "prompt.submit")
+            put("deviceId", "phone")
+            put("certificateId", "certificate")
+            put("sessionId", "session-a")
+            put("payload", buildJsonObject {
+                put("type", "prompt.submit")
+                put("text", "Please inspect this file")
+                put("attachments", JsonArray(listOf(attachment)))
+            })
+        }, "\$prompt", 100)
+        assertEquals("diagnostics.txt", result.messages.single().attachments?.single()?.name)
+    }
+
+    @Test
     fun `history rebuilds an evicted message after restart without replaying its command terminal`() {
         val original = projection()
         original.applyGatewayEvent(projectSnapshot(), "\$project", null)

@@ -3801,6 +3801,9 @@ internal class MatrixMlp3NativeProjection(
         sessionId = sessionId,
         commandId = commandId,
         originDeviceId = originDeviceId,
+        attachments = (semantic["attachments"] as? JsonArray)?.mapNotNull {
+            runCatching { PublicClientJson.decodeAttachment(it) }.getOrNull()
+        }?.takeIf { it.isNotEmpty() },
         semantic = JsonObject(semantic + ("physicalEventId" to JsonPrimitive(physicalEventId))),
     )
 

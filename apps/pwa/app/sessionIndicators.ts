@@ -6,8 +6,8 @@ const MAX_PERSISTED_SESSIONS = 5_000;
 
 export type SessionReadState = {
   /**
-   * False means this client has never established a baseline. Existing
-   * sessions are marked read during bootstrap instead of all appearing new.
+   * False means this client has not received its first session snapshot.
+   * Loading a snapshot is not evidence that its conversations were read.
    */
   initialized: boolean;
   readUpdatedAt: Readonly<Record<string, number>>;
@@ -43,19 +43,17 @@ export const EMPTY_SESSION_READ_STATE: SessionReadState = Object.freeze({
 });
 
 /**
- * Establishes a first-run baseline. This deliberately does not infer that an
- * idle session "completed": Gateway status has no such transition history.
+ * Establishes readiness without inventing read markers. Actual reads and
+ * remote receipts are the only authorities for advancing read state.
  */
 export function initializeSessionReadState(
   state: SessionReadState,
-  sessions: readonly GatewaySessionSummary[],
+  _sessions: readonly GatewaySessionSummary[],
 ): SessionReadState {
   if (state.initialized) return state;
   return {
     initialized: true,
-    readUpdatedAt: Object.fromEntries(
-      sessions.map((session) => [session.id, session.updatedAt]),
-    ),
+    readUpdatedAt: state.readUpdatedAt,
   };
 }
 

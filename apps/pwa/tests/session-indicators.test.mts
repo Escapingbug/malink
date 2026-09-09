@@ -30,18 +30,19 @@ function session(
   };
 }
 
-test("first snapshot is a read baseline instead of fabricating historical unread work", () => {
+test("first snapshot never fabricates reads that other devices cannot observe", () => {
   const sessions = [session("idle", "idle", 10), session("failed", "failed", 20)];
   const state = initializeSessionReadState(EMPTY_SESSION_READ_STATE, sessions);
 
   assert.equal(state.initialized, true);
-  assert.equal(sessionIndicator(sessions[0], state).unread, false);
+  assert.deepEqual(state.readUpdatedAt, {});
+  assert.equal(sessionIndicator(sessions[0], state).unread, true);
   assert.deepEqual(sessionIndicator(sessions[0], state), {
     activity: "idle",
-    unread: false,
+    unread: true,
     needsAttention: false,
   });
-  assert.equal(sessionIndicator(sessions[1], state).needsAttention, false);
+  assert.equal(sessionIndicator(sessions[1], state).needsAttention, true);
 });
 
 test("newer stable updatedAt values create unread and failed-attention indicators", () => {
