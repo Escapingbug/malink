@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { generateDeviceKeyPair, exportPairingPublicKey, generatePairingChallenge, signPairingOffer, signPairingRequest, signPairingCertificate, pairingOfferDigest, pairingRequestDigest, signWorkspaceGatewayDirectory } from '@malink/security';
 import { loadTrustedGateway, saveTrustedGateway, applyWorkspaceGatewayDirectory, PAIRING_TRUST_PROFILES_STORAGE_KEY } from '../app/pairing.ts';
-test('retired startup entry recovers through signed directory while explicit nodes stay exact', async () => {
+test('retired startup entry recovers through signed directory while explicit nodes stay exact', async (t) => {
     const values = new Map<string, string>();
     const oldStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
     Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: (k: string) => values.get(k) ?? null, setItem: (k: string, v: string) => values.set(k, v), removeItem: (k: string) => values.delete(k) } });
@@ -27,6 +27,72 @@ test('retired startup entry recovers through signed directory while explicit nod
         saveTrustedGateway({ ...trust, gatewayDirectory: undefined });
         await applyWorkspaceGatewayDirectory({ ...trust, gatewayDirectory: undefined }, directory);
         assert.equal(JSON.parse(values.get(PAIRING_TRUST_PROFILES_STORAGE_KEY)!).activeGatewayId, 'new-node');
+        assert.ok(recovered);
+        const nextDirectory = await signWorkspaceGatewayDirectory({
+            ...directory.directory,
+            directoryId: 'directory-after-second-update',
+            revision: 3,
+            gateways: [{ ...descriptor, gatewayNodeId: 'next-node',
+                transport: { ...descriptor.transport, roomId: '!next:example', deviceId: 'NEXT' } }],
+        }, keys.privateKey, keys.keyId);
+        // A running connection can persist its now-retired node with the new
+        // directory. Its transport differs from the original pairing certificate.
+        const twiceUpdated = { ...recovered, gatewayDirectory: nextDirectory };
+        saveTrustedGateway(twiceUpdated);
+        const restoredAgain = await loadTrustedGateway();
+        assert.equal(restoredAgain?.gatewayNodeId, 'next-node');
+        assert.equal(restoredAgain?.gatewayTransport.deviceId, 'NEXT');
+        assert.deepEqual(restoredAgain?.certificate, certificate);
+        assert.equal((await loadTrustedGateway())?.gatewayNodeId, 'next-node', 'survives another reload');
+        assert.equal(await loadTrustedGateway(undefined, 'new-node'), null, 'explicit retired node never changes target');
+        await t.test('rejects a tampered replacement directory without writing storage', async () => {
+            const tamperedDirectory = structuredClone(nextDirectory);
+            tamperedDirectory.directory.gateways[0]!.transport.deviceId = 'ATTACKER';
+            saveTrustedGateway({ ...twiceUpdated, gatewayDirectory: tamperedDirectory });
+            const before = new Map(values);
+            assert.equal(await loadTrustedGateway(), null);
+            assert.deepEqual(values, before);
+        });
+        await t.test('still rejects invalid and expired authorization before recovery', async () => {
+            const invalidCertificate = structuredClone(certificate);
+            invalidCertificate.signature.value = 'invalid-signature';
+            saveTrustedGateway({ ...twiceUpdated, certificate: invalidCertificate });
+            assert.equal(await loadTrustedGateway(), null);
+            saveTrustedGateway(twiceUpdated);
+            const originalNow = Date.now;
+            Date.now = () => certificate.certificate.expiresAt + 1;
+            try { assert.equal(await loadTrustedGateway(), null); }
+            finally { Date.now = originalNow; }
+        });
+        await t.test('rejects a different browser identity', async () => {
+            saveTrustedGateway(twiceUpdated);
+            assert.equal(await loadTrustedGateway({
+                ...device, keyId: 'another-browser', publicJwk: request.request.deviceKey.publicKey,
+            }), null);
+        });
+        await t.test('does not select any node when the signed directory is empty', async () => {
+            const empty = await signWorkspaceGatewayDirectory({
+                ...nextDirectory.directory, directoryId: 'empty', revision: 4, gateways: [],
+            }, keys.privateKey, keys.keyId);
+            saveTrustedGateway({ ...twiceUpdated, gatewayDirectory: empty });
+            assert.equal(await loadTrustedGateway(), null);
+        });
+        await t.test('preserves transport validation for a node still in the directory', async () => {
+            saveTrustedGateway({ ...recovered, gatewayTransport: { ...recovered.gatewayTransport, deviceId: 'ATTACKER' } });
+            assert.equal(await loadTrustedGateway(), null);
+        });
+        await t.test('recovers across a third node update', async () => {
+            assert.ok(restoredAgain);
+            const third = await signWorkspaceGatewayDirectory({
+                ...nextDirectory.directory, directoryId: 'third-update', revision: 4,
+                gateways: [{ ...descriptor, gatewayNodeId: 'third-node',
+                    transport: { ...descriptor.transport, deviceId: 'THIRD' } }],
+            }, keys.privateKey, keys.keyId);
+            saveTrustedGateway({ ...restoredAgain, gatewayDirectory: third });
+            const recoveredThird = await loadTrustedGateway();
+            assert.equal(recoveredThird?.gatewayTransport.deviceId, 'THIRD');
+            assert.deepEqual(recoveredThird?.certificate, certificate);
+        });
         const tampered = structuredClone(directory);
         tampered.directory.gateways[0]!.transport.deviceId = 'ATTACKER';
         saveTrustedGateway({ ...trust, gatewayDirectory: tampered });

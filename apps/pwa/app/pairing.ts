@@ -393,6 +393,50 @@ export async function loadTrustedGateway(
     const directoryGateway = directory?.gateways.find(
       gateway => gateway.gatewayNodeId === gatewayNodeId,
     );
+    if (
+      parsed.version !== 1 ||
+      !parsed.gatewayId ||
+      !parsed.gatewayName ||
+      !parsed.gatewayKey ||
+      !parsed.gatewayTransport ||
+      !parsed.offer ||
+      !parsed.request ||
+      !parsed.certificate ||
+      certificate.certificate.expiresAt <= Date.now() ||
+      certificate.certificate.gatewayId !== parsed.gatewayId ||
+      certificate.certificate.gatewayKeyId !== parsed.gatewayKey.keyId
+    ) {
+      return null;
+    }
+    const verified: TrustedGateway = {
+      ...parsed,
+      gatewayNodeId: parsed.gatewayNodeId ?? parsed.gatewayId,
+      ...(gatewayDirectory ? { gatewayDirectory } : {}),
+      offer,
+      request,
+      certificate,
+      rotations,
+      transportSnapshots,
+    };
+    // The signed directory authorizes the replacement independently of the
+    // retired node's transport. Recover before comparing that obsolete binding
+    // with the original pairing certificate: after a second node update they
+    // legitimately differ. Explicit node requests still validate their own
+    // binding below and must never be redirected.
+    if (!gatewayId && directory && !directoryGateway) {
+      const replacement = selectDirectoryEntry(verified, directory.gateways);
+      if (!replacement) return null;
+      const recovered: TrustedGateway = {
+        ...verified,
+        gatewayNodeId: replacement.gatewayNodeId,
+        gatewayName: replacement.gatewayName,
+        gatewayTransport: replacement.transport,
+        rotations: [],
+        transportSnapshots: [],
+      };
+      saveTrustedGateway(recovered);
+      return recovered;
+    }
     let expectedTransport = directoryGateway?.transport ?? certificate.certificate.gatewayTransport;
     let previousIssuedAt = certificate.certificate.issuedAt;
     const rotationIds = new Set<string>();
@@ -440,48 +484,8 @@ export async function loadTrustedGateway(
       }
       previousIssuedAt = update.issuedAt;
     }
-    if (
-      parsed.version !== 1 ||
-      !parsed.gatewayId ||
-      !parsed.gatewayName ||
-      !parsed.gatewayKey ||
-      !parsed.gatewayTransport ||
-      !parsed.offer ||
-      !parsed.request ||
-      !parsed.certificate ||
-      certificate.certificate.expiresAt <= Date.now() ||
-      certificate.certificate.gatewayId !== parsed.gatewayId ||
-      certificate.certificate.gatewayKeyId !== parsed.gatewayKey.keyId ||
-      canonicalJson(expectedTransport) !==
-        canonicalJson(parsed.gatewayTransport)
-    ) {
+    if (canonicalJson(expectedTransport) !== canonicalJson(parsed.gatewayTransport)) {
       return null;
-    }
-    const verified: TrustedGateway = {
-      ...parsed,
-      gatewayNodeId: parsed.gatewayNodeId ?? parsed.gatewayId,
-      ...(gatewayDirectory ? { gatewayDirectory } : {}),
-      offer,
-      request,
-      certificate,
-      rotations,
-      transportSnapshots,
-    };
-    // Only implicit startup selection may move to another node. The directory
-    // and original authorization have both been verified above.
-    if (!gatewayId && directory && !directoryGateway) {
-      const replacement = selectDirectoryEntry(verified, directory.gateways);
-      if (!replacement) return null;
-      const recovered: TrustedGateway = {
-        ...verified,
-        gatewayNodeId: replacement.gatewayNodeId,
-        gatewayName: replacement.gatewayName,
-        gatewayTransport: replacement.transport,
-        rotations: [],
-        transportSnapshots: [],
-      };
-      saveTrustedGateway(recovered);
-      return recovered;
     }
     return verified;
   } catch {
