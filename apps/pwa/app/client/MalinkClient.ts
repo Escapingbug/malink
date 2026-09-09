@@ -169,6 +169,8 @@ export interface MalinkClient {
   installNativeUpdate?(): Promise<NativeUpdateStatus>;
   exportDiagnostics?(): Promise<boolean>;
   readDiagnostics?(): Promise<File>;
+  readSharedFiles?(): Promise<{ batchId: string; files: File[] }>;
+  dismissSharedFiles?(batchId: string): Promise<void>;
   /** Saves a bounded QR PNG through the native platform image library. */
   savePngImage?(filename: string, dataBase64: string): Promise<boolean>;
   /** Saves a bounded one-time authorization file to native public downloads. */

@@ -1,6 +1,7 @@
 package id.my.anciety.malink.web
 
 import android.Manifest
+import kotlinx.serialization.json.jsonPrimitive
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
@@ -133,6 +134,7 @@ class MainActivity : ComponentActivity() {
     private var webViewResumed = false
     private var pendingForegroundStart = false
     private var pendingSessionId: String? = null
+    private val sharedFileInbox by lazy { SharedFileInbox(this) }
     private var pendingAuthorizationTransfer: String? = null
     private var authorizationImportGeneration = 0L
     private var nativeBackDispatchPending = false
@@ -1329,7 +1331,8 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         when (intent?.action) {
-            Intent.ACTION_VIEW, Intent.ACTION_SEND -> importAuthorizationTransfer(intent)
+            Intent.ACTION_VIEW -> importAuthorizationTransfer(intent)
+            Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> receiveSharedFiles(intent)
             ACTION_EXPORT_DIAGNOSTICS -> {
                 intent.action = null
                 exportDiagnostics()
@@ -1359,6 +1362,35 @@ class MainActivity : ComponentActivity() {
                     updateManager?.acceptPublishedRelease(release)
                 }
             }
+        }
+    }
+
+    private fun receiveSharedFiles(intent: Intent) {
+        val uris = if (intent.action == Intent.ACTION_SEND_MULTIPLE) {
+            IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
+        } else listOfNotNull(IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java))
+        val targets = (uris.ifEmpty {
+            intent.clipData?.let { clip -> (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri } }.orEmpty()
+        }).distinct()
+        if (targets.size == 1 && targets[0].scheme == "content" && runCatching {
+            acceptsAuthorizationTransferFile(authorizationTransferDisplayName(targets[0]), intent.type ?: contentResolver.getType(targets[0]))
+        }.getOrDefault(false)) {
+            intent.action = Intent.ACTION_SEND
+            intent.putExtra(Intent.EXTRA_STREAM, targets[0])
+            importAuthorizationTransfer(intent)
+            return
+        }
+        intent.action = null
+        intent.removeExtra(Intent.EXTRA_STREAM)
+        intent.clipData = null
+        lifecycleScope.launch {
+            runCatching { withContext(Dispatchers.IO) { sharedFileInbox.receive(targets) } }
+                .onSuccess { id -> webView?.loadUrl("${trustedWebOrigin.appUrl.substringBefore('#')}#share-files=$id") }
+                .onFailure { error ->
+                    AlertDialog.Builder(this@MainActivity).setTitle("File share could not be added")
+                        .setMessage(error.message ?: "The shared file could not be read.")
+                        .setPositiveButton("Close", null).show()
+                }
         }
     }
 
@@ -1521,26 +1553,14 @@ class MainActivity : ComponentActivity() {
             pendingAuthorizationTransfer = null
             return "${trustedWebOrigin.appUrl}#authorization=${Uri.encode(authorization)}"
         }
+        val shareId = runCatching { sharedFileInbox.pending()["batchId"]?.jsonPrimitive?.content }.getOrNull()
+        if (!shareId.isNullOrEmpty()) return "${trustedWebOrigin.appUrl.substringBefore('#')}#share-files=$shareId"
         val sessionId = pendingSessionId ?: return trustedWebOrigin.appUrl
         pendingSessionId = null
         return "${trustedWebOrigin.appUrl}#session=${Uri.encode(sessionId)}"
     }
 
     private fun exportDiagnostics() {
-        if (webView != null) {
-            AlertDialog.Builder(this)
-                .setTitle("Export diagnostics")
-                .setItems(arrayOf("Add to a Malink conversation", "Share or save externally")) { _, choice ->
-                    if (choice == 0) {
-                        webView?.loadUrl("${trustedWebOrigin.appUrl.substringBefore('#')}#share-diagnostics")
-                    } else {
-                        exportDiagnosticsExternally()
-                    }
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
-            return
-        }
         exportDiagnosticsExternally()
     }
 
@@ -2264,6 +2284,10 @@ class MainActivity : ComponentActivity() {
 
         override suspend fun exportDiagnostics(): String =
             withContext(Dispatchers.Main.immediate) { shareDiagnostics() }
+
+        override suspend fun pendingSharedFiles(): JsonObject = withContext(Dispatchers.IO) { sharedFileInbox.pending() }
+        override suspend fun readSharedFile(batchId: String, index: Int, offset: Int): JsonObject = withContext(Dispatchers.IO) { sharedFileInbox.read(batchId, index, offset) }
+        override suspend fun dismissSharedFiles(batchId: String) = withContext(Dispatchers.IO) { sharedFileInbox.dismiss(batchId) }
 
         override suspend fun readDiagnostics(): JsonObject = withContext(Dispatchers.IO) {
             val report = diagnostics.export()

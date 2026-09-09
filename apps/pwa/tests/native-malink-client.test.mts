@@ -36,6 +36,30 @@ type Request = {
 
 const NO_RESPONSE = Symbol("no native response");
 
+test("incoming shares reconstruct multiple binary files without uploading or sending", async () => {
+  const calls: string[] = [];
+  const bytes = new Uint8Array(150_000).map((_, i) => i % 251);
+  const bridge = { context: () => ({ bridgeSessionId: "test-share" }), async request(method: string, params: { index?: number; offset?: number }) {
+    calls.push(method);
+    if (method === "malink.share.pending") return { batchId: "batch-1", files: [
+      { name: "data.bin", mimeType: "application/octet-stream", size: bytes.length },
+      { name: "empty.txt", mimeType: "text/plain", size: 0 },
+    ] };
+    assert.equal(method, "malink.share.read");
+    const source = params.index === 0 ? bytes : new Uint8Array();
+    const offset = params.offset ?? 0;
+    const part = source.slice(offset, offset + 65536);
+    return { data: Buffer.from(part).toString("base64"), nextOffset: offset + part.length, eof: offset + part.length === source.length };
+  } };
+  const result = await NativeBridgeClient.prototype.readSharedFiles.call({ bridge } as unknown as NativeBridgeClient);
+  assert.equal(result.files.length, 2);
+  assert.equal(result.files[0].name, "data.bin");
+  assert.deepEqual(new Uint8Array(await result.files[0].arrayBuffer()), bytes);
+  assert.equal(result.files[1].size, 0);
+  assert.equal(calls.filter(c => c === "malink.share.read").length, 4);
+  assert.ok(calls.every(c => c === "malink.share.pending" || c === "malink.share.read"));
+});
+
 class RuntimePort implements NativeBridgePort {
   onmessage: NativeBridgePort["onmessage"] = null;
   readonly requests: Request[] = [];

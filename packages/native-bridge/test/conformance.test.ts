@@ -17,6 +17,23 @@ import {
 } from "../src/index.js";
 
 const context = { bridgeSessionId: "bridge-session-1" };
+describe("generic incoming file shares", () => {
+  it("accepts bounded files and binary chunks without diagnostic-specific metadata", () => {
+    expect(parseRpcRequest(request("malink.share.pending", { context })).method).toBe("malink.share.pending");
+    expect(parseRpcRequest(request("malink.share.read", { context, batchId: "share-1", index: 0, offset: 0 })).method).toBe("malink.share.read");
+    expect(parseMethodRpcResponse("malink.share.pending", response({ batchId: "share-1", files: [
+      { name: "photo.png", mimeType: "image/png", size: 4 }, { name: "empty.txt", mimeType: "text/plain", size: 0 },
+    ] }))).toMatchObject({ result: { files: [{ name: "photo.png" }, { size: 0 }] } });
+    expect(parseMethodRpcResponse("malink.share.read", response({ data: "YWJj", nextOffset: 3, eof: true }))).toMatchObject({ result: { nextOffset: 3 } });
+    expect(parseMethodRpcResponse("malink.share.read", response({ data: "", nextOffset: 0, eof: true }))).toMatchObject({ result: { eof: true } });
+  });
+  it("rejects unbounded or unauthorized share requests", () => {
+    expect(() => parseRpcRequest(request("malink.share.read", { batchId: "share-1", index: 0, offset: 0 }))).toThrow();
+    expect(() => parseRpcRequest(request("malink.share.read", { context, batchId: "share-1", index: -1, offset: 0 }))).toThrow();
+    expect(() => parseMethodRpcResponse("malink.share.pending", response({ batchId: "share-1", files: [{ name: "x", mimeType: "text/plain", size: 51 * 1024 * 1024 }] }))).toThrow();
+    expect(() => parseMethodRpcResponse("malink.share.read", response({ data: "a".repeat(90001), nextOffset: 1, eof: true }))).toThrow();
+  });
+});
 describe("diagnostic draft export", () => {
   it("reads a bounded report without a mutation or share-sheet action", () => {
     expect(isMutationMethod("malink.diagnostics.read")).toBe(false);

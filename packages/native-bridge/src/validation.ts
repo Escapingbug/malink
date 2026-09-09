@@ -459,6 +459,30 @@ function parseMethodResult<M extends RequestMethod>(
         eof: requiredBoolean(value.eof, "eof") };
       break;
     }
+    case "malink.share.pending": {
+      const value = strictObject(input, ["batchId", "files"], "shared files");
+      if (typeof value.batchId !== "string" || value.batchId.length > 128 || !Array.isArray(value.files) || value.files.length > 10) invalidParams("Invalid shared files");
+      let total = 0;
+      const files = value.files.map((input: unknown) => {
+        const f = strictObject(input, ["name", "mimeType", "size"], "shared file");
+        const size = nonnegativeInteger(f.size, "size"); total += size;
+        if (size > NATIVE_BRIDGE_LIMITS.maxAttachmentBytes || total > 100 * 1024 * 1024) invalidParams("Shared files exceed attachment limit");
+        return { name: requiredString(f.name, "name", 256), mimeType: requiredString(f.mimeType, "mimeType", 256), size };
+      });
+      result = { batchId: value.batchId, files };
+      break;
+    }
+    case "malink.share.read": {
+      const value = strictObject(input, ["data", "nextOffset", "eof"], "shared file chunk");
+      if (typeof value.data !== "string" || value.data.length > 90_000 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.data)) invalidParams("Invalid shared file data");
+      result = { data: value.data, nextOffset: nonnegativeInteger(value.nextOffset, "nextOffset"), eof: requiredBoolean(value.eof, "eof") };
+      break;
+    }
+    case "malink.share.dismiss": {
+      const value = strictObject(input, ["dismissed"], "shared file dismissal");
+      result = { dismissed: requiredBoolean(value.dismissed, "dismissed") };
+      break;
+    }
     case "malink.image.save":
       result = parseImageSaveResult(input);
       break;
@@ -1622,7 +1646,16 @@ function parseMethodParams(method: RequestMethod, input: unknown): JsonObject {
     case "malink.trust.get":
     case "malink.update.status":
     case "malink.diagnostics.export":
+    case "malink.share.pending":
       return paramsWithContext(input, []);
+    case "malink.share.read": {
+      const params = paramsWithContext(input, ["batchId", "index", "offset"]);
+      opaqueId(params.batchId, "batchId"); nonnegativeInteger(params.index, "index"); nonnegativeInteger(params.offset, "offset");
+      return params;
+    }
+    case "malink.share.dismiss": {
+      const params = paramsWithContext(input, ["batchId"]); opaqueId(params.batchId, "batchId"); return params;
+    }
     case "malink.diagnostics.read": {
       const params = paramsWithContext(input, ["reportId", "offset"]);
       if (params.reportId !== undefined) opaqueId(params.reportId, "reportId");

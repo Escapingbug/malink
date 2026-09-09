@@ -146,6 +146,9 @@ object BridgeProtocol {
         "malink.update.install",
         "malink.diagnostics.export",
         "malink.diagnostics.read",
+        "malink.share.pending",
+        "malink.share.read",
+        "malink.share.dismiss",
         "malink.image.save",
         "malink.authorization.export",
         "malink.events.subscribe",
@@ -362,6 +365,10 @@ interface BridgeRuntime {
         BridgeError.CAPABILITY_UNAVAILABLE, "Diagnostic report reading is unavailable.",
         userAction = "update_native",
     )
+
+    suspend fun pendingSharedFiles(): JsonObject = throw BridgeRuntimeFailure(BridgeError.CAPABILITY_UNAVAILABLE, "File sharing is unavailable.")
+    suspend fun readSharedFile(batchId: String, index: Int, offset: Int): JsonObject = throw BridgeRuntimeFailure(BridgeError.CAPABILITY_UNAVAILABLE, "File sharing is unavailable.")
+    suspend fun dismissSharedFiles(batchId: String) { throw BridgeRuntimeFailure(BridgeError.CAPABILITY_UNAVAILABLE, "File sharing is unavailable.") }
 
     suspend fun savePngImage(filename: String, bytes: ByteArray): String =
         throw BridgeRuntimeFailure(
@@ -589,6 +596,21 @@ class BridgeDispatcher(
                         put("eof", end == text.length)
                     }
                 }
+            }
+            "malink.share.pending" -> {
+                requireContext(request.params, mutation = false)
+                runtime.pendingSharedFiles()
+            }
+            "malink.share.read" -> {
+                requireContext(request.params, mutation = false, requiredExtra = setOf("batchId", "index", "offset"))
+                runtime.readSharedFile(requiredString(request.params, "batchId", 128),
+                    optionalInt(request.params, "index") ?: invalidParams("Missing file index"),
+                    optionalInt(request.params, "offset") ?: invalidParams("Missing file offset"))
+            }
+            "malink.share.dismiss" -> {
+                requireContext(request.params, mutation = false, requiredExtra = setOf("batchId"))
+                runtime.dismissSharedFiles(requiredString(request.params, "batchId", 128))
+                buildJsonObject { put("dismissed", true) }
             }
             "malink.image.save" -> {
                 requireImageSaveCapability()

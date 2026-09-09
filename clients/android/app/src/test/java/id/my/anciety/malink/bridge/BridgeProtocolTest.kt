@@ -31,6 +31,24 @@ class BridgeProtocolTest {
     private val json = Json
 
     @Test
+    fun `generic shares require the active bridge context and do not export diagnostics`() {
+        val runtime = FakeRuntime()
+        val dispatcher = BridgeDispatcher(runtime, BRIDGE_SESSION_ID)
+        dispatch(dispatcher, helloRequest())
+        val result = successResult(dispatch(dispatcher, """
+            {"jsonrpc":"2.0","id":"share","method":"malink.share.pending",
+             "params":{"context":{"bridgeSessionId":"$BRIDGE_SESSION_ID"}}}
+        """.trimIndent()))
+        assertEquals("share-1", result.getValue("batchId").jsonPrimitive.content)
+        assertEquals(0, runtime.diagnosticExports)
+        val bad = dispatch(dispatcher, """
+            {"jsonrpc":"2.0","id":"bad-share","method":"malink.share.pending",
+             "params":{"context":{"bridgeSessionId":"another-bridge"}}}
+        """.trimIndent())
+        assertTrue(json.parseToJsonElement(bad).jsonObject.containsKey("error"))
+    }
+
+    @Test
     fun `strictly parses a shared JSON RPC hello request`() {
         val parsed = BridgeProtocol.parse(helloRequest())
 
@@ -860,6 +878,10 @@ class BridgeProtocolTest {
         }
 
         var diagnosticText = "sanitized report"
+        override suspend fun pendingSharedFiles(): JsonObject = buildJsonObject {
+            put("batchId", "share-1")
+            put("files", kotlinx.serialization.json.JsonArray(emptyList()))
+        }
         override suspend fun readDiagnostics(): JsonObject = buildJsonObject {
             put("filename", "malink-native-diagnostics.txt")
             put("text", diagnosticText)

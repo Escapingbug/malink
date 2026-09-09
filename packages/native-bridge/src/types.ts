@@ -596,6 +596,9 @@ export const REQUEST_METHODS = [
   "malink.update.install",
   "malink.diagnostics.export",
   "malink.diagnostics.read",
+  "malink.share.pending",
+  "malink.share.read",
+  "malink.share.dismiss",
   "malink.image.save",
   "malink.authorization.export",
   "malink.events.subscribe",
@@ -704,6 +707,9 @@ export type BridgeMethodParams = {
   "malink.update.install": IdempotentMutationParams;
   "malink.diagnostics.export": ContextParams;
   "malink.diagnostics.read": ContextParams & { reportId?: string; offset?: number };
+  "malink.share.pending": ContextParams;
+  "malink.share.read": ContextParams & { batchId: string; index: number; offset: number };
+  "malink.share.dismiss": ContextParams & { batchId: string };
   "malink.image.save": IdempotentMutationParams & {
     filename: string;
     mimeType: "image/png";
@@ -794,6 +800,9 @@ export type BridgeMethodResults = {
   "malink.update.install": NativeUpdateStatus;
   "malink.diagnostics.export": DiagnosticsExportResult;
   "malink.diagnostics.read": { filename: string; text: string; reportId: string; nextOffset: number; eof: boolean };
+  "malink.share.pending": { batchId: string; files: Array<{ name: string; mimeType: string; size: number }> };
+  "malink.share.read": { data: string; nextOffset: number; eof: boolean };
+  "malink.share.dismiss": { dismissed: boolean };
   "malink.image.save": ImageSaveResult;
   "malink.authorization.export": AuthorizationExportResult;
   "malink.events.subscribe": EventsSubscribeResult;

@@ -290,6 +290,28 @@ export class NativeBridgeClient implements MalinkClient {
     throw new Error("Diagnostic report did not finish within the sharing limit.");
   }
 
+  async readSharedFiles(): Promise<{ batchId: string; files: File[] }> {
+    const pending = await this.bridge.request("malink.share.pending", { context: this.bridge.context() });
+    const files: File[] = [];
+    for (const [index, metadata] of pending.files.entries()) {
+      const parts: Uint8Array<ArrayBuffer>[] = [];
+      let offset = 0;
+      do {
+        const chunk = await this.bridge.request("malink.share.read", { context: this.bridge.context(), batchId: pending.batchId, index, offset });
+        const bytes = Uint8Array.from(atob(chunk.data), c => c.charCodeAt(0));
+        if (chunk.nextOffset !== offset + bytes.length || chunk.nextOffset > metadata.size || (!chunk.eof && bytes.length === 0) || chunk.eof !== (chunk.nextOffset === metadata.size)) throw new Error("Shared file transfer did not match its size.");
+        parts.push(bytes); offset = chunk.nextOffset;
+        if (chunk.eof) break;
+      } while (offset < metadata.size);
+      files.push(new File(parts, metadata.name, { type: metadata.mimeType }));
+    }
+    return { batchId: pending.batchId, files };
+  }
+
+  async dismissSharedFiles(batchId: string): Promise<void> {
+    await this.bridge.request("malink.share.dismiss", { context: this.bridge.context(), batchId });
+  }
+
   async savePngImage(filename: string, dataBase64: string): Promise<boolean> {
     if (this.helloResult.capabilities["client.image-save"]?.version !== 1) {
       return false;

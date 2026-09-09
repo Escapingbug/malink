@@ -52,14 +52,16 @@ one identity from being driven by both transports.
 - A visible ongoing `remoteMessaging` notification is mandatory. There is no
   battery-saving or connection-mode selector. Refusing notification permission
   blocks native connection startup with a visible explanation.
-- The ongoing notification exposes **Export logs**. It creates a bounded text
-  report. With the UI available, choose **Add to a Malink conversation** to
-  select an authenticated project/session destination. The report is added to
-  that conversation's local attachment draft only: no upload or Agent command
-  occurs until the user enters text and presses Send. Existing conversation
-  drafts are preserved independently. **Share or save externally** retains the
-  Android system share sheet. Older APKs without `malink.diagnostics.read`
-  retain that external-share fallback without a bridge version increase.
+- The ongoing notification exposes **Export logs**, which opens Android's
+  system share sheet. Select Malink to use the same incoming-file flow as any
+  other app's share action. `ACTION_SEND` and `ACTION_SEND_MULTIPLE` accept up
+  to 10 content-URI files (50 MiB each, 100 MiB total), copied into private
+  temporary storage while the URI permission is available. Authorization files
+  retain their separate verified import route. The hosted UI selects a
+  conversation and adds the files to its existing local attachment draft;
+  nothing is uploaded or sent until the user enters text and presses Send.
+  Pending incoming shares survive Activity/process recreation until added or
+  cancelled; only one incoming batch is retained at a time.
   The bounded
   report can be shared directly to Telegram even when the hosted Web UI
   cannot connect. Reports contain the exact APK build, Android version, native

@@ -37,7 +37,7 @@ import {
   type SessionExtensionDescriptor,
 } from "@malink/protocol";
 import type { NativeUpdateStatus } from "@malink/native-bridge";
-import { DiagnosticShareDialog } from "./DiagnosticShareDialog";
+import { SharedFileDialog } from "./SharedFileDialog";
 import {
   CommandAcknowledgementTimeoutError,
   CommandCompletionTimeoutError,
@@ -1594,9 +1594,9 @@ function MalinkAppRuntime() {
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
-  const [diagnosticShareFile, setDiagnosticShareFile] = useState<File | null>(null);
-  const diagnosticRouteFlightRef = useRef(false);
-  const diagnosticDraftFilesRef = useRef(new WeakSet<File>());
+  const [sharedFileBatch, setSharedFileBatch] = useState<{ batchId: string; files: File[] } | null>(null);
+  const sharedRouteFlightRef = useRef(false);
+  const sharedDraftFilesRef = useRef(new WeakSet<File>());
   const conversationDraftsRef = useRef(new Map<string, { text: string; files: File[] }>());
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -1847,23 +1847,28 @@ function MalinkAppRuntime() {
   const [sessionSettingsUpdate, setSessionSettingsUpdate] =
     useState<SessionSettingsUpdate | null>(null);
   useEffect(() => {
-    const openDiagnosticShare = () => {
-      if (window.location.hash !== "#share-diagnostics" || diagnosticRouteFlightRef.current) return;
+    const openSharedFileDialog = () => {
+      if (!window.location.hash.startsWith("#share-files=") || sharedRouteFlightRef.current) return;
       const connection = malinkClientRef.current;
-      if (!connection?.readDiagnostics) return;
-      diagnosticRouteFlightRef.current = true;
-      void connection.readDiagnostics().then(file => {
-        setDiagnosticShareFile(file);
+      if (!connection?.readSharedFiles) return;
+      sharedRouteFlightRef.current = true;
+      void connection.readSharedFiles().then(batch => {
+        if (!batch.files.length) return;
+        setSharedFileBatch(batch);
         setSettingsOpen(false);
         setGatewayUpdateDialogOpen(false);
         window.history.replaceState(null, "", window.location.pathname + window.location.search);
       }).catch(error => {
-        showUiNotice("diagnostics:read", "update", "error", formatUiError(error));
-      }).finally(() => { diagnosticRouteFlightRef.current = false; });
+        showUiNotice("share:read", "attachment", "error", formatUiError(error));
+      }).finally(() => { sharedRouteFlightRef.current = false; });
     };
-    openDiagnosticShare();
-    window.addEventListener("hashchange", openDiagnosticShare);
-    return () => window.removeEventListener("hashchange", openDiagnosticShare);
+    openSharedFileDialog();
+    window.addEventListener("hashchange", openSharedFileDialog);
+    window.addEventListener("malink:client-ready", openSharedFileDialog);
+    return () => {
+      window.removeEventListener("hashchange", openSharedFileDialog);
+      window.removeEventListener("malink:client-ready", openSharedFileDialog);
+    };
   }, [connectionStatus]);
   useEffect(() => {
     if (!sessionSettingsUpdate?.confirmed) return;
@@ -2660,7 +2665,7 @@ function MalinkAppRuntime() {
     isStreaming,
     isStopping,
     hasContent: Boolean(draft.trim() || (pendingFiles.length > 0 &&
-      !pendingFiles.some(file => diagnosticDraftFilesRef.current.has(file)))),
+      !pendingFiles.some(file => sharedDraftFilesRef.current.has(file)))),
   });
   const composerState = optimisticSelected && optimisticSession
     ? optimisticSession.phase === "failed"
@@ -6825,6 +6830,7 @@ function MalinkAppRuntime() {
       void connection.ready
         .then(() => {
           if (malinkClientRef.current !== connection) return;
+          window.dispatchEvent(new Event("malink:client-ready"));
           continuePendingProjectCreate(connection);
           continuePendingSessionCreate(connection);
           scheduleRecoveredNativeCommandReconciliation(connection, 1_000);
@@ -8967,17 +8973,6 @@ function MalinkAppRuntime() {
       });
       const connection = malinkClientRef.current;
       if (connection?.runtime === "native") {
-        if (connection.readDiagnostics) {
-          try {
-            setDiagnosticShareFile(await connection.readDiagnostics());
-            setSettingsOpen(false);
-            setGatewayUpdateDialogOpen(false);
-            return true;
-          } catch (error) {
-            showUiNotice("diagnostics:read", "update", "warning",
-              `In-app diagnostic sharing is unavailable: ${formatUiError(error)}. Opening Android sharing instead.`);
-          }
-        }
         if (!connection.exportDiagnostics || !(await connection.exportDiagnostics())) {
           throw new Error(
             "This APK cannot open the Android diagnostic share sheet. Update the APK and try again.",
@@ -11397,8 +11392,8 @@ function MalinkAppRuntime() {
   async function sendMessage(event?: FormEvent) {
     event?.preventDefault();
     const value = draft.trim();
-    if (!value && pendingFiles.some(file => diagnosticDraftFilesRef.current.has(file))) {
-      showUiNotice("diagnostics:message", "composer", "info", "Enter a message before sending the diagnostic attachment.");
+    if (!value && pendingFiles.some(file => sharedDraftFilesRef.current.has(file))) {
+      showUiNotice("diagnostics:message", "composer", "info", "Enter a message before sending shared attachments.");
       return;
     }
     if (!value && pendingFiles.length === 0) return;
@@ -13766,31 +13761,29 @@ function MalinkAppRuntime() {
             }}
           />
         )}
-        {diagnosticShareFile && <DiagnosticShareDialog file={diagnosticShareFile}
+        {sharedFileBatch && <SharedFileDialog files={sharedFileBatch.files}
           sessions={visibleGatewaySessions.map(session => ({
             key: JSON.stringify([session.projectId, session.id]),
             label: `${session.title} — ${session.projectName} — ${(projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway).label}`,
           }))}
-          onClose={() => setDiagnosticShareFile(null)}
-          onExternal={() => { void malinkClientRef.current?.exportDiagnostics?.().catch(error => {
-            showUiNotice("diagnostics:share", "update", "error", formatUiError(error));
-          }); setDiagnosticShareFile(null); }}
+          onClose={() => { void malinkClientRef.current?.dismissSharedFiles?.(sharedFileBatch.batchId).then(() => setSharedFileBatch(null)).catch(error => showUiNotice("share:cancel", "attachment", "error", formatUiError(error))); }}
           onAttach={key => {
             const target = visibleGatewaySessions.find(s => JSON.stringify([s.projectId, s.id]) === key);
             if (!target) return;
             const same = selectedSessionIdRef.current === target.id && selectedProjectIdRef.current === target.projectId;
             const existing = same ? pendingFiles : conversationDraftsRef.current.get(key)?.files ?? [];
-            if (existing.length >= MAX_MALINK_ATTACHMENTS || existing.reduce((n, f) => n + f.size, 0) + diagnosticShareFile.size > MAX_MALINK_PROMPT_ATTACHMENT_BYTES) {
+            if (existing.length + sharedFileBatch.files.length > MAX_MALINK_ATTACHMENTS || [...existing, ...sharedFileBatch.files].reduce((n, f) => n + f.size, 0) > MAX_MALINK_PROMPT_ATTACHMENT_BYTES) {
               showUiNotice("diagnostics:share", "attachment", "warning", "The selected conversation draft has no room for another attachment.");
               return;
             }
-            diagnosticDraftFilesRef.current.add(diagnosticShareFile);
+            sharedFileBatch.files.forEach(file => sharedDraftFilesRef.current.add(file));
             chooseSession(target.id, target.projectId);
-            setPendingFiles([...existing, diagnosticShareFile]);
-            setDiagnosticShareFile(null);
+            setPendingFiles([...existing, ...sharedFileBatch.files]);
+            void malinkClientRef.current?.dismissSharedFiles?.(sharedFileBatch.batchId).catch(error => showUiNotice("share:cleanup", "attachment", "warning", formatUiError(error)));
+            setSharedFileBatch(null);
             setSettingsOpen(false);
             setGatewayUpdateDialogOpen(false);
-            showUiNotice("diagnostics:draft", "composer", "info", "Diagnostic attachment added. Enter a message, then press Send. Nothing has been sent yet.");
+            showUiNotice("share:draft", "composer", "info", "Shared files added. Enter a message, then press Send. Nothing has been sent yet.");
           }} />}
         <header className="conversation-header">
           <button
