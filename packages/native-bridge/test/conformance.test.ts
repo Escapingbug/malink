@@ -21,7 +21,7 @@ describe("diagnostic draft export", () => {
   it("reads a bounded report without a mutation or share-sheet action", () => {
     expect(isMutationMethod("malink.diagnostics.read")).toBe(false);
     expect(parseRpcRequest(request("malink.diagnostics.read", { context })).method).toBe("malink.diagnostics.read");
-    expect(parseMethodRpcResponse("malink.diagnostics.read", response({ filename: "diagnostics.txt", text: "sanitized report" })))
+    expect(parseMethodRpcResponse("malink.diagnostics.read", response({ filename: "diagnostics.txt", text: "sanitized report", reportId: "report-1", nextOffset: 16, eof: true })))
       .toMatchObject({ result: { filename: "diagnostics.txt", text: "sanitized report" } });
   });
   it("rejects unexpected report fields and oversized content", () => {

@@ -167,6 +167,26 @@ class BridgeProtocolTest {
         """.trimIndent()))
         assertEquals("sanitized report", report.getValue("text").jsonPrimitive.content)
         assertEquals(1, runtime.diagnosticExports) // Reading never opens a share sheet or sends a command.
+        runtime.diagnosticText = "日志\n\"".repeat(150_000)
+        var page = successResult(dispatch(dispatcher, """
+            {"jsonrpc":"2.0","id":"large-report","method":"malink.diagnostics.read",
+             "params":{"context":{"bridgeSessionId":"$BRIDGE_SESSION_ID"}}}
+        """.trimIndent()))
+        val restored = StringBuilder()
+        val original = runtime.diagnosticText
+        runtime.diagnosticText = "changed after snapshot"
+        while (true) {
+            assertTrue(page.toString().toByteArray(Charsets.UTF_8).size < 480 * 1024)
+            restored.append(page.getValue("text").jsonPrimitive.content)
+            if (page.getValue("eof").jsonPrimitive.content == "true") break
+            val reportId = page.getValue("reportId").jsonPrimitive.content
+            val offset = page.getValue("nextOffset").jsonPrimitive.content
+            page = successResult(dispatch(dispatcher, """
+                {"jsonrpc":"2.0","id":"next-report","method":"malink.diagnostics.read",
+                 "params":{"context":{"bridgeSessionId":"$BRIDGE_SESSION_ID"},"reportId":"$reportId","offset":$offset}}
+            """.trimIndent()))
+        }
+        assertEquals(original, restored.toString())
     }
 
     @Test
@@ -839,9 +859,10 @@ class BridgeProtocolTest {
             return "malink-native-diagnostics.txt"
         }
 
+        var diagnosticText = "sanitized report"
         override suspend fun readDiagnostics(): JsonObject = buildJsonObject {
             put("filename", "malink-native-diagnostics.txt")
-            put("text", "sanitized report")
+            put("text", diagnosticText)
         }
 
         override suspend fun savePngImage(filename: String, bytes: ByteArray): String {

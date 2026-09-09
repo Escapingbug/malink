@@ -702,7 +702,7 @@ export type BridgeMethodParams = {
   "malink.update.check": IdempotentMutationParams;
   "malink.update.install": IdempotentMutationParams;
   "malink.diagnostics.export": ContextParams;
-  "malink.diagnostics.read": ContextParams;
+  "malink.diagnostics.read": ContextParams & { reportId?: string; offset?: number };
   "malink.image.save": IdempotentMutationParams & {
     filename: string;
     mimeType: "image/png";
@@ -792,7 +792,7 @@ export type BridgeMethodResults = {
   "malink.update.check": NativeUpdateStatus;
   "malink.update.install": NativeUpdateStatus;
   "malink.diagnostics.export": DiagnosticsExportResult;
-  "malink.diagnostics.read": { filename: string; text: string };
+  "malink.diagnostics.read": { filename: string; text: string; reportId: string; nextOffset: number; eof: boolean };
   "malink.image.save": ImageSaveResult;
   "malink.authorization.export": AuthorizationExportResult;
   "malink.events.subscribe": EventsSubscribeResult;

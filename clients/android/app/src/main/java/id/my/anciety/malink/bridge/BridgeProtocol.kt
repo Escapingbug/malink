@@ -388,6 +388,9 @@ class BridgeDispatcher(
     private val unexpectedFailureSink: (String, Throwable) -> Unit = { _, _ -> },
 ) {
     private var negotiated = false
+    private val diagnosticReadMutex = Mutex()
+    private var diagnosticReport: JsonObject? = null
+    private var diagnosticReportId: String? = null
     private var negotiatedCapabilities = emptyMap<String, Int>()
     private val mutationMutex = Mutex()
     private val mutationResults = object : LinkedHashMap<String, MutationRecord>(16, 0.75f, true) {
@@ -562,8 +565,30 @@ class BridgeDispatcher(
             }
             "malink.diagnostics.read" -> {
                 requireDiagnosticsCapability()
-                requireContext(request.params, mutation = false)
-                runtime.readDiagnostics()
+                requireContext(request.params, mutation = false, optionalExtra = setOf("reportId", "offset"))
+                diagnosticReadMutex.withLock {
+                    val requestedId = optionalString(request.params, "reportId", 128)
+                    val offset = optionalInt(request.params, "offset") ?: 0
+                    if (offset < 0) invalidParams("Diagnostic offset is invalid")
+                    if (requestedId == null) {
+                        if (offset != 0) invalidParams("A report ID is required for continuation")
+                        diagnosticReport = runtime.readDiagnostics()
+                        diagnosticReportId = UUID.randomUUID().toString()
+                    } else if (requestedId != diagnosticReportId) {
+                        invalidParams("Diagnostic report expired; export again")
+                    }
+                    val report = diagnosticReport ?: invalidParams("Diagnostic report expired")
+                    val text = report.getValue("text").jsonPrimitive.content
+                    if (offset >= text.length) invalidParams("Diagnostic offset exceeds report")
+                    val end = minOf(offset + 64 * 1024, text.length)
+                    buildJsonObject {
+                        put("filename", report.getValue("filename"))
+                        put("text", text.substring(offset, end))
+                        put("reportId", diagnosticReportId!!)
+                        put("nextOffset", end)
+                        put("eof", end == text.length)
+                    }
+                }
             }
             "malink.image.save" -> {
                 requireImageSaveCapability()

@@ -271,8 +271,23 @@ export class NativeBridgeClient implements MalinkClient {
   }
 
   async readDiagnostics(): Promise<File> {
-    const report = await this.bridge.request("malink.diagnostics.read", { context: this.bridge.context() });
-    return new File([report.text], report.filename, { type: "text/plain" });
+    const chunks: string[] = [];
+    let reportId: string | undefined;
+    let offset = 0;
+    for (let index = 0; index < 33; index++) {
+      const report = await this.bridge.request("malink.diagnostics.read", {
+        context: this.bridge.context(), ...(reportId ? { reportId, offset } : {}),
+      });
+      if ((reportId && report.reportId !== reportId) || report.nextOffset !== offset + report.text.length || report.nextOffset <= offset) {
+        throw new Error("Diagnostic report changed during export. Try again.");
+      }
+      chunks.push(report.text);
+      reportId = report.reportId;
+      offset = report.nextOffset;
+      if (offset > 2 * 1024 * 1024) throw new Error("Diagnostic report exceeds the sharing limit.");
+      if (report.eof) return new File([chunks.join("")], report.filename, { type: "text/plain" });
+    }
+    throw new Error("Diagnostic report did not finish within the sharing limit.");
   }
 
   async savePngImage(filename: string, dataBase64: string): Promise<boolean> {

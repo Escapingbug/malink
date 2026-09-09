@@ -451,9 +451,12 @@ function parseMethodResult<M extends RequestMethod>(
       result = parseDiagnosticsExportResult(input);
       break;
     case "malink.diagnostics.read": {
-      const value = strictObject(input, ["filename", "text"], "diagnostic report");
+      const value = strictObject(input, ["filename", "text", "reportId", "nextOffset", "eof"], "diagnostic report");
       result = { filename: requiredString(value.filename, "filename", 256),
-        text: requiredString(value.text, "text", 2 * 1024 * 1024) };
+        text: requiredString(value.text, "text", 64 * 1024),
+        reportId: requiredString(value.reportId, "reportId", 128),
+        nextOffset: nonnegativeInteger(value.nextOffset, "nextOffset"),
+        eof: requiredBoolean(value.eof, "eof") };
       break;
     }
     case "malink.image.save":
@@ -1618,8 +1621,13 @@ function parseMethodParams(method: RequestMethod, input: unknown): JsonObject {
     case "malink.trust.get":
     case "malink.update.status":
     case "malink.diagnostics.export":
-    case "malink.diagnostics.read":
       return paramsWithContext(input, []);
+    case "malink.diagnostics.read": {
+      const params = paramsWithContext(input, ["reportId", "offset"]);
+      if (params.reportId !== undefined) opaqueId(params.reportId, "reportId");
+      if (params.offset !== undefined) nonnegativeInteger(params.offset, "offset");
+      return params;
+    }
     case "malink.image.save": {
       const params = mutationParams(input, ["filename", "mimeType", "dataBase64"]);
       pngFilename(params.filename, "filename");
