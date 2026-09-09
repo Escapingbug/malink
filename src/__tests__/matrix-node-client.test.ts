@@ -42,7 +42,10 @@ describe('MatrixNodeSdkGatewayClient', () => {
         const client = new MatrixNodeSdkGatewayClient({
             baseUrl: 'https://matrix.example.test', accessToken: 'token',
             userId: '@gateway:example.test', deviceId: 'STABLE_DEVICE',
-        }, 2_000, undefined, fetchMock)
+        }, 120_000, undefined, fetchMock)
+        const requests = vi.spyOn(client as unknown as {
+            matrixRequest: (...args: unknown[]) => Promise<unknown>
+        }, 'matrixRequest')
         await client.initializeCrypto({
             backend: 'node-sqlite', storagePath: join(directory, 'crypto'),
             storagePassword: 'test-only-passphrase', syncTokenPath: join(directory, 'sync.json'),
@@ -55,6 +58,12 @@ describe('MatrixNodeSdkGatewayClient', () => {
             await client.stop()
         }
         expect(syncRequests).toBe(3)
+        const syncCalls = requests.mock.calls.filter(call => call[1] === '/_matrix/client/v3/sync')
+        expect(syncCalls[0]?.[2]).toMatchObject({ query: { timeout: 0 }, timeoutMs: 115_000 })
+        expect(syncCalls[1]?.[2]).toMatchObject({ query: { timeout: 0 }, timeoutMs: 115_000 })
+        expect(syncCalls[2]?.[2]).toMatchObject({
+            query: { timeout: 30_000, since: 'recovered-after-request-timeout' }, timeoutMs: 40_000,
+        })
         expect(JSON.parse(await readFile(join(directory, 'sync.json'), 'utf8'))).toBeTruthy()
     })
 

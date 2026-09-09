@@ -758,11 +758,17 @@ export class MatrixNodeSdkGatewayClient implements MatrixGatewayClient {
                     '/_matrix/client/v3/sync',
                     {
                         query: {
-                            timeout: 30_000,
+                            timeout: this.syncToken ? 30_000 : 0,
                             ...(this.syncToken ? { since: this.syncToken } : {}),
                         },
                         signal,
-                        timeoutMs: 40_000,
+                        // A fresh device downloads all joined-room state. It
+                        // can exceed the incremental long-poll deadline even
+                        // on a healthy server. Leave time to process that first
+                        // response within the configured startup budget.
+                        timeoutMs: this.syncToken
+                            ? 40_000
+                            : Math.max(40_000, this.defaultReadyTimeoutMs - 5_000),
                     },
                 )
                 await this.processSync(sync)

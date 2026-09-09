@@ -23,6 +23,10 @@ Update this Malink Gateway from the exact signed Git commit supplied above.
    cannot be mistaken for static PWA release configuration. For example, prefix
    those commands with
    `env -u MALINK_GATEWAY_RELEASE_ID -u MALINK_GATEWAY_BUILD_ID`.
+   Set `TMPDIR` to a short absolute path such as `/tmp` for tests. macOS Unix
+   socket tests cannot use the deeply nested update workspace as their temporary
+   root, and relative temporary roots break absolute-path validation. Test-created
+   temporary files are not production state and must not be copied into the candidate.
 4. The supplied candidate is an independent copy of the active release. Replace
    its Gateway and update-supervisor bundles with the target commit's production
    bundles, including `ops/matrix-local-gateway.js`,
