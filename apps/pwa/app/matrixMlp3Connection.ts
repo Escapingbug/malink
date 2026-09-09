@@ -86,6 +86,7 @@ import {
 } from "./projectKeyGrantRecovery";
 import { workspaceRouteNeedsJoin } from "./matrixWorkspaceRoute";
 import { MatrixStartupLifetime } from "./matrixStartupLifetime";
+import { waitForProjectTransport } from "./projectSendReadiness";
 import {
   MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_DETAIL,
   MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_MS,
@@ -1866,8 +1867,13 @@ export async function connectMatrixMlp3(
     pair,
     async send(payload, targetProjectId) {
       await ready;
-      const target = protocolForProject(targetProjectId);
-      if (!target) throw new Error("The target Workspace project is not initialized.");
+      const target = await waitForProjectTransport({
+        lookup: () => protocolForProject(targetProjectId),
+        isAuthorized: () => !targetProjectId || !trust?.gatewayDirectory
+          || workspaceRoutesFromTrust(trust).some(route => route.projectId === targetProjectId),
+        recover: () => reconcileWorkspaceRoutes(true),
+        signal: startupLifetime.controller.signal,
+      });
       const sent = await target.send(payload);
       commandProjects.set(sent.commandId, target);
       return {
@@ -1881,8 +1887,13 @@ export async function connectMatrixMlp3(
     },
     async updateProjectExtensions(extensions, targetProjectId) {
       await ready;
-      const target = protocolForProject(targetProjectId);
-      if (!target) throw new Error("The target Workspace project is not initialized.");
+      const target = await waitForProjectTransport({
+        lookup: () => protocolForProject(targetProjectId),
+        isAuthorized: () => !targetProjectId || !trust?.gatewayDirectory
+          || workspaceRoutesFromTrust(trust).some(route => route.projectId === targetProjectId),
+        recover: () => reconcileWorkspaceRoutes(true),
+        signal: startupLifetime.controller.signal,
+      });
       const sent = await target.updateProjectExtensions(extensions);
       commandProjects.set(sent.commandId, target);
       return {

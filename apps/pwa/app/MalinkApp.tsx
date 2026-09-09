@@ -11715,7 +11715,7 @@ function MalinkAppRuntime() {
         const errorMessage: ChatMessage = {
           id: `matrix-error-${Date.now()}`,
           kind: "error",
-          text: "The command was not sent. Open connection settings.",
+          text: "The message was not sent. Review the connection notice before retrying.",
           time: "now",
           timestamp: Date.now(),
           sessionId,
