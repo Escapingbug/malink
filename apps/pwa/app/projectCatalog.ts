@@ -36,7 +36,7 @@ export function gatewayProjectOwners(
       const slot = candidate ? deployment.candidate
         : deployment.active.gatewayNodeId === gateway.gatewayNodeId ? deployment.active : undefined;
       if (!slot) continue;
-      owner.deploymentLabel = `${candidate ? "Candidate Gateway" : "Current Gateway"} · ${slot.buildId.replace(/^gateway-/, "")}`;
+      owner.deploymentLabel = `${candidate ? "New Gateway" : deployment.candidate ? "Previous Gateway · recovery" : "Current Gateway"} · ${slot.buildId.replace(/^gateway-/, "")}`;
       owner.label += ` · ${owner.deploymentLabel}`;
       break;
     }

@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import {
   MALINK_MATRIX_EXTENSION,
   MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+  MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE,
   canonicalJson,
   matrixGatewayCapabilitiesSchema,
   matrixModelCapabilitySchema,
@@ -1675,6 +1676,8 @@ export class MatrixMlp3GatewayRunner {
       // activation time. Keep this runtime open until the host actually calls
       // sealForDeployment; otherwise a candidate-side preflight failure makes
       // the still-live production Gateway appear offline for ordinary work.
+      this.updateDrainState = 'open'
+      this.resumeDeferredUpdateCommands()
       await this.settleAndDeliver(
         project,
         command,
@@ -2004,6 +2007,11 @@ export class MatrixMlp3GatewayRunner {
       },
     }
     await this.content.queueEvent(project.config, event, this.client)
+    const current = await this.content.enqueueStateEvent(project.config, event,
+      MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE, status.computerId, this.client)
+    void current.confirmation.catch(error => {
+      this.log(`[mlp3/matrix] Gateway deployment current-state delivery failed: ${formatError(error)}`)
+    })
     this.gatewayDeploymentStatusFingerprint = fingerprint
     this.gatewayNodeStatusLastPublishedAt = observedAt
     return status
@@ -2842,7 +2850,7 @@ export class MatrixMlp3GatewayRunner {
       await this.settleAndDeliver(project, command, lifecycle, 'succeeded')
       return
     }
-    await this.assertMaintenanceSessionCanBeArchived(record.id)
+    await this.assertMaintenanceSessionCanBeArchived(record.id, record.title)
     assertCommandExecutionActive(signal)
     const active = project.sessions.get(record.id)
     const previousLifecycle = record.lifecycle
@@ -2889,10 +2897,20 @@ export class MatrixMlp3GatewayRunner {
     this.scheduleArchivedSessionCleanup(project, record, active)
   }
 
-  private async assertMaintenanceSessionCanBeArchived(sessionId: string): Promise<void> {
-    if (!sessionId.startsWith('gateway-update-')) return
+  private async assertMaintenanceSessionCanBeArchived(sessionId: string, title?: string): Promise<void> {
+    if (!sessionId.startsWith('gateway-update-') && !title?.startsWith('Gateway update repair · ')) return
     const supervisor = this.dependencies.gatewayUpdateSupervisor
     if (!supervisor) return
+    // Retain the repair path even for older clients that automatically archive
+    // terminal update sessions. Reading this state must fail closed.
+    if (supervisor.deploymentStatus) {
+      const deployment = await supervisor.deploymentStatus()
+      if (deployment.phase !== 'steady' &&
+          deployment.active.gatewayNodeId === this.config.gatewayNodeId) {
+        throw new Error('This maintenance session is retained for old-Gateway recovery. '
+          + 'Complete or discard the deployment before archiving it.')
+      }
+    }
     const status = await supervisor.status()
     const ownsSession = status.maintenanceSessionId === sessionId
       || (

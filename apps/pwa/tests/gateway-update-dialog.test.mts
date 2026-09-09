@@ -233,7 +233,12 @@ for (const phase of ["preparing", "trial", "draining", "committing", "repair_req
     const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
       open: true, connected: true, release,
       nodes: [{ ...nodes[0]!, computerId: "computer-office", blueGreenUpdate: true }],
-      runtimeByNode: { "node-office": { state: "online", status: {
+      runtimeByNode: { "node-office": { state: "online",
+        maintenanceSessionId: "gateway-update-test",
+        maintenanceSessionArchiveAvailable: true,
+        legacyMaintenanceSessionId: "gateway-update-legacy",
+        legacyMaintenanceSessionArchiveAvailable: true,
+        status: {
         version: 1, phase: "staged", releaseId: "older-release",
         targetBuildId: "older-build", currentBuildId: "gateway-old-arm64", updatedAt: 1,
       } } },
@@ -247,10 +252,12 @@ for (const phase of ["preparing", "trial", "draining", "committing", "repair_req
       } },
       activeGatewayNodeIds: new Set(),
       onClose() {}, onStart() {}, onPromote() {}, onDiscard() {}, onOpenProject() {},
-      onOpenSession() {}, onArchiveSession() {}, onExportDiagnostics() {},
+      onOpenSession() {}, onArchiveSession() {}, onExportDiagnostics() {}, onRecover() {},
     }));
     assert.doesNotMatch(html, /Prepare candidate Gateway|older prepared build|Newer Gateway update available/);
-    if (phase === "trial") assert.match(html, /Switch all work when idle/);
+    assert.match(html, /Repair using previous Gateway/);
+    assert.doesNotMatch(html, />Archive (?:old )?update session<\/button>/);
+    if (phase === "trial") assert.match(html, /Complete update when idle/);
   });
 }
 

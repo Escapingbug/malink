@@ -625,6 +625,9 @@ export class NativeBridgeClient implements MalinkClient {
       undefined,
       "local",
     );
+    // The cache may stop before the last Agent response. The first remote
+    // request must refresh the latest page, not paginate behind this cache.
+    this.#historyBefore.delete(sessionId);
     return {
       messages: page.messages
         .filter((message) => !loaded.has(message.eventId))

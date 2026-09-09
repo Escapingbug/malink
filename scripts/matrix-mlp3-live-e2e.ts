@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
+import { createServer as createHttpServer, type Server as HttpServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -12,7 +13,7 @@ import {
 } from '@malink/protocol'
 import { chromium, type Browser, type Page, type Route } from 'playwright-core'
 import { GatewayAdminClient } from '../src/gateway/admin/client.js'
-import { runAndroidMatrixMlp3Journey } from './e2e/androidMatrixMlp3Journey.js'
+import { runAndroidMatrixMlp3Journey, runAndroidGatewayRecoveryJourney } from './e2e/androidMatrixMlp3Journey.js'
 import { MATRIX_MLP3_PROJECTION_STATE_VERSION } from '../apps/pwa/app/matrixMlp3Projection.js'
 import {
     createDisposableMatrixFixture,
@@ -64,7 +65,11 @@ const pwaPort = await freePort()
 let matrixPort = await freePort()
 while (matrixPort === pwaPort) matrixPort = await freePort()
 const pwaUrl = `http://127.0.0.1:${pwaPort}`
-const pwaEnvironment = { ...process.env }
+// Never let a test launched by a live Gateway inherit its login files, admin
+// socket or deployment supervisor. Each child receives only fixture routing.
+const isolatedEnvironment = Object.fromEntries(Object.entries(process.env)
+    .filter(([key]) => !key.startsWith('MALINK_')))
+const pwaEnvironment = { ...isolatedEnvironment }
 delete pwaEnvironment.MALINK_GATEWAY_RELEASE_ID
 delete pwaEnvironment.MALINK_GATEWAY_BUILD_ID
 pwaEnvironment.MALINK_PWA_BASE_PATH = "/"
@@ -79,6 +84,8 @@ let browser: Browser | undefined
 let first: Page | undefined
 let second: Page | undefined
 let previousGatewayOutput = ''
+let recoverySupervisor: HttpServer | undefined
+let recoverySupervisorSocket: string | undefined
 const logs = new Map<Page, string[]>()
 const errors = new Map<Page, Error[]>()
 
@@ -102,7 +109,7 @@ try {
         home_server: new URL(fixture.homeserver).host,
     }, null, 2), { encoding: 'utf8', mode: 0o600 })
     process.stdout.write('[2/7] Building the actual PWA and starting the MLP/3 Gateway…\n')
-    await runProcess(
+    if (process.env.MALINK_MATRIX_MLP3_PWA_DIST_READY !== '1') await runProcess(
         join(repositoryRoot, 'apps', 'pwa', 'node_modules', '.bin', 'vite'),
         ['build'],
         join(repositoryRoot, 'apps', 'pwa'),
@@ -140,6 +147,21 @@ try {
     process.stdout.write('[3g/7] Enrolling and discovering a second Gateway through the product UI…\n')
     await exerciseGatewayEnrollment(first, fixture)
 
+    if (process.env.MALINK_GATEWAY_RECOVERY_LIVE_E2E === '1') {
+        await exerciseOldGatewayRecovery(first, fixture)
+    } else if (process.env.MALINK_GATEWAY_RECOVERY_LIVE_E2E === 'native') {
+        const serial = process.env.MALINK_ANDROID_SERIAL
+        assert.ok(serial, 'Native recovery acceptance requires an Android target.')
+        const existingSessionId = await createSession(first, 'malink-e2e-model')
+        await sendPrompt(first, `Native recovery setup ${runId}`)
+        await waitForText(first, PROVIDER_RESPONSE)
+        const admin = new GatewayAdminClient({ socketPath: gatewayAdminSocket, timeoutMs: 10_000 })
+        const invitation = await createInvitationWithRateLimit(admin, { matrixLogin: 'required', appUrl: pwaUrl })
+        await runAndroidMatrixMlp3Journey({ repositoryRoot, serial, pwaUrl, pwaPort, matrixPort,
+            pairingLink: invitation.url, gatewayName: `MLP/3 E2E ${runId}`, browserPage: first,
+            existingSessionId, providerResponse: PROVIDER_RESPONSE, runId })
+        await exerciseOldGatewayRecovery(first, fixture)
+    } else {
     process.stdout.write('[4/7] Creating a session and running a real Agent turn…\n')
     const firstSession = await createSession(first, 'malink-e2e-model')
     const firstPrompt = `MLP/3 first prompt ${runId}`
@@ -154,7 +176,7 @@ try {
 
     process.stdout.write('[5/7] Pairing a second device and restoring inventory/history without refresh…\n')
     const admin = new GatewayAdminClient({ socketPath: gatewayAdminSocket, timeoutMs: 10_000 })
-    const invitation = await admin.createInvitation({ matrixLogin: 'required', appUrl: pwaUrl })
+    const invitation = await createInvitationWithRateLimit(admin, { matrixLogin: 'required', appUrl: pwaUrl })
     second = await browser.newPage({ serviceWorkers: 'block' })
     capture(second)
     await pairBrowser(second, invitation.url)
@@ -221,7 +243,7 @@ try {
     const androidSerial = process.env.MALINK_ANDROID_SERIAL
     if (androidSerial) {
         process.stdout.write('[5a/7] Running the native Android MLP/3 acceptance journey…\n')
-        const androidInvitation = await admin.createInvitation({
+        const androidInvitation = await createInvitationWithRateLimit(admin, {
             matrixLogin: 'required',
             appUrl: pwaUrl,
         })
@@ -332,6 +354,10 @@ try {
     await assertNoBlockingAlerts(first)
     await assertNoBlockingAlerts(second)
     process.stdout.write('PASS — MLP/3 over Matrix paired, created, ran concurrently, synchronized, restored, quarantined poison, and archived.\n')
+    if (process.env.MALINK_GATEWAY_RECOVERY_LIVE_E2E === 'full') {
+        await exerciseOldGatewayRecovery(first, fixture)
+    }
+    }
 } catch (error) {
     await mkdir(artifactDirectory, { recursive: true })
     await Promise.all([
@@ -374,6 +400,7 @@ try {
     await enrollmentJoin?.stop().catch(() => undefined)
     await enrolledGateway?.stop().catch(() => undefined)
     await gateway?.stop().catch(() => undefined)
+    if (recoverySupervisor) await new Promise<void>(resolve => recoverySupervisor!.close(() => resolve()))
     await pwa?.stop().catch(() => undefined)
     await fixture?.close().catch(() => undefined)
     await rm(temporaryDirectory, { recursive: true, force: true })
@@ -381,15 +408,30 @@ try {
 
 process.exit(0)
 
+async function createInvitationWithRateLimit(
+    admin: GatewayAdminClient,
+    input: Parameters<GatewayAdminClient['createInvitation']>[0],
+): ReturnType<GatewayAdminClient['createInvitation']> {
+    for (let attempt = 0; ; attempt += 1) {
+        try { return await admin.createInvitation(input) }
+        catch (error) {
+            if (attempt >= 2 || !(error instanceof Error) ||
+                !error.message.includes('Too Many Requests')) throw error
+            process.stdout.write('[fixture] Login token rate limit; retrying after 35 seconds.\n')
+            await delay(35_000)
+        }
+    }
+}
+
 async function pairBrowser(
     page: Page,
     invitationLink: string,
 ): Promise<void> {
     await page.goto(invitationLink)
-    const dialog = page.getByRole('dialog', { name: 'Connect a computer' })
+    const dialog = page.getByRole('dialog', { name: 'Add this device' })
     await dialog.waitFor({ state: 'visible', timeout: STARTUP_TIMEOUT_MS })
     await dialog.getByText('Computer found').waitFor({ state: 'visible' })
-    const connect = dialog.getByRole('button', { name: /^Connect to /u })
+    const connect = dialog.getByRole('button', { name: 'Add this device', exact: true })
     await waitFor(async () => {
         if (await isConnected(page)) return true
         return await connect.isVisible().catch(() => false)
@@ -397,19 +439,20 @@ async function pairBrowser(
     }, { description: 'pairing confirmation', timeoutMs: STARTUP_TIMEOUT_MS })
     if (!await isConnected(page)) await connect.click()
     await waitForConnected(page)
+    await page.getByRole('button', { name: 'Open conversations', exact: true }).click()
     // Pairing completion and the MLP/3 key grant can independently rerender and
     // auto-close this dialog. A locator action waits for element stability and
     // turns that successful auto-close into a false 30-second timeout.
     await page.evaluate(() => {
         const close = document.querySelector<HTMLButtonElement>(
-            'button[aria-label="Close connection settings"]',
+            'button[aria-label="Close settings"]',
         )
         close?.click()
     })
 }
 
 async function assertProjectIdentity(page: Page, cwd: string): Promise<void> {
-    await page.getByRole('button', { name: 'New conversation' }).click()
+    await page.getByRole('button', { name: 'New conversation', exact: true }).first().click()
     const dialog = page.locator('.new-session-dialog')
     await dialog.waitFor({ state: 'visible' })
     assert.equal(await dialog.getByRole('option', { name: /New project/u }).count(), 0)
@@ -429,12 +472,13 @@ async function exerciseGatewayEnrollment(
     page: Page,
     matrix: DisposableMatrixFixture,
 ): Promise<void> {
-    await page.locator('button[aria-label^="Open connection settings,"]').click()
-    const dialog = page.getByRole('dialog', { name: 'Connection' })
+    await page.getByRole('button', { name: 'Settings', exact: true }).first().click()
+    const dialog = page.getByRole('dialog', { name: 'Manage Malink' })
     await dialog.waitFor({ state: 'visible', timeout: STARTUP_TIMEOUT_MS })
-    await dialog.getByRole('button', { name: 'Add Gateway', exact: true }).click()
+    await dialog.getByRole('button', { name: 'Computers', exact: true }).click()
+    await dialog.getByRole('button', { name: 'Add computer', exact: true }).click()
     await dialog.getByRole('button', {
-        name: 'Create Gateway setup link',
+        name: 'Create computer setup command',
         exact: true,
     }).click()
     const setupCommand = dialog.getByLabel('One-time setup command')
@@ -456,7 +500,7 @@ async function exerciseGatewayEnrollment(
             enrolledGatewayName,
         ],
         repositoryRoot,
-        process.env,
+        isolatedEnvironment,
     )
     const verification = await enrollmentJoin.waitFor(
         /Verification code: (\d{3}-\d{3})/u,
@@ -467,7 +511,7 @@ async function exerciseGatewayEnrollment(
         state: 'visible',
         timeout: STARTUP_TIMEOUT_MS,
     })
-    await dialog.getByRole('button', { name: 'Approve Gateway', exact: true }).click()
+    await dialog.getByRole('button', { name: 'Approve computer', exact: true }).click()
     await enrollmentJoin.waitFor(/Start the Gateway with MALINK_MATRIX_DATA_DIR/u, STARTUP_TIMEOUT_MS)
 
     const enrolledFixture = JSON.parse(
@@ -479,38 +523,125 @@ async function exerciseGatewayEnrollment(
 
     enrolledGateway = launchEnrolledGateway(matrix)
     await enrolledGateway.waitFor(/Gateway ready with 1 trusted device\(s\)\./u, STARTUP_TIMEOUT_MS)
-    await dialog.getByText('2 available to every authorized client', { exact: true }).waitFor({
+    await dialog.getByText('2 computers available to every authorized Malink app', { exact: true }).waitFor({
         state: 'visible',
         timeout: STARTUP_TIMEOUT_MS,
     })
-    await dialog.getByText(`MLP/3 E2E ${runId}`, { exact: true }).waitFor({
+    await dialog.getByText(`MLP/3 E2E ${runId}`, { exact: false }).first().waitFor({
         state: 'visible',
         timeout: STARTUP_TIMEOUT_MS,
     })
-    await dialog.getByText(enrolledGatewayName, { exact: true }).waitFor({
+    await dialog.getByText(enrolledGatewayName, { exact: false }).first().waitFor({
         state: 'visible',
         timeout: STARTUP_TIMEOUT_MS,
     })
     await page.evaluate(() => {
         document.querySelector<HTMLButtonElement>(
-            'button[aria-label="Close connection settings"]',
+            'button[aria-label="Close settings"]',
         )?.click()
     })
     await waitForConnected(page)
 }
 
-async function createSession(page: Page, model?: string): Promise<string> {
+async function exerciseOldGatewayRecovery(page: Page, matrix: DisposableMatrixFixture): Promise<void> {
+    process.stdout.write('[recovery] Testing real old-node routing with fixture deployment status…\n')
+    const old = await new GatewayAdminClient({ socketPath: gatewayAdminSocket }).status()
+    const candidate = await new GatewayAdminClient({ socketPath: enrolledGatewayAdminSocket }).status()
+    // The supervisor status is the only fixture here. Both nodes, command
+    // journals, encrypted Matrix transport and provider execution are real.
+    const deployment = {
+        version: 1, strategy: 'blue-green-v1', maxDeployments: 2,
+        computerId: old.gatewayNodeId, generation: 1, phase: 'trial',
+        updateId: `recovery-${runId}`, updatedAt: Date.now(),
+        active: { gatewayNodeId: old.gatewayNodeId, buildId: old.buildId ?? 'old', projectCount: 1, sessionCount: 0 },
+        candidate: { gatewayNodeId: candidate.gatewayNodeId, buildId: candidate.buildId ?? 'new', projectCount: 1, sessionCount: 0 },
+    }
+    recoverySupervisorSocket = join(temporaryDirectory, 'recovery-supervisor.sock')
+    recoverySupervisor = createHttpServer((request, response) => {
+        const body = request.url === '/v1/deployments/status' ? deployment
+            : request.url === '/v1/status' ? { version: 1, phase: 'committed', updatedAt: deployment.updatedAt }
+            : request.url === '/v1/gateway/restart' ? { version: 1, phase: 'idle', updatedAt: deployment.updatedAt }
+            : null
+        response.writeHead(body ? 200 : 404, { 'content-type': 'application/json' })
+        response.end(JSON.stringify(body ?? { error: 'unsupported fixture operation' }))
+    })
+    await new Promise<void>((resolve, reject) => {
+        recoverySupervisor!.once('error', reject)
+        recoverySupervisor!.listen(recoverySupervisorSocket!, resolve)
+    })
+    await gateway!.stop()
+    previousGatewayOutput += gateway!.output
+    gateway = launchGateway(matrix)
+    await gateway.waitFor(new RegExp(`Gateway ready with ${old.activeDeviceCount} trusted device\\(s\\)\\.`, 'u'), STARTUP_TIMEOUT_MS)
+    await waitForConnected(page)
+    await page.getByRole('button', { name: 'New conversation', exact: true }).first().click()
+    await page.locator('.new-session-dialog select').first()
+        .locator('option').filter({ hasText: 'android' }).waitFor({ state: 'attached', timeout: STARTUP_TIMEOUT_MS })
+    const projects = await page.locator('.new-session-dialog select').first()
+        .locator('option').evaluateAll(options => options.map(option => ({
+            id: (option as HTMLOptionElement).value, label: option.textContent ?? '',
+        })))
+    const candidateProject = projects.find(project => project.label.includes('android'))
+    assert.ok(candidateProject, 'The candidate project must be discoverable.')
+    await page.locator('.new-session-dialog').getByRole('button', { name: 'Cancel', exact: true }).click()
+    const candidateSession = await createSession(page, undefined, candidateProject.id)
+    process.stdout.write('  [R1] Candidate conversation created; waiting for signed recovery action.\n')
+    await page.getByRole('button', { name: 'Update recovery', exact: true }).waitFor({ timeout: STARTUP_TIMEOUT_MS })
+    await enrolledGateway!.crash()
+    process.stdout.write('  [R2] Candidate stopped; opening old-node repair draft.\n')
+    await page.getByRole('button', { name: /^(Update recovery|Old Gateway repair)$/u }).click()
+    await page.locator('.pending-attachments').getByText('gateway-update-diagnostics.json', { exact: true })
+        .waitFor({ timeout: STARTUP_TIMEOUT_MS })
+    const repair = page.locator('button.session-row[aria-pressed="true"]')
+    process.stdout.write('  [R3] Old-node diagnostic draft visible.\n')
+    const repairProject = await repair.getAttribute('data-project-id')
+    assert.notEqual(repairProject, candidateProject.id, 'Repair must not execute through the stopped candidate.')
+    const repairSession = await repair.getAttribute('data-session-id')
+    assert.ok(repairSession && repairSession !== candidateSession)
+    assert.equal(await page.getByRole('button', { name: 'Send message', exact: true }).isDisabled(), true,
+        'An attachment-only repair draft must not start a turn.')
+    assert.equal(await page.locator('.chat-feed').getByText(PROVIDER_RESPONSE, { exact: false }).count(), 0)
+    await mkdir(artifactDirectory, { recursive: true })
+    await page.screenshot({ path: join(artifactDirectory, 'recovery-desktop.png'), fullPage: true })
+    await page.setViewportSize({ width: 412, height: 915 })
+    await page.screenshot({ path: join(artifactDirectory, 'recovery-mobile.png'), fullPage: true })
+    await page.setViewportSize({ width: 1280, height: 720 })
+    await sendPrompt(page, `Inspect the stopped candidate ${runId}; do not promote.`)
+    await waitForText(page, `Malink deterministic E2E attachment result: GATEWAY-RECOVERY-recovery-${runId}`)
+    await waitForSessionSettled(page, repairSession)
+    process.stdout.write('  [R4] Old provider read the diagnostic attachment and replied.\n')
+    await page.getByRole('button', { name: 'Return to new Gateway', exact: true }).click()
+    await waitFor(async () => await page.locator('button.session-row[aria-pressed="true"]').getAttribute('data-session-id') === candidateSession,
+        { description: 'return to the original candidate conversation', timeoutMs: CONVERGENCE_TIMEOUT_MS })
+    await page.getByRole('button', { name: /^(Update recovery|Old Gateway repair)$/u }).click()
+    await page.locator('.pending-attachments').getByText('gateway-update-diagnostics.json', { exact: true })
+        .waitFor({ timeout: STARTUP_TIMEOUT_MS })
+    assert.equal(await page.locator('button.session-row[aria-pressed="true"]').getAttribute('data-session-id'), repairSession,
+        'Repeated recovery must reuse the old repair conversation.')
+    if (process.env.MALINK_ANDROID_SERIAL && ['full', 'native'].includes(process.env.MALINK_GATEWAY_RECOVERY_LIVE_E2E ?? '')) {
+        await runAndroidGatewayRecoveryJourney({
+            serial: process.env.MALINK_ANDROID_SERIAL, pwaUrl, candidateSessionId: candidateSession,
+            repairSessionId: repairSession, runId, artifactDirectory,
+            expectedResult: `Malink deterministic E2E attachment result: GATEWAY-RECOVERY-recovery-${runId}`,
+        })
+    }
+    assertNoErrors(page)
+    process.stdout.write('PASS — stopped candidate recovered through old Gateway; diagnostics stayed a draft until user text; return route preserved.\n')
+}
+
+async function createSession(page: Page, model?: string, projectId?: string): Promise<string> {
     const before = new Set(await sessionIds(page))
-    await page.getByRole('button', { name: 'New conversation' }).click()
+    await page.getByRole('button', { name: 'New conversation', exact: true }).first().click()
     const dialog = page.locator('.new-session-dialog')
     await dialog.waitFor({ state: 'visible' })
+    if (projectId) await dialog.locator('select').first().selectOption(projectId)
     if (model) {
         await dialog.getByRole('combobox', { name: 'Model' }).selectOption(model)
     }
     await dialog.getByRole('button', { name: 'Create session', exact: true }).click()
     let created = ''
     await waitFor(async () => {
-        const additions = (await sessionIds(page)).filter(id => !before.has(id))
+        const additions = (await sessionIds(page)).filter(id => !before.has(id) && !id.startsWith('local-session:'))
         if (additions.length !== 1) return false
         created = additions[0]!
         return true
@@ -526,7 +657,7 @@ async function createSession(page: Page, model?: string): Promise<string> {
 
 async function sendPrompt(page: Page, prompt: string): Promise<void> {
     await page.locator('textarea[aria-label^="Message "]').fill(prompt)
-    await page.getByRole('button', { name: 'Send message' }).click()
+    await page.getByRole('button', { name: 'Send message', exact: true }).click()
 }
 
 async function beginArchive(page: Page): Promise<void> {
@@ -991,7 +1122,7 @@ async function assertProjectAuthorizationRepair(
     await page.route(pattern, handler)
     try {
         await page.goto(pwaUrl)
-        const dialog = page.getByRole('dialog', { name: 'Repair connection' })
+        const dialog = page.locator('.matrix-settings[role="dialog"]')
         await dialog.waitFor({ state: 'visible', timeout: STARTUP_TIMEOUT_MS })
         await dialog.getByText('Reauthorize this device', { exact: true }).waitFor()
         await dialog.getByText('malink-matrix gateway invite', { exact: true }).waitFor()
@@ -1001,23 +1132,25 @@ async function assertProjectAuthorizationRepair(
             0,
             'Authorization repair must not offer a retry that cannot change authorization.',
         )
-        await dialog.getByText('Advanced diagnostics', { exact: true }).click()
+        await dialog.getByRole('button', { name: 'App & help', exact: true }).click()
         const [download] = await Promise.all([
             page.waitForEvent('download'),
             dialog.getByRole('button', { name: 'Export diagnostics' }).click(),
         ])
         assert.match(download.suggestedFilename(), /^malink-connection-diagnostics-\d+\.json$/u)
         await download.delete()
+        await dialog.getByRole('button', { name: 'Device setup', exact: true }).click()
 
-        const invitation = await admin.createInvitation({
+        const invitation = await createInvitationWithRateLimit(admin, {
             matrixLogin: 'required',
             appUrl: pwaUrl,
         })
         await dialog.getByLabel('One-time pairing link').fill(invitation.pairingLink)
         await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
         await dialog.getByText('Computer found').waitFor()
-        await dialog.getByRole('button', { name: /^Connect to /u }).click()
+        await dialog.getByRole('button', { name: 'Add this device', exact: true }).click()
         await waitForConnected(page)
+        await dialog.getByRole('button', { name: 'Open conversations', exact: true }).click()
         await waitForSessionIds(page, expectedSessionIds)
     } finally {
         await page.unroute(pattern, handler)
@@ -1040,10 +1173,8 @@ async function assertColdProjectionWaitsForAuthority(
         const recoveryIndicatorVisible =
             await page.locator('.connection-progress').isVisible().catch(() => false)
             || await page.locator(
-                '.gateway-card.connection-state-reconnecting,'
-                + '.gateway-card.connection-state-connecting,'
-                + '.gateway-card.connection-state-securing',
-            ).isVisible().catch(() => false)
+                '.gateway-card .connection-path-tone-progress',
+            ).first().isVisible().catch(() => false)
         const actual = {
             connected: await isConnected(page),
             emptyInventoryVisible: await page.getByText(
@@ -1092,10 +1223,8 @@ async function assertRecoveryFailureSurvivesLaterSync(
         const recoveryIndicatorVisible =
             await page.locator('.connection-progress').isVisible().catch(() => false)
             || await page.locator(
-                '.gateway-card.connection-state-reconnecting,'
-                + '.gateway-card.connection-state-connecting,'
-                + '.gateway-card.connection-state-securing',
-            ).isVisible().catch(() => false)
+                '.gateway-card .connection-path-tone-progress',
+            ).first().isVisible().catch(() => false)
         const actual = {
             connected: await isConnected(page),
             blockingFailureVisible: await alert.isVisible().catch(() => false),
@@ -1132,7 +1261,9 @@ async function assertRecoveryFailureSurvivesLaterSync(
 }
 
 async function cachedProjectionInteractionsLocked(page: Page): Promise<boolean> {
-    const create = page.getByRole('button', { name: 'New conversation', exact: true })
+    const create = page.getByRole('button', {
+        name: /^(New conversation|Reconnect your computer to create a conversation|No project can start a conversation)$/u,
+    }).first()
     const send = page.getByRole('button', { name: 'Send message', exact: true })
     return await create.isDisabled() && await send.isDisabled()
 }
@@ -1339,10 +1470,9 @@ async function waitForConnected(page: Page): Promise<void> {
 }
 
 async function isConnected(page: Page): Promise<boolean> {
-    const label = await page.locator(
-        'button[aria-label^="Open connection settings,"]',
-    ).getAttribute('aria-label')
-    return label?.endsWith('Online') ?? false
+    const labels = await page.locator('button[aria-label^="Open connection settings."]')
+        .evaluateAll(elements => elements.map(element => element.getAttribute('aria-label') ?? ''))
+    return labels.some(label => label.includes('signed in and receiving Workspace updates'))
 }
 
 async function waitFor(
@@ -1413,7 +1543,7 @@ function launchGateway(matrix: DisposableMatrixFixture): ManagedProcess {
         [join(repositoryRoot, 'scripts', 'matrix-local-gateway.ts')],
         repositoryRoot,
         {
-            ...process.env,
+            ...isolatedEnvironment,
             MALINK_MATRIX_FIXTURE: fixturePath,
             MALINK_MATRIX_DATA_DIR: gatewayDataDirectory,
             MALINK_PWA_LOGIN_FILE: pwaLoginPath,
@@ -1423,6 +1553,7 @@ function launchGateway(matrix: DisposableMatrixFixture): ManagedProcess {
             MALINK_MATRIX_GATEWAY_PASSWORD: matrix.gateway.password,
             MALINK_GATEWAY_NAME: `MLP/3 E2E ${runId}`,
             MALINK_GATEWAY_ADMIN_SOCKET: gatewayAdminSocket,
+            ...(recoverySupervisorSocket ? { MALINK_GATEWAY_UPDATE_SOCKET: recoverySupervisorSocket } : {}),
             MALINK_MATRIX_E2E_PROVIDER: '1',
             MALINK_MATRIX_E2E_PROVIDER_DELAY_MS: '4000',
             MALINK_CWD: repositoryRoot,
@@ -1436,7 +1567,7 @@ function launchEnrolledGateway(matrix: DisposableMatrixFixture): ManagedProcess 
         [join(repositoryRoot, 'scripts', 'matrix-local-gateway.ts')],
         repositoryRoot,
         {
-            ...process.env,
+            ...isolatedEnvironment,
             MALINK_MATRIX_DATA_DIR: enrolledGatewayDataDirectory,
             MALINK_PWA_LOGIN_FILE: pwaLoginPath,
             MALINK_PWA_URL: pwaUrl,

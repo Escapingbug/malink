@@ -3,6 +3,7 @@ package id.my.anciety.malink.matrix
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_KEY_GRANT_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE
+import id.my.anciety.malink.security.malink.MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE
@@ -57,7 +58,8 @@ internal fun isMalinkApplicationControlEvent(rawJson: String): Boolean = runCatc
         MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE ->
             root["state_key"]?.jsonPrimitive?.contentOrNull?.isNotBlank() == true &&
                 content["document"] is JsonObject && content["signature"] is JsonObject
-        MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE -> {
+        MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+        MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE -> {
             val extension = content["io.malink"] as? JsonObject ?: return@runCatching false
             root["state_key"]?.jsonPrimitive?.contentOrNull?.isNotBlank() == true &&
                 extension["version"]?.jsonPrimitive?.intOrNull == 3 &&
@@ -111,6 +113,8 @@ internal fun malinkApplicationEventKind(rawJson: String): String = runCatching {
             return@runCatching "v3_workspace_pointer"
         MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE ->
             return@runCatching "v3_provider_catalog"
+        MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE ->
+            return@runCatching "v3_gateway_deployment"
         MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE ->
             return@runCatching "workspace_gateway_directory"
         MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE ->
@@ -610,6 +614,7 @@ class MatrixApplicationRoomStateClient(
             MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
             MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
             MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+            MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE,
             MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
             MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE,
         )

@@ -1,6 +1,7 @@
 import {
   MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
   MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+  MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE,
   MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
   MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
   MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
@@ -1189,7 +1190,7 @@ export async function connectMatrixMlp3(
             `[mlp3/matrix] project ${secondary.route.projectId} snapshot could not be recovered`,
             error,
           ));
-      } else if (event.getType() === MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE) {
+      } else if ([MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE, MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE].includes(event.getType())) {
         void ingestSecondaryEvent(secondary, event).catch(error => console.error(
           `[mlp3/matrix] project ${secondary.route.projectId} provider catalog could not be recovered`,
           error,
@@ -1214,7 +1215,7 @@ export async function connectMatrixMlp3(
       });
       return;
     }
-    if (event.getType() === MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE) {
+    if ([MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE, MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE].includes(event.getType())) {
       enqueue(event);
     }
   };
@@ -1285,6 +1286,10 @@ export async function connectMatrixMlp3(
     ingest: (event: MatrixEvent) => Promise<void>,
     targetProtocol: MatrixMlp3ProtocolClient,
   ): Promise<void> => {
+    const deploymentStates = targetRoom.currentState.getStateEvents(MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE);
+    for (const event of Array.isArray(deploymentStates) ? deploymentStates : deploymentStates ? [deploymentStates] : []) {
+      await ingest(event);
+    }
     const states = targetRoom.currentState.getStateEvents(
       MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
     );
@@ -1309,7 +1314,7 @@ export async function connectMatrixMlp3(
       "The Provider Catalog Room State did not load in time.",
     );
     for (const raw of current) {
-      if (raw.type !== MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE) continue;
+      if (![MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE, MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE].includes(raw.type)) continue;
       await ingest(new sdk.MatrixEvent(raw));
     }
   };
@@ -2240,6 +2245,8 @@ export function toLegacyCompletion(
         ? { result: payload }
       : payload.type === "gateway.update.status"
         ? { result: payload.status }
+      : payload.type === "gateway.deployment.status"
+        ? { result: payload.status }
       : payload.type === "gateway.restart.status"
         ? { result: payload.status }
       : payload.type === "provider.sessions.listed" || payload.type === "provider.session.inspected"
@@ -2543,7 +2550,8 @@ function workspaceRoutesFromProtocols(
 
 export function isMatrixMlp3ProjectionEventType(eventType: string): boolean {
   return eventType === "m.room.message"
-    || eventType === MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE;
+    || eventType === MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE
+    || eventType === MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE;
 }
 
 function isMatrixNotFound(error: unknown): boolean {

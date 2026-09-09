@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { Page } from 'playwright-core'
@@ -107,11 +108,10 @@ class WebViewPage {
         return this.evaluate<AndroidState>(`(() => {
             const normalized = value => String(value || '').replace(/\\s+/gu, ' ').trim();
             const selected = document.querySelector('button.session-row[aria-pressed="true"]');
-            const connection = document.querySelector('button[aria-label^="Open connection settings,"]');
+            const connection = document.querySelector('button[aria-label^="Open connection settings."]');
             return {
                 connected: Boolean(
-                    connection?.classList.contains('connection-state-connected')
-                    && connection.getAttribute('aria-label')?.endsWith('Online')
+                    connection?.getAttribute('aria-label')?.includes('signed in and receiving Workspace updates')
                 ),
                 sessionIds: Array.from(document.querySelectorAll('button.session-row'))
                     .map(row => row.dataset.sessionId || '').filter(Boolean),
@@ -318,9 +318,10 @@ export async function runAndroidMatrixMlp3Journey(
         await waitFor(async () => {
             const state = await android!.state()
             assertHealthy(state)
-            return state.bodyText.includes(`Connect to ${options.gatewayName}`)
+            return android!.evaluate<boolean>(`Array.from(document.querySelectorAll('button')).some(button =>
+                button.textContent?.trim() === 'Add this device' && !button.disabled && button.getClientRects().length > 0)`)
         }, 'native pairing preview', CONNECT_TIMEOUT_MS)
-        await android.clickButton(`Connect to ${options.gatewayName}`)
+        await android.clickButton('Add this device')
         await tapNativePairingConfirmation(options.serial, options.gatewayName)
         await waitFor(async () => {
             const state = await android!.state()
@@ -333,6 +334,9 @@ export async function runAndroidMatrixMlp3Journey(
                 bodyText: state.bodyText.slice(0, 1_000),
             }))
         }, 'connected native MLP/3 projection', CONNECT_TIMEOUT_MS)
+        await waitFor(() => android!.hasButton('Open conversations'),
+            'native pairing completion action', CONNECT_TIMEOUT_MS)
+        await android.clickButton('Open conversations')
         await android.clickSession(options.existingSessionId)
         await waitFor(
             async () => (await android!.state()).bodyText.includes(options.providerResponse),
@@ -352,6 +356,7 @@ export async function runAndroidMatrixMlp3Journey(
             if (
                 state.createPending
                 || !state.selectedSessionId
+                || state.selectedSessionId.startsWith('local-session:')
                 || before.has(state.selectedSessionId)
                 || !state.sessionIds.includes(state.selectedSessionId)
             ) return false
@@ -377,7 +382,7 @@ export async function runAndroidMatrixMlp3Journey(
         )
         const nativeEventsBeforeIdle = await diagnosticCount(
             options.serial,
-            'matrix.application_control.event_committed',
+            'command.v3_completion.received action=prompt',
         )
         const driverStartsBeforeIdle = await diagnosticCount(options.serial, 'matrix.driver.start')
         await android.fillComposer(prompt)
@@ -428,9 +433,9 @@ export async function runAndroidMatrixMlp3Journey(
         await waitFor(
             async () => await diagnosticCount(
                 options.serial,
-                'matrix.application_control.event_committed',
+                'command.v3_completion.received action=prompt',
             ) > nativeEventsBeforeIdle,
-            'native Matrix event commit while the screen remains off in forced idle',
+            'native command completion while the screen remains off in forced idle',
             CONVERGENCE_TIMEOUT_MS,
         )
         assert.equal(
@@ -502,6 +507,20 @@ export async function runAndroidMatrixMlp3Journey(
         process.stdout.write(
             '  PASS — Android MLP/3 paired, restored, ran in background, notified, restarted, and archived.\n',
         )
+    } catch (error) {
+        const artifactDirectory = join(options.repositoryRoot, 'artifacts', 'e2e', `android-${options.runId}`)
+        try {
+            await mkdir(artifactDirectory, { recursive: true })
+            if (android) await writeFile(join(artifactDirectory, 'state.json'), JSON.stringify(await android.state(), null, 2))
+            await adb(options.serial, 'shell', 'screencap', '-p', '/sdcard/malink-e2e-failure.png')
+            await adb(options.serial, 'pull', '/sdcard/malink-e2e-failure.png', join(artifactDirectory, 'screen.png'))
+            await writeFile(join(artifactDirectory, 'native.log'), await adb(options.serial, 'shell', 'run-as', PACKAGE_NAME,
+                'cat', 'files/diagnostics/native-current.log'))
+            process.stderr.write(`Android failure artifacts: ${artifactDirectory}\n`)
+        } catch (captureError) {
+            process.stderr.write(`Android failure capture also failed: ${String(captureError)}\n`)
+        }
+        throw error
     } finally {
         if (deviceIdleForced) {
             await adbMaybe(options.serial, 'shell', 'dumpsys', 'deviceidle', 'unforce')
@@ -523,6 +542,68 @@ export async function runAndroidMatrixMlp3Journey(
             await adbMaybe(options.serial, 'forward', '--remove', `tcp:${forwardedPort}`)
         }
         await adbMaybe(options.serial, 'shell', 'am', 'force-stop', PACKAGE_NAME)
+    }
+}
+
+/** Reuses the isolated APK paired by the main journey; never touches the user's app. */
+export async function runAndroidGatewayRecoveryJourney(options: {
+    serial: string;
+    pwaUrl: string;
+    candidateSessionId: string;
+    repairSessionId: string;
+    expectedResult: string;
+    artifactDirectory: string;
+    runId: string;
+}): Promise<void> {
+    let android: WebViewPage | undefined
+    let forwardedPort: string | undefined
+    try {
+        process.stdout.write('  [AR] Recovering the stopped candidate through native Matrix and attachments…\n')
+        await adb(options.serial, 'shell', 'dumpsys', 'deviceidle', 'whitelist', `+${PACKAGE_NAME}`)
+        await startActivity(options.serial)
+        ;({ page: android, port: forwardedPort } = await attachWebView(options.serial, options.pwaUrl))
+        await waitFor(async () => {
+            const state = await android!.state()
+            assertHealthy(state)
+            return state.connected && state.sessionIds.includes(options.candidateSessionId)
+                && state.sessionIds.includes(options.repairSessionId)
+        }, 'native recovery inventory', CONNECT_TIMEOUT_MS)
+        await android.clickSession(options.candidateSessionId)
+        await waitFor(async () => await android!.hasButton('Update recovery') || await android!.hasButton('Old Gateway repair'),
+            'native old Gateway recovery action', CONVERGENCE_TIMEOUT_MS)
+        await android.clickButton(await android.hasButton('Old Gateway repair') ? 'Old Gateway repair' : 'Update recovery')
+        await waitFor(async () => await android!.evaluate<boolean>(`Boolean(document.querySelector('.pending-attachments')?.textContent?.includes('gateway-update-diagnostics.json'))`),
+            'native recovery diagnostic draft', CONNECT_TIMEOUT_MS)
+        assert.equal((await android.state()).selectedSessionId, options.repairSessionId)
+        assert.equal(await android.hasButton('Send message'), false, 'Native diagnostics must wait for user text.')
+        assert.equal(await android.hasButton('Queue message'), false, 'Native diagnostics must not queue a turn by themselves.')
+        await waitFor(async () => android!.evaluate<boolean>(`(() => {
+            const panel = document.querySelector('.conversation-panel');
+            return document.querySelector('.app-shell')?.classList.contains('mobile-chat-open') === true
+                && Boolean(panel && Math.abs(panel.getBoundingClientRect().left) < 1);
+        })()`), 'native repair conversation visible', CONVERGENCE_TIMEOUT_MS)
+        await adb(options.serial, 'shell', 'screencap', '-p', '/sdcard/malink-recovery.png')
+        await adb(options.serial, 'pull', '/sdcard/malink-recovery.png', join(options.artifactDirectory, 'recovery-android.png'))
+        const prompt = `Native old Gateway repair ${options.runId}; inspect only.`
+        await android.fillComposer(prompt)
+        await waitFor(async () => await android!.hasButton('Send message') || await android!.hasButton('Queue message'),
+            'native text and diagnostic attachment ready to send', CONVERGENCE_TIMEOUT_MS)
+        await android.clickButton(await android.hasButton('Send message') ? 'Send message' : 'Queue message')
+        await waitFor(async () => {
+            const state = await android!.state()
+            assertHealthy(state)
+            return state.bodyText.includes(`Use these local paths if you need to inspect the uploaded file(s). ${prompt}`)
+                && state.bodyText.includes(options.expectedResult)
+        }, 'native repair response from the old Gateway', CONNECT_TIMEOUT_MS)
+        await android.clickButton('Return to new Gateway')
+        await waitFor(async () => (await android!.state()).selectedSessionId === options.candidateSessionId,
+            'native return to candidate conversation', CONVERGENCE_TIMEOUT_MS)
+        process.stdout.write('  PASS — native recovery draft, old-node execution and return route.\n')
+    } finally {
+        android?.close()
+        if (forwardedPort) await adbMaybe(options.serial, 'forward', '--remove', `tcp:${forwardedPort}`)
+        await adbMaybe(options.serial, 'shell', 'am', 'force-stop', PACKAGE_NAME)
+        await adbMaybe(options.serial, 'shell', 'dumpsys', 'deviceidle', 'whitelist', `-${PACKAGE_NAME}`)
     }
 }
 

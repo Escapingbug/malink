@@ -44,6 +44,7 @@ export const MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE =
 export const MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE =
   'io.malink.workspace.current.v3' as const
 /** Application-encrypted, paginated provider catalogs stored as bounded Room State. */
+export const MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE = 'io.malink.gateway_deployment.v1'
 export const MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE =
   'io.malink.provider_catalog.v1' as const
 export const MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE =

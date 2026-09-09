@@ -138,7 +138,7 @@ export function gatewayUpdateRecoveryAction(input: {
   return {
     kind: "wait",
     explanation: status.phase === "committed"
-      ? "The update is complete. Its maintenance session will be archived automatically."
+      ? "Installation finished. Maintenance cleanup waits until the deployment recovery window closes."
       : "No update action is needed.",
   };
 }

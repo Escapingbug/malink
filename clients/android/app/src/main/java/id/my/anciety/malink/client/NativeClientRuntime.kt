@@ -72,6 +72,7 @@ import id.my.anciety.malink.security.malink.MatrixTransportBinding
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_KEY_GRANT_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE
+import id.my.anciety.malink.security.malink.MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE
 import id.my.anciety.malink.security.malink.MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE
@@ -578,6 +579,22 @@ class NativeClientRuntime(
             withTimeout(HISTORY_PAGE_TOTAL_TIMEOUT_MS) {
                 historyMutexes.computeIfAbsent(sessionId) { Mutex() }.withLock {
                     diagnostics.record("history.page.requested")
+                if (allowRemote) {
+                    // A trusted cached projection can reach the WebView just
+                    // before the first Matrix sync. Do not report that cache
+                    // as a successful remote refresh: the UI would stop
+                    // retrying and miss the final streamed Agent response.
+                    while (matrix.status.phase in setOf(
+                            MatrixRuntimePhase.RESTORING,
+                            MatrixRuntimePhase.BOOTSTRAPPING,
+                            MatrixRuntimePhase.CONNECTING,
+                        )) {
+                        delay(50)
+                    }
+                    check(matrix.status.phase == MatrixRuntimePhase.SYNCING) {
+                        "Matrix history is not online yet. Retry after the connection resumes."
+                    }
+                }
                 val online = matrix.status.phase == MatrixRuntimePhase.SYNCING
                 val initialized = sessionId in initializedHistoryRelations
                 val providerHistoryAvailable = matrixMlp3Projection.providerHistory(sessionId) != null
@@ -2918,6 +2935,7 @@ class NativeClientRuntime(
             eventType != MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE &&
             eventType != MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE &&
             eventType != MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE &&
+            eventType != MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE &&
             !(eventType == "m.room.message" &&
                 (content["io.malink"] as? JsonObject)?.long("version") == 3L)
         ) return false
@@ -4497,6 +4515,7 @@ private fun isMatrixMlp3RawEvent(rawJson: String): Boolean = runCatching {
         MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE,
         MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
         MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+        MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE,
         MLP3_MATRIX_WORKSPACE_DIRECTORY_EVENT_TYPE,
         MLP3_MATRIX_WORKSPACE_DEVICE_REVOCATION_EVENT_TYPE,
         -> true

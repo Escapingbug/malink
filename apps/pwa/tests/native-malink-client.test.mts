@@ -521,6 +521,28 @@ test("keeps native local projection reads separate from Matrix pagination", asyn
   client.dispose();
 });
 
+test("refreshes the remote tail before paginating beyond a partial local cache", async () => {
+  const cursors: Array<string | undefined> = [];
+  const port = new RuntimePort((request) => {
+    if (request.method !== "malink.history.page") return responseFor(request);
+    const params = request.params as BridgeMethodParams["malink.history.page"];
+    cursors.push(params.before);
+    return {
+      sessionId: params.sessionId,
+      messages: [],
+      hasMore: true,
+      nextBefore: params.source === "local" ? "cache-oldest" : "remote-oldest",
+      asOfCursor: `cursor-${params.source}`,
+    };
+  });
+  const client = await createTestClient(port);
+  await client.loadLocalHistory("session-history-1");
+  await client.loadHistoryPage("session-history-1");
+  await client.loadHistoryPage("session-history-1");
+  assert.deepEqual(cursors, [undefined, undefined, "remote-oldest"]);
+  client.dispose();
+});
+
 test("restores scoped history outcomes without replaying command results", async () => {
   const observed: unknown[] = [];
   const port = new RuntimePort(request => {

@@ -38,6 +38,7 @@ import {
 } from "@malink/protocol";
 import type { NativeUpdateStatus } from "@malink/native-bridge";
 import { SharedFileDialog } from "./SharedFileDialog";
+import { gatewayRecoveryTarget, gatewayRecoveryReport, gatewayRecoveryTitle, preferredGatewayCreationWorkspace } from "./gatewayRecovery";
 import {
   CommandAcknowledgementTimeoutError,
   CommandCompletionTimeoutError,
@@ -1595,6 +1596,13 @@ function MalinkAppRuntime() {
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [sharedFileBatch, setSharedFileBatch] = useState<{ batchId: string; files: File[] } | null>(null);
+  const [gatewayRecoveryBusy, setGatewayRecoveryBusy] = useState(false);
+  const [gatewayRecoveryReturnRoute, setGatewayRecoveryReturnRoute] = useState<{
+    projectId: string; sessionId: string;
+  } | null>(null);
+  const [gatewayRecoveryDraft, setGatewayRecoveryDraft] = useState<{
+    projectId: string; sessionId: string; file: File;
+  } | null>(null);
   const sharedRouteFlightRef = useRef(false);
   const sharedDraftFilesRef = useRef(new WeakSet<File>());
   const conversationDraftsRef = useRef(new Map<string, { text: string; files: File[] }>());
@@ -2736,8 +2744,18 @@ function MalinkAppRuntime() {
   const activeProjectGateway = activeWorkspace
     ? projectGatewaysById.get(activeWorkspace.projectId) ?? fallbackProjectGateway
     : fallbackProjectGateway;
+  const defaultCreationWorkspace = gatewayFilterDefaultWorkspace ?? gatewayState?.workspace;
+  const preferredNewWorkspace = preferredGatewayCreationWorkspace(gatewayState, defaultCreationWorkspace);
   const newSessionWorkspace = allWorkspaceProjects.find(project =>
-    project.projectId === newSessionProjectId) ?? gatewayFilterDefaultWorkspace ?? gatewayState?.workspace;
+    project.projectId === newSessionProjectId) ?? preferredNewWorkspace ?? defaultCreationWorkspace;
+  const activeRecoveryDeployment = Object.values(gatewayState?.gatewayDeployments ?? {})
+    .map(observation => observation.deployment)
+    .find(deployment => deployment.phase !== "steady" &&
+      deployment.candidate?.gatewayNodeId === activeProjectGateway.gatewayNodeId);
+  const previousGatewayDeployment = Object.values(gatewayState?.gatewayDeployments ?? {})
+    .map(observation => observation.deployment)
+    .find(deployment => deployment.phase !== "steady" && deployment.candidate &&
+      deployment.active.gatewayNodeId === activeProjectGateway.gatewayNodeId);
   const projectSettingsWorkspace = projectSettingsProjectId
     ? gatewayState?.projects?.find(project => project.projectId === projectSettingsProjectId)
       ?? (gatewayState?.workspace.projectId === projectSettingsProjectId
@@ -4169,6 +4187,13 @@ function MalinkAppRuntime() {
     for (const node of gatewayUpdatePlan) {
       if (!node.targetProjectId) continue;
       const runtime = gatewayUpdateRuntimePresentation[node.gatewayNodeId];
+      // A terminal installer status does not end the dual-Gateway recovery
+      // window. Missing deployment state must not destroy its repair session.
+      const deployment = node.computerId
+        ? gatewayState?.gatewayDeployments?.[node.computerId]?.deployment
+        : undefined;
+      if ((deployment && deployment.phase !== "steady") ||
+          (node.blueGreenUpdate && !deployment)) continue;
       const status = runtime?.status;
       const sessionId = runtime?.maintenanceSessionId;
       if (!sessionId) continue;
@@ -4203,6 +4228,7 @@ function MalinkAppRuntime() {
   }, [
     connectionStatus,
     gatewayState?.sessions,
+    gatewayState?.gatewayDeployments,
     gatewayUpdatePlan,
     gatewayUpdateRuntimePresentation,
   ]);
@@ -8579,6 +8605,101 @@ function MalinkAppRuntime() {
     setMobileChatOpen(true);
     activateLocalSession(sessionId, malinkClientRef.current, true, false, projectId);
   }
+
+  async function recoverWithPreviousGateway(deployment = activeRecoveryDeployment): Promise<void> {
+    if (gatewayRecoveryBusy || !deployment) return;
+    const state = gatewayStateRef.current;
+    const target = state && gatewayRecoveryTarget(state, deployment);
+    if (!target) {
+      showUiNotice("gateway:recovery", "connection", "error",
+        "The old Gateway route has not synchronized. Keep the old Gateway running and reconnect this client; recovery will not be sent through the new Gateway.");
+      return;
+    }
+    const recoveryKey = `malink.gateway-repair-command:${JSON.stringify([
+      matrixConfig.gatewayId, target.gatewayNodeId, deployment.updateId ?? deployment.generation,
+    ])}`;
+    setGatewayRecoveryBusy(true);
+    try {
+      if (activeProjectGateway.gatewayNodeId === deployment.candidate?.gatewayNodeId &&
+          selectedSessionIdRef.current && selectedProjectIdRef.current) {
+        setGatewayRecoveryReturnRoute({ projectId: selectedProjectIdRef.current,
+          sessionId: selectedSessionIdRef.current });
+      }
+      const file = new File([gatewayRecoveryReport(deployment,
+        gatewayNodeLivenessById[deployment.candidate?.gatewayNodeId ?? ""]?.state ?? "unknown")],
+      "gateway-update-diagnostics.json", { type: "application/json" });
+      let sessionId = target.session?.id;
+      if (sessionId) window.localStorage.removeItem(recoveryKey);
+      if (!sessionId) {
+        // This independent old-node command must not depend on candidate
+        // capabilities or discard its failed/unsent optimistic conversation.
+        const pendingCommandId = window.localStorage.getItem(recoveryKey);
+        if (pendingCommandId && pendingCommandId.length > 256) throw new Error("The saved repair command identity is invalid.");
+        const sent = pendingCommandId
+          ? await malinkClientRef.current?.recoverCommand(pendingCommandId)
+          : await sendRealCommand({ operation: "session.create",
+              provider: target.workspace.provider, scope: "project",
+              title: gatewayRecoveryTitle(deployment),
+            }, target.workspace.projectId, { propagateFailure: true });
+        if (!sent?.sessionId) throw new Error("The old Gateway repair command has no session identity.");
+        window.localStorage.setItem(recoveryKey, sent.commandId);
+        sessionId = sent.sessionId;
+        const completion = await waitForCommandCompletion(sent.completion, 60_000);
+        window.localStorage.removeItem(recoveryKey);
+        if (completion.outcome !== "succeeded") {
+          throw new Error(completion.error?.message ?? "The old Gateway could not create the repair session.");
+        }
+      }
+      if (sessionId) setGatewayRecoveryDraft({ projectId: target.workspace.projectId, sessionId, file });
+    } catch (error) {
+      if (error instanceof CommandAcknowledgementTimeoutError) {
+        try { window.localStorage.setItem(recoveryKey, error.commandId); }
+        catch (storageError) {
+          showUiNotice("gateway:recovery-storage", "connection", "warning",
+            `The command remains queued, but its local repair shortcut could not be saved: ${formatUiError(storageError)}. Check queued commands before creating another repair session.`);
+        }
+      }
+      showUiNotice("gateway:recovery", "connection", "error",
+        error instanceof CommandCompletionTimeoutError
+          ? "The old Gateway has not confirmed its repair session yet. The request is saved; retrying this action checks the same command instead of creating another session."
+          : `The old Gateway repair session could not be opened: ${formatUiError(error)}`);
+    } finally {
+      setGatewayRecoveryBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!gatewayRecoveryDraft) return;
+    const timer = window.setTimeout(() => {
+      setGatewayRecoveryDraft(current => current === gatewayRecoveryDraft ? null : current);
+      showUiNotice("gateway:recovery", "connection", "warning",
+        "The old Gateway created the repair conversation, but its history has not synchronized yet. Retry recovery after synchronization; the existing repair conversation will be reused.");
+    }, 30_000);
+    return () => window.clearTimeout(timer);
+  }, [gatewayRecoveryDraft]);
+
+  useEffect(() => {
+    if (!gatewayRecoveryDraft) return;
+    const { projectId, sessionId, file } = gatewayRecoveryDraft;
+    const session = gatewayState?.sessions.find(session => session.id === sessionId &&
+      session.projectId === projectId && session.status !== "archived");
+    if (!session) return;
+    const key = JSON.stringify([projectId, sessionId]);
+    const same = selectedSessionIdRef.current === sessionId && selectedProjectIdRef.current === projectId;
+    const existing = same ? pendingFiles : conversationDraftsRef.current.get(key)?.files ?? [];
+    if (existing.length >= MAX_MALINK_ATTACHMENTS ||
+        existing.reduce((sum, item) => sum + item.size, file.size) > MAX_MALINK_PROMPT_ATTACHMENT_BYTES) {
+      showUiNotice("gateway:recovery", "attachment", "warning", "The repair draft is full. Remove an attachment before adding diagnostics.");
+      setGatewayRecoveryDraft(null);
+      return;
+    }
+    chooseSession(sessionId, projectId);
+    sharedDraftFilesRef.current.add(file);
+    setPendingFiles([...existing, file]);
+    setGatewayUpdateDialogOpen(false);
+    setGatewayRecoveryDraft(null);
+    showUiNotice("gateway:recovery", "composer", "info", "Diagnostics added to the old Gateway draft. Enter a message and press Send to start repair.");
+  }, [gatewayRecoveryDraft, gatewayState?.sessions]);
 
   function openGatewayTrialProject(projectId: string): void {
     setGatewayUpdateDialogOpen(false);
@@ -13831,6 +13952,42 @@ function MalinkAppRuntime() {
             aria-live="polite"
             aria-atomic="true"
           >
+            {previousGatewayDeployment && (
+              <button type="button" className="secondary-button gateway-recovery-button"
+                title="Return to new Gateway"
+                aria-label="Return to new Gateway"
+                onClick={() => {
+                  const route = gatewayRecoveryReturnRoute;
+                  if (route && gatewayState?.sessions.some(session => session.id === route.sessionId &&
+                    session.projectId === route.projectId && session.status !== "archived" &&
+                    projectGatewaysById.get(session.projectId)?.gatewayNodeId === previousGatewayDeployment.candidate?.gatewayNodeId)) {
+                    chooseSession(route.sessionId, route.projectId);
+                  } else {
+                    const project = allWorkspaceProjects.find(project =>
+                      project.cwd === activeWorkspace?.cwd && projectGatewaysById.get(project.projectId)?.gatewayNodeId ===
+                        previousGatewayDeployment.candidate?.gatewayNodeId);
+                    if (project) openGatewayTrialProject(project.projectId);
+                    else setGatewayUpdateDialogOpen(true);
+                  }
+                }}>
+                New Gateway →
+              </button>
+            )}
+            {activeRecoveryDeployment && (
+              <button
+                type="button"
+                className="secondary-button gateway-recovery-button"
+                disabled={gatewayRecoveryBusy || Boolean(gatewayRecoveryDraft)}
+                aria-busy={gatewayRecoveryBusy || Boolean(gatewayRecoveryDraft)}
+                onClick={() => void recoverWithPreviousGateway()}
+                title="The previous Gateway remains available for update repair"
+              >
+                {gatewayRecoveryBusy || gatewayRecoveryDraft ? "Opening repair…" :
+                  gatewayNodeLivenessById[activeProjectGateway.gatewayNodeId]?.state === "unreachable"
+                  ? "Old Gateway repair"
+                  : "Update recovery"}
+              </button>
+            )}
             {selectedUpdateSignal && selectedUpdateLabel && gatewaySelected && (
               <button
                 type="button"
@@ -14993,6 +15150,9 @@ function MalinkAppRuntime() {
           onStart={(node, mode) => void startGatewayUpdateNode(node, mode)}
           onPromote={(node, mode) => void changeGatewayDeployment(node, "promote", mode)}
           onDiscard={(node) => void changeGatewayDeployment(node, "discard")}
+          onRecover={(node) => void recoverWithPreviousGateway(node.computerId
+            ? gatewayState?.gatewayDeployments?.[node.computerId]?.deployment : undefined)}
+          recoveryBusy={gatewayRecoveryBusy || Boolean(gatewayRecoveryDraft)}
           onOpenProject={openGatewayTrialProject}
           onOpenSession={openGatewayUpdateSession}
           onArchiveSession={(node, sessionId) =>

@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
   MALINK_MATRIX_EXTENSION,
   MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+  MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE,
   MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
   MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE,
   mlp3CurrentPointerSchema,
@@ -1799,6 +1800,10 @@ describe('MatrixMlp3GatewayRunner', () => {
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
       .some(event => event.payload.type === 'gateway.deployment.status'
         && event.payload.status.updateId === 'external-prepare'), 7_000)
+    await waitFor(async () => (await stateEvents(client, activeKey.key, roomId, projectId,
+      MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE)).some(event =>
+        event.payload.type === 'gateway.deployment.status'
+        && event.payload.status.updateId === 'external-prepare'))
     gatewayDeploymentStatus = originalDeployment
 
     await expect(runner.publishNativeClientRelease(nativeRelease(42))).resolves.toMatchObject({

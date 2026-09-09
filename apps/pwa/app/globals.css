@@ -2211,6 +2211,32 @@ select:focus-visible {
   gap: 3px;
 }
 
+.conversation-header .gateway-recovery-button {
+  min-width: 0;
+  max-width: 148px;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid #d8d2fb;
+  border-radius: 9px;
+  background: #f0edff;
+  color: #5440c7;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-header .gateway-recovery-button:hover {
+  background: #e7e1ff;
+}
+
+.conversation-header .gateway-recovery-button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
 .conversation-heading h2 {
   overflow: hidden;
   margin: 0;

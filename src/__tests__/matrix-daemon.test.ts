@@ -381,9 +381,10 @@ describe('MatrixJsSdkGatewayClient', () => {
             expect.objectContaining({ kind: 'state_envelope' }),
             expect.any(Object),
         )
+        for (const eventType of [MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE, 'io.malink.gateway_deployment.v1']) {
         await client.setApplicationRoomState({
             roomId: '!room:example.org',
-            eventType: MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+            eventType,
             stateKey: 'codex/manifest',
             content: {
                 msgtype: 'm.notice',
@@ -405,11 +406,12 @@ describe('MatrixJsSdkGatewayClient', () => {
         })
         expect(sdk.http.authedRequest).toHaveBeenCalledWith(
             'PUT',
-            '/rooms/!room%3Aexample.org/state/io.malink.provider_catalog.v1/codex%2Fmanifest',
+            `/rooms/!room%3Aexample.org/state/${eventType}/codex%2Fmanifest`,
             undefined,
             expect.objectContaining({ body: 'Encrypted Malink event' }),
             expect.any(Object),
         )
+        }
         await expect(client.setApplicationRoomState({
             roomId: '!room:example.org',
             eventType: MALINK_MATRIX_GATEWAY_STATE_EVENT_TYPE,
@@ -427,7 +429,7 @@ describe('MatrixJsSdkGatewayClient', () => {
             },
         })).rejects.toThrow('must contain a Malink state envelope')
         expect(sdk.sendMessage).toHaveBeenCalledTimes(1)
-        expect(sdk.http.authedRequest).toHaveBeenCalledTimes(5)
+        expect(sdk.http.authedRequest).toHaveBeenCalledTimes(6)
         await client.stop()
         expect(sdk.stopClient).toHaveBeenCalledOnce()
     })

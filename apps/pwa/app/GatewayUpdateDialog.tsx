@@ -58,6 +58,8 @@ type Props = {
   onStart(node: GatewayUpdatePlanNode, mode: "when_idle" | "force"): void;
   onPromote(node: GatewayUpdatePlanNode, mode: "when_idle" | "force"): void;
   onDiscard(node: GatewayUpdatePlanNode): void;
+  onRecover?(node: GatewayUpdatePlanNode): void;
+  recoveryBusy?: boolean;
   onOpenProject(projectId: string): void;
   onOpenSession(projectId: string, sessionId: string): void;
   onArchiveSession(node: GatewayUpdatePlanNode, sessionId: string): void;
@@ -84,6 +86,8 @@ function GatewayUpdateDialogContent({
   onStart,
   onPromote,
   onDiscard,
+  onRecover,
+  recoveryBusy = false,
   onOpenProject,
   onOpenSession,
   onArchiveSession,
@@ -91,6 +95,7 @@ function GatewayUpdateDialogContent({
   diagnosticExportBusy = false,
 }: Props) {
   const [forceConfirmationNodeId, setForceConfirmationNodeId] = useState<string | null>(null);
+  const [completionConfirmationNodeId, setCompletionConfirmationNodeId] = useState<string | null>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const forceConfirmationRef = useRef<HTMLDivElement>(null);
@@ -159,7 +164,7 @@ function GatewayUpdateDialogContent({
         </div>
 
         <p className="gateway-update-explanation">
-          Prepare and try a candidate Gateway before choosing to switch all work.
+          Use the new Gateway while keeping the previous version available for repair. Complete the update when you are ready to close recovery.
           Older computers retain their restart-based update controls. Signed
           supervisor state is the source of truth; you may close this panel.
         </p>
@@ -177,6 +182,8 @@ function GatewayUpdateDialogContent({
               : undefined;
             const deploymentOwner = deployment?.active.gatewayNodeId === node.gatewayNodeId;
             const deploymentInProgress = deploymentOwner && deployment.phase !== "steady";
+            const maintenanceCleanupAllowed = !deploymentInProgress &&
+              (!node.blueGreenUpdate || deployment?.phase === "steady");
             const liveness = livenessByNode[node.gatewayNodeId];
             const signedUpdateStatus = gatewayUpdateStatusForPresentation(
               runtime.status,
@@ -326,10 +333,18 @@ function GatewayUpdateDialogContent({
                 )}
 
                 <div className="gateway-update-node-actions">
+                  {deploymentOwner && deployment.phase !== "steady" && onRecover && (
+                    <button type="button" className="secondary-button"
+                      disabled={!connected || recoveryBusy}
+                      aria-busy={recoveryBusy}
+                      onClick={() => onRecover(node)}>
+                      {recoveryBusy ? "Opening repair session…" : "Repair using previous Gateway"}
+                    </button>
+                  )}
                   {deploymentOwner && deployment.phase !== "steady" && (
                     <p className="gateway-update-action-status" role="status">
                       {deployment.phase === "trial"
-                        ? `Candidate ${deployment.candidate?.buildId ?? "unknown"} is running beside the current Gateway. It stays available until you choose.`
+                        ? `New Gateway ${deployment.candidate?.buildId ?? "unknown"} is ready for new work. The previous Gateway remains available for repair until you complete or discard this update.`
                         : deployment.detail ?? `Gateway deployment is ${deployment.phase}.`}
                     </p>
                   )}
@@ -342,11 +357,11 @@ function GatewayUpdateDialogContent({
                           disabled={!connected}
                           onClick={() => onOpenProject(candidateNode.targetProjectId!)}
                         >
-                          Use candidate Gateway
+                          Open new Gateway
                         </button>
                       ) : (
                         <p className="gateway-update-action-status" role="status">
-                          Candidate trial route is still synchronizing to this device.
+                          The new Gateway project is still synchronizing to this device.
                         </p>
                       )}
                       <button
@@ -354,12 +369,24 @@ function GatewayUpdateDialogContent({
                         className="secondary-button"
                         disabled={!connected || active}
                         aria-busy={active && activeMode === "when_idle"}
-                        onClick={() => onPromote(node, "when_idle")}
+                        onClick={() => setCompletionConfirmationNodeId(node.gatewayNodeId)}
                       >
                         {active && activeMode === "when_idle"
                           ? "Switching when idle…"
-                          : "Switch all work when idle"}
+                          : "Complete update when idle"}
                       </button>
+                      {completionConfirmationNodeId === node.gatewayNodeId && (
+                        <div className="gateway-update-force-confirmation">
+                          <strong>Close the old Gateway recovery window?</strong>
+                          <p>All work will move to the new Gateway when idle. The previous Gateway will stop after takeover commits, and its repair session can then be archived.</p>
+                          <button type="button" className="secondary-button" disabled={active}
+                            onClick={() => setCompletionConfirmationNodeId(null)}>Keep recovery available</button>
+                          <button type="button" className="primary-button" disabled={!connected || active}
+                            onClick={() => { setCompletionConfirmationNodeId(null); onPromote(node, "when_idle"); }}>
+                            Confirm completion
+                          </button>
+                        </div>
+                      )}
                       <button
                         type="button"
                         className="secondary-button"
@@ -399,7 +426,7 @@ function GatewayUpdateDialogContent({
                   )}
                   {!targetInstalled && !statusWasSuperseded && runtime.maintenanceSessionId &&
                     !runtime.maintenanceSessionAmbiguous &&
-                    runtime.maintenanceSessionArchiveAvailable && (
+                    maintenanceCleanupAllowed && runtime.maintenanceSessionArchiveAvailable && (
                     <button
                       type="button"
                       className="secondary-button"
@@ -430,7 +457,7 @@ function GatewayUpdateDialogContent({
                         <span className="gateway-update-session-warning" role="status">
                           Old update session archived on this Gateway.
                         </span>
-                      ) : runtime.maintenanceSessionArchiveAvailable ? (
+                      ) : maintenanceCleanupAllowed && runtime.maintenanceSessionArchiveAvailable ? (
                         <button
                           type="button"
                           className="secondary-button"
@@ -460,7 +487,7 @@ function GatewayUpdateDialogContent({
                         <span className="gateway-update-session-warning" role="status">
                           Old update session archived on this Gateway.
                         </span>
-                      ) : runtime.legacyMaintenanceSessionArchiveAvailable ? (
+                      ) : maintenanceCleanupAllowed && runtime.legacyMaintenanceSessionArchiveAvailable ? (
                         <button
                           type="button"
                           className="secondary-button"

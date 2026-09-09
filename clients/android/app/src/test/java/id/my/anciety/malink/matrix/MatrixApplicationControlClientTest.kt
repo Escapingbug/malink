@@ -328,6 +328,22 @@ class MatrixApplicationControlClientTest {
         }
 
     @Test
+    fun `cold projection restores encrypted deployment state and ignores another sender`() = runBlocking {
+        val client = MatrixApplicationRoomStateClient(MatrixApplicationReadTransport { _, _ ->
+            MatrixHttpResponse(200, """[
+              {"type":"io.malink.gateway_deployment.v1","state_key":"computer-1",
+               "event_id":"${'$'}deployment","sender":"@gateway:example.org","origin_server_ts":10,
+               "content":${timelineContent()}},
+              {"type":"io.malink.gateway_deployment.v1","state_key":"computer-2",
+               "event_id":"${'$'}untrusted","sender":"@mallory:example.org","origin_server_ts":11,
+               "content":${timelineContent()}}
+            ]""".trimIndent().toByteArray())
+        })
+        val batch = client.currentMlp3(storedSession())
+        assertEquals(listOf("${'$'}deployment"), batch.events.map { it.eventId })
+    }
+
+    @Test
     fun `cold projection reads current MLP3 state without opening another sync`() = runBlocking {
         lateinit var endpoint: URI
         val client = MatrixApplicationRoomStateClient(

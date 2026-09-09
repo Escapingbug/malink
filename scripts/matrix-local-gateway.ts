@@ -1534,6 +1534,17 @@ async function deterministicE2eResponse(input: AgentQueryInput): Promise<string>
                 `E2E Agent received the wrong byte count for ${attachment.label}`,
             )
         }
+        if (attachment.label === 'gateway-update-diagnostics.json') {
+            const report = JSON.parse(attachment.bytes.toString('utf8'))
+            if (report.kind !== 'gateway-update-recovery' || report.version !== 1 ||
+                typeof report.updateId !== 'string' || !report.previous?.gatewayNodeId ||
+                !report.candidate?.gatewayNodeId ||
+                report.previous.gatewayNodeId === report.candidate.gatewayNodeId) {
+                throw new Error('E2E Agent received invalid Gateway recovery diagnostics')
+            }
+            markers.push(`GATEWAY-RECOVERY-${report.updateId}`)
+            continue
+        }
         const marker = attachment.bytes.toString('utf8').match(attachmentMarkerPattern)?.[1]
         if (!marker) {
             throw new Error(

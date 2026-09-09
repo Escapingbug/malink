@@ -8,6 +8,41 @@ the blue/green deployment capability.
 
 ## Product contract
 
+### Default use and recovery window
+
+After the candidate passes host health checks and the signed deployment enters
+`trial`, new conversations prefer its matching working-directory route. An
+explicit project choice is respected. Existing conversations are never migrated
+by opening the candidate or by changing this default.
+
+The previous Gateway retains its update conversation throughout every non-steady
+deployment phase. Both the client auto-archive loop and the old Gateway archive
+handler protect this recovery window, including against older clients. Failure to
+read supervisor state must not permit maintenance cleanup.
+This server-side protection takes effect only after the previous Gateway itself
+includes the retention guard; publishing only a new PWA cannot retrofit the
+guard into an already running old binary.
+
+“Update recovery” resolves the previous node through the signed directory. It
+opens the exact maintenance session, or creates a replacement through the old
+node's ordinary session-create command when that session was archived or lost.
+It never restores Provider History through the candidate. A bounded deployment
+diagnostic report is attached as a normal local draft; the user must enter text
+and send before the repair Agent runs. This report is deployment context, not a
+replacement for native diagnostic-log export through the normal share flow.
+
+The recovery page offers return to the new Gateway. Completing the update is a
+separate explicit action confirming that the previous repair path will close.
+Only committed promotion or deliberate candidate discard returns to `steady`
+and permits ordinary maintenance cleanup. There is no automatic promotion after
+a successful startup check.
+
+The Gateway also publishes the same signed, application-encrypted deployment
+event under `io.malink.gateway_deployment.v1` Room State, keyed by computer ID.
+This bounded current state restores the recovery action when an APK or browser
+missed the transition offline. The timeline event remains for existing clients;
+neither channel grants execution authority without normal MLP verification.
+
 A Workspace computer normally has exactly one active Gateway deployment. An
 update may temporarily add one candidate deployment on the same computer:
 
@@ -265,11 +300,12 @@ independent node-local timestamps.
 The Computers card groups deployments by stable `computerId` and shows:
 
 - **Current Gateway** with its version and all existing work;
-- **Candidate Gateway** with its version, readiness, and trial-owned work;
-- an explicit version selector when creating a trial project; sessions then stay
-  on their owning project's Gateway;
-- **Switch all work to this version**, with the number of projects and sessions
-  that will move and a wait/cancel-running-work choice;
+- **New Gateway** with its version and readiness, preferred for new work once
+  the matching project is ready; existing sessions retain their owner;
+- **Previous Gateway · recovery**, presented as the repair fallback rather than
+  a second equal workspace, with a persistent recovery action on new sessions;
+- **Complete update when idle**, with inline confirmation that completing
+  takeover closes the old-Gateway recovery window;
 - **Discard candidate**, explaining that only candidate-owned trial work is
   removed;
 - no control for preparing a third version and no per-session migration action.
@@ -279,6 +315,23 @@ view. Old sessions keep their IDs, Matrix threads, history, and provider resume
 identifiers; only their owning deployment and ownership generation change.
 
 ## Acceptance criteria
+
+The recovery-specific real-Matrix regression is run from the repository root:
+
+```sh
+MALINK_MATRIX_MLP3_LIVE_E2E=1 MALINK_GATEWAY_RECOVERY_LIVE_E2E=1 pnpm exec tsx scripts/matrix-mlp3-live-e2e.ts
+MALINK_MATRIX_MLP3_LIVE_E2E=1 MALINK_GATEWAY_RECOVERY_LIVE_E2E=native MALINK_MATRIX_MLP3_REQUIRE_ANDROID=1 MALINK_ANDROID_SERIAL=emulator-5554 pnpm exec tsx scripts/matrix-mlp3-live-e2e.ts
+```
+
+These use disposable Synapse, two real Gateway processes, the actual PWA, and
+(for `native`) an isolated APK. A fixture supervisor supplies signed trial
+metadata; the candidate process is then killed. Tests require old-node repair,
+a visible attachment-only draft with Send disabled, explicit user text before
+execution, repair-session reuse, and return to the candidate session. This is
+not evidence of a real macOS supervisor promotion: system-level takeover must
+still satisfy the criteria below. Use `full` instead of `native` to also run the
+broader multi-browser transport and cache-recovery journey. Do not build a
+second PWA into the shared `dist` directory during these tests.
 
 The feature is not complete until automated and real-Matrix tests prove all of
 the following:

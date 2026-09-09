@@ -58,7 +58,8 @@ describe('MatrixNodeSdkGatewayClient', () => {
         expect(JSON.parse(await readFile(join(directory, 'sync.json'), 'utf8'))).toBeTruthy()
     })
 
-    it('accepts application-encrypted Provider Catalog state', async () => {
+    it.each([MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE, 'io.malink.gateway_deployment.v1'])(
+      'accepts application-encrypted current state %s', async eventType => {
         const fetchMock = vi.fn(async () => jsonResponse({ event_id: '$catalog' }))
         const client = new MatrixNodeSdkGatewayClient({
             baseUrl: 'https://matrix.example.test',
@@ -69,7 +70,7 @@ describe('MatrixNodeSdkGatewayClient', () => {
 
         await expect(client.setApplicationRoomState({
             roomId: '!room:example.test',
-            eventType: MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
+            eventType,
             stateKey: 'codex/manifest',
             content: {
                 msgtype: 'm.notice',
