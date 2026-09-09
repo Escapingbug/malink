@@ -13,6 +13,17 @@ import {
   shouldPollNativeUpdateStatus,
 } from "../app/nativeUpdatePolling.ts";
 
+test("checking again is named as an update check, not a status refresh", () => {
+  const html = renderToStaticMarkup(createElement(NativeUpdateSettings, {
+    state: { phase: "current", currentVersionCode: 1, currentVersionName: "test" },
+    busy: false,
+    onRefresh() {},
+    onInstall() {},
+  }));
+  assert.match(html, /Check APK update/);
+  assert.doesNotMatch(html, /Refresh APK status/);
+});
+
 test("explains that only static APK checks bypass Workspace authorization", () => {
   const html = renderToStaticMarkup(createElement(NativeUpdateSettings, {
     state: null,

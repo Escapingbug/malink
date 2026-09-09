@@ -7,6 +7,19 @@ import { CurrentAppAccessCard } from "../app/MatrixSettings.tsx";
 import { PairingWizard } from "../app/PairingWizard.tsx";
 import { SettingsNavigation } from "../app/SettingsNavigation.tsx";
 
+test("app settings remain accessible before Workspace authorization", () => {
+  const html = renderToStaticMarkup(createElement(SettingsNavigation, {
+    activeSection: "support",
+    setupRequired: true,
+    gatewayUpdateAvailableCount: 0,
+    onSelect() {},
+  }));
+  assert.match(html, /Device setup/);
+  assert.match(html, /App &amp; help/);
+  assert.match(html, /aria-current="page"/);
+  assert.doesNotMatch(html, /Computers|Overview/);
+});
+
 test("labels the Computers count as a software update instead of an error", () => {
   const html = renderToStaticMarkup(createElement(SettingsNavigation, {
     activeSection: "workspace",

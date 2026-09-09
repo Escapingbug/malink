@@ -11,14 +11,17 @@ export function SettingsNavigation({
   activeSection,
   gatewayUpdateAvailableCount,
   onSelect,
+  setupRequired = false,
 }: {
   activeSection: SettingsSection;
   gatewayUpdateAvailableCount: number;
   onSelect(section: SettingsSection): void;
+  setupRequired?: boolean;
 }) {
   return (
     <nav className="settings-navigation" aria-label="Settings sections">
-      {SETTINGS_SECTIONS.map(([section, label]) => {
+      {SETTINGS_SECTIONS.filter(([section]) => !setupRequired ||
+        section === "access" || section === "support").map(([section, label]) => {
         const updateCount = section === "computers"
           ? gatewayUpdateAvailableCount
           : 0;
@@ -33,7 +36,7 @@ export function SettingsNavigation({
             aria-current={activeSection === section ? "page" : undefined}
             onClick={() => onSelect(section)}
           >
-            <span>{label}</span>
+            <span>{setupRequired && section === "access" ? "Device setup" : label}</span>
             {updateCount > 0 && (
               <b aria-label={updateLabel} title={updateLabel}>
                 {updateCount}

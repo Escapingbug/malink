@@ -302,8 +302,9 @@ function MatrixSettingsDialog({
       config.gatewayId.trim() ||
       pairingPreview,
   );
-  const setupMode =
+  const setupRequired =
     !trustedGateway || repairRequired || Boolean(pairingPreview) || Boolean(pairingCompletion);
+  const setupMode = setupRequired && activeSection !== "support";
   const connectionPresentation = deriveConnectionPresentation(status, connectionDetail);
   const availableProjectIdSet = new Set(availableProjectIds);
   const onlineGatewayNodeIds = new Set(
@@ -467,7 +468,7 @@ function MatrixSettingsDialog({
               {setupMode ? "Secure device setup" : "Workspace settings"}
             </span>
             <h2 id="matrix-settings-title">
-              {pairingCompletion
+              {activeSection === "support" ? "App & help" : pairingCompletion
                 ? "Device added"
                 : repairRequired
                 ? "Repair connection"
@@ -487,9 +488,10 @@ function MatrixSettingsDialog({
           </button>
         </header>
 
-        {!setupMode && (
+        {(
           <SettingsNavigation
-            activeSection={activeSection}
+            activeSection={setupMode ? "access" : activeSection}
+            setupRequired={setupRequired}
             gatewayUpdateAvailableCount={gatewayUpdateAvailableCount}
             onSelect={(section) => {
               setAddingGateway(false);
@@ -764,7 +766,7 @@ function MatrixSettingsDialog({
                             ? "Checking…"
                             : gatewayUpdateDiscoveryError
                               ? "Retry update check"
-                              : "Review update"}
+                              : "View update options"}
                         </button>
                       )}
                     </div>
@@ -1441,7 +1443,7 @@ export function GatewayRecoveryCard({
             available.
           </em>
           <button type="button" disabled={busy} onClick={onReviewGatewayUpdates}>
-            Review Gateway updates
+            View Gateway update options
           </button>
         </div>
       )}
@@ -1686,9 +1688,7 @@ export function NativeUpdateSettings({
           ? legacyManualCheck
             ? "Open APK releases"
             : "Retry APK check"
-          : state
-            ? "Refresh APK status"
-            : "Check APK update";
+          : "Check APK update";
   return (
     <section className="native-update-settings" aria-live="polite">
       <span>
