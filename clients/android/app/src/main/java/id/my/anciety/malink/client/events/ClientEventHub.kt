@@ -2,6 +2,7 @@ package id.my.anciety.malink.client.events
 
 import java.security.SecureRandom
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -63,6 +64,7 @@ data class HistoryPage(
     val nextBefore: String?,
     val hasMore: Boolean,
     val asOfCursor: String,
+    val turnCompletions: JsonArray = JsonArray(emptyList()),
 )
 
 class UnknownSubscriptionException : IllegalArgumentException("Unknown client event subscription.")

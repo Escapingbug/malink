@@ -62,6 +62,8 @@ export function ToolActivityCard({
     currentTool(selectedStage?.tools ?? []);
   const summary = toolStateSummary(tools);
   const activityRunning = !terminalOutcome && (live || summary.running > 0);
+  const activityStopped = terminalOutcome === "cancelled";
+  const activityLabel = activityStopped ? "Stopped" : summary.label;
   const detailsId = useMemo(
     () => `tool-activity-${safeDomId(group.groupId)}`,
     [group.groupId],
@@ -110,7 +112,7 @@ export function ToolActivityCard({
   return (
     <article
       className={`tool-activity-card ${activityRunning ? "is-live" : "is-complete"} ${summary.failed > 0 ? "has-error" : ""}`}
-      aria-label={`Agent activity, ${summary.label}`}
+      aria-label={`Agent activity, ${activityLabel}`}
     >
       <button
         type="button"
@@ -121,11 +123,11 @@ export function ToolActivityCard({
       >
         <ActivityStateMark phase={summary.phase} />
         <span className="tool-activity-copy">
-          <strong>{activityRunning ? "Agent working" : summary.failed > 0 ? "Activity failed" : "Activity completed"}</strong>
-          <small>{toolActivityDescription(tools)}</small>
+          <strong>{activityRunning ? "Agent working" : activityStopped ? "Activity stopped" : summary.failed > 0 ? "Activity failed" : "Activity completed"}</strong>
+          <small>{activityStopped ? "Task stopped" : toolActivityDescription(tools)}</small>
         </span>
         <span className="tool-activity-meta">
-          <ToolState phase={summary.phase} label={summary.label} />
+          <ToolState phase={summary.phase} label={activityLabel} />
           <time>{formatDuration(tools)}</time>
         </span>
         <span className="tool-activity-chevron" aria-hidden="true">

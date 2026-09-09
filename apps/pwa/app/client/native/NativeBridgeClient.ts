@@ -79,11 +79,12 @@ export function nativeCapabilityVersions(
   // operations; v3 adds explicit project routing for simultaneous multi-Gateway
   // management; v4 adds atomic project metadata/default updates and deletion.
   // v5 adds Provider History materialization; history.page v3 joins its
-  // data-only room and pages reverse-appended provider messages.
+  // data-only room and pages reverse-appended provider messages. history.page
+  // v4 adds optional verified turn outcomes; v3 remains fully usable.
   // Request older versions as negotiation fallbacks only so an old
   // APK can return an actionable update requirement instead of failing hello.
   if (name === "commands.durable") return [5, 4, 3, 2, 1];
-  if (name === "history.page") return [3, 2, 1];
+  if (name === "history.page") return [4, 3, 2, 1];
   // v3 removes arbitrary Matrix password bootstrap. Old native versions remain
   // usable because the new PWA only sends the token form they already support.
   if (name === "matrix.session-bootstrap") return [3, 2, 1];
@@ -147,12 +148,14 @@ export function hasCurrentNativeCapability(
     const version = hello.capabilities[name]?.version;
     return version === 1 || version === 2 || version === 3;
   }
+  if (name === "history.page") {
+    const version = hello.capabilities[name]?.version;
+    return version === 3 || version === 4;
+  }
   return hello.capabilities[name]?.version ===
     (name === "commands.durable"
       ? 5
-      : name === "history.page"
-        ? 3
-        : 1);
+      : 1);
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 24 * 60 * 60_000;
@@ -1226,6 +1229,11 @@ export class NativeBridgeClient implements MalinkClient {
     }
     if (page.nextBefore) this.#historyBefore.set(sessionId, page.nextBefore);
     else this.#historyBefore.delete(sessionId);
+    const pageCommands = new Set(page.messages.map(message => message.commandId));
+    for (const completion of page.turnCompletions ?? []) {
+      if (!pageCommands.has(completion.commandId)) continue;
+      this.handlers.onHistoryTurnCompleted?.({ ...completion, sessionId });
+    }
     return {
       messages: page.messages.map((payload) => ({
         ...parseCompatibleClientMessage(payload),

@@ -23,6 +23,47 @@ import org.junit.Test
 
 class MatrixMlp3NativeProjectionTest {
     @Test
+    fun `history cancellation evidence survives restart and stays scoped to the requested turn`() {
+        val original = projection()
+        original.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        original.applyGatewayEvent(sessionReady("session-a", 1, "Session A", 100), "\$root", "\$root")
+        original.applyGatewayEvent(turn("completed", 3, "idle", "cancelled"), "\$done", "\$root")
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" }, activeDeviceCount = { 2 }, initialState = original.durableState(),
+        )
+        assertEquals("cancelled", restored.historyTurnCompletions("session-a", setOf("turn-1"))
+            .single().jsonObject.getValue("outcome").jsonPrimitive.content)
+        assertTrue(restored.historyTurnCompletions("session-b", setOf("turn-1")).isEmpty())
+        assertTrue(restored.historyTurnCompletions("session-a", setOf("new-running-turn")).isEmpty())
+    }
+
+    @Test
+    fun `legacy history outcomes are unknown until verified replay enriches the checkpoint`() {
+        val original = projection()
+        original.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        original.applyGatewayEvent(sessionReady("session-a", 1, "Session A", 100), "\$root", "\$root")
+        val terminal = turn("completed", 3, "idle", "cancelled")
+        original.applyGatewayEvent(terminal, "\$done", "\$root")
+        val state = original.durableState()
+        val legacy = JsonObject(state + mapOf(
+            "schemaVersion" to JsonPrimitive(24),
+            "completionObservations" to JsonArray(state.getValue("completionObservations").jsonArray.map {
+                JsonObject(it.jsonObject - "outcome")
+            }),
+        ))
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" }, activeDeviceCount = { 2 }, initialState = legacy,
+        )
+        assertTrue(restored.historyTurnCompletions("session-a", setOf("turn-1")).isEmpty())
+        val result = restored.applyGatewayEvent(terminal, "\$done", "\$root")
+        assertTrue(result.checkpointChanged)
+        assertNull(result.terminal)
+        assertTrue(result.messages.isEmpty())
+        assertEquals("cancelled", restored.historyTurnCompletions("session-a", setOf("turn-1"))
+            .single().jsonObject.getValue("outcome").jsonPrimitive.content)
+    }
+
+    @Test
     fun `verified physical event ids can bypass repeated raw inbox writes`() {
         val projection = projection()
 
@@ -343,7 +384,7 @@ class MatrixMlp3NativeProjectionTest {
         projection.applyGatewayEvent(turn("started", 2, "working"), "\$started", "\$root-a")
         projection.applyGatewayEvent(turn("completed", 3, "idle"), "\$completed", "\$root-a")
         val current = projection.durableState()
-        assertEquals(24, current.getValue("schemaVersion").jsonPrimitive.content.toInt())
+        assertEquals(25, current.getValue("schemaVersion").jsonPrimitive.content.toInt())
 
         val providerCatalogOnly = JsonObject(current.filterKeys {
             it != "completionObservations"
@@ -2674,7 +2715,7 @@ class MatrixMlp3NativeProjectionTest {
         },
     )
 
-    private fun turn(stage: String, stateVersion: Long, activity: String) = event(
+    private fun turn(stage: String, stateVersion: Long, activity: String, outcome: String = "succeeded") = event(
         eventId = "turn-$stage-$stateVersion",
         projectId = "project-1",
         sessionId = "session-a",
@@ -2682,7 +2723,7 @@ class MatrixMlp3NativeProjectionTest {
         payload = buildJsonObject {
             put("type", "turn.$stage")
             put("turnId", "turn-1")
-            if (stage == "completed") put("outcome", "succeeded")
+            if (stage == "completed") put("outcome", outcome)
             put(
                 "projection",
                 sessionProjection(stateVersion, "Session A", "active", activity, stateVersion * 100),

@@ -1075,11 +1075,16 @@ function parseEventsCursorResult(input: unknown): {
 function parseHistoryPageResult(input: unknown): HistoryPageResult {
   const value = strictObject(
     input,
-    ["sessionId", "messages", "nextBefore", "hasMore", "asOfCursor"],
+    ["sessionId", "messages", "nextBefore", "hasMore", "asOfCursor", "turnCompletions"],
     "history page result",
   );
   if (!Array.isArray(value.messages) || value.messages.length > 100) {
     invalidParams("history.messages must be an array of at most 100 messages.");
+  }
+  const turnCompletions = value.turnCompletions;
+  if (turnCompletions !== undefined &&
+      (!Array.isArray(turnCompletions) || turnCompletions.length > 100)) {
+    invalidParams("history.turnCompletions must contain at most 100 entries.");
   }
   return {
     sessionId: opaqueId(value.sessionId, "history.sessionId"),
@@ -1091,6 +1096,15 @@ function parseHistoryPageResult(input: unknown): HistoryPageResult {
       : { nextBefore: opaqueId(value.nextBefore, "history.nextBefore") }),
     hasMore: requiredBoolean(value.hasMore, "history.hasMore"),
     asOfCursor: opaqueId(value.asOfCursor, "history.asOfCursor"),
+    ...(turnCompletions === undefined ? {} : {
+      turnCompletions: (turnCompletions as unknown[]).map((input) => {
+        const item = strictObject(input, ["commandId", "outcome"], "history turn completion");
+        return {
+          commandId: opaqueId(item.commandId, "history.turn.commandId"),
+          outcome: enumValue(item.outcome, "history.turn.outcome", ["succeeded", "failed", "cancelled"] as const),
+        };
+      }),
+    }),
   };
 }
 

@@ -497,6 +497,28 @@ test("keeps native local projection reads separate from Matrix pagination", asyn
   client.dispose();
 });
 
+test("restores scoped history outcomes without replaying command results", async () => {
+  const observed: unknown[] = [];
+  const port = new RuntimePort(request => {
+    if (request.method !== "malink.history.page") return responseFor(request);
+    return {
+      sessionId: "session-history",
+      messages: [{ eventId: "old-agent", sender: "gateway", timestamp: 1,
+        encrypted: true, kind: "agent", format: "plain", text: "Old work",
+        sessionId: "session-history", commandId: "cancelled-turn" }],
+      turnCompletions: [
+        { commandId: "cancelled-turn", outcome: "cancelled" },
+        { commandId: "unrelated-turn", outcome: "succeeded" },
+      ],
+      hasMore: false, asOfCursor: "history-cursor",
+    };
+  });
+  const client = await createTestClient(port, undefined, undefined, value => observed.push(value));
+  await client.loadLocalHistory("session-history");
+  assert.deepEqual(observed, [{ commandId: "cancelled-turn", outcome: "cancelled", sessionId: "session-history" }]);
+  client.dispose();
+});
+
 test("identifies a terminal native session creation for orphaned UI recovery", async () => {
   const recovered: string[] = [];
   const bridgePort = new RuntimePort();
@@ -1391,6 +1413,7 @@ async function createTestClient(
   port: RuntimePort,
   onReview: (review: MalinkCommandReview | null) => void = () => {},
   onCommandChanged: (command: MalinkRecoveredDurableCommand) => void = () => {},
+  onHistoryTurnCompleted: (result: unknown) => void = () => {},
 ): Promise<NativeBridgeClient> {
   const bridge = await acquireNativeRpcBridge(port);
   const hello = await bridge.hello({
@@ -1409,6 +1432,7 @@ async function createTestClient(
     onStatus() {},
     onCommandReviewRequired: onReview,
     onDurableCommandChanged: onCommandChanged,
+    onHistoryTurnCompleted,
   });
   await client.ready;
   return client;

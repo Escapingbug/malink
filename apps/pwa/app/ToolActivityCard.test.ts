@@ -123,6 +123,18 @@ describe("ToolActivityCard", () => {
     expect(html).toContain("Command failed");
     expect(html).toContain('aria-label="1 failed"');
   });
+
+  it("distinguishes a cancelled task from success and failure", () => {
+    const html = renderToStaticMarkup(createElement(ToolActivityCard, {
+      terminalOutcome: "cancelled",
+      group: group([tool("command-1", "Bash", "execute", "started", "sleep 45")]),
+    }));
+    expect(html).toContain("Activity stopped");
+    expect(html).toContain("Task stopped");
+    expect(html).not.toContain("Activity failed");
+    expect(html).not.toContain("Activity completed");
+    expect(html).not.toContain("Command running");
+  });
 });
 
 function group(

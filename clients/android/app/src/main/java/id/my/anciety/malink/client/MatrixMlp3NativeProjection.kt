@@ -153,6 +153,7 @@ internal class MatrixMlp3NativeProjection(
         val commandId: String,
         val sessionId: String,
         val occurredAt: Long,
+        val outcome: String? = null,
     )
 
     private data class Project(
@@ -688,7 +689,16 @@ internal class MatrixMlp3NativeProjection(
             )
         }
 
-        if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
+        if (!seenEvents.add(eventId)) {
+            // Older checkpoints retained completion timestamps but not outcomes.
+            // An independently verified history replay may enrich that evidence
+            // without reapplying an old session projection or command result.
+            val enriched = if (sessionId != null && sessionId in sessions &&
+                type in setOf("turn.completed", "turn.failed", "command.rejected", "command.reconciled")) {
+                rememberCompletionObservation(type, terminal(type, event, payload, causation, sessionId), occurredAt)
+            } else false
+            return MatrixMlp3NativeProjectionResult(checkpointChanged = enriched)
+        }
 
         if (type == "project.deleted" && projectId != null) {
             projects.remove(projectId)
@@ -1954,7 +1964,7 @@ internal class MatrixMlp3NativeProjection(
             .filter { it.sessionId in retainedSessionIds }
             .takeLast(MAX_TASK_NOTIFICATION_PREVIEWS)
         val value = buildJsonObject {
-            put("schemaVersion", 24)
+            put("schemaVersion", 25)
             put("projectCapabilities", buildJsonArray {
                 projectCapabilities.entries.sortedBy { it.key }.forEach { (projectId, capabilities) ->
                     add(buildJsonObject {
@@ -2078,6 +2088,7 @@ internal class MatrixMlp3NativeProjection(
                         put("commandId", observation.commandId)
                         put("sessionId", observation.sessionId)
                         put("occurredAt", observation.occurredAt)
+                        observation.outcome?.let { put("outcome", it) }
                     })
                 }
             })
@@ -2214,7 +2225,7 @@ internal class MatrixMlp3NativeProjection(
 
     private fun restore(value: JsonObject) {
         val schemaVersion = value.requiredLong("schemaVersion")
-        require(schemaVersion in 1L..24L)
+        require(schemaVersion in 1L..25L)
         val legacyWorkspaceCapabilities = if (schemaVersion == 1L || schemaVersion >= 9L) {
             null
         } else {
@@ -2738,13 +2749,16 @@ internal class MatrixMlp3NativeProjection(
                     ?: throw IllegalArgumentException("A completion observation is invalid.")
                 item.requireKeys(
                     setOf("commandId", "sessionId", "occurredAt"),
-                    emptySet(),
+                    setOf("outcome"),
                     "Completion observation",
                 )
                 val observation = CompletionObservation(
                     commandId = item.requiredString("commandId", 256),
                     sessionId = item.requiredString("sessionId", 256),
                     occurredAt = item.requiredLong("occurredAt").also { require(it >= 0) },
+                    outcome = item.optionalString("outcome", 32)?.also {
+                        require(it in setOf("succeeded", "failed", "cancelled"))
+                    },
                 )
                 require(observation.sessionId in sessions)
                 require(completionObservations.put(
@@ -3188,12 +3202,14 @@ internal class MatrixMlp3NativeProjection(
         val sessionId = completed.sessionId ?: return false
         val key = completionObservationKey(sessionId, completed.commandId)
         val current = completionObservations[key]
-        if (current != null && current.occurredAt >= occurredAt) return false
+        if (current != null && (current.occurredAt > occurredAt ||
+                (current.occurredAt == occurredAt && current.outcome != null))) return false
         completionObservations.remove(key)
         completionObservations[key] = CompletionObservation(
             commandId = completed.commandId,
             sessionId = sessionId,
             occurredAt = occurredAt,
+            outcome = completed.outcome,
         )
         while (completionObservations.size > MAX_COMPLETION_OBSERVATIONS) {
             completionObservations.remove(completionObservations.keys.first())
@@ -3217,6 +3233,20 @@ internal class MatrixMlp3NativeProjection(
 
     private fun completionObservationKey(sessionId: String, commandId: String): String =
         "$sessionId\u0000$commandId"
+
+    /** Display evidence only: never substitutes for an outbox acknowledgement. */
+    @Synchronized
+    fun historyTurnCompletions(sessionId: String, commandIds: Set<String>): JsonArray = buildJsonArray {
+        commandIds.forEach { commandId ->
+            val observation = completionObservations[completionObservationKey(sessionId, commandId)]
+                ?: return@forEach
+            val outcome = observation.outcome ?: return@forEach
+            add(buildJsonObject {
+                put("commandId", commandId)
+                put("outcome", outcome)
+            })
+        }
+    }
 
     private fun terminal(
         type: String,

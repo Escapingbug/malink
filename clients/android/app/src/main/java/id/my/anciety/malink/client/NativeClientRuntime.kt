@@ -706,6 +706,11 @@ class NativeClientRuntime(
                     "Matrix thread history exceeded the bounded pagination window.",
                 )
                 }
+            }.let { page ->
+                page.copy(turnCompletions = matrixMlp3Projection.historyTurnCompletions(
+                    sessionId,
+                    page.messages.mapNotNull { it.commandId }.toSet(),
+                ))
             }
         } catch (error: TimeoutCancellationException) {
             diagnostics.record(

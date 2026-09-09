@@ -95,6 +95,8 @@ export type MalinkClientHandlers = {
   onCollaborationState?(state: CollaborationState): void;
   onSessionRead?(update: SessionReadUpdate): void;
   onCommandResult?(result: CommandCompletion): void;
+  /** Restores transcript presentation without replaying command side effects. */
+  onHistoryTurnCompleted?(result: Pick<CommandCompletion, "commandId" | "outcome"> & { sessionId: string }): void;
   onSessionCreateRecovered?(recovery: MalinkRecoveredSessionCreate): void;
   onDurableCommandRecovered?(command: MalinkRecoveredDurableCommand): void;
   onDurableCommandChanged?(command: MalinkRecoveredDurableCommand): void;

@@ -1299,6 +1299,9 @@ class BridgeDispatcher(
         value.nextBefore?.let { put("nextBefore", it) }
         put("hasMore", value.hasMore)
         put("asOfCursor", value.asOfCursor)
+        if ((negotiatedCapabilities["history.page"] ?: 1) >= 4) {
+            put("turnCompletions", value.turnCompletions)
+        }
     }
 
     private suspend fun boundedHistoryPage(
@@ -1684,7 +1687,7 @@ class BridgeDispatcher(
             SESSION_READ_RECEIPTS_CAPABILITY,
         )
         fun supportedCapabilityVersions(name: String): Set<Int> = when {
-            name == "history.page" -> setOf(1, 2, 3)
+            name == "history.page" -> setOf(1, 2, 3, 4)
             name == "commands.durable" -> setOf(1, 2, 3, 4, 5)
             name == MATRIX_BOOTSTRAP_CAPABILITY -> setOf(3)
             name in SUPPORTED_CAPABILITIES -> setOf(1)

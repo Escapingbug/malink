@@ -52,6 +52,22 @@ function snapshot(overrides: Record<string, unknown> = {}) {
 }
 
 describe("native bridge JSON-RPC conformance", () => {
+  it("accepts optional bounded history outcomes and rejects nonterminal values", () => {
+    const page = { sessionId: "session-1", messages: [], hasMore: false, asOfCursor: "cursor-1" };
+    for (const outcome of ["succeeded", "failed", "cancelled"]) {
+      const parsed = parseMethodRpcResponse("malink.history.page", response({
+        ...page, turnCompletions: [{ commandId: "turn-1", outcome }],
+      }));
+      expect("result" in parsed && parsed.result.turnCompletions?.[0]?.outcome).toBe(outcome);
+    }
+    expect(() => parseMethodRpcResponse("malink.history.page", response({
+      ...page, turnCompletions: [{ commandId: "turn-1", outcome: "running" }],
+    }))).toThrow();
+    expect(() => parseMethodRpcResponse("malink.history.page", response({
+      ...page, turnCompletions: Array.from({ length: 101 }, () => ({ commandId: "turn-1", outcome: "cancelled" })),
+    }))).toThrow();
+  });
+
   it("strictly parses a version and capability hello", () => {
     const parsed = parseRpcRequest(
       request("malink.bridge.hello", {

@@ -6722,6 +6722,10 @@ function MalinkAppRuntime() {
           recoveredNativeCommandsRef.current.set(command.commandId, command);
           syncRecoveredNativeCommands();
         },
+        onHistoryTurnCompleted(result) {
+          if (!isCurrentStartup()) return;
+          observeCommandCompletion({ ...result, sequence: 0, revision: 0 });
+        },
         onCommandResult(result) {
           if (!isCurrentStartup()) return;
           observeCommandCompletion(result);

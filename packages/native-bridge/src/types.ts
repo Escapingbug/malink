@@ -465,6 +465,11 @@ export type HistoryPageResult = {
   nextBefore?: string;
   hasMore: boolean;
   asOfCursor: string;
+  /** Verified per-turn presentation evidence, not outbox acknowledgements (v4). */
+  turnCompletions?: Array<{
+    commandId: string;
+    outcome: "succeeded" | "failed" | "cancelled";
+  }>;
 };
 
 export type PairingPreview = {

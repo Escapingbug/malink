@@ -263,13 +263,13 @@ class OfficialMatrixSdkDriver(
             diagnostics.record("matrix.driver.sync_service_building")
             val service = try {
                 built.syncService()
-                    // This runtime is explicitly single-process. Restoring a
-                    // shared Sliding Sync position makes the first request a
-                    // 30-second long poll when no event changed, so the app
-                    // cannot install its live timeline listeners until that
-                    // idle poll returns. Start this process's room-list stream
-                    // without a persisted cross-process position instead.
-                    .withSharePos(false)
+                    // Retain the SDK's persisted stream position. Discarding
+                    // it downloads every subscribed room's initial timeline
+                    // again on every process restart. Cached Room handles now
+                    // install live listeners below without awaiting an idle
+                    // long poll, so incremental resumption does not gate UI
+                    // readiness. The SDK owns expired-position recovery.
+                    .withSharePos(true)
                     .withRoomListTimelineLimit(ROOM_LIST_TIMELINE_LIMIT)
                     .finish()
             } catch (error: Exception) {
