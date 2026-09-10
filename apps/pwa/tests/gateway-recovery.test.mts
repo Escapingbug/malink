@@ -107,3 +107,9 @@ test("repair creation is old-project scoped and never starts an automatic Agent 
   assert.match(recovery, /sharedDraftFilesRef\.current\.add\(file\)/);
   assert.match(recovery, /setPendingFiles\(\[\.\.\.existing, file\]\)/);
 });
+
+test("update completion copy does not promise to close retained recovery", async () => {
+  const dialog = await readFile(new URL("../app/GatewayUpdateDialog.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(dialog, /until you complete or discard|ready to close recovery/);
+  assert.match(dialog, /retain its dedicated repair conversation after completion, until the next update/);
+});

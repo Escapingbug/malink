@@ -358,7 +358,7 @@ function GatewayUpdateDialogContent({
                   {deploymentOwner && deployment.phase !== "steady" && (
                     <p className="gateway-update-action-status" role="status">
                       {deployment.phase === "trial"
-                        ? `New Gateway ${deployment.candidate?.buildId ?? "unknown"} is ready for new work. The previous Gateway remains available for repair until you complete or discard this update.`
+                        ? `New Gateway ${deployment.candidate?.buildId ?? "unknown"} is ready for new work. The previous Gateway is available for repair. Compatible releases retain its dedicated repair conversation after completion, until the next update.`
                         : deployment.detail ?? `Gateway deployment is ${deployment.phase}.`}
                     </p>
                   )}
