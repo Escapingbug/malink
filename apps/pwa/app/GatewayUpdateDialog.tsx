@@ -261,7 +261,9 @@ function GatewayUpdateDialogContent({
                 </div>
 
                 {showUpdateProgress && signedUpdateStatus && (
-                  <GatewayUpdateProgress status={signedUpdateStatus} />
+                  <GatewayUpdateProgress status={updateCompleted
+                    ? { ...signedUpdateStatus, phase: "committed" }
+                    : signedUpdateStatus} />
                 )}
 
                 <div className="gateway-update-builds">

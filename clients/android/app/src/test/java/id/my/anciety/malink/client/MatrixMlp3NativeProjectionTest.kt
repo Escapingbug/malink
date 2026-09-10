@@ -1367,7 +1367,8 @@ class MatrixMlp3NativeProjectionTest {
         )
         assertTrue(snapshot.getValue("sessions").jsonArray.all { session ->
             "available_commands_ref" in session.jsonObject &&
-                "available_commands" !in session.jsonObject
+                "available_commands" !in session.jsonObject &&
+                "controls_ref" in session.jsonObject && "controls" !in session.jsonObject
         })
     }
 

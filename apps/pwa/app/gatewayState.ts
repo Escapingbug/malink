@@ -343,6 +343,12 @@ export function parseGatewayStateExtension(
           throw new Error("The authenticated Gateway project capability catalogs are malformed.");
         })();
 
+  const controlCatalogs = sessionArrayCatalogs?.controls === undefined
+    ? undefined
+    : Array.isArray(sessionArrayCatalogs.controls)
+      ? sessionArrayCatalogs.controls.map(parseProviderControls)
+      : (() => { throw new Error("The authenticated Gateway control catalogs are malformed."); })();
+
   const parsedSessions: GatewaySessionSummary[] = extension.sessions.map((value) => {
     const session = asRecord(value);
     if (
@@ -441,9 +447,10 @@ export function parseGatewayStateExtension(
       ...(typeof session.reasoning_effort === "string"
         ? { reasoningEffort: session.reasoning_effort }
         : {}),
-      ...(session.controls === undefined
+      ...(session.controls === undefined && session.controls_ref === undefined
         ? {}
-        : { controls: parseProviderControls(session.controls) }),
+        : { controls: session.controls !== undefined ? parseProviderControls(session.controls)
+          : sessionControlCatalog(controlCatalogs, session.controls_ref) }),
       ...(session.control_values === undefined
         ? {}
         : {
@@ -704,6 +711,13 @@ function projectCapabilityCatalog(
     );
   }
   return catalogs[reference as number] as GatewayCapabilities;
+}
+
+function sessionControlCatalog(catalogs: ProviderControl[][] | undefined, reference: unknown): ProviderControl[] {
+  if (!catalogs || !Number.isInteger(reference) || (reference as number) < 0 || (reference as number) >= catalogs.length) {
+    throw new Error("The authenticated Gateway control catalog reference is invalid.");
+  }
+  return catalogs[reference as number];
 }
 
 function parseProviderControls(input: unknown): ProviderControl[] {

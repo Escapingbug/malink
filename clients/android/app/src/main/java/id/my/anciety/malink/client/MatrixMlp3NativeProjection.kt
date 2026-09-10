@@ -1154,11 +1154,13 @@ internal class MatrixMlp3NativeProjection(
         capabilityEncoding: PublicProjectCapabilityEncoding,
     ): JsonObject {
         val availableCommandCatalog = linkedMapOf<JsonArray, Int>()
+        val controlCatalog = linkedMapOf<JsonArray, Int>()
         if (commandEncoding == PublicSessionCommandEncoding.CATALOG) {
             visible.forEach { session ->
                 availableCommandCatalog.getOrPut(session.availableCommands) {
                     availableCommandCatalog.size
                 }
+                controlCatalog.getOrPut(session.controls) { controlCatalog.size }
             }
         }
         val capabilitiesByProject = projects.values.associate { project ->
@@ -1198,6 +1200,7 @@ internal class MatrixMlp3NativeProjection(
                         projects[session.projectId] ?: activeProject,
                         commandEncoding,
                         availableCommandCatalog,
+                        controlCatalog,
                     ))
                 }
             })
@@ -1207,6 +1210,7 @@ internal class MatrixMlp3NativeProjection(
                         "available_commands",
                         JsonArray(availableCommandCatalog.keys.toList()),
                     )
+                    put("controls", JsonArray(controlCatalog.keys.toList()))
                 })
             }
             put("inbox_files", buildJsonArray {
@@ -3843,6 +3847,7 @@ internal class MatrixMlp3NativeProjection(
         project: Project,
         commandEncoding: PublicSessionCommandEncoding = PublicSessionCommandEncoding.INLINE,
         availableCommandCatalog: Map<JsonArray, Int> = emptyMap(),
+        controlCatalog: Map<JsonArray, Int> = emptyMap(),
     ): JsonObject = buildJsonObject {
         put("id", session.id)
         put("title", session.title)
@@ -3880,7 +3885,11 @@ internal class MatrixMlp3NativeProjection(
             PublicSessionCommandEncoding.OMIT -> Unit
         }
         put("control_values", session.controlValues)
-        put("controls", session.controls)
+        if (commandEncoding == PublicSessionCommandEncoding.CATALOG) {
+            put("controls_ref", controlCatalog.getValue(session.controls))
+        } else {
+            put("controls", session.controls)
+        }
         session.providerHistory?.let { binding ->
             val page = providerHistoryPageStates[session.id]
                 ?.takeIf { it.snapshotId == binding.requiredString("snapshotId", 256) }

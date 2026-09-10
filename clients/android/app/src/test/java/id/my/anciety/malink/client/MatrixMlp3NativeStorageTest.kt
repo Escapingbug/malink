@@ -505,6 +505,22 @@ class MatrixMlp3NativeStorageTest {
     }
 
     @Test
+    fun `uncheckpointed projected records survive a process death`() = runBlocking {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val cipher = JvmAesGcmCipher()
+        val store = AtomicEncryptedMatrixMlp3InboxStore(blob, cipher, "account-a")
+        store.put(event("\$pending-checkpoint", "{}"))
+        drainMatrixMlp3Inbox(store, flushProjected = false) { record ->
+            store.projected(record.event.eventId)
+            MatrixMlp3InboxProjectionStep.ADVANCED
+        }
+        assertTrue(store.pending().isEmpty())
+        assertEquals(1, AtomicEncryptedMatrixMlp3InboxStore(blob, cipher, "account-a").pending().size)
+        store.flushProjected()
+        assertTrue(AtomicEncryptedMatrixMlp3InboxStore(blob, cipher, "account-a").pending().isEmpty())
+    }
+
+    @Test
     fun `a later key grant unlocks an earlier deferred event`() = runBlocking {
         val blob = MemoryMatrixMlp3BlobStore()
         val store = AtomicEncryptedMatrixMlp3InboxStore(blob, JvmAesGcmCipher(), "account-a")

@@ -108,6 +108,7 @@ describe("Native Gateway state catalogs", () => {
       provider: "codex",
       extensions: [],
       available_commands_ref: 0,
+      controls_ref: 0,
     });
     const workspace = {
       project_id: "project-1",
@@ -136,6 +137,7 @@ describe("Native Gateway state catalogs", () => {
       current_session_id: null,
       sessions: [session("session-1"), session("session-2")],
       session_array_catalogs: {
+        controls: [[]],
         available_commands: [[{
           name: "review",
           description: "Review the workspace",
@@ -153,6 +155,7 @@ describe("Native Gateway state catalogs", () => {
       [{ name: "review", description: "Review the workspace", inputHint: null }],
     ]);
     expect(parsed?.workspace.capabilities).toEqual(parsed?.capabilities);
+    expect(parsed?.sessions.map(value => value.controls)).toEqual([[], []]);
     expect(parsed?.projects?.[0]?.capabilities).toEqual(parsed?.capabilities);
   });
 

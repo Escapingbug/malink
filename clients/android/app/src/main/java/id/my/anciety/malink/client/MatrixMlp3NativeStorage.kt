@@ -53,6 +53,7 @@ internal enum class MatrixMlp3InboxProjectionStep {
  */
 internal suspend fun drainMatrixMlp3Inbox(
     store: AtomicEncryptedMatrixMlp3InboxStore,
+    flushProjected: Boolean = true,
     project: suspend (MatrixMlp3InboxRecord) -> MatrixMlp3InboxProjectionStep,
 ) {
     try {
@@ -68,7 +69,7 @@ internal suspend fun drainMatrixMlp3Inbox(
         // A process can be killed without reaching NativeClientRuntime.close().
         // Commit the whole replay batch here so already-projected events are
         // not decrypted and projected again on every cold start.
-        store.flushProjected()
+        if (flushProjected) store.flushProjected()
     }
 }
 

@@ -8336,7 +8336,23 @@ function MalinkAppRuntime() {
       [node.gatewayNodeId]: mode,
     }));
     try {
-      const knownStatus = gatewayUpdateRuntimeForRelease[node.gatewayNodeId]?.status;
+      let knownStatus = gatewayUpdateRuntimeForRelease[node.gatewayNodeId]?.status;
+      // Discover the installed control mode on the user's update action. A
+      // fresh client must not need a separate "check versions" ritual first.
+      if (!knownStatus?.executionTracks) {
+        const control = node.computerId
+          ? gatewayStateRef.current?.gatewayDeployments?.[node.computerId]?.deployment.recovery?.projectId
+          : undefined;
+        try {
+          knownStatus = await executeGatewayUpdate({ operation: "gateway.update.status", includeExecutionTracks: true },
+            control ?? target.targetProjectId, 30_000);
+        } catch {
+          // Older strict Gateways may reject the optional field. Require a
+          // real signed legacy status before selecting their existing path.
+          knownStatus = await executeGatewayUpdate({ operation: "gateway.update.status" }, target.targetProjectId, 30_000);
+        }
+        setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status: knownStatus }));
+      }
       const continuePublishedRelease = gatewayUpdateCanContinuePublishedRelease({
         status: knownStatus,
         release: gatewayRelease,
@@ -8397,9 +8413,10 @@ function MalinkAppRuntime() {
         const status = await executeWithSignedBoundary({
           operation: "gateway.update.apply", releaseId: gatewayRelease.releaseId, mode,
           executionGeneration: knownStatus.executionTracks.generation,
-        }, target.targetProjectId);
+        }, knownStatus.executionTracks.controlProjectId ?? target.targetProjectId);
         setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status }));
         clearGatewayUpdateIntent(window.localStorage, matrixConfig.gatewayId, node.gatewayNodeId);
+        await observeGatewayExecutionHandoff(node, knownStatus.executionTracks.controlProjectId ?? target.targetProjectId);
         return;
       }
       if (node.blueGreenUpdate) {
@@ -8622,12 +8639,7 @@ function MalinkAppRuntime() {
       setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status }));
       showUiNotice(`gateway-track:${node.gatewayNodeId}`, "connection", "info",
         `Version selection was accepted. ${releaseId} will take over the same conversations after running tasks finish.`);
-      for (const delayMs of [2000, 4000, 8000]) {
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-        const observed = await executeGatewayUpdate({ operation: "gateway.update.status", includeExecutionTracks: true }, targetProject, 15000);
-        setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status: observed }));
-        if (!observed.executionTracks || ["steady", "attention"].includes(observed.executionTracks.phase)) break;
-      }
+      await observeGatewayExecutionHandoff(node, targetProject);
     } catch (error) {
       showUiNotice(`gateway-track:${node.gatewayNodeId}`, "connection", "warning", formatUiError(error));
     } finally {
@@ -8638,6 +8650,15 @@ function MalinkAppRuntime() {
       setGatewayUpdateActiveModesByNode(current => {
         const next = { ...current }; delete next[node.gatewayNodeId]; return next;
       });
+    }
+  }
+
+  async function observeGatewayExecutionHandoff(node: GatewayUpdatePlanNode, targetProject: string): Promise<void> {
+    for (const delayMs of [2000, 4000, 8000]) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      const observed = await executeGatewayUpdate({ operation: "gateway.update.status", includeExecutionTracks: true }, targetProject, 15000);
+      setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status: observed }));
+      if (!observed.executionTracks || ["steady", "attention"].includes(observed.executionTracks.phase)) return;
     }
   }
 

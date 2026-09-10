@@ -400,6 +400,7 @@ class NativeClientRuntime(
     @Volatile private var sessionReadReceiptReconciliationJob: Job? = null
     private var matrixMlp3InboxReplayActive = false
     private var matrixMlp3ProjectionPersistenceDeferred = false
+    private var matrixMlp3CheckpointJob: Job? = null
     private val sessionReadReceiptScheduleLock = Any()
     private var sessionReadReceiptReconciliationRequested = false
     private var sessionReadReceiptInspectionRequested = false
@@ -1458,6 +1459,8 @@ class NativeClientRuntime(
             matrixMlp3ProjectKeys.clear()
             matrixMlp3Inbox.clear()
             matrixMlp3TaskNotifications.clear()
+            matrixMlp3CheckpointJob?.cancel()
+            matrixMlp3CheckpointJob = null
             matrixMlp3Projection.clear()
             matrixMlp3ProjectionStore.clear()
             matrixMlp3CommandContent.clear()
@@ -1493,7 +1496,12 @@ class NativeClientRuntime(
         workspaceAuthorizationCheckJob?.cancel()
         workspaceAuthorizationCheckJob = null
         transfers.clear()
-        matrixMlp3Inbox.flushProjected()
+        matrixMlp3CheckpointJob?.cancel()
+        mutex.withLock {
+            if (trust != null && persistMatrixMlp3ProjectionCache(
+                    matrixMlp3Projection, matrixMlp3ProjectionStore, diagnostics, "close",
+                )) matrixMlp3Inbox.flushProjected()
+        }
         matrix.close()
         scope.cancel()
     }
@@ -1704,12 +1712,9 @@ class NativeClientRuntime(
             }
         }
         if (projected) {
-            // The live projection cache is durable before processMatrixEvent
-            // returns. Remove its independent raw record immediately so a
-            // busy timeline cannot leave thousands of empty files for the next
-            // cold start. Replay keeps its own removals batched until the final
-            // projection checkpoint.
-            matrixMlp3Inbox.flushProjected()
+            // Retain disk raw records until the coalesced projection checkpoint
+            // succeeds. A process death before then replays the same events.
+            mutex.withLock { scheduleMatrixMlp3Checkpoint() }
         }
         val elapsedMs = (System.nanoTime() - receivedAt) / 1_000_000
         if (elapsedMs >= 1_000) diagnostics.record("matrix.v3_event.processing_delayed", mapOf(
@@ -3654,7 +3659,7 @@ class NativeClientRuntime(
         matrixMlp3InboxReplayActive = true
         var retryableFailure = false
         try {
-            drainMatrixMlp3Inbox(matrixMlp3Inbox) { record ->
+            drainMatrixMlp3Inbox(matrixMlp3Inbox, flushProjected = false) { record ->
                 try {
                     processMatrixEvent(record.event)
                     matrixMlp3Inbox.projected(record.event.eventId)
@@ -3785,7 +3790,6 @@ class NativeClientRuntime(
     }
 
     private fun commitMatrixMlp3Projection(reason: String) {
-        matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
         if (matrixMlp3InboxReplayActive) {
             // Replay can contain thousands of already-durable events. Rewriting
             // the bounded acceleration cache for each one holds the runtime
@@ -3794,15 +3798,27 @@ class NativeClientRuntime(
             matrixMlp3ProjectionPersistenceDeferred = true
             return
         }
+        matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
         // ClientEventHub/raw-inbox persistence remains authoritative. This
         // encrypted projection is a bounded acceleration cache; failing to
         // rewrite it must not turn an authenticated Matrix event into poison.
-        persistMatrixMlp3ProjectionCache(
-            matrixMlp3Projection,
-            matrixMlp3ProjectionStore,
-            diagnostics,
-            reason,
-        )
+        scheduleMatrixMlp3Checkpoint()
+    }
+
+    /** Called under the runtime mutex; a fixed window cannot be starved by a busy timeline. */
+    private fun scheduleMatrixMlp3Checkpoint() {
+        if (matrixMlp3CheckpointJob?.isActive == true) return
+        matrixMlp3CheckpointJob = scope.launch {
+            delay(500)
+            mutex.withLock {
+                if (trust != null && persistMatrixMlp3ProjectionCache(
+                        matrixMlp3Projection, matrixMlp3ProjectionStore, diagnostics, "event_batch",
+                    )) {
+                    matrixMlp3Inbox.flushProjected()
+                }
+                matrixMlp3CheckpointJob = null
+            }
+        }
     }
 
 
