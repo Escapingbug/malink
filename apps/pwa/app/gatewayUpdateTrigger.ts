@@ -263,6 +263,7 @@ export function gatewayUpdateStatusSupersededByDirectory(
   node: GatewayUpdatePlanNode,
   status: GatewayUpdateStatus | undefined,
 ): boolean {
+  if (status?.executionTracks) return false;
   return Boolean(
     status?.targetBuildId &&
     node.currentBuildId === status.targetBuildId &&
@@ -282,7 +283,7 @@ export function latestGatewayUpdateStatus(
   incoming: GatewayUpdateStatus,
 ): GatewayUpdateStatus {
   if (current?.executionTracks && !incoming.executionTracks
-    && current.releaseId === incoming.releaseId && current.updatedAt === incoming.updatedAt) {
+    && current.releaseId === incoming.releaseId && current.currentBuildId === incoming.currentBuildId) {
     incoming = { ...incoming, executionTracks: current.executionTracks };
   }
   if (!current) return incoming;

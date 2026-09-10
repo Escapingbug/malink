@@ -39,7 +39,9 @@ test("a legacy snapshot of the same signed status does not erase opted-in versio
     executionTracks: { generation: 2, activeRelease: "new", standbyRelease: "old", phase: "steady" as const } };
   const { executionTracks: _tracks, ...legacy } = current;
   assert.deepEqual(latestGatewayUpdateStatus(current, legacy).executionTracks, _tracks);
-  assert.equal(latestGatewayUpdateStatus(current, { ...legacy, updatedAt: 124 }).executionTracks, undefined);
+  assert.deepEqual(latestGatewayUpdateStatus(current, { ...legacy, updatedAt: 124 }).executionTracks, _tracks);
+  assert.equal(gatewayUpdateStatusSupersededByDirectory({ gatewayNodeId: "business", gatewayName: "Mac", state: "current",
+    onlineUpdate: true, currentBuildId: "new", buildObservedAt: 200 }, { ...current, targetBuildId: "new" }), false);
 });
 
 test("opens maintenance in its own signed project without crossing Gateway ownership", () => {
