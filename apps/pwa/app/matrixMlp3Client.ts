@@ -978,13 +978,14 @@ export function toMlp3Command(
           operation: "gateway.update.apply",
           releaseId: payload.releaseId,
           mode: payload.mode ?? "when_idle",
+          ...(payload.executionGeneration !== undefined ? { executionGeneration: payload.executionGeneration } : {}),
         },
       };
     case "gateway.update.status":
       return {
         ...common,
         operation: "gateway.update.status",
-        payload: { operation: "gateway.update.status" },
+        payload: { operation: "gateway.update.status", ...(payload.includeExecutionTracks ? { includeExecutionTracks: true } : {}) },
       };
     case "gateway.update.prepare":
       return {

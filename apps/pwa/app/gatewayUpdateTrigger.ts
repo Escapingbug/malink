@@ -65,6 +65,7 @@ export type GatewayUpdateCommand =
       releaseId: string;
       mode: "when_idle" | "force";
       allowForwardOnly?: true;
+      executionGeneration?: number;
     };
 
 /**

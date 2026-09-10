@@ -20,6 +20,7 @@ import {
   webCrypto,
 } from '@malink/security'
 import { GatewayUpdateSupervisor } from '@/ops/gatewayUpdateSupervisor'
+import { GatewayExecutionTracks } from '@/ops/gatewayExecutionTracks'
 import {
   GatewayUpdateSupervisorClient,
   startGatewayUpdateSupervisorServer,
@@ -35,6 +36,32 @@ afterEach(async () => {
 })
 
 describe('GatewayUpdateSupervisor', () => {
+  it('keeps legacy status compatible and durably accepts only generation-bound admitted version selections', async () => {
+    const fixture = await releaseFixture()
+    const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fixture.fetch })
+    await supervisor.initialize()
+    await supervisor.stage('release-2')
+    const activate = vi.fn(async () => {})
+    const tracks = new GatewayExecutionTracks(join(fixture.installRoot, 'tracks.json'), {
+      version: 1, gatewayNodeId: 'node', dataDirectory: join(fixture.installRoot, 'data'),
+      generation: 0, activeRelease: 'release-1', phase: 'steady',
+    }, { validateRelease: async () => {}, ensureStandby: async () => {},
+      releaseExecution: async () => {}, activate, verifyActive: async () => {} })
+    const server = await startGatewayUpdateSupervisorServer({ socketPath: join(fixture.installRoot, 'tracks.sock'),
+      supervisor, executionTracks: tracks, executionControlProjectId: 'control-project' })
+    try {
+      const client = new GatewayUpdateSupervisorClient(server.socketPath, 5000)
+      expect((await client.status()).executionTracks).toBeUndefined()
+      expect((await client.executionStatus()).executionTracks).toMatchObject({ generation: 0, controlProjectId: 'control-project' })
+      await expect(client.scheduleApply('unverified-release', false, 0)).rejects.toThrow()
+      expect((await tracks.status()).generation).toBe(0)
+      await expect(client.scheduleApply('release-2', false, 0)).resolves.toMatchObject({
+        executionTracks: { generation: 1, targetRelease: 'release-2', phase: 'releasing' },
+      })
+      expect(activate).not.toHaveBeenCalled()
+      await expect(client.scheduleApply('release-1', false, 0)).rejects.toThrow()
+    } finally { await server.stop(); await supervisor.stop() }
+  })
   it('serves validated status and staging operations over the owner Unix socket', async () => {
     const fixture = await releaseFixture()
     const supervisor = new GatewayUpdateSupervisor(fixture.config, {

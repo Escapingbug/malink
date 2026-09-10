@@ -20,12 +20,38 @@ import {
 } from '@malink/protocol'
 import type { GatewayUpdateSupervisor } from './gatewayUpdateSupervisor.js'
 import type { GatewayDeploymentCoordinator } from './gatewayDeploymentCoordinator.js'
+import type { GatewayExecutionTracks } from './gatewayExecutionTracks.js'
 import type {
   GatewayAgentUpdateBeginResult,
   GatewayAgentUpdateInstruction,
 } from './gatewayUpdateSupervisor.js'
 
 const MAX_BODY_BYTES = 8 * 1024
+
+async function statusWithTracks(input: {
+  supervisor: GatewayUpdateSupervisor
+  executionTracks?: GatewayExecutionTracks
+  executionControlProjectId?: string
+}): Promise<GatewayUpdateStatus> {
+  const status = await input.supervisor.status()
+  if (!input.executionTracks) return status
+  const { generation, activeRelease, standbyRelease, phase, targetRelease, error, updatedAt } = await input.executionTracks.status()
+  const preparingAnother = phase === 'steady' && status.releaseId !== activeRelease
+    && ['staging', 'agent_required', 'agent_running', 'agent_validating', 'staged'].includes(status.phase)
+  return gatewayUpdateStatusSchema.parse({ ...status,
+    currentBuildId: input.supervisor.executionBuildId(activeRelease) ?? status.currentBuildId,
+    ...(preparingAnother ? {} : {
+      phase: phase === 'steady' ? 'committed' : phase === 'attention' ? 'repair_required' : phase === 'releasing' ? 'scheduled' : 'activating',
+      releaseId: targetRelease ?? activeRelease,
+      targetBuildId: input.supervisor.executionBuildId(targetRelease ?? activeRelease) ?? status.targetBuildId,
+      previousReleaseId: standbyRelease,
+      detail: error ?? (phase === 'steady' ? 'Selected version is active; conversations and results use the same current state.' : 'Execution is transferring between the retained versions.'),
+    }), updatedAt: updatedAt ?? status.updatedAt, executionTracks: {
+    generation, activeRelease, standbyRelease, phase, targetRelease,
+    ...(error ? { error: error.slice(0, 4096) } : {}),
+    ...(input.executionControlProjectId ? { controlProjectId: input.executionControlProjectId } : {}),
+  } })
+}
 
 export interface GatewayUpdateSupervisorServer {
   socketPath: string
@@ -36,20 +62,27 @@ export async function startGatewayUpdateSupervisorServer(input: {
   socketPath: string
   supervisor: GatewayUpdateSupervisor
   deploymentCoordinator?: GatewayDeploymentCoordinator
+  executionTracks?: GatewayExecutionTracks
+  executionControlProjectId?: string
   onLog?: (message: string) => void
+  executionDeploymentStatus?: () => Promise<GatewayDeploymentStatus>
 }): Promise<GatewayUpdateSupervisorServer> {
   await prepareSocketPath(input.socketPath)
+  const executionTimers = new Set<ReturnType<typeof setTimeout>>()
   const server = createServer(async (request, response) => {
     setHeaders(response)
     try {
       if (request.headers.origin) throw new SupervisorHttpError(403, 'browser_origin_forbidden')
       const path = new URL(request.url ?? '/', 'http://localhost').pathname
       if (request.method === 'GET' && path === '/v1/status') {
-        sendJson(response, 200, await input.supervisor.status())
+        const status = await statusWithTracks(input)
+        if (new URL(request.url!, 'http://localhost').searchParams.get('executionTracks') !== '1') delete status.executionTracks
+        sendJson(response, 200, status)
         return
       }
       if (request.method === 'GET' && path === '/v1/deployments/status') {
-        sendJson(response, 200, await requireDeploymentCoordinator(input).status())
+        sendJson(response, 200, input.executionDeploymentStatus
+          ? await input.executionDeploymentStatus() : await requireDeploymentCoordinator(input).status())
         return
       }
       if (request.method === 'POST' && path === '/v1/deployments/prepare') {
@@ -101,6 +134,38 @@ export async function startGatewayUpdateSupervisorServer(input: {
       }
       if (request.method === 'POST' && path === '/v1/releases/apply') {
         const body = applyReleaseFromBody(await readJsonBody(request))
+        if (body.executionGeneration !== undefined || input.executionTracks) {
+          if (!input.executionTracks) throw new SupervisorHttpError(409, 'execution_tracks_unavailable')
+          const tracks = await input.executionTracks.status()
+          const staged = await input.supervisor.status()
+          // Existing clients can still install the exact signed, staged update.
+          // Selecting a retained version is a different user action and must
+          // include the displayed generation; never infer a rollback request.
+          if (body.executionGeneration === undefined && !(staged.phase === 'staged'
+            && staged.releaseId === body.releaseId && body.releaseId !== tracks.activeRelease
+            && body.releaseId !== tracks.standbyRelease)) {
+            throw new SupervisorHttpError(409, 'execution_generation_required')
+          }
+          const retained = body.releaseId === tracks.activeRelease || body.releaseId === tracks.standbyRelease
+            || body.releaseId === tracks.targetRelease
+          if (!retained && !(staged.phase === 'staged' && staged.releaseId === body.releaseId)) {
+            throw new SupervisorHttpError(409, 'release_not_admitted')
+          }
+          await input.executionTracks.scheduleSelection(body.releaseId, body.executionGeneration ?? tracks.generation)
+          const selected = await statusWithTracks(input)
+          if (body.executionGeneration === undefined) delete selected.executionTracks
+          sendJson(response, 202, selected)
+          // The independent supervisor completes durable intent after allowing
+          // the requesting Gateway to journal its signed command result.
+          const timer = setTimeout(() => {
+            executionTimers.delete(timer)
+            void input.executionTracks!.resume().catch(error => input.onLog?.(
+              `[execution-tracks] selection needs attention: ${error instanceof Error ? error.message : String(error)}`,
+            ))
+          }, 1500).unref()
+          executionTimers.add(timer)
+          return
+        }
         sendJson(response, 202, await input.supervisor.scheduleApply(
           body.releaseId,
           body.allowForwardOnly,
@@ -166,6 +231,8 @@ export async function startGatewayUpdateSupervisorServer(input: {
     async stop() {
       if (stopped) return
       stopped = true
+      for (const timer of executionTimers) clearTimeout(timer)
+      executionTimers.clear()
       await close(server)
       await removeOwnedSocket(input.socketPath)
     },
@@ -173,6 +240,9 @@ export async function startGatewayUpdateSupervisorServer(input: {
 }
 
 export class GatewayUpdateSupervisorClient {
+  executionStatus(): Promise<GatewayUpdateStatus> {
+    return this.request('GET', '/v1/status?executionTracks=1').then(value => gatewayUpdateStatusSchema.parse(value))
+  }
   constructor(
     private readonly socketPath: string,
     private readonly timeoutMs = 30 * 60_000,
@@ -223,10 +293,12 @@ export class GatewayUpdateSupervisorClient {
   scheduleApply(
     releaseId: string,
     allowForwardOnly = false,
+    executionGeneration?: number,
   ): Promise<GatewayUpdateStatus> {
     return this.request('POST', '/v1/releases/apply', {
       releaseId,
       ...(allowForwardOnly ? { allowForwardOnly: true } : {}),
+      ...(executionGeneration !== undefined ? { executionGeneration } : {}),
     })
       .then(value => gatewayUpdateStatusSchema.parse(value))
   }
@@ -413,23 +485,26 @@ function restartModeFromBody(input: unknown): GatewayRestartMode {
 function applyReleaseFromBody(input: unknown): {
   releaseId: string
   allowForwardOnly: boolean
+  executionGeneration?: number
 } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new SupervisorHttpError(400, 'invalid_request')
   }
   const value = input as Record<string, unknown>
   if (
-    !Object.keys(value).every(key => key === 'releaseId' || key === 'allowForwardOnly')
+    !Object.keys(value).every(key => key === 'releaseId' || key === 'allowForwardOnly' || key === 'executionGeneration')
     || Object.keys(value).length < 1
     || typeof value.releaseId !== 'string'
     || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value.releaseId)
     || !(value.allowForwardOnly === undefined || value.allowForwardOnly === true)
+    || !(value.executionGeneration === undefined || (Number.isSafeInteger(value.executionGeneration) && Number(value.executionGeneration) >= 0))
   ) {
     throw new SupervisorHttpError(400, 'invalid_request')
   }
   return {
     releaseId: value.releaseId,
     allowForwardOnly: value.allowForwardOnly === true,
+    ...(value.executionGeneration !== undefined ? { executionGeneration: Number(value.executionGeneration) } : {}),
   }
 }
 

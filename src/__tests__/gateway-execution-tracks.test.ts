@@ -19,7 +19,7 @@ async function fixture() {
   const calls: string[] = []
   const host: GatewayExecutionTrackHost = {
     async validateRelease(release) { calls.push(`validate:${release}`); if (failure === 'compatibility') throw new Error('incompatible') },
-    async ensureStandby(release) { calls.push(`standby:${release}`) },
+    async ensureStandby(release) { calls.push(`standby:${release}`); if (failure === `standby:${release}`) throw new Error('standby damaged') },
     async releaseExecution(release) {
       calls.push(`release:${release}`)
       if (failure === 'release') throw new Error('writer still alive')
@@ -61,6 +61,23 @@ it('checks compatibility before disturbing a working owner', async () => {
   await expect(f.tracks.select('new', 0)).rejects.toThrow('incompatible')
   expect(f.owner()).toBe('old')
   expect((await f.tracks.status()).phase).toBe('steady')
+})
+
+it('starts the default even when the previous version cannot become standby', async () => {
+  const f = await fixture()
+  await f.tracks.select('new', 0)
+  f.fail('standby:old')
+  await f.reopen().startDefault()
+  expect(f.owner()).toBe('new')
+  expect(await f.tracks.status()).toMatchObject({ phase: 'steady', activeRelease: 'new', error: expect.stringContaining('previous version is unavailable') })
+})
+
+it('records the verified new owner even if retaining the previous controller fails', async () => {
+  const f = await fixture()
+  f.fail('standby:old')
+  const state = await f.tracks.select('new', 0)
+  expect(state).toMatchObject({ phase: 'steady', activeRelease: 'new', standbyRelease: 'old', error: expect.stringContaining('previous version is unavailable') })
+  expect(f.owner()).toBe('new')
 })
 
 it('never starts another writer when the old owner cannot release', async () => {

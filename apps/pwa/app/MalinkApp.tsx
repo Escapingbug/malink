@@ -871,25 +871,6 @@ function ProjectFolderIcon({ temporary }: { temporary: boolean }) {
   );
 }
 
-function NewProjectIcon() {
-  return (
-    <svg aria-hidden="true" className="toolbar-icon" viewBox="0 0 24 24">
-      <path d="M3.75 7.75V6.6c0-.83.67-1.5 1.5-1.5h4.1l2 2.25h7.4c.83 0 1.5.67 1.5 1.5v9.05c0 .83-.67 1.5-1.5 1.5H5.25c-.83 0-1.5-.67-1.5-1.5V7.75Z" />
-      <path d="M16.75 11.75v5M14.25 14.25h5" />
-    </svg>
-  );
-}
-
-function HistoryIcon() {
-  return (
-    <svg aria-hidden="true" className="toolbar-icon" viewBox="0 0 24 24">
-      <path d="M4.25 8.25V4.8M4.25 8.25H7.7" />
-      <path d="M5.15 7.1a8 8 0 1 1-1 7.15" />
-      <path d="M12 7.75v4.6l3 1.75" />
-    </svg>
-  );
-}
-
 function FileInboxIcon() {
   return (
     <svg aria-hidden="true" className="toolbar-icon" viewBox="0 0 24 24">
@@ -8405,6 +8386,22 @@ function MalinkAppRuntime() {
       const deployment = node.computerId
         ? gatewayStateRef.current?.gatewayDeployments?.[node.computerId]?.deployment
         : undefined;
+      if (knownStatus?.executionTracks) {
+        const staged = continuePublishedRelease ? knownStatus : await executeWithSignedBoundary({
+          operation: "gateway.update.stage", releaseId: gatewayRelease.releaseId,
+        }, target.targetProjectId);
+        if (staged.phase !== "staged") {
+          setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status: staged }));
+          return;
+        }
+        const status = await executeWithSignedBoundary({
+          operation: "gateway.update.apply", releaseId: gatewayRelease.releaseId, mode,
+          executionGeneration: knownStatus.executionTracks.generation,
+        }, target.targetProjectId);
+        setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status }));
+        clearGatewayUpdateIntent(window.localStorage, matrixConfig.gatewayId, node.gatewayNodeId);
+        return;
+      }
       if (node.blueGreenUpdate) {
         if (deployment?.phase === "trial") {
           showUiNotice(
@@ -8607,6 +8604,50 @@ function MalinkAppRuntime() {
         delete next[node.gatewayNodeId];
         return next;
       });
+    }
+  }
+
+  async function selectGatewayExecutionVersion(node: GatewayUpdatePlanNode, releaseId: string, generation: number): Promise<void> {
+    const controlProject = gatewayUpdateRuntimeByNodeRef.current[node.gatewayNodeId]?.status?.executionTracks?.controlProjectId;
+    const targetProject = controlProject ?? node.targetProjectId;
+    if (!targetProject || gatewayUpdateActiveNodeIdsRef.current.has(node.gatewayNodeId)) return;
+    const busy = new Set(gatewayUpdateActiveNodeIdsRef.current);
+    busy.add(node.gatewayNodeId);
+    gatewayUpdateActiveNodeIdsRef.current = busy;
+    setGatewayUpdateActiveNodeIds(busy);
+    try {
+      const status = await executeGatewayUpdate({ operation: "gateway.update.apply", releaseId,
+        executionGeneration: generation, mode: "when_idle" }, targetProject);
+      setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status }));
+      showUiNotice(`gateway-track:${node.gatewayNodeId}`, "connection", "info",
+        `Version selection was accepted. ${releaseId} will take over the same conversations after running tasks finish.`);
+      for (const delayMs of [2000, 4000, 8000]) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        const observed = await executeGatewayUpdate({ operation: "gateway.update.status", includeExecutionTracks: true }, targetProject, 15000);
+        setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status: observed }));
+        if (!observed.executionTracks || ["steady", "attention"].includes(observed.executionTracks.phase)) break;
+      }
+    } catch (error) {
+      showUiNotice(`gateway-track:${node.gatewayNodeId}`, "connection", "warning", formatUiError(error));
+    } finally {
+      const remaining = new Set(gatewayUpdateActiveNodeIdsRef.current);
+      remaining.delete(node.gatewayNodeId);
+      gatewayUpdateActiveNodeIdsRef.current = remaining;
+      setGatewayUpdateActiveNodeIds(remaining);
+    }
+  }
+
+  async function checkGatewayExecutionVersions(node: GatewayUpdatePlanNode): Promise<void> {
+    try {
+      const fallbackProject = node.computerId ? gatewayStateRef.current?.gatewayDeployments?.[node.computerId]?.deployment.recovery?.projectId : undefined;
+      const targetProject = gatewayUpdateRuntimeByNodeRef.current[node.gatewayNodeId]?.status?.executionTracks?.controlProjectId ?? fallbackProject ?? node.targetProjectId;
+      if (!targetProject) throw new Error("This computer has no verified control route.");
+      const status = await executeGatewayUpdate({ operation: "gateway.update.status", includeExecutionTracks: true }, targetProject);
+      setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status }));
+      if (!status.executionTracks) showUiNotice(`gateway-track:${node.gatewayNodeId}`, "connection", "info",
+        "This computer does not have dual-version control enabled yet. Its existing update workflow remains available.");
+    } catch (error) {
+      showUiNotice(`gateway-track:${node.gatewayNodeId}`, "connection", "warning", formatUiError(error));
     }
   }
 
@@ -15220,6 +15261,8 @@ function MalinkAppRuntime() {
           onStart={(node, mode) => void startGatewayUpdateNode(node, mode)}
           onPromote={(node, mode) => void changeGatewayDeployment(node, "promote", mode)}
           onDiscard={(node) => void changeGatewayDeployment(node, "discard")}
+          onSelectVersion={(node, releaseId, generation) => void selectGatewayExecutionVersion(node, releaseId, generation)}
+          onCheckVersions={(node) => void checkGatewayExecutionVersions(node)}
           onRecover={(node) => void recoverWithPreviousGateway(node.computerId
             ? gatewayState?.gatewayDeployments?.[node.computerId]?.deployment : undefined)}
           recoveryBusy={gatewayRecoveryBusy || Boolean(gatewayRecoveryDraft)}

@@ -1,4 +1,5 @@
 import { readFile, readlink } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { pairingPublicKeySchema } from '@malink/protocol'
 import { GatewayUpdateSupervisor } from './gatewayUpdateSupervisor.js'
@@ -6,6 +7,7 @@ import { startGatewayUpdateSupervisorServer } from './gatewayUpdateSupervisorSer
 import { FileGatewayComputerIdentityStore } from './gatewayComputerIdentity.js'
 import { GatewayDeploymentCoordinator } from './gatewayDeploymentCoordinator.js'
 import { requestMacosSupervisorReload } from './macosSupervisorReload.js'
+import { initializeGatewayExecutionTracks } from './initializeGatewayExecutionTracks.js'
 import {
   inspectGatewayDeploymentSlot,
   MacosGatewayBlueGreenHost,
@@ -32,6 +34,7 @@ const reloadSupervisor = (): void => {
   reload.unref?.()
 }
 const supervisor = new GatewayUpdateSupervisor({
+  executionTracksEnabled: existsSync(join(installRoot, 'execution-tracks-config.json')),
   installRoot,
   manifestBaseUrl: optionalEnvironment('MALINK_GATEWAY_RELEASE_MANIFEST_BASE_URL'),
   agentChannelUrl: optionalEnvironment('MALINK_GATEWAY_AGENT_UPDATE_CHANNEL_URL'),
@@ -108,11 +111,18 @@ const deploymentCoordinator = new GatewayDeploymentCoordinator({
   recoverPreparation: transition => blueGreenHost.recoverPreparation(transition),
   recoverCommit: transition => blueGreenHost.recoverCommit(transition),
 })
-await deploymentCoordinator.initialize()
+const execution = await initializeGatewayExecutionTracks({
+  installRoot, dataDirectory: gatewayDataDirectory, adminSocket: gatewayAdminSocketPath,
+  launchAgentPath: requiredEnvironment('MALINK_GATEWAY_LAUNCH_AGENT'),
+  serviceLabel: requiredEnvironment('MALINK_GATEWAY_SERVICE_LABEL'), supervisor,
+  log: message => process.stderr.write(`${message}\n`),
+})
+if (!execution) await deploymentCoordinator.initialize()
 const server = await startGatewayUpdateSupervisorServer({
   socketPath: updateSocketPath,
   supervisor,
-  deploymentCoordinator,
+  ...(execution ? { executionTracks: execution.tracks, executionControlProjectId: execution.controlProjectId,
+    executionDeploymentStatus: execution.deploymentStatus } : { deploymentCoordinator }),
   onLog: message => process.stderr.write(`${message}\n`),
 })
 process.stdout.write(`Gateway update supervisor listening on ${server.socketPath}\n`)
@@ -123,6 +133,7 @@ const stop = (): void => {
   stopping = true
   void server.stop()
     .then(() => deploymentCoordinator.stop())
+    .then(() => execution?.workers.stop())
     .then(() => supervisor.stop())
     .catch(error => {
       process.stderr.write(`[gateway-update-supervisor] shutdown failed: ${formatError(error)}\n`)

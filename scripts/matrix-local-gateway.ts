@@ -680,6 +680,9 @@ const config: MatrixGatewayConfig = {
     ...(handoffPending
         ? { startFenced: true }
         : {}),
+    ...(process.env.MALINK_GATEWAY_EXECUTION_CONTROL_ONLY === '1'
+        ? { executionControlOnly: true }
+        : {}),
 }
 runner = new MatrixMlp3GatewayRunner(config, {
     client,

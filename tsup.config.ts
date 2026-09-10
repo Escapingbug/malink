@@ -9,6 +9,7 @@ export default defineConfig({
     'mcp/stdio': 'src/mcp/stdio.ts',
     'privilege/helperMain': 'src/privilege/helperMain.ts',
     'ops/gatewayUpdateSupervisorMain': 'src/ops/gatewayUpdateSupervisorMain.ts',
+    'ops/gatewayExecutionTrackWorker': 'src/ops/gatewayExecutionTrackWorker.ts',
     'ops/gatewayAgentUpdateCli': 'src/ops/gatewayAgentUpdateCli.ts',
     'ops/gatewayJournalRepairCli': 'src/ops/gatewayJournalRepairCli.ts',
     'ops/macosGatewayHostDoctor': 'scripts/macos-gateway-host-doctor.ts',

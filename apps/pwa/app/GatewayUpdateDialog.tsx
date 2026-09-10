@@ -58,6 +58,8 @@ type Props = {
   onStart(node: GatewayUpdatePlanNode, mode: "when_idle" | "force"): void;
   onPromote(node: GatewayUpdatePlanNode, mode: "when_idle" | "force"): void;
   onDiscard(node: GatewayUpdatePlanNode): void;
+  onSelectVersion?(node: GatewayUpdatePlanNode, releaseId: string, generation: number): void;
+  onCheckVersions?(node: GatewayUpdatePlanNode): void;
   onRecover?(node: GatewayUpdatePlanNode): void;
   recoveryBusy?: boolean;
   onOpenProject(projectId: string): void;
@@ -86,6 +88,8 @@ function GatewayUpdateDialogContent({
   onStart,
   onPromote,
   onDiscard,
+  onSelectVersion,
+  onCheckVersions,
   onRecover,
   recoveryBusy = false,
   onOpenProject,
@@ -302,7 +306,31 @@ function GatewayUpdateDialogContent({
                   </span>
                 </div>
 
-                {deploymentOwner && deployment.recovery && (
+                {onCheckVersions && <button type="button" disabled={!connected || activeGatewayNodeIds.has(node.gatewayNodeId)}
+                  onClick={() => onCheckVersions(node)}>Check available versions</button>}
+                {runtime.status?.executionTracks && (
+                  <section className="gateway-update-action-status" aria-label="Gateway versions">
+                    <p>Default version · {runtime.status.executionTracks.activeRelease}</p>
+                    {runtime.status.executionTracks.standbyRelease && <p>Standby version · {runtime.status.executionTracks.standbyRelease}</p>}
+                    {runtime.status.executionTracks.phase === "steady" && runtime.status.executionTracks.error &&
+                      <p role="status">{runtime.status.executionTracks.error}</p>}
+                    {runtime.status.executionTracks.phase !== "steady" && <p role="status">
+                      {runtime.status.executionTracks.phase === "attention"
+                        ? runtime.status.executionTracks.error ?? "Version selection needs attention."
+                        : `Transferring execution to ${runtime.status.executionTracks.targetRelease}. Conversations remain in the same Workspace.`}
+                    </p>}
+                    {onSelectVersion && ["steady", "attention"].includes(runtime.status.executionTracks.phase) &&
+                      [...new Set([runtime.status.executionTracks.standbyRelease,
+                        ...(runtime.status.executionTracks.phase === "attention" ? [runtime.status.executionTracks.activeRelease, runtime.status.executionTracks.targetRelease] : [])])]
+                        .filter((id): id is string => Boolean(id)).map(id => (
+                          <button key={id} type="button" disabled={!connected || activeGatewayNodeIds.has(node.gatewayNodeId)}
+                            onClick={() => onSelectVersion(node, id, runtime.status!.executionTracks!.generation)}>
+                            Use version {id}
+                          </button>
+                        ))}
+                  </section>
+                )}
+                {deploymentOwner && deployment.recovery && !runtime.status?.executionTracks && (
                   <p className="gateway-update-action-status">
                     Recovery version · {deployment.recovery.releaseId ?? deployment.recovery.buildId}
                     <br />Kept for repair until the next update. Normal conversations use the current version.
@@ -347,7 +375,7 @@ function GatewayUpdateDialogContent({
                 )}
 
                 <div className="gateway-update-node-actions">
-                  {deploymentOwner && (deployment.phase !== "steady" || deployment.recovery) && onRecover && (
+                  {deploymentOwner && !runtime.status?.executionTracks && (deployment.phase !== "steady" || deployment.recovery) && onRecover && (
                     <button type="button" className="secondary-button"
                       disabled={!connected || recoveryBusy}
                       aria-busy={recoveryBusy}

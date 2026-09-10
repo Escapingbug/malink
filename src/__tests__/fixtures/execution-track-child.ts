@@ -1,5 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { createServer } from 'node:http'
 import { acquireGatewayDataDirectoryLock } from '../../gateway/matrix/gatewayDataDirectoryLock'
 
 const root = process.env.MALINK_MATRIX_DATA_DIR!
@@ -12,6 +13,12 @@ await writeFile(join(root, 'health.json'), JSON.stringify({
   matrixReady: true, deploymentFenced: false,
 }))
 const timer = setInterval(() => {}, 1000)
+const server = process.env.MALINK_GATEWAY_ADMIN_SOCKET ? createServer(async (_request, response) => {
+  response.setHeader('content-type', 'application/json')
+  response.end(await readFile(join(root, 'health.json'), 'utf8'))
+}) : undefined
+if (server) await new Promise<void>(resolve => server.listen(process.env.MALINK_GATEWAY_ADMIN_SOCKET, resolve))
 process.once('SIGTERM', () => {
+  server?.close()
   void lock.release().then(() => { clearInterval(timer); process.exit(0) })
 })

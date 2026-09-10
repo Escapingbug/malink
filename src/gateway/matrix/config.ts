@@ -95,6 +95,8 @@ export interface MatrixGatewayConfig {
     shadowRoomIds?: string[]
     /** Starts Matrix-ready with business execution fenced for handoff validation. */
     startFenced?: boolean
+    /** Independent signed version-control receiver; never runs business tasks. */
+    executionControlOnly?: boolean
     trustedDevices: MatrixGatewayTrustedDevice[]
     replayLedgerPath: string
     applicationSecurity: MatrixGatewayApplicationSecurityConfig

@@ -50,6 +50,7 @@ export function initializeSessionReadState(
   state: SessionReadState,
   _sessions: readonly GatewaySessionSummary[],
 ): SessionReadState {
+  void _sessions; // Retain the public call signature; sessions do not imply reads.
   if (state.initialized) return state;
   return {
     initialized: true,

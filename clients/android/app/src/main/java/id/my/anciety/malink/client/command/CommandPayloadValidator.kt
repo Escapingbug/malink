@@ -676,7 +676,8 @@ object CommandPayloadValidator {
             operation == CommandOperation.GATEWAY_UPDATE_STATUS ||
             operation == CommandOperation.GATEWAY_DEPLOYMENT_STATUS
         ) {
-            value.requireExactKeys(setOf("operation"))
+            value.requireExactKeys(setOf("operation"), if (operation == CommandOperation.GATEWAY_UPDATE_STATUS) setOf("includeExecutionTracks") else emptySet())
+            value.optionalBoolean("includeExecutionTracks")?.let { require(it) }
             return GatewayUpdateCommandPayload(operation, null, null, null, null)
         }
         if (
@@ -701,7 +702,7 @@ object CommandPayloadValidator {
         value.requireExactKeys(
             required = setOf("operation", "releaseId"),
             optional = if (operation == CommandOperation.GATEWAY_UPDATE_APPLY) {
-                setOf("mode", "allowForwardOnly")
+                setOf("mode", "allowForwardOnly", "executionGeneration")
             } else {
                 emptySet()
             },
@@ -713,6 +714,12 @@ object CommandPayloadValidator {
             "Gateway update mode is invalid."
         }
         val allowForwardOnly = value.optionalBoolean("allowForwardOnly")
+        value["executionGeneration"]?.let {
+            val generation = (it as? JsonPrimitive)?.longOrNull
+            require(generation != null && generation >= 0 && generation <= 9007199254740991L) {
+                "Gateway execution generation is invalid."
+            }
+        }
         require(allowForwardOnly == null || allowForwardOnly) {
             "Gateway forward-only confirmation must be true when present."
         }

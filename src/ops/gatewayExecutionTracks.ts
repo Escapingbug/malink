@@ -14,6 +14,7 @@ export const gatewayExecutionTracksStateSchema = z.object({
   phase: z.enum(['steady', 'releasing', 'activating', 'attention']),
   targetRelease: release.optional(),
   error: z.string().optional(),
+  updatedAt: z.number().int().nonnegative().optional(),
 }).strict()
 export type GatewayExecutionTracksState = z.infer<typeof gatewayExecutionTracksStateSchema>
 
@@ -22,6 +23,7 @@ export interface GatewayExecutionTrackHost {
   validateRelease(releaseId: string, dataDirectory: string): Promise<void>
   /** A standby owns no Matrix sync, business store, outbox, or Agent execution. */
   ensureStandby(releaseId: string): Promise<void>
+  retireStandby?(releaseId: string): Promise<void>
   /** Return only when all writers and child execution have relinquished the directory. */
   releaseExecution(releaseId: string): Promise<void>
   /** Idempotent start; must acquire the existing Gateway data-directory lock. */
@@ -52,16 +54,29 @@ export class GatewayExecutionTracks {
 
   /** A signed user action must supply the generation it displayed. */
   select(releaseId: string, generation: number): Promise<GatewayExecutionTracksState> {
+    return this.requestSelection(releaseId, generation, false)
+  }
+
+  /** Persist selection before the command sender is stopped by its own request. */
+  scheduleSelection(releaseId: string, generation: number): Promise<GatewayExecutionTracksState> {
+    return this.requestSelection(releaseId, generation, true)
+  }
+
+  private requestSelection(releaseId: string, generation: number, deferred: boolean): Promise<GatewayExecutionTracksState> {
     return this.serialize(async () => {
       release.parse(releaseId)
       const current = await this.status()
       if (current.generation !== generation) throw new Error('Version selection changed; refresh before selecting again')
       if (current.phase !== 'steady' && current.phase !== 'attention') throw new Error('An execution handoff is still running')
-      if (current.phase === 'attention' && releaseId !== current.activeRelease && releaseId !== current.targetRelease) {
+      if (current.phase === 'attention' && releaseId !== current.activeRelease && releaseId !== current.targetRelease && releaseId !== current.standbyRelease) {
         throw new Error('Resolve the interrupted handoff before adding another version')
       }
       if (releaseId === current.activeRelease && current.phase === 'steady') return current
       await this.host.validateRelease(releaseId, current.dataDirectory)
+      if (current.phase === 'steady' && current.standbyRelease && current.standbyRelease !== releaseId) {
+        if (!this.host.retireStandby) throw new Error('Host cannot safely replace the previous standby')
+        await this.host.retireStandby(current.standbyRelease)
+      }
       await this.host.ensureStandby(releaseId)
       // Persist intent before stopping the current owner. Competing selectors
       // cannot each grant a different writer, even across supervisor instances.
@@ -70,12 +85,12 @@ export class GatewayExecutionTracks {
         if (state.generation !== generation || state.phase !== current.phase) throw new Error('Execution handoff already changed')
         const otherRelease = state.phase === 'attention' && releaseId === state.activeRelease
           ? state.targetRelease! : state.activeRelease
-        Object.assign(raw, { generation: generation + 1, activeRelease: otherRelease,
+        Object.assign(raw, { generation: generation + 1, updatedAt: Date.now(), activeRelease: otherRelease,
           targetRelease: releaseId, phase: 'releasing' })
         delete raw.error
         return { changed: true, result: structuredClone(raw) }
       })
-      return this.complete(intent)
+      return deferred ? intent : this.complete(intent)
     })
   }
 
@@ -85,6 +100,25 @@ export class GatewayExecutionTracks {
       const state = await this.status()
       if (state.phase === 'steady') return state
       return this.complete(state)
+    })
+  }
+
+  async startDefault(): Promise<void> {
+    return this.serialize(async () => {
+      const state = await this.status()
+      if (state.phase !== 'steady') { await this.complete(state); return }
+      try {
+        await this.host.validateRelease(state.activeRelease, state.dataDirectory)
+        await this.host.ensureStandby(state.activeRelease)
+        await this.host.activate(state.activeRelease, state.dataDirectory, state.gatewayNodeId)
+        await this.host.verifyActive(state.activeRelease, state.dataDirectory, state.gatewayNodeId)
+      } catch (error) {
+        state.phase = 'attention'; state.targetRelease = state.activeRelease
+        state.error = error instanceof Error ? error.message : String(error)
+        await this.save(state)
+        throw error
+      }
+      await this.prepareOptionalStandby(state)
     })
   }
 
@@ -103,12 +137,14 @@ export class GatewayExecutionTracks {
       await this.save(state)
       await this.host.activate(target, state.dataDirectory, state.gatewayNodeId)
       await this.host.verifyActive(target, state.dataDirectory, state.gatewayNodeId)
-      await this.host.ensureStandby(state.activeRelease)
       const completed: GatewayExecutionTracksState = {
         version: 1, gatewayNodeId: state.gatewayNodeId, dataDirectory: state.dataDirectory,
-        generation: state.generation, activeRelease: target, standbyRelease: state.activeRelease, phase: 'steady',
+        generation: state.generation, activeRelease: target,
+        ...(target !== state.activeRelease ? { standbyRelease: state.activeRelease }
+          : state.standbyRelease ? { standbyRelease: state.standbyRelease } : {}), phase: 'steady',
       }
       await this.save(completed)
+      await this.prepareOptionalStandby(completed)
       return completed
     } catch (error) {
       state.phase = 'attention'
@@ -116,6 +152,19 @@ export class GatewayExecutionTracks {
       await this.save(state)
       throw error
     }
+  }
+
+  private async prepareOptionalStandby(state: GatewayExecutionTracksState): Promise<void> {
+    if (!state.standbyRelease) return
+    try {
+      await this.host.ensureStandby(state.standbyRelease)
+      delete state.error
+    } catch (error) {
+      // A verified business writer remains the active version. Never describe
+      // its successful activation as a failed handoff because standby failed.
+      state.error = `The default version is running, but the previous version is unavailable: ${error instanceof Error ? error.message : String(error)}`
+    }
+    await this.save(state)
   }
 
   private validate(raw: GatewayExecutionTracksState): GatewayExecutionTracksState {
@@ -128,6 +177,7 @@ export class GatewayExecutionTracks {
   }
 
   private save(next: GatewayExecutionTracksState): Promise<void> {
+    next.updatedAt = Date.now()
     this.validate(next)
     return this.file.transaction(() => structuredClone(this.initial), raw => {
       const current = this.validate(raw)

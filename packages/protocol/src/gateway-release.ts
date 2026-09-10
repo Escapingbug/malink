@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { gatewayExecutionTracksStatusSchema } from './gateway-execution-tracks.js'
 import { pairingPublicKeySchema } from './pairing.js'
 import { signatureSchema } from './schema.js'
 
@@ -153,6 +154,7 @@ export const gatewayUpdateStatusSchema = z
     targetBuildId: opaqueId.optional(),
     currentBuildId: opaqueId.optional(),
     previousReleaseId: releaseId.optional(),
+    executionTracks: gatewayExecutionTracksStatusSchema.optional(),
     activationMode: z.enum(['rollback-safe', 'forward-only']).optional(),
     detail: z.string().min(1).max(4_096).optional(),
     maintenanceSessionId: opaqueId.optional(),

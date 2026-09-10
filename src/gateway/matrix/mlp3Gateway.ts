@@ -292,10 +292,12 @@ export interface MatrixMlp3GatewayDependencies {
   onProjectDeleted?: (room: MatrixGatewayRoomConfig) => Promise<void>
   gatewayUpdateSupervisor?: {
     status(): Promise<GatewayUpdateStatus>
+    executionStatus?(): Promise<GatewayUpdateStatus>
     stage(releaseId: string): Promise<GatewayUpdateStatus>
     scheduleApply(
       releaseId: string,
       allowForwardOnly?: boolean,
+      executionGeneration?: number,
     ): Promise<GatewayUpdateStatus>
     agentInstruction(releaseId: string): Promise<GatewayAgentUpdateInstruction>
     beginAgentUpdate(
@@ -565,7 +567,7 @@ export class MatrixMlp3GatewayRunner {
       this.publishedClientReleases = await this.nativeClientReleases.releases()
       await this.content.initialize()
       await this.createProjectRuntimes()
-      await this.registerProviderHistoryRooms()
+      if (!this.config.executionControlOnly) await this.registerProviderHistoryRooms()
       for (const record of await this.journal.terminalProjectDeletions()) {
         if (record.terminal?.outcome !== 'succeeded') continue
         const project = this.projectForRecord(record)
@@ -596,17 +598,19 @@ export class MatrixMlp3GatewayRunner {
         })
         await this.publishSessionRecovery(project)
         await this.publishWorkspaceSnapshot(project, false)
-        this.scheduleProviderCatalogPublication(project)
+        if (!this.config.executionControlOnly) this.scheduleProviderCatalogPublication(project)
         await this.publishProjectSnapshot(project, false)
-        await this.provisionProviderHistoryRooms(project)
+        if (!this.config.executionControlOnly) await this.provisionProviderHistoryRooms(project)
       }
       this.state = 'running'
       await this.recoverJournal()
       await this.drainInbox()
       await this.eventChain
-      this.modelCapabilityPublicationEnabled = true
-      this.scheduleModelCapabilityPublication()
-      this.schedulePersistedArchivedSessionCleanup()
+      this.modelCapabilityPublicationEnabled = !this.config.executionControlOnly
+      if (!this.config.executionControlOnly) {
+        this.scheduleModelCapabilityPublication()
+        this.schedulePersistedArchivedSessionCleanup()
+      }
       // A replacement process starts while the independent supervisor still
       // owns the activation transaction. Read that local state once at startup
       // and follow only real phase transitions until it becomes terminal.
@@ -1275,6 +1279,11 @@ export class MatrixMlp3GatewayRunner {
     signal?: AbortSignal,
   ): Promise<void> {
     const command = journalRecord.command
+    if (this.config.executionControlOnly && ![
+      'gateway.update.status', 'gateway.update.apply',
+    ].includes(command.operation)) {
+      throw new Error('This is the independent version-control route. Open the original project to run business tasks.')
+    }
     switch (command.operation) {
       case 'session.create':
         await this.createSession(project, command, journalRecord.matrixEventId, signal)
@@ -1626,6 +1635,7 @@ export class MatrixMlp3GatewayRunner {
       const status = await supervisor.scheduleApply(
         command.payload.releaseId,
         command.payload.allowForwardOnly === true,
+        command.payload.executionGeneration,
       )
       scheduled = true
       await this.settleAndDeliver(
@@ -1644,7 +1654,7 @@ export class MatrixMlp3GatewayRunner {
       await this.publishGatewayUpdateStatus()
       this.scheduleGatewayUpdateStatusMonitor()
     } finally {
-      if (!scheduled) {
+      if (!scheduled || this.config.executionControlOnly) {
         this.updateDrainState = 'open'
         this.resumeDeferredUpdateCommands()
       }
@@ -1655,7 +1665,8 @@ export class MatrixMlp3GatewayRunner {
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'gateway.update.status'>,
   ): Promise<void> {
-    const status = await this.requireGatewayUpdateSupervisor().status()
+    const supervisor = this.requireGatewayUpdateSupervisor()
+    const status = await (command.payload.includeExecutionTracks ? supervisor.executionStatus?.() ?? supervisor.status() : supervisor.status())
     await this.settleAndDeliver(
       project,
       command,

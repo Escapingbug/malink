@@ -96,6 +96,7 @@ export interface GatewayAgentUpdateBeginResult {
 }
 
 export interface GatewayUpdateSupervisorConfig {
+  executionTracksEnabled?: boolean
   installRoot: string
   manifestBaseUrl?: string
   agentChannelUrl?: string
@@ -137,6 +138,8 @@ export interface GatewayUpdateSupervisorDependencies {
 }
 
 export class GatewayUpdateSupervisor {
+  private readonly executionBuildIds = new Map<string, string>()
+  executionBuildId(releaseId: string): string | undefined { return this.executionBuildIds.get(releaseId) }
   private readonly installRoot: string
   private readonly releasesRoot: string
   private readonly agentUpdatesRoot: string
@@ -204,6 +207,7 @@ export class GatewayUpdateSupervisor {
     await mkdir(this.releasesRoot, { recursive: true, mode: 0o700 })
     await mkdir(this.agentUpdatesRoot, { recursive: true, mode: 0o700 })
     const state = await this.readState()
+    if (this.config.executionTracksEnabled) return
     if (state.status.phase === 'scheduled' && state.scheduledAt !== undefined) {
       this.armActivation(state.scheduledAt)
     } else if (state.status.phase === 'activating' || state.status.phase === 'probation') {
@@ -688,11 +692,31 @@ export class GatewayUpdateSupervisor {
     return this.serializeRequest(() => this.scheduleApplyOnce(releaseId, allowForwardOnly))
   }
 
+  /** Admit an already sealed binary without moving or restoring business data. */
+  async admitExecutionRelease(releaseId: string): Promise<{ directory: string; buildId: string }> {
+    requireReleaseId(releaseId)
+    const directory = join(this.releasesRoot, releaseId)
+    const signed = signedGatewayAgentUpdatePromptSchema.parse(JSON.parse(await readFile(join(directory, 'release-prompt.json'), 'utf8')))
+    if (signed.update.releaseId !== releaseId) throw new Error('Execution release ID does not match its signed manifest')
+    await this.verifyAgentPrompt(signed)
+    const normalized = (entries: GatewayReleaseManifest['stateCatalog']) => entries
+      .map(entry => ({ id: entry.id, schemaVersion: entry.schemaVersion, stateClass: entry.stateClass }))
+      .sort((a, b) => a.id.localeCompare(b.id))
+    if (canonicalJson(normalized(signed.update.stateCatalog)) !== canonicalJson(normalized([...GATEWAY_STATE_CATALOG]))) {
+      throw new Error('This release cannot participate in shared-state version selection: persistent state compatibility differs')
+    }
+    const seal = parseAgentReleaseSeal(JSON.parse(await readFile(join(directory, 'release-seal.json'), 'utf8')))
+    await verifyAgentSealedRelease(directory, signed, seal)
+    this.executionBuildIds.set(releaseId, signed.update.buildId)
+    return { directory, buildId: signed.update.buildId }
+  }
+
   private async scheduleApplyOnce(
     releaseId: string,
     allowForwardOnly: boolean,
   ): Promise<GatewayUpdateStatus> {
     requireReleaseId(releaseId)
+    if (this.config.executionTracksEnabled) throw new Error('Use a generation-bound version selection for this Gateway')
     const stagedState = await this.readState()
     if (
       stagedState.restart?.phase === 'scheduled'

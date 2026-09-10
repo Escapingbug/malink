@@ -2477,12 +2477,16 @@ class NativeClientRuntime(
                     if (raw.boolean("allowForwardOnly") == true) {
                         put("allowForwardOnly", true)
                     }
+                    raw.long("executionGeneration")?.let { put("executionGeneration", it) }
                 }
             }
             "gateway.update.status" -> {
                 v3Operation = operation
                 v3SessionId = null
-                v3Payload = buildJsonObject { put("operation", v3Operation) }
+                v3Payload = buildJsonObject {
+                    put("operation", v3Operation)
+                    if (raw.boolean("includeExecutionTracks") == true) put("includeExecutionTracks", true)
+                }
             }
             "gateway.update.prepare" -> {
                 v3Operation = operation

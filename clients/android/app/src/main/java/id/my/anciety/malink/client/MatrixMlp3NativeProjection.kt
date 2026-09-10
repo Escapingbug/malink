@@ -3625,6 +3625,7 @@ internal class MatrixMlp3NativeProjection(
                 "targetBuildId",
                 "currentBuildId",
                 "previousReleaseId",
+                "executionTracks",
                 "activationMode",
                 "detail",
                 "maintenanceSessionId",
@@ -3657,6 +3658,19 @@ internal class MatrixMlp3NativeProjection(
         value.optionalString("targetBuildId", 256)
         value.optionalString("currentBuildId", 256)
         value.optionalString("previousReleaseId", 128)
+        value["executionTracks"]?.let { raw ->
+            val tracks = raw as? JsonObject ?: throw IllegalArgumentException("Gateway execution tracks must be an object")
+            tracks.requireKeys(setOf("generation", "activeRelease", "phase"),
+                setOf("standbyRelease", "targetRelease", "error", "controlProjectId"), "Gateway execution tracks")
+            require(tracks.requiredLong("generation") in 0..9007199254740991L)
+            val releasePattern = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+            require(releasePattern.matches(tracks.requiredString("activeRelease", 128)))
+            tracks.optionalString("standbyRelease", 128)?.let { require(releasePattern.matches(it)) }
+            tracks.optionalString("targetRelease", 128)?.let { require(releasePattern.matches(it)) }
+            require(tracks.requiredString("phase", 32) in setOf("steady", "releasing", "activating", "attention"))
+            tracks.optionalString("error", 4096)
+            tracks.optionalString("controlProjectId", 256)
+        }
         value.optionalString("detail", 4_096)
         value.optionalString("maintenanceSessionId", 256)
         require(value.requiredLong("updatedAt") >= 0)

@@ -737,10 +737,11 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
       operation: z.literal('gateway.update.apply'),
       releaseId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u),
       mode: z.enum(['when_idle', 'force']).optional(),
+      executionGeneration: z.number().int().nonnegative().optional(),
     })
     .strict(),
   z
-    .object({ operation: z.literal('gateway.update.status') })
+    .object({ operation: z.literal('gateway.update.status'), includeExecutionTracks: z.literal(true).optional() })
     .strict(),
   z
     .object({

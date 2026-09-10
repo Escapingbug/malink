@@ -157,6 +157,17 @@ export class GatewayExecutionTrackProcessHost implements GatewayExecutionTrackHo
   private requireDirectory(directory: string): void {
     if (resolve(directory) !== this.dataDirectory) throw new Error('Cannot switch the business data directory')
   }
+
+  /** Loss of the stable controller is a crash, not a new owner grant. */
+  async controllerDisconnected(): Promise<void> {
+    for (const child of this.children.values()) if (child.pid) signalGroup(child.pid, 'SIGTERM')
+    const deadline = Date.now() + this.timeoutMs
+    for (const child of this.children.values()) {
+      if (!child.pid) continue
+      while (groupAlive(child.pid) && Date.now() < deadline) await delay(50)
+      if (groupAlive(child.pid)) signalGroup(child.pid, 'SIGKILL')
+    }
+  }
 }
 
 function signalGroup(pid: number, signal: NodeJS.Signals): void {
