@@ -19,6 +19,29 @@ afterEach(async () => {
 })
 
 describe('MacosGatewayBlueGreenHost', () => {
+  it('checks candidate shadow rooms against the current catalog, not stale committed counts', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-shadow-count-'))
+    temporaryDirectories.push(directory)
+    const candidateDirectory = join(directory, 'candidate')
+    await mkdir(candidateDirectory)
+    await writeFile(join(directory, 'gateway-projects.json'), JSON.stringify({ version: 1, projects: [
+      { roomId: '!normal:example.org' }, { roomId: '!new-repair:example.org' },
+    ] }))
+    const writeDeployment = vi.fn(async () => {})
+    const state = { candidateDirectory, sourceProjectCount: 1, sourceSessionCount: 7,
+      candidateShadowRoomCount: undefined as number | undefined }
+    const prototype = MacosGatewayBlueGreenHost.prototype as unknown as {
+      seedCandidateShadowRooms(this: unknown, state: unknown): Promise<void>
+    }
+    await prototype.seedCandidateShadowRooms.call({ activeDataDirectory: directory, writeDeployment }, state)
+    expect(state.candidateShadowRoomCount).toBe(2)
+    expect(state.sourceProjectCount).toBe(1)
+    expect(state.sourceSessionCount).toBe(7)
+    expect(JSON.parse(await readFile(join(candidateDirectory, 'gateway-shadow-rooms.json'), 'utf8')))
+      .toEqual(['!normal:example.org', '!new-repair:example.org'])
+    expect(writeDeployment).toHaveBeenCalledWith(state)
+  })
+
   it('restarts retained repair with a versioned isolated catalog and pinned old executable', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-retained-host-'))
     temporaryDirectories.push(directory)

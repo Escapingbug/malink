@@ -70,6 +70,7 @@ interface GatewayBlueGreenHostState {
   sourceSessionCount: number
   candidateProjectCount: number
   candidateSessionCount: number
+  candidateShadowRoomCount?: number
   promotedProjectCount?: number
   promotedSessionCount?: number
   handoffDirectory?: string
@@ -253,8 +254,7 @@ export class MacosGatewayBlueGreenHost {
           providerName: requiredString(sourceRoom.providerName, 'project provider'),
         }],
       })
-      await writePrivateJson(join(state.candidateDirectory, 'gateway-shadow-rooms.json'),
-        sourceCatalog.projects.map(project => requiredString(project.roomId, 'project room ID')))
+      await this.seedCandidateShadowRooms(state)
       state.trialRoomId = trialRoomId
       state.candidateProjectCount = 1
       state.updatedAt = this.now()
@@ -267,7 +267,7 @@ export class MacosGatewayBlueGreenHost {
         buildId: state.buildId,
         projectCount: 1,
         sessionCount: 0,
-        shadowRoomCount: state.sourceProjectCount,
+        shadowRoomCount: state.candidateShadowRoomCount ?? state.sourceProjectCount,
         requireRunning: true,
         deploymentFenced: false,
       })
@@ -509,7 +509,7 @@ export class MacosGatewayBlueGreenHost {
         buildId: state.buildId,
         projectCount: state.candidateProjectCount,
         sessionCount: state.candidateSessionCount,
-        shadowRoomCount: state.sourceProjectCount,
+        shadowRoomCount: state.candidateShadowRoomCount ?? state.sourceProjectCount,
         requireRunning: true,
         deploymentFenced: false,
       }),
@@ -858,6 +858,17 @@ export class MacosGatewayBlueGreenHost {
     if (state.handoffDirectory) {
       await rm(state.handoffDirectory, { recursive: true, force: true })
     }
+  }
+
+  private async seedCandidateShadowRooms(state: GatewayBlueGreenHostState): Promise<void> {
+    // The coordinator's last committed counts can predate newly created repair
+    // projects. Check the exact room set supplied to this candidate, including
+    // on rollback after the active Gateway's project count has changed again.
+    const catalog = await readProjectCatalog(this.activeDataDirectory)
+    const rooms = catalog.projects.map(project => requiredString(project.roomId, 'project room ID'))
+    await writePrivateJson(join(state.candidateDirectory, 'gateway-shadow-rooms.json'), rooms)
+    state.candidateShadowRoomCount = rooms.length
+    await this.writeDeployment(state)
   }
 
   private async copyFoundation(candidateDirectory: string): Promise<void> {
