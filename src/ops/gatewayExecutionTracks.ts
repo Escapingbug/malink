@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { acquireGatewayDataDirectoryLock } from '@/gateway/matrix/gatewayDataDirectoryLock'
 
 const release = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u)
-const stateSchema = z.object({
+export const gatewayExecutionTracksStateSchema = z.object({
   version: z.literal(1),
   gatewayNodeId: z.string().min(1),
   dataDirectory: z.string().min(1),
@@ -15,7 +15,7 @@ const stateSchema = z.object({
   targetRelease: release.optional(),
   error: z.string().optional(),
 }).strict()
-export type GatewayExecutionTracksState = z.infer<typeof stateSchema>
+export type GatewayExecutionTracksState = z.infer<typeof gatewayExecutionTracksStateSchema>
 
 export interface GatewayExecutionTrackHost {
   /** Read-only compatibility check, not an Agent trial or writable data migration. */
@@ -38,7 +38,7 @@ export class GatewayExecutionTracks {
 
   constructor(path: string, private readonly initial: GatewayExecutionTracksState,
     private readonly host: GatewayExecutionTrackHost) {
-    stateSchema.parse(initial)
+    gatewayExecutionTracksStateSchema.parse(initial)
     this.file = new AtomicJsonFile(path)
     this.controlLockDirectory = `${resolve(path)}.controller`
   }
@@ -119,7 +119,7 @@ export class GatewayExecutionTracks {
   }
 
   private validate(raw: GatewayExecutionTracksState): GatewayExecutionTracksState {
-    const state = stateSchema.parse(raw)
+    const state = gatewayExecutionTracksStateSchema.parse(raw)
     if (state.gatewayNodeId !== this.initial.gatewayNodeId || state.dataDirectory !== this.initial.dataDirectory) {
       throw new Error('Execution tracks cannot change Gateway identity or business data directory')
     }

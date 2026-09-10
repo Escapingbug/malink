@@ -1,6 +1,6 @@
 # Stable-identity Gateway execution tracks
 
-Status: coordinator implemented and unit-tested; not yet wired into the product
+Status: coordinator and process adapter implemented and tested; not yet wired into the product
 update path. Existing blue/green deployment remains active until the integration
 and on-device acceptance work below is complete.
 
@@ -41,6 +41,32 @@ window. Compatibility validation is a release admission requirement, not user
 permission to discard newer data. No automatic Agent trial is allowed. Version
 checks must not open a writable production database or run irreversible schema
 migrations. A retained release cannot be replaced while it is executing tasks.
+
+## Process adapter
+
+`GatewayExecutionTrackProcessHost` starts pinned executables with an explicit
+business data directory. Health acceptance requires the selected build and
+stable node identity, Matrix readiness, and an actual data lock owned by the
+spawned process. Relinquishment drains execution and waits for the whole dedicated
+process group to exit; it does not force-kill active tasks on a timeout. A timed-out
+drain remains tracked and blocks activation until its underlying work settles.
+
+The adapter has a real child-process test that uses the production data-directory
+lock and exercises old/new/old over a single current data directory. This is not
+an actual MLP journal, ACP continuation, APK, or live Matrix acceptance test.
+
+It is deliberately not enabled against the existing launchd service: a stable
+owner must first disable the old automatic spawn authority and reconcile live
+processes after restart. Its standby release admission is not yet a persistent
+standby controller process. These integration requirements cannot be replaced
+with a successful unit test or an available APK button.
+
+The independent signed control receiver must remain reachable when the default
+business Gateway cannot start. It needs its own control transport/outbox and
+authenticated command journal; it must not compete for the business Gateway's
+Matrix sync or its data directory. Ordinary Matrix messages and membership are
+never authorization for a version switch. A local-only socket does not satisfy
+the remote rollback requirement.
 
 ## Remaining integration and acceptance gates
 
