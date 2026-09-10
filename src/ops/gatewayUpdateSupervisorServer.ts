@@ -46,7 +46,7 @@ async function statusWithTracks(input: {
       targetBuildId: input.supervisor.executionBuildId(targetRelease ?? activeRelease) ?? status.targetBuildId,
       previousReleaseId: standbyRelease,
       detail: error ?? (phase === 'steady' ? 'Selected version is active; conversations and results use the same current state.' : 'Execution is transferring between the retained versions.'),
-    }), updatedAt: updatedAt ?? status.updatedAt, executionTracks: {
+    }), updatedAt: preparingAnother ? status.updatedAt : updatedAt ?? status.updatedAt, executionTracks: {
     generation, activeRelease, standbyRelease, phase, targetRelease,
     ...(error ? { error: error.slice(0, 4096) } : {}),
     ...(input.executionControlProjectId ? { controlProjectId: input.executionControlProjectId } : {}),

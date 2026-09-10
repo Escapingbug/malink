@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import type { GatewayExecutionTrackHost } from './gatewayExecutionTracks'
@@ -172,12 +172,22 @@ export class GatewayExecutionTrackProcessHost implements GatewayExecutionTrackHo
 
 function signalGroup(pid: number, signal: NodeJS.Signals): void {
   try { process.kill(-pid, signal) } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return
+    if ((error as NodeJS.ErrnoException).code === 'EPERM' && !groupAlive(pid)) return
+    throw error
   }
 }
 function groupAlive(pid: number): boolean {
   try { process.kill(-pid, 0); return true } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false
+    if ((error as NodeJS.ErrnoException).code === 'EPERM' && process.platform === 'darwin') {
+      // Hardened Host process-group probes can return EPERM after a clean
+      // administrative shutdown. Confirm absence from the kernel process
+      // table; permission denial alone never authorizes another writer.
+      const groups = execFileSync('/bin/ps', ['-axo', 'pgid='], { encoding: 'utf8', timeout: 5000 })
+      if (!groups.trim().split(/\s+/u).every(value => /^\d+$/u.test(value))) throw error
+      return groups.trim().split(/\s+/u).some(value => Number(value) === pid)
+    }
     throw error
   }
 }
