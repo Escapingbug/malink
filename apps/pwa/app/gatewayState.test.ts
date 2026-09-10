@@ -147,6 +147,7 @@ describe("Native Gateway state catalogs", () => {
       workspace,
       projects: [workspace],
       project_capability_catalogs: [capabilities],
+      capabilities_ref: 0,
       capabilities,
     });
 

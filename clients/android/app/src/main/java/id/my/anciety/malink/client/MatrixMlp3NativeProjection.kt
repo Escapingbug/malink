@@ -1246,10 +1246,17 @@ internal class MatrixMlp3NativeProjection(
                     JsonArray(projectCapabilityCatalog.keys.toList()),
                 )
             }
-            put(
-                "capabilities",
-                capabilitiesByProject.getValue(activeProject.id),
-            )
+            val activeCapabilities = capabilitiesByProject.getValue(activeProject.id)
+            if (capabilityEncoding == PublicProjectCapabilityEncoding.CATALOG) {
+                put("capabilities_ref", projectCapabilityCatalog.getValue(activeCapabilities))
+                // Legacy presentations still have the full project catalog;
+                // retain safe global action flags without repeating models.
+                put("capabilities", JsonObject(activeCapabilities.toMutableMap().apply {
+                    put("models", JsonArray(emptyList()))
+                    put("providers", JsonArray(emptyList()))
+                    put("controls", JsonArray(emptyList()))
+                }))
+            } else put("capabilities", activeCapabilities)
             put(
                 "native_client_releases",
                 mergedNativeClientReleases(),

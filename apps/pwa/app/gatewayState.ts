@@ -512,7 +512,9 @@ export function parseGatewayStateExtension(
     };
   });
 
-  const capabilities = parseGatewayCapabilities(extension.capabilities);
+  const capabilities = extension.capabilities_ref === undefined
+    ? parseGatewayCapabilities(extension.capabilities)
+    : projectCapabilityCatalog(projectCapabilityCatalogs, extension.capabilities_ref);
   const inboxFiles = parseGatewayInboxFiles(extension.inbox_files);
 
   const currentSessionId = extension.current_session_id;
