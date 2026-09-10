@@ -1,4 +1,5 @@
 import { startMatrixSyncDiagnostics } from "./matrixSyncDiagnostics";
+import { messageAttachments } from "./messageAttachments";
 import { createManagedMatrixClient, waitForRecoverableMatrixSync } from "./matrixSyncLifecycle";
 import {
   MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
@@ -2211,9 +2212,7 @@ export function toIncomingMessage(
       ? { replacesEventId: replacesEventId || message.physicalEventId }
       : {}),
     format: message.format,
-    ...(payload?.type === "assistant.message" && payload.attachments
-      ? { attachments: payload.attachments }
-      : {}),
+    attachments: messageAttachments(undefined, payload),
     ...(toolGroup ? { toolGroup } : {}),
     raw: payload
       ? {

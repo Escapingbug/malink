@@ -1,5 +1,6 @@
 "use client";
 import { bulkArchiveEligible } from "./bulkArchivePolicy";
+import { messageAttachments } from "./messageAttachments";
 
 import {
   ChangeEvent,
@@ -14425,7 +14426,7 @@ function MalinkAppRuntime() {
                     )}
                     <p>{message.text}</p>
                     <AttachmentList
-                      attachments={message.attachments}
+                      attachments={messageAttachments(message.attachments, message.raw)}
                       connection={malinkClientRef.current}
                     />
                     <time
@@ -15732,7 +15733,7 @@ function chatMessageFromIncoming(
     originDeviceName: incoming.originDeviceName,
     format: incoming.format,
     toolGroup: incoming.toolGroup,
-    attachments: incoming.attachments,
+    attachments: messageAttachments(incoming.attachments, incoming.raw),
     sessionId,
     deliveryMode,
     historical: deliveryMode === "history",
@@ -15763,7 +15764,7 @@ function incomingMessageFromClient(
     originDeviceName: message.originDeviceName,
     activeDeviceCount: message.activeDeviceCount,
     format: message.format,
-    attachments: message.attachments,
+    attachments: messageAttachments(message.attachments, message.semantic),
     toolGroup: message.toolGroup,
     raw: message.semantic ?? {},
   };
