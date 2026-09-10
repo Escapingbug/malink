@@ -182,6 +182,7 @@ import {
   gatewayUpdateCanContinuePublishedRelease,
   gatewayUpdateStatusSupersededByDirectory,
   latestGatewayUpdateStatus,
+  gatewayExecutionStatusOwner,
   gatewayUpdateRequiresForwardOnlyConfirmation,
   gatewayUpdateTarget,
   legacyGatewayMaintenanceSessionsByNode,
@@ -4079,8 +4080,10 @@ function MalinkAppRuntime() {
   useEffect(() => {
     const statuses = gatewayState?.gatewayNodeStatuses ?? {};
     for (const [gatewayNodeId, status] of Object.entries(statuses)) {
+      const updateNodeId = gatewayExecutionStatusOwner(gatewayNodeId, status.update,
+        Object.values(gatewayState?.gatewayDeployments ?? {}).map(value => value.deployment));
       const directoryNode = gatewayUpdateDirectoryPlan.find(
-        node => node.gatewayNodeId === gatewayNodeId,
+        node => node.gatewayNodeId === updateNodeId,
       );
       // MLP certificates already require usable system clocks. Clamp a future
       // timestamp locally so clock skew cannot extend the online proof window.
@@ -4096,7 +4099,7 @@ function MalinkAppRuntime() {
           detail: "A signed Gateway status transition was received.",
         };
       });
-      setGatewayUpdateNodeRuntime(gatewayNodeId, current => {
+      setGatewayUpdateNodeRuntime(updateNodeId, current => {
         const currentStatus = directoryNode &&
             gatewayUpdateStatusSupersededByDirectory(directoryNode, current.status)
           ? undefined
@@ -4122,6 +4125,7 @@ function MalinkAppRuntime() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     gatewayState?.gatewayNodeStatuses,
+    gatewayState?.gatewayDeployments,
     gatewayUpdateDirectoryPlan,
     gatewayUpdateReleaseKey,
   ]);

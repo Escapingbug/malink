@@ -2,9 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { GatewayUpdateDialog } from "../app/GatewayUpdateDialog.tsx";
+import { GatewayUpdateDialog, gatewayUpdateRuntimeStateTitle } from "../app/GatewayUpdateDialog.tsx";
 
 const release = { releaseId: "2026.08.28.1", buildId: "gateway-next-arm64" };
+test("version handoff takes precedence over an older completed update", () => {
+  const node = { gatewayNodeId: "node", gatewayName: "Mac", onlineUpdate: true, state: "current" as const };
+  const status = { version: 1 as const, phase: "scheduled" as const, updatedAt: 1, currentBuildId: release.buildId,
+    executionTracks: { generation: 2, activeRelease: "new", targetRelease: "old", phase: "releasing" as const } };
+  assert.equal(gatewayUpdateRuntimeStateTitle({ state: "unchecked", status }, node, release), "Switching Gateway version");
+  assert.equal(gatewayUpdateRuntimeStateTitle({ state: "unchecked", status: { ...status, phase: "committed", currentBuildId: "old",
+    executionTracks: { generation: 2, activeRelease: "old", phase: "steady" } } }, node, release), "Previous version selected");
+});
 test("checking versions never labels the install button as a running preparation", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
     open: true, connected: true, release,

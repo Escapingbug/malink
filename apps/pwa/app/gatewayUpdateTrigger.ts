@@ -278,6 +278,15 @@ export function gatewayUpdateStatusSupersededByDirectory(
  * `updatedAt` is produced by the same node-local supervisor; phase order is a
  * deterministic tie-breaker for transitions written in the same millisecond.
  */
+export function gatewayExecutionStatusOwner(nodeId: string, status: GatewayUpdateStatus | undefined,
+  deployments: readonly GatewayDeploymentStatus[]): string {
+  const controlProject = status?.executionTracks?.controlProjectId;
+  if (!controlProject) return nodeId;
+  const owners = deployments.filter(deployment => deployment.recovery?.gatewayNodeId === nodeId
+    && deployment.recovery.projectId === controlProject);
+  return owners.length === 1 ? owners[0].active.gatewayNodeId : nodeId;
+}
+
 export function latestGatewayUpdateStatus(
   current: GatewayUpdateStatus | undefined,
   incoming: GatewayUpdateStatus,

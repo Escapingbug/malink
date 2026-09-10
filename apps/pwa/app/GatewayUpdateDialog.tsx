@@ -186,7 +186,9 @@ function GatewayUpdateDialogContent({
               : undefined;
             const deploymentOwner = deployment?.active.gatewayNodeId === node.gatewayNodeId;
             const deploymentInProgress = deploymentOwner && deployment.phase !== "steady";
-            const updateCompleted = deploymentOwner && deployment.phase === "steady" &&
+            const updateCompleted = runtime.status?.executionTracks
+              ? runtime.status.executionTracks.phase === "steady" && runtime.status.currentBuildId === release.buildId
+              : deploymentOwner && deployment.phase === "steady" &&
               deployment.active.buildId === release.buildId &&
               (Boolean(deployment.recovery) || deployment.detail === "All projects and sessions now use the promoted Gateway");
             const maintenanceCleanupAllowed = !deploymentInProgress &&
@@ -756,6 +758,8 @@ export function gatewayUpdateRuntimeStateTitle(
   if (activeMode === "check_versions") return "Checking available versions";
   if (activeMode === "select_version") return "Selecting Gateway version";
   const status = gatewayUpdateStatusForPresentation(runtime.status, release, node);
+  if (status?.executionTracks && ["releasing", "activating"].includes(status.executionTracks.phase)) return "Switching Gateway version";
+  if (status?.executionTracks?.phase === "steady" && status.currentBuildId !== release.buildId && status.phase === "committed") return "Previous version selected";
   const stagedPublishedRelease = gatewayUpdateCanContinuePublishedRelease({
     status,
     release,
@@ -814,6 +818,8 @@ export function gatewayUpdateRuntimeStateDetail(
   if (activeMode === "check_versions") return "Reading signed version status. This check does not install or restart anything.";
   if (activeMode === "select_version") return "Waiting for the signed version selection. The same conversations and history will remain available.";
   const status = gatewayUpdateStatusForPresentation(runtime.status, release, node);
+  if (status?.executionTracks && ["releasing", "activating"].includes(status.executionTracks.phase)) return "The selected version is taking over the same Workspace. You can close this panel while the handoff finishes.";
+  if (status?.executionTracks?.phase === "steady" && status.currentBuildId !== release.buildId && status.phase === "committed") return "This computer is using the version you selected. Use the retained newer version below to switch back; conversations and history are unchanged.";
   if (status?.phase === "failed" || status?.phase === "repair_required") {
     const failure = status.detail ?? gatewayUpdatePhaseText(status);
     return failure;
@@ -898,6 +904,7 @@ function gatewayUpdateStatusForPresentation(
   node: GatewayUpdatePlanNode,
 ): GatewayUpdateStatus | undefined {
   if (!status || status.phase === "idle") return undefined;
+  if (status.executionTracks) return status;
   if (gatewayUpdateStatusSupersededByDirectory(node, status)) return undefined;
   if (
     status.phase === "committed" &&

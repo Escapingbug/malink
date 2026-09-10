@@ -15,6 +15,7 @@ import {
   gatewayUpdatePlanNodeWithLiveStatus,
   gatewayUpdateStatusSupersededByDirectory,
   latestGatewayUpdateStatus,
+  gatewayExecutionStatusOwner,
   gatewayUpdateTarget,
   legacyGatewayMaintenanceSessionsByNode,
   recoverAmbiguousGatewayUpdateCompletion,
@@ -32,6 +33,11 @@ test("a dedicated retained control route is not listed as another computer to up
     active: { gatewayNodeId: "business", buildId: "new", projectCount: 1, sessionCount: 1 },
     recovery: { gatewayNodeId: "control", buildId: "old", projectId: "repair", projectCount: 1, sessionCount: 0, retainedAt: 1 } } };
   assert.deepEqual(gatewayUpdatePlan({ directory, deployments, release, knownProjectIds: new Set(["project", "repair"]) }).map(n => n.gatewayNodeId), ["business"]);
+  const status = { version: 1 as const, phase: "committed" as const, updatedAt: 2,
+    executionTracks: { generation: 4, activeRelease: "new", phase: "steady" as const, controlProjectId: "repair" } };
+  assert.equal(gatewayExecutionStatusOwner("control", status, Object.values(deployments)), "business");
+  assert.equal(gatewayExecutionStatusOwner("another-node", status, Object.values(deployments)), "another-node");
+  assert.equal(gatewayExecutionStatusOwner("control", { ...status, executionTracks: { ...status.executionTracks, controlProjectId: "wrong" } }, Object.values(deployments)), "control");
 });
 
 test("a legacy snapshot of the same signed status does not erase opted-in version controls", () => {
