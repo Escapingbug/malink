@@ -891,6 +891,7 @@ runner = new MatrixMlp3GatewayRunner(config, {
     },
     pendingGatewayEnrollments: () => gatewayEnrollmentCoordinator.pending(),
     workspaceGatewayDirectory: () => workspaceDirectory.load(),
+    isolatedMaintenanceProjects: true,
     createProject: async input => {
         if (!client.ensureProjectRoom) {
             throw new Error('Matrix transport cannot create project rooms')

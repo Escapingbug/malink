@@ -1770,6 +1770,33 @@ class MatrixMlp3NativeProjectionTest {
     }
 
     @Test
+    fun `retained recovery survives native durable restore`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        val payload = gatewayDeploymentPayload(3, "steady", 40, false)
+        val status = payload.getValue("status").jsonObject
+        val recovery = buildJsonObject {
+            put("gatewayNodeId", "gateway-previous")
+            put("buildId", "previous-build")
+            put("releaseId", "previous-release")
+            put("projectCount", 1)
+            put("sessionCount", 1)
+            put("projectId", "repair-project")
+            put("sessionId", "gateway-update-repair")
+            put("retainedAt", 40)
+        }
+        projection.applyGatewayEvent(event(
+            eventId = "retained-recovery", projectId = "project-1",
+            payload = JsonObject(payload + ("status" to JsonObject(status + ("recovery" to recovery)))),
+        ), "\$retained-recovery", null)
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" }, activeDeviceCount = { 2 }, initialState = projection.durableState(),
+        )
+        assertEquals(recovery, restored.snapshot()!!.getValue("gateway_deployments").jsonObject
+            .getValue("computer-1").jsonObject.getValue("deployment").jsonObject.getValue("recovery"))
+    }
+
+    @Test
     fun `newest blue green Gateway deployment survives durable restore`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)

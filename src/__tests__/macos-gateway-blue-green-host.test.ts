@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -19,6 +19,66 @@ afterEach(async () => {
 })
 
 describe('MacosGatewayBlueGreenHost', () => {
+  it('restarts retained repair with a versioned isolated catalog and pinned old executable', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'malink-retained-host-'))
+    temporaryDirectories.push(directory)
+    const installRoot = join(directory, 'install')
+    const archive = join(directory, 'archive')
+    const activeDataDirectory = join(directory, 'active')
+    const release = join(installRoot, 'releases', 'release-old')
+    const updateRoot = join(installRoot, 'deployments', 'update-1')
+    for (const path of [archive, activeDataDirectory, updateRoot, join(release, 'runtime'), join(release, 'ops'), join(release, 'mcp')]) {
+      await mkdir(path, { recursive: true })
+    }
+    for (const path of ['runtime/node', 'ops/matrix-local-gateway.js', 'mcp/stdio.js']) {
+      await writeFile(join(release, path), '// fixture only\n')
+    }
+    const activePlist = join(directory, 'active.plist')
+    await writeFile(activePlist, launchAgentPlist('test.active'))
+    await writeFile(join(activeDataDirectory, 'workspace-gateways.json'), '{"version":1}')
+    await writeFile(join(archive, 'gateway-projects.json'), JSON.stringify({ version: 1, projects: [
+      { roomId: '!repair:example.org', projectId: 'repair', cwd: join(activeDataDirectory, 'scratch-sessions', 'repair') },
+      { roomId: '!normal:example.org', projectId: 'normal', cwd: '/repo' },
+    ] }))
+    await writeFile(join(archive, 'gateway-replay.jsonl.v3-runtime-state.json'), JSON.stringify({ version: 1, projects: {
+      '!repair:example.org': { cwd: join(activeDataDirectory, 'scratch-sessions', 'repair'), sessions: [
+        { id: 'gateway-update-repair', lifecycle: 'active', providerSessionId: 'old-provider-continuation' },
+      ] },
+      '!normal:example.org': { sessions: [{ id: 'ordinary' }] },
+    } }))
+    await writeFile(join(archive, 'matrix-fixture.json'), JSON.stringify({ roomId: '!normal:example.org' }))
+    await writeHostState(installRoot, { activeSocket: join(directory, 'active.sock'), candidateSocket: join(directory, 'candidate.sock'), candidateLabel: 'test.candidate' })
+    const state = JSON.parse(await readFile(join(installRoot, 'deployment-host-state.json'), 'utf8'))
+    Object.assign(state.deployment, { phase: 'complete', sourceArchiveDirectory: archive,
+      sourceReleaseId: 'release-old', sourceBuildId: 'build-old', recoveryRoomId: '!repair:example.org',
+      recoveryProjectId: 'repair', promotedProjectCount: 1, promotedSessionCount: 1 })
+    state.retained = state.deployment
+    await writeFile(join(installRoot, 'deployment-host-state.json'), JSON.stringify(state))
+    let loaded = false
+    const host = new MacosGatewayBlueGreenHost({ installRoot, activeDataDirectory,
+      activeAdminSocketPath: join(directory, 'active.sock'), activeLaunchAgentPath: activePlist,
+      activeServiceLabel: 'test.active', updateSocketPath: join(directory, 'update.sock'), platform: 'darwin', uid: 501,
+    }, {
+      isServiceLoaded: async () => loaded,
+      launchctl: async args => { if (args[0] === 'bootstrap') loaded = true; if (args[0] === 'bootout') loaded = false },
+      readStatus: async () => { if (!loaded) throw new Error('not running'); return { ...gatewayStatus('gateway-old', 'build-old'), sessionCount: 1 } },
+    })
+    await host.restoreRecovery({ ...deploymentTransition().active, projectId: 'repair', retainedAt: 1 })
+    const catalog = JSON.parse(await readFile(join(archive, 'gateway-projects.json'), 'utf8'))
+    expect(catalog.version).toBe(1)
+    expect(catalog.projects).toHaveLength(1)
+    expect(catalog.projects[0].cwd).toBe(join(archive, 'scratch-sessions', 'repair'))
+    const runtime = JSON.parse(await readFile(join(archive, 'gateway-replay.jsonl.v3-runtime-state.json'), 'utf8'))
+    expect(Object.keys(runtime.projects)).toEqual(['!repair:example.org'])
+    expect(runtime.projects['!repair:example.org'].sessions[0].providerSessionId).toBe('old-provider-continuation')
+    const plist = await readFile(join(updateRoot, 'recovery.plist'), 'utf8')
+    expect(plist).toContain(join(release, 'ops/matrix-local-gateway.js'))
+    expect(plist).toContain('recovery.log')
+    expect(plist).toContain(archive)
+    await host.restoreRecovery({ ...deploymentTransition().active, projectId: 'repair', retainedAt: 1 })
+    expect(loaded).toBe(true)
+  })
+
   it('commits legacy derived IDs without overwriting explicit trial identity at the same cwd', () => {
     const legacy = {
       cwd: '/Users/user/Documents/malink',

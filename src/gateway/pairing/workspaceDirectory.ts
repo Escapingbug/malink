@@ -266,11 +266,18 @@ export class FileWorkspaceGatewayDirectory {
   async promoteLocalOwnership(
     sourceGatewayNodeId: string,
     projects: readonly WorkspaceProjectRoute[],
-    runtime: { computerName: string; buildId: string },
+    runtime: { computerName: string; buildId: string; retainedSourceProjects?: readonly WorkspaceProjectRoute[] },
     now = Date.now(),
   ): Promise<SignedWorkspaceGatewayDirectory> {
     if (!sourceGatewayNodeId || sourceGatewayNodeId === this.identity.gatewayNodeId) {
       throw new Error('Gateway ownership promotion requires another source node')
+    }
+    const retainedProjects = [...(runtime.retainedSourceProjects ?? [])]
+      .map(project => structuredClone(project))
+      .sort((left, right) => left.projectId.localeCompare(right.projectId) || left.roomId.localeCompare(right.roomId))
+    if (retainedProjects.some(retained => projects.some(project =>
+      project.projectId === retained.projectId || project.roomId === retained.roomId))) {
+      throw new Error('Recovery and promoted Gateway routes must be disjoint')
     }
     const normalizedProjects = [...projects]
       .map(project => structuredClone(project))
@@ -299,8 +306,10 @@ export class FileWorkspaceGatewayDirectory {
           ...(normalizedProjects.length > 0 ? { projects: normalizedProjects } : {}),
           issuedAt: now,
         })
-        const alreadyPromoted = !source
-          && removed.has(sourceGatewayNodeId)
+        const sourceSettled = retainedProjects.length > 0
+          ? source && canonicalJson(source.projects ?? []) === canonicalJson(retainedProjects)
+          : !source && removed.has(sourceGatewayNodeId)
+        const alreadyPromoted = sourceSettled
           && canonicalJson(descriptorSemantics(local))
             === canonicalJson(descriptorSemantics(next))
         if (alreadyPromoted) {
@@ -311,8 +320,16 @@ export class FileWorkspaceGatewayDirectory {
             changed: false,
           }
         }
-        delete state.gateways[sourceGatewayNodeId]
-        removed.add(sourceGatewayNodeId)
+        if (retainedProjects.length) {
+          if (!source) throw new Error('Recovery source descriptor is unavailable')
+          state.gateways[sourceGatewayNodeId] = workspaceGatewayDescriptorSchema.parse({
+            ...source, projects: retainedProjects, issuedAt: now,
+          })
+          removed.delete(sourceGatewayNodeId)
+        } else {
+          delete state.gateways[sourceGatewayNodeId]
+          removed.add(sourceGatewayNodeId)
+        }
         state.removedGatewayNodeIds = [...removed].sort()
         state.gateways[this.identity.gatewayNodeId] = next
         state.revision += 1

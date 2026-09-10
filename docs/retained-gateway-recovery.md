@@ -1,20 +1,30 @@
 # Retained Gateway recovery — implementation contract
 
-Status: implementation design; not shipped.
+Status: implementation in feature worktree; not yet shipped or online-accepted.
 
 Implementation checkpoint:
 
 - Optional typed recovery slot and two-slot invariant added to the protocol.
 - Coordinator can retain a host-verified source recovery slot after commit.
-- Preparing another candidate is rejected until recovery rotation is implemented.
-- Coordinator tests (12) and type checks pass.
-- Host callback is intentionally not wired: no runtime may advertise recovery
-  based only on archived source files.
+- Host retains a dedicated repair room, rehomes its data, pins the previous
+  executable, and verifies its process health before publishing recovery.
+- The repair process starts before the new active process, so a new-version
+  startup failure does not block old-version repair.
+- Next-update rotation checkpoints the old slot; preparation failure and discard
+  restore it. Healthy recovery is not restarted by repeated restore requests.
+- Native strict parsing and web recovery routing accept the optional slot.
+- Gateway full suite (1,204 tests at the earlier checkpoint), PWA full suite
+  (590 tests), Android unit tests/lint/debug build, and production bundles pass.
+  Additional host and client recovery tests were added afterward and pass.
 - Existing maintenance sessions may share a Matrix project room with ordinary
   scratch conversations. Retaining that entire room is not an acceptable
   substitute for a dedicated repair route; moving a session alone also requires
   explicit preservation of its thread/history and provider continuation.
-- Do not merge or release this checkpoint independently.
+- Online acceptance is still required. The installed c962791 source does not
+  provision dedicated repair rooms: the first update is a compatibility bootstrap;
+  the second update must prove retained recovery and the following rotation.
+- Publish updated native parsing before emitting recovery metadata to online
+  clients. Do not claim online completion from a signed status fixture.
 
 ## User-visible semantics
 

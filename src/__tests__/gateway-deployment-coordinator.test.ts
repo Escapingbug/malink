@@ -24,6 +24,40 @@ const active: GatewayDeploymentSlot = {
 }
 
 describe('GatewayDeploymentCoordinator', () => {
+  it('restores the retained version after cancelling the next update', async () => {
+    const rotateRecovery = vi.fn(async () => {})
+    const restoreRecovery = vi.fn(async () => {})
+    const fixture = await coordinatorFixture({
+      retainedRecovery: async transition => ({ ...transition.active, projectId: 'repair-project', retainedAt: 100 }),
+      rotateRecovery,
+      restoreRecovery,
+    })
+    await fixture.coordinator.initialize()
+    const first = await fixture.coordinator.prepare({ releaseId: 'new', buildId: 'new', candidateGatewayNodeId: 'new' })
+    await fixture.coordinator.promote(first.updateId!, 'when_idle')
+    const second = await fixture.coordinator.prepare({ releaseId: 'third', buildId: 'third', candidateGatewayNodeId: 'third' })
+    expect(rotateRecovery).toHaveBeenCalledOnce()
+    expect(second.recovery).toBeUndefined()
+    const discarded = await fixture.coordinator.discard(second.updateId!)
+    expect(restoreRecovery).toHaveBeenCalledOnce()
+    expect(discarded).toMatchObject({ phase: 'steady', active: { gatewayNodeId: 'new' }, recovery: { gatewayNodeId: 'gateway-old' } })
+  })
+
+  it('restores the retained version when rotation fails before preparation', async () => {
+    const restoreRecovery = vi.fn(async () => {})
+    const fixture = await coordinatorFixture({
+      retainedRecovery: async transition => ({ ...transition.active, projectId: 'repair-project', retainedAt: 100 }),
+      rotateRecovery: async () => { throw new Error('Recovery is busy') },
+      restoreRecovery,
+    })
+    await fixture.coordinator.initialize()
+    const first = await fixture.coordinator.prepare({ releaseId: 'new', buildId: 'new', candidateGatewayNodeId: 'new' })
+    await fixture.coordinator.promote(first.updateId!, 'when_idle')
+    await expect(fixture.coordinator.prepare({ releaseId: 'third', buildId: 'third' })).rejects.toThrow('Recovery is busy')
+    expect(restoreRecovery).toHaveBeenCalledOnce()
+    expect((await fixture.coordinator.status()).recovery?.gatewayNodeId).toBe('gateway-old')
+  })
+
   it('retains only a host-verified old repair slot and blocks unsafe replacement', async () => {
     const fixture = await coordinatorFixture({
       retainedRecovery: async transition => ({ ...transition.active, projectId: 'repair-project', retainedAt: 100 }),

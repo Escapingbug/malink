@@ -13,6 +13,7 @@ interface GatewayDeploymentCoordinatorState {
   version: 1
   status: GatewayDeploymentStatus
   commitStarted?: boolean
+  rotatedRecovery?: GatewayRecoverySlot
   scheduledPromotion?: {
     updateId: string
     mode: 'when_idle' | 'force'
@@ -55,6 +56,8 @@ export interface GatewayDeploymentCoordinatorDependencies {
   commitCandidate?: (transition: GatewayDeploymentTransition) => Promise<void>
   /** Only return after the isolated old-version repair runtime is healthy. */
   retainedRecovery?: (transition: GatewayDeploymentTransition) => Promise<GatewayRecoverySlot | undefined>
+  rotateRecovery?: (recovery: GatewayRecoverySlot) => Promise<void>
+  restoreRecovery?: (recovery: GatewayRecoverySlot) => Promise<void>
   rollbackPreCommit?: (transition: GatewayDeploymentTransition) => Promise<{
     active?: GatewayDeploymentSlot
     candidate?: GatewayDeploymentSlot
@@ -87,6 +90,10 @@ export class GatewayDeploymentCoordinator {
       const state = await this.readState()
       const transition = transitionFromStatus(state.status)
       if (state.status.phase === 'steady') {
+        if (state.rotatedRecovery) {
+          await this.dependencies.restoreRecovery?.(state.rotatedRecovery)
+          await this.writeState(current => { delete current.rotatedRecovery })
+        }
         await this.reconcileSteadyActive(state)
         return
       }
@@ -119,7 +126,8 @@ export class GatewayDeploymentCoordinator {
         try {
           const candidate = await this.dependencies.recoverPreparation(transition)
           if (!candidate) {
-            await this.returnToSteady(state.status, 'Interrupted candidate preparation was removed')
+            if (state.rotatedRecovery) await this.dependencies.restoreRecovery?.(state.rotatedRecovery)
+            await this.returnToSteady({ ...state.status, ...(state.rotatedRecovery ? { recovery: state.rotatedRecovery } : {}) }, 'Interrupted candidate preparation was removed')
             return
           }
           assertPreparedCandidate(transition, candidate)
@@ -148,7 +156,7 @@ export class GatewayDeploymentCoordinator {
         }
         try {
           await this.dependencies.discardCandidate(transition)
-          await this.returnToSteady(state.status, 'Interrupted candidate discard completed')
+          await this.restoreRotatedRecovery(state.status, state.rotatedRecovery, 'Interrupted candidate discard completed')
         } catch (error) {
           await this.markRepairRequired(
             state.status,
@@ -205,9 +213,7 @@ export class GatewayDeploymentCoordinator {
       if (current.status.phase !== 'steady') {
         throw new Error(`Cannot prepare a Gateway candidate while ${current.status.phase}`)
       }
-      if (current.status.recovery) {
-        throw new Error('The retained recovery slot must be safely rotated before preparing another Gateway')
-      }
+      const previousRecovery = current.status.recovery
       const updateId = this.createId()
       const candidate: GatewayDeploymentSlot = gatewayDeploymentSlotSchema.parse({
         gatewayNodeId: input.candidateGatewayNodeId ?? this.createId(),
@@ -219,9 +225,21 @@ export class GatewayDeploymentCoordinator {
       if (candidate.gatewayNodeId === current.status.active.gatewayNodeId) {
         throw new Error('Candidate Gateway node ID matches the active deployment')
       }
+      if (previousRecovery) {
+        if (!this.dependencies.rotateRecovery || !this.dependencies.restoreRecovery) throw new Error('The retained recovery slot must be safely rotated before preparing another Gateway')
+        await this.writeState(state => { state.rotatedRecovery = previousRecovery })
+        try {
+          await this.dependencies.rotateRecovery(previousRecovery)
+        } catch (error) {
+          await this.dependencies.restoreRecovery(previousRecovery)
+          await this.writeState(state => { delete state.rotatedRecovery })
+          throw error
+        }
+      }
       const preparing = await this.writeStatus({
         ...current.status,
         phase: 'preparing',
+        recovery: undefined,
         candidate,
         updateId,
         detail: 'Preparing an isolated candidate Gateway; the active Gateway remains available',
@@ -243,8 +261,9 @@ export class GatewayDeploymentCoordinator {
       } catch (error) {
         try {
           await this.dependencies.discardCandidate?.(transition)
+          if (previousRecovery) await this.dependencies.restoreRecovery?.(previousRecovery)
           await this.returnToSteady(
-            preparing,
+            { ...preparing, ...(previousRecovery ? { recovery: previousRecovery } : {}) },
             `Candidate preparation failed; active Gateway unchanged: ${formatError(error)}`,
           )
         } catch (cleanupError) {
@@ -272,7 +291,7 @@ export class GatewayDeploymentCoordinator {
       })
       try {
         await this.dependencies.discardCandidate?.(transition)
-        return await this.returnToSteady(discarding, 'Candidate Gateway was discarded')
+        return await this.restoreRotatedRecovery(discarding, current.rotatedRecovery, 'Candidate Gateway was discarded')
       } catch (error) {
         await this.writeStatus({
           ...discarding,
@@ -283,6 +302,18 @@ export class GatewayDeploymentCoordinator {
         throw error
       }
     })
+  }
+
+  private async restoreRotatedRecovery(
+    status: GatewayDeploymentStatus,
+    recovery: GatewayRecoverySlot | undefined,
+    detail: string,
+  ): Promise<GatewayDeploymentStatus> {
+    if (recovery) {
+      if (!this.dependencies.restoreRecovery) throw new Error('Retained recovery cannot be restored by this host')
+      await this.dependencies.restoreRecovery(recovery)
+    }
+    return this.returnToSteady({ ...status, ...(recovery ? { recovery } : {}) }, detail)
   }
 
   promote(
@@ -557,6 +588,7 @@ export class GatewayDeploymentCoordinator {
       generation: status.generation,
       phase: 'steady',
       active: status.active,
+      ...(status.recovery ? { recovery: status.recovery } : {}),
       detail,
       updatedAt: this.now(),
     }, false)
@@ -600,6 +632,7 @@ export class GatewayDeploymentCoordinator {
         delete state.commitStarted
       }
       if (status.phase !== 'draining') delete state.scheduledPromotion
+      if (status.phase === 'steady') delete state.rotatedRecovery
       validateCoordinatorState(state, this.config.computerId)
       return { result: structuredClone(state.status), changed: true }
     })

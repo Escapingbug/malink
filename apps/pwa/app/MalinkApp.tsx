@@ -2757,10 +2757,13 @@ function MalinkAppRuntime() {
     project.projectId === newSessionProjectId) ?? preferredNewWorkspace ?? defaultCreationWorkspace;
   const activeRecoveryDeployment = Object.values(gatewayState?.gatewayDeployments ?? {})
     .map(observation => observation.deployment)
-    .find(deployment => deployment.phase !== "steady" &&
-      deployment.candidate?.gatewayNodeId === activeProjectGateway.gatewayNodeId);
+    .find(deployment => deployment.recovery
+      ? deployment.active.gatewayNodeId === activeProjectGateway.gatewayNodeId
+      : deployment.phase !== "steady" && deployment.candidate?.gatewayNodeId === activeProjectGateway.gatewayNodeId);
   const previousGatewayDeployment = Object.values(gatewayState?.gatewayDeployments ?? {})
     .map(observation => observation.deployment)
+    .map(deployment => deployment.recovery ? { ...deployment, phase: "trial" as const,
+      active: deployment.recovery, candidate: deployment.active } : deployment)
     .find(deployment => deployment.phase !== "steady" && deployment.candidate &&
       deployment.active.gatewayNodeId === activeProjectGateway.gatewayNodeId);
   const projectSettingsWorkspace = projectSettingsProjectId
@@ -8627,13 +8630,13 @@ function MalinkAppRuntime() {
     ])}`;
     setGatewayRecoveryBusy(true);
     try {
-      if (activeProjectGateway.gatewayNodeId === deployment.candidate?.gatewayNodeId &&
+      if (activeProjectGateway.gatewayNodeId === (deployment.recovery ? deployment.active : deployment.candidate)?.gatewayNodeId &&
           selectedSessionIdRef.current && selectedProjectIdRef.current) {
         setGatewayRecoveryReturnRoute({ projectId: selectedProjectIdRef.current,
           sessionId: selectedSessionIdRef.current });
       }
       const file = new File([gatewayRecoveryReport(deployment,
-        gatewayNodeLivenessById[deployment.candidate?.gatewayNodeId ?? ""]?.state ?? "unknown")],
+        gatewayNodeLivenessById[(deployment.recovery ? deployment.active : deployment.candidate)?.gatewayNodeId ?? ""]?.state ?? "unknown")],
       "gateway-update-diagnostics.json", { type: "application/json" });
       let sessionId = target.session?.id;
       if (sessionId) window.localStorage.removeItem(recoveryKey);
@@ -11471,7 +11474,7 @@ function MalinkAppRuntime() {
     const owner = projectGatewaysById.get(session.projectId);
     const deployment = Object.values(gatewayState?.gatewayDeployments ?? {}).find(value =>
       value.deployment.active.gatewayNodeId === owner?.gatewayNodeId)?.deployment;
-    const protectedRepair = session.id.startsWith("gateway-update-") && (!deployment || deployment.phase !== "steady");
+    const protectedRepair = session.id.startsWith("gateway-update-") && (!deployment || deployment.phase !== "steady" || Boolean(deployment.recovery));
     return bulkArchiveEligible(session.status, protectedRepair,
       sessionLifecycleBusy.has(sessionLifecycleRouteKey(session.projectId, session.id)));
   }
