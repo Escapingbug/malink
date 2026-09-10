@@ -8949,7 +8949,21 @@ select:focus-visible {
   max-width: 100%;
   white-space: normal;
   overflow-wrap: anywhere;
+  padding: 10px 14px;
+  border: 1px solid #c9c2e2;
+  border-radius: 9px;
+  background: #eeebf7;
+  color: #514382;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+  cursor: pointer;
 }
+
+.gateway-version-button:hover:not(:disabled) { background: #e3dcf3; border-color: #9c8cc6; }
+.gateway-version-button:active:not(:disabled) { background: #d6cbea; }
+.gateway-version-button:focus-visible { outline: 2px solid #7862ad; outline-offset: 2px; }
+.gateway-version-button:disabled { opacity: 0.55; cursor: default; }
 
 .gateway-version-check-icon { display: inline-block; flex-shrink: 0; }
 .gateway-version-check-icon.is-checking { animation: gateway-version-spin 1s linear infinite; }
