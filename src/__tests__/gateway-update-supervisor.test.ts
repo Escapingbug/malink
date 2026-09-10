@@ -36,6 +36,16 @@ afterEach(async () => {
 })
 
 describe('GatewayUpdateSupervisor', () => {
+  it('does not infer business activation from the stable controller symlink', async () => {
+    const fixture = await releaseFixture()
+    const supervisor = new GatewayUpdateSupervisor({ ...fixture.config, executionTracksEnabled: true }, { fetch: fixture.fetch })
+    await supervisor.initialize()
+    await supervisor.stage('release-2')
+    await rm(join(fixture.installRoot, 'current'))
+    await symlink(join(fixture.installRoot, 'releases', 'release-2'), join(fixture.installRoot, 'current'))
+    expect(await supervisor.status()).toMatchObject({ phase: 'staged', releaseId: 'release-2' })
+    await supervisor.stop()
+  })
   it('keeps legacy status compatible and durably accepts only generation-bound admitted version selections', async () => {
     const fixture = await releaseFixture()
     const supervisor = new GatewayUpdateSupervisor(fixture.config, { fetch: fixture.fetch })

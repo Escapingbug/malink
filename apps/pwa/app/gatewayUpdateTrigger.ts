@@ -162,7 +162,12 @@ export function gatewayUpdatePlan(input: {
 }): GatewayUpdatePlanNode[] {
   if (!input.directory || !input.release) return [];
   const release = input.release;
-  return input.directory.directory.gateways.map((gateway) => {
+  return input.directory.directory.gateways.filter(gateway => !Object.values(input.deployments ?? {}).some(status =>
+    status.recovery?.gatewayNodeId === gateway.gatewayNodeId
+    && status.active.gatewayNodeId !== gateway.gatewayNodeId
+    && gateway.projects?.length === 1
+    && gateway.projects[0].projectId === status.recovery.projectId,
+  )).map((gateway) => {
     const deployment = Object.values(input.deployments ?? {}).find(status =>
       status.active.gatewayNodeId === gateway.gatewayNodeId
       || status.candidate?.gatewayNodeId === gateway.gatewayNodeId,

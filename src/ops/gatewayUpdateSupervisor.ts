@@ -263,6 +263,9 @@ export class GatewayUpdateSupervisor {
   }
 
   async status(): Promise<GatewayUpdateStatus> {
+    // In execution-track mode `current` pins the stable controller, not the
+    // selected business executable. Only the track owner may report activation.
+    if (this.config.executionTracksEnabled) return structuredClone((await this.readState()).status)
     const installedBuildId = await this.installedBuildId()
     const status = await this.stateFile.transaction(defaultState, state => {
       validateState(state)

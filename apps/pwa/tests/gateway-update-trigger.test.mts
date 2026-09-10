@@ -24,6 +24,16 @@ import { gatewayUpdateRecoveryAction } from "../app/gatewayUpdateRecovery.ts";
 
 const release = { releaseId: "2026.08.26.2", buildId: "gateway-next-arm64" };
 
+test("a dedicated retained control route is not listed as another computer to update", () => {
+  const directory = { directory: { gateways: [gateway("business", "Mac", "new", true, "project"),
+    gateway("control", "Mac", "old", true, "repair")] } } as unknown as SignedWorkspaceGatewayDirectory;
+  const deployments = { mac: { version: 1 as const, strategy: "blue-green-v1" as const, maxDeployments: 2 as const,
+    computerId: "mac", generation: 4, phase: "steady" as const, updatedAt: 1,
+    active: { gatewayNodeId: "business", buildId: "new", projectCount: 1, sessionCount: 1 },
+    recovery: { gatewayNodeId: "control", buildId: "old", projectId: "repair", projectCount: 1, sessionCount: 0, retainedAt: 1 } } };
+  assert.deepEqual(gatewayUpdatePlan({ directory, deployments, release, knownProjectIds: new Set(["project", "repair"]) }).map(n => n.gatewayNodeId), ["business"]);
+});
+
 test("a legacy snapshot of the same signed status does not erase opted-in version controls", () => {
   const current = { version: 1 as const, phase: "committed" as const, releaseId: "new", updatedAt: 123,
     executionTracks: { generation: 2, activeRelease: "new", standbyRelease: "old", phase: "steady" as const } };
