@@ -571,7 +571,7 @@ test("a missing terminal result cannot leave command UI busy forever", async () 
     waitForCommandCompletion(neverCompletes, 10),
     (error) =>
       error instanceof CommandCompletionTimeoutError &&
-      /accepted this command but did not confirm its final result/i.test(
+      /final result has not arrived yet.*do not submit it again/i.test(
         error.message,
       ),
   );

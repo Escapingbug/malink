@@ -45,7 +45,7 @@ export class CommandCompletionExpiredError extends Error {
 export class CommandCompletionTimeoutError extends Error {
   constructor() {
     super(
-      "Your computer accepted this command but did not confirm its final result. Reconnect before retrying.",
+      "The command's final result has not arrived yet. It may already have completed; do not submit it again. Check the connection and pending actions.",
     );
     this.name = "CommandCompletionTimeoutError";
   }

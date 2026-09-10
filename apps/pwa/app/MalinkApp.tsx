@@ -10560,6 +10560,7 @@ function MalinkAppRuntime() {
     if (!project || projectSettingsBusy || !projectSettingsCanDelete) return;
     setProjectSettingsBusy(true);
     let commandId: string | null = null;
+    let confirmed = false;
     try {
       const sent = await sendRealCommand(
         { operation: "project.delete" },
@@ -10568,7 +10569,8 @@ function MalinkAppRuntime() {
       );
       if (!sent) return;
       commandId = sent.commandId;
-      const completion = await sent.completion;
+      const completion = await waitForCommandCompletion(sent.completion);
+      confirmed = true;
       if (completion.outcome !== "succeeded") {
         throw new Error(completion.error?.message ?? "The project could not be deleted.");
       }
@@ -10587,13 +10589,21 @@ function MalinkAppRuntime() {
         7_000,
       );
     } catch (error) {
+      if (error instanceof CommandAcknowledgementTimeoutError) commandId = error.commandId;
+      if (commandId && (error instanceof CommandCompletionTimeoutError || error instanceof CommandAcknowledgementTimeoutError || isCommandRecoveryPendingError(error))) {
+        rememberBackgroundRecoveredNativeCommand(commandId);
+        if (malinkClientRef.current) scheduleRecoveredNativeCommandReconciliation(malinkClientRef.current);
+        showUiNotice("project:delete", "session", "warning",
+          "删除结果尚未确认，正在后台核对原命令。可以关闭此窗口，请勿重复删除。");
+        return;
+      }
       showUiNotice("project:delete", "session", "error", formatUiError(error));
     } finally {
-      if (commandId) {
+      setProjectSettingsBusy(false);
+      if (commandId && confirmed) {
         completedCommandResultsRef.current.delete(commandId);
         await malinkClientRef.current?.releaseCommand(commandId).catch(() => undefined);
       }
-      setProjectSettingsBusy(false);
     }
   }
 
@@ -10971,6 +10981,7 @@ function MalinkAppRuntime() {
     requestedProjectId?: string,
     onSucceeded?: () => void | Promise<void>,
     onFailed?: () => void | Promise<void>,
+    waitForSettlement = false,
   ): Promise<boolean> {
     const matchingSessions = gatewayState?.sessions.filter(
       session => session.id === sessionId,
@@ -11038,7 +11049,7 @@ function MalinkAppRuntime() {
         return false;
       }
       setDetailsOpen(false);
-      void settleSessionLifecycle(
+      const settlement = settleSessionLifecycle(
         connection,
         sent,
         action,
@@ -11047,6 +11058,8 @@ function MalinkAppRuntime() {
         onSucceeded,
         onFailed,
       );
+      if (waitForSettlement) await settlement;
+      else void settlement;
       return true;
     } catch (error) {
       if (error instanceof CommandAcknowledgementTimeoutError && connection) {
@@ -11583,7 +11596,9 @@ function MalinkAppRuntime() {
     const owner = projectGatewaysById.get(session.projectId);
     const deployment = Object.values(gatewayState?.gatewayDeployments ?? {}).find(value =>
       value.deployment.active.gatewayNodeId === owner?.gatewayNodeId)?.deployment;
-    const protectedRepair = session.id.startsWith("gateway-update-") && (!deployment || deployment.phase !== "steady" || Boolean(deployment.recovery));
+    const protectedRepair = deployment?.recovery?.projectId === session.projectId
+      || (deployment?.phase !== "steady" && deployment !== undefined &&
+        gatewayUpdateRuntimeByNode[owner?.gatewayNodeId ?? ""]?.status?.maintenanceSessionId === session.id);
     return bulkArchiveEligible(session.status, protectedRepair,
       sessionLifecycleBusy.has(sessionLifecycleRouteKey(session.projectId, session.id)));
   }
@@ -11606,7 +11621,7 @@ function MalinkAppRuntime() {
       for (const session of targets) {
         const key = sessionLifecycleRouteKey(session.projectId, session.id);
         const accepted = await runSessionLifecycle("archive", session.id, session.projectId,
-          () => finish(key, "done"), () => finish(key, "failed"));
+          () => finish(key, "done"), () => finish(key, "failed"), true);
         if (!accepted) finish(key, "failed");
       }
     } finally { setBulkSubmitting(false); }
@@ -13413,9 +13428,8 @@ function MalinkAppRuntime() {
         {trustedGateway && bulkSelect && (
           <div className={`bulk-session-actions ${bulkSelect ? "is-selecting" : ""}`}>
             <button type="button" className="secondary-button"
-              disabled={bulkSubmitting || Object.values(bulkResults).includes("pending")}
-              onClick={() => { setBulkSelect(!bulkSelect); setBulkSelected(new Set()); setBulkConfirm(false); setBulkResults({}); }}>
-              取消
+              onClick={() => { setBulkSelect(false); setBulkSelected(new Set()); setBulkConfirm(false); }}>
+              退出
             </button>
             {bulkSelect && <>
               <button type="button" className="secondary-button" disabled={bulkSubmitting}
@@ -13424,7 +13438,7 @@ function MalinkAppRuntime() {
               <button type="button" className="primary-button"
                 disabled={!gatewayConnected || bulkSubmitting || Object.values(bulkResults).includes("pending") ||
                   !(gatewayState?.sessions ?? []).some(session => bulkArchiveAllowed(session) && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)))}
-                onClick={() => setBulkConfirm(true)}>归档已选 · {(gatewayState?.sessions ?? []).filter(session => bulkArchiveAllowed(session) && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id))).length}</button>
+                onClick={() => setBulkConfirm(true)}>归档 · {(gatewayState?.sessions ?? []).filter(session => bulkArchiveAllowed(session) && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id))).length}</button>
               {bulkConfirm && <div className="bulk-archive-confirm" role="alertdialog" aria-label="确认批量归档">
                 <strong>归档选中的会话？</strong>
                 <p>将归档全部已选会话，包括当前筛选未显示的选项。历史记录会保留，不会停止运行中的 Agent。</p>
@@ -13756,7 +13770,13 @@ function MalinkAppRuntime() {
                 </span>
                 <b aria-hidden="true">{project.sessions.length}</b>
               </button>
-              {!project.temporary && (
+              {bulkSelect && <button type="button" className="project-manage-button"
+                aria-label={`全选 ${project.projectName} 下可归档会话`}
+                disabled={bulkSubmitting}
+                onClick={() => setBulkSelected(current => new Set([...current,
+                  ...(gatewayState?.sessions ?? []).filter(session => session.projectId === project.projectId && bulkArchiveAllowed(session))
+                    .map(session => sessionLifecycleRouteKey(session.projectId, session.id))]))}>全选</button>}
+              {!project.temporary && !bulkSelect && (
                 <button
                   type="button"
                   className="project-manage-button"
