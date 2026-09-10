@@ -2211,6 +2211,23 @@ select:focus-visible {
   gap: 3px;
 }
 
+.gateway-recovery-notice {
+  margin: 8px 12px;
+  padding: 12px;
+  border: 1px solid var(--border, #d9dce5);
+  border-radius: 12px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.gateway-recovery-notice p { margin: 6px 0 0; }
+.gateway-recovery-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.gateway-recovery-notice-actions button { min-height: 44px; }
+
 .conversation-header .gateway-recovery-button {
   min-width: 0;
   max-width: 148px;

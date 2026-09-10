@@ -40,6 +40,7 @@ import {
 import type { NativeUpdateStatus } from "@malink/native-bridge";
 import { SharedFileDialog } from "./SharedFileDialog";
 import { gatewayRecoveryTarget, gatewayRecoveryReport, gatewayRecoveryTitle, preferredGatewayCreationWorkspace } from "./gatewayRecovery";
+import { GatewayRecoveryNotice, gatewayRecoveryNoticeReason } from "./GatewayRecoveryNotice";
 import {
   CommandAcknowledgementTimeoutError,
   CommandCompletionTimeoutError,
@@ -2744,6 +2745,14 @@ function MalinkAppRuntime() {
     .find(deployment => deployment.recovery
       ? deployment.active.gatewayNodeId === activeProjectGateway.gatewayNodeId
       : deployment.phase !== "steady" && deployment.candidate?.gatewayNodeId === activeProjectGateway.gatewayNodeId);
+  const recoveryNoticeReason = gatewayRecoveryNoticeReason({
+    connected: connectionStatus === "connected",
+    hasRecovery: Boolean(activeRecoveryDeployment),
+    executionPhase: gatewayUpdateRuntimeByNode[activeProjectGateway.gatewayNodeId]?.status?.executionTracks?.phase,
+    deploymentPhase: activeRecoveryDeployment?.phase,
+    liveness: gatewayNodeLivenessById[activeProjectGateway.gatewayNodeId]?.state,
+    consecutiveNoReplies: gatewayNodeLivenessById[activeProjectGateway.gatewayNodeId]?.consecutiveNoReplies,
+  });
   const previousGatewayDeployment = Object.values(gatewayState?.gatewayDeployments ?? {})
     .map(observation => observation.deployment)
     .map(deployment => deployment.recovery ? { ...deployment, phase: "trial" as const,
@@ -14130,21 +14139,6 @@ function MalinkAppRuntime() {
                 New Gateway →
               </button>
             )}
-            {activeRecoveryDeployment && (
-              <button
-                type="button"
-                className="secondary-button gateway-recovery-button"
-                disabled={gatewayRecoveryBusy || Boolean(gatewayRecoveryDraft)}
-                aria-busy={gatewayRecoveryBusy || Boolean(gatewayRecoveryDraft)}
-                onClick={() => void recoverWithPreviousGateway()}
-                title="The previous Gateway remains available for update repair"
-              >
-                {gatewayRecoveryBusy || gatewayRecoveryDraft ? "Opening repair…" :
-                  gatewayNodeLivenessById[activeProjectGateway.gatewayNodeId]?.state === "unreachable"
-                  ? "Old Gateway repair"
-                  : "Update recovery"}
-              </button>
-            )}
             {selectedUpdateSignal && selectedUpdateLabel && gatewaySelected && (
               <button
                 type="button"
@@ -14170,6 +14164,11 @@ function MalinkAppRuntime() {
           </div>
         </header>
 
+        {recoveryNoticeReason && <GatewayRecoveryNotice
+          key={`${activeProjectGateway.gatewayNodeId}:${recoveryNoticeReason}`}
+          reason={recoveryNoticeReason}
+          onOpen={() => setGatewayUpdateDialogOpen(true)}
+        />}
         <UiNoticeList
           notices={sessionNotices}
           className="session-notices-conversation"
