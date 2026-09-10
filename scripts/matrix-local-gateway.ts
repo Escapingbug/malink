@@ -521,7 +521,7 @@ async function performWorkspaceControlSync(): Promise<void> {
         .join('|')
     if (runner?.getState() === 'running' &&
         authorizationFingerprint !== provisionedAuthorizationFingerprint) {
-        await runner.provisionCurrentState()
+        await runner.provisionCurrentState(false)
         provisionedAuthorizationFingerprint = authorizationFingerprint
     }
 }
@@ -568,7 +568,7 @@ const stopWorkspaceControl = client.onRoomEvent(event => {
         && event.content.membership === 'join'
         && event.sender !== currentTransport.userId
     ) {
-        void runner?.provisionCurrentState().catch(error => {
+        void runner?.provisionCurrentState(false).catch(error => {
             process.stderr.write(`[workspace-control] project join provisioning failed: ${formatError(error)}\n`)
         })
         return
@@ -891,6 +891,7 @@ runner = new MatrixMlp3GatewayRunner(config, {
     },
     pendingGatewayEnrollments: () => gatewayEnrollmentCoordinator.pending(),
     workspaceGatewayDirectory: () => workspaceDirectory.load(),
+    isolatedMaintenanceProjects: true,
     createProject: async input => {
         if (!client.ensureProjectRoom) {
             throw new Error('Matrix transport cannot create project rooms')

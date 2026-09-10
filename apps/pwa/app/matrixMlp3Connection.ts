@@ -205,6 +205,20 @@ export async function connectMatrixMlp3(
   const emittedCompletions = new Set<string>();
   const deliveredHistory = new Map<string, Set<string>>();
   const ownPrivateThreadReceipts = new Map<string, string>();
+  let receivedReadReceipts = 0;
+  let appliedReadReceipts = 0;
+  const clearReadSyncDiagnostics = registerReadSyncDiagnostics(() => ({
+    received: receivedReadReceipts, applied: appliedReadReceipts,
+    sessions: activeWorkspaceProtocols().flatMap(target => {
+      const roomId = roomForProtocol(target);
+      return [...target.projection.sessions.values()].map(session => {
+        const receiptEventId = roomId ? ownPrivateThreadReceipts.get(`${roomId}\0${session.threadRootEventId}`) : undefined;
+        return { sessionId: session.sessionId, projectId: session.projectId,
+          targetEventId: session.readReceiptEventId, receiptEventId,
+          reason: !session.readReceiptEventId ? "missing_verified_target" : !receiptEventId ? "receipt_not_observed" : receiptEventId !== session.readReceiptEventId ? "event_mismatch" : "matched" };
+      });
+    }).slice(0, 256),
+  }));
   const emittedSessionReads = new Map<string, number>();
   let sessionReadReceiptRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let sessionReadReceiptDeliveryFailures = 0;
@@ -299,6 +313,11 @@ export async function connectMatrixMlp3(
       if (!roomId) continue;
       for (const session of target.projection.sessions.values()) {
         if (!session.threadRootEventId || !session.readReceiptEventId) continue;
+        const cachedReceipt = client.getRoom(roomId)?.getThread(session.threadRootEventId)
+          ?.getReadReceiptForUserId(config.userId, true, sdk.ReceiptType.ReadPrivate);
+        if (cachedReceipt?.eventId === session.readReceiptEventId) {
+          rememberOwnPrivateThreadReceipt(roomId, session.threadRootEventId, cachedReceipt.eventId);
+        }
         const receiptEventId = ownPrivateThreadReceipts.get(
           receiptRouteKey(roomId, session.threadRootEventId),
         );
@@ -308,6 +327,7 @@ export async function connectMatrixMlp3(
         const sessionKey = `${targetProjectId ?? session.projectId}\0${session.sessionId}`;
         if ((emittedSessionReads.get(sessionKey) ?? -1) >= session.updatedAt) continue;
         emittedSessionReads.set(sessionKey, session.updatedAt);
+        appliedReadReceipts += 1;
         handlers.onSessionRead?.({
           sessionId: session.sessionId,
           ...(targetProjectId || session.projectId
@@ -1168,6 +1188,7 @@ export async function connectMatrixMlp3(
     ]);
     if (!workspaceRoomIds.has(receiptRoom.roomId)) return;
     for (const receipt of parseOwnPrivateThreadReceipts(event.getContent(), config.userId)) {
+      receivedReadReceipts += 1;
       rememberOwnPrivateThreadReceipt(
         receiptRoom.roomId,
         receipt.threadRootEventId,
@@ -2053,6 +2074,7 @@ export async function connectMatrixMlp3(
       workspaceRouteReconciliationRequested = false;
       client.off(sdk.ClientEvent.Event, onMatrixEvent);
       client.off(sdk.RoomEvent.Receipt, onReceipt);
+      clearReadSyncDiagnostics();
       room?.off(sdk.RoomStateEvent.Events, onRoomState);
       for (const value of secondaryProtocols.values()) {
         value.room.off(sdk.RoomStateEvent.Events, onRoomState);
@@ -2635,3 +2657,4 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     ? value as Record<string, unknown>
     : null;
 }
+import { registerReadSyncDiagnostics } from "./readSyncDiagnostics";

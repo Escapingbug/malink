@@ -82,6 +82,7 @@ export async function buildGatewayDeploymentHandoff(input: {
   candidateGatewayNodeId: string
   workspaceId: string
   now?: number
+  retainedRoomId?: string
 }): Promise<GatewayDeploymentHandoffResult> {
   requireOpaqueSegment(input.updateId, 'Gateway update ID')
   const sourceDirectory = resolve(input.sourceDirectory)
@@ -102,11 +103,13 @@ export async function buildGatewayDeploymentHandoff(input: {
       join(sourceDirectory, PROJECT_CATALOG),
       join(targetDirectory, PROJECT_CATALOG),
       input.candidateGatewayNodeId,
+      input.retainedRoomId,
     )
     const counts = await mergeRuntimeState(
       join(sourceDirectory, RUNTIME_STATE),
       join(targetDirectory, RUNTIME_STATE),
       input.workspaceId,
+      input.retainedRoomId,
     )
     await mergeCommandJournal(
       join(sourceDirectory, COMMAND_JOURNAL),
@@ -195,6 +198,7 @@ async function mergeProjectCatalog(
   sourcePath: string,
   targetPath: string,
   candidateGatewayNodeId: string,
+  retainedRoomId?: string,
 ): Promise<void> {
   const [source, target] = await Promise.all([
     readRequiredRecord(sourcePath, 'source project catalog'),
@@ -204,7 +208,7 @@ async function mergeProjectCatalog(
     throw new Error('Gateway project catalog version is not supported for handoff')
   }
   const projects = mergeKeyedArrays(
-    requireArray(source.projects, 'source projects'),
+    requireArray(source.projects, 'source projects').filter(project => record(project)?.roomId !== retainedRoomId),
     requireArray(target.projects, 'candidate projects'),
     value => requireString(record(value)?.roomId, 'project room ID'),
     'project room',
@@ -223,6 +227,7 @@ async function mergeRuntimeState(
   sourcePath: string,
   targetPath: string,
   workspaceId: string,
+  retainedRoomId?: string,
 ): Promise<{ projectCount: number; sessionCount: number }> {
   const [source, target] = await Promise.all([
     readRequiredRecord(sourcePath, 'source runtime state'),
@@ -235,7 +240,8 @@ async function mergeRuntimeState(
     || target.workspaceId !== workspaceId
   ) throw new Error('Gateway runtime state does not match the handoff Workspace')
   const projects = mergeRecords(
-    requireRecord(source.projects, 'source runtime projects'),
+    Object.fromEntries(Object.entries(requireRecord(source.projects, 'source runtime projects'))
+      .filter(([roomId]) => roomId !== retainedRoomId)),
     requireRecord(target.projects, 'candidate runtime projects'),
     'runtime project',
   )

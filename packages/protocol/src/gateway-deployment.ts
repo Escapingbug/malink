@@ -27,6 +27,15 @@ export const gatewayDeploymentSlotSchema = z.object({
 
 export type GatewayDeploymentSlot = z.infer<typeof gatewayDeploymentSlotSchema>
 
+/** A repair-only runtime; it never owns the promoted node's ordinary projects. */
+export const gatewayRecoverySlotSchema = gatewayDeploymentSlotSchema.extend({
+  projectId: opaqueId,
+  sessionId: opaqueId.optional(),
+  retainedAt: timestamp,
+}).strict()
+
+export type GatewayRecoverySlot = z.infer<typeof gatewayRecoverySlotSchema>
+
 /**
  * Signed semantic state for the temporary two-Gateway topology on one host.
  * It stays outside the strict Gateway Directory v1 descriptor so older clients
@@ -41,11 +50,16 @@ export const gatewayDeploymentStatusSchema = z.object({
   phase: gatewayDeploymentPhaseSchema,
   active: gatewayDeploymentSlotSchema,
   candidate: gatewayDeploymentSlotSchema.optional(),
+  recovery: gatewayRecoverySlotSchema.optional(),
   updateId: opaqueId.optional(),
   activeTurns: z.number().int().nonnegative().optional(),
   detail: z.string().min(1).max(4_096).optional(),
   updatedAt: timestamp,
 }).strict().superRefine((status, context) => {
+  if (status.recovery && (status.recovery.gatewayNodeId === status.active.gatewayNodeId || status.candidate)) {
+    context.addIssue({ code: 'custom', path: ['recovery'],
+      message: 'Recovery requires an independent node and must rotate before a candidate occupies the second slot' })
+  }
   const hasTransaction = status.phase !== 'steady'
     && status.phase !== 'repair_required'
   if (hasTransaction && (!status.candidate || !status.updateId)) {

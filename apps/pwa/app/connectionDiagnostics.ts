@@ -1,5 +1,6 @@
 import { readMatrixSyncTimings } from "./matrixSyncDiagnostics";
 import type { MatrixConnectionStatus } from "./matrix";
+import { readSyncDiagnostics } from "./readSyncDiagnostics";
 
 export type ConnectionDiagnosticsInput = {
   buildVersion: string;
@@ -48,6 +49,7 @@ export function createConnectionDiagnostics(
     generatedAt: new Date(now).toISOString(),
     pwaBuild: boundedString(input.buildVersion, 128),
     matrixSyncTimings: readMatrixSyncTimings(),
+    readSync: readSyncDiagnostics(),
     connection: {
       status: input.status,
       detailCode,

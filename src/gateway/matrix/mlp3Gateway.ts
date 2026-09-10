@@ -186,6 +186,8 @@ const GATEWAY_UPDATE_STATUS_MONITOR_MAX_FAILURES = 30
 const DEFAULT_DEPLOYMENT_SEAL_TIMEOUT_MS = 2 * 60_000
 
 export interface MatrixMlp3GatewayDependencies {
+  /** Host guarantees portable authorization for newly created maintenance rooms. */
+  isolatedMaintenanceProjects?: boolean
   client?: MatrixGatewayClient
   providerFactory?: (
     room: MatrixGatewayRoomConfig,
@@ -760,14 +762,14 @@ export class MatrixMlp3GatewayRunner {
     }
   }
 
-  async provisionCurrentState(): Promise<void> {
+  async provisionCurrentState(waitForPublication = true): Promise<void> {
     if (this.state !== 'running') {
       throw new Error(`Cannot provision MLP/3 state while Gateway is ${this.state}`)
     }
     for (const project of this.projects.values()) {
-      await this.content.provisionProject(project.config, this.client)
-      await this.publishWorkspaceSnapshot(project)
-      await this.publishProjectSnapshot(project)
+      await this.content.provisionProject(project.config, this.client, waitForPublication)
+      await this.publishWorkspaceSnapshot(project, waitForPublication)
+      await this.publishProjectSnapshot(project, waitForPublication)
     }
   }
 
@@ -1391,15 +1393,36 @@ export class MatrixMlp3GatewayRunner {
       )
       this.scheduleGatewayUpdateStatusMonitor(0)
       if (begin.started) {
-        const runtime = await this.maintenanceAgentRuntime(
-          project,
-          command,
-          rootEventId,
-          instruction,
-        )
         try {
+          const maintenanceProject = await this.isolatedMaintenanceProject(project, command)
+          let maintenanceRoot = rootEventId
+          if (maintenanceProject !== project) {
+            const existing = maintenanceProject.project.sessions.find(session => session.id === maintenanceSessionId)
+            if (existing) maintenanceRoot = existing.threadRootEventId
+            else {
+              const root: Mlp3Event = {
+                kind: 'malink.event', version: 3,
+                eventId: `gateway-recovery-root-${command.commandId}`,
+                workspaceId: this.config.gatewayId,
+                projectId: maintenanceProject.project.projectId,
+                occurredAt: this.now(),
+                payload: { type: 'project.snapshot', ...this.projectSnapshot(maintenanceProject) },
+              }
+              const queued = await this.content.enqueueEvent(maintenanceProject.config, root, this.client)
+              // The physical root is required for m.thread, but a failed
+              // network attempt is not a failed update. The durable outbox
+              // owns retries and resolves this confirmation after delivery.
+              maintenanceRoot = (await queued.confirmation).eventId
+            }
+          }
+          const runtime = await this.maintenanceAgentRuntime(
+            maintenanceProject,
+            command,
+            maintenanceRoot,
+            instruction,
+          )
           await this.runPrompt(
-            project,
+            maintenanceProject,
             runtime,
             command,
             { text: maintenanceAgentPrompt(instruction) },
@@ -1460,6 +1483,31 @@ export class MatrixMlp3GatewayRunner {
       status,
     )
     await this.publishGatewayUpdateStatus()
+  }
+
+  private async isolatedMaintenanceProject(
+    source: V3ProjectRuntime,
+    command: Mlp3CommandOf<'gateway.update.stage'>,
+  ): Promise<V3ProjectRuntime> {
+    // Existing hosts without dynamic project creation retain their legacy flow.
+    // The supervisor only enables retained recovery for a dedicated room.
+    if (!this.dependencies.isolatedMaintenanceProjects) return source
+    if (!this.dependencies.createProject) throw new Error('Isolated maintenance requires project provisioning')
+    const name = `Gateway recovery · ${this.config.gatewayNodeId}`
+    const cwd = this.scratchSessionDirectory(`gateway-recovery-${this.config.gatewayNodeId}`)
+    const existing = [...this.projects.values()].find(project =>
+      project.project.name === name && project.project.cwd === cwd)
+    if (existing) return existing
+    const created = await this.dependencies.createProject({
+      sourceRoom: source.config, requestedByDeviceId: command.deviceId,
+      commandId: `gateway-recovery-${this.config.gatewayNodeId}`,
+      name, cwd, provider: source.project.provider, createDirectory: true,
+    })
+    await this.dependencies.onProjectCreated?.(created.room)
+    const project = await this.registerProject(created.room, { waitForPublication: false })
+    // Establish local encryption/authorization before staging the root without
+    // requiring every addressed key grant to finish a network attempt first.
+    return project
   }
 
   private async maintenanceAgentRuntime(
@@ -2184,6 +2232,10 @@ export class MatrixMlp3GatewayRunner {
     signal?: AbortSignal,
   ): Promise<void> {
     assertCommandExecutionActive(signal)
+    if (project.project.name === `Gateway recovery · ${this.config.gatewayNodeId}`
+      && !command.payload.title?.startsWith('Gateway update repair · ')) {
+      throw new Error('This project is reserved for Gateway repair; create ordinary conversations on the current Gateway')
+    }
     if (!command.sessionId) throw new Error('Session create command is missing its session ID')
     if (!rootEventId) throw new Error('Session create command lost its Matrix thread root')
     const existing = project.project.sessions.find(session => session.id === command.sessionId)
@@ -2856,6 +2908,9 @@ export class MatrixMlp3GatewayRunner {
       await this.settleAndDeliver(project, command, lifecycle, 'succeeded')
       return
     }
+    if (project.project.name === `Gateway recovery · ${this.config.gatewayNodeId}`) {
+      throw new Error('This project retains the independent Gateway repair history until the next update replaces it')
+    }
     await this.assertMaintenanceSessionCanBeArchived(record.id, record.title)
     assertCommandExecutionActive(signal)
     const active = project.sessions.get(record.id)
@@ -2911,8 +2966,9 @@ export class MatrixMlp3GatewayRunner {
     // terminal update sessions. Reading this state must fail closed.
     if (supervisor.deploymentStatus) {
       const deployment = await supervisor.deploymentStatus()
-      if (deployment.phase !== 'steady' &&
-          deployment.active.gatewayNodeId === this.config.gatewayNodeId) {
+      if ((deployment.phase !== 'steady' &&
+          deployment.active.gatewayNodeId === this.config.gatewayNodeId) ||
+          deployment.recovery?.gatewayNodeId === this.config.gatewayNodeId) {
         throw new Error('This maintenance session is retained for old-Gateway recovery. '
           + 'Complete or discard the deployment before archiving it.')
       }
@@ -4041,7 +4097,7 @@ export class MatrixMlp3GatewayRunner {
 
   private async registerProject(
     room: MatrixGatewayRoomConfig,
-    options: { deferActivation?: boolean } = {},
+    options: { deferActivation?: boolean; waitForPublication?: boolean } = {},
   ): Promise<V3ProjectRuntime> {
     const requestedProjectId = room.projectId ?? gatewayProjectIdentity(
       room.cwd,
@@ -4055,7 +4111,7 @@ export class MatrixMlp3GatewayRunner {
         || existing.project.projectId !== requestedProjectId
       ) throw new Error(`Project ${requestedProjectId} conflicts with an active Matrix room`)
       if (options.deferActivation) this.deferProjectActivation(existing)
-      else await this.activateProject(existing)
+      else await this.activateProject(existing, options.waitForPublication)
       return existing
     }
     await this.runtimeState.initialize([room])
@@ -4065,7 +4121,7 @@ export class MatrixMlp3GatewayRunner {
       this.config.rooms.push(room)
     }
     if (options.deferActivation) this.deferProjectActivation(project)
-    else await this.activateProject(project)
+    else await this.activateProject(project, options.waitForPublication)
     return project
   }
 

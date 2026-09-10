@@ -61,6 +61,20 @@ test("missing old route never falls back to the visible new Gateway", () => {
 test("committed deployment closes the recovery window", () => {
   assert.equal(gatewayRecoveryTarget(state(), { ...deployment, phase: "steady", candidate: undefined }), null);
 });
+test("retained recovery opens the old repair session even when the new Gateway is unavailable", () => {
+  const committed = { ...deployment, phase: "steady", candidate: undefined, updateId: undefined,
+    active: deployment.candidate!, recovery: { ...deployment.active, projectId: "old-project",
+      sessionId: "maintenance", retainedAt: 2 } } as GatewayDeploymentStatus;
+  const snapshot = state();
+  snapshot.gatewayNodeStatuses = {};
+  const target = gatewayRecoveryTarget(snapshot, committed)!;
+  assert.equal(target.gatewayNodeId, "old");
+  assert.equal(target.session?.id, "maintenance");
+  assert.equal(target.workspace.projectId, "old-project");
+  const report = JSON.parse(gatewayRecoveryReport(committed, "unreachable"));
+  assert.equal(report.previous.gatewayNodeId, "old");
+  assert.equal(report.candidate.gatewayNodeId, "new");
+});
 test("diagnostic draft identifies builds without credentials or auto-execution", () => {
   const report = JSON.parse(gatewayRecoveryReport(deployment, "unreachable"));
   assert.equal(report.previous.gatewayNodeId, "old");
@@ -92,4 +106,10 @@ test("repair creation is old-project scoped and never starts an automatic Agent 
   assert.doesNotMatch(recovery, /operation: "prompt.submit"|initialPrompt:|providerSessionId:/);
   assert.match(recovery, /sharedDraftFilesRef\.current\.add\(file\)/);
   assert.match(recovery, /setPendingFiles\(\[\.\.\.existing, file\]\)/);
+});
+
+test("update completion copy does not promise to close retained recovery", async () => {
+  const dialog = await readFile(new URL("../app/GatewayUpdateDialog.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(dialog, /until you complete or discard|ready to close recovery/);
+  assert.match(dialog, /retain its dedicated repair conversation after completion, until the next update/);
 });

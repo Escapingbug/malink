@@ -164,7 +164,7 @@ function GatewayUpdateDialogContent({
         </div>
 
         <p className="gateway-update-explanation">
-          Use the new Gateway while keeping the previous version available for repair. Complete the update when you are ready to close recovery.
+          Use the new Gateway by default. After completing the update, the previous version remains available for repair until the next update.
           Older computers retain their restart-based update controls. Signed
           supervisor state is the source of truth; you may close this panel.
         </p>
@@ -184,7 +184,7 @@ function GatewayUpdateDialogContent({
             const deploymentInProgress = deploymentOwner && deployment.phase !== "steady";
             const updateCompleted = deploymentOwner && deployment.phase === "steady" &&
               deployment.active.buildId === release.buildId &&
-              deployment.detail === "All projects and sessions now use the promoted Gateway";
+              (Boolean(deployment.recovery) || deployment.detail === "All projects and sessions now use the promoted Gateway");
             const maintenanceCleanupAllowed = !deploymentInProgress &&
               (!node.blueGreenUpdate || deployment?.phase === "steady");
             const liveness = livenessByNode[node.gatewayNodeId];
@@ -289,7 +289,7 @@ function GatewayUpdateDialogContent({
                         : "Completing update"
                       : gatewayUpdateRuntimeStateTitle(runtime, node, release, activeMode)}</strong>
                     <small>{updateCompleted
-                      ? `Completed ${new Date(deployment.updatedAt).toLocaleString()}. All conversations use this version; the previous version's recovery window is closed.`
+                      ? `Completed ${new Date(deployment.updatedAt).toLocaleString()}. ${deployment.recovery ? "The previous version remains available for repair." : "All conversations use this version; the previous version's recovery window is closed."}`
                       : deploymentInProgress && activeMode !== "discard"
                       ? deployment.detail ?? "The signed deployment state controls this computer's candidate and switch actions."
                       : gatewayUpdateRuntimeStateDetail(
@@ -301,6 +301,13 @@ function GatewayUpdateDialogContent({
                     )}</small>
                   </span>
                 </div>
+
+                {deploymentOwner && deployment.recovery && (
+                  <p className="gateway-update-action-status">
+                    Recovery version · {deployment.recovery.releaseId ?? deployment.recovery.buildId}
+                    <br />Kept for repair until the next update. Normal conversations use the current version.
+                  </p>
+                )}
 
                 {(liveness?.state === "checking" || liveness?.state === "unreachable") && (
                   <p className="gateway-update-action-status" role="status">
@@ -340,7 +347,7 @@ function GatewayUpdateDialogContent({
                 )}
 
                 <div className="gateway-update-node-actions">
-                  {deploymentOwner && deployment.phase !== "steady" && onRecover && (
+                  {deploymentOwner && (deployment.phase !== "steady" || deployment.recovery) && onRecover && (
                     <button type="button" className="secondary-button"
                       disabled={!connected || recoveryBusy}
                       aria-busy={recoveryBusy}
@@ -351,7 +358,7 @@ function GatewayUpdateDialogContent({
                   {deploymentOwner && deployment.phase !== "steady" && (
                     <p className="gateway-update-action-status" role="status">
                       {deployment.phase === "trial"
-                        ? `New Gateway ${deployment.candidate?.buildId ?? "unknown"} is ready for new work. The previous Gateway remains available for repair until you complete or discard this update.`
+                        ? `New Gateway ${deployment.candidate?.buildId ?? "unknown"} is ready for new work. The previous Gateway is available for repair. Compatible releases retain its dedicated repair conversation after completion, until the next update.`
                         : deployment.detail ?? `Gateway deployment is ${deployment.phase}.`}
                     </p>
                   )}
@@ -384,10 +391,10 @@ function GatewayUpdateDialogContent({
                       </button>
                       {completionConfirmationNodeId === node.gatewayNodeId && (
                         <div className="gateway-update-force-confirmation">
-                          <strong>Close the old Gateway recovery window?</strong>
-                          <p>All work will move to the new Gateway when idle. The previous Gateway will stop after takeover commits, and its repair session can then be archived.</p>
+                          <strong>Complete the update?</strong>
+                          <p>Normal work will move to the new Gateway when idle. A compatible previous version keeps its dedicated repair conversation until the next update replaces it.</p>
                           <button type="button" className="secondary-button" disabled={active}
-                            onClick={() => setCompletionConfirmationNodeId(null)}>Keep recovery available</button>
+                            onClick={() => setCompletionConfirmationNodeId(null)}>Not now</button>
                           <button type="button" className="primary-button" disabled={!connected || active}
                             onClick={() => { setCompletionConfirmationNodeId(null); onPromote(node, "when_idle"); }}>
                             Confirm completion

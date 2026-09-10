@@ -3690,7 +3690,7 @@ internal class MatrixMlp3NativeProjection(
                 "active",
                 "updatedAt",
             ),
-            setOf("candidate", "updateId", "activeTurns", "detail"),
+            setOf("candidate", "recovery", "updateId", "activeTurns", "detail"),
             "Gateway deployment status",
         )
         require(value.requiredLong("version") == 1L)
@@ -3714,6 +3714,15 @@ internal class MatrixMlp3NativeProjection(
         val active = value.requiredObject("active")
         validateGatewayDeploymentSlot(active)
         val candidate = (value["candidate"] as? JsonObject)?.also(::validateGatewayDeploymentSlot)
+        if (value.containsKey("recovery")) value.requiredObject("recovery").let { recovery ->
+            val slot = JsonObject(recovery.filterKeys { it !in setOf("projectId", "sessionId", "retainedAt") })
+            validateGatewayDeploymentSlot(slot)
+            recovery.requiredString("projectId", 256)
+            recovery.optionalString("sessionId", 256)
+            require(recovery.requiredLong("retainedAt") >= 0)
+            require(candidate == null)
+            require(recovery.requiredString("gatewayNodeId", 256) != active.requiredString("gatewayNodeId", 256))
+        }
         val updateId = value.optionalString("updateId", 256)
         val hasTransaction = phase != "steady" && phase != "repair_required"
         require(!hasTransaction || (candidate != null && updateId != null)) {

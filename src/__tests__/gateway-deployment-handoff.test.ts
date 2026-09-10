@@ -19,6 +19,24 @@ afterEach(async () => {
 })
 
 describe('Gateway deployment handoff', () => {
+  it('leaves a retained repair room and provider continuation exclusively in the source', async () => {
+    const fixture = await handoffFixture()
+    for (const [directory, suffix] of [[fixture.source, 'old'], [fixture.candidate, 'new']] as const) {
+      await seedDeployment(directory, { gatewayNodeId: `gateway-${suffix}`, roomId: `!${suffix}:example.test`,
+        projectId: `project-${suffix}`, sessionId: `session-${suffix}`, providerSessionId: `provider-${suffix}`,
+        commandKey: `["workspace-1","device","certificate","command-${suffix}"]` })
+    }
+    const sourcePath = join(fixture.source, 'gateway-replay.jsonl.v3-runtime-state.json')
+    const before = await readFile(sourcePath, 'utf8')
+    const result = await buildGatewayDeploymentHandoff({ sourceDirectory: fixture.source,
+      candidateDirectory: fixture.candidate, transactionRoot: fixture.transactions,
+      updateId: 'retained-test', candidateGatewayNodeId: 'gateway-new', workspaceId: 'workspace-1',
+      retainedRoomId: '!old:example.test' })
+    const target = await readJson(join(result.targetDirectory, 'gateway-replay.jsonl.v3-runtime-state.json'))
+    expect(Object.keys(target.projects as object)).toEqual(['!new:example.test'])
+    expect(await readFile(sourcePath, 'utf8')).toBe(before)
+    expect(result.sessionCount).toBe(1)
+  })
   it('merges old and candidate projects, sessions, commands, keys, and shadow input', async () => {
     const fixture = await handoffFixture()
     await seedDeployment(fixture.source, {

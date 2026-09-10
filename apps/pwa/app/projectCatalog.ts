@@ -22,7 +22,7 @@ type GatewayDirectorySource = {
 
 export function gatewayProjectOwners(
   gateways: readonly GatewayDirectorySource[],
-  observations: Record<string, { deployment: { active: { gatewayNodeId: string; buildId: string }; candidate?: { gatewayNodeId: string; buildId: string } } }> = {},
+  observations: Record<string, { deployment: { active: { gatewayNodeId: string; buildId: string }; candidate?: { gatewayNodeId: string; buildId: string }; recovery?: { gatewayNodeId: string; buildId: string } } }> = {},
 ): Map<string, GatewayProjectOwner> {
   const owners = new Map<string, GatewayProjectOwner>();
   for (const gateway of gateways) {
@@ -32,6 +32,11 @@ export function gatewayProjectOwners(
       gateway.computerName,
     );
     for (const { deployment } of Object.values(observations)) {
+      if (deployment.recovery?.gatewayNodeId === gateway.gatewayNodeId) {
+        owner.deploymentLabel = "Recovery version · repair only";
+        owner.label += ` · ${owner.deploymentLabel}`;
+        break;
+      }
       const candidate = deployment.candidate?.gatewayNodeId === gateway.gatewayNodeId;
       const slot = candidate ? deployment.candidate
         : deployment.active.gatewayNodeId === gateway.gatewayNodeId ? deployment.active : undefined;

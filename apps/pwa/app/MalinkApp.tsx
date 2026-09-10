@@ -174,6 +174,7 @@ import {
   collidingGatewayMaintenanceSessionIds,
   gatewayMaintenanceAutoArchiveAttemptKey,
   gatewayMaintenanceSessionCanBeArchived,
+  gatewayMaintenanceSessionProject,
   gatewayUpdatePlan as buildGatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
   gatewayUpdateCommandReachedSignedBoundary,
@@ -2757,10 +2758,13 @@ function MalinkAppRuntime() {
     project.projectId === newSessionProjectId) ?? preferredNewWorkspace ?? defaultCreationWorkspace;
   const activeRecoveryDeployment = Object.values(gatewayState?.gatewayDeployments ?? {})
     .map(observation => observation.deployment)
-    .find(deployment => deployment.phase !== "steady" &&
-      deployment.candidate?.gatewayNodeId === activeProjectGateway.gatewayNodeId);
+    .find(deployment => deployment.recovery
+      ? deployment.active.gatewayNodeId === activeProjectGateway.gatewayNodeId
+      : deployment.phase !== "steady" && deployment.candidate?.gatewayNodeId === activeProjectGateway.gatewayNodeId);
   const previousGatewayDeployment = Object.values(gatewayState?.gatewayDeployments ?? {})
     .map(observation => observation.deployment)
+    .map(deployment => deployment.recovery ? { ...deployment, phase: "trial" as const,
+      active: deployment.recovery, candidate: deployment.active } : deployment)
     .find(deployment => deployment.phase !== "steady" && deployment.candidate &&
       deployment.active.gatewayNodeId === activeProjectGateway.gatewayNodeId);
   const projectSettingsWorkspace = projectSettingsProjectId
@@ -8607,10 +8611,22 @@ function MalinkAppRuntime() {
   }
 
   function openGatewayUpdateSession(projectId: string, sessionId: string): void {
+    const state = gatewayStateRef.current;
+    const maintenanceProjectId = gatewayMaintenanceSessionProject({
+      commandProjectId: projectId,
+      sessionId,
+      directory: state?.gatewayDirectory,
+      sessions: state?.sessions ?? [],
+    });
+    if (!maintenanceProjectId) {
+      showUiNotice("gateway:maintenance-route", "connection", "warning",
+        "The update conversation has not synchronized on this Gateway yet. Wait for sync and try again.");
+      return;
+    }
     setGatewayUpdateDialogOpen(false);
     setPrimaryView("chats");
     setMobileChatOpen(true);
-    activateLocalSession(sessionId, malinkClientRef.current, true, false, projectId);
+    activateLocalSession(sessionId, malinkClientRef.current, true, false, maintenanceProjectId);
   }
 
   async function recoverWithPreviousGateway(deployment = activeRecoveryDeployment): Promise<void> {
@@ -8627,13 +8643,13 @@ function MalinkAppRuntime() {
     ])}`;
     setGatewayRecoveryBusy(true);
     try {
-      if (activeProjectGateway.gatewayNodeId === deployment.candidate?.gatewayNodeId &&
+      if (activeProjectGateway.gatewayNodeId === (deployment.recovery ? deployment.active : deployment.candidate)?.gatewayNodeId &&
           selectedSessionIdRef.current && selectedProjectIdRef.current) {
         setGatewayRecoveryReturnRoute({ projectId: selectedProjectIdRef.current,
           sessionId: selectedSessionIdRef.current });
       }
       const file = new File([gatewayRecoveryReport(deployment,
-        gatewayNodeLivenessById[deployment.candidate?.gatewayNodeId ?? ""]?.state ?? "unknown")],
+        gatewayNodeLivenessById[(deployment.recovery ? deployment.active : deployment.candidate)?.gatewayNodeId ?? ""]?.state ?? "unknown")],
       "gateway-update-diagnostics.json", { type: "application/json" });
       let sessionId = target.session?.id;
       if (sessionId) window.localStorage.removeItem(recoveryKey);
@@ -11471,7 +11487,7 @@ function MalinkAppRuntime() {
     const owner = projectGatewaysById.get(session.projectId);
     const deployment = Object.values(gatewayState?.gatewayDeployments ?? {}).find(value =>
       value.deployment.active.gatewayNodeId === owner?.gatewayNodeId)?.deployment;
-    const protectedRepair = session.id.startsWith("gateway-update-") && (!deployment || deployment.phase !== "steady");
+    const protectedRepair = session.id.startsWith("gateway-update-") && (!deployment || deployment.phase !== "steady" || Boolean(deployment.recovery));
     return bulkArchiveEligible(session.status, protectedRepair,
       sessionLifecycleBusy.has(sessionLifecycleRouteKey(session.projectId, session.id)));
   }

@@ -37,6 +37,22 @@ type ProjectedGatewayMaintenanceSession = {
   projectId: string;
 };
 
+/** Resolve maintenance history independently of the project's update-command route. */
+export function gatewayMaintenanceSessionProject(input: {
+  commandProjectId: string;
+  sessionId: string;
+  directory: SignedWorkspaceGatewayDirectory | undefined;
+  sessions: readonly ProjectedGatewayMaintenanceSession[];
+}): string | undefined {
+  const owners = input.directory?.directory.gateways.filter(gateway =>
+    gateway.projects?.some(project => project.projectId === input.commandProjectId));
+  if (owners?.length !== 1) return undefined;
+  const projects = new Set(owners[0].projects?.map(project => project.projectId));
+  const matches = new Set(input.sessions.filter(session =>
+    session.id === input.sessionId && projects.has(session.projectId)).map(session => session.projectId));
+  return matches.size === 1 ? [...matches][0] : undefined;
+}
+
 type LegacyGatewayMaintenanceSession = ProjectedGatewayMaintenanceSession & {
   status: string;
   updatedAt: number;

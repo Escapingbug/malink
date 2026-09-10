@@ -14,7 +14,7 @@ import {
 } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import type { GatewayDeploymentSlot } from '@malink/protocol'
+import type { GatewayDeploymentSlot, GatewayRecoverySlot } from '@malink/protocol'
 import { AtomicJsonFile } from '@malink/security/node'
 import { GatewayAdminClient, type GatewayAdminStatus } from '@/gateway/admin'
 import {
@@ -70,16 +70,22 @@ interface GatewayBlueGreenHostState {
   sourceSessionCount: number
   candidateProjectCount: number
   candidateSessionCount: number
+  candidateShadowRoomCount?: number
   promotedProjectCount?: number
   promotedSessionCount?: number
   handoffDirectory?: string
   sourceArchiveDirectory?: string
+  recoveryRoomId?: string
+  recoveryProjectId?: string
+  sourceReleaseId?: string
+  sourceBuildId?: string
   updatedAt: number
 }
 
 interface GatewayBlueGreenHostFile {
   version: 1
   deployment?: GatewayBlueGreenHostState
+  retained?: GatewayBlueGreenHostState
 }
 
 export interface MacosGatewayBlueGreenHostConfig {
@@ -248,8 +254,7 @@ export class MacosGatewayBlueGreenHost {
           providerName: requiredString(sourceRoom.providerName, 'project provider'),
         }],
       })
-      await writePrivateJson(join(state.candidateDirectory, 'gateway-shadow-rooms.json'),
-        sourceCatalog.projects.map(project => requiredString(project.roomId, 'project room ID')))
+      await this.seedCandidateShadowRooms(state)
       state.trialRoomId = trialRoomId
       state.candidateProjectCount = 1
       state.updatedAt = this.now()
@@ -262,7 +267,7 @@ export class MacosGatewayBlueGreenHost {
         buildId: state.buildId,
         projectCount: 1,
         sessionCount: 0,
-        shadowRoomCount: state.sourceProjectCount,
+        shadowRoomCount: state.candidateShadowRoomCount ?? state.sourceProjectCount,
         requireRunning: true,
         deploymentFenced: false,
       })
@@ -387,6 +392,23 @@ export class MacosGatewayBlueGreenHost {
     if (state.phase === 'transferred' && state.handoffDirectory) {
       return this.promotedCandidateSlot(state)
     }
+    const sourceCatalog = await readProjectCatalog(this.activeDataDirectory)
+    const recoveryProject = sourceCatalog.projects.find(project =>
+      project.projectName === `Gateway recovery · ${state.sourceGatewayNodeId}`)
+    if (recoveryProject && state.sourceReleaseId) {
+      state.recoveryRoomId = requiredString(recoveryProject.roomId, 'recovery room')
+      state.recoveryProjectId = requiredString(recoveryProject.projectId, 'recovery project')
+      requirePathSegment(state.sourceReleaseId, 'source release')
+      await validateMacosGatewayRelease(join(this.installRoot, 'releases', state.sourceReleaseId))
+      const runtime = await readRecord(join(this.activeDataDirectory, 'gateway-replay.jsonl.v3-runtime-state.json'))
+      const repair = record(record(runtime.projects)?.[state.recoveryRoomId])
+      if (!repair || !Array.isArray(repair.sessions) || repair.sessions.some(value =>
+        !String(record(value)?.id ?? '').startsWith('gateway-update-') &&
+        !String(record(value)?.title ?? '').startsWith('Gateway update repair · '))) {
+        throw new Error('Recovery project is not isolated maintenance history; refusing promotion before ownership changes')
+      }
+      await this.writeDeployment(state)
+    }
     const result = await (this.dependencies.buildHandoff ?? buildGatewayDeploymentHandoff)({
       sourceDirectory: this.activeDataDirectory,
       candidateDirectory: state.candidateDirectory,
@@ -395,6 +417,7 @@ export class MacosGatewayBlueGreenHost {
       candidateGatewayNodeId: state.candidateGatewayNodeId,
       workspaceId: state.workspaceId,
       now: this.now(),
+      ...(state.recoveryRoomId ? { retainedRoomId: state.recoveryRoomId } : {}),
     })
     state.phase = 'validating'
     state.handoffDirectory = result.targetDirectory
@@ -486,7 +509,7 @@ export class MacosGatewayBlueGreenHost {
         buildId: state.buildId,
         projectCount: state.candidateProjectCount,
         sessionCount: state.candidateSessionCount,
-        shadowRoomCount: state.sourceProjectCount,
+        shadowRoomCount: state.candidateShadowRoomCount ?? state.sourceProjectCount,
         requireRunning: true,
         deploymentFenced: false,
       }),
@@ -600,6 +623,9 @@ export class MacosGatewayBlueGreenHost {
       nextPlist,
       'MALINK_GATEWAY_HANDOFF_PENDING',
     ), 0o644)
+    // Bring repair online first: a broken promoted executable must not prevent
+    // users from reaching the independent old-version maintenance session.
+    if (state.recoveryRoomId) await this.startRetainedRecovery(state)
     await this.restartService(this.config.activeServiceLabel, this.config.activeLaunchAgentPath)
     await this.waitForHealth(this.config.activeAdminSocketPath, {
       gatewayNodeId: state.candidateGatewayNodeId,
@@ -615,7 +641,15 @@ export class MacosGatewayBlueGreenHost {
       requireRunning: true,
       deploymentFenced: false,
     })
-    await this.logoutCandidate(archive)
+    if (!state.recoveryRoomId) await this.logoutCandidate(archive)
+    const superseded = await this.stateFile.transaction(() => ({ version: 1 }), file => ({ result: file.retained, changed: false }))
+    if (superseded?.sourceArchiveDirectory && superseded.updateId !== state.updateId) {
+      await this.logoutCandidate(superseded.sourceArchiveDirectory)
+      await this.stateFile.transaction(() => ({ version: 1 }), file => {
+        delete file.retained
+        return { result: undefined, changed: true }
+      })
+    }
     state.phase = 'complete'
     state.handoffDirectory = this.activeDataDirectory
     state.updatedAt = this.now()
@@ -627,6 +661,104 @@ export class MacosGatewayBlueGreenHost {
     }
     this.log(`committed all Gateway routes to ${state.candidateGatewayNodeId}`)
     this.dependencies.onCommitted?.()
+  }
+
+  async retainedRecovery(transition: GatewayDeploymentTransition): Promise<GatewayRecoverySlot | undefined> {
+    const state = await this.requireDeployment(transition)
+    if (!state.recoveryRoomId || !state.recoveryProjectId || !state.sourceBuildId) return undefined
+    const runtime = await readRecord(join(requiredString(state.sourceArchiveDirectory, 'source archive'), 'gateway-replay.jsonl.v3-runtime-state.json'))
+    const project = record(record(runtime.projects)?.[state.recoveryRoomId])
+    const sessions = Array.isArray(project?.sessions) ? project.sessions : []
+    const active = sessions.filter(value => record(value)?.lifecycle === 'active')
+    return { gatewayNodeId: state.sourceGatewayNodeId, buildId: state.sourceBuildId,
+      releaseId: state.sourceReleaseId, projectId: state.recoveryProjectId,
+      projectCount: 1, sessionCount: active.length, retainedAt: state.updatedAt,
+      ...(record(active.at(-1))?.id ? { sessionId: String(record(active.at(-1))!.id) } : {}) }
+  }
+
+  async rotateRecovery(recovery: GatewayRecoverySlot): Promise<void> {
+    const state = await this.readDeployment()
+    if (!state || state.phase !== 'complete' || state.sourceGatewayNodeId !== recovery.gatewayNodeId) {
+      throw new Error('Retained recovery checkpoint is unavailable')
+    }
+    const active = await this.readStatus(this.config.activeAdminSocketPath)
+    if (!active.matrixReady || active.deploymentFenced) throw new Error('Current Gateway is not ready to replace the recovery version')
+    const catalog = await readProjectCatalog(this.activeDataDirectory)
+    if (!catalog.projects.some(project => project.projectName === `Gateway recovery · ${active.gatewayNodeId}`)) {
+      throw new Error('Current Gateway has no independent repair project; preserving the previous recovery version')
+    }
+    await this.stateFile.transaction(() => ({ version: 1 }), file => {
+      file.retained = structuredClone(state)
+      return { result: undefined, changed: true }
+    })
+    const socket = macosGatewayCandidateAdminSocketPath(this.installRoot, `recovery-${state.updateId}`)
+    await this.sealForDeployment(socket, 'when_idle')
+    await this.stopService(`${state.candidateServiceLabel}.recovery`)
+  }
+
+  async restoreRecovery(recovery: GatewayRecoverySlot): Promise<void> {
+    const state = await this.stateFile.transaction(() => ({ version: 1 }), file => ({
+      result: file.retained ?? (file.deployment?.phase === 'complete' ? file.deployment : undefined), changed: false,
+    }))
+    if (!state || state.sourceGatewayNodeId !== recovery.gatewayNodeId) throw new Error('Previous recovery checkpoint is missing')
+    const socket = macosGatewayCandidateAdminSocketPath(this.installRoot, `recovery-${state.updateId}`)
+    const running = await this.readStatus(socket).catch(() => undefined)
+    if (running?.matrixReady && !running.deploymentFenced && running.gatewayNodeId === recovery.gatewayNodeId
+      && running.buildId === recovery.buildId) {
+      await this.writeDeployment(state)
+      return
+    }
+    await this.startRetainedRecovery(state)
+    await this.writeDeployment(state)
+  }
+
+  private async startRetainedRecovery(state: GatewayBlueGreenHostState): Promise<void> {
+    const archive = requiredString(state.sourceArchiveDirectory, 'source archive')
+    const roomId = requiredString(state.recoveryRoomId, 'recovery room')
+    const releaseId = requiredString(state.sourceReleaseId, 'source release')
+    requirePathSegment(releaseId, 'source release')
+    const releaseDirectory = join(this.installRoot, 'releases', releaseId)
+    await validateMacosGatewayRelease(releaseDirectory)
+    // Never rewrite recovery stores while their previous process owns them.
+    await this.stopService(`${state.candidateServiceLabel}.recovery`)
+    const catalog = await readProjectCatalog(archive)
+    const projects = catalog.projects.filter(project => project.roomId === roomId)
+    if (projects.length !== 1) throw new Error('Recovery project is absent from archived source')
+    const runtimePath = join(archive, 'gateway-replay.jsonl.v3-runtime-state.json')
+    const runtime = await readRecord(runtimePath)
+    const project = record(record(runtime.projects)?.[roomId])
+    if (!project || !Array.isArray(project.sessions)) throw new Error('Recovery runtime history is unavailable')
+    if (project.sessions.some(value => !String(record(value)?.id ?? '').startsWith('gateway-update-') &&
+      !String(record(value)?.title ?? '').startsWith('Gateway update repair · '))) {
+      throw new Error('The dedicated recovery project contains ordinary sessions; refusing unsafe retention')
+    }
+    // Project working directories inside the moved source data must not point
+    // back into the newly promoted deployment's writable data tree.
+    for (const entry of projects) {
+      const cwd = String(entry.cwd ?? '')
+      if (cwd.startsWith(`${this.activeDataDirectory}/`)) entry.cwd = archive + cwd.slice(this.activeDataDirectory.length)
+    }
+    if (typeof project.cwd === 'string' && project.cwd.startsWith(`${this.activeDataDirectory}/`)) {
+      project.cwd = archive + project.cwd.slice(this.activeDataDirectory.length)
+    }
+    await writePrivateJson(join(archive, 'gateway-projects.json'), { version: 1, ...catalog, projects })
+    await writePrivateJson(runtimePath, { ...runtime, projects: { [roomId]: project } })
+    const fixture = await readRecord(join(archive, 'matrix-fixture.json'))
+    await writePrivateJson(join(archive, 'matrix-fixture.json'), { ...fixture, roomId })
+    await copyFile(join(this.activeDataDirectory, 'workspace-gateways.json'), join(archive, 'workspace-gateways.json'))
+    const recoveryState = { ...state, releaseDirectory, buildId: requiredString(state.sourceBuildId, 'source build'),
+      candidateAdminSocket: macosGatewayCandidateAdminSocketPath(this.installRoot, `recovery-${state.updateId}`),
+      candidateLaunchAgent: join(this.updateRoot(state.updateId), 'recovery.plist'),
+      candidateServiceLabel: `${state.candidateServiceLabel}.recovery`,
+    }
+    await writePrivateJson(join(archive, 'gateway-shadow-rooms.json'), [])
+    await this.writeCandidateLaunchAgent(recoveryState, archive, false)
+    await this.startService(recoveryState.candidateServiceLabel, recoveryState.candidateLaunchAgent)
+    await this.waitForHealth(recoveryState.candidateAdminSocket, {
+      gatewayNodeId: state.sourceGatewayNodeId, buildId: recoveryState.buildId,
+      projectCount: 1, sessionCount: project.sessions.filter(value => record(value)?.lifecycle === 'active').length,
+      requireRunning: true, deploymentFenced: false,
+    })
   }
 
   private async commitLocalDirectoryOwnership(state: GatewayBlueGreenHostState): Promise<void> {
@@ -652,9 +784,15 @@ export class MacosGatewayBlueGreenHost {
           'Gateway computer name',
         ),
         buildId: state.buildId,
+        ...(state.recoveryRoomId ? { retainedSourceProjects: (await readProjectCatalog(this.activeDataDirectory)).projects
+          .filter(project => project.roomId === state.recoveryRoomId).map(gatewayDeploymentOwnershipRoute) } : {}),
       },
       this.now(),
     )
+    const retained = await this.stateFile.transaction(() => ({ version: 1 }), file => ({ result: file.retained, changed: false }))
+    if (retained && retained.sourceGatewayNodeId !== state.sourceGatewayNodeId) {
+      await directory.remove(retained.sourceGatewayNodeId, this.now())
+    }
   }
 
   private async directoryShowsCommittedOwnership(state: GatewayBlueGreenHostState): Promise<boolean> {
@@ -670,8 +808,11 @@ export class MacosGatewayBlueGreenHost {
           : []
         if (
           gateways?.[state.candidateGatewayNodeId]
-          && !gateways[state.sourceGatewayNodeId]
-          && removed.includes(state.sourceGatewayNodeId)
+          && (state.recoveryRoomId
+            ? Array.isArray(record(gateways[state.sourceGatewayNodeId])?.projects) &&
+              (record(gateways[state.sourceGatewayNodeId])!.projects as unknown[]).length === 1 &&
+              record((record(gateways[state.sourceGatewayNodeId])!.projects as unknown[])[0])?.roomId === state.recoveryRoomId
+            : !gateways[state.sourceGatewayNodeId] && removed.includes(state.sourceGatewayNodeId))
         ) return true
       } catch (error) {
         if (!isNodeError(error, 'ENOENT')) throw error
@@ -719,6 +860,17 @@ export class MacosGatewayBlueGreenHost {
     }
   }
 
+  private async seedCandidateShadowRooms(state: GatewayBlueGreenHostState): Promise<void> {
+    // The coordinator's last committed counts can predate newly created repair
+    // projects. Check the exact room set supplied to this candidate, including
+    // on rollback after the active Gateway's project count has changed again.
+    const catalog = await readProjectCatalog(this.activeDataDirectory)
+    const rooms = catalog.projects.map(project => requiredString(project.roomId, 'project room ID'))
+    await writePrivateJson(join(state.candidateDirectory, 'gateway-shadow-rooms.json'), rooms)
+    state.candidateShadowRoomCount = rooms.length
+    await this.writeDeployment(state)
+  }
+
   private async copyFoundation(candidateDirectory: string): Promise<void> {
     for (const name of FOUNDATION_FILES) {
       const source = join(this.activeDataDirectory, name)
@@ -742,6 +894,8 @@ export class MacosGatewayBlueGreenHost {
       phase: 'preparing',
       updateId: transition.updateId,
       sourceGatewayNodeId: transition.active.gatewayNodeId,
+      sourceReleaseId: transition.active.releaseId,
+      sourceBuildId: transition.active.buildId,
       candidateGatewayNodeId: transition.candidate.gatewayNodeId,
       workspaceId: '',
       releaseId: transition.candidate.releaseId!,
@@ -834,8 +988,8 @@ export class MacosGatewayBlueGreenHost {
     }
     candidate = replacePlistLogPaths(
       candidate,
-      join(this.updateRoot(state.updateId), 'candidate.log'),
-      join(this.updateRoot(state.updateId), 'candidate.error.log'),
+      join(this.updateRoot(state.updateId), state.candidateServiceLabel.endsWith('.recovery') ? 'recovery.log' : 'candidate.log'),
+      join(this.updateRoot(state.updateId), state.candidateServiceLabel.endsWith('.recovery') ? 'recovery.error.log' : 'candidate.error.log'),
     )
     await atomicWrite(state.candidateLaunchAgent, candidate, 0o644)
   }
@@ -1388,9 +1542,18 @@ function requirePathSegment(value: string, label: string): void {
 function validateHostFile(state: GatewayBlueGreenHostFile): void {
   if (state.version !== 1) throw new Error('Gateway deployment host state is invalid')
   if (state.deployment) validateHostDeployment(state.deployment)
+  if (state.retained) {
+    validateHostDeployment(state.retained)
+    if (state.retained.phase !== 'complete' || !state.retained.recoveryRoomId) {
+      throw new Error('Retained Gateway checkpoint is invalid')
+    }
+  }
 }
 
 function validateHostDeployment(state: GatewayBlueGreenHostState): void {
+  if (state.recoveryRoomId && (!state.recoveryProjectId || !state.sourceBuildId || !state.sourceReleaseId)) {
+    throw new Error('Recovery Gateway identity is incomplete')
+  }
   const requiresPromotedCounts = [
     'validating',
     'transferred',
