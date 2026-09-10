@@ -1,5 +1,5 @@
 "use client";
-import { bulkArchiveEligible } from "./bulkArchivePolicy";
+import { bulkArchiveEligible, bulkGroupSessions } from "./bulkArchivePolicy";
 import { messageAttachments } from "./messageAttachments";
 
 import {
@@ -2357,6 +2357,7 @@ function MalinkAppRuntime() {
         projectName: string;
         cwd: string;
         gatewayLabel: string;
+        gatewayNodeId: string;
         sessions: NonNullable<typeof gatewayState>["sessions"];
       }
     >();
@@ -2371,6 +2372,7 @@ function MalinkAppRuntime() {
         projectName: project.projectName,
         cwd: project.cwd,
         gatewayLabel: owner.label,
+        gatewayNodeId: owner.gatewayNodeId,
         sessions: [],
       };
       group.sessions.push(session);
@@ -2388,6 +2390,7 @@ function MalinkAppRuntime() {
             gatewayLabel: (
               projectGatewaysById.get(project.projectId) ?? fallbackProjectGateway
             ).label,
+            gatewayNodeId: (projectGatewaysById.get(project.projectId) ?? fallbackProjectGateway).gatewayNodeId,
             sessions: [],
           });
         }
@@ -2429,6 +2432,7 @@ function MalinkAppRuntime() {
       gatewayLabel: string;
       sessions: NonNullable<typeof gatewayState>["sessions"];
       temporary: true;
+      gatewayNodeId: string;
     }>();
     for (const session of activeFilteredSessions) {
       if (session.scope !== "scratch") continue;
@@ -2441,6 +2445,7 @@ function MalinkAppRuntime() {
         gatewayLabel: owner.label,
         sessions: [],
         temporary: true,
+        gatewayNodeId: owner.gatewayNodeId,
       };
       group.sessions.push(session);
       groups.set(owner.gatewayNodeId, group);
@@ -13671,6 +13676,12 @@ function MalinkAppRuntime() {
               ),
             );
             const contentId = `project-sessions-${encodeURIComponent(project.key)}`;
+            const selectableSessions = bulkSelect ? bulkGroupSessions(
+              gatewayState?.sessions ?? [], project,
+              session => (projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway).gatewayNodeId,
+            ).filter(bulkArchiveAllowed) : [];
+            const projectAllSelected = selectableSessions.length > 0 && selectableSessions.every(session =>
+              bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)));
             return (
             <section
               className={`project-session-group${
@@ -13771,12 +13782,13 @@ function MalinkAppRuntime() {
                 </span>
                 <b aria-hidden="true">{project.sessions.length}</b>
               </button>
-              {bulkSelect && <button type="button" className="project-manage-button"
+              {bulkSelect && <button type="button" className="project-manage-button project-select-all"
                 aria-label={`全选 ${project.projectName} 下可归档会话`}
-                disabled={bulkSubmitting}
+                disabled={bulkSubmitting || selectableSessions.length === 0}
+                title={selectableSessions.length === 0 ? "没有可归档会话：运行中、受保护或正在处理的会话不能选择" : undefined}
+                aria-pressed={projectAllSelected}
                 onClick={() => setBulkSelected(current => new Set([...current,
-                  ...(gatewayState?.sessions ?? []).filter(session => session.projectId === project.projectId && bulkArchiveAllowed(session))
-                    .map(session => sessionLifecycleRouteKey(session.projectId, session.id))]))}>全选</button>}
+                  ...selectableSessions.map(session => sessionLifecycleRouteKey(session.projectId, session.id))]))}>{selectableSessions.length === 0 ? "不可选" : projectAllSelected ? "已全选" : "全选"}</button>}
               {!project.temporary && !bulkSelect && (
                 <button
                   type="button"
