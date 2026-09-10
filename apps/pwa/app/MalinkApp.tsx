@@ -8657,7 +8657,7 @@ function MalinkAppRuntime() {
   async function observeGatewayExecutionHandoff(node: GatewayUpdatePlanNode, targetProject: string): Promise<void> {
     for (const delayMs of [2000, 4000, 8000]) {
       await new Promise(resolve => setTimeout(resolve, delayMs));
-      const observed = await executeGatewayUpdate({ operation: "gateway.update.status", includeExecutionTracks: true }, targetProject, 15000);
+      const observed = await executeGatewayUpdate({ operation: "gateway.update.status", includeExecutionTracks: true }, targetProject, 30_000);
       setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status: observed }));
       if (!observed.executionTracks || ["steady", "attention"].includes(observed.executionTracks.phase)) return;
     }

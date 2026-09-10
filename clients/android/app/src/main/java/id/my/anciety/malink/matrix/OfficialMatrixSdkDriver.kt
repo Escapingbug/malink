@@ -4,7 +4,6 @@ import id.my.anciety.malink.diagnostics.DiagnosticRecorder
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
@@ -175,7 +174,7 @@ class OfficialMatrixSdkDriver(
     private val firstSyncFinalizing = AtomicBoolean(false)
     private val firstSyncWorkScheduled = AtomicBoolean(false)
     private val transportReadyPublished = AtomicBoolean(false)
-    private val timelineDeliveryMutex = Mutex()
+    private val timelineDeliveries = MatrixTimelineDeliveryQueue()
     private val timelinePaginationMutex = Mutex()
     private lateinit var activeSession: StoredMatrixSession
     private var runtimeFailure: (Throwable) -> Unit = {}
@@ -473,9 +472,9 @@ class OfficialMatrixSdkDriver(
             ?: throw IllegalArgumentException("Unknown Matrix project room: $roomId")
         return timelinePaginationMutex.withLock {
             val reachedStart = activeTimeline.timeline.paginateBackwards(eventLimit.toUShort())
-            // The listener starts delivery undispatched, so acquiring this
-            // mutex is a barrier for every diff emitted by this pagination.
-            timelineDeliveryMutex.withLock { }
+            // Register each batch before starting it. Await the whole batch,
+            // not a mutex slot: live replies can interleave with old history.
+            timelineDeliveries.drainSubmitted()
             reachedStart
         }
     }
@@ -619,12 +618,8 @@ class OfficialMatrixSdkDriver(
                     val events = currentDiff.flatMap(::timelineItems)
                         .mapNotNull { captureTimelineEvent(binding, it) }
                     if (events.isEmpty()) return
-                    callbackScope.launch(start = CoroutineStart.UNDISPATCHED) {
-                        timelineDeliveryMutex.withLock {
-                            for (event in events) {
-                                runCatching { timelineEvent(event) }.onFailure(runtimeFailure)
-                            }
-                        }
+                    timelineDeliveries.enqueue(callbackScope, events) { event ->
+                        runCatching { timelineEvent(event) }.onFailure(runtimeFailure)
                     }
                 }
             })
