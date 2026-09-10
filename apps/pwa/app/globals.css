@@ -12633,3 +12633,12 @@ body {
     flex-direction: column;
   }
 }
+.bulk-session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #dce1ea;
+}
+.bulk-session-actions button { min-height: 40px; }
+.bulk-session-actions small, .bulk-session-actions p { flex-basis: 100%; margin: 0; }

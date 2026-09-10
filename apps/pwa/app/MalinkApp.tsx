@@ -1,4 +1,5 @@
 "use client";
+import { bulkArchiveEligible } from "./bulkArchivePolicy";
 
 import {
   ChangeEvent,
@@ -1593,6 +1594,11 @@ function MalinkAppRuntime() {
     ),
   }));
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
+  const [bulkSelect, setBulkSelect] = useState(false);
+  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
+  const [bulkConfirm, setBulkConfirm] = useState(false);
+  const [bulkSubmitting, setBulkSubmitting] = useState(false);
+  const [bulkResults, setBulkResults] = useState<Record<string, "pending" | "done" | "failed">>({});
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [sharedFileBatch, setSharedFileBatch] = useState<{ batchId: string; files: File[] } | null>(null);
@@ -11460,6 +11466,39 @@ function MalinkAppRuntime() {
     });
   }
 
+  function bulkArchiveAllowed(session: NonNullable<typeof gatewayState>["sessions"][number]) {
+    const owner = projectGatewaysById.get(session.projectId);
+    const deployment = Object.values(gatewayState?.gatewayDeployments ?? {}).find(value =>
+      value.deployment.active.gatewayNodeId === owner?.gatewayNodeId)?.deployment;
+    const protectedRepair = session.id.startsWith("gateway-update-") && (!deployment || deployment.phase !== "steady");
+    return bulkArchiveEligible(session.status, protectedRepair,
+      sessionLifecycleBusy.has(sessionLifecycleRouteKey(session.projectId, session.id)));
+  }
+
+  async function archiveSelectedSessions() {
+    if (bulkSubmitting) return;
+    const targets = activeFilteredSessions.filter(session => bulkArchiveAllowed(session) &&
+      bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)));
+    setBulkConfirm(false);
+    setBulkSubmitting(true);
+    setBulkResults(Object.fromEntries(targets.map(session =>
+      [sessionLifecycleRouteKey(session.projectId, session.id), "pending" as const])));
+    const finish = (key: string, result: "done" | "failed") => {
+      setBulkResults(current => ({ ...current, [key]: result }));
+      if (result === "done") setBulkSelected(current => {
+        const next = new Set(current); next.delete(key); return next;
+      });
+    };
+    try {
+      for (const session of targets) {
+        const key = sessionLifecycleRouteKey(session.projectId, session.id);
+        const accepted = await runSessionLifecycle("archive", session.id, session.projectId,
+          () => finish(key, "done"), () => finish(key, "failed"));
+        if (!accepted) finish(key, "failed");
+      }
+    } finally { setBulkSubmitting(false); }
+  }
+
   function selectAttachments(event: ChangeEvent<HTMLInputElement>) {
     const selectedFiles = [...(event.target.files ?? [])];
     event.target.value = "";
@@ -13278,6 +13317,35 @@ function MalinkAppRuntime() {
           onDismiss={dismissUiNotice}
         />
 
+        {trustedGateway && (
+          <div className="bulk-session-actions">
+            <button type="button" className="secondary-button"
+              disabled={bulkSubmitting || Object.values(bulkResults).includes("pending")}
+              onClick={() => { setBulkSelect(!bulkSelect); setBulkSelected(new Set()); setBulkConfirm(false); setBulkResults({}); }}>
+              {bulkSelect ? "Done selecting" : "Select conversations"}
+            </button>
+            {bulkSelect && <>
+              <button type="button" className="secondary-button" disabled={bulkSubmitting}
+                onClick={() => setBulkSelected(new Set(activeFilteredSessions.filter(bulkArchiveAllowed)
+                  .map(session => sessionLifecycleRouteKey(session.projectId, session.id))))}>Select filtered results</button>
+              <button type="button" className="secondary-button" disabled={bulkSubmitting}
+                onClick={() => { setBulkSelected(new Set()); setBulkConfirm(false); }}>Clear selection</button>
+              <button type="button" className="primary-button"
+                disabled={!gatewayConnected || bulkSubmitting || Object.values(bulkResults).includes("pending") ||
+                  !activeFilteredSessions.some(session => bulkArchiveAllowed(session) && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)))}
+                onClick={() => setBulkConfirm(true)}>Archive selected ({activeFilteredSessions.filter(session => bulkArchiveAllowed(session) && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id))).length})</button>
+              <small>Only current search and computer-filter results are included. Running conversations and protected update repair sessions are excluded.</small>
+              {bulkConfirm && <div role="alert">
+                <p>Archive the selected conversations? Their history is retained. No running Agent will be stopped.</p>
+                <button type="button" className="primary-button" onClick={() => void archiveSelectedSessions()}>Confirm archive</button>
+                <button type="button" className="secondary-button" onClick={() => setBulkConfirm(false)}>Cancel</button>
+              </div>}
+              {Object.keys(bulkResults).length > 0 && <p role="status" aria-live="polite">
+                {Object.values(bulkResults).filter(value => value === "done").length} archived · {Object.values(bulkResults).filter(value => value === "pending").length} waiting · {Object.values(bulkResults).filter(value => value === "failed").length} failed
+              </p>}
+            </>}
+          </div>
+        )}
         <div className="session-list">
           {optimisticSession && projectMatchesGatewayFilter(
             activeGatewayFilter,
@@ -13665,7 +13733,7 @@ function MalinkAppRuntime() {
                   title={`${session.title} · ${statusSummary}`}
                   data-session-signal={visualSignal}
                   aria-pressed={
-                    selectedSessionId === session.id &&
+                    bulkSelect ? bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)) : selectedSessionId === session.id &&
                     selectedProjectId === session.projectId
                   }
                   className={`session-row ${
@@ -13675,12 +13743,18 @@ function MalinkAppRuntime() {
                       : ""
                   } session-state-${indicator.activity} session-signal-${visualSignal} ${indicator.unread ? "unread" : ""} ${indicator.needsAttention ? "needs-attention" : ""} ${signal === "ready" ? "needs-reply" : ""} ${lifecycleAction ? "is-busy" : ""}`}
                   onClick={() => {
+                    if (bulkSelect) {
+                      setBulkConfirm(false);
+                      const key = sessionLifecycleRouteKey(session.projectId, session.id);
+                      setBulkSelected(current => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
+                      return;
+                    }
                     void chooseSession(session.id, session.projectId);
                   }}
-                  disabled={lifecycleAction === "delete"}
+                  disabled={lifecycleAction === "delete" || (bulkSelect && (bulkSubmitting || !bulkArchiveAllowed(session)))}
                 >
                   <span className="session-avatar violet">
-                    {sessionInitials(session.title)}
+                    {bulkSelect ? bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)) ? "✓" : "□" : sessionInitials(session.title)}
                   </span>
                   <span className="session-copy">
                     <span className="session-title-line">

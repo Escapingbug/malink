@@ -225,7 +225,7 @@ test("offers the effective Gateway update action instead of a removal that canno
   }));
 
   assert.match(html, /Gateway version cannot safely complete this removal/);
-  assert.match(html, /Review Gateway updates/);
+  assert.match(html, /View Gateway update options/);
   assert.match(html, /Continue without this computer[^<]*<\/button>/);
   assert.match(html, /disabled=""/);
 });
