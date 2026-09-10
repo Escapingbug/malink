@@ -30,7 +30,6 @@ type Props = {
   onReviewProviderIssue?(): void;
   onSave(input: ProjectSettingsInput): void;
   onDelete(): void;
-  onSelectConversations?(): void;
 };
 
 export function ProjectSettingsDialog(props: Props) {
@@ -50,7 +49,6 @@ function ProjectSettingsDialogContent({
   onReviewProviderIssue,
   onSave,
   onDelete,
-  onSelectConversations,
 }: Props) {
   const models = project.capabilities?.models ?? fallbackModels;
   const controls = project.capabilities?.providers.find(
@@ -188,7 +186,6 @@ function ProjectSettingsDialogContent({
             </button>
           </header>
           <form onSubmit={submit}>
-            {onSelectConversations && <button type="button" className="secondary-button" disabled={busy} onClick={onSelectConversations}>选择会话 · 批量归档</button>}
             <label>
               <span>Name</span>
               <input

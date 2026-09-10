@@ -1595,6 +1595,7 @@ function MalinkAppRuntime() {
   }));
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [bulkSelect, setBulkSelect] = useState(false);
+  const [listMenuOpen, setListMenuOpen] = useState(false);
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
   const [bulkConfirm, setBulkConfirm] = useState(false);
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
@@ -11477,7 +11478,7 @@ function MalinkAppRuntime() {
 
   async function archiveSelectedSessions() {
     if (bulkSubmitting) return;
-    const targets = activeFilteredSessions.filter(session => bulkArchiveAllowed(session) &&
+    const targets = (gatewayState?.sessions ?? []).filter(session => bulkArchiveAllowed(session) &&
       bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)));
     setBulkConfirm(false);
     setBulkSubmitting(true);
@@ -13160,27 +13161,12 @@ function MalinkAppRuntime() {
             {trustedGateway && (
               <button
                 type="button"
-                className={`mobile-history-button${providerHistoryLoad ? " is-loading" : ""}`}
-                aria-label={providerHistoryLoad
-                  ? "Provider sessions are loading"
-                  : !gatewayAvailable
-                    ? "Reconnect your computer to browse provider sessions"
-                    : providerHistorySources.length === 0
-                      ? "No provider sessions are available"
-                      : "Browse provider sessions"}
-                aria-busy={providerHistoryLoad !== null}
-                title={!gatewayAvailable
-                  ? "Reconnect your computer to browse provider sessions"
-                  : providerHistorySources.length === 0
-                    ? "No provider sessions are available"
-                    : "Browse provider sessions"}
-                onClick={() => void openProviderHistory()}
-                disabled={
-                  !gatewayAvailable ||
-                  providerHistorySources.length === 0
-                }
+                className="mobile-history-button"
+                aria-label="会话列表菜单"
+                aria-expanded={listMenuOpen}
+                onClick={() => setListMenuOpen(value => !value)}
               >
-                <HistoryIcon />
+                <span aria-hidden="true">•••</span>
               </button>
             )}
             <button
@@ -13215,20 +13201,6 @@ function MalinkAppRuntime() {
                 </button>
                 <button
                   type="button"
-                  className="new-project-button"
-                  aria-label="New project"
-                  title="New project"
-                  onClick={() => setNewProjectOpen(true)}
-                  disabled={
-                    Boolean(optimisticProjectCreate) ||
-                    !gatewayAvailable ||
-                    projectCreationGateways.length === 0
-                  }
-                >
-                  <NewProjectIcon />
-                </button>
-                <button
-                  type="button"
                   className="round-button"
                   aria-label={!gatewayAvailable
                     ? "Reconnect your computer to create a conversation"
@@ -13254,6 +13226,15 @@ function MalinkAppRuntime() {
             )}
           </div>
         </header>
+
+        {listMenuOpen && !bulkSelect && <>
+          <button className="list-menu-dismiss" aria-label="关闭会话列表菜单" onClick={() => setListMenuOpen(false)} />
+          <div className="conversation-list-menu" role="group" aria-label="会话列表操作" onKeyDown={event => { if (event.key === "Escape") setListMenuOpen(false); }}>
+            <button type="button" onClick={() => { setListMenuOpen(false); setBulkSelect(true); setBulkSelected(new Set()); setBulkResults({}); setBulkConfirm(false); setSessionSearchOpen(true); }}>选择会话</button>
+            <button type="button" disabled={!gatewayAvailable || providerHistorySources.length === 0 || providerHistoryLoad !== null} onClick={() => { setListMenuOpen(false); void openProviderHistory(); }}>浏览历史会话</button>
+            <button type="button" disabled={Boolean(optimisticProjectCreate) || !gatewayAvailable || projectCreationGateways.length === 0} onClick={() => { setListMenuOpen(false); setNewProjectOpen(true); }}>新建项目</button>
+          </div>
+        </>}
 
         {trustedGateway && (
           <label
@@ -13326,15 +13307,15 @@ function MalinkAppRuntime() {
             </button>
             {bulkSelect && <>
               <button type="button" className="secondary-button" disabled={bulkSubmitting}
-                onClick={() => setBulkSelected(new Set(activeFilteredSessions.filter(bulkArchiveAllowed)
-                  .map(session => sessionLifecycleRouteKey(session.projectId, session.id))))}>全选</button>
+                onClick={() => setBulkSelected(current => new Set([...current, ...activeFilteredSessions.filter(bulkArchiveAllowed)
+                  .map(session => sessionLifecycleRouteKey(session.projectId, session.id))]))}>全选</button>
               <button type="button" className="primary-button"
                 disabled={!gatewayConnected || bulkSubmitting || Object.values(bulkResults).includes("pending") ||
-                  !activeFilteredSessions.some(session => bulkArchiveAllowed(session) && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)))}
-                onClick={() => setBulkConfirm(true)}>归档已选 · {activeFilteredSessions.filter(session => bulkArchiveAllowed(session) && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id))).length}</button>
+                  !(gatewayState?.sessions ?? []).some(session => bulkArchiveAllowed(session) && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)))}
+                onClick={() => setBulkConfirm(true)}>归档已选 · {(gatewayState?.sessions ?? []).filter(session => bulkArchiveAllowed(session) && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id))).length}</button>
               {bulkConfirm && <div className="bulk-archive-confirm" role="alertdialog" aria-label="确认批量归档">
                 <strong>归档选中的会话？</strong>
-                <p>历史记录会保留，不会停止运行中的 Agent。</p>
+                <p>将归档全部已选会话，包括当前筛选未显示的选项。历史记录会保留，不会停止运行中的 Agent。</p>
                 <button type="button" className="primary-button" onClick={() => void archiveSelectedSessions()}>确认归档</button>
                 <button type="button" className="secondary-button" onClick={() => setBulkConfirm(false)}>取消</button>
               </div>}
@@ -15194,13 +15175,6 @@ function MalinkAppRuntime() {
           hasSessions={projectSettingsHasSessions}
           onClose={() => {
             if (!projectSettingsBusy) setProjectSettingsProjectId(null);
-          }}
-          onSelectConversations={() => {
-            setProjectSettingsProjectId(null);
-            setBulkSelect(true);
-            setBulkSelected(new Set());
-            setBulkConfirm(false);
-            setBulkResults({});
           }}
           onReviewProviderIssue={() => {
             setProjectSettingsProjectId(null);

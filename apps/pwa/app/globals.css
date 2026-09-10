@@ -12660,3 +12660,8 @@ body {
 .bulk-exclusion { color: #85899b; font-size: 10px; }
 .bulk-archive-confirm { position: fixed; z-index: 100; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(340px, calc(100vw - 40px)); box-sizing: border-box; box-shadow: 0 0 0 100vmax #17132c66, 0 12px 40px #17132c33; padding: 20px; border: 1px solid #d9d0f5; border-radius: 16px; background: #fbfbfd; display: flex; flex-wrap: wrap; gap: 12px; }
 .bulk-archive-confirm strong { flex-basis: 100%; font-size: 14px; color: #393347; }
+.list-menu-dismiss { position: fixed; inset: 0; z-index: 20; border: 0; background: transparent; cursor: default; }
+.conversation-list-menu { position: absolute; top: 52px; right: 12px; z-index: 21; display: grid; width: 190px; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: #fff; box-shadow: 0 8px 30px #23203826; }
+.conversation-list-menu button { text-align: left; padding: 12px; min-height: 44px; border: 0; border-radius: 8px; background: transparent; color: #41445a; font-size: 13px; cursor: pointer; }
+.conversation-list-menu button:hover, .conversation-list-menu button:focus-visible { background: #eee9fc; }
+.conversation-list-menu button:disabled { opacity: .45; }
