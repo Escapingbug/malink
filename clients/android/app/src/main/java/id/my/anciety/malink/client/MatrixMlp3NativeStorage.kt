@@ -1033,11 +1033,19 @@ internal class AtomicEncryptedMatrixMlp3ProjectKeyStore internal constructor(
     fun isNotEmpty(): Boolean = grants.isNotEmpty()
 
     @Synchronized
-    fun save(value: MatrixMlp3ProjectKeyGrant) {
+    fun save(value: MatrixMlp3ProjectKeyGrant): Boolean {
         val key = value.storageKey()
+        val previous = grants[key]
+        if (previous != null && previous.workspaceId == value.workspaceId &&
+            previous.deviceId == value.deviceId && previous.certificateId == value.certificateId &&
+            previous.activeKeyId == value.activeKeyId && previous.keys.size == value.keys.size &&
+            previous.keys.all { old -> value.keys.any { next ->
+                old.keyId == next.keyId && old.createdAt == next.createdAt && old.key.contentEquals(next.key)
+            } }) return false
         grants.remove(key)?.wipe()
         grants[key] = value.deepCopy()
         persist()
+        return true
     }
 
     @Synchronized

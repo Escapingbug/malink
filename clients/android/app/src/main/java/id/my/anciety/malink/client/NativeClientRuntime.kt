@@ -2980,9 +2980,10 @@ class NativeClientRuntime(
                 expectedRoomId = roomId,
                 expectedCertificateId = activeTrust.certificate.certificateId,
             )
-            matrixMlp3ProjectKeys.save(grant)
+            val grantChanged = matrixMlp3ProjectKeys.save(grant)
             val grantProjectId = grant.projectId
             grant.wipe()
+            if (!grantChanged) return true
             diagnostics.record(
                 "matrix.v3_project_keys.accepted",
                 mapOf(
@@ -3105,7 +3106,7 @@ class NativeClientRuntime(
             event.eventId,
             threadRootHint,
         )
-        if (protocolPayload.string("type") in setOf("session.ready", "session.lifecycle")) {
+        if (result.changed && protocolPayload.string("type") in setOf("session.ready", "session.lifecycle")) {
             scheduleWorkspaceDirectoryConvergence()
         }
         if (
@@ -3462,8 +3463,8 @@ class NativeClientRuntime(
                     val bindingsChanged = matrix.publicSession()?.roomBindings != next
                     if (bindingsChanged) {
                         matrix.updateRoomBindings(next)
+                        startMatrixMlp3ProjectionRefresh()
                     }
-                    startMatrixMlp3ProjectionRefresh()
                 }
                 if (result.isSuccess) return@launch
                 diagnostics.record(

@@ -736,6 +736,19 @@ class MatrixMlp3NativeStorageTest {
     }
 
     @Test
+    fun `identical verified grants do not restart projection recovery`() {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val store = AtomicEncryptedMatrixMlp3ProjectKeyStore(blob, JvmAesGcmCipher(), "account-a")
+        val first = projectKeyGrant("project-a", "key-a", 1)
+        assertTrue(store.save(first))
+        val bytes = blob.read()!!.copyOf()
+        assertFalse(store.save(projectKeyGrant("project-a", "key-a", 1)))
+        assertArrayEquals(bytes, blob.read())
+        assertTrue(store.save(projectKeyGrant("project-a", "key-b", 2)))
+        assertEquals("key-b", store.value()!!.activeKeyId)
+    }
+
+    @Test
     fun `legacy project indexed keys with one room migrate without dropping either grant`() {
         val blob = MemoryMatrixMlp3BlobStore()
         val cipher = JvmAesGcmCipher()
