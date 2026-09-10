@@ -24,6 +24,18 @@ const active: GatewayDeploymentSlot = {
 }
 
 describe('GatewayDeploymentCoordinator', () => {
+  it('retains only a host-verified old repair slot and blocks unsafe replacement', async () => {
+    const fixture = await coordinatorFixture({
+      retainedRecovery: async transition => ({ ...transition.active, projectId: 'repair-project', retainedAt: 100 }),
+    })
+    await fixture.coordinator.initialize()
+    const trial = await fixture.coordinator.prepare({ releaseId: 'release-new', buildId: 'build-new', candidateGatewayNodeId: 'gateway-new' })
+    const promoted = await fixture.coordinator.promote(trial.updateId!, 'when_idle')
+    expect(promoted).toMatchObject({ phase: 'steady', active: { gatewayNodeId: 'gateway-new' },
+      recovery: { gatewayNodeId: 'gateway-old', buildId: 'build-old', projectId: 'repair-project' } })
+    await expect(fixture.coordinator.prepare({ releaseId: 'third', buildId: 'third' })).rejects.toThrow('safely rotated')
+    expect((await fixture.coordinator.status()).recovery?.gatewayNodeId).toBe('gateway-old')
+  })
   it('prepares one real candidate and rejects a third deployment', async () => {
     const fixture = await coordinatorFixture({
       prepareCandidate: async transition => ({

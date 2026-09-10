@@ -4,6 +4,8 @@ import {
   gatewayDeploymentStatusSchema,
   type GatewayDeploymentSlot,
   type GatewayDeploymentStatus,
+  gatewayRecoverySlotSchema,
+  type GatewayRecoverySlot,
 } from '@malink/protocol'
 import { AtomicJsonFile } from '@malink/security/node'
 
@@ -51,6 +53,8 @@ export interface GatewayDeploymentCoordinatorDependencies {
     transition: GatewayDeploymentTransition,
   ) => Promise<GatewayDeploymentSlot>
   commitCandidate?: (transition: GatewayDeploymentTransition) => Promise<void>
+  /** Only return after the isolated old-version repair runtime is healthy. */
+  retainedRecovery?: (transition: GatewayDeploymentTransition) => Promise<GatewayRecoverySlot | undefined>
   rollbackPreCommit?: (transition: GatewayDeploymentTransition) => Promise<{
     active?: GatewayDeploymentSlot
     candidate?: GatewayDeploymentSlot
@@ -200,6 +204,9 @@ export class GatewayDeploymentCoordinator {
       }
       if (current.status.phase !== 'steady') {
         throw new Error(`Cannot prepare a Gateway candidate while ${current.status.phase}`)
+      }
+      if (current.status.recovery) {
+        throw new Error('The retained recovery slot must be safely rotated before preparing another Gateway')
       }
       const updateId = this.createId()
       const candidate: GatewayDeploymentSlot = gatewayDeploymentSlotSchema.parse({
@@ -515,8 +522,14 @@ export class GatewayDeploymentCoordinator {
     }
   }
 
-  private finishCommit(status: GatewayDeploymentStatus): Promise<GatewayDeploymentStatus> {
+  private async finishCommit(status: GatewayDeploymentStatus): Promise<GatewayDeploymentStatus> {
     if (!status.candidate) throw new Error('Committed deployment has no candidate')
+    const recoveryInput = await this.dependencies.retainedRecovery?.(requireTransition(status))
+    const recovery = recoveryInput ? gatewayRecoverySlotSchema.parse(recoveryInput) : undefined
+    if (recovery && (recovery.gatewayNodeId !== status.active.gatewayNodeId ||
+      recovery.buildId !== status.active.buildId || recovery.releaseId !== status.active.releaseId)) {
+      throw new Error('Retained recovery does not match the previous Gateway release')
+    }
     return this.writeStatus({
       version: 1,
       strategy: 'blue-green-v1',
@@ -525,7 +538,9 @@ export class GatewayDeploymentCoordinator {
       generation: status.generation + 1,
       phase: 'steady',
       active: status.candidate,
-      detail: 'All projects and sessions now use the promoted Gateway',
+      ...(recovery ? { recovery } : {}),
+      detail: recovery ? 'New Gateway is active; the previous version remains available for repair'
+        : 'All projects and sessions now use the promoted Gateway',
       updatedAt: this.now(),
     }, false)
   }
