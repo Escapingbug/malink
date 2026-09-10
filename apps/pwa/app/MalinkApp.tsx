@@ -13318,30 +13318,31 @@ function MalinkAppRuntime() {
         />
 
         {trustedGateway && (
-          <div className="bulk-session-actions">
+          <div className={`bulk-session-actions ${bulkSelect ? "is-selecting" : ""}`}>
             <button type="button" className="secondary-button"
               disabled={bulkSubmitting || Object.values(bulkResults).includes("pending")}
               onClick={() => { setBulkSelect(!bulkSelect); setBulkSelected(new Set()); setBulkConfirm(false); setBulkResults({}); }}>
-              {bulkSelect ? "Done selecting" : "Select conversations"}
+              <span aria-hidden="true">{bulkSelect ? "✕" : "☑"}</span> {bulkSelect ? "退出多选" : "多选"}
             </button>
             {bulkSelect && <>
               <button type="button" className="secondary-button" disabled={bulkSubmitting}
                 onClick={() => setBulkSelected(new Set(activeFilteredSessions.filter(bulkArchiveAllowed)
-                  .map(session => sessionLifecycleRouteKey(session.projectId, session.id))))}>Select filtered results</button>
+                  .map(session => sessionLifecycleRouteKey(session.projectId, session.id))))}>全选筛选结果</button>
               <button type="button" className="secondary-button" disabled={bulkSubmitting}
-                onClick={() => { setBulkSelected(new Set()); setBulkConfirm(false); }}>Clear selection</button>
+                onClick={() => { setBulkSelected(new Set()); setBulkConfirm(false); }}>清空</button>
               <button type="button" className="primary-button"
                 disabled={!gatewayConnected || bulkSubmitting || Object.values(bulkResults).includes("pending") ||
                   !activeFilteredSessions.some(session => bulkArchiveAllowed(session) && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)))}
-                onClick={() => setBulkConfirm(true)}>Archive selected ({activeFilteredSessions.filter(session => bulkArchiveAllowed(session) && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id))).length})</button>
-              <small>Only current search and computer-filter results are included. Running conversations and protected update repair sessions are excluded.</small>
-              {bulkConfirm && <div role="alert">
-                <p>Archive the selected conversations? Their history is retained. No running Agent will be stopped.</p>
-                <button type="button" className="primary-button" onClick={() => void archiveSelectedSessions()}>Confirm archive</button>
-                <button type="button" className="secondary-button" onClick={() => setBulkConfirm(false)}>Cancel</button>
+                onClick={() => setBulkConfirm(true)}>归档已选 · {activeFilteredSessions.filter(session => bulkArchiveAllowed(session) && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id))).length}</button>
+              <small>点击会话勾选 · 仅操作当前筛选结果</small>
+              {bulkConfirm && <div className="bulk-archive-confirm" role="alertdialog" aria-label="确认批量归档">
+                <strong>归档选中的会话？</strong>
+                <p>历史记录会保留，不会停止运行中的 Agent。</p>
+                <button type="button" className="primary-button" onClick={() => void archiveSelectedSessions()}>确认归档</button>
+                <button type="button" className="secondary-button" onClick={() => setBulkConfirm(false)}>取消</button>
               </div>}
               {Object.keys(bulkResults).length > 0 && <p role="status" aria-live="polite">
-                {Object.values(bulkResults).filter(value => value === "done").length} archived · {Object.values(bulkResults).filter(value => value === "pending").length} waiting · {Object.values(bulkResults).filter(value => value === "failed").length} failed
+                已归档 {Object.values(bulkResults).filter(value => value === "done").length} · 等待 {Object.values(bulkResults).filter(value => value === "pending").length} · 失败 {Object.values(bulkResults).filter(value => value === "failed").length}
               </p>}
             </>}
           </div>
@@ -13736,7 +13737,7 @@ function MalinkAppRuntime() {
                     bulkSelect ? bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)) : selectedSessionId === session.id &&
                     selectedProjectId === session.projectId
                   }
-                  className={`session-row ${
+                  className={`session-row ${bulkSelect ? "bulk-select-row" : ""} ${bulkSelect && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)) ? "bulk-selected" : ""} ${
                     selectedSessionId === session.id &&
                     selectedProjectId === session.projectId
                       ? "selected"
@@ -13753,10 +13754,11 @@ function MalinkAppRuntime() {
                   }}
                   disabled={lifecycleAction === "delete" || (bulkSelect && (bulkSubmitting || !bulkArchiveAllowed(session)))}
                 >
-                  <span className="session-avatar violet">
-                    {bulkSelect ? bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)) ? "✓" : "□" : sessionInitials(session.title)}
+                  <span className={bulkSelect ? "bulk-checkbox" : "session-avatar violet"} aria-hidden="true">
+                    {bulkSelect ? bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)) ? "✓" : "" : sessionInitials(session.title)}
                   </span>
                   <span className="session-copy">
+                    {bulkSelect && !bulkArchiveAllowed(session) && <small className="bulk-exclusion">{session.status === "running" || session.status === "stopping" ? "运行中，暂不可归档" : lifecycleAction ? "正在处理" : "更新恢复保护中"}</small>}
                     <span className="session-title-line">
                       <strong>{session.title}</strong>
                       <span className="session-title-meta">
