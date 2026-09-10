@@ -9,6 +9,7 @@ import {
   gatewayDeploymentOwnershipRoute,
   macosGatewayCandidateAdminSocketPath,
   MacosGatewayBlueGreenHost,
+  settleGatewayTrackActivation,
 } from '@/ops/macosGatewayBlueGreenHost'
 
 const temporaryDirectories: string[] = []
@@ -19,6 +20,21 @@ afterEach(async () => {
 })
 
 describe('MacosGatewayBlueGreenHost', () => {
+  it('does not cancel the default Gateway startup when the retained version fails', async () => {
+    let started = false
+    const active = new Promise<void>(resolve => setTimeout(() => { started = true; resolve() }, 5))
+    await expect(settleGatewayTrackActivation(active, Promise.reject(new Error('catalog invalid'))))
+      .rejects.toThrow('Previous-version Gateway failed: catalog invalid')
+    expect(started).toBe(true)
+  })
+
+  it('keeps the previous-version startup independent of default startup failure', async () => {
+    let started = false
+    const retained = new Promise<void>(resolve => setTimeout(() => { started = true; resolve() }, 5))
+    await expect(settleGatewayTrackActivation(Promise.reject(new Error('default failed')), retained))
+      .rejects.toThrow('Default Gateway failed: default failed')
+    expect(started).toBe(true)
+  })
   it('checks candidate shadow rooms against the current catalog, not stale committed counts', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'malink-shadow-count-'))
     temporaryDirectories.push(directory)
@@ -89,6 +105,7 @@ describe('MacosGatewayBlueGreenHost', () => {
     await host.restoreRecovery({ ...deploymentTransition().active, projectId: 'repair', retainedAt: 1 })
     const catalog = JSON.parse(await readFile(join(archive, 'gateway-projects.json'), 'utf8'))
     expect(catalog.version).toBe(1)
+    expect(catalog.gatewayNodeId).toBe('gateway-old')
     expect(catalog.projects).toHaveLength(1)
     expect(catalog.projects[0].cwd).toBe(join(archive, 'scratch-sessions', 'repair'))
     const runtime = JSON.parse(await readFile(join(archive, 'gateway-replay.jsonl.v3-runtime-state.json'), 'utf8'))

@@ -41,6 +41,17 @@ const FOUNDATION_FILES = [
 const LAUNCHD_STOP_POLL_INTERVAL_MS = 100
 const LAUNCHD_STOP_TIMEOUT_MS = 30_000
 
+export async function settleGatewayTrackActivation(
+  active: Promise<void>,
+  retained: Promise<void>,
+): Promise<void> {
+  const [activeResult, retainedResult] = await Promise.allSettled([active, retained])
+  const failures: string[] = []
+  if (activeResult.status === 'rejected') failures.push(`Default Gateway failed: ${formatError(activeResult.reason)}`)
+  if (retainedResult.status === 'rejected') failures.push(`Previous-version Gateway failed: ${formatError(retainedResult.reason)}`)
+  if (failures.length) throw new Error(failures.join('; '))
+}
+
 type HostPhase =
   | 'preparing'
   | 'trial'
@@ -623,11 +634,12 @@ export class MacosGatewayBlueGreenHost {
       nextPlist,
       'MALINK_GATEWAY_HANDOFF_PENDING',
     ), 0o644)
-    // Bring repair online first: a broken promoted executable must not prevent
-    // users from reaching the independent old-version maintenance session.
-    if (state.recoveryRoomId) await this.startRetainedRecovery(state)
-    await this.restartService(this.config.activeServiceLabel, this.config.activeLaunchAgentPath)
-    await this.waitForHealth(this.config.activeAdminSocketPath, {
+    // Both tracks must get a startup attempt. Neither executable's failure may
+    // prevent starting the other; in particular, old recovery catalog failures
+    // must not strand an otherwise healthy promoted Gateway offline.
+    const activeActivation = (async () => {
+      await this.restartService(this.config.activeServiceLabel, this.config.activeLaunchAgentPath)
+      await this.waitForHealth(this.config.activeAdminSocketPath, {
       gatewayNodeId: state.candidateGatewayNodeId,
       buildId: state.buildId,
       projectCount: requiredCount(
@@ -640,7 +652,12 @@ export class MacosGatewayBlueGreenHost {
       ),
       requireRunning: true,
       deploymentFenced: false,
-    })
+      })
+    })()
+    const recoveryActivation = state.recoveryRoomId
+      ? this.startRetainedRecovery(state)
+      : Promise.resolve()
+    await settleGatewayTrackActivation(activeActivation, recoveryActivation)
     if (!state.recoveryRoomId) await this.logoutCandidate(archive)
     const superseded = await this.stateFile.transaction(() => ({ version: 1 }), file => ({ result: file.retained, changed: false }))
     if (superseded?.sourceArchiveDirectory && superseded.updateId !== state.updateId) {
@@ -741,7 +758,12 @@ export class MacosGatewayBlueGreenHost {
     if (typeof project.cwd === 'string' && project.cwd.startsWith(`${this.activeDataDirectory}/`)) {
       project.cwd = archive + project.cwd.slice(this.activeDataDirectory.length)
     }
-    await writePrivateJson(join(archive, 'gateway-projects.json'), { version: 1, ...catalog, projects })
+    if (catalog.gatewayNodeId !== undefined && catalog.gatewayNodeId !== state.sourceGatewayNodeId) {
+      throw new Error('Recovery catalog belongs to a different Gateway node')
+    }
+    await writePrivateJson(join(archive, 'gateway-projects.json'), {
+      ...catalog, version: 1, gatewayNodeId: state.sourceGatewayNodeId, projects,
+    })
     await writePrivateJson(runtimePath, { ...runtime, projects: { [roomId]: project } })
     const fixture = await readRecord(join(archive, 'matrix-fixture.json'))
     await writePrivateJson(join(archive, 'matrix-fixture.json'), { ...fixture, roomId })
@@ -1368,6 +1390,7 @@ export function gatewayDeploymentOwnershipRoute(project: Record<string, unknown>
 }
 
 async function readProjectCatalog(directory: string): Promise<{
+  [key: string]: unknown
   projects: Record<string, unknown>[]
 }> {
   const catalog = await readRecord(join(directory, 'gateway-projects.json'))
@@ -1375,6 +1398,7 @@ async function readProjectCatalog(directory: string): Promise<{
     throw new Error('Gateway project catalog is invalid')
   }
   return {
+    ...catalog,
     projects: catalog.projects.map((value, index) => {
       const project = record(value)
       if (!project) throw new Error(`Gateway project ${index} is invalid`)
