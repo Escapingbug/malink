@@ -1,3 +1,5 @@
+import { startMatrixSyncDiagnostics } from "./matrixSyncDiagnostics";
+import { createManagedMatrixClient, waitForRecoverableMatrixSync } from "./matrixSyncLifecycle";
 import {
   MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
   MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
@@ -41,7 +43,7 @@ import {
   flushAndReleaseMatrixSyncStore,
   flushMatrixSyncStore,
   matrixCryptoLockName,
-  matrixSyncDatabaseName,
+  resolveMatrixSyncDatabaseName,
   waitForMatrixSyncStoreClose,
 } from "./matrixSyncStore";
 import {
@@ -49,7 +51,6 @@ import {
   normalizeMatrixConfig,
   createMatrixPairingTransport,
   verifyAndPinGatewayDevice,
-  waitForInitialSync,
   waitForOwnMatrixDeviceKeys,
   withMatrixTimeout,
   type CollaborationState,
@@ -144,12 +145,23 @@ export async function connectMatrixMlp3(
   );
   let trust = await loadTrustedGateway(identity, config.gatewayNodeId || config.gatewayId || undefined);
   const sdk = await import("matrix-js-sdk");
-  const syncDatabase = await matrixSyncDatabaseName(config);
-  await waitForMatrixSyncStoreClose(syncDatabase);
-  const syncStore = new sdk.IndexedDBStore({ indexedDB, dbName: syncDatabase });
   const cryptoScope = await matrixCryptoLockName(config);
+  // Serialize by the account/device, including the first legacy-cache adoption.
+  await waitForMatrixSyncStoreClose(cryptoScope);
   const cryptoLock = await acquireMatrixCryptoLock(cryptoScope);
-  const client = sdk.createClient({
+  let syncDatabase: string;
+  try {
+    syncDatabase = await resolveMatrixSyncDatabaseName(
+      config,
+      window.localStorage,
+      name => sdk.IndexedDBStore.exists(indexedDB, name),
+    );
+  } catch (error) {
+    await cryptoLock.release();
+    throw error;
+  }
+  const syncStore = new sdk.IndexedDBStore({ indexedDB, dbName: syncDatabase });
+  const client = createManagedMatrixClient(sdk, {
     baseUrl: config.homeserver,
     userId: config.userId,
     accessToken: config.accessToken,
@@ -1231,7 +1243,7 @@ export async function connectMatrixMlp3(
       matrixSyncCatchupGeneration += 1;
     }
     if (state === "SYNCING" || state === "PREPARED") {
-      const persisted = flushMatrixSyncStore(syncDatabase, syncStore);
+      const persisted = flushMatrixSyncStore(cryptoScope, syncStore);
       if (readiness.canPublishAuthoritativeProjection) {
         void protocol?.retryPending();
         void checkpointMatrixSync(activeWorkspaceProtocols(), persisted);
@@ -1406,7 +1418,7 @@ export async function connectMatrixMlp3(
 
   const checkpointMatrixSync = (
     targets: MatrixMlp3ProtocolClient[],
-    persistedStore: Promise<void> = flushMatrixSyncStore(syncDatabase, syncStore),
+    persistedStore: Promise<void> = flushMatrixSyncStore(cryptoScope, syncStore),
   ): Promise<void> => {
     const token = syncStore.getSyncToken();
     if (!token || targets.length === 0) return Promise.resolve();
@@ -1474,15 +1486,18 @@ export async function connectMatrixMlp3(
     handlers.onStatus("error", detail);
   };
 
+  const syncDiagnostics = startMatrixSyncDiagnostics(config.homeserver);
   const transportReady = (async () => {
     await withMatrixTimeout(startupLifetime.run(() => syncStore.startup()), LOCAL_TIMEOUT_MS, "The Matrix sync store did not open in time.");
     startupSavedMatrixSyncToken = await startupLifetime.run(() => syncStore.getSavedSyncToken());
+    syncDiagnostics.mark("store", { usedSavedSync: Boolean(startupSavedMatrixSyncToken) });
     handlers.onStatus("connecting", MATRIX_CRYPTO_LOADING_DETAIL);
     await withMatrixTimeout(
       startupLifetime.run(() => client.initRustCrypto({ useIndexedDB: true, cryptoDatabasePrefix: cryptoScope })),
       MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_MS,
       MATRIX_CRYPTO_INITIALIZATION_TIMEOUT_DETAIL,
     );
+    syncDiagnostics.mark("crypto");
     const cryptoApi = client.getCrypto();
     if (!cryptoApi) throw new Error("Matrix encryption did not initialize.");
     const { AllDevicesIsolationMode } = await import("matrix-js-sdk/lib/crypto-api");
@@ -1498,8 +1513,23 @@ export async function connectMatrixMlp3(
     // every room on the shared Workspace account. History is loaded separately.
     await startupLifetime.run(() => client.startClient({
       initialSyncLimit: matrixInitialSyncLimit(Boolean(trust), !startupSavedMatrixSyncToken),
+      lazyLoadMembers: true,
     }));
-    await waitForInitialSync(client, sdk.ClientEvent.Sync, 30_000, startupLifetime.controller.signal);
+    handlers.onStatus("connecting", "Syncing Workspace updates…");
+    await Promise.race([
+      client.syncFailure,
+      waitForRecoverableMatrixSync(
+        client,
+        sdk.ClientEvent.Sync,
+        startupLifetime.controller.signal,
+        detail => handlers.onStatus("connecting", detail),
+        30_000,
+        () => Boolean(client.getRoom(config.roomId)),
+      ),
+    ]);
+    syncDiagnostics.mark("sync-ready", {
+      usedSavedSync: Boolean(startupSavedMatrixSyncToken), roomCount: client.getRooms().length,
+    });
     startupLifetime.assertActive();
     room = client.getRoom(config.roomId);
     if (!room) throw new Error("The bound Matrix project room is unavailable.");
@@ -2010,6 +2040,7 @@ export async function connectMatrixMlp3(
     stop() {
       if (stopped) return;
       stopped = true;
+      syncDiagnostics.stop();
       const startupStopped = startupLifetime.stop();
       if (workspaceRouteRecoveryTimer !== null) {
         clearTimeout(workspaceRouteRecoveryTimer);
@@ -2030,16 +2061,16 @@ export async function connectMatrixMlp3(
       handlers.onStatus("offline");
       // Retain the database lock until even a timed-out initialization settles.
       // Otherwise it can finish against a disposed crypto object after retry.
-      const closing = startupStopped.then(() => {
-        client.stopClient();
-      });
-      void flushAndReleaseMatrixSyncStore(syncDatabase, {
+      const closing = async () => {
+        await startupStopped;
+        await client.stopAfterSync();
+      };
+      void flushAndReleaseMatrixSyncStore(cryptoScope, {
         async save() {
-          await closing;
           await syncStore.save(true);
         },
         destroy: () => syncStore.destroy(),
-      }, cryptoLock).catch(error => console.error("[mlp3/matrix] connection cleanup failed", error));
+      }, cryptoLock, closing).catch(error => console.error("[mlp3/matrix] connection cleanup failed", error));
     },
   };
 }

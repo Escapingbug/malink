@@ -577,7 +577,7 @@ test("a missing terminal result cannot leave command UI busy forever", async () 
   );
 });
 
-test("Matrix sync databases are isolated by origin, user, device, and room", async () => {
+test("Matrix sync databases survive room updates and isolate origin, user, device", async () => {
   const base = {
     homeserver: "https://matrix.example/",
     userId: "@alice:example",
@@ -591,8 +591,9 @@ test("Matrix sync databases are isolated by origin, user, device, and room", asy
     matrixSyncDatabaseName({ ...base, matrixDeviceId: "PWA-B" }),
     matrixSyncDatabaseName({ ...base, roomId: "!room-b:example" }),
   ]);
-  assert.equal(new Set(names).size, names.length);
-  assert.match(names[0], /^malink-matrix-sync-v1-[A-Za-z0-9_-]{43}$/);
+  assert.equal(names[0], names[4]);
+  assert.equal(new Set(names).size, 4);
+  assert.match(names[0], /^malink-matrix-sync-v2-[A-Za-z0-9_-]{43}$/);
 });
 
 test("Matrix crypto lock is isolated by origin, user, and device", async () => {

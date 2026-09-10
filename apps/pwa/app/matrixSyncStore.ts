@@ -6,15 +6,39 @@ const operations = new Map<string, Promise<void>>();
 export async function matrixSyncDatabaseName(
   config: Pick<
     MatrixConnectionConfig,
-    "homeserver" | "userId" | "matrixDeviceId" | "roomId"
+    "homeserver" | "userId" | "matrixDeviceId"
   >,
 ): Promise<string> {
-  return `malink-matrix-sync-v1-${await scopeDigest([
+  return `malink-matrix-sync-v2-${await scopeDigest([
     new URL(config.homeserver).origin,
     config.userId,
     config.matrixDeviceId,
-    config.roomId,
   ])}`;
+}
+
+/** Keep an existing SDK database in place; only its account-scoped alias changes.
+ * The alias stores a room ID, never a database name from another account/device.
+ * No identity, crypto keys, or projection records are copied or deleted.
+ */
+export async function resolveMatrixSyncDatabaseName(
+  config: Pick<MatrixConnectionConfig, "homeserver" | "userId" | "matrixDeviceId" | "roomId">,
+  storage: Pick<Storage, "getItem" | "setItem">,
+  exists: (name: string) => Promise<boolean>,
+): Promise<string> {
+  const accountName = await matrixSyncDatabaseName(config);
+  const aliasKey = `${accountName}:legacy-room`;
+  const savedRoom = storage.getItem(aliasKey);
+  const legacyName = async (roomId: string) => `malink-matrix-sync-v1-${await scopeDigest([
+    new URL(config.homeserver).origin, config.userId, config.matrixDeviceId, roomId,
+  ])}`;
+  if (savedRoom) return legacyName(savedRoom);
+  if (await exists(accountName)) return accountName;
+  const previous = await legacyName(config.roomId);
+  if (await exists(previous)) {
+    storage.setItem(aliasKey, config.roomId);
+    return previous;
+  }
+  return accountName;
 }
 
 export async function matrixCryptoLockName(
@@ -154,8 +178,11 @@ export function flushAndReleaseMatrixSyncStore(
   databaseName: string,
   store: ClosableMatrixSyncStore,
   lock: MatrixCryptoLock,
+  stopTransport: () => Promise<void> = async () => {},
 ): Promise<void> {
   return serializeStoreOperation(databaseName, async () => {
+    // A failed drain must retain the crypto lock: a new client cannot safely start.
+    await stopTransport();
     try {
       await store.save(true);
     } finally {

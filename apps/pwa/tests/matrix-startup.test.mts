@@ -72,7 +72,7 @@ test("reloads one interrupted startup after returning to the foreground", () => 
       now: 25_000,
       visible: true,
     }),
-    true,
+    false,
   );
   assert.equal(
     shouldReloadInterruptedMatrixStartup({

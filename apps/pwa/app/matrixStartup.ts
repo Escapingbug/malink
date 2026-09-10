@@ -49,7 +49,8 @@ export function shouldReloadInterruptedMatrixStartup(input: {
 }): boolean {
   if (
     !input.visible ||
-    (input.phase !== "connecting" && input.phase !== "securing")
+    // Matrix owns transport retries, including slow foreground/background sync.
+    input.phase !== "securing"
   ) {
     return false;
   }
