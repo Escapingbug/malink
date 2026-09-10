@@ -229,6 +229,7 @@ export function gatewayUpdatePlanNodeWithLiveStatus(input: {
   release: GatewayReleaseBuild;
   status: GatewayUpdateStatus | undefined;
 }): GatewayUpdatePlanNode {
+  if (input.status?.executionTracks) input = { ...input, node: { ...input.node, blueGreenUpdate: false } };
   if (
     input.node.buildObservedAt !== undefined &&
     input.status !== undefined &&
