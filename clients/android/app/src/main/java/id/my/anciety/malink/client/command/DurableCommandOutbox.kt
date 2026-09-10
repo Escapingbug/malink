@@ -116,6 +116,7 @@ class DurableCommandOutbox internal constructor(
             val statusProbes = snapshot.commands.filter { candidate ->
                 !candidate.state.isTerminal &&
                     candidate.projectId == projectId &&
+                    candidate.payload["includeExecutionTracks"] == payload["includeExecutionTracks"] &&
                     CommandPayloadValidator.validate(candidate.payload).operation
                         .isGatewayStatusProbe
             }

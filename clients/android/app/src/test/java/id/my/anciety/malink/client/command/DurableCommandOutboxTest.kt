@@ -16,6 +16,19 @@ import org.junit.Test
 
 class DurableCommandOutboxTest {
     @Test
+    fun `version catalog probes cannot be replaced by ordinary background status probes`() {
+        val fixture = fixture()
+        val basic = payload("gateway.update.status")
+        val versions = buildJsonObject { put("operation", "gateway.update.status"); put("includeExecutionTracks", true) }
+        val first = fixture.outbox.enqueue(UUID.randomUUID().toString(), basic, projectId = "project-a")
+        val extended = fixture.outbox.enqueue(UUID.randomUUID().toString(), versions, projectId = "project-a")
+        assertNotEquals(first.commandId, extended.commandId)
+        assertEquals(first.commandId, fixture.outbox.enqueue(UUID.randomUUID().toString(), basic, projectId = "project-a").commandId)
+        assertEquals(extended.commandId, fixture.outbox.enqueue(UUID.randomUUID().toString(), versions, projectId = "project-a").commandId)
+        assertEquals(extended.commandId, fixture.outbox.get(extended.commandId)?.commandId)
+    }
+
+    @Test
     fun `restart preserves a queued command before its sender starts`() {
         val fixture = fixture()
         val receipt = fixture.outbox.enqueue(UUID.randomUUID().toString(), payload("session.create"))

@@ -930,7 +930,9 @@ export class NativeBridgeClient implements MalinkClient {
       || this.#disposed
     ) return;
     if (this.#networkCatchupSettleTimer !== null) {
-      clearTimeout(this.#networkCatchupSettleTimer);
+      // Bound catch-up presentation even when other projects keep publishing.
+      // Debouncing every status event can hide completed replies indefinitely.
+      return;
     }
     this.#networkCatchupSettleTimer = setTimeout(() => {
       this.#networkCatchupSettleTimer = null;

@@ -434,7 +434,15 @@ test("bounds native replay as catch-up while later events remain live", async ()
 
   assert.equal(recoveries.length, 1);
   assert.equal(liveMessages.length, 1);
-  await new Promise((resolve) => setTimeout(resolve, 550));
+  for (let i = 0; i < 4; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    port.deliver({ jsonrpc: "2.0", method: "malink.events.deliver", params: {
+      subscriptionId: "subscription-1", events: [{ schemaVersion: 1,
+        eventId: `busy-ready-${i}`, cursor: `busy-ready-${i}`, occurredAt: 250 + i,
+        type: "client.status.changed", payload: { phase: "ready" } }],
+    } });
+  }
+  await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal(recoveries.length, 2);
   assert.equal(recoveries[1]?.messages.length, 30);
   assert.equal(
