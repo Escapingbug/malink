@@ -1225,7 +1225,10 @@ internal class AtomicEncryptedMatrixMlp3ProjectionStore internal constructor(
 
     @Synchronized
     fun save(value: JsonObject): Int {
-        val plaintext = CanonicalJson.bytes(value)
+        // This local AEAD cache is parsed as JSON, never signed or compared
+        // byte-for-byte. Canonical wire encoding here sorted and copied the
+        // entire workspace for each event, blocking live command receipts.
+        val plaintext = value.toString().toByteArray(Charsets.UTF_8)
         if (plaintext.size > MAX_BYTES) {
             val actualBytes = plaintext.size
             plaintext.fill(0)

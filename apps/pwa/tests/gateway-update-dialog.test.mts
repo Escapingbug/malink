@@ -5,6 +5,19 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { GatewayUpdateDialog } from "../app/GatewayUpdateDialog.tsx";
 
 const release = { releaseId: "2026.08.28.1", buildId: "gateway-next-arm64" };
+test("checking versions never labels the install button as a running preparation", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true, connected: true, release,
+    nodes: [{ gatewayNodeId: "mac", gatewayName: "Mac", onlineUpdate: true,
+      blueGreenUpdate: true, state: "available", currentBuildId: "old", targetProjectId: "project" }],
+    runtimeByNode: {}, activeGatewayNodeIds: new Set(["mac"]),
+    activeGatewayModesByNode: { mac: "check_versions" },
+    onClose() {}, onStart() {}, onPromote() {}, onDiscard() {}, onOpenProject() {},
+    onCheckVersions() {}, onOpenSession() {}, onArchiveSession() {}, onExportDiagnostics() {},
+  }));
+  assert.match(html, /Checking version control/);
+  assert.doesNotMatch(html, /Preparing candidate Gateway…|Scheduling when idle…/);
+});
 test("completed takeover remains visible with its completion time", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
     open: true, connected: true, release,

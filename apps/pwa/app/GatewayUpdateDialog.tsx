@@ -42,7 +42,7 @@ export type GatewayUpdateNodeRuntime = {
   commandFailureRetryable?: boolean;
 };
 
-export type GatewayUpdateActiveAction = "when_idle" | "force" | "discard";
+export type GatewayUpdateActiveAction = "when_idle" | "force" | "discard" | "check_versions" | "select_version";
 
 type Props = {
   open: boolean;
@@ -308,7 +308,7 @@ function GatewayUpdateDialogContent({
 
                 {onCheckVersions && <button type="button" disabled={!connected || activeGatewayNodeIds.has(node.gatewayNodeId)}
                   aria-busy={activeGatewayNodeIds.has(node.gatewayNodeId)}
-                  onClick={() => onCheckVersions(node)}>{activeGatewayNodeIds.has(node.gatewayNodeId) ? "Checking version control…" : "Check available versions"}</button>}
+                  onClick={() => onCheckVersions(node)}>{activeMode === "check_versions" ? "Checking version control…" : "Check available versions"}</button>}
                 {runtime.status?.executionTracks && (
                   <section className="gateway-update-action-status" aria-label="Gateway versions">
                     <p>Default version · {runtime.status.executionTracks.activeRelease}</p>
@@ -557,10 +557,10 @@ function GatewayUpdateDialogContent({
                         type="button"
                         className="primary-button"
                         disabled={!connected || active}
-                        aria-busy={active && activeMode !== "force"}
+                        aria-busy={active && activeMode === "when_idle"}
                         onClick={() => onStart(node, "when_idle")}
                       >
-                        {active && activeMode !== "force"
+                        {active && activeMode === "when_idle"
                           ? node.blueGreenUpdate
                             ? "Preparing candidate Gateway…"
                             : stagedPublishedRelease
@@ -751,6 +751,8 @@ export function gatewayUpdateRuntimeStateTitle(
   release: GatewayReleaseBuild,
   activeMode?: GatewayUpdateActiveAction,
 ): string {
+  if (activeMode === "check_versions") return "Checking available versions";
+  if (activeMode === "select_version") return "Selecting Gateway version";
   const status = gatewayUpdateStatusForPresentation(runtime.status, release, node);
   const stagedPublishedRelease = gatewayUpdateCanContinuePublishedRelease({
     status,
@@ -807,6 +809,8 @@ export function gatewayUpdateRuntimeStateDetail(
   connected: boolean,
   activeMode?: GatewayUpdateActiveAction,
 ): string {
+  if (activeMode === "check_versions") return "Reading signed version status. This check does not install or restart anything.";
+  if (activeMode === "select_version") return "Waiting for the signed version selection. The same conversations and history will remain available.";
   const status = gatewayUpdateStatusForPresentation(runtime.status, release, node);
   if (status?.phase === "failed" || status?.phase === "repair_required") {
     const failure = status.detail ?? gatewayUpdatePhaseText(status);

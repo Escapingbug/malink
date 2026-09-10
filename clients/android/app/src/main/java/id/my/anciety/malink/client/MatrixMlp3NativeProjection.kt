@@ -10,7 +10,6 @@ import id.my.anciety.malink.client.events.ToolCategory
 import id.my.anciety.malink.client.events.ToolGroupPresentation
 import id.my.anciety.malink.client.events.ToolPhase
 import id.my.anciety.malink.client.events.ToolPresentationItem
-import id.my.anciety.malink.security.malink.CanonicalJson
 import java.net.URI
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -2276,7 +2275,9 @@ internal class MatrixMlp3NativeProjection(
                     }
             })
         }
-        val encoded = CanonicalJson.bytes(value)
+        // Match the local encrypted cache encoding, not the canonical MLP
+        // signature encoding. Both existing and new caches are ordinary JSON.
+        val encoded = value.toString().toByteArray(Charsets.UTF_8)
         val encodedBytes = try {
             encoded.size
         } finally {

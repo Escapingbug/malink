@@ -8615,9 +8615,10 @@ function MalinkAppRuntime() {
     busy.add(node.gatewayNodeId);
     gatewayUpdateActiveNodeIdsRef.current = busy;
     setGatewayUpdateActiveNodeIds(busy);
+    setGatewayUpdateActiveModesByNode(current => ({ ...current, [node.gatewayNodeId]: "select_version" }));
     try {
       const status = await executeGatewayUpdate({ operation: "gateway.update.apply", releaseId,
-        executionGeneration: generation, mode: "when_idle" }, targetProject);
+        executionGeneration: generation, mode: "when_idle" }, targetProject, 60_000);
       setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status }));
       showUiNotice(`gateway-track:${node.gatewayNodeId}`, "connection", "info",
         `Version selection was accepted. ${releaseId} will take over the same conversations after running tasks finish.`);
@@ -8634,6 +8635,9 @@ function MalinkAppRuntime() {
       remaining.delete(node.gatewayNodeId);
       gatewayUpdateActiveNodeIdsRef.current = remaining;
       setGatewayUpdateActiveNodeIds(remaining);
+      setGatewayUpdateActiveModesByNode(current => {
+        const next = { ...current }; delete next[node.gatewayNodeId]; return next;
+      });
     }
   }
 
@@ -8643,6 +8647,7 @@ function MalinkAppRuntime() {
     checking.add(node.gatewayNodeId);
     gatewayUpdateActiveNodeIdsRef.current = checking;
     setGatewayUpdateActiveNodeIds(checking);
+    setGatewayUpdateActiveModesByNode(current => ({ ...current, [node.gatewayNodeId]: "check_versions" }));
     try {
       const fallbackProject = node.computerId ? gatewayStateRef.current?.gatewayDeployments?.[node.computerId]?.deployment.recovery?.projectId : undefined;
       const targetProject = gatewayUpdateRuntimeByNodeRef.current[node.gatewayNodeId]?.status?.executionTracks?.controlProjectId ?? fallbackProject ?? node.targetProjectId;
@@ -8658,6 +8663,9 @@ function MalinkAppRuntime() {
       remaining.delete(node.gatewayNodeId);
       gatewayUpdateActiveNodeIdsRef.current = remaining;
       setGatewayUpdateActiveNodeIds(remaining);
+      setGatewayUpdateActiveModesByNode(current => {
+        const next = { ...current }; delete next[node.gatewayNodeId]; return next;
+      });
     }
   }
 

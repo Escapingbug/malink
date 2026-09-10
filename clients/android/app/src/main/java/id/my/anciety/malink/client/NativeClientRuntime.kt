@@ -1626,6 +1626,7 @@ class NativeClientRuntime(
     }
 
     override suspend fun onDecryptedEvent(event: MatrixDecryptedEvent) {
+        val receivedAt = System.nanoTime()
         val isV3 = isMatrixMlp3RawEvent(event.rawJson)
         // A verified physical event already retained by the encrypted
         // projection needs no second raw-inbox write. It is still applied
@@ -1657,6 +1658,10 @@ class NativeClientRuntime(
         }
         var projected = false
         mutex.withLock {
+            val waitMs = (System.nanoTime() - receivedAt) / 1_000_000
+            if (waitMs >= 1_000) diagnostics.record("matrix.v3_event.queue_delayed", mapOf(
+                "event" to diagnosticOpaqueId(event.eventId), "wait_ms" to waitMs.toString(),
+            ))
             try {
                 processMatrixEvent(event)
                 if (isV3) {
@@ -1706,6 +1711,10 @@ class NativeClientRuntime(
             // projection checkpoint.
             matrixMlp3Inbox.flushProjected()
         }
+        val elapsedMs = (System.nanoTime() - receivedAt) / 1_000_000
+        if (elapsedMs >= 1_000) diagnostics.record("matrix.v3_event.processing_delayed", mapOf(
+            "event" to diagnosticOpaqueId(event.eventId), "elapsed_ms" to elapsedMs.toString(),
+        ))
     }
 
     private fun launchCommandTransmission(
@@ -3065,6 +3074,12 @@ class NativeClientRuntime(
             opened.projectId,
         )
         val protocolPayload = protocolEvent.objectValue("payload")
+        if (protocolEvent.string("causationCommandId") != null) diagnostics.record(
+            "matrix.v3_event.command_verified", mapOf(
+                "command" to diagnosticOpaqueId(protocolEvent.string("causationCommandId")!!),
+                "type" to (protocolPayload.string("type") ?: "unknown"),
+            ),
+        )
         if (protocolPayload.string("type") == "workspace.snapshot") {
             require(protocolPayload.string("gatewayKeyId") == activeTrust.gatewayKey.keyId) {
                 "The MLP/3 workspace snapshot names another Gateway key."

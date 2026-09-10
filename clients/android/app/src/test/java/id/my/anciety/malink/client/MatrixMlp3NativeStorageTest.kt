@@ -22,6 +22,20 @@ import org.junit.Test
 
 class MatrixMlp3NativeStorageTest {
     @Test
+    fun `projection cache reads both canonical legacy and unsorted local JSON`() {
+        val blob = MemoryMatrixMlp3BlobStore()
+        val cipher = JvmAesGcmCipher()
+        val value = buildJsonObject { put("z", "历史\n😀"); put("a", 7) }
+        val aad = "malink.matrix-v3-projection.v1\u0000account-a".toByteArray()
+        val legacy = cipher.encrypt(CanonicalJson.bytes(value), aad)
+        blob.write(SecretEnvelope.encode(legacy))
+        val store = AtomicEncryptedMatrixMlp3ProjectionStore(blob, cipher, "account-a")
+        assertEquals(value, store.load())
+        assertEquals(value.toString().toByteArray(Charsets.UTF_8).size, store.save(value))
+        assertEquals(value, store.load())
+    }
+
+    @Test
     fun `fresh delivery restores legacy timeout quarantine after restart`() {
         for (segmented in listOf(false, true)) {
             val blob = MemoryMatrixMlp3BlobStore()
