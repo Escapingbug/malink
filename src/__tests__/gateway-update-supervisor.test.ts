@@ -72,6 +72,24 @@ describe('GatewayUpdateSupervisor', () => {
       await expect(client.scheduleApply('release-1', false, 0)).rejects.toThrow()
     } finally { await server.stop(); await supervisor.stop() }
   })
+  it('reports the retained active version after rollback instead of an obsolete stage checkpoint', async () => {
+    const fixture = await releaseFixture()
+    const supervisor = new GatewayUpdateSupervisor({ ...fixture.config, executionTracksEnabled: true }, { fetch: fixture.fetch })
+    await supervisor.initialize()
+    await supervisor.stage('release-2')
+    const updatedAt = Date.now() + 1000
+    const tracks = new GatewayExecutionTracks(join(fixture.installRoot, 'tracks.json'), {
+      version: 1, gatewayNodeId: 'node', dataDirectory: join(fixture.installRoot, 'data'),
+      generation: 4, activeRelease: 'release-1', standbyRelease: 'release-2', phase: 'steady', updatedAt,
+    }, { validateRelease: async () => {}, ensureStandby: async () => {}, releaseExecution: async () => {},
+      activate: async () => {}, verifyActive: async () => {} })
+    const server = await startGatewayUpdateSupervisorServer({ socketPath: join(fixture.installRoot, 'tracks.sock'), supervisor, executionTracks: tracks })
+    try {
+      const client = new GatewayUpdateSupervisorClient(server.socketPath, 5000)
+      expect(await client.executionStatus()).toMatchObject({ phase: 'committed', releaseId: 'release-1', updatedAt,
+        executionTracks: { activeRelease: 'release-1', standbyRelease: 'release-2', generation: 4, phase: 'steady' } })
+    } finally { await server.stop(); await supervisor.stop() }
+  })
   it('serves validated status and staging operations over the owner Unix socket', async () => {
     const fixture = await releaseFixture()
     const supervisor = new GatewayUpdateSupervisor(fixture.config, {

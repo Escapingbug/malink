@@ -36,7 +36,7 @@ async function statusWithTracks(input: {
   const status = await input.supervisor.status()
   if (!input.executionTracks) return status
   const { generation, activeRelease, standbyRelease, phase, targetRelease, error, updatedAt } = await input.executionTracks.status()
-  const preparingAnother = phase === 'steady' && status.releaseId !== activeRelease
+  const preparingAnother = phase === 'steady' && status.releaseId !== activeRelease && status.releaseId !== standbyRelease
     && ['staging', 'agent_required', 'agent_running', 'agent_validating', 'staged'].includes(status.phase)
   return gatewayUpdateStatusSchema.parse({ ...status,
     currentBuildId: input.supervisor.executionBuildId(activeRelease) ?? status.currentBuildId,
@@ -46,7 +46,7 @@ async function statusWithTracks(input: {
       targetBuildId: input.supervisor.executionBuildId(targetRelease ?? activeRelease) ?? status.targetBuildId,
       previousReleaseId: standbyRelease,
       detail: error ?? (phase === 'steady' ? 'Selected version is active; conversations and results use the same current state.' : 'Execution is transferring between the retained versions.'),
-    }), updatedAt: preparingAnother ? status.updatedAt : updatedAt ?? status.updatedAt, executionTracks: {
+    }), updatedAt: Math.max(updatedAt ?? 0, status.updatedAt), executionTracks: {
     generation, activeRelease, standbyRelease, phase, targetRelease,
     ...(error ? { error: error.slice(0, 4096) } : {}),
     ...(input.executionControlProjectId ? { controlProjectId: input.executionControlProjectId } : {}),

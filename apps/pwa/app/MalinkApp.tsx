@@ -122,6 +122,7 @@ import { GatewayForgetDialog } from "./GatewayForgetDialog";
 import {
   GatewayUpdateDialog,
   type GatewayUpdateNodeRuntime,
+  type GatewayUpdateActiveAction,
 } from "./GatewayUpdateDialog";
 import { PrivilegeTotpDialog } from "./PrivilegeTotpDialog";
 import { ProviderControls } from "./ProviderControls";
@@ -1753,7 +1754,7 @@ function MalinkAppRuntime() {
   const [gatewayUpdateActiveNodeIds, setGatewayUpdateActiveNodeIds] =
     useState<Set<string>>(() => new Set());
   const [gatewayUpdateActiveModesByNode, setGatewayUpdateActiveModesByNode] =
-    useState<Record<string, "when_idle" | "force" | "discard">>({});
+    useState<Record<string, GatewayUpdateActiveAction>>({});
   const [gatewayUpdateRuntimeByNode, setGatewayUpdateRuntimeByNode] = useState<
     Record<string, GatewayUpdateNodeRuntime>
   >({});
