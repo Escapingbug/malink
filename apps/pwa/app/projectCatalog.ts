@@ -1,3 +1,5 @@
+import { computerNodeAliases } from "./computerPresentation";
+
 export type GatewayProjectSource = {
   projectId: string;
   projectName: string;
@@ -8,6 +10,7 @@ export type GatewayProjectOwner = {
   gatewayNodeId: string;
   gatewayName: string;
   computerName: string;
+  computerGatewayNodeId?: string;
   shortId: string;
   label: string;
   deploymentLabel?: string;
@@ -25,12 +28,15 @@ export function gatewayProjectOwners(
   observations: Record<string, { deployment: { active: { gatewayNodeId: string; buildId: string }; candidate?: { gatewayNodeId: string; buildId: string }; recovery?: { gatewayNodeId: string; buildId: string } } }> = {},
 ): Map<string, GatewayProjectOwner> {
   const owners = new Map<string, GatewayProjectOwner>();
+  const aliases = computerNodeAliases(gateways, Object.values(observations).map(value => value.deployment));
   for (const gateway of gateways) {
     const owner = gatewayProjectOwner(
       gateway.gatewayNodeId,
       gateway.gatewayName,
       gateway.computerName,
     );
+    const computerNode = aliases.get(gateway.gatewayNodeId);
+    if (computerNode !== gateway.gatewayNodeId) owner.computerGatewayNodeId = computerNode;
     for (const { deployment } of Object.values(observations)) {
       if (deployment.recovery?.gatewayNodeId === gateway.gatewayNodeId) {
         owner.deploymentLabel = "Recovery version · repair only";

@@ -1,4 +1,5 @@
 "use client";
+import { computerRepresentatives, computerNodeAliases } from "./computerPresentation";
 import { bulkArchiveEligible, bulkGroupSessions } from "./bulkArchivePolicy";
 import { messageAttachments } from "./messageAttachments";
 
@@ -2271,7 +2272,8 @@ function MalinkAppRuntime() {
   }
   gatewayNodeBySessionRef.current = gatewayNodeBySession;
   const gatewayFilterOptions = useMemo(
-    () => (gatewayState?.gatewayDirectory?.directory.gateways ?? [])
+    () => computerRepresentatives(gatewayState?.gatewayDirectory?.directory.gateways ?? [],
+      Object.values(gatewayState?.gatewayDeployments ?? {}).map(value => value.deployment))
       .map(gateway => gatewayProjectOwner(
         gateway.gatewayNodeId,
         gateway.gatewayName,
@@ -2281,11 +2283,12 @@ function MalinkAppRuntime() {
         left.label.localeCompare(right.label) ||
         left.gatewayNodeId.localeCompare(right.gatewayNodeId),
       ),
-    [gatewayState?.gatewayDirectory],
+    [gatewayState?.gatewayDirectory, gatewayState?.gatewayDeployments],
   );
   const activeGatewayFilter = gatewayFilterOptions.length > 0
     ? normalizeGatewayFilter(
-        gatewayFilter,
+        computerNodeAliases(gatewayState?.gatewayDirectory?.directory.gateways ?? [],
+          Object.values(gatewayState?.gatewayDeployments ?? {}).map(value => value.deployment)).get(gatewayFilter) ?? gatewayFilter,
         gatewayFilterOptions.map(gateway => gateway.gatewayNodeId),
       )
     : ALL_GATEWAYS_FILTER;
@@ -2813,7 +2816,11 @@ function MalinkAppRuntime() {
     const workspaces = gatewayState.projects ?? [gatewayState.workspace];
     const directory = gatewayState.gatewayDirectory?.directory;
     if (directory) {
-      return directory.gateways.flatMap(gateway => {
+      return computerRepresentatives(directory.gateways,
+        Object.values(gatewayState.gatewayDeployments ?? {}).map(value => value.deployment))
+        .filter(gateway => !Object.values(gatewayState.gatewayDeployments ?? {}).some(value =>
+          value.deployment.recovery?.gatewayNodeId === gateway.gatewayNodeId && value.deployment.active.gatewayNodeId !== gateway.gatewayNodeId))
+        .flatMap(gateway => {
         const route = (gateway.projects ?? []).find(candidate =>
           workspaces.some(project => project.projectId === candidate.projectId),
         );
@@ -15460,6 +15467,7 @@ function MalinkAppRuntime() {
         activeDeviceCount={activeDeviceCount}
         savedGateways={savedGateways}
         gatewayDirectory={gatewayState?.gatewayDirectory ?? null}
+        computerDeployments={Object.values(gatewayState?.gatewayDeployments ?? {}).map(value => value.deployment)}
         availableProjectIds={allWorkspaceProjects
           .map(project => project.projectId)
           .filter(projectId =>

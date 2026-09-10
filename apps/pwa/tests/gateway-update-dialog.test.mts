@@ -23,7 +23,7 @@ test("checking versions never labels the install button as a running preparation
     onClose() {}, onStart() {}, onPromote() {}, onDiscard() {}, onOpenProject() {},
     onCheckVersions() {}, onOpenSession() {}, onArchiveSession() {}, onExportDiagnostics() {},
   }));
-  assert.match(html, /Checking version control/);
+  assert.match(html, /Checking available versions/);
   assert.doesNotMatch(html, /Preparing candidate Gateway…|Scheduling when idle…/);
 });
 test("completed takeover remains visible with its completion time", () => {

@@ -1,4 +1,6 @@
 "use client";
+import { computerRepresentatives } from "./computerPresentation";
+import type { GatewayDeploymentStatus } from "@malink/protocol";
 
 import { useRef, useState } from "react";
 import type {
@@ -78,6 +80,7 @@ type Props = {
   activeDeviceCount: number | null;
   savedGateways: MalinkPublicTrust[];
   gatewayDirectory: SignedWorkspaceGatewayDirectory | null;
+  computerDeployments?: readonly GatewayDeploymentStatus[];
   availableProjectIds: readonly string[];
   pairingBusy: boolean;
   deviceInvitation: GeneratedDeviceInvitation | null;
@@ -173,6 +176,7 @@ function MatrixSettingsDialog({
   activeDeviceCount,
   savedGateways,
   gatewayDirectory,
+  computerDeployments = [],
   availableProjectIds,
   repairReason,
   pairingBusy,
@@ -320,7 +324,7 @@ function MatrixSettingsDialog({
     availableProjectIdSet,
     onlineGatewayNodeIds,
   );
-  const directoryGatewayProfiles = (gatewayDirectory?.directory.gateways ?? []).map(
+  const directoryGatewayProfiles = computerRepresentatives(gatewayDirectory?.directory.gateways ?? [], computerDeployments).map(
     gateway => ({
       gatewayId: gateway.workspaceId,
       gatewayNodeId: gateway.gatewayNodeId,

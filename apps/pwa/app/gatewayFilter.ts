@@ -8,6 +8,7 @@ export type GatewayFilterStorageWriter = Pick<Storage, "removeItem" | "setItem">
 
 type ProjectGatewayOwner = {
   gatewayNodeId: string;
+  computerGatewayNodeId?: string;
 };
 
 export function readGatewayFilter(
@@ -59,7 +60,8 @@ export function projectMatchesGatewayFilter(
   fallbackGatewayNodeId: string,
 ): boolean {
   if (gatewayNodeId === ALL_GATEWAYS_FILTER) return true;
-  return (projectOwners.get(projectId)?.gatewayNodeId ?? fallbackGatewayNodeId) ===
+  const owner = projectOwners.get(projectId);
+  return (owner?.computerGatewayNodeId ?? owner?.gatewayNodeId ?? fallbackGatewayNodeId) ===
     gatewayNodeId;
 }
 
