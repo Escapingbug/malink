@@ -13137,7 +13137,7 @@ function MalinkAppRuntime() {
       )}
 
       <section className="session-panel" aria-label="Conversations">
-        <header className="session-header">
+        <header className={`session-header ${bulkSelect ? "bulk-header-replaced" : ""}`} aria-hidden={bulkSelect || undefined} inert={bulkSelect || undefined}>
           <div>
             <span className="eyebrow">Workspace</span>
             <h1>Malink</h1>
@@ -13317,24 +13317,21 @@ function MalinkAppRuntime() {
           onDismiss={dismissUiNotice}
         />
 
-        {trustedGateway && (
+        {trustedGateway && bulkSelect && (
           <div className={`bulk-session-actions ${bulkSelect ? "is-selecting" : ""}`}>
             <button type="button" className="secondary-button"
               disabled={bulkSubmitting || Object.values(bulkResults).includes("pending")}
               onClick={() => { setBulkSelect(!bulkSelect); setBulkSelected(new Set()); setBulkConfirm(false); setBulkResults({}); }}>
-              <span aria-hidden="true">{bulkSelect ? "✕" : "☑"}</span> {bulkSelect ? "退出多选" : "多选"}
+              取消
             </button>
             {bulkSelect && <>
               <button type="button" className="secondary-button" disabled={bulkSubmitting}
                 onClick={() => setBulkSelected(new Set(activeFilteredSessions.filter(bulkArchiveAllowed)
-                  .map(session => sessionLifecycleRouteKey(session.projectId, session.id))))}>全选筛选结果</button>
-              <button type="button" className="secondary-button" disabled={bulkSubmitting}
-                onClick={() => { setBulkSelected(new Set()); setBulkConfirm(false); }}>清空</button>
+                  .map(session => sessionLifecycleRouteKey(session.projectId, session.id))))}>全选</button>
               <button type="button" className="primary-button"
                 disabled={!gatewayConnected || bulkSubmitting || Object.values(bulkResults).includes("pending") ||
                   !activeFilteredSessions.some(session => bulkArchiveAllowed(session) && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)))}
                 onClick={() => setBulkConfirm(true)}>归档已选 · {activeFilteredSessions.filter(session => bulkArchiveAllowed(session) && bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id))).length}</button>
-              <small>点击会话勾选 · 仅操作当前筛选结果</small>
               {bulkConfirm && <div className="bulk-archive-confirm" role="alertdialog" aria-label="确认批量归档">
                 <strong>归档选中的会话？</strong>
                 <p>历史记录会保留，不会停止运行中的 Agent。</p>
@@ -15197,6 +15194,13 @@ function MalinkAppRuntime() {
           hasSessions={projectSettingsHasSessions}
           onClose={() => {
             if (!projectSettingsBusy) setProjectSettingsProjectId(null);
+          }}
+          onSelectConversations={() => {
+            setProjectSettingsProjectId(null);
+            setBulkSelect(true);
+            setBulkSelected(new Set());
+            setBulkConfirm(false);
+            setBulkResults({});
           }}
           onReviewProviderIssue={() => {
             setProjectSettingsProjectId(null);
