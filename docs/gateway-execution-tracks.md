@@ -50,3 +50,24 @@ requires the existing macOS repair route; unsupported layouts fail explicitly.
 After bootstrap verify `execution-tracks.json`, both real admin sockets and an
 authenticated APK version selection. A passing process fixture alone is not
 online acceptance. Future signed installs need no bootstrap or data migration.
+
+## Online acceptance — 2026-09-10
+
+Verified with the Official Android APK `8ee49e30` (versionCode `211196041`)
+against the existing authorized Workspace, using the published PWA `9ae5b3b`:
+
+- Selected `9c07003`, rolled back to `c5b1e74`, then selected `9c07003` again
+  through APK controls and signed Matrix commands, not owner activation calls.
+- The final handoff reached generation 7, `steady`, with `9c07003` active and
+  `c5b1e74` retained. Without reloading, the APK converged to “Update complete”
+  and offered the previous version while the supervisor reported the same pair.
+- The stable business node retained 10 projects and 31 sessions. Its Matrix
+  connection was ready with no pending commands or outbox deliveries.
+- A real prompt in the existing session returned `FINAL-8EE49E3-LIVE-OK.` and
+  reached idle in the APK without a reload. Cold-recovery delivery took roughly
+  38 seconds; this is functional acceptance, not a claim of low latency.
+
+This acceptance covers the local Mac Gateway only. The separate Mac mini was
+still advertising `8d46b6a`; it was not upgraded or validated by this run.
+The APK is published under GitHub Release `android-alpha-211196041`; SHA-256:
+`7cfcfb55043a804b029cf66ef4a85425644004be153a63223eca71d1e5ffc67b`.
