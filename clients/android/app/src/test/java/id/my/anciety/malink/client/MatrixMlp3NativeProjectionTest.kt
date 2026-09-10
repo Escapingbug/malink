@@ -23,6 +23,38 @@ import org.junit.Test
 
 class MatrixMlp3NativeProjectionTest {
     @Test
+    fun `authenticated status replay can complete a still pending local command`() {
+        val projection = projection()
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        val status = event(eventId = "version-status", projectId = "project-1", causationCommandId = "select-version",
+            payload = buildJsonObject {
+                put("type", "gateway.update.status")
+                put("status", buildJsonObject {
+                    put("version", 1); put("phase", "scheduled"); put("releaseId", "old"); put("updatedAt", 20)
+                    put("executionTracks", buildJsonObject {
+                        put("generation", 1); put("activeRelease", "new"); put("targetRelease", "old"); put("phase", "releasing")
+                    })
+                })
+            })
+        assertEquals("select-version", projection.applyGatewayEvent(status, "\$first", null).terminal?.commandId)
+        val restored = MatrixMlp3NativeProjection(gatewayId = { "gateway-1" }, activeDeviceCount = { 2 }, initialState = projection.durableState())
+        assertEquals("select-version", restored.applyGatewayEvent(status, "\$replayed", null).terminal?.commandId)
+    }
+
+    @Test
+    fun `only retained matching snapshot versions skip a pointer download`() {
+        val projection = projection()
+        assertFalse(projection.hasProjectedSnapshot("project-1", 1, false))
+        projection.applyGatewayEvent(projectSnapshot(), "\$project", null)
+        assertTrue(projection.hasProjectedSnapshot("project-1", 1, false))
+        assertFalse(projection.hasProjectedSnapshot("project-1", 2, false))
+        assertFalse(projection.hasProjectedSnapshot("project-1", 1, true))
+        projection.applyGatewayEvent(workspaceSnapshot(1, "gpt-5.6-sol"), "\$workspace", null)
+        assertTrue(projection.hasProjectedSnapshot("project-1", 1, true))
+        assertFalse(projection.hasProjectedSnapshot("other", 1, true))
+    }
+
+    @Test
     fun `shared prompt attachments survive native user message projection`() {
         val attachment = buildJsonObject {
             put("id", "shared-file")

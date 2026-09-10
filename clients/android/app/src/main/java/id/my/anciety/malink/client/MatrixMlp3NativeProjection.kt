@@ -671,9 +671,11 @@ internal class MatrixMlp3NativeProjection(
         }
 
         if (type == "gateway.update.status") {
-            if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult()
             val status = payload.requiredObject("status")
             validateGatewayUpdateStatus(status)
+            if (!seenEvents.add(eventId)) return MatrixMlp3NativeProjectionResult(
+                terminal = terminal(type, event, payload, causation, sessionId),
+            )
             val currentUpdatedAt = gatewayUpdateStatus?.requiredLong("updatedAt") ?: -1
             val incomingUpdatedAt = status.requiredLong("updatedAt")
             val globalStatusChanged = incomingUpdatedAt >= currentUpdatedAt
@@ -1889,6 +1891,11 @@ internal class MatrixMlp3NativeProjection(
 
     @Synchronized
     fun projectedWorkspaceCapabilityProjectIds(): Set<String> = projectCapabilities.keys.toSet()
+
+    @Synchronized
+    fun hasProjectedSnapshot(projectId: String, version: Long, workspace: Boolean): Boolean =
+        (if (workspace) projectCapabilities[projectId]?.snapshotVersion else projects[projectId]?.snapshotVersion)
+            ?.let { it >= version } == true
 
     /** Null means no authoritative multi-Gateway directory has been projected yet. */
     @Synchronized

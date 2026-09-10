@@ -3017,6 +3017,12 @@ class NativeClientRuntime(
             } finally {
                 keys.wipe()
             }
+            val pointerVersion = pointer.long("snapshotVersion")
+            if (pointerVersion != null && pointerVersion > 0 &&
+                matrixMlp3Projection.hasProjectedSnapshot(pointerProjectId, pointerVersion,
+                    eventType == MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE)) {
+                return true
+            }
             val snapshotEvent = matrix.fetchApplicationEvent(
                 pointer.string("eventId")
                     ?: throw IllegalArgumentException("The MLP/3 pointer event ID is missing."),
