@@ -132,6 +132,7 @@ class MainActivity : ComponentActivity() {
     private var nativeBridge: NativeWebBridge? = null
     private var foreground = false
     private var webViewResumed = false
+    private var webBootstrapRecoveryVisible = false
     private var pendingForegroundStart = false
     private var pendingSessionId: String? = null
     private val sharedFileInbox by lazy { SharedFileInbox(this) }
@@ -320,6 +321,7 @@ class MainActivity : ComponentActivity() {
         webView?.apply {
             resumeTimers()
             onResume()
+            if (!webBootstrapReady) scheduleWebBootstrapTimeout(this)
         }
         if (pendingNativeUpdateInstall && packageManager.canRequestPackageInstalls()) {
             pendingNativeUpdateInstall = false
@@ -341,6 +343,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         webViewResumed = false
+        // JavaScript cannot make progress while paused. Invalidate probes too:
+        // their delayed callbacks may otherwise rebuild a healthy resumed UI.
+        webBootstrapGeneration += 1
+        webBootstrapTimeout?.cancel()
+        webBootstrapTimeout = null
         webView?.apply {
             onPause()
             pauseTimers()
@@ -969,7 +976,7 @@ class MainActivity : ComponentActivity() {
         webBootstrapReady = false
         webBootstrapCriticalFailure = null
         webBootstrapLastProbe = null
-        val generation = ++webBootstrapGeneration
+        ++webBootstrapGeneration
         webBootstrapTimeout?.cancel()
         showWebLoading(
             title = if (webBootstrapRepairAttempted) "Repairing Malink UI…" else "Loading Malink…",
@@ -979,9 +986,16 @@ class MainActivity : ComponentActivity() {
                 "Connecting the secure interface to the native background service."
             },
         )
+        scheduleWebBootstrapTimeout(view)
+    }
+
+    private fun scheduleWebBootstrapTimeout(view: WebView) {
+        webBootstrapTimeout?.cancel()
+        if (view !== webView || webBootstrapReady || !webViewResumed) return
+        val generation = ++webBootstrapGeneration
         webBootstrapTimeout = lifecycleScope.launch {
             delay(WEB_BOOTSTRAP_TIMEOUT_MS)
-            if (generation == webBootstrapGeneration && !webBootstrapReady) {
+            if (generation == webBootstrapGeneration && !webBootstrapReady && webViewResumed) {
                 recoverWebBootstrapAfterProbe(view, generation)
             }
         }
@@ -992,6 +1006,10 @@ class MainActivity : ComponentActivity() {
         if (webBootstrapReady) return
         leaveNativeRecoveryUpdate()
         webBootstrapReady = true
+        if (webBootstrapRecoveryVisible) {
+            webBootstrapRecoveryVisible = false
+            showContent(current)
+        }
         webBootstrapCriticalFailure = null
         webBootstrapLastProbe = null
         webBootstrapTimeout?.cancel()
@@ -1015,7 +1033,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun recoverWebBootstrap(view: WebView, reason: String) {
-        if (view !== webView || webBootstrapReady) return
+        if (view !== webView || webBootstrapReady || !webViewResumed) return
         webBootstrapTimeout?.cancel()
         webBootstrapTimeout = null
         if (!webBootstrapRepairAttempted) {
@@ -1041,6 +1059,7 @@ class MainActivity : ComponentActivity() {
                 !completed &&
                 view === webView &&
                 generation == webBootstrapGeneration &&
+                webViewResumed &&
                 !webBootstrapReady
             ) {
                 completed = true
@@ -1734,6 +1753,7 @@ class MainActivity : ComponentActivity() {
     private fun showWebBootstrapRecoveryPage(reason: String) {
         leaveNativeRecoveryUpdate()
         stopWebBootstrap()
+        webBootstrapRecoveryVisible = true
         val bridgeMissing = reason == "bridge_missing"
         showContent(messageView(
             title = "Malink UI could not start",
