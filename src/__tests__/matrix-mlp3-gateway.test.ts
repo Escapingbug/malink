@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   MALINK_MATRIX_EXTENSION,
   MLP3_MATRIX_PROVIDER_CATALOG_EVENT_TYPE,
@@ -141,6 +141,25 @@ class TestMatrixClient extends InMemoryMatrixTransport implements MatrixGatewayC
 }
 
 describe('MatrixMlp3GatewayRunner', () => {
+  it('activates dedicated maintenance locally without waiting for key-grant network attempts', async () => {
+    const room = { roomId: '!repair:example.org' }
+    const registered = { project: { projectId: 'repair' } }
+    const registerProject = vi.fn(async () => registered)
+    const onProjectCreated = vi.fn(async () => {})
+    const receiver = {
+      config: { gatewayNodeId: 'node' }, projects: new Map(),
+      scratchSessionDirectory: () => '/isolated-repair', registerProject,
+      dependencies: { isolatedMaintenanceProjects: true,
+        createProject: async () => ({ room }), onProjectCreated },
+    }
+    const method = (MatrixMlp3GatewayRunner.prototype as unknown as {
+      isolatedMaintenanceProject: (source: unknown, command: unknown) => Promise<unknown>
+    }).isolatedMaintenanceProject
+    expect(await method.call(receiver, { config: {}, project: { provider: 'test' } }, { deviceId: 'phone' })).toBe(registered)
+    expect(onProjectCreated).toHaveBeenCalledWith(room)
+    expect(registerProject).toHaveBeenCalledWith(room, { waitForPublication: false })
+  })
+
   it('scopes maintenance sessions to one physical Gateway node', () => {
     const first = gatewayMaintenanceSessionId('gateway-node-a', 'release-2')
     const second = gatewayMaintenanceSessionId('gateway-node-b', 'release-2')

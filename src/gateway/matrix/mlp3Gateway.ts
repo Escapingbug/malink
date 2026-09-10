@@ -1408,7 +1408,11 @@ export class MatrixMlp3GatewayRunner {
                 occurredAt: this.now(),
                 payload: { type: 'project.snapshot', ...this.projectSnapshot(maintenanceProject) },
               }
-              maintenanceRoot = (await this.content.sendEvent(maintenanceProject.config, root, this.client)).eventId
+              const queued = await this.content.enqueueEvent(maintenanceProject.config, root, this.client)
+              // The physical root is required for m.thread, but a failed
+              // network attempt is not a failed update. The durable outbox
+              // owns retries and resolves this confirmation after delivery.
+              maintenanceRoot = (await queued.confirmation).eventId
             }
           }
           const runtime = await this.maintenanceAgentRuntime(
@@ -1500,7 +1504,10 @@ export class MatrixMlp3GatewayRunner {
       name, cwd, provider: source.project.provider, createDirectory: true,
     })
     await this.dependencies.onProjectCreated?.(created.room)
-    return this.registerProject(created.room)
+    const project = await this.registerProject(created.room, { waitForPublication: false })
+    // Establish local encryption/authorization before staging the root without
+    // requiring every addressed key grant to finish a network attempt first.
+    return project
   }
 
   private async maintenanceAgentRuntime(
@@ -4090,7 +4097,7 @@ export class MatrixMlp3GatewayRunner {
 
   private async registerProject(
     room: MatrixGatewayRoomConfig,
-    options: { deferActivation?: boolean } = {},
+    options: { deferActivation?: boolean; waitForPublication?: boolean } = {},
   ): Promise<V3ProjectRuntime> {
     const requestedProjectId = room.projectId ?? gatewayProjectIdentity(
       room.cwd,
@@ -4104,7 +4111,7 @@ export class MatrixMlp3GatewayRunner {
         || existing.project.projectId !== requestedProjectId
       ) throw new Error(`Project ${requestedProjectId} conflicts with an active Matrix room`)
       if (options.deferActivation) this.deferProjectActivation(existing)
-      else await this.activateProject(existing)
+      else await this.activateProject(existing, options.waitForPublication)
       return existing
     }
     await this.runtimeState.initialize([room])
@@ -4114,7 +4121,7 @@ export class MatrixMlp3GatewayRunner {
       this.config.rooms.push(room)
     }
     if (options.deferActivation) this.deferProjectActivation(project)
-    else await this.activateProject(project)
+    else await this.activateProject(project, options.waitForPublication)
     return project
   }
 
