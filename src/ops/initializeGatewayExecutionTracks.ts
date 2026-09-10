@@ -35,6 +35,13 @@ export async function initializeGatewayExecutionTracks(input: {
   }
   if (process.platform !== 'darwin') throw new Error('Execution track launchd migration requires macOS')
   const config = configuration.parse(JSON.parse(raw))
+  let legacyGeneration = 0
+  try {
+    const legacy = JSON.parse(await readFile(join(input.installRoot, 'deployment-state.json'), 'utf8'))
+    legacyGeneration = z.number().int().nonnegative().parse(legacy.status.generation)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
   const plist = JSON.parse((await execute('/usr/bin/plutil', ['-convert', 'json', '-o', '-', input.launchAgentPath])).stdout)
   const environment = plist.EnvironmentVariables as NodeJS.ProcessEnv
   const executable = plist.ProgramArguments?.[0]
@@ -53,7 +60,8 @@ export async function initializeGatewayExecutionTracks(input: {
   })
   const tracks = new GatewayExecutionTracks(join(input.installRoot, 'execution-tracks.json'), {
     version: 1, gatewayNodeId: config.gatewayNodeId, dataDirectory: input.dataDirectory,
-    generation: 0, activeRelease: config.defaultRelease, standbyRelease: config.previousRelease, phase: 'steady',
+    generation: 0, activeRelease: config.defaultRelease, standbyRelease: config.previousRelease,
+    phase: 'activating', targetRelease: config.defaultRelease,
   }, workers)
   // Admission occurs before disabling the legacy automatic spawn authority.
   const state = await tracks.status()
@@ -92,7 +100,7 @@ export async function initializeGatewayExecutionTracks(input: {
     const active = await inspectGatewayDeploymentSlot({ dataDirectory: input.dataDirectory,
       releaseId: state.activeRelease, buildId: input.supervisor.executionBuildId(state.activeRelease) ?? state.activeRelease })
     return { version: 1, strategy: 'blue-green-v1', maxDeployments: 2,
-      computerId: config.computerId, generation: state.generation,
+      computerId: config.computerId, generation: legacyGeneration + 1 + state.generation,
       phase: state.phase === 'attention' ? 'repair_required' : 'steady', active,
       recovery: { gatewayNodeId: config.controlGatewayNodeId, buildId: config.controlBuildId,
         releaseId: config.controlReleaseId, projectId: config.controlProjectId,

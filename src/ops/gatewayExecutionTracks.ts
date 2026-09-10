@@ -107,11 +107,18 @@ export class GatewayExecutionTracks {
     return this.serialize(async () => {
       const state = await this.status()
       if (state.phase !== 'steady') { await this.complete(state); return }
+      state.phase = 'activating'
+      state.targetRelease = state.activeRelease
+      await this.save(state)
       try {
         await this.host.validateRelease(state.activeRelease, state.dataDirectory)
         await this.host.ensureStandby(state.activeRelease)
         await this.host.activate(state.activeRelease, state.dataDirectory, state.gatewayNodeId)
         await this.host.verifyActive(state.activeRelease, state.dataDirectory, state.gatewayNodeId)
+        state.phase = 'steady'
+        delete state.targetRelease
+        delete state.error
+        await this.save(state)
       } catch (error) {
         state.phase = 'attention'; state.targetRelease = state.activeRelease
         state.error = error instanceof Error ? error.message : String(error)

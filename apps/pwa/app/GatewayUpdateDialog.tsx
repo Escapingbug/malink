@@ -307,7 +307,8 @@ function GatewayUpdateDialogContent({
                 </div>
 
                 {onCheckVersions && <button type="button" disabled={!connected || activeGatewayNodeIds.has(node.gatewayNodeId)}
-                  onClick={() => onCheckVersions(node)}>Check available versions</button>}
+                  aria-busy={activeGatewayNodeIds.has(node.gatewayNodeId)}
+                  onClick={() => onCheckVersions(node)}>{activeGatewayNodeIds.has(node.gatewayNodeId) ? "Checking version control…" : "Check available versions"}</button>}
                 {runtime.status?.executionTracks && (
                   <section className="gateway-update-action-status" aria-label="Gateway versions">
                     <p>Default version · {runtime.status.executionTracks.activeRelease}</p>

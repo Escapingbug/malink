@@ -8638,6 +8638,11 @@ function MalinkAppRuntime() {
   }
 
   async function checkGatewayExecutionVersions(node: GatewayUpdatePlanNode): Promise<void> {
+    if (gatewayUpdateActiveNodeIdsRef.current.has(node.gatewayNodeId)) return;
+    const checking = new Set(gatewayUpdateActiveNodeIdsRef.current);
+    checking.add(node.gatewayNodeId);
+    gatewayUpdateActiveNodeIdsRef.current = checking;
+    setGatewayUpdateActiveNodeIds(checking);
     try {
       const fallbackProject = node.computerId ? gatewayStateRef.current?.gatewayDeployments?.[node.computerId]?.deployment.recovery?.projectId : undefined;
       const targetProject = gatewayUpdateRuntimeByNodeRef.current[node.gatewayNodeId]?.status?.executionTracks?.controlProjectId ?? fallbackProject ?? node.targetProjectId;
@@ -8648,6 +8653,11 @@ function MalinkAppRuntime() {
         "This computer does not have dual-version control enabled yet. Its existing update workflow remains available.");
     } catch (error) {
       showUiNotice(`gateway-track:${node.gatewayNodeId}`, "connection", "warning", formatUiError(error));
+    } finally {
+      const remaining = new Set(gatewayUpdateActiveNodeIdsRef.current);
+      remaining.delete(node.gatewayNodeId);
+      gatewayUpdateActiveNodeIdsRef.current = remaining;
+      setGatewayUpdateActiveNodeIds(remaining);
     }
   }
 
@@ -8839,7 +8849,9 @@ function MalinkAppRuntime() {
           gatewayUpdate: latestGatewayUpdateStatus(current.gatewayUpdate, mergedStatus),
         })
       : current);
-    return mergedStatus;
+    // A different computer's global snapshot must not replace the signed
+    // result of this exact command. Callers own the per-node status merge.
+    return status;
   }
 
   async function executeGatewayDeployment(

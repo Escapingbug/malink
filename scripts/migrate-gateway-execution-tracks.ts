@@ -35,6 +35,9 @@ if (catalog.gatewayNodeId !== host.candidateGatewayNodeId
 }
 const current = basename(await readlink(join(installRoot, 'current')))
 const supervisor = new GatewayUpdateSupervisor({ installRoot, executionTracksEnabled: true,
+  agentChannelUrl: env.MALINK_GATEWAY_AGENT_UPDATE_CHANNEL_URL,
+  agentPromptBaseUrl: env.MALINK_GATEWAY_AGENT_UPDATE_PROMPT_BASE_URL,
+  manifestBaseUrl: env.MALINK_GATEWAY_RELEASE_MANIFEST_BASE_URL,
   trustedSigner: pairingPublicKeySchema.parse(await json(env.MALINK_GATEWAY_RELEASE_SIGNER_FILE)),
   launchAgentPath: env.MALINK_GATEWAY_LAUNCH_AGENT, serviceLabel: env.MALINK_GATEWAY_SERVICE_LABEL,
   gatewayAdminSocketPath: env.MALINK_GATEWAY_ADMIN_SOCKET, gatewayDataDirectory: data })
@@ -65,6 +68,8 @@ try {
   await writeFile(join(archive, 'gateway-projects.json'), JSON.stringify({ ...controlCatalog,
     gatewayNodeId: host.sourceGatewayNodeId }), { mode: 0o600 })
   controlPlist.ProgramArguments[1] = join(admitted.directory, 'ops/matrix-local-gateway.js')
+  controlPlist.RunAtLoad = true
+  controlPlist.KeepAlive = true
   Object.assign(controlPlist.EnvironmentVariables, { MALINK_GATEWAY_BUILD_ID: admitted.buildId,
     MALINK_GATEWAY_EXECUTION_CONTROL_ONLY: '1', MALINK_GATEWAY_BLUE_GREEN: '0' })
   const temporary = `${controlPlistPath}.execution-tracks`
@@ -81,5 +86,6 @@ try {
   await rename(temporaryLink, join(installRoot, 'current'))
 } finally { await controlLock.release() }
 await execute('/bin/launchctl', ['bootstrap', domain, controlPlistPath])
+await execute('/bin/launchctl', ['kickstart', `${domain}/${controlPlist.Label}`])
 await execute('/bin/launchctl', ['kickstart', '-k', `${domain}/${plist.Label}`])
 process.stdout.write(`Execution tracks bootstrap requested. Verify both admin sockets and signed APK controls. Configuration backup: ${backup}\n`)

@@ -24,6 +24,14 @@ import { gatewayUpdateRecoveryAction } from "../app/gatewayUpdateRecovery.ts";
 
 const release = { releaseId: "2026.08.26.2", buildId: "gateway-next-arm64" };
 
+test("a legacy snapshot of the same signed status does not erase opted-in version controls", () => {
+  const current = { version: 1 as const, phase: "committed" as const, releaseId: "new", updatedAt: 123,
+    executionTracks: { generation: 2, activeRelease: "new", standbyRelease: "old", phase: "steady" as const } };
+  const { executionTracks: _tracks, ...legacy } = current;
+  assert.deepEqual(latestGatewayUpdateStatus(current, legacy).executionTracks, _tracks);
+  assert.equal(latestGatewayUpdateStatus(current, { ...legacy, updatedAt: 124 }).executionTracks, undefined);
+});
+
 test("opens maintenance in its own signed project without crossing Gateway ownership", () => {
   const directory = { directory: { gateways: [
     { gatewayNodeId: "old", projects: [{ projectId: "normal" }, { projectId: "repair" }] },

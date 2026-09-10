@@ -275,6 +275,10 @@ export function latestGatewayUpdateStatus(
   current: GatewayUpdateStatus | undefined,
   incoming: GatewayUpdateStatus,
 ): GatewayUpdateStatus {
+  if (current?.executionTracks && !incoming.executionTracks
+    && current.releaseId === incoming.releaseId && current.updatedAt === incoming.updatedAt) {
+    incoming = { ...incoming, executionTracks: current.executionTracks };
+  }
   if (!current) return incoming;
   if (incoming.updatedAt > current.updatedAt) return incoming;
   if (incoming.updatedAt < current.updatedAt) return current;
