@@ -8940,6 +8940,24 @@ select:focus-visible {
   line-height: 1.45;
 }
 
+.gateway-version-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.gateway-version-check-icon { display: inline-block; flex-shrink: 0; }
+.gateway-version-check-icon.is-checking { animation: gateway-version-spin 1s linear infinite; }
+@keyframes gateway-version-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .gateway-version-check-icon.is-checking { animation: none; }
+}
+
 .gateway-update-action-status {
   flex: 1 1 100%;
   margin: 0;

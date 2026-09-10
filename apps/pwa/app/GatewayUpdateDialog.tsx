@@ -310,9 +310,13 @@ function GatewayUpdateDialogContent({
                   </span>
                 </div>
 
-                {onCheckVersions && <button type="button" disabled={!connected || activeGatewayNodeIds.has(node.gatewayNodeId)}
-                  aria-busy={activeGatewayNodeIds.has(node.gatewayNodeId)}
-                  onClick={() => onCheckVersions(node)}>{activeMode === "check_versions" ? "Checking version control…" : "Check available versions"}</button>}
+                {onCheckVersions && <button type="button" className="secondary-button gateway-version-button"
+                  disabled={!connected || activeGatewayNodeIds.has(node.gatewayNodeId)}
+                  aria-busy={activeMode === "check_versions"}
+                  onClick={() => onCheckVersions(node)}>
+                  <span className={activeMode === "check_versions" ? "gateway-version-check-icon is-checking" : "gateway-version-check-icon"} aria-hidden="true">↻</span>
+                  {activeMode === "check_versions" ? "Checking available versions…" : "Check available versions"}
+                </button>}
                 {runtime.status?.executionTracks && (
                   <section className="gateway-update-action-status" aria-label="Gateway versions">
                     <p>Default version · {runtime.status.executionTracks.activeRelease}</p>
@@ -328,7 +332,7 @@ function GatewayUpdateDialogContent({
                       [...new Set([runtime.status.executionTracks.standbyRelease,
                         ...(runtime.status.executionTracks.phase === "attention" ? [runtime.status.executionTracks.activeRelease, runtime.status.executionTracks.targetRelease] : [])])]
                         .filter((id): id is string => Boolean(id)).map(id => (
-                          <button key={id} type="button" disabled={!connected || activeGatewayNodeIds.has(node.gatewayNodeId)}
+                          <button key={id} type="button" className="secondary-button gateway-version-button" disabled={!connected || activeGatewayNodeIds.has(node.gatewayNodeId)}
                             onClick={() => onSelectVersion(node, id, runtime.status!.executionTracks!.generation)}>
                             Use version {id}
                           </button>
