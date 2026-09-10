@@ -5,6 +5,7 @@ import {
   collidingGatewayMaintenanceSessionIds,
   gatewayMaintenanceAutoArchiveAttemptKey,
   gatewayMaintenanceSessionCanBeArchived,
+  gatewayMaintenanceSessionProject,
   gatewayMaintenanceSessionShouldAutoArchive,
   type GatewayUpdateCommand,
   gatewayUpdateCommandReachedSignedBoundary,
@@ -22,6 +23,21 @@ import {
 import { gatewayUpdateRecoveryAction } from "../app/gatewayUpdateRecovery.ts";
 
 const release = { releaseId: "2026.08.26.2", buildId: "gateway-next-arm64" };
+
+test("opens maintenance in its own signed project without crossing Gateway ownership", () => {
+  const directory = { directory: { gateways: [
+    { gatewayNodeId: "old", projects: [{ projectId: "normal" }, { projectId: "repair" }] },
+    { gatewayNodeId: "other", projects: [{ projectId: "remote" }] },
+  ] } } as SignedWorkspaceGatewayDirectory;
+  const input = { commandProjectId: "normal", sessionId: "maintenance", directory,
+    sessions: [{ id: "maintenance", projectId: "repair" }, { id: "maintenance", projectId: "remote" }] };
+  assert.equal(gatewayMaintenanceSessionProject(input), "repair");
+  assert.equal(gatewayMaintenanceSessionProject({ ...input, sessions: [] }), undefined);
+  assert.equal(gatewayMaintenanceSessionProject({ ...input, directory: undefined }), undefined);
+  assert.equal(gatewayMaintenanceSessionProject({ ...input, sessions: [input.sessions[1]] }), undefined);
+  assert.equal(gatewayMaintenanceSessionProject({ ...input,
+    sessions: [...input.sessions, { id: "maintenance", projectId: "normal" }] }), undefined);
+});
 
 test("uses a newer signed supervisor phase to unblock the client update chain", () => {
   const baseline = {

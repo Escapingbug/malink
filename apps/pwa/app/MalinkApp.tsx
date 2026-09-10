@@ -174,6 +174,7 @@ import {
   collidingGatewayMaintenanceSessionIds,
   gatewayMaintenanceAutoArchiveAttemptKey,
   gatewayMaintenanceSessionCanBeArchived,
+  gatewayMaintenanceSessionProject,
   gatewayUpdatePlan as buildGatewayUpdatePlan,
   gatewayUpdatePlanNodeWithLiveStatus,
   gatewayUpdateCommandReachedSignedBoundary,
@@ -8610,10 +8611,22 @@ function MalinkAppRuntime() {
   }
 
   function openGatewayUpdateSession(projectId: string, sessionId: string): void {
+    const state = gatewayStateRef.current;
+    const maintenanceProjectId = gatewayMaintenanceSessionProject({
+      commandProjectId: projectId,
+      sessionId,
+      directory: state?.gatewayDirectory,
+      sessions: state?.sessions ?? [],
+    });
+    if (!maintenanceProjectId) {
+      showUiNotice("gateway:maintenance-route", "connection", "warning",
+        "The update conversation has not synchronized on this Gateway yet. Wait for sync and try again.");
+      return;
+    }
     setGatewayUpdateDialogOpen(false);
     setPrimaryView("chats");
     setMobileChatOpen(true);
-    activateLocalSession(sessionId, malinkClientRef.current, true, false, projectId);
+    activateLocalSession(sessionId, malinkClientRef.current, true, false, maintenanceProjectId);
   }
 
   async function recoverWithPreviousGateway(deployment = activeRecoveryDeployment): Promise<void> {
