@@ -14,6 +14,7 @@ async function fixture() {
     activeRelease: 'old', phase: 'steady' as const }
   let owner: string | undefined = 'old'
   let failure: string | undefined
+  let activationGate: Promise<void> | undefined
   const data = { sessions: ['existing'], results: ['first'], commands: ['command-1'] }
   const calls: string[] = []
   const host: GatewayExecutionTrackHost = {
@@ -28,6 +29,7 @@ async function fixture() {
       expect(path).toBe(dataDirectory); expect(node).toBe('stable-node')
       expect(owner === undefined || owner === release).toBe(true)
       calls.push(`activate:${release}`)
+      await activationGate
       if (failure === 'activate') throw new Error('cannot start')
       owner = release
     },
@@ -36,7 +38,8 @@ async function fixture() {
   const path = join(root, 'tracks.json')
   return { tracks: new GatewayExecutionTracks(path, initial, host),
     reopen: () => new GatewayExecutionTracks(path, initial, host), data, calls,
-    owner: () => owner, fail: (value?: string) => { failure = value } }
+    owner: () => owner, fail: (value?: string) => { failure = value },
+    gate: (value: Promise<void>) => { activationGate = value } }
 }
 
 it('changes only software execution and retains new conversations and command results on return', async () => {
@@ -92,4 +95,20 @@ it('allows explicit old-version selection after failed new-version activation', 
   expect(state.activeRelease).toBe('old')
   expect(state.standbyRelease).toBe('new')
   expect(f.owner()).toBe('old')
+})
+
+it('excludes another supervisor from resuming an in-flight activation', async () => {
+  const f = await fixture()
+  let unblock!: () => void
+  f.gate(new Promise<void>(resolve => { unblock = resolve }))
+  const selection = f.tracks.select('new', 0)
+  try {
+    await expect.poll(() => f.calls.includes('activate:new')).toBe(true)
+    await expect(f.reopen().resume()).rejects.toThrow('already owns')
+    expect(f.calls.filter(call => call === 'activate:new')).toHaveLength(1)
+  } finally {
+    unblock()
+    await selection
+  }
+  expect((await f.reopen().resume()).activeRelease).toBe('new')
 })

@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import { AtomicJsonFile } from '@malink/security/node'
+import { resolve } from 'node:path'
+import { acquireGatewayDataDirectoryLock } from '@/gateway/matrix/gatewayDataDirectoryLock'
 
 const release = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u)
 const stateSchema = z.object({
@@ -32,11 +34,13 @@ export interface GatewayExecutionTrackHost {
 export class GatewayExecutionTracks {
   private readonly file: AtomicJsonFile<GatewayExecutionTracksState>
   private chain: Promise<unknown> = Promise.resolve()
+  private readonly controlLockDirectory: string
 
   constructor(path: string, private readonly initial: GatewayExecutionTracksState,
     private readonly host: GatewayExecutionTrackHost) {
     stateSchema.parse(initial)
     this.file = new AtomicJsonFile(path)
+    this.controlLockDirectory = `${resolve(path)}.controller`
   }
 
   status(): Promise<GatewayExecutionTracksState> {
@@ -135,7 +139,17 @@ export class GatewayExecutionTracks {
   }
 
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
-    const next = this.chain.then(operation, operation)
+    const guarded = async () => {
+      // Atomic status writes alone do not protect external process operations:
+      // another supervisor could resume the same generation concurrently.
+      const lock = await acquireGatewayDataDirectoryLock(this.controlLockDirectory)
+      try {
+        return await operation()
+      } finally {
+        await lock.release()
+      }
+    }
+    const next = this.chain.then(guarded, guarded)
     this.chain = next.catch(() => undefined)
     return next
   }
