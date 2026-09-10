@@ -762,14 +762,14 @@ export class MatrixMlp3GatewayRunner {
     }
   }
 
-  async provisionCurrentState(): Promise<void> {
+  async provisionCurrentState(waitForPublication = true): Promise<void> {
     if (this.state !== 'running') {
       throw new Error(`Cannot provision MLP/3 state while Gateway is ${this.state}`)
     }
     for (const project of this.projects.values()) {
-      await this.content.provisionProject(project.config, this.client)
-      await this.publishWorkspaceSnapshot(project)
-      await this.publishProjectSnapshot(project)
+      await this.content.provisionProject(project.config, this.client, waitForPublication)
+      await this.publishWorkspaceSnapshot(project, waitForPublication)
+      await this.publishProjectSnapshot(project, waitForPublication)
     }
   }
 

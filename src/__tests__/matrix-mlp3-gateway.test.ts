@@ -141,6 +141,19 @@ class TestMatrixClient extends InMemoryMatrixTransport implements MatrixGatewayC
 }
 
 describe('MatrixMlp3GatewayRunner', () => {
+  it('stages workspace authorization refresh without waiting for unrelated room deliveries', async () => {
+    const project = { config: { roomId: '!existing:example.org' } }
+    const receiver = {
+      state: 'running', projects: new Map([['existing', project]]), client: {},
+      content: { provisionProject: vi.fn(async () => {}) },
+      publishWorkspaceSnapshot: vi.fn(async () => {}), publishProjectSnapshot: vi.fn(async () => {}),
+    }
+    await MatrixMlp3GatewayRunner.prototype.provisionCurrentState.call(receiver as never, false)
+    expect(receiver.content.provisionProject).toHaveBeenCalledWith(project.config, receiver.client, false)
+    expect(receiver.publishWorkspaceSnapshot).toHaveBeenCalledWith(project, false)
+    expect(receiver.publishProjectSnapshot).toHaveBeenCalledWith(project, false)
+  })
+
   it('activates dedicated maintenance locally without waiting for key-grant network attempts', async () => {
     const room = { roomId: '!repair:example.org' }
     const registered = { project: { projectId: 'repair' } }
