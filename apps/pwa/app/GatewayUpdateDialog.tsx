@@ -182,6 +182,9 @@ function GatewayUpdateDialogContent({
               : undefined;
             const deploymentOwner = deployment?.active.gatewayNodeId === node.gatewayNodeId;
             const deploymentInProgress = deploymentOwner && deployment.phase !== "steady";
+            const updateCompleted = deploymentOwner && deployment.phase === "steady" &&
+              deployment.active.buildId === release.buildId &&
+              deployment.detail === "All projects and sessions now use the promoted Gateway";
             const maintenanceCleanupAllowed = !deploymentInProgress &&
               (!node.blueGreenUpdate || deployment?.phase === "steady");
             const liveness = livenessByNode[node.gatewayNodeId];
@@ -280,10 +283,14 @@ function GatewayUpdateDialogContent({
                 >
                   <span aria-hidden="true" />
                   <span>
-                    <strong>{deploymentInProgress && activeMode !== "discard"
-                      ? `Gateway deployment: ${deployment.phase}`
+                    <strong>{updateCompleted ? "Update complete · Latest version installed" : deploymentInProgress && activeMode !== "discard"
+                      ? deployment.phase === "trial" ? "New version ready · Recovery available"
+                        : deployment.phase === "preparing" ? "Preparing the new version"
+                        : "Completing update"
                       : gatewayUpdateRuntimeStateTitle(runtime, node, release, activeMode)}</strong>
-                    <small>{deploymentInProgress && activeMode !== "discard"
+                    <small>{updateCompleted
+                      ? `Completed ${new Date(deployment.updatedAt).toLocaleString()}. All conversations use this version; the previous version's recovery window is closed.`
+                      : deploymentInProgress && activeMode !== "discard"
                       ? deployment.detail ?? "The signed deployment state controls this computer's candidate and switch actions."
                       : gatewayUpdateRuntimeStateDetail(
                       runtime,
@@ -353,7 +360,7 @@ function GatewayUpdateDialogContent({
                       {candidateNode?.targetProjectId ? (
                         <button
                           type="button"
-                          className="primary-button"
+                          className="secondary-button"
                           disabled={!connected}
                           onClick={() => onOpenProject(candidateNode.targetProjectId!)}
                         >
@@ -366,14 +373,14 @@ function GatewayUpdateDialogContent({
                       )}
                       <button
                         type="button"
-                        className="secondary-button"
+                        className="primary-button"
                         disabled={!connected || active}
                         aria-busy={active && activeMode === "when_idle"}
                         onClick={() => setCompletionConfirmationNodeId(node.gatewayNodeId)}
                       >
                         {active && activeMode === "when_idle"
-                          ? "Switching when idle…"
-                          : "Complete update when idle"}
+                          ? "Waiting for running conversations to finish…"
+                          : "Complete update"}
                       </button>
                       {completionConfirmationNodeId === node.gatewayNodeId && (
                         <div className="gateway-update-force-confirmation">
@@ -528,7 +535,7 @@ function GatewayUpdateDialogContent({
                               ? recovery.busyLabel
                               : "Preparing update…"
                           : node.blueGreenUpdate
-                            ? "Prepare candidate Gateway"
+                            ? "Prepare new version"
                           : stagedPublishedRelease
                             ? forwardOnlyConfirmation
                               ? "Confirm and install when idle"

@@ -754,7 +754,7 @@ function MatrixSettingsDialog({
                             : "Check this computer when it is online."}
                         </small>
                       </span>
-                      {(updateAvailable || gatewayUpdateDiscoveryError) && (
+                      {(gateway.buildId || updateAvailable || gatewayUpdateDiscoveryError) && (
                         <button
                           type="button"
                           disabled={busy || !gatewayManagementReady}
@@ -766,7 +766,7 @@ function MatrixSettingsDialog({
                             ? "Checking…"
                             : gatewayUpdateDiscoveryError
                               ? "Retry update check"
-                              : "View update options"}
+                              : updateAvailable ? "View update options" : "Update details"}
                         </button>
                       )}
                     </div>

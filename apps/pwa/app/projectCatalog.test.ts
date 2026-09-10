@@ -14,11 +14,11 @@ describe("canonicalGatewayProjects", () => {
     const active = { gatewayNodeId: "old", buildId: "gateway-release-a" };
     const candidate = { gatewayNodeId: "new", buildId: "gateway-release-b" };
     const trial = gatewayProjectOwners(gateways, { computer: { deployment: { active, candidate } } });
-    expect(trial.get("old-project")?.label).toContain("Previous Gateway · recovery · release-a");
-    expect(trial.get("trial-project")?.label).toContain("New Gateway · release-b");
+    expect(trial.get("old-project")?.label).toContain("Previous version · repair mode");
+    expect(trial.get("trial-project")?.label).toContain("New version · recovery available");
     const promoted = gatewayProjectOwners([{ ...gateways[1]!, projects: [{ projectId: "old-project" }, { projectId: "trial-project" }] }],
       { computer: { deployment: { active: candidate } } });
-    expect([...promoted.values()].every(owner => owner.deploymentLabel === "Current Gateway · release-b")).toBe(true);
+    expect([...promoted.values()].every(owner => owner.deploymentLabel === undefined && owner.label === "Same Mac")).toBe(true);
     expect(gatewayProjectOwners(gateways).get("old-project")?.deploymentLabel).toBeUndefined();
   });
   const workspace = {

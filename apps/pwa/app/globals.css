@@ -8750,11 +8750,11 @@ select:focus-visible {
 }
 
 .gateway-update-builds code {
-  overflow: hidden;
+  overflow-wrap: anywhere;
+  user-select: text;
   color: #52596a;
   font-size: 9px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .gateway-update-live {

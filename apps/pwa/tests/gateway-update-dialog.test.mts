@@ -5,6 +5,24 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { GatewayUpdateDialog } from "../app/GatewayUpdateDialog.tsx";
 
 const release = { releaseId: "2026.08.28.1", buildId: "gateway-next-arm64" };
+test("completed takeover remains visible with its completion time", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, {
+    open: true, connected: true, release,
+    nodes: [{ gatewayNodeId: "new", gatewayName: "Mac", computerId: "mac", onlineUpdate: true,
+      blueGreenUpdate: true, state: "current", currentBuildId: release.buildId }],
+    runtimeByNode: {}, activeGatewayNodeIds: new Set(),
+    deploymentsByComputer: { mac: { version: 1, strategy: "blue-green-v1", maxDeployments: 2,
+      computerId: "mac", generation: 2, phase: "steady", updatedAt: 1789001800498,
+      active: { gatewayNodeId: "new", buildId: release.buildId, projectCount: 1, sessionCount: 1 },
+      detail: "All projects and sessions now use the promoted Gateway" } },
+    onClose() {}, onStart() {}, onPromote() {}, onDiscard() {}, onOpenProject() {},
+    onOpenSession() {}, onArchiveSession() {}, onExportDiagnostics() {},
+  }));
+  assert.match(html, /Update complete · Latest version installed/);
+  assert.match(html, /Completed /);
+  assert.match(html, /recovery window is closed/);
+  assert.doesNotMatch(html, /Complete update<\/button>|Repair using previous Gateway/);
+});
 const nodes = [
   {
     gatewayNodeId: "node-office",
@@ -132,7 +150,7 @@ test("prepares a blue-green candidate without offering a destructive restart pat
     onExportDiagnostics() {},
   }));
 
-  assert.match(html, />Prepare candidate Gateway<\/button>/);
+  assert.match(html, />Prepare new version<\/button>/);
   assert.doesNotMatch(html, /Prepare candidate now|restart now|Stop work/);
   assert.equal(html.match(/class="primary-button"/g)?.length, 1);
 });
@@ -257,7 +275,7 @@ for (const phase of ["preparing", "trial", "draining", "committing", "repair_req
     assert.doesNotMatch(html, /Prepare candidate Gateway|older prepared build|Newer Gateway update available/);
     assert.match(html, /Repair using previous Gateway/);
     assert.doesNotMatch(html, />Archive (?:old )?update session<\/button>/);
-    if (phase === "trial") assert.match(html, /Complete update when idle/);
+    if (phase === "trial") assert.match(html, /Complete update<\/button>/);
   });
 }
 
