@@ -1,3 +1,4 @@
+import { readProjectRecoveryDiagnostics } from "./projectRecoveryDiagnostics";
 import { readMatrixSyncTimings } from "./matrixSyncDiagnostics";
 import type { MatrixConnectionStatus } from "./matrix";
 import { readSyncDiagnostics } from "./readSyncDiagnostics";
@@ -50,6 +51,7 @@ export function createConnectionDiagnostics(
     pwaBuild: boundedString(input.buildVersion, 128),
     matrixSyncTimings: readMatrixSyncTimings(),
     readSync: readSyncDiagnostics(),
+    projectRecovery: readProjectRecoveryDiagnostics(),
     connection: {
       status: input.status,
       detailCode,
