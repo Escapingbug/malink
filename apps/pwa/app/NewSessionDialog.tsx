@@ -30,6 +30,7 @@ export type NewSessionInput = {
   projectName: string;
   provider: string;
   providerSessionId?: string;
+  forkFromSessionId?: string;
   title?: string;
   initialPrompt?: string;
   model?: string;

@@ -3,6 +3,8 @@ import { Writable, Readable } from 'node:stream'
 import { ClientSideConnection, ndJsonStream, type Client, type Agent } from '@agentclientprotocol/sdk'
 import type {
     InitializeResponse,
+    ForkSessionRequest,
+    ForkSessionResponse,
     NewSessionRequest,
     NewSessionResponse,
     LoadSessionRequest,
@@ -127,6 +129,10 @@ export class AcpClientManager {
     /** Whether the agent supports session/resume (unstable) */
     get supportsResumeSession(): boolean {
         return this.initResponse?.agentCapabilities?.sessionCapabilities?.resume != null
+    }
+
+    get supportsForkSession(): boolean {
+        return this.initResponse?.agentCapabilities?.sessionCapabilities?.fork != null
     }
 
     get supportsListSessions(): boolean {
@@ -277,6 +283,15 @@ export class AcpClientManager {
         })
         this.sessionUpdates.set(response.sessionId, [])
         this.sessionWaiters.set(response.sessionId, [])
+        return response
+    }
+
+    async forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
+        const response = await this.requireConnection().unstable_forkSession(params)
+        if (!this.sessionUpdates.has(response.sessionId)) {
+            this.sessionUpdates.set(response.sessionId, [])
+            this.sessionWaiters.set(response.sessionId, [])
+        }
         return response
     }
 

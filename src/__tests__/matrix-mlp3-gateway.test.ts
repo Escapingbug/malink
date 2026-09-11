@@ -1320,8 +1320,11 @@ describe('MatrixMlp3GatewayRunner', () => {
       flush: async () => undefined,
       stop: () => undefined,
     }
+    const nativeForkCalls: string[] = []
     registerProvider({
       name: 'test',
+      supportsSessionFork: () => true,
+      forkSession: async input => { nativeForkCalls.push(input.sessionId); return { sessionId: 'provider-fork-1' } },
       startQuery() { throw new Error('The catalog provider must not execute a query') },
       isReady: () => true,
       getInitError: () => null,
@@ -2580,6 +2583,16 @@ describe('MatrixMlp3GatewayRunner', () => {
     expect(clearedProjectControls.controls).not.toHaveProperty('verbosity')
     expect(clearedProjectControls).not.toHaveProperty('model')
     expect(clearedProjectControls).not.toHaveProperty('reasoningEffort')
+    const forkCommand: Mlp3Command = { ...base, commandId: 'fork-session-1', sessionId: 'session-native-fork',
+      operation: 'session.create', payload: { operation: 'session.create', forkFromSessionId: 'session-a', title: 'Alternative' } }
+    await send(forkCommand, '$fork-root-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === 'fork-session-1' && event.payload.type === 'session.ready'))
+    expect(nativeForkCalls).toEqual(['provider-session-1'])
+    expect(providerSessionRestoreCalls).toContain('session-native-fork:provider-fork-1')
+    await send(forkCommand, '$fork-root-retry')
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(nativeForkCalls).toHaveLength(1)
     await expect(runner.sendSessionFile('session-a', {
       path: generatedImagePath,
       filename: 'generated-image.png',
@@ -3366,6 +3379,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       'session-b',
       'session-idle-update-new',
       'session-long-initial-prompt',
+      'session-native-fork',
       'session-provider-defaults',
       'session-scratch',
     ].sort())
@@ -3393,6 +3407,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       'session-idle-update-new',
       'session-b',
       'session-long-initial-prompt',
+      'session-native-fork',
       'session-provider-defaults',
       'session-scratch',
       gatewayMaintenanceSessionId('gateway-node-1', 'release-2'),
@@ -3446,7 +3461,7 @@ describe('MatrixMlp3GatewayRunner', () => {
     await waitFor(() => Promise.resolve(deletedProjects.includes(projectId)))
     expect(client.retiredRooms).toContain(roomId)
     await restarted.stop()
-  }, 30_000)
+  }, 60_000)
 })
 
 function nativeRelease(versionCode: number) {

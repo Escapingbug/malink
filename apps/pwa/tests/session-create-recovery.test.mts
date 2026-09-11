@@ -399,3 +399,9 @@ test("bounds the independent session creation watchdog delay", () => {
   assert.equal(sessionCreateRecoveryRemainingMs(recovery, recovery.createdAt + 59_999), 1);
   assert.equal(sessionCreateRecoveryRemainingMs(recovery, recovery.createdAt + 90_000), 0);
 });
+
+test("native branches request inherited history when creation completes", () => {
+  for (const known of [new Set<string>(), new Set(["fork"])]) {
+    assert.equal(completedSessionCreateTarget("fork", known, true).skipHistoryRestore, false);
+  }
+});

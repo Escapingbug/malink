@@ -113,6 +113,7 @@ export type GatewayCapabilities = {
     canListSessions: boolean;
     canInspectSessions: boolean;
     canMaterializeHistory?: boolean;
+    canForkSession?: boolean;
     controls?: ProviderControl[];
   }>;
   controls?: ProviderControl[];
@@ -862,6 +863,7 @@ export function parseGatewayCapabilities(input: unknown): GatewayCapabilities {
             canListSessions: provider.can_list_sessions,
             canInspectSessions: provider.can_inspect_sessions,
             canMaterializeHistory: provider.can_materialize_history === true,
+            canForkSession: provider.can_fork_session === true,
             ...(provider.controls === undefined
               ? {}
               : { controls: parseProviderControls(provider.controls) }),
@@ -1054,6 +1056,7 @@ function gatewayCapabilitiesExtension(
         name: provider.name,
         can_list_sessions: provider.canListSessions,
         can_inspect_sessions: provider.canInspectSessions,
+        ...(provider.canForkSession === undefined ? {} : { can_fork_session: provider.canForkSession }),
         ...(provider.canMaterializeHistory === undefined
           ? {}
           : { can_materialize_history: provider.canMaterializeHistory }),

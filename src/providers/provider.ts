@@ -144,6 +144,10 @@ export interface AgentProvider {
      */
     restoreSession?(config: AgentSessionRestoreConfig): Promise<AgentSessionRestoreResult>
 
+    /** Native, independent fork of the current persisted provider history. */
+    supportsSessionFork?(): boolean
+    forkSession?(config: AgentSessionRestoreConfig): Promise<AgentSessionRestoreResult>
+
     isReady(): boolean
     getInitError(): string | null
 

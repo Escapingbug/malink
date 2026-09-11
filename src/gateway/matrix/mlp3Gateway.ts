@@ -1,5 +1,6 @@
 import type { ExtensionCryptoService } from '../extensions/crypto.js'
 import { createHash, randomUUID } from 'node:crypto'
+import { SessionForkStore } from './sessionForkStore'
 import { BatchArchiveStore } from './batchArchiveStore'
 import { BatchArchiveInterruptedError, executeBatchArchive } from './batchArchiveExecutor'
 import { mkdir, rm } from 'node:fs/promises'
@@ -374,6 +375,8 @@ export class MatrixMlp3GatewayRunner {
   private readonly shadowInbox: FileMatrixEventInbox | null
   private readonly shadowRoomIds: Set<string>
   private readonly journal: Mlp3CommandJournal
+  private readonly nativeForks: SessionForkStore
+  private readonly forkingSessions = new Set<string>()
   private readonly archiveBatches: BatchArchiveStore
   private readonly runtimeState: FileMlp3RuntimeStateStore
   private readonly nativeClientReleases: FileNativeClientReleaseStore
@@ -428,6 +431,7 @@ export class MatrixMlp3GatewayRunner {
     private readonly dependencies: MatrixMlp3GatewayDependencies = {},
   ) {
     validateMatrixGatewayConfig(config)
+    this.nativeForks = new SessionForkStore(`${config.replayLedgerPath}.v3-native-forks.json`)
     this.archiveBatches = new BatchArchiveStore(`${config.replayLedgerPath}.v3-archive-batches`)
     if (config.startFenced) this.updateDrainState = 'sealed'
     this.client = dependencies.client
@@ -2298,6 +2302,23 @@ export class MatrixMlp3GatewayRunner {
       await this.settleAndDeliver(project, command, event, 'succeeded')
       return
     }
+    const forkSource = command.payload.forkFromSessionId
+      ? this.requireActiveSession(project, command.payload.forkFromSessionId)
+      : undefined
+    if (forkSource) {
+      if (command.payload.providerSessionId || command.payload.initialPrompt || command.payload.scope === 'scratch') {
+        throw new Error('Native forks cannot also restore a session, submit a prompt or create a scratch workspace')
+      }
+      if (forkSource.record.scope === 'scratch' || !forkSource.record.providerSessionId) {
+        throw new Error('Only persisted project conversations can be forked')
+      }
+      if (forkSource.activeTurn || forkSource.activity.phase !== 'idle') {
+        throw new Error('Wait for the source conversation to finish before creating a branch')
+      }
+      if (command.payload.provider && command.payload.provider !== forkSource.record.provider) {
+        throw new Error('Cross-provider forks are not supported')
+      }
+    }
     if (command.payload.providerSessionId) {
       const managed = project.project.sessions.find(session =>
         (session.lifecycle === 'active' || session.retainedArchive === true)
@@ -2308,7 +2329,14 @@ export class MatrixMlp3GatewayRunner {
         throw new Error(`Provider session is already managed by Malink session ${managed.id}`)
       }
     }
-    const settings = this.resolveCreateSettings(project, command)
+    const forkSourceVersion = forkSource?.record.stateVersion
+    const settings = forkSource ? {
+      provider: forkSource.record.provider,
+      model: forkSource.record.model,
+      reasoningEffort: forkSource.record.reasoningEffort,
+      permissionMode: forkSource.record.permissionMode,
+      controlValues: structuredClone(forkSource.record.controlValues),
+    } : this.resolveCreateSettings(project, command)
     const createdAt = this.now()
     const scope = command.payload.scope ?? 'project'
     const cwd = scope === 'scratch'
@@ -2346,10 +2374,10 @@ export class MatrixMlp3GatewayRunner {
       providerHistory: null,
       archiveCleanup: null,
       extensions: this.extensions.normalizeBindings(
-        command.payload.extensions ?? project.project.defaultExtensions,
+        forkSource?.record.extensions ?? command.payload.extensions ?? project.project.defaultExtensions,
       ),
       extensionRevision: 1,
-      inheritedFromProjectExtensionRevision: command.payload.extensions === undefined
+      inheritedFromProjectExtensionRevision: !forkSource && command.payload.extensions === undefined
         ? project.project.extensionDefaultsRevision
         : null,
       availableCommands: [],
@@ -2375,6 +2403,38 @@ export class MatrixMlp3GatewayRunner {
       }
     }
     try {
+      if (forkSource) {
+        if (this.forkingSessions.has(forkSource.record.id) || forkSource.activeTurn
+          || forkSource.activity.phase !== 'idle' || forkSource.record.lifecycle !== 'active'
+          || forkSource.record.stateVersion !== forkSourceVersion) {
+          throw new Error('The source conversation changed; wait until it is idle and try again')
+        }
+        this.forkingSessions.add(forkSource.record.id)
+        let provider: AgentProvider | undefined
+        try {
+          provider = this.providerForHistory(project, record)
+          if (!provider.forkSession) throw new Error(`Provider ${record.provider} does not support native forks`)
+          record.providerSessionId = await this.nativeForks.forkOnce(
+            JSON.stringify([project.project.projectId, command.deviceId, command.commandId]),
+            async () => {
+              const result = await provider!.forkSession!({
+                cwd: record.cwd,
+                sessionId: forkSource.record.providerSessionId!,
+                malinkSessionId: record.id,
+                signal: signal ?? new AbortController().signal,
+              })
+              if (!result.sessionId || result.sessionId === forkSource.record.providerSessionId) {
+                throw new Error('Provider did not return an independent forked session')
+              }
+              return result.sessionId
+            },
+          )
+          assertCommandExecutionActive(signal)
+        } finally {
+          this.forkingSessions.delete(forkSource.record.id)
+          await provider?.destroy?.()
+        }
+      }
       if (record.providerSessionId) {
         await this.prepareRecoveredProviderHistory(project, record, signal)
       }
@@ -2452,6 +2512,7 @@ export class MatrixMlp3GatewayRunner {
     prompt: { text: string; attachments?: import('@malink/protocol').MalinkAttachment[] },
     options: { settleCommand?: boolean; childTurnId?: string; signal?: AbortSignal } = {},
   ): Promise<void> {
+    if (this.forkingSessions.has(runtime.record.id)) throw new Error('Wait for conversation branching to finish before sending a new prompt')
     assertCommandExecutionActive(options.signal)
     if (options.childTurnId && options.settleCommand !== false) {
       throw new Error('A child Agent turn cannot settle its parent command')
@@ -2941,6 +3002,7 @@ export class MatrixMlp3GatewayRunner {
   ): Promise<void> {
     const sessionId = command.sessionId
     if (!sessionId) throw new Error('Lifecycle command is missing its session ID')
+    if (this.forkingSessions.has(sessionId)) throw new Error('Wait for conversation branching to finish before changing its lifecycle')
     // Recheck at dispatch, after waiting in the session queue. In particular a
     // batch must not retain access that was revoked while other items ran.
     const devices = this.dependencies.listTrustedDevices ? await this.dependencies.listTrustedDevices() : this.config.trustedDevices
@@ -2971,6 +3033,7 @@ export class MatrixMlp3GatewayRunner {
       await this.settleAndDeliver(project, command, lifecycle, 'succeeded')
       return
     }
+    if (this.forkingSessions.has(sessionId)) throw new Error('Wait for conversation branching to finish before changing its lifecycle')
     const requested = command.payload.state
     const retained = record.lifecycle === 'archived' && record.retainedArchive === true && record.archiveCleanup === null
     if (requested !== 'deleted' && record.lifecycle !== 'active' && !retained) {
@@ -4597,6 +4660,7 @@ export class MatrixMlp3GatewayRunner {
     sessionId: string | undefined,
   ): Mlp3SessionRuntime {
     if (!sessionId) throw new Error('Command is missing its session ID')
+    if (this.forkingSessions.has(sessionId)) throw new Error('This conversation is being forked; try again when branching finishes')
     const runtime = project.sessions.get(sessionId)
     if (!runtime) {
       const record = project.project.sessions.find(candidate => candidate.id === sessionId)
@@ -4818,6 +4882,7 @@ export class MatrixMlp3GatewayRunner {
           name: getProviderDisplayName(catalog.providerId),
           models: [],
           controls: catalogSnapshotControls(catalog),
+          can_fork_session: provider.supportsSessionFork?.() === true,
           can_list_sessions: typeof provider.listSessions === 'function',
           can_inspect_sessions: typeof provider.getSessionHistory === 'function',
           can_materialize_history: typeof provider.getSessionHistory === 'function'

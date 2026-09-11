@@ -62,24 +62,25 @@ export function sessionCreateFailureMessage(
 /**
  * Resolves both valid Matrix event orders for a completed session creation.
  * If the native session root is already projected, reveal it immediately and
- * leave no pending marker that could override a later manual selection. A
- * session revealed by this completion is brand new in either order, so its
- * first activation must not start an irrelevant history request.
+ * leave no pending marker that could override a later manual selection. An
+ * ordinary new session skips history loading; native branches must request
+ * the history they inherited from their provider.
  */
 export function completedSessionCreateTarget(
   sessionId: string,
   knownSessionIds: ReadonlySet<string>,
+  hasInheritedHistory = false,
 ): CompletedSessionCreateTarget {
   return knownSessionIds.has(sessionId)
     ? {
         pendingSessionId: null,
         sessionToReveal: sessionId,
-        skipHistoryRestore: true,
+        skipHistoryRestore: !hasInheritedHistory,
       }
     : {
         pendingSessionId: sessionId,
         sessionToReveal: null,
-        skipHistoryRestore: true,
+        skipHistoryRestore: !hasInheritedHistory,
       };
 }
 

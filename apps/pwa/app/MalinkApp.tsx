@@ -3,6 +3,8 @@
 import { ArchiveListHeading, ArchiveListHelp, ArchiveEmptyState, ArchivedConversationNotice } from "./ArchiveView";
 import { SessionDeleteDialog } from "./SessionDeleteDialog";
 import { SessionRenameDialog } from "./SessionRenameDialog";
+import { ConversationActionDialog } from "./ConversationActionDialog";
+import { referenceDraft, referenceTargets, type ConversationReference } from "./conversationReference";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { batchArchiveProgressSchema } from "@malink/protocol";
 import { batchArchiveUiStorageKey, readBatchArchiveUiResults, writeBatchArchiveUiResults } from "./batchArchiveUiStorage";
@@ -1611,6 +1613,7 @@ function MalinkAppRuntime() {
   const [bulkResults, setBulkResults] = useState<Record<string, "pending" | "done" | "failed">>({});
   const batchArchiveRevisions = useRef(new Map<string, number>());
   const [batchArchiveErrors, setBatchArchiveErrors] = useState<Record<string, string>>({});
+  const [conversationAction, setConversationAction] = useState<{ source: GatewaySessionSummary; reference?: ConversationReference } | null>(null);
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [sharedFileBatch, setSharedFileBatch] = useState<{ batchId: string; files: File[] } | null>(null);
@@ -9556,6 +9559,7 @@ function MalinkAppRuntime() {
         const target = completedSessionCreateTarget(
           completion.sessionId,
           knownGatewaySessionIdsRef.current,
+          Boolean(recovery.input.forkFromSessionId),
         );
         pendingCreatedSessionIdRef.current = target.pendingSessionId;
         sessionToReveal = target.sessionToReveal;
@@ -9622,7 +9626,7 @@ function MalinkAppRuntime() {
         const current = optimisticSessionRef.current;
         if (!current || current.localSessionId !== localSessionId) return;
         const selectedDraft = selectedSessionIdRef.current === localSessionId;
-        const revealRestoredSession = Boolean(current.input.providerSessionId);
+        const revealRestoredSession = Boolean(current.input.providerSessionId || current.input.forkFromSessionId);
         const localMessages = (
           liveMessagesBySessionRef.current.get(localSessionId) ?? []
         ).map((message) => ({ ...message, sessionId: remoteSessionId }));
@@ -9651,6 +9655,13 @@ function MalinkAppRuntime() {
           setMobileChatOpen(true);
         }
         removeOptimisticSession(localSessionId);
+        if (current.input.forkFromSessionId && (selectedDraft || revealRestoredSession) && connection) {
+          // A native fork already contains history; the optimistic row has none.
+          historyGenerationRef.current += 1;
+          historyCursorRef.current = null;
+          setHistoryHasMore(true);
+          void restoreSessionHistory(remoteSessionId, connection, current.input.projectId);
+        }
         clearPendingSessionCreateUi();
         recoverUiNotice("session:create-queue-storage");
         void flushQueuedSessionMessages(
@@ -10781,6 +10792,19 @@ function MalinkAppRuntime() {
     recoverUiNotice("project:create");
   }
 
+  function addConversationReference(target: GatewaySessionSummary) {
+    const reference = conversationAction?.reference;
+    if (!reference || !referenceTargets(reference.session, gatewayState?.sessions ?? []).some(session => session.id === target.id)) return;
+    const key = JSON.stringify([target.projectId, target.id]);
+    const previous = conversationDraftsRef.current.get(key) ?? { text: "", files: [] };
+    const text = `${previous.text}${previous.text ? "\n\n" : ""}${referenceDraft(reference)}`;
+    conversationDraftsRef.current.set(key, { ...previous, text });
+    chooseSession(target.id, target.projectId);
+    setDraft(text);
+    setConversationAction(null);
+    showUiNotice("conversation:reference", "composer", "info", "Quoted text added to this draft. Review it, add your request, or delete the quotation before sending. Nothing has been sent yet.");
+  }
+
   async function createSession(
     input: NewSessionInput,
     retryRecord?: OptimisticSessionRecord,
@@ -10871,6 +10895,7 @@ function MalinkAppRuntime() {
         scope: input.scope ?? "project",
         provider: input.provider,
         ...(input.providerSessionId ? { providerSessionId: input.providerSessionId } : {}),
+        ...(input.forkFromSessionId ? { forkFromSessionId: input.forkFromSessionId } : {}),
         ...(input.title ? { title: input.title } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.reasoningEffort
@@ -14370,6 +14395,18 @@ function MalinkAppRuntime() {
               setMobileChatOpen(false);
             });
           }} />
+        {conversationAction && <ConversationActionDialog
+          source={conversationAction.source} reference={conversationAction.reference}
+          sessions={gatewayState?.sessions ?? []} onClose={() => setConversationAction(null)}
+          onReference={addConversationReference}
+          onFork={title => {
+            const source = conversationAction.source;
+            setConversationAction(null);
+            void createSession({ projectId: source.projectId, cwd: source.cwd,
+              projectName: source.projectName, provider: source.provider,
+              forkFromSessionId: source.id, title });
+          }}
+        />}
         {sessionToRename && <SessionRenameDialog
           key={`${sessionToRename.projectId}:${sessionToRename.id}:${sessionToRename.title}`}
           session={sessionToRename}
@@ -14546,6 +14583,14 @@ function MalinkAppRuntime() {
             </span>
             {gatewaySelected && (
               <div className="session-menu-actions">
+                {activeCapabilities?.providers.find(provider => provider.id === gatewaySelected.provider)?.canForkSession && gatewaySelected.scope !== "scratch" && (
+                  <button type="button" className="session-menu-primary"
+                    disabled={selectedLifecycleBusy || !gatewayAvailable || isStreaming || gatewaySelected.status !== "idle"}
+                    onClick={() => { setConversationAction({ source: gatewaySelected }); setDetailsOpen(false); }}>
+                    <span aria-hidden="true">⑂</span><span><strong>Create branch</strong><small>Continue independently with current saved history · same project files</small></span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   className="session-menu-primary"
@@ -15015,6 +15060,14 @@ function MalinkAppRuntime() {
                   />
                   <div className="message-bubble-meta">
                     <MessageCopyButton text={message.text ?? ""} />
+                    {gatewaySelected && message.text && !isStreaming && !message.optimistic && (
+                      <button type="button" className="message-reference-button" title="Quote answer in another conversation"
+                        onClick={() => setConversationAction({ source: gatewaySelected,
+                          reference: { session: gatewaySelected, messageId: message.id, text: message.text! } })}>
+                        Quote…
+                      </button>
+                    )}
+
                     <time>{message.time}</time>
                   </div>
                 </div>

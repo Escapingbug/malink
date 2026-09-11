@@ -15,6 +15,16 @@ import org.junit.Test
 
 class CommandPayloadValidatorTest {
     @Test
+    fun `session create preserves native fork source`() {
+        val payload = buildJsonObject {
+            put("operation", "session.create")
+            put("forkFromSessionId", "source-session")
+        }
+        val parsed = CommandPayloadValidator.validate(payload) as SessionCreateCommandPayload
+        assertEquals("source-session", parsed.forkFromSessionId)
+    }
+
+    @Test
     fun `validates every protocol command operation into a typed payload`() {
         val payloads = listOf(
             buildJsonObject {

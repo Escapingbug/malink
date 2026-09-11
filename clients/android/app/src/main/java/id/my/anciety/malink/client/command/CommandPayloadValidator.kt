@@ -171,6 +171,7 @@ data class SessionCreateCommandPayload(
     val controls: JsonObject?,
     val extensions: List<SessionExtensionBindingPayload>,
     val initialPrompt: String?,
+    val forkFromSessionId: String? = null,
 ) : ValidatedCommandPayload {
     override val operation = CommandOperation.SESSION_CREATE
     override val sessionId: String? = null
@@ -494,6 +495,7 @@ object CommandPayloadValidator {
                 "projectName",
                 "provider",
                 "providerSessionId",
+                "forkFromSessionId",
                 "title",
                 "model",
                 "reasoningEffort",
@@ -509,6 +511,11 @@ object CommandPayloadValidator {
         require(extensions.map { it.id }.toSet().size == extensions.size) {
             "Session extension IDs must be unique."
         }
+        if (value.optionalOpaqueId("forkFromSessionId") != null) {
+            require(value["providerSessionId"] == null && value["initialPrompt"] == null && value.optionalString("scope") != "scratch") {
+                "Native forks cannot restore a session, submit an initial prompt, or use a scratch workspace."
+            }
+        }
         return SessionCreateCommandPayload(
             scope = value.optionalString("scope")?.also {
                 require(it == "project" || it == "scratch") { "Session scope is invalid." }
@@ -517,6 +524,7 @@ object CommandPayloadValidator {
             projectName = value.optionalBoundedString("projectName", 256),
             provider = value.optionalBoundedString("provider", 256),
             providerSessionId = value.optionalOpaqueId("providerSessionId"),
+            forkFromSessionId = value.optionalOpaqueId("forkFromSessionId"),
             title = value.optionalBoundedString("title", 512),
             model = value.optionalBoundedString("model", 256),
             reasoningEffort = value.optionalBoundedString("reasoningEffort", 64),

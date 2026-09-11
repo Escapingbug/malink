@@ -601,6 +601,7 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
       projectName: z.string().min(1).max(256).optional(),
       provider: z.string().min(1).max(256).optional(),
       providerSessionId: opaqueId.optional(),
+      forkFromSessionId: opaqueId.optional(),
       title: z.string().min(1).max(512).optional(),
       model: z.string().min(1).max(256).optional(),
       reasoningEffort: z.string().min(1).max(64).optional(),
@@ -611,6 +612,10 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
     })
     .strict()
     .superRefine((value, context) => {
+      if (value.forkFromSessionId && (value.providerSessionId || value.initialPrompt || value.scope === 'scratch')) {
+        context.addIssue({ code: 'custom', path: ['forkFromSessionId'], message: 'A native fork cannot also restore a session, submit an initial prompt, or create a scratch workspace' })
+      }
+
       const ids = new Set<string>()
       for (const [index, extension] of (value.extensions ?? []).entries()) {
         if (ids.has(extension.id)) {

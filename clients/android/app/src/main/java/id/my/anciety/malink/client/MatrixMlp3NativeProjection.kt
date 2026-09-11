@@ -4144,7 +4144,7 @@ internal class MatrixMlp3NativeProjection(
                 ?: throw IllegalArgumentException("A MLP/3 provider capability must be an object.")
             provider.requireKeys(
                 setOf("id", "name", "models", "can_list_sessions", "can_inspect_sessions"),
-                setOf("can_materialize_history", "controls"),
+                setOf("can_materialize_history", "can_fork_session", "controls"),
                 "MLP/3 provider capability",
             )
             provider.requiredString("id", 256)
@@ -4158,6 +4158,7 @@ internal class MatrixMlp3NativeProjection(
             }
             provider.requiredBoolean("can_list_sessions")
             provider.requiredBoolean("can_inspect_sessions")
+            if (provider["can_fork_session"] != null) provider.requiredBoolean("can_fork_session")
             if (provider["can_materialize_history"] != null) {
                 provider.requiredBoolean("can_materialize_history")
             }

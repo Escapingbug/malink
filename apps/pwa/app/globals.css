@@ -13036,3 +13036,21 @@ body {
 .image-viewer-stage img { display: block; margin: auto; flex: none; max-width: 100%; max-height: 100%; object-fit: contain; }
 .image-viewer-stage.is-original-size img { max-width: none; max-height: none; }
 .image-viewer-stage p { margin: auto; max-width: 420px; padding: 16px; line-height: 1.5; }
+
+/* Conversation actions reuse the existing message footer and session menu. */
+.message-reference-button { border: 0; background: transparent; color: var(--text-muted, #777); min-height: 36px; padding: 6px 8px; cursor: pointer; font-size: 12px; }
+.conversation-action-dialog { max-height: calc(100dvh - 32px); overflow-y: auto; }
+.conversation-action-source { overflow-wrap: anywhere; }
+.conversation-action-dialog details { margin: 12px 0; }
+.conversation-action-dialog summary { cursor: pointer; min-height: 36px; }
+.conversation-action-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; font: inherit; font-size: 12px; }
+.conversation-reference-targets { max-height: 240px; overflow: auto; margin: 12px 0; }
+.conversation-reference-targets label { display: flex; align-items: center; gap: 12px; padding: 10px 4px; min-height: 48px; cursor: pointer; }
+.conversation-reference-targets input[type=radio] { width: 18px; height: 18px; padding: 0; flex: 0 0 18px; accent-color: var(--violet); }
+.conversation-reference-targets span { overflow-wrap: anywhere; min-width: 0; }
+.conversation-reference-targets small { display: block; opacity: .7; font-size: 11px; }
+@media (max-width: 640px) {
+  .message-reference-button { min-height: 44px; }
+  .new-session-backdrop:has(.conversation-action-dialog) { padding: 12px; align-items: end; }
+  .conversation-action-dialog { width: 100%; padding: 20px; max-height: calc(100dvh - 24px); animation: none; }
+}

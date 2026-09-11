@@ -240,6 +240,7 @@ export const matrixGatewayCapabilitiesSchema = z
         can_list_sessions: z.boolean(),
         can_inspect_sessions: z.boolean(),
         can_materialize_history: z.boolean().optional(),
+        can_fork_session: z.boolean().optional(),
       }).strict(),
     ).max(64).optional(),
     permission_modes: z.array(matrixCapabilityOptionSchema).max(128),

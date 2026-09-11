@@ -252,6 +252,7 @@ const sessionCreatePayloadSchema = z
     model: z.string().min(1).max(256).optional(),
     provider: z.string().min(1).max(256).optional(),
     providerSessionId: opaqueId.optional(),
+      forkFromSessionId: opaqueId.optional(),
     reasoningEffort: z.string().min(1).max(64).optional(),
     permissionMode: z
       .enum(['default', 'accept_edits', 'plan', 'bypass_permissions'])
@@ -268,6 +269,10 @@ const sessionCreatePayloadSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+      if (value.forkFromSessionId && (value.providerSessionId || value.initialPrompt || value.scope === 'scratch')) {
+        context.addIssue({ code: 'custom', path: ['forkFromSessionId'], message: 'A native fork cannot also restore a session, submit an initial prompt, or create a scratch workspace' })
+      }
+
     if (
       value.initialPrompt
       && value.initialPrompt.text.length === 0

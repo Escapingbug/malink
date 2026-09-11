@@ -746,6 +746,7 @@ export function toMlp3Command(
           ...(payload.scope ? { scope: payload.scope } : {}),
           ...(payload.provider ? { provider: payload.provider } : {}),
           ...(payload.providerSessionId ? { providerSessionId: payload.providerSessionId } : {}),
+          ...(payload.forkFromSessionId ? { forkFromSessionId: payload.forkFromSessionId } : {}),
           ...(payload.title ? { title: payload.title } : {}),
           ...(payload.model ? { model: payload.model } : {}),
           ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),

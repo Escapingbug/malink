@@ -2259,6 +2259,7 @@ class NativeClientRuntime(
                     raw.string("scope")?.let { put("scope", it) }
                     raw.string("provider")?.let { put("provider", it) }
                     raw.string("providerSessionId")?.let { put("providerSessionId", it) }
+                    raw.string("forkFromSessionId")?.let { put("forkFromSessionId", it) }
                     raw.string("title")?.let { put("title", it) }
                     raw.string("model")?.let { put("model", it) }
                     raw.string("reasoningEffort")?.let { put("reasoningEffort", it) }

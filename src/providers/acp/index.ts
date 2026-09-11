@@ -527,6 +527,28 @@ export class AcpProvider implements AgentProvider {
         return entries.slice(0, 256).sort((left, right) => right.updated - left.updated)
     }
 
+    supportsSessionFork(): boolean {
+        return this.isReady() && this.clientManager.supportsForkSession === true
+    }
+
+    async forkSession(config: AgentSessionRestoreConfig): Promise<AgentSessionRestoreResult> {
+        this.prepareWorkingDirectory(config.cwd)
+        await this.init()
+        config.signal.throwIfAborted()
+        if (!this.supportsSessionFork()) throw new Error(`Provider ${this.name} does not support native session forks`)
+        // Never retry this mutation: the provider may have created the fork
+        // even when the response is lost. The Gateway journals the attempt.
+        const result = await this.runSessionOpenOperation('session/fork', () => this.clientManager.forkSession({
+            sessionId: config.sessionId,
+            cwd: config.cwd,
+            mcpServers: buildMalinkMcpBaseConfig(config),
+        }))
+        if (!result.sessionId || result.sessionId === config.sessionId) {
+            throw new Error('Provider did not return an independent forked session')
+        }
+        return { sessionId: result.sessionId }
+    }
+
     async getSessionHistory(sessionId: string, cwd: string): Promise<ProviderSessionHistory> {
         this.prepareWorkingDirectory(cwd)
         await this.init()
