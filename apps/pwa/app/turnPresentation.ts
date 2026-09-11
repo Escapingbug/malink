@@ -76,7 +76,10 @@ export function completedTurnPresentation(
     if (!result) continue;
     resultByMessageId.set(result.id, resultPresentation);
 
-    const processMessages = work.filter((message) => message.id !== result.id);
+    // Delivered files are results, not hidden execution details. Keep their
+    // original message/card visible even when a later text becomes primary.
+    const processMessages = work.filter((message) =>
+      message.id !== result.id && !message.attachments?.length);
     if (processMessages.length === 0) continue;
     const process: CompletedTurnProcess = {
       ...resultPresentation,

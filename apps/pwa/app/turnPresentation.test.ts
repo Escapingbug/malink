@@ -84,7 +84,7 @@ describe("completedTurnPresentation", () => {
     ).toBe(1);
   });
 
-  it("keeps attachment and cancellation context in the compact process", () => {
+  it("keeps delivered attachments outside the compact process after cancellation", () => {
     const progress = message("progress", "agent", "turn-a", 1);
     progress.attachments = [attachment("artifact")];
     const presentation = completedTurnPresentation(
@@ -94,10 +94,23 @@ describe("completedTurnPresentation", () => {
     );
 
     const process = presentation.processByMessageId.get("progress");
-    expect(process?.attachmentCount).toBe(1);
+    expect(process).toBeUndefined();
     expect(presentation.resultByMessageId.get("cancelled")?.outcome).toBe(
       "cancelled",
     );
+  });
+
+  it("never hides a delivered file behind steps when a later final reply arrives", () => {
+    const file = message("file", "agent", "turn-a", 2);
+    file.attachments = [attachment("ret.html")];
+    const presentation = completedTurnPresentation(
+      [toolMessage("tools", "turn-a", 1, 6), file, message("final", "agent", "turn-a", 3)],
+      [completion("turn-a", "succeeded")], "session-a",
+    );
+    expect(presentation.processByMessageId.has("file")).toBe(false);
+    expect([...presentation.processByMessageId.get("tools")!.messageIds]).toEqual(["tools"]);
+    expect(presentation.resultByMessageId.has("final")).toBe(true);
+    expect(file.attachments).toHaveLength(1);
   });
 
   it("does not mix terminal results from another session", () => {
