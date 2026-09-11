@@ -12736,3 +12736,65 @@ body {
 .conversation-list-menu button { text-align: left; padding: 12px; min-height: 44px; border: 0; border-radius: 8px; background: transparent; color: #41445a; font-size: 13px; cursor: pointer; }
 .conversation-list-menu button:hover, .conversation-list-menu button:focus-visible { background: #eee9fc; }
 .conversation-list-menu button:disabled { opacity: .45; }
+
+/* Session creation: a dedicated project destination picker on every surface. */
+.session-configuration > header { display: flex; justify-content: space-between; padding: 20px 22px 14px; border-bottom: 1px solid #eceef3; }
+.session-configuration > header h2 { margin: 4px 0; font-size: 22px; }
+.session-configuration > header p { color: #62677a; font-size: 12px; }
+.session-configuration > header > button { width: 44px; height: 44px; font-size: 25px; background: transparent; }
+.session-step-back { padding: 6px 0; color: #6650b8; background: transparent; }
+.session-project-dialog { width: min(720px, 100%); overflow: hidden; }
+.session-project-picker { height: min(820px, calc(100dvh - 42px)); display: flex; flex-direction: column; color: #292638; }
+.session-project-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 24px 24px 16px; }
+.session-project-header h2 { margin: 6px 0; font-size: 26px; letter-spacing: -.035em; }
+.session-project-header h2:focus { outline: none; }
+.session-project-header p { margin: 0; font-size: 13px; color: #747080; }
+.session-project-header > button { background: #f2eff8; color: #62518f; border-radius: 10px; padding: 12px; min-height: 44px; }
+.session-project-tools { padding: 0 24px 16px; border-bottom: 1px solid #ece9f2; }
+.session-project-picker .session-project-search { display: flex; align-items: center; gap: 10px; padding: 0 12px; border: 1px solid #ded8eb; background: #faf9fc; border-radius: 12px; }
+.session-project-search > span { font-size: 24px; }
+.session-project-picker .session-project-search input { min-width: 0; width: 100%; height: 48px; border: 0; background: transparent; font-size: 16px; padding: 8px 0; }
+.session-project-search:focus-within { outline: 2px solid #8b70cb; outline-offset: 2px; }
+.session-project-filters { display: flex; gap: 8px; overflow-x: auto; padding: 12px 0 4px; }
+.session-project-filters button { flex-shrink: 0; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid #e6e1ef; border-radius: 20px; background: white; padding: 10px 14px; min-height: 44px; font-size: 12px; }
+.session-project-filters button[aria-pressed="true"] { color: #6445a3; border-color: #d0c0ef; background: #f0eafb; }
+.session-project-shortcuts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+.session-project-shortcuts button { display: flex; align-items: center; gap: 10px; text-align: left; padding: 13px; border-radius: 12px; background: #f6f3fc; color: #624595; }
+.session-project-shortcuts button > span:first-child { font-size: 25px; }
+.session-project-shortcuts button > span:nth-child(2) { flex: 1; }
+.session-project-shortcuts strong { display: block; font-size: 12px; }
+.session-project-shortcuts small { display: block; margin-top: 4px; font-size: 11px; color: #797084; }
+.session-project-results { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 8px 24px 20px; }
+.session-project-count { color: #85808f; font-size: 11px; margin: 8px 0; }
+.session-project-results section + section { margin-top: 22px; }
+.session-project-results h3 { display: flex; justify-content: space-between; gap: 10px; overflow-wrap: anywhere; font-size: 12px; color: #777080; margin: 14px 0 8px; }
+.session-project-results h3 > span { color: #9b94a4; }
+.session-project-row { display: flex; align-items: center; gap: 13px; width: 100%; text-align: left; padding: 14px 12px; margin: 6px 0; border: 1px solid #e8e4ee; border-radius: 12px; background: white; }
+.session-project-row:hover, .session-project-row.is-selected { background: #f8f5ff; border-color: #cabcdf; }
+.session-project-row:disabled { opacity: .55; cursor: not-allowed; }
+.session-project-icon { display: grid; place-items: center; width: 38px; height: 38px; flex-shrink: 0; background: #f0edf6; color: #8063b1; border-radius: 10px; font-size: 25px; }
+.session-project-copy { flex: 1; min-width: 0; }
+.session-project-copy strong { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.session-project-copy > span, .session-project-copy small { display: block; overflow-wrap: anywhere; font-size: 11px; color: #80788b; margin-top: 4px; }
+.session-project-copy small { font-family: monospace; }
+.session-project-arrow { color: #947cb7; font-size: 20px; }
+.session-project-empty { text-align: center; padding: 40px 12px; color: #756c83; font-size: 13px; }
+.session-project-empty button { background: #eee7f8; padding: 12px 20px; border-radius: 10px; }
+.session-project-picker .session-project-footer { margin: 0; position: static; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 24px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid #ece9f2; font-size: 11px; color: #88808f; }
+.session-project-footer button { color: #7051a4; background: transparent; min-height: 44px; font-size: 12px; }
+.session-project-summary { display: flex; align-items: center; justify-content: space-between; text-align: left; gap: 16px; padding: 16px; background: #f8f5fc; border: 1px solid #ddd2ee; border-radius: 12px; color: #624595; }
+.session-project-summary strong, .session-project-summary small { display: block; overflow-wrap: anywhere; margin: 4px 0; }
+.session-project-summary small { font-size: 11px; color: #81748e; }
+.session-project-summary > span:first-child { min-width: 0; }
+.session-project-summary > span:last-child { flex-shrink: 0; font-size: 12px; }
+@media (max-width: 600px) {
+  .new-session-backdrop:has(.session-project-dialog) { padding: 0; }
+  .session-project-dialog { width: 100%; max-height: 100dvh; border-radius: 0; border: 0; }
+  .session-project-picker { height: 100dvh; padding-top: env(safe-area-inset-top); box-sizing: border-box; }
+  .session-project-header { padding: 20px 16px 16px; }
+  .session-project-tools { padding: 0 16px 14px; }
+  .session-project-results { padding: 8px 16px 20px; }
+  .session-project-picker .session-project-footer { padding-left: 16px; padding-right: 16px; }
+  .session-project-shortcuts { grid-template-columns: 1fr; }
+  .session-project-shortcuts button { min-height: 60px; }
+}

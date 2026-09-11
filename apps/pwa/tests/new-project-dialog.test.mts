@@ -76,8 +76,8 @@ test("shows the owning Gateway for every project session route", () => {
   }));
 
   assert.match(html, /NAS Gateway · home-nas/);
-  assert.match(html, /Malink — Office Gateway · alice-macbook/);
-  assert.match(html, /Archive — NAS Gateway · home-nas/);
+  assert.match(html, /<strong>Malink<\/strong><span>Office Gateway · alice-macbook<\/span><small>\/work\/malink/);
+  assert.match(html, /<strong>Archive<\/strong><span>NAS Gateway · home-nas<\/span><small>\/srv\/archive/);
   assert.doesNotMatch(html, /Model/);
   assert.doesNotMatch(html, /not exposed by this provider/);
 });
