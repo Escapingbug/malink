@@ -1,3 +1,4 @@
+import { ProjectRecoveryDiagnostics } from "./projectRecoveryDiagnostics";
 import { startMatrixSyncDiagnostics } from "./matrixSyncDiagnostics";
 import { messageAttachments } from "./messageAttachments";
 import { createManagedMatrixClient, waitForRecoverableMatrixSync } from "./matrixSyncLifecycle";
@@ -170,6 +171,7 @@ export async function connectMatrixMlp3(
     timelineSupport: true,
     store: syncStore,
   });
+  const projectDiagnostics = new ProjectRecoveryDiagnostics();
   let stopped = false;
   const startupLifetime = new MatrixStartupLifetime();
   let room: Room | null = null;
@@ -607,20 +609,29 @@ export async function connectMatrixMlp3(
     if (!trust || route.roomId === config.roomId || secondaryProtocols.has(route.projectId) ||
         pendingSecondaryProjects.has(route.projectId)) return;
     pendingSecondaryProjects.add(route.projectId);
+    projectDiagnostics.begin(route.projectId);
+    projectDiagnostics.stage(route.projectId, "join_room");
     try {
       let routeRoom = client.getRoom(route.roomId);
       if (workspaceRouteNeedsJoin(routeRoom)) {
         routeRoom = await client.joinRoom(route.roomId);
       }
-      if (!routeRoom) throw new Error(`Workspace project room ${route.roomId} is unavailable.`);
+      if (!routeRoom) {
+        projectDiagnostics.fail(route.projectId, { errcode: "room_missing" });
+        throw new Error(`Workspace project room ${route.roomId} is unavailable.`);
+      }
+      projectDiagnostics.stage(route.projectId, "check_encryption");
       if (!client.isRoomEncrypted(route.roomId)) {
+        projectDiagnostics.fail(route.projectId, { errcode: "room_not_encrypted" });
         throw new Error(`Workspace project room ${route.roomId} is not encrypted.`);
       }
+      projectDiagnostics.stage(route.projectId, "fetch_grant");
       const content = await client.getStateEvent(
         route.roomId,
         MLP3_MATRIX_PROJECT_KEY_GRANT_EVENT_TYPE,
         `${route.projectId}.${identity.keyId}`,
       );
+      projectDiagnostics.stage(route.projectId, "validate_grant");
       const resolution = resolveAuthoritativeProjectKeyGrant(content, {
         workspaceId: config.gatewayId,
         projectId: route.projectId,
@@ -629,6 +640,7 @@ export async function connectMatrixMlp3(
         certificateId: trust.certificate.certificate.certificateId,
       });
       if (resolution.kind === "reauthorization-required") {
+        projectDiagnostics.fail(route.projectId, { errcode: "project_not_authorized" });
         throw new Error(`Project ${route.projectId} has not granted this Workspace device access.`);
       }
       const routeProtocol = new MatrixMlp3ProtocolClient(
@@ -655,12 +667,16 @@ export async function connectMatrixMlp3(
       },
       (_event, error) => console.error("[mlp3/matrix] quarantined project event", error),
     );
+      projectDiagnostics.stage(route.projectId, "open_store");
       await routeProtocol.initialize();
+      projectDiagnostics.stage(route.projectId, "accept_grant");
       await routeProtocol.acceptKeyGrant(resolution.grant);
       const context = { route, room: routeRoom, protocol: routeProtocol };
       secondaryProtocols.set(route.projectId, context);
+      projectDiagnostics.transport(route.projectId, route.roomId);
       routeRoom.on(sdk.RoomStateEvent.Events, onRoomState);
       await recoverSecondaryProject(route.projectId, "hydrate");
+      projectDiagnostics.stage(route.projectId, "thread_directory");
       await threadDirectoryRecovery.ensure(routeProtocol, async () => {
         if (await routeProtocol.requiresThreadDirectoryRecovery(startupSavedMatrixSyncToken)) {
           await replayThreadDirectory(
@@ -670,8 +686,13 @@ export async function connectMatrixMlp3(
           );
         }
       });
+      projectDiagnostics.stage(route.projectId, "checkpoint");
       await checkpointMatrixSync([routeProtocol]);
+      projectDiagnostics.stage(route.projectId, "ready");
       scheduleSessionReadReceiptDelivery();
+    } catch (error) {
+      projectDiagnostics.failIfUnrecorded(route.projectId, error);
+      throw error;
     } finally {
       pendingSecondaryProjects.delete(route.projectId);
     }
@@ -681,6 +702,7 @@ export async function connectMatrixMlp3(
     targetProjectId: string,
     deliveryMode: ProjectionDeliveryMode = "live",
   ): Promise<void> => {
+    if (!pendingSecondaryProjects.has(targetProjectId)) projectDiagnostics.begin(targetProjectId);
     activeSecondaryRecoveryCounts.set(
       targetProjectId,
       (activeSecondaryRecoveryCounts.get(targetProjectId) ?? 0) + 1,
@@ -694,23 +716,29 @@ export async function connectMatrixMlp3(
         [MLP3_MATRIX_PROJECT_POINTER_EVENT_TYPE, targetProjectId],
       ] as const) {
         try {
+          projectDiagnostics.stage(targetProjectId, eventType === MLP3_MATRIX_WORKSPACE_POINTER_EVENT_TYPE ? "workspace_snapshot" : "project_snapshot");
           const content = await client.getStateEvent(context.route.roomId, eventType, stateKey);
           const pointer = await verifyMlp3Pointer(content, trust.gatewayKey.publicKey);
           if (pointer.workspaceId !== config.gatewayId || pointer.projectId !== targetProjectId ||
               pointer.roomId !== context.route.roomId || pointer.gatewayKeyId !== trust.gatewayKey.keyId) {
+            projectDiagnostics.fail(targetProjectId, { errcode: "pointer_binding_mismatch" });
             throw new Error("The MLP/3 pointer is bound to another Workspace project.");
           }
           const raw = await client.fetchRoomEvent(context.route.roomId, pointer.eventId);
           await ingestSecondaryEvent(context, new sdk.MatrixEvent(raw));
         } catch (error) {
+          projectDiagnostics.failIfUnrecorded(targetProjectId, error);
           failures.push(error);
         }
       }
+      projectDiagnostics.stage(targetProjectId, "provider_catalog");
       await replayProviderCatalogState(context.room, event =>
         ingestSecondaryEvent(context, event), context.protocol);
+      projectDiagnostics.stage(targetProjectId, "timeline");
       for (const event of context.room.getLiveTimeline().getEvents()) {
         await ingestSecondaryEvent(context, event);
       }
+      projectDiagnostics.stage(targetProjectId, "retry_commands");
       await context.protocol.retryPending();
       publishProjection(deliveryMode, [context.protocol]);
       if (failures.length > 0) {
@@ -731,8 +759,8 @@ export async function connectMatrixMlp3(
       }
     };
     void operation.then(
-      finish,
-      finish,
+      () => { projectDiagnostics.stage(targetProjectId, "ready"); finish(); },
+      error => { projectDiagnostics.failIfUnrecorded(targetProjectId, error); finish(); },
     );
     return operation;
   };
@@ -920,6 +948,7 @@ export async function connectMatrixMlp3(
     if (stopped || workspaceRouteRecoveryTimer !== null) return;
     const delayMs = workspaceRouteRecoveryDelayMs(workspaceRouteRecoveryFailures);
     workspaceRouteRecoveryFailures += 1;
+    projectDiagnostics.retry(delayMs);
     workspaceRouteRecoveryTimer = setTimeout(() => {
       workspaceRouteRecoveryTimer = null;
       reconcileWorkspaceRoutes();
@@ -943,6 +972,11 @@ export async function connectMatrixMlp3(
         const routes = trustedRoutes.length > 0
           ? trustedRoutes
           : discovered.length > 0 ? discovered : config.workspaceRoutes ?? [];
+        projectDiagnostics.directory(routes, trust.gatewayDirectory?.directory.revision);
+        if (projectId) {
+          projectDiagnostics.transport(projectId, config.roomId);
+          projectDiagnostics.stage(projectId, readiness.canPublishAuthoritativeProjection ? "ready" : "project_snapshot");
+        }
         const desired = new Map(routes
           .filter(route => route.roomId !== config.roomId)
           .map(route => [route.projectId, route]));
@@ -951,6 +985,7 @@ export async function connectMatrixMlp3(
           if (next?.roomId === context.route.roomId) continue;
           context.room.off(sdk.RoomStateEvent.Events, onRoomState);
           secondaryProtocols.delete(secondaryProjectId);
+          projectDiagnostics.transport(secondaryProjectId, null);
           for (const [commandId, owner] of commandProjects) {
             if (owner === context.protocol) commandProjects.delete(commandId);
           }
@@ -962,11 +997,13 @@ export async function connectMatrixMlp3(
             if (current) {
               if (!current.protocol.projection.project || !current.protocol.projection.workspace) {
                 await recoverSecondaryProject(route.projectId, "hydrate");
+                projectDiagnostics.stage(route.projectId, "ready");
               }
             } else {
               await createSecondaryProtocol(route);
             }
           } catch (error) {
+            projectDiagnostics.failIfUnrecorded(route.projectId, error);
             failures.push(error);
             console.error(
               `[mlp3/matrix] Workspace project ${route.projectId} could not be reconciled`,
@@ -1924,12 +1961,15 @@ export async function connectMatrixMlp3(
     pair,
     async send(payload, targetProjectId) {
       await ready;
+      const sendStartedAt = Date.now();
       const target = await waitForProjectTransport({
         lookup: () => protocolForProject(targetProjectId),
         isAuthorized: () => !targetProjectId || !trust?.gatewayDirectory
           || workspaceRoutesFromTrust(trust).some(route => route.projectId === targetProjectId),
         recover: () => reconcileWorkspaceRoutes(true),
         signal: startupLifetime.controller.signal,
+        onFailure: reason => projectDiagnostics.sendFailed(reason, targetProjectId,
+          "sessionId" in payload && typeof payload.sessionId === "string" ? payload.sessionId : undefined, sendStartedAt),
       });
       const sent = await target.send(payload);
       commandProjects.set(sent.commandId, target);
@@ -2062,6 +2102,7 @@ export async function connectMatrixMlp3(
     stop() {
       if (stopped) return;
       stopped = true;
+      projectDiagnostics.stop();
       syncDiagnostics.stop();
       const startupStopped = startupLifetime.stop();
       if (workspaceRouteRecoveryTimer !== null) {
