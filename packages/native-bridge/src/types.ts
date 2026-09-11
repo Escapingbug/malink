@@ -112,6 +112,7 @@ export type CapabilityName =
   | "extensions.crypto"
   | "commands.durable"
   | "commands.batch-archive"
+  | "commands.session-lifecycle"
   | "commands.journal-reconciliation"
   | "commands.orphan-retirement"
   | "history.page"

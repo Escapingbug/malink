@@ -298,6 +298,19 @@ describe("MatrixMlp3Projection", () => {
     });
   });
 
+  it("keeps archived sessions and messages across local reload and restores the same thread", () => {
+    const projection = new MatrixMlp3Projection();
+    projection.applyCommand(createCommand("a"), "$root-a");
+    projection.applyEvent(messageEvent(1), "$message-a");
+    projection.applyEvent(lifecycleEvent("session-a", "archived"), "$archive-a");
+    expect(projection.visibleSessions()).toMatchObject([{ sessionId: "session-a", lifecycle: "archived", threadRootEventId: "$root-a" }]);
+    const restored = new MatrixMlp3Projection();
+    restored.restore(projection.durableState());
+    expect(restored.sessionMessages("session-a").some(message => message.body === "message 1 v1")).toBe(true);
+    restored.applyEvent(lifecycleEvent("session-a", "active"), "$restore-a");
+    expect(restored.visibleSessions()).toMatchObject([{ sessionId: "session-a", lifecycle: "active", threadRootEventId: "$root-a" }]);
+  });
+
   it("tombstones only the targeted session without a global inventory revision", () => {
     const projection = new MatrixMlp3Projection();
     projection.applyCommand(createCommand("a"), "$root-a");

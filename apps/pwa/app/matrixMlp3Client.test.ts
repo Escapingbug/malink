@@ -22,6 +22,15 @@ import {
 } from "./matrixMlp3Client";
 
 describe("MatrixMlp3ProtocolClient", () => {
+  it("encodes archive, restore and delete as distinct lifecycle commands", () => {
+    for (const [operation, state] of [["session.archive", "archived"], ["session.restore", "active"], ["session.delete", "deleted"]] as const) {
+      expect(toMlp3Command({ operation, sessionId: "session-1" }, {
+        workspaceId: "workspace-1", roomId: "!project:example.org", projectId: "project-1",
+      }, "device-1", "certificate-1")).toMatchObject({
+        operation: "session.set_lifecycle", sessionId: "session-1", payload: { state },
+      });
+    }
+  });
   it("encodes active-session Provider default resets as nullable MLP patches", () => {
     const command = toMlp3Command(
       {

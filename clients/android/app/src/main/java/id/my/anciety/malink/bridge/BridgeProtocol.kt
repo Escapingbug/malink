@@ -1755,6 +1755,7 @@ class BridgeDispatcher(
             "commands.durable",
             "extensions.crypto",
             "commands.batch-archive",
+            "commands.session-lifecycle",
             COMMAND_JOURNAL_RECONCILIATION_CAPABILITY,
             COMMAND_ORPHAN_RETIREMENT_CAPABILITY,
             "history.page",

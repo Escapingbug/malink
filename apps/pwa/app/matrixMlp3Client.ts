@@ -903,7 +903,7 @@ export function toMlp3Command(
         operation: "session.set_lifecycle",
         payload: {
           operation: "session.set_lifecycle",
-          state: payload.operation === "session.archive" || payload.operation === "session.delete"
+          state: payload.operation === "session.delete" ? "deleted" : payload.operation === "session.archive"
             ? "archived"
             : "active",
         },

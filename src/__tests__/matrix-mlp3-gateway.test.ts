@@ -451,7 +451,8 @@ describe('MatrixMlp3GatewayRunner', () => {
         inheritedFromProjectExtensionRevision: null,
         availableCommands: [],
       } satisfies PersistedMlp3Session
-      project.sessions.push(legacy, {
+      project.sessions.push({ ...legacy, id: 'retained-archive', retainedArchive: true,
+        lifecycleCommandId: 'retain-interrupted', threadRootEventId: '$retained-thread-root' }, legacy, {
         ...legacy,
         id: 'requested-archive',
         sourceCommandId: 'requested-create',
@@ -477,7 +478,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       certificateId: 'certificate-1',
       createdAt: 2,
       operation: 'session.set_lifecycle',
-      payload: { operation: 'session.set_lifecycle', state: 'archived' },
+      payload: { operation: 'session.set_lifecycle', state: 'deleted' },
     } satisfies Mlp3Command
     const journal = new SqliteMlp3CommandJournal(
       `${replayLedgerPath}.v3-commands.sqlite`,
@@ -489,6 +490,11 @@ describe('MatrixMlp3GatewayRunner', () => {
       matrixEventId: '$requested-archive-command',
     })
     await journal.markDispatched(interruptedArchive, 2)
+    const retainedCommand: Mlp3Command = { ...interruptedArchive, commandId: 'retain-interrupted', sessionId: 'retained-archive',
+      payload: { operation: 'session.set_lifecycle', state: 'archived' } }
+    await journal.claim(retainedCommand, 2, { roomId, matrixEventId: '$retain-interrupted' })
+    await journal.markDispatched(retainedCommand, 2)
+
     const { sessionId: _archiveSessionId, ...batchBase } = interruptedArchive
     const retainedBatch: Mlp3Command = { ...batchBase, commandId: 'retained-batch',
       operation: 'session.archive.batch', payload: {
@@ -534,7 +540,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       event.sessionId === 'legacy-archive'
     )?.payload).toMatchObject({
       type: 'session.lifecycle',
-      state: 'archived',
+      state: 'deleted',
       projection: {
         lifecycle: 'archived',
         activity: 'idle',
@@ -542,11 +548,18 @@ describe('MatrixMlp3GatewayRunner', () => {
       },
     })
 
+    await waitFor(async () => (await events(client, activeKey.key, roomId, grant.projectId)).some(event =>
+      event.causationCommandId === 'retain-interrupted' && event.payload.type === 'session.lifecycle'))
+    expect((await events(client, activeKey.key, roomId, grant.projectId)).find(event =>
+      event.causationCommandId === 'retain-interrupted')?.payload).toMatchObject({ state: 'archived' })
+    expect(client.deletedThreads).not.toContainEqual(expect.objectContaining({ threadRootEventId: '$retained-thread-root' }))
+
     await waitFor(() => Promise.resolve(client.deletedThreads.some(deleted =>
       deleted.threadRootEventId === '$requested-thread-root'
     )))
-    await waitFor(async () => (await state.project(roomId)).sessions.length === 1)
+    await waitFor(async () => (await state.project(roomId)).sessions.length === 2)
     expect((await state.project(roomId)).sessions).toEqual([
+      expect.objectContaining({ id: 'retained-archive', retainedArchive: true, archiveCleanup: null }),
       expect.objectContaining({
         id: 'legacy-archive',
         lifecycle: 'archived',
@@ -2230,7 +2243,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       event.causationCommandId === 'gateway-capabilities-1' && event.payload.type === 'gateway.update.status'))
     expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
       event.causationCommandId === 'gateway-capabilities-1' && event.payload.type === 'gateway.update.status')?.payload)
-      .toMatchObject({ status: { supportedOperations: ['session.archive.batch'] } })
+      .toMatchObject({ status: { supportedOperations: ['session.archive.retain', 'session.archive.batch'] } })
     await send({ ...base, commandId: 'gateway-ordinary-status-1', operation: 'gateway.update.status',
       payload: { operation: 'gateway.update.status' } }, '$gateway-ordinary-status-1')
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
@@ -2325,7 +2338,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       commandId: 'archive-failed-gateway-update',
       sessionId: failedMaintenanceSessionId,
       operation: 'session.set_lifecycle',
-      payload: { operation: 'session.set_lifecycle', state: 'archived' },
+      payload: { operation: 'session.set_lifecycle', state: 'deleted' },
     }, '$archive-failed-gateway-update')
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
       .some(event =>
@@ -2985,6 +2998,24 @@ describe('MatrixMlp3GatewayRunner', () => {
       .toMatchObject({ outcome: 'succeeded', result: { state: 'completed',
         items: freshBatchTargets.map(target => ({ ...target, state: 'succeeded' })) } })
 
+    const retainedStore = new FileMlp3RuntimeStateStore(`${config.replayLedgerPath}.v3-runtime-state.json`, config.gatewayId)
+    for (const target of freshBatchTargets) {
+      expect((await retainedStore.project(roomId)).sessions.find(session => session.id === target.sessionId))
+        .toMatchObject({ lifecycle: 'archived', retainedArchive: true, archiveCleanup: null })
+    }
+    const beforeArchive = (await retainedStore.project(roomId)).sessions.find(session => session.id === 'session-a')!
+    const deletedThreadCount = client.deletedThreads.length
+    for (const [commandId, state] of [['retain-a', 'archived'], ['restore-a', 'active']] as const) {
+      await send({ ...base, commandId, sessionId: 'session-a', operation: 'session.set_lifecycle',
+        payload: { operation: 'session.set_lifecycle', state } }, `$${commandId}`)
+      await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
+        event.causationCommandId === commandId && event.payload.type === 'session.lifecycle'))
+      expect((await retainedStore.project(roomId)).sessions.find(session => session.id === 'session-a'))
+        .toMatchObject({ lifecycle: state, threadRootEventId: beforeArchive.threadRootEventId,
+          cwd: beforeArchive.cwd, archiveCleanup: null })
+    }
+    expect(client.deletedThreads.length).toBe(deletedThreadCount)
+
     const archiveCleanupGate = client.blockNextThreadDeletion()
     // A batch is admitted once and reports independent item failures without
     // attempting an unauthorized cross-project operation.
@@ -3006,7 +3037,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       commandId: 'archive-a',
       sessionId: 'session-a',
       operation: 'session.set_lifecycle',
-      payload: { operation: 'session.set_lifecycle', state: 'archived' },
+      payload: { operation: 'session.set_lifecycle', state: 'deleted' },
     } satisfies Mlp3Command
     await send(archiveA, '$archive-a')
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
@@ -3041,7 +3072,7 @@ describe('MatrixMlp3GatewayRunner', () => {
       commandId: 'archive-already-absent',
       sessionId: 'session-a',
       operation: 'session.set_lifecycle',
-      payload: { operation: 'session.set_lifecycle', state: 'archived' },
+      payload: { operation: 'session.set_lifecycle', state: 'deleted' },
     }, '$archive-already-absent')
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
       .some(event => event.causationCommandId === 'archive-already-absent'))
@@ -3314,6 +3345,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         .update('gateway-node-1\0release-2')
         .digest('hex')
         .slice(0, 40)}`,
+      'batch-fresh-a', 'batch-fresh-b', 'batch-fresh-c',
       'session-b',
       'session-idle-update-new',
       'session-long-initial-prompt',
@@ -3340,6 +3372,7 @@ describe('MatrixMlp3GatewayRunner', () => {
 
     gatewayAgentStaged = false
     const remainingSessionIds = [
+      'batch-fresh-a', 'batch-fresh-b', 'batch-fresh-c',
       'session-idle-update-new',
       'session-b',
       'session-long-initial-prompt',
@@ -3354,7 +3387,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         commandId,
         sessionId,
         operation: 'session.set_lifecycle',
-        payload: { operation: 'session.set_lifecycle', state: 'archived' },
+        payload: { operation: 'session.set_lifecycle', state: 'deleted' },
       }, `$${commandId}`)
       await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
         .some(event =>

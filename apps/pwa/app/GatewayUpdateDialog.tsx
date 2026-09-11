@@ -493,7 +493,7 @@ function GatewayUpdateDialogContent({
                     >
                       {runtime.maintenanceSessionArchiveBusy
                           ? "Archiving failed update session…"
-                          : "Archive failed update session"}
+                          : "Delete failed update session"}
                     </button>
                   )}
                   {!targetInstalled && runtime.maintenanceSessionAmbiguous && (
@@ -506,7 +506,7 @@ function GatewayUpdateDialogContent({
                       </p>
                       {runtime.maintenanceSessionArchived ? (
                         <span className="gateway-update-session-warning" role="status">
-                          Old update session archived on this Gateway.
+                          Old update session deleted on this Gateway.
                         </span>
                       ) : maintenanceCleanupAllowed && runtime.maintenanceSessionArchiveAvailable ? (
                         <button
@@ -521,7 +521,7 @@ function GatewayUpdateDialogContent({
                         >
                           {runtime.maintenanceSessionArchiveBusy
                             ? "Archiving old update session…"
-                            : "Archive old update session"}
+                            : "Delete old update session"}
                         </button>
                       ) : null}
                     </>
@@ -532,11 +532,11 @@ function GatewayUpdateDialogContent({
                         {runtime.legacyMaintenanceSessionArchiveAvailable ||
                           runtime.legacyMaintenanceSessionArchived
                           ? "This Gateway also has an update session left by an older Malink version. Cleanup is safe now; only this Gateway is affected."
-                          : "This older update session remains attached to the active update transaction and will be archived after it reaches a safe terminal state."}
+                          : "This older update session remains attached to the active update transaction and will be deleted after it reaches a safe terminal state."}
                       </p>
                       {runtime.legacyMaintenanceSessionArchived ? (
                         <span className="gateway-update-session-warning" role="status">
-                          Old update session archived on this Gateway.
+                          Old update session deleted on this Gateway.
                         </span>
                       ) : maintenanceCleanupAllowed && runtime.legacyMaintenanceSessionArchiveAvailable ? (
                         <button
@@ -554,7 +554,7 @@ function GatewayUpdateDialogContent({
                         >
                           {runtime.legacyMaintenanceSessionArchiveBusy
                             ? "Archiving old update session…"
-                            : "Archive old update session"}
+                            : "Delete old update session"}
                         </button>
                       ) : null}
                     </>

@@ -754,6 +754,22 @@ test("hydrates and publishes Matrix session read receipts through the native bri
   client.dispose();
 });
 
+test("requires an Android update before sending lifecycle commands through an old host", async () => {
+  const port = new RuntimePort();
+  const bridge = await acquireNativeRpcBridge(port);
+  const hello = await bridge.hello({ webBuild: "test-build", requiredCapabilities: [],
+    optionalCapabilities: REQUIRED_NATIVE_CAPABILITIES.map(name => ({ name, versions: nativeCapabilityVersions(name) })),
+  });
+  const capabilities = { ...hello.capabilities };
+  delete capabilities["commands.session-lifecycle"];
+  const client = new NativeBridgeClient(bridge, { ...hello, capabilities }, { onMessage() {}, onStatus() {}, onCommandResult() {} });
+  for (const operation of ["session.archive", "session.restore", "session.delete"] as const) {
+    await assert.rejects(client.send({ operation, sessionId: "session-1" }, "project-1"), /Update the Android app/);
+  }
+  assert.equal(port.requests.some(request => request.method === "malink.command.send"), false);
+  client.dispose();
+});
+
 test("keeps the durable receipt identity while Gateway progress arrives", async () => {
   const port = new RuntimePort((request) => {
     if (request.method !== "malink.command.send") return responseFor(request);
@@ -846,7 +862,7 @@ test("rebinds a retried command completion even when the event precedes its rece
   const hello = await bridge.hello({
     webBuild: "test-build",
     requiredCapabilities: [],
-    optionalCapabilities: REQUIRED_NATIVE_CAPABILITIES.map((name) => ({
+    optionalCapabilities: [...REQUIRED_NATIVE_CAPABILITIES, "commands.session-lifecycle" as const].map((name) => ({
       name,
       versions: nativeCapabilityVersions(name),
     })),

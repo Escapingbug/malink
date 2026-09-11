@@ -2414,7 +2414,8 @@ class NativeClientRuntime(
                 v3Payload = buildJsonObject {
                     put("operation", v3Operation)
                     put("state", when (operation) {
-                        "session.archive", "session.delete" -> "archived"
+                        "session.archive" -> "archived"
+                        "session.delete" -> "deleted"
                         "session.restore" -> "active"
                         else -> "archived"
                     })
@@ -4622,9 +4623,8 @@ internal fun projectedSessionLifecycleSatisfies(
     operation: CommandOperation,
     lifecycle: String,
 ): Boolean = when (operation) {
-    CommandOperation.SESSION_ARCHIVE,
-    CommandOperation.SESSION_DELETE,
-    -> lifecycle == "archived" || lifecycle == "deleted"
+    CommandOperation.SESSION_ARCHIVE -> lifecycle == "archived"
+    CommandOperation.SESSION_DELETE -> lifecycle == "deleted"
     CommandOperation.SESSION_RESTORE -> lifecycle == "active"
     else -> false
 }

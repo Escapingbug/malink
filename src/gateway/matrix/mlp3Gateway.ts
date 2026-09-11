@@ -591,7 +591,7 @@ export class MatrixMlp3GatewayRunner {
         await this.content.provisionProject(project.config, this.client, false)
         if (project.deletingCommandId) continue
         const legacyCleanupCheckpoints = project.project.sessions.filter(
-          record => record.lifecycle !== 'active' && record.archiveCleanup === null,
+          record => record.lifecycle !== 'active' && !record.retainedArchive && record.archiveCleanup === null,
         ).length
         if (legacyCleanupCheckpoints > 0) {
           this.log(
@@ -1691,7 +1691,7 @@ export class MatrixMlp3GatewayRunner {
     const baseStatus = await (command.payload.includeExecutionTracks ? supervisor.executionStatus?.() ?? supervisor.status() : supervisor.status())
     // Opt-in: older clients strictly validate the ordinary status response.
     const status = command.payload.includeOperationCapabilities
-      ? { ...baseStatus, supportedOperations: this.config.batchArchiveEnabled === false ? [] : ['session.archive.batch'] }
+      ? { ...baseStatus, supportedOperations: ['session.archive.retain', ...(this.config.batchArchiveEnabled === false ? [] : ['session.archive.batch'])] }
       : baseStatus
     await this.settleAndDeliver(
       project,
@@ -2300,7 +2300,7 @@ export class MatrixMlp3GatewayRunner {
     }
     if (command.payload.providerSessionId) {
       const managed = project.project.sessions.find(session =>
-        session.lifecycle === 'active'
+        (session.lifecycle === 'active' || session.retainedArchive === true)
         && session.provider === (command.payload.provider ?? project.project.provider)
         && session.providerSessionId === command.payload.providerSessionId
       )
@@ -2921,11 +2921,11 @@ export class MatrixMlp3GatewayRunner {
     // batch must not retain access that was revoked while other items ran.
     const devices = this.dependencies.listTrustedDevices ? await this.dependencies.listTrustedDevices() : this.config.trustedDevices
     const device = devices.find(candidate => candidate.deviceId === command.deviceId)
-    const lifecyclePermission = command.payload.state === 'active' ? 'session.restore' : 'session.archive'
+    const lifecyclePermission = command.payload.state === 'active' ? 'session.restore'
+      : command.payload.state === 'deleted' ? 'session.delete' : 'session.archive'
     const hasLifecyclePermission = !device?.allowedOperations || device.allowedOperations.includes('device.invite')
       || device.allowedOperations.includes(lifecyclePermission)
-      || (command.payload.state !== 'active' && !command.commandId.startsWith('batch-archive-')
-        && device.allowedOperations.includes('session.delete'))
+
     if (!device || !device.allowedRoomIds.includes(project.config.roomId)
       || (device.certificateExpiresAt !== undefined && device.certificateExpiresAt <= this.now())
       || !hasLifecyclePermission
@@ -2947,15 +2947,44 @@ export class MatrixMlp3GatewayRunner {
       await this.settleAndDeliver(project, command, lifecycle, 'succeeded')
       return
     }
-    if (command.payload.state === 'active' && record.lifecycle !== 'active') {
+    const requested = command.payload.state
+    const retained = record.lifecycle === 'archived' && record.retainedArchive === true && record.archiveCleanup === null
+    if (requested !== 'deleted' && record.lifecycle !== 'active' && !retained) {
       throw new Error('Deleted sessions cannot be restored; continue them from Provider History')
     }
-    if (command.payload.state === 'active') {
+    if (requested === 'active' || (requested === 'archived' && (record.lifecycle === 'active' || retained))) {
+      const alreadyApplied = record.lifecycle === requested
+      const runtime = project.sessions.get(record.id)
+      if (!alreadyApplied) {
+        if (requested === 'archived') {
+          if (project.project.name === `Gateway recovery · ${this.config.gatewayNodeId}`) {
+            throw new Error('This project retains the independent Gateway repair history until the next update replaces it')
+          }
+          await this.assertMaintenanceSessionCanBeArchived(record.id, record.title)
+          if (runtime?.activeTurn) throw new Error('Stop the agent before archiving this session')
+        }
+        assertCommandExecutionActive(signal)
+        const previous = { ...record, retainedArchive: record.retainedArchive, lifecycleCommandId: record.lifecycleCommandId }
+        if (runtime) record.providerSessionId = runtime.session.sessionRecord.conversationId
+        record.lifecycle = requested
+        record.retainedArchive = requested === 'archived'
+        record.lifecycleCommandId = command.commandId
+        record.updatedAt = this.now()
+        record.stateVersion += 1
+        try { await this.persist(project) }
+        catch (error) { Object.assign(record, previous); throw error }
+        if (requested === 'archived') {
+          project.sessions.delete(record.id)
+          if (runtime) await this.destroySessionRuntime(runtime, 'shutdown')
+        } else {
+          project.sessions.set(record.id, this.createSessionRuntime(project, record))
+        }
+      }
       const lifecycle = this.eventFor(project, record, command, 'session-lifecycle', {
         type: 'session.lifecycle',
         projection: terminalProjection(record, 'idle', this.extensions),
-        state: 'active',
-        alreadyApplied: true,
+        state: requested,
+        ...(alreadyApplied ? { alreadyApplied: true } : {}),
       })
       await this.settleAndDeliver(project, command, lifecycle, 'succeeded')
       return
@@ -2970,9 +2999,11 @@ export class MatrixMlp3GatewayRunner {
     const previousUpdatedAt = record.updatedAt
     const previousStateVersion = record.stateVersion
     const previousProviderSessionId = record.providerSessionId
+    const previousRetainedArchive = record.retainedArchive
     const previousArchiveCleanup = record.archiveCleanup
     if (active) record.providerSessionId = active.session.sessionRecord.conversationId
     record.lifecycle = 'archived'
+    record.retainedArchive = false
     record.updatedAt = this.now()
     record.stateVersion += 1
     record.archiveCleanup = record.archiveCleanup
@@ -2992,6 +3023,7 @@ export class MatrixMlp3GatewayRunner {
       record.updatedAt = previousUpdatedAt
       record.stateVersion = previousStateVersion
       record.providerSessionId = previousProviderSessionId
+      record.retainedArchive = previousRetainedArchive
       record.archiveCleanup = previousArchiveCleanup
       throw error
     }
@@ -3965,6 +3997,23 @@ export class MatrixMlp3GatewayRunner {
       if (record.status === 'accepted' || record.command.operation === 'session.archive.batch') {
         this.scheduleExecution(project, record)
       } else {
+        const lifecycleState = record.command.operation === 'session.set_lifecycle' ? record.command.payload.state : undefined
+        const lifecycleRecord = lifecycleState && lifecycleState !== 'deleted'
+          ? project.project.sessions.find(session =>
+              session.id === record.command.sessionId
+              && session.lifecycleCommandId === record.command.commandId
+              && session.lifecycle === lifecycleState
+              && session.archiveCleanup === null)
+          : undefined
+        if (lifecycleRecord) {
+          await this.settleAndDeliver(project, record.command,
+            this.eventFor(project, lifecycleRecord, record.command, 'session-lifecycle', {
+              type: 'session.lifecycle',
+              projection: terminalProjection(lifecycleRecord, 'idle', this.extensions),
+              state: lifecycleRecord.lifecycle,
+            }), 'succeeded')
+          continue
+        }
         const archived = record.command.operation === 'session.set_lifecycle'
           && record.command.payload.state !== 'active'
           && record.command.sessionId
@@ -4618,7 +4667,7 @@ export class MatrixMlp3GatewayRunner {
 
   private async publishSessionRecovery(project: V3ProjectRuntime): Promise<void> {
     for (const record of project.project.sessions) {
-      const payload: Mlp3Event['payload'] = record.lifecycle === 'active'
+      const payload: Mlp3Event['payload'] = (record.lifecycle === 'active' || record.retainedArchive === true)
         ? {
             type: 'session.ready',
             projection: terminalProjection(record, 'idle', this.extensions),
@@ -4629,13 +4678,11 @@ export class MatrixMlp3GatewayRunner {
             extensionBindings: record.extensions,
           }
         : {
-            // A durable user-requested cleanup checkpoint is already logically
-            // deleted even while physical redaction resumes in the background.
-            // Legacy tombstones have no cleanup request and remain visible for
-            // an explicit retry without generating upgrade-time Matrix work.
+            // Both legacy archive tombstones and pending cleanup are deleted.
+            // Retained archives are published above with full session metadata.
             type: 'session.lifecycle',
             projection: terminalProjection(record, 'idle', this.extensions),
-            state: record.archiveCleanup === null ? record.lifecycle : 'deleted',
+            state: 'deleted',
           }
       const event: Mlp3Event = {
         kind: 'malink.event',
@@ -4761,7 +4808,7 @@ export class MatrixMlp3GatewayRunner {
         can_create_session: true,
         can_select_session: false,
         can_archive_session: true,
-        can_delete_session: false,
+        can_delete_session: true,
         session_extensions: this.extensions.descriptors().map(extension => ({
           id: extension.id,
           name: extension.name,
@@ -4811,7 +4858,7 @@ export class MatrixMlp3GatewayRunner {
       can_create_session: true,
       can_select_session: false,
       can_archive_session: true,
-      can_delete_session: false,
+      can_delete_session: true,
       session_extensions: this.extensions.descriptors().map(extension => ({
         id: extension.id,
         name: extension.name,
@@ -5485,9 +5532,9 @@ function providerSessionMalinkRelation(
     && session.providerSessionId === providerSessionId
     && session.lifecycle !== 'deleted'
   )
-  const managed = related.find(session => session.lifecycle === 'active')
+  const managed = related.find(session => session.lifecycle === 'active' || session.retainedArchive === true)
   const archived = related
-    .filter(session => session.lifecycle === 'archived')
+    .filter(session => session.lifecycle === 'archived' && !session.retainedArchive)
     .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))[0]
   return {
     ...(managed ? { managedSessionId: managed.id } : {}),

@@ -943,7 +943,7 @@ export class MatrixMlp3Projection {
 
   visibleSessions(): V3ProjectedSession[] {
     return [...this.sessions.values()]
-      .filter(session => session.lifecycle === "active")
+      .filter(session => session.lifecycle !== "deleted")
       .sort((left, right) =>
         right.updatedAt - left.updatedAt || left.sessionId.localeCompare(right.sessionId),
       );

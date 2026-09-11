@@ -1127,7 +1127,7 @@ internal class MatrixMlp3NativeProjection(
     fun snapshot(): JsonObject? {
         val activeProject = projects.values.firstOrNull() ?: return null
         val visible = sessions.values
-            .filter { it.lifecycle == "active" }
+            .filter { it.lifecycle != "deleted" }
             .sortedWith(compareByDescending<Session> { it.updatedAt }.thenBy { it.id })
         val inline = publicSnapshot(
             activeProject,
