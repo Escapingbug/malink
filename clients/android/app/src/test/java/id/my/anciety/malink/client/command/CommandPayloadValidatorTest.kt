@@ -83,6 +83,13 @@ class CommandPayloadValidatorTest {
                 put("limit", 30)
             },
             lifecycle("session.archive"),
+            buildJsonObject {
+                put("operation", "session.archive.batch")
+                put("targets", kotlinx.serialization.json.JsonArray(listOf(buildJsonObject {
+                    put("projectId", "project-1")
+                    put("sessionId", "session-1")
+                })))
+            },
             lifecycle("session.restore"),
             lifecycle("session.delete"),
             buildJsonObject {

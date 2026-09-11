@@ -110,6 +110,7 @@ export type CapabilityName =
   | "events.replay"
   | "state.snapshot"
   | "commands.durable"
+  | "commands.batch-archive"
   | "commands.journal-reconciliation"
   | "commands.orphan-retirement"
   | "history.page"

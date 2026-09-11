@@ -59,6 +59,7 @@ export const REQUIRED_NATIVE_CAPABILITIES = [
 ] as const;
 
 export const OPTIONAL_NATIVE_CAPABILITIES = [
+  "commands.batch-archive",
   "commands.journal-reconciliation",
   "commands.orphan-retirement",
   "matrix.login-token",
@@ -384,6 +385,9 @@ export class NativeBridgeClient implements MalinkClient {
 
   async send(payload: CommandPayload, projectId?: string): Promise<MalinkCommandSendResult> {
     await this.ready;
+    if (payload.operation === "session.archive.batch" && !this.helloResult.capabilities["commands.batch-archive"]) {
+      throw new Error("Update the Android app to use protocol batch archive.");
+    }
     const idempotencyKey = crypto.randomUUID();
     const receipt = await this.#sendWhenOutboxAvailable(payload, idempotencyKey, projectId);
     const completionTimeoutMs = payload.operation === "gateway.update.stage"
@@ -392,6 +396,7 @@ export class NativeBridgeClient implements MalinkClient {
       || payload.operation === "gateway.update.promote"
       || payload.operation === "gateway.update.discard"
       || payload.operation === "gateway.restart"
+      || payload.operation === "session.archive.batch"
       ? null
       : DEFAULT_COMMAND_TIMEOUT_MS;
     return this.#sendResult(
@@ -1558,6 +1563,7 @@ function parseCommandOperation(input: unknown): CommandPayload["operation"] | un
     case "provider.session.inspect":
     case "session.settings":
     case "session.archive":
+    case "session.archive.batch":
     case "session.restore":
     case "session.delete":
     case "prompt":

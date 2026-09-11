@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { BatchArchiveStore } from './batchArchiveStore'
+import { executeBatchArchive } from './batchArchiveExecutor'
 import { mkdir, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import {
@@ -370,6 +372,7 @@ export class MatrixMlp3GatewayRunner {
   private readonly shadowInbox: FileMatrixEventInbox | null
   private readonly shadowRoomIds: Set<string>
   private readonly journal: Mlp3CommandJournal
+  private readonly archiveBatches: BatchArchiveStore
   private readonly runtimeState: FileMlp3RuntimeStateStore
   private readonly nativeClientReleases: FileNativeClientReleaseStore
   private readonly artifacts: FileMlp3ArtifactStore
@@ -423,6 +426,7 @@ export class MatrixMlp3GatewayRunner {
     private readonly dependencies: MatrixMlp3GatewayDependencies = {},
   ) {
     validateMatrixGatewayConfig(config)
+    this.archiveBatches = new BatchArchiveStore(`${config.replayLedgerPath}.v3-archive-batches`)
     if (config.startFenced) this.updateDrainState = 'sealed'
     this.client = dependencies.client
       ?? createMatrixJsSdkGatewayClient(config.connection, dependencies.onLog)
@@ -1234,6 +1238,7 @@ export class MatrixMlp3GatewayRunner {
     const timeoutMs = command.operation === 'prompt.submit'
       || (command.operation === 'session.create' && command.payload.initialPrompt !== undefined)
       || command.operation === 'gateway.restart'
+      || command.operation === 'session.archive.batch'
       ? null
       : command.operation === 'gateway.update.stage'
         || command.operation === 'gateway.update.apply'
@@ -1305,6 +1310,9 @@ export class MatrixMlp3GatewayRunner {
         return
       case 'session.set_lifecycle':
         await this.setSessionLifecycle(project, command, signal)
+        return
+      case 'session.archive.batch':
+        await this.archiveBatch(project, command, signal)
         return
       case 'project.update':
         await this.updateProject(project, command)
@@ -2969,6 +2977,49 @@ export class MatrixMlp3GatewayRunner {
     this.scheduleArchivedSessionCleanup(project, record, active)
   }
 
+  private async archiveBatch(project: V3ProjectRuntime, command: Mlp3CommandOf<'session.archive.batch'>, signal?: AbortSignal): Promise<void> {
+    const key = commandKey(command)
+    const checkpoint = await this.archiveBatches.read(key)
+    const result = await executeBatchArchive({
+      batchId: command.commandId, request: command.payload, checkpoint,
+      persist: (progress, revision) => this.archiveBatches.write(key, progress, revision),
+      publish: async progress => {
+        await this.enqueueEventDelivery(project, undefined,
+          this.eventFor(project, undefined, command, `batch-progress-${progress.revision}`, progress))
+      },
+      describeFailure: error => ({ code: 'archive_item_failed', message: formatError(error).slice(0, 8192) || 'Archive failed', retryable: false }),
+      archive: async (target, itemCommandId) => {
+        assertCommandExecutionActive(signal)
+        const devices = this.dependencies.listTrustedDevices ? await this.dependencies.listTrustedDevices() : this.config.trustedDevices
+        const device = devices.find(candidate => candidate.deviceId === command.deviceId)
+        const targetProject = [...this.projects.values()].find(candidate => candidate.project.projectId === target.projectId)
+        if (!device || !targetProject || !device.allowedRoomIds.includes(targetProject.config.roomId)
+          || (device.certificateExpiresAt !== undefined && device.certificateExpiresAt <= this.now())
+          || (device.allowedOperations && !device.allowedOperations.includes('device.invite') && !device.allowedOperations.includes('session.archive'))
+          || (this.dependencies.isTrustedDeviceActive && !await this.dependencies.isTrustedDeviceActive(command.deviceId))) {
+          throw new Error('Archive target is unavailable or not authorized')
+        }
+        if (targetProject.deletingCommandId) throw new Error('Project deletion is in progress')
+        if (targetProject.sessions.get(target.sessionId)?.activeTurn) throw new Error('Running sessions cannot be batch archived')
+        const child = { ...command, projectId: target.projectId, sessionId: target.sessionId,
+          commandId: itemCommandId, operation: 'session.set_lifecycle' as const,
+          payload: { operation: 'session.set_lifecycle' as const, state: 'archived' as const } }
+        const claim = await this.journal.claim(child, this.now())
+        if (claim.record.status !== 'terminal') {
+          const pending = this.activeCommands.get(commandKey(child))
+          if (pending) await pending
+          else await this.scheduleExecution(targetProject, claim.record)
+        }
+        const terminal = (await this.journal.get(child))?.terminal
+        if (terminal?.outcome !== 'succeeded') throw new Error(terminal?.error ?? 'Archive item did not confirm success')
+      },
+    })
+    await this.settleAndDeliver(project, command, this.eventFor(project, undefined, command, 'batch-completed', {
+      type: 'command.reconciled', commandId: command.commandId, state: 'terminal',
+      acceptedAt: command.createdAt, terminalAt: this.now(), outcome: 'succeeded', result,
+    }), 'succeeded', result)
+  }
+
   private async assertMaintenanceSessionCanBeArchived(sessionId: string, title?: string): Promise<void> {
     if (!sessionId.startsWith('gateway-update-') && !title?.startsWith('Gateway update repair · ')) return
     const supervisor = this.dependencies.gatewayUpdateSupervisor
@@ -3866,7 +3917,7 @@ export class MatrixMlp3GatewayRunner {
         this.log(`[mlp3/matrix] cannot recover command ${record.command.commandId}: project unavailable`)
         continue
       }
-      if (record.status === 'accepted') {
+      if (record.status === 'accepted' || record.command.operation === 'session.archive.batch') {
         this.scheduleExecution(project, record)
       } else {
         const archived = record.command.operation === 'session.set_lifecycle'

@@ -2895,6 +2895,21 @@ describe('MatrixMlp3GatewayRunner', () => {
     })
 
     const archiveCleanupGate = client.blockNextThreadDeletion()
+    // A batch is admitted once and reports independent item failures without
+    // attempting an unauthorized cross-project operation.
+    await send({ ...base, commandId: 'archive-batch-missing', operation: 'session.archive.batch',
+      payload: { operation: 'session.archive.batch', targets: [
+        { projectId, sessionId: 'missing-batch-session' },
+        { projectId: 'unauthorized-project', sessionId: 'missing-other-session' },
+      ] },
+    }, '$archive-batch-missing')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === 'archive-batch-missing' && event.payload.type === 'command.reconciled'))
+    const batchResult = (await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'archive-batch-missing' && event.payload.type === 'command.reconciled')
+    expect(batchResult?.payload).toMatchObject({ state: 'terminal', outcome: 'succeeded', result: {
+      state: 'completed', items: [{ state: 'failed' }, { state: 'failed' }],
+    } })
     const archiveA = {
       ...base,
       commandId: 'archive-a',
@@ -2950,6 +2965,17 @@ describe('MatrixMlp3GatewayRunner', () => {
       },
     })
     await send(archiveA, '$archive-a-recovery')
+    const batchReplay = { ...base, commandId: 'batch-archive-existing', operation: 'session.archive.batch' as const,
+      payload: { operation: 'session.archive.batch' as const, targets: [{ projectId, sessionId: 'session-a' }] } }
+    await send(batchReplay, '$batch-archive-existing')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === batchReplay.commandId && event.payload.type === 'command.reconciled'))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === batchReplay.commandId && event.payload.type === 'command.reconciled')?.payload)
+      .toMatchObject({ outcome: 'succeeded', result: { state: 'completed', items: [{ state: 'succeeded' }] } })
+    await send(batchReplay, '$batch-archive-existing-replay')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).filter(event =>
+      event.causationCommandId === batchReplay.commandId && event.payload.type === 'command.reconciled').length >= 2)
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).filter(event =>
       event.causationCommandId === 'archive-a'
       && event.payload.type === 'session.lifecycle'

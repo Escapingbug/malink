@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { batchArchiveRequestSchema, batchArchiveProgressSchema } from './batch-archive.js'
 import {
   matrixGatewayCapabilitiesSchema,
   matrixModelCapabilitySchema,
@@ -542,6 +543,7 @@ export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
   artifactMaterializePayloadSchema,
   sessionUpdatePayloadSchema,
   sessionLifecyclePayloadSchema,
+  batchArchiveRequestSchema,
   projectCreatePayloadSchema,
   projectUpdatePayloadSchema,
   projectDeletePayloadSchema,
@@ -657,6 +659,9 @@ export const mlp3CommandSchema = z.union([
     ...sessionCommandCommon,
     operation: z.literal('session.set_lifecycle'),
     payload: sessionLifecyclePayloadSchema,
+  }).strict(),
+  z.object({ ...commandCommon, projectId: opaqueId, sessionId: z.never().optional(),
+    operation: z.literal('session.archive.batch'), payload: batchArchiveRequestSchema,
   }).strict(),
   z.object({
     ...commandCommon,
@@ -1140,6 +1145,7 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
     })
     .strict(),
   commandReconciledPayloadSchema,
+  batchArchiveProgressSchema,
   z
     .object({
       type: z.literal('project.created'),

@@ -890,6 +890,8 @@ export function toMlp3Command(
           ...(payload.limit === undefined ? {} : { limit: payload.limit }),
         },
       };
+    case "session.archive.batch":
+      return { ...common, operation: "session.archive.batch", payload };
     case "session.archive":
     case "session.restore":
     case "session.delete":

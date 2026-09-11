@@ -928,6 +928,22 @@ internal class MatrixMlp3NativeProjection(
 
         var messages = emptyList<ClientMessage>()
         when (type) {
+            "session.archive.batch.progress" -> {
+                require(payload.requiredString("batchId", 512) == causation)
+                payload.requiredPositiveLong("revision")
+                payload.requiredOneOf("state", setOf("running", "completed"))
+                val items = payload.requiredArray("items", 100)
+                require(items.isNotEmpty())
+                items.forEach { entry ->
+                    val item = entry as? JsonObject ?: throw IllegalArgumentException("Invalid batch item")
+                    item.requiredString("projectId", 512)
+                    item.requiredString("sessionId", 512)
+                    item.requiredOneOf("state", setOf("pending", "running", "succeeded", "failed"))
+                }
+                messages = listOf(ClientMessage(eventId = eventId, sender = gatewayId(), timestamp = occurredAt,
+                    encrypted = true, kind = ClientMessageKind.NOTICE, format = ClientMessageFormat.PLAIN,
+                    text = "Batch archive progress", commandId = causation, semantic = payload))
+            }
             "session.ready" -> if (sessionId != null && projectId != null) {
                 val projection = payload.requiredObject("projection")
                 val current = sessions[sessionId]

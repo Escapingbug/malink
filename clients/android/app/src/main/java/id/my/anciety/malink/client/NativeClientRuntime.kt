@@ -2374,6 +2374,11 @@ class NativeClientRuntime(
                     raw.long("limit")?.let { put("limit", it) }
                 }
             }
+            "session.archive.batch" -> {
+                v3Operation = operation
+                v3SessionId = null
+                v3Payload = raw
+            }
             "session.archive", "session.restore", "session.delete" -> {
                 v3Operation = "session.set_lifecycle"
                 v3SessionId = sessionId ?: throw IllegalArgumentException("Session lifecycle target is missing.")

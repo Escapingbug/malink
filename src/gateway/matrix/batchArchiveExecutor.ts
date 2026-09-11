@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import {
   batchArchiveProgressSchema, batchArchiveRequestSchema,
   type BatchArchiveRequest, type BatchArchiveProgress,
-} from '../../../packages/protocol/src/batch-archive'
+} from '@malink/protocol'
 
 type Target = BatchArchiveRequest['targets'][number]
 

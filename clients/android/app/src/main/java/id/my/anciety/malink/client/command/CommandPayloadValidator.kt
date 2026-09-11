@@ -22,6 +22,7 @@ enum class CommandOperation(val wireName: String) {
     PROVIDER_SESSION_INSPECT("provider.session.inspect"),
     PROVIDER_HISTORY_MATERIALIZE("provider.history.materialize"),
     SESSION_ARCHIVE("session.archive"),
+    SESSION_ARCHIVE_BATCH("session.archive.batch"),
     SESSION_RESTORE("session.restore"),
     SESSION_DELETE("session.delete"),
     DEVICE_INVITE("device.invite"),
@@ -329,6 +330,11 @@ data class GatewayRestartCommandPayload(
     }
 }
 
+data class BatchArchiveCommandPayload(val targets: List<Pair<String, String>>) : ValidatedCommandPayload {
+    override val operation = CommandOperation.SESSION_ARCHIVE_BATCH
+    override val sessionId: String? = null
+}
+
 object CommandPayloadValidator {
     const val MAX_ATTACHMENT_BYTES = 50L * 1024 * 1024
     const val MAX_ATTACHMENTS = 10
@@ -353,6 +359,19 @@ object CommandPayloadValidator {
             CommandOperation.SESSION_RESTORE,
             CommandOperation.SESSION_DELETE,
             -> validateSessionLifecycle(value, operation)
+            CommandOperation.SESSION_ARCHIVE_BATCH -> {
+                value.requireExactKeys(setOf("operation", "targets"))
+                val array = value["targets"] as? kotlinx.serialization.json.JsonArray
+                    ?: throw IllegalArgumentException("Batch archive targets are missing")
+                require(array.size in 1..100) { "Batch archive size is invalid" }
+                val targets = array.map { entry ->
+                    val target = entry as? JsonObject ?: throw IllegalArgumentException("Invalid archive target")
+                    target.requireExactKeys(setOf("projectId", "sessionId"))
+                    target.requiredOpaqueId("projectId") to target.requiredOpaqueId("sessionId")
+                }
+                require(targets.toSet().size == targets.size) { "Duplicate archive target" }
+                BatchArchiveCommandPayload(targets)
+            }
             CommandOperation.DEVICE_INVITE -> validateDeviceInvite(value)
             CommandOperation.GATEWAY_ENROLLMENT_INVITE -> validateGatewayEnrollmentInvite(value)
             CommandOperation.GATEWAY_ENROLLMENT_APPROVE -> validateGatewayEnrollmentApprove(value)
@@ -948,6 +967,7 @@ object CommandAuthorizationPolicy {
  */
 internal fun requiredCertificateOperation(operation: CommandOperation): PairingOperation =
     when (operation) {
+        CommandOperation.SESSION_ARCHIVE_BATCH -> PairingOperation.SESSION_ARCHIVE
         CommandOperation.PROJECT_DELETE -> PairingOperation.PROJECT_SETTINGS
         CommandOperation.GATEWAY_ENROLLMENT_INVITE,
         CommandOperation.GATEWAY_ENROLLMENT_APPROVE,

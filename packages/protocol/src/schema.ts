@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { batchArchiveRequestSchema } from './batch-archive.js'
 
 export const PROTOCOL_VERSION = 1 as const
 export const MAX_MALINK_ATTACHMENT_BYTES = 50 * 1024 * 1024
@@ -675,6 +676,7 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
       sessionId: opaqueId,
     })
     .strict(),
+  batchArchiveRequestSchema,
   z
     .object({
       operation: z.literal('session.restore'),
@@ -804,6 +806,7 @@ export const commandSchema = z
       'provider.sessions.list',
       'provider.session.inspect',
       'session.archive',
+      'session.archive.batch',
       'session.restore',
       'session.delete',
       'device.invite',

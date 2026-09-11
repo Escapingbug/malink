@@ -16,6 +16,12 @@ export interface GatewayStateCatalogEntry {
  */
 export const GATEWAY_STATE_CATALOG: readonly GatewayStateCatalogEntry[] = Object.freeze([
     {
+        id: 'matrix-archive-batches',
+        stateClass: 'durable-command',
+        schemaVersion: 1,
+        migrationFromVersions: new Set<number>(),
+    },
+    {
         // Retained in release manifests for rollback compatibility with
         // pre-MLP/3 releases. The active Gateway no longer opens this store.
         id: 'gateway-runtime-state',

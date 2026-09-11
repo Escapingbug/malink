@@ -670,6 +670,15 @@ export class MatrixMlp3Projection {
       }
     }
     this.observeActiveTurn(event);
+    if (payload.type === "session.archive.batch.progress") {
+      const key = `batch:${payload.batchId}`;
+      const current = this.messages.get(key);
+      if (!current || current.version < payload.revision) this.messages.set(key, {
+        logicalId: key, physicalEventId, sessionId: key, sender: "system",
+        timestamp: event.occurredAt, body: "Batch archive progress", format: "plain",
+        version: payload.revision, commandId: payload.batchId, payload,
+      });
+    }
     if (payload.type === "turn.queued" && event.sessionId) {
       this.addUserPrompt(
         payload.turnId,

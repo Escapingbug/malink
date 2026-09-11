@@ -13,7 +13,8 @@ test("leaving selection is independent of pending archive results", () => {
 });
 test("batch archives await settlement and keep unknown results durable", () => {
   assert.match(source, /if \(waitForSettlement\) await settlement/);
-  assert.match(source, /finish\(key, "failed"\), true\)/);
+  assert.match(source, /operation: "session.archive.batch"/);
+  assert.match(source, /consumeBatchArchiveProgress\(result.result\)/);
   const deletion = source.slice(source.indexOf('async function deleteProject()'), source.indexOf('function retryFailedOptimisticProjectCreate'));
   assert.match(deletion, /waitForCommandCompletion\(sent.completion\)/);
   assert.match(deletion, /commandId && confirmed/);

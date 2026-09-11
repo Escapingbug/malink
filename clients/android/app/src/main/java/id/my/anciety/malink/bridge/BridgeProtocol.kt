@@ -1728,6 +1728,7 @@ class BridgeDispatcher(
             "events.replay",
             "state.snapshot",
             "commands.durable",
+            "commands.batch-archive",
             COMMAND_JOURNAL_RECONCILIATION_CAPABILITY,
             COMMAND_ORPHAN_RETIREMENT_CAPABILITY,
             "history.page",

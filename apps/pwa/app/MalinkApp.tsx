@@ -1,4 +1,5 @@
 "use client";
+import { batchArchiveProgressSchema } from "@malink/protocol";
 import { computerRepresentatives, computerNodeAliases } from "./computerPresentation";
 import { bulkArchiveEligible, bulkGroupSessions } from "./bulkArchivePolicy";
 import { messageAttachments } from "./messageAttachments";
@@ -1587,6 +1588,8 @@ function MalinkAppRuntime() {
   const [bulkConfirm, setBulkConfirm] = useState(false);
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
   const [bulkResults, setBulkResults] = useState<Record<string, "pending" | "done" | "failed">>({});
+  const batchArchiveRevisions = useRef(new Map<string, number>());
+  const [batchArchiveErrors, setBatchArchiveErrors] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [sharedFileBatch, setSharedFileBatch] = useState<{ batchId: string; files: File[] } | null>(null);
@@ -4782,6 +4785,7 @@ function MalinkAppRuntime() {
   );
 
   function receiveMatrixMessage(incoming: IncomingMalinkMessage) {
+    if (consumeBatchArchiveProgress(incoming.raw)) return;
     if (
       incoming.encrypted &&
       isLiveMessageDelivery(incoming)
@@ -6811,6 +6815,7 @@ function MalinkAppRuntime() {
         },
         onCommandResult(result) {
           if (!isCurrentStartup()) return;
+          consumeBatchArchiveProgress(result.result);
           observeCommandCompletion(result);
           const pendingSessionCreate = pendingSessionCreateRecoveryRef.current;
           const activeConnection = malinkClientRef.current;
@@ -11620,24 +11625,79 @@ function MalinkAppRuntime() {
     if (bulkSubmitting) return;
     const targets = (gatewayState?.sessions ?? []).filter(session => bulkArchiveAllowed(session) &&
       bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)));
+    const incompatible = targets.some(session => {
+      const owner = projectGatewaysById.get(session.projectId)?.gatewayNodeId;
+      const node = gatewayUpdatePlan.find(candidate => candidate.gatewayNodeId === owner);
+      return !gatewayRelease || node?.currentBuildId !== gatewayRelease.buildId;
+    });
+    if (incompatible) {
+      showUiNotice("session:batch-archive", "session", "warning",
+        "Update the selected computers to the current Gateway release before using protocol batch archive. No archive commands were sent.");
+      return;
+    }
     setBulkConfirm(false);
     setBulkSubmitting(true);
+    setBatchArchiveErrors({});
     setBulkResults(Object.fromEntries(targets.map(session =>
       [sessionLifecycleRouteKey(session.projectId, session.id), "pending" as const])));
-    const finish = (key: string, result: "done" | "failed") => {
-      setBulkResults(current => ({ ...current, [key]: result }));
-      if (result === "done") setBulkSelected(current => {
-        const next = new Set(current); next.delete(key); return next;
-      });
-    };
     try {
+      const groups = new Map<string, typeof targets>();
       for (const session of targets) {
-        const key = sessionLifecycleRouteKey(session.projectId, session.id);
-        const accepted = await runSessionLifecycle("archive", session.id, session.projectId,
-          () => finish(key, "done"), () => finish(key, "failed"), true);
-        if (!accepted) finish(key, "failed");
+        const owner = projectGatewaysById.get(session.projectId)?.gatewayNodeId;
+        if (!owner) throw new Error("Refresh the computer directory before batch archiving.");
+        groups.set(owner, [...(groups.get(owner) ?? []), session]);
       }
+      const outcomes = await Promise.allSettled([...groups.values()].map(async sessions => {
+        for (let offset = 0; offset < sessions.length; offset += 100) {
+          const batch = sessions.slice(offset, offset + 100);
+          const sent = await sendRealCommand({ operation: "session.archive.batch",
+            targets: batch.map(session => ({ projectId: session.projectId, sessionId: session.id })) },
+            batch[0]!.projectId, { propagateFailure: true });
+          if (!sent) throw new Error("Batch archive was not submitted");
+          const result = await waitForCommandCompletion(sent.completion, null);
+          consumeBatchArchiveProgress(result.result);
+          if (result.outcome !== "succeeded") throw new Error(result.error?.message ?? "Batch archive failed");
+          await malinkClientRef.current?.releaseCommand(sent.commandId);
+        }
+      }));
+      const failed = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+      if (failed) throw failed.reason;
+    } catch (error) {
+      showUiNotice("session:batch-archive", "session", "warning",
+        `Batch archive: ${error instanceof Error ? error.message : String(error)}. Do not resubmit unconfirmed items; reconnect to recover their results.`);
     } finally { setBulkSubmitting(false); }
+  }
+
+  function consumeBatchArchiveProgress(value: unknown): boolean {
+    const parsed = batchArchiveProgressSchema.safeParse(value);
+    if (!parsed.success) return false;
+    const progress = parsed.data;
+    if ((batchArchiveRevisions.current.get(progress.batchId) ?? 0) >= progress.revision) return true;
+    batchArchiveRevisions.current.set(progress.batchId, progress.revision);
+    setBatchArchiveErrors(current => {
+      const next = { ...current };
+      for (const item of progress.items) {
+        const key = sessionLifecycleRouteKey(item.projectId, item.sessionId);
+        if (item.error) next[key] = item.error.message;
+        else delete next[key];
+      }
+      return next;
+    });
+    setBulkResults(current => {
+      const next = { ...current };
+      for (const item of progress.items) {
+        const key = sessionLifecycleRouteKey(item.projectId, item.sessionId);
+        const state = item.state === "succeeded" ? "done" : item.state === "failed" ? "failed" : "pending";
+        next[key] = state;
+      }
+      return next;
+    });
+    setBulkSelected(current => {
+      const next = new Set(current);
+      for (const item of progress.items) if (item.state === "succeeded") next.delete(sessionLifecycleRouteKey(item.projectId, item.sessionId));
+      return next;
+    });
+    return true;
   }
 
   function selectAttachments(event: ChangeEvent<HTMLInputElement>) {
@@ -13889,6 +13949,8 @@ function MalinkAppRuntime() {
                   </span>
                   <span className="session-copy">
                     {bulkSelect && !bulkArchiveAllowed(session) && <small className="bulk-exclusion">{session.status === "running" || session.status === "stopping" ? "运行中，暂不可归档" : lifecycleAction ? "正在处理" : "更新恢复保护中"}</small>}
+                    {bulkSelect && batchArchiveErrors[sessionLifecycleRouteKey(session.projectId, session.id)] &&
+                      <small className="bulk-exclusion">{batchArchiveErrors[sessionLifecycleRouteKey(session.projectId, session.id)]}</small>}
                     <span className="session-title-line">
                       <strong>{session.title}</strong>
                       <span className="session-title-meta">

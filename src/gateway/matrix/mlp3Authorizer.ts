@@ -39,6 +39,7 @@ const CURRENT_WORKSPACE_MEMBER_OPERATIONS = [
   'artifact.materialize',
   'session.update',
   'session.set_lifecycle',
+  'session.archive.batch',
   'project.create',
   'project.update',
   'project.delete',
@@ -163,6 +164,9 @@ function v3AllowedOperations(
       case 'provider.session.inspect': result.add('provider.session.inspect'); break
       case 'provider.history.materialize': result.add('provider.history.materialize'); break
       case 'session.archive':
+        result.add('session.archive.batch')
+        result.add('session.set_lifecycle')
+        break
       case 'session.restore':
       case 'session.delete':
         result.add('session.set_lifecycle')
