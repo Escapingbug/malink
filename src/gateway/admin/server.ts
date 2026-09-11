@@ -108,7 +108,7 @@ export interface GatewayAdminServerOptions {
   preflightFilesystem?: (
     request: GatewayFilesystemPreflightRequest,
   ) => Promise<GatewayFilesystemPreflightResponse>
-  sealForDeployment?: (mode: 'when_idle' | 'force') => Promise<void>
+  sealForDeployment?: (mode: 'when_idle' | 'force', signal?: AbortSignal) => Promise<void>
   issueDeploymentMatrixLogin?: () => Promise<MatrixLoginTokenIssueResult>
   now?: () => number
   rateLimitPerMinute?: number
@@ -183,7 +183,16 @@ export async function startGatewayAdminServer(
         }
         const body = await readJsonBody(request)
         const mode = deploymentSealMode(body)
-        await options.sealForDeployment(mode)
+        const controller = new AbortController()
+        const disconnected = () => {
+          if (!response.writableEnded) controller.abort(new Error('Deployment controller disconnected before handoff'))
+        }
+        response.once('close', disconnected)
+        try {
+          await options.sealForDeployment(mode, controller.signal)
+        } finally {
+          response.off('close', disconnected)
+        }
         sendJson(response, 200, { ok: true, mode })
         return
       }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AcpProvider } from '@/providers/acp'
 import { AgentProvider } from '@/providers/agent'
 import type { AgentEvent } from '@/providers/types'
@@ -21,7 +21,7 @@ class RecoveryClientManager {
     supportsResumeSession = true
     supportsListSessions = false
     agentCapabilities = { agentCapabilities: { loadSession: false } }
-    promptCapabilities = {}
+    promptCapabilities: { image?: boolean } = {}
 
     closeCalls = 0
     initCalls = 0
@@ -33,6 +33,7 @@ class RecoveryClientManager {
     permissionHandlerCalls = 0
     extensionHandlerCalls = 0
     promptSessionIds: string[] = []
+    prompts: unknown[][] = []
     resumeMcpServerCounts: number[] = []
     newSessionMcpServerCounts: number[] = []
 
@@ -100,7 +101,8 @@ class RecoveryClientManager {
     }
     async setSessionConfigOption(): Promise<Record<string, never>> { return {} }
 
-    async prompt(params: { sessionId: string }): Promise<{ stopReason: string }> {
+    async prompt(params: { sessionId: string; prompt: unknown[] }): Promise<{ stopReason: string }> {
+        this.prompts.push(params.prompt)
         this.promptCalls += 1
         this.promptSessionIds.push(params.sessionId)
         return { stopReason: 'end_turn' }
@@ -164,9 +166,10 @@ function cursorProviderWith(manager: RecoveryClientManager): AgentProvider {
     return provider
 }
 
-async function collectEvents(provider: AcpProvider, sessionId: string | null = 'existing-session'): Promise<AgentEvent[]> {
+async function collectEvents(provider: AcpProvider, sessionId: string | null = 'existing-session', malinkSessionId?: string): Promise<AgentEvent[]> {
     const handle = provider.startQuery('continue', {
         cwd: '/repo',
+        malinkSessionId,
         ...(sessionId ? { sessionId } : {}),
         signal: new AbortController().signal,
     })
@@ -176,6 +179,40 @@ async function collectEvents(provider: AcpProvider, sessionId: string | null = '
 }
 
 describe('AcpProvider session-open recovery', () => {
+    afterEach(() => vi.unstubAllEnvs())
+
+    it.each([undefined, 'existing-session'])('injects Matrix context and preserves rich input for session %s', async (sessionId) => {
+        vi.stubEnv('MALINK_GATEWAY_ADMIN_SOCKET', '/tmp/gateway.sock')
+        const manager = new RecoveryClientManager()
+        manager.supportsResumeSession = false
+        manager.agentCapabilities.agentCapabilities.loadSession = true
+        const requests: SessionRequest[] = []
+        manager.newSessionBehavior = async (_call, request) => {
+            requests.push(request)
+            return { sessionId: 'new-session' }
+        }
+        const provider = providerWith(manager)
+        const config = { cwd: '/repo', malinkSessionId: 'malink-1', sessionId, signal: new AbortController().signal }
+        manager.promptCapabilities.image = true
+        const image = { type: 'image' as const, mimeType: 'image/png', data: 'aW1hZ2U=' }
+        const input = { parts: [{ type: 'text' as const, text: 'user question' }, image] }
+        for await (const _event of provider.startQuery(input, config).events) { /* drain */ }
+        for await (const _event of provider.startQuery(input, { ...config, sessionId: sessionId ?? 'new-session' }).events) { /* drain */ }
+        expect(manager.prompts).toHaveLength(2)
+        for (const prompt of manager.prompts) {
+            expect(prompt).toEqual([
+                { type: 'text', text: expect.stringContaining('Malink MCP tools are attached') },
+                { type: 'text', text: 'user question' },
+                image,
+            ])
+        }
+        expect(input.parts).toEqual([{ type: 'text', text: 'user question' }, image])
+        if (!sessionId) expect(requests[0]).toMatchObject({ mcpServers: [{ env: expect.arrayContaining([
+            { name: 'MALINK_CHANNEL', value: 'matrix' },
+            { name: 'MALINK_SESSION_ID', value: 'malink-1' },
+            { name: 'MALINK_SESSION_CWD', value: '/repo' },
+        ]) }] })
+    })
     it('acquires a restored provider session before the first prompt and reuses it', async () => {
         const manager = new RecoveryClientManager()
         const provider = providerWith(manager)
@@ -373,6 +410,7 @@ describe('AcpProvider session-open recovery', () => {
     })
 
     it('preserves the same session without MCP when both full recovery attempts time out', async () => {
+        vi.stubEnv('MALINK_GATEWAY_ADMIN_SOCKET', '/tmp/gateway.sock')
         const firstManager = new RecoveryClientManager()
         const secondManager = new RecoveryClientManager()
         const degradedManager = new RecoveryClientManager()
@@ -380,8 +418,11 @@ describe('AcpProvider session-open recovery', () => {
         secondManager.resumeBehavior = () => secondManager.hangUntilClose()
         const provider = providerWithManagers([firstManager, secondManager, degradedManager])
 
-        const events = await collectEvents(provider)
+        const events = await collectEvents(provider, 'existing-session', 'malink-1')
 
+        expect(degradedManager.prompts[0]?.[0]).toEqual({
+            type: 'text', text: expect.stringContaining('unavailable for this turn'),
+        })
         expect(firstManager.closeCalls).toBe(1)
         expect(secondManager.closeCalls).toBe(1)
         expect(firstManager.resumeMcpServerCounts).toEqual([1])

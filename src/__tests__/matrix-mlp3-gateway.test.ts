@@ -3177,6 +3177,13 @@ describe('MatrixMlp3GatewayRunner', () => {
       dispatched.some(item => item.text === 'finish before update'),
     ))
 
+    const disconnectedController = new AbortController()
+    const abandonedSeal = runner.sealForDeployment('when_idle', disconnectedController.signal)
+    const abandonedSealResult = expect(abandonedSeal).rejects.toThrow('controller timed out')
+    disconnectedController.abort(new Error('controller timed out'))
+    await abandonedSealResult
+    expect((await runner.healthSnapshot()).deploymentFenced).toBe(false)
+
     await send({
       ...base,
       commandId: 'gateway-update-apply-1',
@@ -3200,10 +3207,28 @@ describe('MatrixMlp3GatewayRunner', () => {
       operation: 'provider.sessions.list',
       payload: { operation: 'provider.sessions.list', provider: 'test' },
     }, '$provider-list-during-update-drain')
-    await new Promise(resolveDelay => setTimeout(resolveDelay, 25))
-    expect((await events(client, activeKey.key, roomId, projectId)).some(event =>
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
       event.causationCommandId === 'provider-list-during-update-drain'
-    )).toBe(false)
+    ))
+    expect(gatewayUpdateCalls).not.toContain('apply:release-2')
+
+    await send({
+      ...base,
+      commandId: 'create-session-for-idle-update-test',
+      sessionId: 'session-idle-update-new',
+      operation: 'session.create',
+      payload: { operation: 'session.create', provider: 'test', title: 'Continue during update' },
+    }, '$create-session-for-idle-update-test')
+    await send({
+      ...base,
+      commandId: 'prompt-new-session-during-idle-update',
+      sessionId: 'session-idle-update-new',
+      operation: 'prompt.submit',
+      payload: { operation: 'prompt.submit', text: 'continue while update waits' },
+    }, '$prompt-new-session-during-idle-update')
+    await waitFor(() => Promise.resolve(
+      dispatched.some(item => item.text === 'continue while update waits'),
+    ))
     expect(gatewayUpdateCalls).not.toContain('apply:release-2')
 
     updateDrainBlocked.resolve()
@@ -3290,6 +3315,7 @@ describe('MatrixMlp3GatewayRunner', () => {
         .digest('hex')
         .slice(0, 40)}`,
       'session-b',
+      'session-idle-update-new',
       'session-long-initial-prompt',
       'session-provider-defaults',
       'session-scratch',
@@ -3314,6 +3340,7 @@ describe('MatrixMlp3GatewayRunner', () => {
 
     gatewayAgentStaged = false
     const remainingSessionIds = [
+      'session-idle-update-new',
       'session-b',
       'session-long-initial-prompt',
       'session-provider-defaults',

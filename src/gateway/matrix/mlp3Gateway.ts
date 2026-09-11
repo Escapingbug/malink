@@ -656,12 +656,13 @@ export class MatrixMlp3GatewayRunner {
     return this.inbox.counts()
   }
 
-  async sealForDeployment(mode: 'when_idle' | 'force'): Promise<void> {
+  async sealForDeployment(mode: 'when_idle' | 'force', signal?: AbortSignal): Promise<void> {
     if (this.state === 'stopped') return
     if (this.state !== 'running') {
       throw new Error(`Cannot seal Gateway deployment while ${this.state}`)
     }
     const previousDrainState = this.updateDrainState
+    signal?.throwIfAborted()
     if (previousDrainState === 'open') this.updateDrainState = 'waiting'
     try {
       if (mode === 'force') {
@@ -669,16 +670,19 @@ export class MatrixMlp3GatewayRunner {
       }
       while (this.activeTurnCount() > 0 || this.activeCommands.size > 0) {
         await new Promise(resolveDelay => setTimeout(resolveDelay, 100))
+        signal?.throwIfAborted()
         if (this.state !== 'running') {
           throw new Error('Gateway stopped before its deployment handoff was sealed')
         }
       }
+      signal?.throwIfAborted()
       this.updateDrainState = 'sealed'
       await this.eventChain
       const deadline = Date.now()
         + (this.dependencies.deploymentSealTimeoutMs ?? DEFAULT_DEPLOYMENT_SEAL_TIMEOUT_MS)
       let health = await this.healthSnapshot()
       while (health.pendingOutboxDeliveries > 0 || health.pendingInboxEvents > 0) {
+        signal?.throwIfAborted()
         if (Date.now() >= deadline) {
           throw new Error(
             `Gateway deployment cannot seal with ${health.pendingOutboxDeliveries} outbox `
@@ -691,6 +695,7 @@ export class MatrixMlp3GatewayRunner {
         }
         health = await this.healthSnapshot()
       }
+      signal?.throwIfAborted()
       await this.stop()
     } catch (error) {
       // A failed pre-commit seal must leave a live Gateway exactly as usable
@@ -1118,15 +1123,11 @@ export class MatrixMlp3GatewayRunner {
     this.scheduleExecution(project, record)
   }
 
-  private shouldDeferForGatewayUpdate(command: Mlp3Command): boolean {
-    if (this.updateDrainState === 'open') return false
-    if (this.updateDrainState === 'sealed') return true
-    if (
-      command.operation === 'gateway.update.status'
-      || command.operation === 'gateway.deployment.status'
-      || command.operation === 'gateway.restart.status'
-    ) return false
-    return command.operation !== 'turn.cancel' && command.operation !== 'decision.answer'
+  private shouldDeferForGatewayUpdate(_command: Mlp3Command): boolean {
+    // Waiting for an idle opportunity is not an execution fence. Newly
+    // authorized work may extend that wait, including work in other sessions.
+    // Only the synchronous idle-to-handoff transition closes admission.
+    return this.updateDrainState === 'sealed'
   }
 
   private resumeDeferredUpdateCommands(): void {
@@ -1945,9 +1946,9 @@ export class MatrixMlp3GatewayRunner {
   }
 
   /**
-   * Close the business-command gate first, then drain work that was already
-   * running. Commands accepted after the gate closes remain in the durable
-   * journal for the replacement Gateway to resume after activation.
+   * Wait for an idle opportunity without blocking new business commands.
+   * The caller seals admission synchronously once this wait finishes. Only
+   * commands arriving during the actual handoff remain journaled for restart.
    */
   private async drainGatewayForUpdate(
     project: V3ProjectRuntime,

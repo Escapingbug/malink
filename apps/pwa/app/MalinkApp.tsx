@@ -516,7 +516,6 @@ import {
   resolveMatrixSession,
   saveMatrixConfig,
   type IncomingMalinkMessage,
-  type GatewayStateSnapshot,
   type MatrixConnectionConfig,
   type MatrixConnectionStatus,
 } from "./matrix";
@@ -2786,6 +2785,12 @@ function MalinkAppRuntime() {
     .find(deployment => deployment.recovery
       ? deployment.active.gatewayNodeId === activeProjectGateway.gatewayNodeId
       : deployment.phase !== "steady" && deployment.candidate?.gatewayNodeId === activeProjectGateway.gatewayNodeId);
+  const activeMaintenanceStatus = gatewayUpdateRuntimeByNode[activeProjectGateway.gatewayNodeId]?.status;
+  const activeMaintenanceWaiting = activeMaintenanceStatus?.phase === "waiting_for_idle";
+  const activeMaintenanceSwitching = activeMaintenanceStatus?.executionTracks?.phase === "releasing"
+    || activeMaintenanceStatus?.executionTracks?.phase === "activating"
+    || activeMaintenanceStatus?.phase === "activating"
+    || activeMaintenanceStatus?.phase === "scheduled";
   const recoveryNoticeReason = gatewayRecoveryNoticeReason({
     connected: connectionStatus === "connected",
     hasRecovery: Boolean(activeRecoveryDeployment),
@@ -11823,6 +11828,9 @@ function MalinkAppRuntime() {
       return;
     }
     if (!value && pendingFiles.length === 0) return;
+    if (activeMaintenanceWaiting && !window.confirm(
+      "This computer has an update waiting for all running tasks to finish. Send this message anyway? Your task can run normally; the update will wait longer.",
+    )) return;
     const sessionId = selectedSessionIdRef.current;
     if (!composerState.canSend || !sessionId) {
       showUiNotice(
@@ -14331,6 +14339,12 @@ function MalinkAppRuntime() {
           </div>
         </header>
 
+        {(activeMaintenanceWaiting || activeMaintenanceSwitching) && <div className="session-notices-conversation" role="status">
+          <p>{activeMaintenanceWaiting
+            ? "Gateway update waiting: you can continue working. Installation starts when all tasks finish."
+            : "Gateway update in progress: this computer is handing over or restarting. New messages may wait until it reconnects."}</p>
+          <button type="button" onClick={() => setGatewayUpdateDialogOpen(true)}>View Gateway update</button>
+        </div>}
         {recoveryNoticeReason && <GatewayRecoveryNotice
           key={`${activeProjectGateway.gatewayNodeId}:${recoveryNoticeReason}`}
           reason={recoveryNoticeReason}
@@ -15504,6 +15518,17 @@ function MalinkAppRuntime() {
       {gatewayState && (
         <NewSessionDialog
           open={newSessionOpen}
+          selectProjectFirst={newSessionProjectId === null}
+          recentProjectIds={[...gatewayState.sessions]
+            .filter(session => session.scope !== "scratch")
+            .sort((a, b) => b.updatedAt - a.updatedAt)
+            .map(session => session.projectId)}
+          onNewProject={!optimisticProjectCreate && gatewayAvailable && projectCreationGateways.length > 0
+            ? () => { setNewSessionOpen(false); setNewProjectOpen(true); } : undefined}
+          onManageProject={projectId => {
+            setNewSessionOpen(false);
+            setProjectSettingsProjectId(projectId);
+          }}
           busy={newSessionBusy}
           fallbackGateway={fallbackProjectGateway}
           projectGateways={projectGatewaysById}

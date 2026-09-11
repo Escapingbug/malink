@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import type {
   JsonValue,
   ProviderControl,
@@ -15,6 +15,8 @@ import {
   type GatewayWorkspaceState,
 } from "./gatewayState";
 import type { GatewayProjectOwner } from "./projectCatalog";
+import { SessionProjectPicker } from "./SessionProjectPicker";
+import { useNativeBackHandler, NATIVE_BACK_PRIORITY } from "./nativeBackNavigation";
 import { ProviderControls } from "./ProviderControls";
 import {
   legacyProviderControls,
@@ -54,6 +56,10 @@ type Props = {
   extensions: SessionExtensionDescriptor[];
   defaultExtensions?: SessionExtensionBinding[];
   canUpdateProjectDefaults?: boolean;
+  selectProjectFirst?: boolean;
+  recentProjectIds?: string[];
+  onNewProject?(): void;
+  onManageProject?(projectId: string): void;
   onClose(): void;
   onReviewProviderIssue?(): void;
   onCreate(input: NewSessionInput): void;
@@ -76,10 +82,17 @@ function NewSessionDialogContent({
   extensions: fallbackExtensions,
   defaultExtensions = [],
   canUpdateProjectDefaults = false,
+  selectProjectFirst = false,
+  recentProjectIds = [],
+  onNewProject,
+  onManageProject,
   onClose,
   onReviewProviderIssue,
   onCreate,
 }: Props) {
+  const [choosingProject, setChoosingProject] = useState(selectProjectFirst);
+  const [pickerReturnsToConfig, setPickerReturnsToConfig] = useState(false);
+  const [hasConfigured, setHasConfigured] = useState(!selectProjectFirst);
   const availableWorkspaces = workspaces.length > 0 ? workspaces : [workspace];
   const [projectId, setProjectId] = useState(workspace.projectId);
   const selectedWorkspace = availableWorkspaces.find(
@@ -154,12 +167,27 @@ function NewSessionDialogContent({
   const requestClose = () => {
     if (!busy) onClose();
   };
+  const goBack = () => {
+    if (busy) return;
+    if (choosingProject) {
+      if (pickerReturnsToConfig) setChoosingProject(false);
+      else onClose();
+    } else if (selectProjectFirst) {
+      setPickerReturnsToConfig(false);
+      setChoosingProject(true);
+    }
+    else onClose();
+  };
+  useNativeBackHandler(open, () => { goBack(); return true; }, NATIVE_BACK_PRIORITY.nestedModal);
+  useEffect(() => {
+    if (!choosingProject) providerSelectRef.current?.focus();
+  }, [choosingProject]);
   useDialogFocus({
     open,
     containerRef: dialogRef,
     initialFocusRef: providerSelectRef,
     escapeDisabled: busy,
-    onEscape: requestClose,
+    onEscape: goBack,
   });
 
   const extensionConfigValid = extensions.every((extension) => {
@@ -252,19 +280,42 @@ function NewSessionDialogContent({
     >
       <section
         ref={dialogRef}
-        className="new-session-dialog"
+        className={`new-session-dialog${choosingProject ? " session-project-dialog" : ""}`}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="new-session-title"
+        aria-labelledby={choosingProject ? "session-project-title" : "new-session-title"}
         aria-busy={busy}
         tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
       >
+        <div hidden={!choosingProject}>
+          <SessionProjectPicker
+            active={choosingProject}
+            workspaces={availableWorkspaces}
+            projectGateways={projectGateways}
+            fallbackGateway={fallbackGateway}
+            selectedProjectId={hasConfigured ? projectId : undefined}
+            recentProjectIds={recentProjectIds}
+            busy={busy}
+            onCancel={goBack}
+            onChoose={next => {
+              if (next.projectId !== projectId) chooseWorkspace(next);
+              setScope("project");
+              setHasConfigured(true);
+              setChoosingProject(false);
+            }}
+            onTemporary={() => { setScope("scratch"); setHasConfigured(true); setChoosingProject(false); }}
+            onNewProject={onNewProject}
+            onManageProject={onManageProject}
+          />
+        </div>
+        <div hidden={choosingProject} className="session-configuration">
         <header>
           <div>
             <span className="eyebrow">
               {scope === "scratch" ? "Computer · Temporary" : "Computer · Project"}
             </span>
+            {selectProjectFirst && <button type="button" className="session-step-back" onClick={() => { setPickerReturnsToConfig(false); setChoosingProject(true); }} disabled={busy}>‹ Projects</button>}
             <h2 id="new-session-title">Create a session</h2>
             <p>{selectedGateway.label}</p>
           </div>
@@ -296,42 +347,12 @@ function NewSessionDialogContent({
           </label>
 
           {scope === "project" ? <>
-          <div className="new-session-grid">
-            <label>
-              <span>Project</span>
-              {availableWorkspaces.length > 1 ? (
-                <select
-                  value={selectedWorkspace.projectId}
-                  disabled={busy}
-                  onChange={(event) => {
-                    const next = availableWorkspaces.find(
-                      candidate => candidate.projectId === event.target.value,
-                    );
-                    if (!next) return;
-                    chooseWorkspace(next);
-                  }}
-                >
-                  {availableWorkspaces.map(candidate => (
-                    <option key={candidate.projectId} value={candidate.projectId}>
-                      {candidate.projectName} — {
-                        (projectGateways.get(candidate.projectId) ?? fallbackGateway).label
-                      }
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input value={selectedWorkspace.projectName} disabled readOnly />
-              )}
-            </label>
-            <label>
-              <span>Working directory</span>
-              <input value={selectedWorkspace.cwd} disabled readOnly />
-            </label>
-          </div>
-          <small className="project-identity-note">
-            Each project keeps its own durable Matrix room; all listed projects
-            remain connected and manageable at the same time.
-          </small>
+          <button type="button" className="session-project-summary" disabled={busy}
+            onClick={() => { setPickerReturnsToConfig(true); setChoosingProject(true); }}>
+            <span><small>PROJECT</small><strong>{selectedWorkspace.projectName}</strong>
+              <small>{selectedGateway.label}</small><small>{selectedWorkspace.cwd}</small></span>
+            <span>Change ›</span>
+          </button>
           </> : <>
             <div className="new-session-grid">
               <label>
@@ -368,6 +389,7 @@ function NewSessionDialogContent({
               <span>Provider</span>
               <select
                 ref={providerSelectRef}
+                aria-label="Provider"
                 value={provider}
                 onChange={(event) => {
                   const nextProvider = event.target.value;
@@ -530,9 +552,8 @@ function NewSessionDialogContent({
             </button>
           </footer>
         </form>
+        </div>
       </section>
     </div>
   );
 }
-
-export type { NewSessionInput };

@@ -64,6 +64,7 @@ describe('MCP active surface registration', () => {
     })
 
     afterEach(() => {
+        vi.unstubAllEnvs()
         vi.unstubAllGlobals()
         vi.restoreAllMocks()
         delete process.env.MALINK_CONVERSATION_ID
@@ -180,5 +181,33 @@ describe('MCP active surface registration', () => {
         expect(tools.has('get_malink_context')).toBe(true)
         expect(tools.has('send_file')).toBe(false)
         expect(tools.has('send_message')).toBe(false)
+    })
+
+    it.each([undefined, 'restored-provider-session'])('exposes only Gateway tools with provider identity %s', async (providerSessionId) => {
+        vi.stubEnv('MALINK_CHANNEL', 'matrix')
+        vi.stubEnv('MALINK_SESSION_ID', 'matrix-session-1')
+        vi.stubEnv('MALINK_SESSION_CWD', '/repo')
+        vi.stubEnv('MALINK_GATEWAY_ADMIN_SOCKET', '/tmp/gateway.sock')
+        vi.stubEnv('MALINK_CONVERSATION_ID', providerSessionId)
+        const { server, tools, resources } = createServerRecorder()
+        registerMalinkMcpSurface(server)
+        expect([...tools.keys()].sort()).toEqual(['get_malink_context', 'send_file'])
+        expect(resources.has('Malink Session')).toBe(true)
+        const context = await tools.get('get_malink_context')!({})
+        expect(context.content[0].text).toContain('PWA or Android')
+        expect(context.content[0].text).toContain('matrix-session-1')
+        expect(context.content[0].text).toContain('/repo')
+        expect(context.content[0].text).not.toContain('Telegram')
+        expect(context.content[0].text).not.toContain('/tmp/gateway.sock')
+        expect(fetch).not.toHaveBeenCalled()
+    })
+
+    it('does not advertise file delivery without a bound Gateway route', async () => {
+        vi.stubEnv('MALINK_CHANNEL', 'matrix')
+        const { server, tools } = createServerRecorder()
+        registerMalinkMcpSurface(server)
+        expect([...tools.keys()]).toEqual(['get_malink_context'])
+        const context = await tools.get('get_malink_context')!({})
+        expect(context.content[0].text).toContain('unavailable')
     })
 })
