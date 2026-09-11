@@ -313,6 +313,8 @@ import {
 } from "./messageDelivery";
 import { retryMatchingCommandRevisionConflict } from "./commandRevisionRetry";
 import { deriveComposerState } from "./composerState";
+import { ConversationRecoveryDetails } from "./ConversationRecoveryDetails";
+import { observeConversationRecovery } from "./conversationRecovery";
 import {
   connectionRepairReasonForDetail,
   connectionStatusForBrowserNetwork,
@@ -2727,27 +2729,15 @@ function MalinkAppRuntime() {
     setConversationRecoveryError(null);
     if (!selectedSessionId || !conversationConnection?.ensureSessionReady
       || connectionStatus !== "connected" || optimisticSelected) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const check = async () => {
-      try {
-        await conversationConnection.ensureSessionReady!(selectedSessionId, selectedProjectId ?? undefined);
-        if (!cancelled) {
-          setReadyConversation({ connection: conversationConnection, key: conversationReadyKey });
-          setConversationRecoveryError(null);
-          // A foreground history read may have timed out before readiness.
-          // Re-read the cache/projection now, without requiring another click.
-          void restoreSessionHistory(selectedSessionId, conversationConnection, selectedProjectId ?? undefined);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setConversationRecoveryError(formatUiError(error));
-          timer = setTimeout(check, 2_000);
-        }
-      }
-    };
-    void check();
-    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    return observeConversationRecovery({
+      ensureReady: () => conversationConnection.ensureSessionReady!(selectedSessionId, selectedProjectId ?? undefined),
+      onReady: () => {
+        setReadyConversation({ connection: conversationConnection, key: conversationReadyKey });
+        setConversationRecoveryError(null);
+        void restoreSessionHistory(selectedSessionId, conversationConnection, selectedProjectId ?? undefined);
+      },
+      onFailure: (error) => setConversationRecoveryError(formatUiError(error)),
+    });
   }, [conversationConnection, conversationReadyKey, connectionStatus, selectedSessionId, selectedProjectId, optimisticSelected]);
   const derivedComposerState = deriveComposerState({
     conversationRecovering,
@@ -9273,6 +9263,11 @@ function MalinkAppRuntime() {
   async function performConnectionDiagnosticsExport(): Promise<boolean> {
     try {
       const report = createConnectionDiagnostics({
+        conversationRecovery: conversationRecovering ? {
+          sessionId: selectedSessionId,
+          projectId: selectedProjectId,
+          needsAttention: Boolean(conversationRecoveryError),
+        } : null,
         buildVersion: MALINK_BUILD_VERSION,
         status: connectionStatus,
         detail: connectionDetail,
@@ -15402,6 +15397,16 @@ function MalinkAppRuntime() {
           >
             {composerState.reason}
           </p>
+          {conversationRecovering && conversationRecoveryError && (
+            <ConversationRecoveryDetails
+              key={conversationReadyKey}
+              error={conversationRecoveryError}
+              sessionId={selectedSessionId}
+              projectId={selectedProjectId}
+              exportBusy={diagnosticExportBusy}
+              onExport={() => void exportConnectionDiagnostics()}
+            />
+          )}
           </>}
         </div>
       </section>

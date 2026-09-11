@@ -69,8 +69,8 @@ export function deriveComposerState(input: ComposerStateInput): ComposerState {
   }
   if (input.conversationRecovering) {
     return blocked(input.conversationRecoveryFailed
-      ? "Conversation is still reconnecting · Your draft is kept · Retrying automatically"
-      : "Restoring this conversation… You can keep typing");
+      ? "Conversation recovery needs attention · Sending is paused · Your draft is kept"
+      : "Restoring this conversation… Sending is paused until its project is ready. You can keep typing");
   }
   if (input.attachmentBusy) {
     return blocked("Preparing attachments…");
