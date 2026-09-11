@@ -13,7 +13,7 @@ test("background history restoration shares the animated loading state", () => {
 
 test("verified archive ends busy state before slow local cleanup, without repeating callbacks on retry", async () => {
   const start = source.indexOf("  async function settleSessionLifecycle(");
-  const end = source.indexOf("  async function archiveSession(", start);
+  const end = source.indexOf("  async function deleteSession(", start);
   assert.ok(start >= 0 && end > start);
   const code = ts.transpileModule(source.slice(start, end), {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
@@ -41,7 +41,7 @@ test("verified archive ends busy state before slow local cleanup, without repeat
   const cleanup = new Promise<void>((_, reject) => { rejectCleanup = reject; });
   let callbacks = 0;
   const pending = settle({ releaseCommand: () => cleanup },
-    { commandId: "archive", completion: Promise.resolve({}) },
+    { commandId: "archive", completion: Promise.resolve({ outcome: "succeeded" }) },
     "archive", "session", "project", () => { callbacks++; });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(callbacks, 1);

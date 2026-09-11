@@ -61,6 +61,8 @@ class GatewayStateSyncPolicyTest {
 
     @Test
     fun `authoritative session lifecycle safely resolves matching mutations`() {
+        assertEquals(false, projectedSessionLifecycleSatisfies(CommandOperation.SESSION_ARCHIVE, "deleted"))
+        assertEquals(false, projectedSessionLifecycleSatisfies(CommandOperation.SESSION_DELETE, "archived"))
         assertEquals(
             true,
             projectedSessionLifecycleSatisfies(CommandOperation.SESSION_ARCHIVE, "archived"),

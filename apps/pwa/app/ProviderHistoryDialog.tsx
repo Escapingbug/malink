@@ -198,7 +198,7 @@ function ProviderHistoryDialogContent({
                   const kind = providerHistorySessionKind(session);
                   const timestamp = providerHistorySessionTimestamp(session);
                   const status = kind === "archived"
-                    ? "Archived"
+                    ? "Deleted"
                     : kind === "active"
                       ? "Current in Malink"
                       : "Provider-only";
@@ -283,7 +283,7 @@ function ProviderHistoryDialogContent({
                     <strong>{selected.title}</strong>
                     <small>
                       {providerHistorySessionKind(selected) === "archived"
-                        ? "Archived from Malink"
+                        ? "Deleted from Malink"
                         : providerHistorySessionKind(selected) === "active"
                           ? "Current in Malink"
                           : "Provider-only"}

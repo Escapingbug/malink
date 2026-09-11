@@ -85,7 +85,7 @@ function ProjectSettingsDialogContent({
     canDelete
       ? "This removes the project and retires its Matrix room from every connected device."
       : hasSessions
-        ? "Archive every Malink session in this project before deleting it."
+        ? "Delete every Malink session in this project before deleting it."
         : "A Gateway must retain its bootstrap control project and at least one project route."
   ), [canDelete, hasSessions]);
 

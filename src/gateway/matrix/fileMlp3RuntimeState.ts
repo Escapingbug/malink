@@ -45,6 +45,9 @@ export interface PersistedMlp3Session {
   updatedAt: number
   stateVersion: number
   lifecycle: Mlp3SessionLifecycle
+  /** Only new, retained archives can be restored in place; old archives are deletion tombstones. */
+  retainedArchive?: boolean
+  lifecycleCommandId?: string
   provider: string
   model: string | null
   reasoningEffort: string | null
@@ -369,6 +372,9 @@ function validateProject(project: PersistedMlp3Project, roomId: string): void {
       || session.extensionRevision < 1
       || !Array.isArray(session.availableCommands)
       || !validProviderHistoryRoom(session.providerHistory)
+      || (session.lifecycleCommandId !== undefined && (typeof session.lifecycleCommandId !== 'string' || !session.lifecycleCommandId))
+      || (session.retainedArchive !== undefined && typeof session.retainedArchive !== 'boolean')
+      || (session.retainedArchive === true && (session.lifecycle !== 'archived' || session.archiveCleanup !== null))
       || !validArchiveCleanup(session.archiveCleanup)
       || (session.archiveCleanup !== null && session.lifecycle !== 'archived')
       || (

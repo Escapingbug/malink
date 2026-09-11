@@ -63,6 +63,7 @@ export const REQUIRED_NATIVE_CAPABILITIES = [
 export const OPTIONAL_NATIVE_CAPABILITIES = [
   "extensions.crypto",
   "commands.batch-archive",
+  "commands.session-lifecycle",
   "commands.journal-reconciliation",
   "commands.orphan-retirement",
   "matrix.login-token",
@@ -417,6 +418,10 @@ export class NativeBridgeClient implements MalinkClient {
 
   async send(payload: CommandPayload, projectId?: string): Promise<MalinkCommandSendResult> {
     await this.ready;
+    if (["session.archive", "session.restore", "session.delete", "session.archive.batch"].includes(payload.operation)
+      && !this.helloResult.capabilities["commands.session-lifecycle"]) {
+      throw new Error("Update the Android app before archiving, restoring, or deleting sessions.");
+    }
     if ((payload.operation === "session.archive.batch" ||
       (payload.operation === "gateway.update.status" && payload.includeOperationCapabilities)) &&
       !this.helloResult.capabilities["commands.batch-archive"]) {

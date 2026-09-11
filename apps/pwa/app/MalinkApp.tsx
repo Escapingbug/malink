@@ -604,7 +604,7 @@ type TimelinePresentationItem =
 
 type PendingSessionLifecycleRecovery = {
   commandId: string;
-  action: "archive";
+  action: "archive" | "restore" | "delete";
   sessionId: string;
   projectId: string;
   onSucceeded?: () => void | Promise<void>;
@@ -2347,8 +2347,10 @@ function MalinkAppRuntime() {
       }),
     [fallbackProjectGateway, gatewayScopedSessions, projectGatewaysById, search],
   );
-  const activeFilteredSessions = filteredSessions;
-  const activeSessionCount = gatewayScopedSessions.length;
+  const [showArchivedSessions, setShowArchivedSessions] = useState(false);
+  const activeFilteredSessions = filteredSessions.filter(session =>
+    (session.status === "archived") === showArchivedSessions);
+  const activeSessionCount = gatewayScopedSessions.filter(session => session.status !== "archived").length;
   const gatewayScopedProjects = useMemo(
     () => (gatewayState?.projects ?? []).filter(project => projectMatchesGatewayFilter(
       activeGatewayFilter,
@@ -2699,7 +2701,7 @@ function MalinkAppRuntime() {
     gatewayAvailable,
     hasGatewayState: Boolean(gatewayState),
     hasSelectedSession: Boolean(selected),
-    selectedArchived: false,
+    selectedArchived: gatewaySelected?.status === "archived",
     attachmentBusy,
     promptSubmitting: isPromptSubmitting,
     isStreaming,
@@ -7892,7 +7894,7 @@ function MalinkAppRuntime() {
         return;
       }
       if (node.targetProjectId) {
-        await archiveSession(sessionId, node.targetProjectId);
+        await deleteSession(sessionId, node.targetProjectId);
       }
     } finally {
       setGatewayArchivePreflight(sessionId, false);
@@ -11039,7 +11041,7 @@ function MalinkAppRuntime() {
   }
 
   async function runSessionLifecycle(
-    action: "archive",
+    action: "archive" | "restore" | "delete",
     sessionId: string,
     requestedProjectId?: string,
     onSucceeded?: () => void | Promise<void>,
@@ -11079,7 +11081,7 @@ function MalinkAppRuntime() {
       project => project.projectId === sessionProjectId,
     );
     const capabilities = sessionWorkspace?.capabilities ?? gatewayState?.capabilities;
-    const supported = capabilities?.canArchiveSession;
+    const supported = action === "delete" ? capabilities?.canDeleteSession : capabilities?.canArchiveSession;
     if (!supported) {
       showUiNotice(
         `session:${action}`,
@@ -11098,6 +11100,13 @@ function MalinkAppRuntime() {
     let connection: MalinkClient | null = null;
     try {
       connection = malinkClientRef.current;
+      if (action !== "delete") {
+        const status = await executeGatewayUpdate({ operation: "gateway.update.status",
+          includeOperationCapabilities: true }, sessionProjectId, 30_000);
+        if (!status.supportedOperations?.includes("session.archive.retain")) {
+          throw new Error("Update this computer's Gateway before archiving or restoring sessions.");
+        }
+      }
       const sent = await sendRealCommand(
         sessionLifecyclePayload(action, sessionId),
         sessionProjectId,
@@ -11162,7 +11171,7 @@ function MalinkAppRuntime() {
 
   function rememberSessionLifecycleRecovery(
     commandId: string,
-    action: "archive",
+    action: "archive" | "restore" | "delete",
     sessionId: string,
     projectId: string,
     onSucceeded?: () => void | Promise<void>,
@@ -11515,7 +11524,7 @@ function MalinkAppRuntime() {
   async function settleSessionLifecycle(
     connection: MalinkClient,
     sent: MalinkCommandSendResult,
-    action: "archive",
+    action: "archive" | "restore" | "delete",
     sessionId: string,
     projectId: string,
     onSucceeded?: () => void | Promise<void>,
@@ -11570,7 +11579,7 @@ function MalinkAppRuntime() {
     if (recovery?.timer != null) window.clearTimeout(recovery.timer);
     sessionLifecycleRecoveriesRef.current.delete(sent.commandId);
     try {
-      if (!sessionArchiveSucceeded(completion)) {
+      if (!(action === "delete" ? sessionArchiveSucceeded(completion) : completion.outcome === "succeeded")) {
         await onFailed?.();
         showUiNotice(
           `session:${action}`,
@@ -11629,7 +11638,7 @@ function MalinkAppRuntime() {
     recoverUiNotice(`session:${action}:release`);
   }
 
-  async function archiveSession(sessionId: string, projectId?: string) {
+  async function deleteSession(sessionId: string, projectId?: string) {
     const session = gatewayState?.sessions.find(candidate =>
       candidate.id === sessionId &&
       (!projectId || candidate.projectId === projectId),
@@ -11637,7 +11646,7 @@ function MalinkAppRuntime() {
     const historySource = session
       ? providerHistorySources.find(source => source.projectId === session.projectId) ?? null
       : null;
-    await runSessionLifecycle("archive", sessionId, projectId, () => {
+    await runSessionLifecycle("delete", sessionId, projectId, () => {
       if (!session || !historySource) return;
       providerHistoryFocusRef.current = {
         gatewayNodeId: historySource.gatewayNodeId,
@@ -11692,7 +11701,7 @@ function MalinkAppRuntime() {
       await Promise.all([...groups.values()].map(async sessions => {
         const status = await executeGatewayUpdate({ operation: "gateway.update.status",
           includeOperationCapabilities: true }, sessions[0]!.projectId, 30_000);
-        if (!status.supportedOperations?.includes("session.archive.batch")) {
+        if (!status.supportedOperations?.includes("session.archive.batch") || !status.supportedOperations.includes("session.archive.retain")) {
           throw new Error("This computer does not support batch archive. Update its Gateway to use this feature");
         }
       }));
@@ -13571,6 +13580,13 @@ function MalinkAppRuntime() {
           onDismiss={dismissUiNotice}
         />
 
+        {trustedGateway && <div className="bulk-session-actions" role="group" aria-label="Session lifecycle filter">
+          <button type="button" className="secondary-button" aria-pressed={!showArchivedSessions}
+            onClick={() => setShowArchivedSessions(false)}>Active</button>
+          <button type="button" className="secondary-button" aria-pressed={showArchivedSessions}
+            onClick={() => setShowArchivedSessions(true)}>Archived · {gatewayScopedSessions.filter(session => session.status === "archived").length}</button>
+        </div>}
+
         {trustedGateway && bulkSelect && (
           <div className={`bulk-session-actions ${bulkSelect ? "is-selecting" : ""}`}>
             <button type="button" className="secondary-button"
@@ -14224,7 +14240,7 @@ function MalinkAppRuntime() {
           />
         )}
         {sharedFileBatch && <SharedFileDialog files={sharedFileBatch.files}
-          sessions={visibleGatewaySessions.map(session => ({
+          sessions={visibleGatewaySessions.filter(session => session.status !== "archived").map(session => ({
             key: JSON.stringify([session.projectId, session.id]),
             title: session.title,
             projectId: session.projectId,
@@ -14393,21 +14409,31 @@ function MalinkAppRuntime() {
                   disabled={
                     selectedLifecycleBusy ||
                     !gatewayAvailable ||
-                    !activeCapabilities?.canArchiveSession
+                    !activeCapabilities?.canArchiveSession || isStreaming
                   }
                   onClick={() => {
-                    void archiveSession(gatewaySelected.id, gatewaySelected.projectId);
+                    void runSessionLifecycle(gatewaySelected.status === "archived" ? "restore" : "archive", gatewaySelected.id, gatewaySelected.projectId);
                   }}
                 >
                   <span aria-hidden="true">▣</span>
                   <span>
                     <strong>
-                      {isStreaming ? "Archive & stop agent" : "Archive session"}
+                      {gatewaySelected.status === "archived" ? "Restore session" : "Archive session"}
                     </strong>
                     <small>
-                      Remove from Malink; provider history remains
+                      {gatewaySelected.status === "archived" ? "Continue this conversation with its history" : "Keep history and files; restore quickly from Archived"}
                     </small>
                   </span>
+                </button>
+                <button type="button" className="session-menu-primary"
+                  disabled={selectedLifecycleBusy || !gatewayAvailable || !activeCapabilities?.canDeleteSession}
+                  onClick={() => {
+                    if (window.confirm("Delete this session from Malink? Its Malink messages will be removed; scratch files are also removed. You can only continue it again from Provider History.")) {
+                      void deleteSession(gatewaySelected.id, gatewaySelected.projectId);
+                    }
+                  }}>
+                  <span aria-hidden="true">×</span>
+                  <span><strong>Delete session</strong><small>Remove from Malink; continue only through Provider History</small></span>
                 </button>
               </div>
             )}
@@ -14423,6 +14449,15 @@ function MalinkAppRuntime() {
             ref={feedRef}
             onScroll={handleFeedScroll}
           >
+          {gatewaySelected?.status === "archived" && (
+            <div className="bulk-session-actions" role="status">
+              <span>This session is archived. Its history and files are preserved.</span>
+              <button type="button" className="primary-button" disabled={selectedLifecycleBusy || !gatewayAvailable}
+                onClick={() => void runSessionLifecycle("restore", gatewaySelected.id, gatewaySelected.projectId)}>
+                Restore session
+              </button>
+            </div>
+          )}
           <UiNoticeList
             notices={historyNotices}
             className="history-notices"
@@ -16294,15 +16329,15 @@ function nativeCommandReviewDescription(
   return `Another device changed the Gateway before this ${action} was accepted. Review the latest state, then retry it or discard it before starting new work.`;
 }
 
-function lifecyclePastTense(action: "archive"): string {
-  return action === "archive" ? "archived" : action;
+function lifecyclePastTense(action: "archive" | "restore" | "delete"): string {
+  return action === "archive" ? "archived" : action === "restore" ? "restored" : "deleted";
 }
 
 function sessionLifecyclePayload(
-  action: "archive",
+  action: "archive" | "restore" | "delete",
   sessionId: string,
-): Extract<CommandPayload, { operation: "session.archive" }> {
-  return { operation: "session.archive", sessionId };
+): Extract<CommandPayload, { operation: "session.archive" | "session.restore" | "session.delete" }> {
+  return { operation: action === "archive" ? "session.archive" : action === "restore" ? "session.restore" : "session.delete", sessionId };
 }
 
 function formatUiError(error: unknown): string {
