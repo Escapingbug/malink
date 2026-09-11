@@ -516,7 +516,6 @@ import {
   resolveMatrixSession,
   saveMatrixConfig,
   type IncomingMalinkMessage,
-  type GatewayStateSnapshot,
   type MatrixConnectionConfig,
   type MatrixConnectionStatus,
 } from "./matrix";
@@ -15518,6 +15517,17 @@ function MalinkAppRuntime() {
       {gatewayState && (
         <NewSessionDialog
           open={newSessionOpen}
+          selectProjectFirst={newSessionProjectId === null}
+          recentProjectIds={[...gatewayState.sessions]
+            .filter(session => session.scope !== "scratch")
+            .sort((a, b) => b.updatedAt - a.updatedAt)
+            .map(session => session.projectId)}
+          onNewProject={!optimisticProjectCreate && gatewayAvailable && projectCreationGateways.length > 0
+            ? () => { setNewSessionOpen(false); setNewProjectOpen(true); } : undefined}
+          onManageProject={projectId => {
+            setNewSessionOpen(false);
+            setProjectSettingsProjectId(projectId);
+          }}
           busy={newSessionBusy}
           fallbackGateway={fallbackProjectGateway}
           projectGateways={projectGatewaysById}
