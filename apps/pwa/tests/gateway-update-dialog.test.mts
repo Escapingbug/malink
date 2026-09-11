@@ -702,7 +702,7 @@ test("opens a legacy maintenance session through its exact project route", () =>
   assert.match(html, /project-qualified route is preserved/);
   assert.doesNotMatch(html, /maintenance session ID|node-specific session IDs/);
   assert.match(html, /Open update session/);
-  assert.match(html, /Archive old update session/);
+  assert.match(html, /Delete old update session/);
 });
 
 test("shows exact-node archival progress for a legacy maintenance session", () => {
@@ -736,7 +736,7 @@ test("shows exact-node archival progress for a legacy maintenance session", () =
   }));
 
   assert.match(html, /Archiving old update session…/);
-  assert.match(html, /Old update session archived on this Gateway/);
+  assert.match(html, /Old update session deleted on this Gateway/);
 });
 
 test("locks archive actions while the signed lifecycle command is running", () => {
@@ -805,7 +805,7 @@ test("keeps a new release actionable while offering cleanup for an older collisi
     onExportDiagnostics() {},
   }));
 
-  assert.match(html, /Archive old update session/);
+  assert.match(html, /Delete old update session/);
   assert.match(html, /only this Gateway is affected/);
   assert.match(html, /Update when idle/);
 });
@@ -1021,7 +1021,7 @@ test("treats a verified installed build as complete without cleanup warnings", (
 
   assert.match(html, /signed supervisor state confirms this build is installed/i);
   assert.doesNotMatch(html, /left by an older Malink version/);
-  assert.doesNotMatch(html, /Archive old update session/);
+  assert.doesNotMatch(html, /Delete old update session/);
   assert.doesNotMatch(html, /Maintenance Agent running/);
 });
 
