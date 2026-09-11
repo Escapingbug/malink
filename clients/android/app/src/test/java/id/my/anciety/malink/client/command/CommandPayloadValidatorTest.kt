@@ -311,6 +311,15 @@ class CommandPayloadValidatorTest {
                 buildJsonObject {
                     put("operation", "session.settings")
                     put("sessionId", "session-1")
+                    put("title", "Renamed conversation")
+                },
+            ) is SessionSettingsCommandPayload,
+        )
+        assertTrue(
+            CommandPayloadValidator.validate(
+                buildJsonObject {
+                    put("operation", "session.settings")
+                    put("sessionId", "session-1")
                     put("reasoningEffort", "x".repeat(64))
                 },
             ) is SessionSettingsCommandPayload,

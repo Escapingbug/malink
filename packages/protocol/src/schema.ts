@@ -573,6 +573,7 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
     .object({
       operation: z.literal('session.settings'),
       sessionId: opaqueId,
+      title: z.string().min(1).max(512).optional(),
       model: z.string().min(1).max(256).nullable().optional(),
       reasoningEffort: z.string().min(1).max(64).nullable().optional(),
       permissionMode: z.enum(['default', 'accept_edits', 'plan', 'bypass_permissions']).optional(),
@@ -583,6 +584,7 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
     .strict()
     .refine(
       (settings) =>
+        settings.title !== undefined ||
         settings.model !== undefined ||
         settings.reasoningEffort !== undefined ||
         settings.permissionMode !== undefined ||

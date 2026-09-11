@@ -51,6 +51,8 @@ export type MalinkBackState = {
   archivedListOpen?: boolean;
   deleteDialogOpen: boolean;
   deleteDialogBusy: boolean;
+  renameDialogOpen?: boolean;
+  renameDialogBusy?: boolean;
   notificationCenterOpen?: boolean;
   providerHistoryOpen?: boolean;
   gatewayUpdateDialogOpen?: boolean;
@@ -70,6 +72,8 @@ export type MalinkBackAction =
   | "show-active-conversations"
   | "close-delete-dialog"
   | "block-delete-dialog"
+  | "close-rename-dialog"
+  | "block-rename-dialog"
   | "close-notification-center"
   | "close-provider-history"
   | "close-gateway-update"
@@ -89,6 +93,11 @@ export function resolveMalinkBackAction(
     return state.deleteDialogBusy
       ? "block-delete-dialog"
       : "close-delete-dialog";
+  }
+  if (state.renameDialogOpen) {
+    return state.renameDialogBusy
+      ? "block-rename-dialog"
+      : "close-rename-dialog";
   }
   if (state.notificationCenterOpen) {
     return "close-notification-center";

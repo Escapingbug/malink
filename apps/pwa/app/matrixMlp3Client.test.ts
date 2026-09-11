@@ -36,6 +36,7 @@ describe("MatrixMlp3ProtocolClient", () => {
       {
         operation: "session.settings",
         sessionId: "session-1",
+        title: "Renamed conversation",
         model: null,
         reasoningEffort: null,
       },
@@ -53,7 +54,11 @@ describe("MatrixMlp3ProtocolClient", () => {
       operation: "session.update",
       payload: {
         operation: "session.update",
-        patch: { model: null, reasoningEffort: null },
+        patch: {
+          title: "Renamed conversation",
+          model: null,
+          reasoningEffort: null,
+        },
       },
     });
   });

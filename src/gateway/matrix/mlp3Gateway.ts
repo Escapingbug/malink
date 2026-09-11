@@ -2801,8 +2801,32 @@ export class MatrixMlp3GatewayRunner {
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'session.update'>,
   ): Promise<void> {
-    let runtime = this.requireActiveSession(project, command.sessionId)
     const patch = command.payload.patch
+    const sessionId = command.sessionId
+    if (!sessionId) throw new Error('Session update command is missing its session ID')
+    const activeRuntime = project.sessions.get(sessionId)
+    if (!activeRuntime) {
+      const record = project.project.sessions.find(candidate => candidate.id === sessionId)
+      if (!record || record.lifecycle === 'deleted') {
+        throw new Mlp3SessionNotFoundError(sessionId)
+      }
+      if (record.lifecycle !== 'archived' || typeof patch.title !== 'string'
+        || Object.keys(patch).some(key => key !== 'title')) {
+        throw new Error(`Malink session ${sessionId} is not active`)
+      }
+      record.title = patch.title
+      record.updatedAt = this.now()
+      record.stateVersion += 1
+      await this.persist(project)
+      const updated = this.eventFor(project, record, command, 'session-updated', {
+        type: 'session.updated',
+        projection: terminalProjection(record, 'idle', this.extensions),
+        patch,
+      })
+      await this.settleAndDeliver(project, command, updated, 'succeeded')
+      return
+    }
+    let runtime = activeRuntime
     const provider = runtime.record.provider
     const catalog = getProvider(provider)
     if (!catalog) throw new Error(`Provider ${provider} is not configured`)

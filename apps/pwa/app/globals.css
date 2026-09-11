@@ -3079,6 +3079,62 @@ select:focus-visible {
   text-align: right;
 }
 
+.message-bubble-meta {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-top: 3px;
+}
+
+.bubble .message-bubble-meta time {
+  margin-top: 0;
+}
+
+.message-copy-button {
+  display: inline-flex;
+  min-width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 7px;
+  border-radius: 8px;
+  background: transparent;
+  color: #717b90;
+  font-size: 12px;
+}
+
+.message-copy-button:hover,
+.message-copy-button:focus-visible {
+  background: rgb(91 77 184 / 10%);
+  color: var(--violet);
+}
+
+.message-copy-button b {
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.message-copy-button.state-copied {
+  color: #2f7d61;
+}
+
+.message-copy-button.state-failed {
+  color: #b13d4c;
+}
+
+.user-bubble .message-copy-button {
+  color: rgb(255 255 255 / 88%);
+}
+
+.user-bubble .message-copy-button:hover,
+.user-bubble .message-copy-button:focus-visible {
+  background: rgb(255 255 255 / 15%);
+  color: white;
+}
+
 .user-bubble {
   border-bottom-right-radius: 4px;
   background: var(--violet);
@@ -9377,6 +9433,88 @@ select:focus-visible {
   animation: dialog-enter var(--motion-panel) var(--motion-ease-out);
 }
 
+.session-rename-dialog {
+  display: grid;
+  width: min(440px, 100%);
+  gap: 8px;
+  padding: 25px;
+  border: 1px solid #e1e3eb;
+  border-radius: 18px;
+  background: white;
+  box-shadow: 0 28px 90px rgb(26 31 52 / 28%);
+  transform-origin: center;
+  animation: dialog-enter var(--motion-panel) var(--motion-ease-out);
+}
+
+.session-rename-dialog h2 {
+  margin: 0;
+  color: #292d3b;
+  font-size: 20px;
+  letter-spacing: -0.03em;
+}
+
+.session-rename-dialog > p {
+  margin: 0 0 7px;
+  color: #727a8c;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.session-rename-dialog form,
+.session-rename-dialog label {
+  display: grid;
+  gap: 7px;
+}
+
+.session-rename-dialog label > span {
+  color: #555e72;
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.session-rename-dialog input {
+  width: 100%;
+  height: 44px;
+  padding: 0 12px;
+  border: 1px solid #d8dbe5;
+  border-radius: 10px;
+  background: #fbfbfd;
+  color: #292d3b;
+  font: inherit;
+  font-size: 14px;
+}
+
+.session-rename-dialog input:focus {
+  border-color: var(--violet);
+  outline: 3px solid rgb(91 77 184 / 12%);
+}
+
+.session-rename-error {
+  margin: 0;
+  color: #b13d4c;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.session-rename-dialog footer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+  margin-top: 10px;
+}
+
+.session-rename-dialog footer button {
+  min-height: 42px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.session-rename-dialog footer button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .danger-symbol {
   display: grid;
   width: 42px;
@@ -11509,6 +11647,7 @@ body {
   }
 
   .session-delete-dialog,
+  .session-rename-dialog,
   .privilege-totp-dialog {
     width: 100%;
     border-radius: 20px 20px 0 0;

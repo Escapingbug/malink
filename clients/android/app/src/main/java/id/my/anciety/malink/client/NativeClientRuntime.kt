@@ -2328,6 +2328,7 @@ class NativeClientRuntime(
                 v3Operation = "session.update"
                 v3SessionId = sessionId ?: throw IllegalArgumentException("Settings session is missing.")
                 val patch = buildJsonObject {
+                    raw.string("title")?.let { put("title", it) }
                     raw["model"]?.let { put("model", it) }
                     raw["reasoningEffort"]?.let { put("reasoningEffort", it) }
                     raw.string("permissionMode")?.let { put("permissionMode", it) }

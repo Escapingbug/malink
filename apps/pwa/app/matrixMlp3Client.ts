@@ -812,6 +812,7 @@ export function toMlp3Command(
         payload: {
           operation: "session.update",
           patch: {
+            ...(payload.title === undefined ? {} : { title: payload.title }),
             ...(payload.model === undefined ? {} : { model: payload.model }),
             ...(payload.reasoningEffort === undefined
               ? {}

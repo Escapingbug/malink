@@ -142,6 +142,7 @@ enum class CommandPermissionMode(val wireName: String) {
 
 data class SessionSettingsCommandPayload(
     override val sessionId: String,
+    val title: String?,
     val model: String?,
     val reasoningEffort: String?,
     val permissionMode: CommandPermissionMode?,
@@ -152,7 +153,7 @@ data class SessionSettingsCommandPayload(
     override val operation = CommandOperation.SESSION_SETTINGS
 
     override fun toString(): String =
-        "SessionSettingsCommandPayload(sessionId=$sessionId, model=$model, " +
+        "SessionSettingsCommandPayload(sessionId=$sessionId, title=<redacted>, model=$model, " +
             "reasoningEffort=$reasoningEffort, permissionMode=$permissionMode, cwd=<redacted>, " +
             "projectName=<redacted>)"
 }
@@ -469,11 +470,12 @@ object CommandPayloadValidator {
     }
 
     private fun validateSessionSettings(value: JsonObject): SessionSettingsCommandPayload {
-        val settings = setOf("model", "reasoningEffort", "permissionMode", "controls", "cwd", "projectName")
+        val settings = setOf("title", "model", "reasoningEffort", "permissionMode", "controls", "cwd", "projectName")
         value.requireExactKeys(required = setOf("operation", "sessionId"), optional = settings)
         require(value.keys.any(settings::contains)) { "At least one session setting is required." }
         return SessionSettingsCommandPayload(
             sessionId = value.requiredOpaqueId("sessionId"),
+            title = value.optionalBoundedString("title", 512),
             model = value.optionalNullableBoundedString("model", 256),
             reasoningEffort = value.optionalNullableBoundedString("reasoningEffort", 64),
             permissionMode = value.optionalString("permissionMode")?.let(CommandPermissionMode::fromWireName),
