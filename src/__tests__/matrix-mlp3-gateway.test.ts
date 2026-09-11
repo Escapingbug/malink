@@ -1893,9 +1893,18 @@ describe('MatrixMlp3GatewayRunner', () => {
       .filter(event => event.payload.type === 'gateway.deployment.status'
         && event.payload.status.updateId === 'external-prepare').length
     deploymentClockOffset = 31_000
-    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+    const readsBeforeRefresh = gatewayUpdateCalls.filter(call => call === 'deployment-status').length
+    const stateBeforeRefresh = await stateEvents(client, activeKey.key, roomId, projectId,
+      MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE)
+    // Let the independent monitor finish an observation beyond the old repeat
+    // deadline. A second read ensures the first observation has completed.
+    await waitFor(async () => gatewayUpdateCalls.filter(call => call === 'deployment-status').length
+      >= readsBeforeRefresh + 2, 12_000)
+    expect((await events(client, activeKey.key, roomId, projectId))
       .filter(event => event.payload.type === 'gateway.deployment.status'
-        && event.payload.status.updateId === 'external-prepare').length > beforeRefresh, 7_000)
+        && event.payload.status.updateId === 'external-prepare').length).toBe(beforeRefresh)
+    expect(await stateEvents(client, activeKey.key, roomId, projectId,
+      MLP3_MATRIX_GATEWAY_DEPLOYMENT_EVENT_TYPE)).toEqual(stateBeforeRefresh)
     gatewayDeploymentStatus = originalDeployment
 
     await expect(runner.publishNativeClientRelease(nativeRelease(42))).resolves.toMatchObject({

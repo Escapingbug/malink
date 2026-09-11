@@ -7,6 +7,14 @@ out the exact signed Git commit, builds and tests it locally, and prepares a
 self-contained candidate. The independent update supervisor then validates,
 hash-seals, activates, health-checks, and if necessary rolls back that result.
 
+Deployment status is published on first observation and whenever it changes,
+as both an authenticated timeline event and encrypted Matrix Room State.
+Unchanged status is not periodically re-announced. PWA clients restore current
+deployment state from SDK Room State; Android includes it in the bounded
+current-state restore. Late joins and reconnects therefore do not depend on a
+future broadcast. Local supervisor observation continues to detect changes
+made outside client commands, but does not itself require Matrix traffic.
+
 The upstream repository defaults to:
 
 ```text

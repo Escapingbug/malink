@@ -414,7 +414,6 @@ export class MatrixMlp3GatewayRunner {
   private readonly providerHistorySnapshots: FileProviderHistorySnapshotStore
   private gatewayNodeStatusFingerprint: string | null = null
   private gatewayDeploymentStatusFingerprint: string | null = null
-  private gatewayDeploymentStatusLastPublishedAt = 0
   private gatewayNodeStatusLastPublishedAt = 0
   private gatewayNodeStatusControlRoomId: string | null | undefined
   private gatewayUpdateStatusMonitorTimer: ReturnType<typeof setTimeout> | null = null
@@ -2075,11 +2074,10 @@ export class MatrixMlp3GatewayRunner {
     )
     if (!status) return undefined
     const fingerprint = canonicalJson(status as JsonValue)
-    // A client may discover the candidate room after the phase transition.
-    // Re-announce bounded current state so a missed live event does not leave
-    // that client waiting for a transition that will never occur again.
-    if (fingerprint === this.gatewayDeploymentStatusFingerprint
-      && this.now() - this.gatewayDeploymentStatusLastPublishedAt < 30_000) return status
+    // Late joiners and reconnecting clients read the durable Room State below.
+    // Re-publishing unchanged state wakes every subscribed device, even when
+    // its UI is in the background. Only actual status changes need delivery.
+    if (fingerprint === this.gatewayDeploymentStatusFingerprint) return status
     const project = await this.gatewayNodeStatusProject()
     if (!project) return status
     const observedAt = Math.max(this.now(), this.gatewayNodeStatusLastPublishedAt + 1)
@@ -2107,7 +2105,6 @@ export class MatrixMlp3GatewayRunner {
       this.log(`[mlp3/matrix] Gateway deployment current-state delivery failed: ${formatError(error)}`)
     })
     this.gatewayDeploymentStatusFingerprint = fingerprint
-    this.gatewayDeploymentStatusLastPublishedAt = this.now()
     this.gatewayNodeStatusLastPublishedAt = observedAt
     return status
   }
