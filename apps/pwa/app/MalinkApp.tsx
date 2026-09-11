@@ -312,6 +312,7 @@ import {
   userMessageDeliveryState,
 } from "./messageDelivery";
 import { retryMatchingCommandRevisionConflict } from "./commandRevisionRetry";
+import { ZoomableImage } from "./ZoomableImage";
 import { deriveComposerState } from "./composerState";
 import { ConversationRecoveryDetails } from "./ConversationRecoveryDetails";
 import { observeConversationRecovery } from "./conversationRecovery";
@@ -1144,7 +1145,7 @@ function AttachmentCard({
       {previewUrl && isImage && (
         // Decrypted attachments use short-lived local blob: URLs, which are
         // intentionally outside the Next image optimization pipeline.
-        <img src={previewUrl} alt={attachment.name} />
+        <ZoomableImage src={previewUrl} alt={attachment.name} />
       )}
       <div className="attachment-card-copy">
         <span aria-hidden="true">{isImage ? "▧" : "▤"}</span>

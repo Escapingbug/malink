@@ -3121,7 +3121,7 @@ select:focus-visible {
   background: rgb(255 255 255 / 10%);
 }
 
-.attachment-card > img {
+.attachment-card > .image-preview-trigger img {
   width: 100%;
   max-height: 280px;
   border-radius: 7px;
@@ -12882,3 +12882,18 @@ body {
 .conversation-recovery-details button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: inherit; cursor: pointer; }
 .conversation-recovery-details button:disabled { opacity: .5; }
 .conversation-recovery-details :is(summary, button):focus-visible { outline: 2px solid #7055d8; outline-offset: 2px; }
+
+/* Only loaded previews gain a compact enlarge affordance. */
+.image-preview-trigger { position: relative; display: inline-block; max-width: 100%; padding: 0; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: zoom-in; vertical-align: middle; }
+.image-preview-trigger > img { display: block; max-width: 100%; }
+.image-preview-badge { position: absolute; right: 6px; bottom: 6px; padding: 2px 6px; border-radius: 5px; background: #141826cc; color: white; font-size: 18px; line-height: 1.3; pointer-events: none; }
+.image-preview-trigger:focus-visible { outline: 2px solid #7055d8; outline-offset: 3px; }
+.image-viewer { position: fixed; inset: 0; z-index: 300; display: flex; flex-direction: column; background: #10131bf5; color: white; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); overscroll-behavior: contain; }
+.image-viewer-toolbar { display: flex; flex-shrink: 0; align-items: center; gap: 8px; padding: 8px 12px; }
+.image-viewer-toolbar > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.image-viewer-toolbar button { flex-shrink: 0; min-height: 44px; padding: 8px 12px; border: 1px solid #ffffff55; border-radius: 8px; background: #ffffff12; color: white; cursor: pointer; }
+.image-viewer-toolbar button:focus-visible { outline: 2px solid white; outline-offset: 2px; }
+.image-viewer-stage { flex: 1; min-height: 0; min-width: 0; display: flex; overflow: auto; overscroll-behavior: contain; padding: 12px; }
+.image-viewer-stage img { display: block; margin: auto; flex: none; max-width: 100%; max-height: 100%; object-fit: contain; }
+.image-viewer-stage.is-original-size img { max-width: none; max-height: none; }
+.image-viewer-stage p { margin: auto; max-width: 420px; padding: 16px; line-height: 1.5; }
