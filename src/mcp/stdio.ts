@@ -10,12 +10,15 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { registerMalinkMcpSurface } from './register'
+import { isMatrixMcpEnvironment, malinkAgentInstructions, readMalinkEnvironment } from '@/runtime/malinkEnvironment'
 
 async function main() {
     const server = new McpServer({
         name: 'malink',
         version: '1.0.0',
-    })
+    }, isMatrixMcpEnvironment() ? {
+        instructions: malinkAgentInstructions(readMalinkEnvironment().fileDelivery),
+    } : undefined)
 
     registerMalinkMcpSurface(server)
 

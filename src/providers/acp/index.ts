@@ -28,6 +28,7 @@ import { acpSessionControls } from './sessionControls'
 import type { AgentEvent } from '@/providers/types'
 import type { RichMediaPart, RichUserInput } from '@/runtime/semantic'
 import { normalizeUserInput } from '@/runtime/semantic'
+import { isMatrixMcpEnvironment, malinkAgentInstructions } from '@/runtime/malinkEnvironment'
 import { PushableAsyncIterable } from '@/utils/PushableAsyncIterable'
 import {
     AcpClientManager,
@@ -292,11 +293,11 @@ function isMissingToolName(toolName: string | undefined): boolean {
  * Two variants:
  * - Base config (no provider sessionId): used for session/new. Registers context
  *   resources/tools and send_file, which routes by the stable Malink session ID.
- *   Other notify tools still require provider session identity.
+ *   Legacy Telegram notify tools still require provider session identity.
  * - Full config (with sessionId): used for session/load or session/resume, where sessionId is known.
  *   Injects MALINK_CONVERSATION_ID into env so MCP subprocess can identify its session.
- *   Registers all tools including the remaining notify tools
- *   (schedule_reminder, cancel_reminder, send_message).
+ *   Only the legacy Telegram surface enables the remaining notify tools.
+ *   Matrix keeps the same session-bound Gateway tools on every turn.
  *
  * Note: Some agents (e.g. Cursor's `agent` CLI) don't support session/resume, and their
  * session/load only works on persisted sessions (i.e. after at least one prompt completes).
@@ -308,7 +309,7 @@ function isMissingToolName(toolName: string | undefined): boolean {
  *   If loadSession fails, send_file remains available but the other
  *   session-scoped MCP tools are unavailable.
  */
-function buildMalinkMcpBaseConfig(config?: Pick<AgentQueryConfig, 'malinkSessionId'>): Array<{
+function buildMalinkMcpBaseConfig(config?: Pick<AgentQueryConfig, 'malinkSessionId' | 'cwd'>): Array<{
     type: 'stdio'
     name: string
     command: string
@@ -326,7 +327,7 @@ function buildMalinkMcpBaseConfig(config?: Pick<AgentQueryConfig, 'malinkSession
     }]
 }
 
-function buildMalinkMcpFullConfig(sessionId: string, config?: Pick<AgentQueryConfig, 'malinkSessionId'>): Array<{
+function buildMalinkMcpFullConfig(sessionId: string, config?: Pick<AgentQueryConfig, 'malinkSessionId' | 'cwd'>): Array<{
     type: 'stdio'
     name: string
     command: string
@@ -348,9 +349,11 @@ function buildMalinkMcpFullConfig(sessionId: string, config?: Pick<AgentQueryCon
 }
 
 function malinkMcpEnvironment(
-    config?: Pick<AgentQueryConfig, 'malinkSessionId'>,
+    config?: Pick<AgentQueryConfig, 'malinkSessionId' | 'cwd'>,
 ): Array<{ name: string; value: string }> {
     return [
+        ...(isMatrixMcpEnvironment() ? [{ name: 'MALINK_CHANNEL', value: 'matrix' }] : []),
+        ...(config?.cwd ? [{ name: 'MALINK_SESSION_CWD', value: config.cwd }] : []),
         ...(config?.malinkSessionId
             ? [{ name: 'MALINK_SESSION_ID', value: config.malinkSessionId }]
             : []),
@@ -1376,7 +1379,12 @@ export class AcpProvider implements AgentProvider {
                 // 5. Send the prompt (blocks until turn completes)
                 const promptResponse = await clientManager.prompt({
                     sessionId: sessionId!,
-                    prompt: await buildAcpPrompt(prompt, clientManager.promptCapabilities),
+                    prompt: [
+                        ...(config.malinkSessionId && isMatrixMcpEnvironment()
+                            ? [{ type: 'text' as const, text: `[Malink host context]\n${malinkAgentInstructions(mcpAttached && Boolean(process.env.MALINK_GATEWAY_ADMIN_SOCKET?.trim()))}\n[End Malink host context]` }]
+                            : []),
+                        ...await buildAcpPrompt(prompt, clientManager.promptCapabilities),
+                    ],
                 })
                 console.error(`[acp:${this.name}] Prompt returned: stopReason=${promptResponse.stopReason}, sessionId=${sessionId}`)
 

@@ -2,6 +2,7 @@ import { registerContextResources, registerContextTools } from './resources'
 import { registerNotifyTools, registerSendFileTool } from './tools/notify'
 import { registerSessionTools, type SessionToolContext } from './tools/session'
 import { registerPrivilegeTools } from './tools/privilege'
+import { isMatrixMcpEnvironment, readMalinkEnvironment } from '@/runtime/malinkEnvironment'
 
 export interface MalinkMcpRegistrationOptions {
     includeNotifyTools?: boolean
@@ -11,6 +12,16 @@ export interface MalinkMcpRegistrationOptions {
 export function registerMalinkMcpSurface(server: any, options: MalinkMcpRegistrationOptions = {}): void {
     registerContextResources(server)
     registerContextTools(server)
+
+    // Matrix never exposes tools that route through the transitional daemon.
+    // Provider identity on resume must not change this surface.
+    if (isMatrixMcpEnvironment()) {
+        if (options.includeNotifyTools !== false && readMalinkEnvironment().fileDelivery) {
+            registerSendFileTool(server)
+        }
+        registerPrivilegeTools(server)
+        return
+    }
 
     const includeNotifyTools = options.includeNotifyTools ?? hasSessionIdentity()
     if (includeNotifyTools) {

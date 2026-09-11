@@ -152,6 +152,11 @@ expose a direct control endpoint on a Gateway.
 
 ## Runtime shape
 
+Gateway agents receive per-turn Malink host context and a local stdio MCP
+surface for environment discovery and session-bound file/image delivery. See
+[Gateway agent context and MCP](gateway-agent-context.md) for the deployment
+path, available tools and legacy-channel boundary.
+
 ```text
 PWA or Android native service
   -> durable signed/encrypted MLP/3 command event
