@@ -15,6 +15,21 @@ const ready = {
   hasContent: true,
 };
 
+test("Workspace connected does not enable sending into a recovering conversation", () => {
+  const state = deriveComposerState({ ...ready, conversationRecovering: true });
+  assert.equal(state.canType, true);
+  assert.equal(state.canSend, false);
+  assert.match(state.reason, /Restoring this conversation/);
+  assert.equal(deriveComposerState({ ...ready, conversationRecovering: false }).canSend, true);
+});
+
+test("slow recovery explains automatic retry without masking offline or archive state", () => {
+  const input = { ...ready, conversationRecovering: true, conversationRecoveryFailed: true };
+  assert.match(deriveComposerState(input).reason, /Retrying automatically/);
+  assert.match(deriveComposerState({ ...input, connectionStatus: "offline" }).reason, /offline/);
+  assert.match(deriveComposerState({ ...input, selectedArchived: true }).reason, /Restore this session/);
+});
+
 test("allows a new message to be queued while the agent is running", () => {
   assert.deepEqual(
     deriveComposerState({ ...ready, isStreaming: true }),

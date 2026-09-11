@@ -224,6 +224,7 @@ export type MatrixConnection = {
     projectId?: string,
   ): void;
   markSessionRead?(sessionId: string, projectId?: string): Promise<void>;
+  ensureSessionReady?(sessionId: string, projectId?: string): Promise<void>;
   loadLocalHistory(sessionId: string, projectId?: string): Promise<MatrixHistoryPage>;
   loadHistoryPage(
     sessionId: string,

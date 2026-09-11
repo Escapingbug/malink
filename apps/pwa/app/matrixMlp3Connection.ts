@@ -180,6 +180,7 @@ export async function connectMatrixMlp3(
   let startupSavedMatrixSyncToken: string | null = null;
   let matrixSyncCatchingUp = false;
   let matrixSyncCatchupGeneration = 0;
+  const readySecondaryProjects = new Set<string>();
   const secondaryProtocols = new Map<string, {
     route: MatrixWorkspaceRoute;
     room: Room;
@@ -759,7 +760,7 @@ export async function connectMatrixMlp3(
       }
     };
     void operation.then(
-      () => { projectDiagnostics.stage(targetProjectId, "ready"); finish(); },
+      () => { readySecondaryProjects.add(targetProjectId); projectDiagnostics.stage(targetProjectId, "ready"); finish(); },
       error => { projectDiagnostics.failIfUnrecorded(targetProjectId, error); finish(); },
     );
     return operation;
@@ -985,6 +986,7 @@ export async function connectMatrixMlp3(
           if (next?.roomId === context.route.roomId) continue;
           context.room.off(sdk.RoomStateEvent.Events, onRoomState);
           secondaryProtocols.delete(secondaryProjectId);
+          readySecondaryProjects.delete(secondaryProjectId);
           projectDiagnostics.transport(secondaryProjectId, null);
           for (const [commandId, owner] of commandProjects) {
             if (owner === context.protocol) commandProjects.delete(commandId);
@@ -993,9 +995,12 @@ export async function connectMatrixMlp3(
         const failures: unknown[] = [];
         for (const route of desired.values()) {
           try {
+            if (pendingSecondaryProjects.has(route.projectId)
+              || activeSecondaryRecoveryCounts.has(route.projectId)) continue;
             const current = secondaryProtocols.get(route.projectId);
             if (current) {
-              if (!current.protocol.projection.project || !current.protocol.projection.workspace) {
+              if (!readySecondaryProjects.has(route.projectId)
+                || !current.protocol.projection.project || !current.protocol.projection.workspace) {
                 await recoverSecondaryProject(route.projectId, "hydrate");
                 projectDiagnostics.stage(route.projectId, "ready");
               }
@@ -1720,6 +1725,49 @@ export async function connectMatrixMlp3(
     return null;
   };
 
+  // Foreground recovery must not queue behind every other Workspace project.
+  // Existing in-flight work is shared; this never substitutes another route.
+  const requestSessionRecovery = (targetProjectId?: string): void => {
+    const route = trust && workspaceRoutesFromTrust(trust).find(
+      value => value.projectId === targetProjectId,
+    );
+    if (!route || route.roomId === config.roomId) {
+      reconcileWorkspaceRoutes(true);
+      return;
+    }
+    if (pendingSecondaryProjects.has(route.projectId)
+      || activeSecondaryRecoveryCounts.has(route.projectId)) return;
+    const operation = secondaryProtocols.has(route.projectId)
+      ? recoverSecondaryProject(route.projectId, "hydrate")
+      : createSecondaryProtocol(route);
+    void operation.catch(error => {
+      projectDiagnostics.failIfUnrecorded(route.projectId, error);
+      console.error("[mlp3/matrix] foreground conversation recovery failed", error);
+    });
+  };
+
+  const sessionContextWhenReady = (sessionId: string, targetProjectId?: string) => {
+    const context = protocolForSession(sessionId, targetProjectId);
+    if (!context?.protocol.projection.project || !context.protocol.projection.workspace) return null;
+    if (context.protocol === protocol && !readiness.canPublishAuthoritativeProjection) return null;
+    const owner = projectForProtocol(context.protocol);
+    if (context.protocol !== protocol && (!owner || !readySecondaryProjects.has(owner))) return null;
+    if (owner && (pendingSecondaryProjects.has(owner) || activeSecondaryRecoveryCounts.has(owner))) return null;
+    return context;
+  };
+
+  const waitForSession = async (sessionId: string, targetProjectId?: string) => {
+    await ready;
+    return waitForProjectTransport({
+      lookup: () => sessionContextWhenReady(sessionId, targetProjectId),
+      purpose: "restore",
+      isAuthorized: () => !targetProjectId || !trust?.gatewayDirectory
+        || workspaceRoutesFromTrust(trust).some(route => route.projectId === targetProjectId),
+      recover: () => requestSessionRecovery(targetProjectId),
+      signal: startupLifetime.controller.signal,
+    });
+  };
+
   const loadProviderHistory = async (
     active: MatrixMlp3ProtocolClient,
     session: V3ProjectedSession,
@@ -1799,9 +1847,7 @@ export async function connectMatrixMlp3(
     limit = 30,
     targetProjectId?: string,
   ): Promise<MatrixHistoryPage> => {
-    await ready;
-    const context = protocolForSession(sessionId, targetProjectId);
-    if (!context) throw new Error("The MLP/3 project is not initialized.");
+    const context = await waitForSession(sessionId, targetProjectId);
     const active = context.protocol;
     const session = active.projection.sessions.get(sessionId);
     const pageLimit = Math.max(1, Math.min(limit, 100));
@@ -1881,9 +1927,7 @@ export async function connectMatrixMlp3(
     sessionId: string,
     targetProjectId?: string,
   ): Promise<MatrixHistoryPage> => {
-    await ready;
-    const active = protocolForSession(sessionId, targetProjectId)?.protocol;
-    if (!active) throw new Error("The MLP/3 project is not initialized.");
+    const active = (await waitForSession(sessionId, targetProjectId)).protocol;
     const historyKey = targetProjectId ? `${targetProjectId}\0${sessionId}` : sessionId;
     const delivered = deliveredHistory.get(historyKey) ?? new Set<string>();
     deliveredHistory.set(historyKey, delivered);
@@ -1961,6 +2005,9 @@ export async function connectMatrixMlp3(
     pair,
     async send(payload, targetProjectId) {
       await ready;
+      if (payload.operation === "prompt" && typeof payload.sessionId === "string") {
+        await waitForSession(payload.sessionId, targetProjectId);
+      }
       const sendStartedAt = Date.now();
       const target = await waitForProjectTransport({
         lookup: () => protocolForProject(targetProjectId),
@@ -2084,6 +2131,9 @@ export async function connectMatrixMlp3(
         scheduleSessionReadReceiptDelivery(retryDelay);
         throw error;
       }
+    },
+    async ensureSessionReady(sessionId, targetProjectId) {
+      await waitForSession(sessionId, targetProjectId);
     },
     loadLocalHistory,
     loadHistoryPage: loadHistory,

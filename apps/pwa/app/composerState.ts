@@ -17,6 +17,8 @@ export interface ComposerStateInput {
   isStreaming: boolean;
   isStopping: boolean;
   hasContent: boolean;
+  conversationRecovering?: boolean;
+  conversationRecoveryFailed?: boolean;
 }
 
 export interface ComposerState {
@@ -64,6 +66,11 @@ export function deriveComposerState(input: ComposerStateInput): ComposerState {
   }
   if (!input.hasSelectedSession) {
     return blocked("Create or select a session before sending.");
+  }
+  if (input.conversationRecovering) {
+    return blocked(input.conversationRecoveryFailed
+      ? "Conversation is still reconnecting · Your draft is kept · Retrying automatically"
+      : "Restoring this conversation… You can keep typing");
   }
   if (input.attachmentBusy) {
     return blocked("Preparing attachments…");

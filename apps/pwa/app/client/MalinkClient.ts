@@ -153,6 +153,8 @@ export interface MalinkClient {
   ): void;
   /** Publishes this session's current verified projection as a private Matrix receipt. */
   markSessionRead?(sessionId: string, projectId?: string): Promise<void>;
+  /** Wait for the exact verified session, not just the Workspace connection. */
+  ensureSessionReady?(sessionId: string, projectId?: string): Promise<void>;
   /** Reads the runtime's durable local projection without Matrix I/O. */
   loadLocalHistory(sessionId: string, projectId?: string): Promise<MalinkHistoryPage>;
   loadHistoryPage(

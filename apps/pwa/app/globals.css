@@ -12817,3 +12817,17 @@ body {
 .archived-conversation-notice button:focus-visible { outline: 2px solid #7055d8; outline-offset: 3px; }
 .session-menu-actions .session-menu-delete { margin-top: 8px; border-top: 1px solid var(--line); color: #ae3443; }
 @media (max-width: 760px) { .archive-list-heading h1 { font-size: 18px; } }
+
+/* A blocked conversation needs visible feedback even on compact layouts. */
+.composer-hint.composer-hint-recovering {
+  display: block;
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip-path: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.45;
+}

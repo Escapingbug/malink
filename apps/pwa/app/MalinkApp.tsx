@@ -6,6 +6,7 @@ import { batchArchiveUiStorageKey, readBatchArchiveUiResults, writeBatchArchiveU
 import { computerRepresentatives, computerNodeAliases } from "./computerPresentation";
 import { bulkArchiveEligible, bulkGroupSessions } from "./bulkArchivePolicy";
 import { messageAttachments } from "./messageAttachments";
+import { readTurnCompletionCache, writeTurnCompletionCache } from "./turnCompletionCache";
 
 import {
   ChangeEvent,
@@ -2711,7 +2712,47 @@ function MalinkAppRuntime() {
       gatewayState &&
       gatewaySelected,
   );
+  const [readyConversation, setReadyConversation] = useState<{
+    connection: MalinkClient; key: string;
+  } | null>(null);
+  const [conversationRecoveryError, setConversationRecoveryError] = useState<string | null>(null);
+  const conversationConnection = malinkClientRef.current;
+  const conversationReadyKey = JSON.stringify([selectedProjectId, selectedSessionId]);
+  const conversationRecovering = Boolean(
+    selectedSessionId && !optimisticSelected && conversationConnection?.ensureSessionReady
+    && (readyConversation?.connection !== conversationConnection
+      || readyConversation?.key !== conversationReadyKey),
+  );
+  useEffect(() => {
+    setReadyConversation(null);
+    setConversationRecoveryError(null);
+    if (!selectedSessionId || !conversationConnection?.ensureSessionReady
+      || connectionStatus !== "connected" || optimisticSelected) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = async () => {
+      try {
+        await conversationConnection.ensureSessionReady!(selectedSessionId, selectedProjectId ?? undefined);
+        if (!cancelled) {
+          setReadyConversation({ connection: conversationConnection, key: conversationReadyKey });
+          setConversationRecoveryError(null);
+          // A foreground history read may have timed out before readiness.
+          // Re-read the cache/projection now, without requiring another click.
+          void restoreSessionHistory(selectedSessionId, conversationConnection, selectedProjectId ?? undefined);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setConversationRecoveryError(formatUiError(error));
+          timer = setTimeout(check, 2_000);
+        }
+      }
+    };
+    void check();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [conversationConnection, conversationReadyKey, connectionStatus, selectedSessionId, selectedProjectId, optimisticSelected]);
   const derivedComposerState = deriveComposerState({
+    conversationRecovering,
+    conversationRecoveryFailed: Boolean(conversationRecoveryError),
     connectionStatus,
     gatewayAvailable,
     hasGatewayState: Boolean(gatewayState),
@@ -3773,6 +3814,17 @@ function MalinkAppRuntime() {
   useEffect(() => {
     writeProjectDisclosureState(window.localStorage, collapsedProjects);
   }, [collapsedProjects]);
+
+  useEffect(() => {
+    // Persist one batch after projection replay, not one storage rewrite per
+    // historic command. This cache never drives command execution state.
+    try {
+      writeTurnCompletionCache(window.localStorage, historyScopeRef.current, observedCommandCompletions);
+    } catch (error) {
+      showUiNotice("history:turn-cache", "history", "warning",
+        `Completed steps could not be saved for refresh: ${formatUiError(error)}`);
+    }
+  }, [observedCommandCompletions]);
 
   useEffect(() => {
     writeSessionReadState(window.localStorage, sessionReadState);
@@ -5311,6 +5363,16 @@ function MalinkAppRuntime() {
     setMessages([]);
     setDecisionStates({});
     try {
+      try {
+        const cachedCompletions = readTurnCompletionCache(window.localStorage, scope);
+        setObservedCommandCompletions(current => {
+          const known = new Set(current.map(value => value.commandId));
+          return [...cachedCompletions.filter(value => !known.has(value.commandId)), ...current];
+        });
+      } catch (error) {
+        showUiNotice("history:turn-cache", "history", "warning",
+          `Completed steps could not be restored locally: ${formatUiError(error)}`);
+      }
       const cached = await waitForHistoryOperation(
         loadMessageHistoryPage(scope, cacheSessionId),
         LOCAL_HISTORY_FOREGROUND_TIMEOUT_MS,
@@ -15394,7 +15456,7 @@ function MalinkAppRuntime() {
           </form>
           <p
             id="composer-status"
-            className={`composer-hint composer-hint-${composerState.mode}`}
+            className={`composer-hint composer-hint-${composerState.mode}${conversationRecovering ? " composer-hint-recovering" : ""}`}
             role="status"
             aria-live="polite"
           >

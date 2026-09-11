@@ -24,6 +24,20 @@ test("removed authorization rejects even a cached usable transport", async () =>
     recover: () => assert.fail(), signal: new AbortController().signal }), /no longer in/);
 });
 
+test("having a transport is insufficient until the selected session is restored", async () => {
+  const sessions = new Map();
+  const transport = { sessions };
+  let requested = false;
+  const result = await waitForProjectTransport({
+    lookup: () => sessions.has("selected") ? transport : null,
+    isAuthorized: () => true,
+    recover: () => { requested = true; setTimeout(() => sessions.set("selected", {}), 5); },
+    signal: new AbortController().signal, intervalMs: 1,
+  });
+  assert.equal(requested, true);
+  assert.equal(result, transport);
+});
+
 test("stopping a connection cancels waiting without sending", async () => {
   const controller = new AbortController();
   const pending = waitForProjectTransport({ lookup: () => null, isAuthorized: () => true,
