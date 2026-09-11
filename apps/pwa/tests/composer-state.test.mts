@@ -25,7 +25,7 @@ test("Workspace connected does not enable sending into a recovering conversation
 
 test("slow recovery explains automatic retry without masking offline or archive state", () => {
   const input = { ...ready, conversationRecovering: true, conversationRecoveryFailed: true };
-  assert.match(deriveComposerState(input).reason, /Retrying automatically/);
+  assert.match(deriveComposerState(input).reason, /recovery needs attention/);
   assert.match(deriveComposerState({ ...input, connectionStatus: "offline" }).reason, /offline/);
   assert.match(deriveComposerState({ ...input, selectedArchived: true }).reason, /Restore this session/);
 });
