@@ -46,9 +46,9 @@ export function gatewayUpdateRecoveryAction(input: {
   if (!status || status.phase === "idle") {
     return {
       kind: "start",
-      label: "Update when idle",
+      label: "Prepare new version",
       busyLabel: "Preparing update…",
-      explanation: "Create one maintenance session and complete the update in the background.",
+      explanation: "Prepare and verify the new version in the background. Switching requires a separate click.",
     };
   }
   const publishedReleaseChanged = Boolean(
@@ -81,7 +81,7 @@ export function gatewayUpdateRecoveryAction(input: {
     }
     return {
       kind: "continue",
-      label: "Continue update",
+      label: "Switch to new version",
       busyLabel: "Continuing update…",
       explanation: "This older Gateway already prepared the release; continue from that safe checkpoint.",
     };

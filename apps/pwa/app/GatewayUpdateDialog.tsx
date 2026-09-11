@@ -582,15 +582,15 @@ function GatewayUpdateDialogContent({
                             ? "Prepare new version"
                           : stagedPublishedRelease
                             ? forwardOnlyConfirmation
-                              ? "Confirm and install when idle"
-                              : "Install when idle"
+                              ? "Review and switch to new version"
+                              : "Switch to new version"
                             : recovery.kind === "start" ||
                                 recovery.kind === "continue" ||
                                 recovery.kind === "retry"
                               ? recovery.label
-                              : "Update when idle"}
+                              : "Prepare new version"}
                       </button>
-                      {!node.blueGreenUpdate && (
+                      {!node.blueGreenUpdate && stagedPublishedRelease && (
                         <button
                           type="button"
                           className="secondary-button"
@@ -793,7 +793,7 @@ export function gatewayUpdateRuntimeStateTitle(
     case "agent_running":
     case "agent_validating":
       return "Preparing Gateway update";
-    case "staged": return "Ready to choose restart time";
+    case "staged": return "New version ready · waiting for your switch";
     case "waiting_for_idle": return "Waiting for current Agent work";
     case "scheduled": return "Restart queued";
     case "activating": return "Restarting Gateway";
@@ -884,7 +884,7 @@ function gatewayUpdatePhaseText(status: GatewayUpdateStatus): string {
     case "agent_required": return "Creating the local maintenance Agent session";
     case "agent_running": return "The local maintenance Agent is preparing the release";
     case "agent_validating": return "Validating the prepared build before restart";
-    case "staged": return "Update prepared; choose when to install and restart";
+    case "staged": return "New version prepared. Nothing switches until you choose to switch.";
     case "waiting_for_idle":
       return status.activeTurns
         ? `Waiting for ${status.activeTurns} active Agent ${status.activeTurns === 1 ? "turn" : "turns"} to finish`

@@ -106,8 +106,8 @@ test("shows node identity and stable update actions before consent", () => {
   assert.match(html, /Office Mac · studio\.local/);
   assert.match(html, /Update available/);
   assert.match(html, /Choose when this computer may restart/);
-  assert.match(html, /Update when idle/);
-  assert.match(html, /Install and restart now/);
+  assert.match(html, /Prepare new version/);
+  assert.doesNotMatch(html, /Install and restart now/);
   assert.match(html, /Server/);
   assert.match(html, /Up to date/);
   assert.doesNotMatch(html, /Check live status|Check and update|Check again/);
@@ -137,12 +137,9 @@ test("starts the durable update directly without a live-status preflight", () =>
 
   assert.match(
     html,
-    /<button type="button" class="primary-button" aria-busy="false">Update when idle<\/button>/,
+    /<button type="button" class="primary-button" aria-busy="false">Prepare new version<\/button>/,
   );
-  assert.match(
-    html,
-    /<button type="button" class="secondary-button">Install and restart now…<\/button>/,
-  );
+  assert.doesNotMatch(html, /Install and restart now/);
   assert.doesNotMatch(html, /primary-button" disabled/);
 });
 
@@ -350,8 +347,8 @@ test("keeps a delayed connection check advisory and leaves update actions usable
   }));
 
   assert.match(html, /recent connection check did not receive its reply/i);
-  assert.match(html, /Update when idle/);
-  assert.match(html, /Install and restart now/);
+  assert.match(html, /Prepare new version/);
+  assert.doesNotMatch(html, /Install and restart now/);
   assert.doesNotMatch(html, /Gateway needs attention|Diagnose this Gateway/);
 });
 
@@ -672,7 +669,7 @@ test("keeps a signed staged phase consistent with the selected busy action", () 
   assert.match(html, /Scheduling when idle…/);
   assert.match(html, /Install and restart now…/);
   assert.equal(html.match(/aria-busy="true"/g)?.length, 1);
-  assert.doesNotMatch(html, /Ready to choose restart time/);
+  assert.doesNotMatch(html, /New version ready · waiting for your switch/);
 });
 
 test("opens a legacy maintenance session through its exact project route", () => {
@@ -807,7 +804,7 @@ test("keeps a new release actionable while offering cleanup for an older collisi
 
   assert.match(html, /Delete old update session/);
   assert.match(html, /only this Gateway is affected/);
-  assert.match(html, /Update when idle/);
+  assert.match(html, /Prepare new version/);
 });
 
 test("offers installation when the maintenance Agent already staged the target", () => {
@@ -839,8 +836,8 @@ test("offers installation when the maintenance Agent already staged the target",
     onExportDiagnostics() {},
   }));
 
-  assert.match(html, /Ready to choose restart time/);
-  assert.match(html, /Install when idle/);
+  assert.match(html, /New version ready · waiting for your switch/);
+  assert.match(html, /Switch to new version/);
   assert.match(html, /Install and restart now/);
 });
 
@@ -873,8 +870,8 @@ test("never labels an older staged build as the published install action", () =>
 
   assert.match(html, /Newer Gateway update available/);
   assert.match(html, /Prepare latest update/);
-  assert.match(html, /Prepare latest and restart now/);
-  assert.doesNotMatch(html, /Install when idle|Ready to choose restart time/);
+  assert.doesNotMatch(html, /Prepare latest and restart now/);
+  assert.doesNotMatch(html, /Switch to new version|New version ready · waiting for your switch/);
 });
 
 test("renders running supervisor phases as status without update actions or alerts", () => {
@@ -947,7 +944,7 @@ test("does not offer retry for a non-retryable command result without signed sta
   assert.match(html, /rejected this update request as non-retryable/i);
   assert.match(html, /Export client diagnostics/);
   assert.match(html, /Report update issue/);
-  assert.doesNotMatch(html, /Update when idle|Install and restart now|Try update again/);
+  assert.doesNotMatch(html, /Prepare new version|Install and restart now|Try update again/);
 });
 
 test("requires an explicit second action for a forward-only staged release", () => {
@@ -982,7 +979,7 @@ test("requires an explicit second action for a forward-only staged release", () 
 
   assert.match(html, /Ready · confirmation required/);
   assert.match(html, /Extra confirmation required/);
-  assert.match(html, /Confirm and install when idle/);
+  assert.match(html, /Review and switch to new version/);
   assert.match(html, /cannot automatically return to the previous Gateway version/);
 });
 
@@ -1059,7 +1056,7 @@ test("does not let an installed prior release block the newly published update",
   }));
 
   assert.match(html, /Update available/);
-  assert.match(html, /Update when idle/);
+  assert.match(html, /Prepare new version/);
   assert.doesNotMatch(html, /Check and update|Check live status/);
   assert.doesNotMatch(html, /Gateway restart scheduled/);
   assert.doesNotMatch(html, /Open update session/);

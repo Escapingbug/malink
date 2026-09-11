@@ -4229,10 +4229,8 @@ function MalinkAppRuntime() {
         gatewayUpdateResumeKeysRef.current.delete(key);
       });
     }
-    // The saved intent is written only after an explicit user action. It lets
-    // a current client finish the old two-command protocol if the browser was
-    // closed after stage but before apply, without touching pre-existing staged
-    // updates that have no current-client intent.
+    // A saved intent resumes preparation only. It never grants activation
+    // consent; a prepared release requires a fresh manual switch action.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     connectionStatus,
@@ -8347,7 +8345,14 @@ function MalinkAppRuntime() {
   async function startGatewayUpdateNode(
     node: GatewayUpdatePlanNode,
     mode: "when_idle" | "force" = "when_idle",
+    manualSwitch = false,
   ): Promise<void> {
+    // Capture consent before asynchronous discovery: a click on Prepare must
+    // never become permission to activate a release that finishes meanwhile.
+    const switchRequested = manualSwitch && Boolean(gatewayRelease && gatewayUpdateCanContinuePublishedRelease({
+      status: gatewayUpdateRuntimeForRelease[node.gatewayNodeId]?.status,
+      release: gatewayRelease,
+    }));
     if (!gatewayRelease) {
       showUiNotice(
         `gateway-update:${node.gatewayNodeId}`,
@@ -8475,6 +8480,17 @@ function MalinkAppRuntime() {
       const deployment = node.computerId
         ? gatewayStateRef.current?.gatewayDeployments?.[node.computerId]?.deployment
         : undefined;
+      if (!switchRequested) {
+        const prepared = continuePublishedRelease && knownStatus ? knownStatus
+          : await executeWithSignedBoundary({ operation: "gateway.update.stage", releaseId: gatewayRelease.releaseId }, target.targetProjectId);
+        setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, state: "unchecked", status: prepared,
+          maintenanceSessionId: prepared.maintenanceSessionId }));
+        clearGatewayUpdateIntent(window.localStorage, matrixConfig.gatewayId, node.gatewayNodeId);
+        showUiNotice(`gateway-update:${node.gatewayNodeId}`, "update", "info",
+          prepared.phase === "staged" ? "New version ready. Choose Switch to new version when you are ready; nothing switches automatically."
+            : "Preparing the new version. Switching requires a separate action after preparation finishes.");
+        return;
+      }
       if (knownStatus?.executionTracks) {
         const staged = continuePublishedRelease ? knownStatus : await executeWithSignedBoundary({
           operation: "gateway.update.stage", releaseId: gatewayRelease.releaseId,
@@ -15526,7 +15542,7 @@ function MalinkAppRuntime() {
             ),
           )}
           onClose={() => setGatewayUpdateDialogOpen(false)}
-          onStart={(node, mode) => void startGatewayUpdateNode(node, mode)}
+          onStart={(node, mode) => void startGatewayUpdateNode(node, mode, true)}
           onPromote={(node, mode) => void changeGatewayDeployment(node, "promote", mode)}
           onDiscard={(node) => void changeGatewayDeployment(node, "discard")}
           onSelectVersion={(node, releaseId, generation) => void selectGatewayExecutionVersion(node, releaseId, generation)}
