@@ -12798,3 +12798,22 @@ body {
   .session-project-shortcuts { grid-template-columns: 1fr; }
   .session-project-shortcuts button { min-height: 60px; }
 }
+
+/* Archive is a secondary destination reached from the existing list menu. */
+.archive-list-heading { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.archive-list-heading > button { flex: 0 0 44px; width: 44px; height: 44px; border: 0; border-radius: 10px; background: transparent; color: var(--ink); font-size: 30px; cursor: pointer; }
+.archive-list-heading > button:focus-visible { outline: 2px solid #7055d8; outline-offset: -2px; }
+.archive-header-actions .mobile-notification-button,
+.archive-header-actions .mobile-files-button,
+.archive-header-actions .round-button { display: none; }
+.archive-list-help { margin: 12px; color: #60677b; font-size: 12px; line-height: 1.65; }
+.archive-list-help summary { cursor: pointer; min-height: 44px; align-content: center; }
+.archive-list-help p { margin: 4px 0 10px; }
+.archive-empty { line-height: 1.7; }
+.archived-conversation-notice { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0 16px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: #f7f5fc; font-size: 13px; }
+.archived-conversation-notice p { margin: 4px 0 0; color: #60677b; }
+.archived-conversation-notice button { min-height: 44px; flex-shrink: 0; padding: 10px 14px; border: 0; border-radius: 10px; background: #7055d8; color: #fff; font-weight: 600; cursor: pointer; }
+.archived-conversation-notice button:disabled { opacity: .5; cursor: not-allowed; }
+.archived-conversation-notice button:focus-visible { outline: 2px solid #7055d8; outline-offset: 3px; }
+.session-menu-actions .session-menu-delete { margin-top: 8px; border-top: 1px solid var(--line); color: #ae3443; }
+@media (max-width: 760px) { .archive-list-heading h1 { font-size: 18px; } }

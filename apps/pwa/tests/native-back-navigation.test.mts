@@ -194,3 +194,10 @@ test("continues past handlers that decline Back", () => {
   assert.equal(dispatcher.dispatch(), true);
   assert.deepEqual(calls, ["declined", "fallback"]);
 });
+
+test("archive navigation backs out of the current layer before returning to conversations", () => {
+  assert.equal(resolveMalinkBackAction({...emptyState, archivedListOpen:true}), "show-active-conversations");
+  assert.equal(resolveMalinkBackAction({...emptyState, archivedListOpen:true, mobileChatOpen:true}), "show-conversations");
+  assert.equal(resolveMalinkBackAction({...emptyState, archivedListOpen:true, listMenuOpen:true}), "close-list-menu");
+  assert.equal(resolveMalinkBackAction({...emptyState, archivedListOpen:true, sessionSearchOpen:true}), "close-session-search");
+});
