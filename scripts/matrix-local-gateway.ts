@@ -1080,7 +1080,7 @@ const adminServer = await startGatewayAdminServer({
     getGatewayState: () => runner?.getState() ?? 'starting',
     buildId: gatewayBuildId,
     getGatewayDiagnostics: () => runner!.healthSnapshot(),
-    sealForDeployment: mode => runner!.sealForDeployment(mode),
+    sealForDeployment: (mode, signal) => runner!.sealForDeployment(mode, signal),
     issueDeploymentMatrixLogin: () => gatewayLoginTokenIssuer.issue({
         homeserver: fixture.homeserver,
         offerExpiresAt: Date.now() + 2 * 60_000,
