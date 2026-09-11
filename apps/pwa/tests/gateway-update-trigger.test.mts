@@ -33,6 +33,11 @@ test("a dedicated retained control route is not listed as another computer to up
     active: { gatewayNodeId: "business", buildId: "new", projectCount: 1, sessionCount: 1 },
     recovery: { gatewayNodeId: "control", buildId: "old", projectId: "repair", projectCount: 1, sessionCount: 0, retainedAt: 1 } } };
   assert.deepEqual(gatewayUpdatePlan({ directory, deployments, release, knownProjectIds: new Set(["project", "repair"]) }).map(n => n.gatewayNodeId), ["business"]);
+  const noRelease = gatewayUpdatePlan({ directory, deployments, release: null, knownProjectIds: new Set(["project", "repair"]) });
+  assert.equal(noRelease.length, 1);
+  assert.equal(noRelease[0].gatewayNodeId, "business");
+  assert.equal(noRelease[0].computerId, "mac");
+  assert.equal(noRelease[0].state, "unknown");
   const status = { version: 1 as const, phase: "committed" as const, updatedAt: 2,
     executionTracks: { generation: 4, activeRelease: "new", phase: "steady" as const, controlProjectId: "repair" } };
   assert.equal(gatewayExecutionStatusOwner("control", status, Object.values(deployments)), "business");

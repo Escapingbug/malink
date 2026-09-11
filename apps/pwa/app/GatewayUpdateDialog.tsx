@@ -22,6 +22,9 @@ export type GatewayUpdateNodeRuntime = {
   state: "unchecked" | "checking" | "unreachable" | "online" | "starting" | "error";
   releaseKey?: string;
   checkedAt?: number;
+  versionCheckedAt?: number;
+  versionCheckError?: string;
+  versionSwitchError?: string;
   lastVerifiedAt?: number;
   consecutiveNoReplies?: number;
   startedAt?: number;
@@ -47,7 +50,8 @@ export type GatewayUpdateActiveAction = "when_idle" | "force" | "discard" | "che
 type Props = {
   open: boolean;
   connected: boolean;
-  release: GatewayReleaseBuild;
+  release: GatewayReleaseBuild | null;
+  embedded?: boolean;
   nodes: GatewayUpdatePlanNode[];
   runtimeByNode: Readonly<Record<string, GatewayUpdateNodeRuntime>>;
   livenessByNode?: Readonly<Record<string, GatewayNodeLiveness>>;
@@ -77,7 +81,8 @@ export function GatewayUpdateDialog(props: Props) {
 function GatewayUpdateDialogContent({
   open,
   connected,
-  release,
+  release: publishedRelease,
+  embedded = false,
   nodes,
   runtimeByNode,
   livenessByNode = {},
@@ -98,13 +103,40 @@ function GatewayUpdateDialogContent({
   onExportDiagnostics,
   diagnosticExportBusy = false,
 }: Props) {
+  const release = publishedRelease ?? { releaseId: "", buildId: "" };
+  const [versionSelection, setVersionSelection] = useState<{ nodeId: string; releaseId: string; generation: number } | null>(null);
+  const refreshRef = useRef({ nodes, runtimeByNode, activeGatewayNodeIds, onCheckVersions });
+  refreshRef.current = { nodes, runtimeByNode, activeGatewayNodeIds, onCheckVersions };
+  useEffect(() => {
+    if (!embedded || !connected) return;
+    const tick = () => {
+      if (document.visibilityState !== "visible" || !navigator.onLine) return;
+      const current = refreshRef.current;
+      for (const node of current.nodes) {
+        const runtime = current.runtimeByNode[node.gatewayNodeId];
+        if (!node.onlineUpdate || current.activeGatewayNodeIds.has(node.gatewayNodeId)) continue;
+        // Refresh on entry only when stale; retained data remains visible during the read.
+        if (runtime?.versionCheckedAt && Date.now() - runtime.versionCheckedAt < 300_000) continue;
+        current.onCheckVersions?.(node);
+      }
+    };
+    tick();
+    const timer = window.setInterval(tick, 30_000);
+    document.addEventListener("visibilitychange", tick);
+    window.addEventListener("online", tick);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+      window.removeEventListener("online", tick);
+    };
+  }, [embedded, connected]);
   const [forceConfirmationNodeId, setForceConfirmationNodeId] = useState<string | null>(null);
   const [completionConfirmationNodeId, setCompletionConfirmationNodeId] = useState<string | null>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const forceConfirmationRef = useRef<HTMLDivElement>(null);
   useDialogFocus({
-    open,
+    open: open && !embedded,
     containerRef: dialogRef,
     initialFocusRef: closeRef,
     onEscape: onClose,
@@ -125,20 +157,20 @@ function GatewayUpdateDialogContent({
 
   return (
     <div
-      className="gateway-update-backdrop"
+      className={embedded ? "computer-update-content" : "gateway-update-backdrop"}
       role="presentation"
-      onMouseDown={onClose}
+      onMouseDown={embedded ? undefined : onClose}
     >
       <section
         ref={dialogRef}
-        className="gateway-update-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="gateway-update-title"
+        className={embedded ? "gateway-update-dialog is-embedded" : "gateway-update-dialog"}
+        role={embedded ? "region" : "dialog"}
+        aria-modal={embedded ? undefined : true}
+        aria-label={embedded ? "Computer versions and update" : "Install Gateway updates"}
         tabIndex={-1}
         onMouseDown={event => event.stopPropagation()}
       >
-        <header>
+        {!embedded && <header>
           <div>
             <span className="eyebrow">Workspace computers</span>
             <h2 id="gateway-update-title">Install Gateway updates</h2>
@@ -156,21 +188,20 @@ function GatewayUpdateDialogContent({
           >
             ×
           </button>
-        </header>
+        </header>}
 
-        <div className="gateway-update-release">
+        {publishedRelease && <div className="gateway-update-release">
           <span aria-hidden="true">↻</span>
           <span>
             <small>Available release</small>
             <strong>{release.releaseId}</strong>
             <code>{release.buildId}</code>
           </span>
-        </div>
+        </div>}
 
         <p className="gateway-update-explanation">
-          Use the new Gateway by default. After completing the update, the previous version remains available for repair until the next update.
-          Older computers retain their restart-based update controls. Signed
-          supervisor state is the source of truth; you may close this panel.
+          Start an update session to prepare the new version. Review its result, then explicitly switch when ready.
+          You can leave settings while it works.
         </p>
 
         <div className="gateway-update-node-list">
@@ -193,7 +224,6 @@ function GatewayUpdateDialogContent({
               (Boolean(deployment.recovery) || deployment.detail === "All projects and sessions now use the promoted Gateway");
             const maintenanceCleanupAllowed = !deploymentInProgress &&
               (!node.blueGreenUpdate || deployment?.phase === "steady");
-            const liveness = livenessByNode[node.gatewayNodeId];
             const signedUpdateStatus = gatewayUpdateStatusForPresentation(
               runtime.status,
               release,
@@ -259,9 +289,50 @@ function GatewayUpdateDialogContent({
                     <strong>{owner.label}</strong>
                     <small>Node {owner.shortId}</small>
                   </span>
-                  <b>{planStateLabel(node.state)}</b>
+                  <b>{publishedRelease ? planStateLabel(node.state) : "Latest version not confirmed"}</b>
                 </div>
 
+                {runtime.status?.executionTracks && (
+                  <section className="computer-execution-tracks" aria-label="Gateway versions">
+                    <h3>Execution tracks</h3>
+                    <p>Currently selected · {runtime.status.executionTracks.activeRelease}</p>
+                    {runtime.status.executionTracks.standbyRelease && <p>Retained version · {runtime.status.executionTracks.standbyRelease}</p>}
+                    <p>Switch back for normal work or to repair a faulty version. Compatibility is checked before switching.</p>
+                    {!runtime.status.executionTracks.standbyRelease && <p>No retained version is reported. Dual-track protection is not confirmed.</p>}
+                    {runtime.status.executionTracks.phase === "steady" && runtime.status.executionTracks.error &&
+                      <p role="status">{runtime.status.executionTracks.error}</p>}
+                    {runtime.status.executionTracks.phase !== "steady" && <p role="status">
+                      {runtime.status.executionTracks.phase === "attention"
+                        ? runtime.status.executionTracks.error ?? "Version selection needs attention."
+                        : `Transferring execution to ${runtime.status.executionTracks.targetRelease}. Conversations remain in the same Workspace.`}
+                    </p>}
+                    {onSelectVersion && ["steady", "attention"].includes(runtime.status.executionTracks.phase) &&
+                      [...new Set([runtime.status.executionTracks.standbyRelease,
+                        ...(runtime.status.executionTracks.phase === "attention" ? [runtime.status.executionTracks.activeRelease, runtime.status.executionTracks.targetRelease] : [])])]
+                        .filter((id): id is string => Boolean(id)).map(id => (
+                          <button key={id} type="button" className="secondary-button gateway-version-button" disabled={!connected || activeGatewayNodeIds.has(node.gatewayNodeId)}
+                            onClick={() => setVersionSelection({ nodeId: node.gatewayNodeId, releaseId: id, generation: runtime.status!.executionTracks!.generation })}>
+                            Switch to retained version {id}
+                          </button>
+                        ))}
+                  </section>
+                )}
+                {runtime.versionSwitchError && <p role="alert">Version switch could not be confirmed: {runtime.versionSwitchError}. Refresh status before trying again.</p>}
+                {versionSelection?.nodeId === node.gatewayNodeId && <div className="gateway-update-force-confirmation" role="group" aria-label="Confirm version switch">
+                  <strong>Switch {owner.label} to {versionSelection.releaseId}?</strong>
+                  <p>Running tasks will drain before the selected version takes over. Conversations and current data stay on this computer. You can select the other retained version again after repair, subject to compatibility checks.</p>
+                  <button type="button" className="secondary-button" onClick={() => setVersionSelection(null)}>Cancel</button>
+                  <button type="button" className="primary-button"
+                    disabled={!connected || active || runtime.status?.executionTracks?.generation !== versionSelection.generation}
+                    onClick={() => {
+                      onSelectVersion?.(node, versionSelection.releaseId, versionSelection.generation);
+                      setVersionSelection(null);
+                    }}>Confirm switch</button>
+                  {runtime.status?.executionTracks?.generation !== versionSelection.generation && <p role="status">The version state changed. Cancel and select a version again.</p>}
+                </div>}
+
+                {!runtime.status?.executionTracks && runtime.versionCheckedAt && !runtime.versionCheckError && <p role="status">This computer has not reported dual-track protection. Its existing update controls remain available.</p>}
+                <h3 className="computer-update-heading">Update session & progress</h3>
                 {showUpdateProgress && signedUpdateStatus && (
                   <GatewayUpdateProgress status={updateCompleted
                     ? { ...signedUpdateStatus, phase: "committed" }
@@ -271,12 +342,12 @@ function GatewayUpdateDialogContent({
                 <div className="gateway-update-builds">
                   <span>
                     <small>Current build</small>
-                    <code>{node.currentBuildId ?? runtime.status?.currentBuildId ?? "unknown"}</code>
+                    <code>{runtime.status?.currentBuildId ?? node.currentBuildId ?? "unknown"}</code>
                   </span>
                   <span aria-hidden="true">→</span>
                   <span>
                     <small>Target build</small>
-                    <code>{release.buildId}</code>
+                    <code>{publishedRelease ? release.buildId : "Release channel not available"}</code>
                   </span>
                 </div>
 
@@ -296,7 +367,9 @@ function GatewayUpdateDialogContent({
                         : deployment.phase === "preparing" ? "Preparing the new version"
                         : "Completing update"
                       : gatewayUpdateRuntimeStateTitle(runtime, node, release, activeMode)}</strong>
-                    <small>{updateCompleted
+                    <small>{updateCompleted && runtime.status?.executionTracks
+                      ? `Current version confirmed. ${runtime.status.executionTracks.standbyRelease ? "The retained version remains available for normal work and repair." : "No retained version is reported."}`
+                      : updateCompleted && deployment
                       ? `Completed ${new Date(deployment.updatedAt).toLocaleString()}. ${deployment.recovery ? "The previous version remains available for repair." : "All conversations use this version; the previous version's recovery window is closed."}`
                       : deploymentInProgress && activeMode !== "discard"
                       ? deployment.detail ?? "The signed deployment state controls this computer's candidate and switch actions."
@@ -310,35 +383,20 @@ function GatewayUpdateDialogContent({
                   </span>
                 </div>
 
-                {onCheckVersions && <button type="button" className="secondary-button gateway-version-button"
-                  disabled={!connected || activeGatewayNodeIds.has(node.gatewayNodeId)}
-                  aria-busy={activeMode === "check_versions"}
-                  onClick={() => onCheckVersions(node)}>
-                  <span className={activeMode === "check_versions" ? "gateway-version-check-icon is-checking" : "gateway-version-check-icon"} aria-hidden="true">↻</span>
-                  {activeMode === "check_versions" ? "Checking available versions…" : "Check available versions"}
-                </button>}
-                {runtime.status?.executionTracks && (
-                  <section className="gateway-update-action-status" aria-label="Gateway versions">
-                    <p>Default version · {runtime.status.executionTracks.activeRelease}</p>
-                    {runtime.status.executionTracks.standbyRelease && <p>Standby version · {runtime.status.executionTracks.standbyRelease}</p>}
-                    {runtime.status.executionTracks.phase === "steady" && runtime.status.executionTracks.error &&
-                      <p role="status">{runtime.status.executionTracks.error}</p>}
-                    {runtime.status.executionTracks.phase !== "steady" && <p role="status">
-                      {runtime.status.executionTracks.phase === "attention"
-                        ? runtime.status.executionTracks.error ?? "Version selection needs attention."
-                        : `Transferring execution to ${runtime.status.executionTracks.targetRelease}. Conversations remain in the same Workspace.`}
-                    </p>}
-                    {onSelectVersion && ["steady", "attention"].includes(runtime.status.executionTracks.phase) &&
-                      [...new Set([runtime.status.executionTracks.standbyRelease,
-                        ...(runtime.status.executionTracks.phase === "attention" ? [runtime.status.executionTracks.activeRelease, runtime.status.executionTracks.targetRelease] : [])])]
-                        .filter((id): id is string => Boolean(id)).map(id => (
-                          <button key={id} type="button" className="secondary-button gateway-version-button" disabled={!connected || activeGatewayNodeIds.has(node.gatewayNodeId)}
-                            onClick={() => onSelectVersion(node, id, runtime.status!.executionTracks!.generation)}>
-                            Use version {id}
-                          </button>
-                        ))}
-                  </section>
-                )}
+                <div className="computer-status-refresh">
+                  <small role="status">{activeMode === "check_versions" ? "Refreshing computer status…"
+                    : runtime.versionCheckError ? `Status refresh failed: ${runtime.versionCheckError}`
+                    : runtime.versionCheckedAt ? `Computer status checked ${new Date(runtime.versionCheckedAt).toLocaleString()}`
+                    : "Computer status has not been confirmed yet."}</small>
+                  {onCheckVersions && <details>
+                    <summary>{runtime.versionCheckError ? "Retry status refresh" : "Status options"}</summary>
+                    <button type="button" className="secondary-button gateway-version-button"
+                      disabled={!connected || active} aria-busy={activeMode === "check_versions"}
+                      onClick={() => onCheckVersions(node)}>
+                      {activeMode === "check_versions" ? "Refreshing…" : "Refresh computer status"}
+                    </button>
+                  </details>}
+                </div>
                 {deploymentOwner && deployment.recovery && !runtime.status?.executionTracks && (
                   <p className="gateway-update-action-status">
                     Recovery version · {deployment.recovery.releaseId ?? deployment.recovery.buildId}
@@ -346,13 +404,6 @@ function GatewayUpdateDialogContent({
                   </p>
                 )}
 
-                {(liveness?.state === "checking" || liveness?.state === "unreachable") && (
-                  <p className="gateway-update-action-status" role="status">
-                    {liveness.state === "checking"
-                      ? "A separate connection check is still waiting. It does not block this update."
-                      : "A recent connection check did not receive its reply. Update requests remain durable and the signed supervisor phase above stays authoritative."}
-                  </p>
-                )}
                 {signedUpdateStatus && knownUpdateFailure && (
                   <GatewayUpdateFailureHelp
                     gatewayLabel={owner.label}
@@ -462,7 +513,7 @@ function GatewayUpdateDialogContent({
                       </button>
                     </>
                   )}
-                  {!targetInstalled && !statusWasSuperseded && runtime.maintenanceSessionId &&
+                  {!statusWasSuperseded && runtime.maintenanceSessionId &&
                     node.targetProjectId && (
                     <button
                       type="button"
@@ -472,7 +523,9 @@ function GatewayUpdateDialogContent({
                         runtime.maintenanceSessionId!,
                       )}
                     >
-                      Open update session
+                      {runtime.status?.executionTracks?.phase === "steady" && runtime.status.currentBuildId !== release.buildId
+                        && ["committed", "failed", "repair_required"].includes(runtime.status.phase)
+                        ? "Open update session to repair" : "View update session"}
                     </button>
                   )}
                   {!targetInstalled && !statusWasSuperseded && runtime.maintenanceSessionId &&
@@ -559,7 +612,7 @@ function GatewayUpdateDialogContent({
                       ) : null}
                     </>
                   )}
-                  {node.state === "available" && updateActionAvailable && !deploymentInProgress && (
+                  {publishedRelease && node.state === "available" && updateActionAvailable && !deploymentInProgress && (
                     <>
                       <button
                         type="button"
@@ -579,7 +632,7 @@ function GatewayUpdateDialogContent({
                               ? recovery.busyLabel
                               : "Preparing update…"
                           : node.blueGreenUpdate
-                            ? "Prepare new version"
+                            ? "Start update session"
                           : stagedPublishedRelease
                             ? forwardOnlyConfirmation
                               ? "Review and switch to new version"
@@ -587,8 +640,8 @@ function GatewayUpdateDialogContent({
                             : recovery.kind === "start" ||
                                 recovery.kind === "continue" ||
                                 recovery.kind === "retry"
-                              ? recovery.label
-                              : "Prepare new version"}
+                              ? recovery.kind === "start" ? "Start update session" : recovery.label
+                              : "Start update session"}
                       </button>
                       {!node.blueGreenUpdate && stagedPublishedRelease && (
                         <button
@@ -659,7 +712,7 @@ function GatewayUpdateDialogContent({
           })}
         </div>
 
-        <footer>
+        {!embedded && <footer>
           <small>
             {activeGatewayNodeIds.size > 0
               ? `${activeGatewayNodeIds.size} ${activeGatewayNodeIds.size === 1 ? "computer continues" : "computers continue"} updating when this panel closes.`
@@ -672,7 +725,7 @@ function GatewayUpdateDialogContent({
           >
             Close
           </button>
-        </footer>
+        </footer>}
       </section>
     </div>
   );
@@ -681,7 +734,7 @@ function GatewayUpdateDialogContent({
 const GATEWAY_UPDATE_STEPS = [
   "Preparing",
   "Ready",
-  "Restarting",
+  "Switching",
   "Complete",
 ] as const;
 
@@ -823,7 +876,7 @@ export function gatewayUpdateRuntimeStateDetail(
   if (activeMode === "select_version") return "Waiting for the signed version selection. The same conversations and history will remain available.";
   const status = gatewayUpdateStatusForPresentation(runtime.status, release, node);
   if (status?.executionTracks && ["releasing", "activating"].includes(status.executionTracks.phase)) return "The selected version is taking over the same Workspace. You can close this panel while the handoff finishes.";
-  if (status?.executionTracks?.phase === "steady" && status.currentBuildId !== release.buildId && status.phase === "committed") return "This computer is using the version you selected. Use the retained newer version below to switch back; conversations and history are unchanged.";
+  if (status?.executionTracks?.phase === "steady" && status.currentBuildId !== release.buildId && status.phase === "committed") return "This computer is using the version you selected. Use the retained version controls to switch again; conversations and history are unchanged.";
   if (status?.phase === "failed" || status?.phase === "repair_required") {
     const failure = status.detail ?? gatewayUpdatePhaseText(status);
     return failure;
@@ -873,7 +926,7 @@ export function gatewayUpdateRuntimeStateDetail(
     case "current":
       return "The signed Gateway directory reports the published build on this computer.";
     case "available":
-      return "Choose when this computer may restart. Malink will route the durable request to this named Gateway.";
+      return "Start an update session on this computer to prepare the release. Preparation does not switch versions; you choose when to switch after it is ready.";
   }
 }
 
@@ -907,8 +960,9 @@ function gatewayUpdateStatusForPresentation(
   release: GatewayReleaseBuild,
   node: GatewayUpdatePlanNode,
 ): GatewayUpdateStatus | undefined {
-  if (!status || status.phase === "idle") return undefined;
+  if (!status) return undefined;
   if (status.executionTracks) return status;
+  if (status.phase === "idle") return undefined;
   if (gatewayUpdateStatusSupersededByDirectory(node, status)) return undefined;
   if (
     status.phase === "committed" &&

@@ -344,9 +344,7 @@ import { deriveGatewayLiveness } from "./gatewayLiveness";
 import { ConnectionPathIndicator } from "./ConnectionPathIndicator";
 import { deriveConnectionPathPresentation } from "./connectionPathPresentation";
 import {
-  GATEWAY_FOREGROUND_PROBE_INTERVAL_MS,
   GATEWAY_LIVE_STATUS_TIMEOUT_MS,
-  gatewayForegroundProbeDue,
   gatewayNodeLivenessAfterProbeTimeout,
   gatewayNodeLivenessTargets,
   gatewayProbeRecoveryBackoffMs,
@@ -1787,6 +1785,7 @@ function MalinkAppRuntime() {
     gatewayNodeId: string;
     detail: string;
   } | null>(null);
+  const [settingsComputerId, setSettingsComputerId] = useState<string | null>(null);
   const [gatewayUpdateDialogOpen, setGatewayUpdateDialogOpen] = useState(false);
   const [activeClientIntegration, setActiveClientIntegration] =
     useState<ClientIntegrationTarget | null>(null);
@@ -2968,14 +2967,9 @@ function MalinkAppRuntime() {
   const gatewayUpdateReleaseKey = gatewayRelease
     ? `${gatewayRelease.releaseId}\0${gatewayRelease.buildId}`
     : null;
-  const gatewayUpdateRuntimeForRelease = useMemo(
-    () => Object.fromEntries(
-      Object.entries(gatewayUpdateRuntimeByNode).filter(
-        ([, runtime]) => runtime.releaseKey === gatewayUpdateReleaseKey,
-      ),
-    ),
-    [gatewayUpdateReleaseKey, gatewayUpdateRuntimeByNode],
-  );
+  // Signed computer/track state survives release-channel changes and failures.
+  // Release comparison and switch consent are derived separately below.
+  const gatewayUpdateRuntimeForRelease = gatewayUpdateRuntimeByNode;
   const gatewayUpdatePlan = useMemo(
     () => gatewayRelease
       ? gatewayUpdateDirectoryPlan.map(node => gatewayUpdatePlanNodeWithLiveStatus({
@@ -4070,66 +4064,8 @@ function MalinkAppRuntime() {
   }, [connectionStatus]);
 
   useEffect(() => {
-    if (!gatewayUpdateDialogOpen) return;
-    const probeTargets = gatewayNodeProbeTargets.filter((target) =>
-      target.canProbe && target.targetProjectId
-    );
-    if (probeTargets.length === 0) return;
-    let timer: number | null = null;
-    const clearTimer = () => {
-      if (timer === null) return;
-      window.clearInterval(timer);
-      timer = null;
-    };
-    const tick = () => {
-      const visible = document.visibilityState === "visible";
-      const networkOnline = navigator.onLine;
-      const matrixConnected = connectionStatus === "connected";
-      if (!visible || !networkOnline || !matrixConnected) {
-        clearTimer();
-        return;
-      }
-      const now = Date.now();
-      for (const target of probeTargets) {
-        const current = gatewayNodeLivenessRef.current[target.gatewayNodeId];
-        if (!gatewayForegroundProbeDue({
-          userInspecting: gatewayUpdateDialogOpen,
-          visible,
-          networkOnline,
-          matrixConnected,
-          inFlight: gatewayNodeProbeFlightsRef.current.has(target.gatewayNodeId),
-          now,
-          ...(current?.lastVerifiedAt === undefined
-            ? {}
-            : { lastVerifiedAt: current.lastVerifiedAt }),
-        })) continue;
-        void probeGatewayNodeLiveness(target);
-      }
-    };
-    const reconcile = () => {
-      clearTimer();
-      if (
-        document.visibilityState !== "visible" ||
-        !navigator.onLine ||
-        connectionStatus !== "connected"
-      ) return;
-      tick();
-      timer = window.setInterval(tick, GATEWAY_FOREGROUND_PROBE_INTERVAL_MS);
-    };
-    reconcile();
-    document.addEventListener("visibilitychange", reconcile);
-    window.addEventListener("online", reconcile);
-    window.addEventListener("offline", reconcile);
-    return () => {
-      clearTimer();
-      document.removeEventListener("visibilitychange", reconcile);
-      window.removeEventListener("online", reconcile);
-      window.removeEventListener("offline", reconcile);
-    };
-    // The probe function intentionally reads the current client and command
-    // refs. Restart only when routes or Matrix connectivity change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionStatus, gatewayNodeProbeTargets, gatewayUpdateDialogOpen]);
+    if (gatewayUpdateDialogOpen) setSettingsOpen(true);
+  }, [gatewayUpdateDialogOpen]);
 
   useEffect(() => {
     const knownNodeIds = new Set(
@@ -7830,9 +7766,7 @@ function MalinkAppRuntime() {
         ...current,
         [gatewayNodeId]: {
           ...update(
-            current[gatewayNodeId]?.releaseKey === gatewayUpdateReleaseKey
-              ? current[gatewayNodeId]
-              : { state: "unchecked" },
+            current[gatewayNodeId] ?? { state: "unchecked" },
           ),
           ...(gatewayUpdateReleaseKey ? { releaseKey: gatewayUpdateReleaseKey } : {}),
         },
@@ -8747,6 +8681,7 @@ function MalinkAppRuntime() {
     gatewayUpdateActiveNodeIdsRef.current = busy;
     setGatewayUpdateActiveNodeIds(busy);
     setGatewayUpdateActiveModesByNode(current => ({ ...current, [node.gatewayNodeId]: "select_version" }));
+    setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, versionSwitchError: undefined }));
     try {
       const status = await executeGatewayUpdate({ operation: "gateway.update.apply", releaseId,
         executionGeneration: generation, mode: "when_idle" }, targetProject, 60_000);
@@ -8755,7 +8690,7 @@ function MalinkAppRuntime() {
         `Version selection was accepted. ${releaseId} will take over the same conversations after running tasks finish.`);
       await observeGatewayExecutionHandoff(node, targetProject);
     } catch (error) {
-      showUiNotice(`gateway-track:${node.gatewayNodeId}`, "connection", "warning", formatUiError(error));
+      setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, versionSwitchError: formatUiError(error) }));
     } finally {
       const remaining = new Set(gatewayUpdateActiveNodeIdsRef.current);
       remaining.delete(node.gatewayNodeId);
@@ -8788,11 +8723,13 @@ function MalinkAppRuntime() {
       const targetProject = gatewayUpdateRuntimeByNodeRef.current[node.gatewayNodeId]?.status?.executionTracks?.controlProjectId ?? fallbackProject ?? node.targetProjectId;
       if (!targetProject) throw new Error("This computer has no verified control route.");
       const status = await executeGatewayUpdate({ operation: "gateway.update.status", includeExecutionTracks: true }, targetProject);
-      setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status }));
-      if (!status.executionTracks) showUiNotice(`gateway-track:${node.gatewayNodeId}`, "connection", "info",
-        "This computer does not have dual-version control enabled yet. Its existing update workflow remains available.");
+      setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current,
+        status: latestGatewayUpdateStatus(current.status, status),
+        maintenanceSessionId: status.maintenanceSessionId ?? current.maintenanceSessionId,
+        versionCheckedAt: Date.now(), versionCheckError: undefined }));
+
     } catch (error) {
-      showUiNotice(`gateway-track:${node.gatewayNodeId}`, "connection", "warning", formatUiError(error));
+      setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, versionCheckedAt: Date.now(), versionCheckError: formatUiError(error) }));
     } finally {
       const remaining = new Set(gatewayUpdateActiveNodeIdsRef.current);
       remaining.delete(node.gatewayNodeId);
@@ -8818,6 +8755,7 @@ function MalinkAppRuntime() {
       return;
     }
     setGatewayUpdateDialogOpen(false);
+    setSettingsOpen(false);
     setPrimaryView("chats");
     setMobileChatOpen(true);
     activateLocalSession(sessionId, malinkClientRef.current, true, false, maintenanceProjectId);
@@ -8914,12 +8852,14 @@ function MalinkAppRuntime() {
     sharedDraftFilesRef.current.add(file);
     setPendingFiles([...existing, file]);
     setGatewayUpdateDialogOpen(false);
+    setSettingsOpen(false);
     setGatewayRecoveryDraft(null);
     showUiNotice("gateway:recovery", "composer", "info", "Diagnostics added to the old Gateway draft. Enter a message and press Send to start repair.");
   }, [gatewayRecoveryDraft, gatewayState?.sessions]);
 
   function openGatewayTrialProject(projectId: string): void {
     setGatewayUpdateDialogOpen(false);
+    setSettingsOpen(false);
     setPrimaryView("chats");
     setMobileChatOpen(true);
     setNewSessionProjectId(projectId);
@@ -15558,39 +15498,6 @@ function MalinkAppRuntime() {
         />
       )}
 
-      {gatewayRelease && gatewayUpdatePlan.length > 0 && (
-        <GatewayUpdateDialog
-          open={gatewayUpdateDialogOpen}
-          connected={connectionStatus === "connected"}
-          release={gatewayRelease}
-          nodes={gatewayUpdatePlan}
-          runtimeByNode={gatewayUpdateRuntimePresentation}
-          livenessByNode={gatewayNodeLivenessById}
-          activeGatewayNodeIds={gatewayUpdateActiveNodeIds}
-          activeGatewayModesByNode={gatewayUpdateActiveModesByNode}
-          deploymentsByComputer={Object.fromEntries(
-            Object.entries(gatewayState?.gatewayDeployments ?? {}).map(
-              ([computerId, observation]) => [computerId, observation.deployment],
-            ),
-          )}
-          onClose={() => setGatewayUpdateDialogOpen(false)}
-          onStart={(node, mode) => void startGatewayUpdateNode(node, mode, true)}
-          onPromote={(node, mode) => void changeGatewayDeployment(node, "promote", mode)}
-          onDiscard={(node) => void changeGatewayDeployment(node, "discard")}
-          onSelectVersion={(node, releaseId, generation) => void selectGatewayExecutionVersion(node, releaseId, generation)}
-          onCheckVersions={(node) => void checkGatewayExecutionVersions(node)}
-          onRecover={(node) => void recoverWithPreviousGateway(node.computerId
-            ? gatewayState?.gatewayDeployments?.[node.computerId]?.deployment : undefined)}
-          recoveryBusy={gatewayRecoveryBusy || Boolean(gatewayRecoveryDraft)}
-          onOpenProject={openGatewayTrialProject}
-          onOpenSession={openGatewayUpdateSession}
-          onArchiveSession={(node, sessionId) =>
-            void archiveGatewayMaintenanceSession(node, sessionId)
-          }
-          onExportDiagnostics={exportConnectionDiagnostics}
-          diagnosticExportBusy={diagnosticExportBusy}
-        />
-      )}
 
       <NotificationCenter
         open={notificationCenterOpen}
@@ -15698,6 +15605,49 @@ function MalinkAppRuntime() {
 
       <MatrixSettings
         open={settingsOpen}
+        gatewayUpdateRuntimeByNode={gatewayUpdateRuntimePresentation}
+        gatewayUpdateActiveModesByNode={gatewayUpdateActiveModesByNode}
+        initialComputerId={settingsComputerId}
+        onExpandComputer={setSettingsComputerId}
+        computersRequested={gatewayUpdateDialogOpen}
+        onComputersRequestHandled={() => setGatewayUpdateDialogOpen(false)}
+        renderGatewayDetails={(gatewayNodeId) => {
+          const node = gatewayUpdatePlan.find(value => value.gatewayNodeId === gatewayNodeId);
+          return node ? (
+            <GatewayUpdateDialog
+              open={true}
+              embedded
+              connected={connectionStatus === "connected"}
+              release={gatewayRelease}
+              nodes={[node]}
+              runtimeByNode={{ ...gatewayUpdateRuntimeByNode, ...gatewayUpdateRuntimePresentation }}
+              livenessByNode={gatewayNodeLivenessById}
+              activeGatewayNodeIds={gatewayUpdateActiveNodeIds}
+              activeGatewayModesByNode={gatewayUpdateActiveModesByNode}
+              deploymentsByComputer={Object.fromEntries(
+                Object.entries(gatewayState?.gatewayDeployments ?? {}).map(
+                  ([computerId, observation]) => [computerId, observation.deployment],
+                ),
+              )}
+              onClose={() => {}}
+              onStart={(node, mode) => void startGatewayUpdateNode(node, mode, true)}
+              onPromote={(node, mode) => void changeGatewayDeployment(node, "promote", mode)}
+              onDiscard={(node) => void changeGatewayDeployment(node, "discard")}
+              onSelectVersion={(node, releaseId, generation) => void selectGatewayExecutionVersion(node, releaseId, generation)}
+              onCheckVersions={(node) => void checkGatewayExecutionVersions(node)}
+              onRecover={(node) => void recoverWithPreviousGateway(node.computerId
+                ? gatewayState?.gatewayDeployments?.[node.computerId]?.deployment : undefined)}
+              recoveryBusy={gatewayRecoveryBusy || Boolean(gatewayRecoveryDraft)}
+              onOpenProject={openGatewayTrialProject}
+              onOpenSession={openGatewayUpdateSession}
+              onArchiveSession={(node, sessionId) =>
+                void archiveGatewayMaintenanceSession(node, sessionId)
+              }
+              onExportDiagnostics={exportConnectionDiagnostics}
+              diagnosticExportBusy={diagnosticExportBusy}
+            />
+          ) : <p role="status">Waiting for this computer's synchronized information.</p>;
+        }}
         config={matrixConfig}
         status={displayedConnectionStatus}
         connectionDetail={connectionDetail}
@@ -15810,7 +15760,7 @@ function MalinkAppRuntime() {
           void restartGatewayNode(gatewayNodeId, targetProjectId, mode);
         }}
         onReviewGatewayUpdates={() => {
-          setSettingsOpen(false);
+          setSettingsOpen(true);
           setGatewayUpdateDialogOpen(true);
         }}
         onRetryGatewayUpdateDiscovery={() => {
