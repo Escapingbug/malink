@@ -69,6 +69,8 @@ import {
   STOPPING_AGENT_ACTIVITY,
   WAITING_AGENT_ACTIVITY,
   WORKING_AGENT_ACTIVITY,
+  activityForRunningSnapshot,
+  reconcileLocalAgentActivity,
   agentExecutionSignal,
   agentActivityWatermarkForEvent,
   agentActivityWatermarkForSession,
@@ -3706,7 +3708,7 @@ function MalinkAppRuntime() {
       const activity =
         typeof update === "function"
           ? update(next.get(sessionId) ?? null)
-          : update;
+          : reconcileLocalAgentActivity(next.get(sessionId) ?? null, update);
       if (activity) next.set(sessionId, activity);
       else next.delete(sessionId);
       return next;
@@ -6709,7 +6711,7 @@ function MalinkAppRuntime() {
                 ) {
                   next.set(
                     session.id,
-                    current.get(session.id) ?? WORKING_AGENT_ACTIVITY,
+                    activityForRunningSnapshot(current.get(session.id)),
                   );
                 } else {
                   const localActivity = current.get(session.id);

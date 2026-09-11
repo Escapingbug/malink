@@ -109,6 +109,7 @@ class MatrixConnectionRuntime(
     private var driverGeneration = 0L
     private var retryJob: Job? = null
     private var reconnectFailures = 0
+    private val syncStallPolicy = MatrixSyncStallPolicy()
     @Volatile
     private var sdkTimelineReady = false
     private val initialSessionRestore = MatrixSessionRestoreBarrier()
@@ -441,6 +442,7 @@ class MatrixConnectionRuntime(
                 "matrix.session_read.operation_timeout",
                 mapOf("stage" to "publish"),
             )
+            recoverStalledSyncAfterTimeout(current)
             throw error
         }
     }.await()
@@ -741,6 +743,7 @@ class MatrixConnectionRuntime(
         driver = null
         driverGeneration += 1
         val generation = driverGeneration
+        syncStallPolicy.progress(System.nanoTime() / 1_000_000)
         val nextDriver = try {
             driverFactory.create(scope)
         } catch (error: Exception) {
@@ -761,6 +764,7 @@ class MatrixConnectionRuntime(
                         scope.launch {
                             val current = mutex.withLock {
                                 if (driver === nextDriver && driverGeneration == generation) {
+                                    syncStallPolicy.progress(System.nanoTime() / 1_000_000)
                                     retryJob?.cancel()
                                     retryJob = null
                                     reconnectFailures = 0
@@ -931,6 +935,23 @@ class MatrixConnectionRuntime(
                 accepted
             }
         }
+
+    private suspend fun recoverStalledSyncAfterTimeout(timedOutDriver: MatrixSdkDriver) {
+        mutex.withLock {
+            if (driver !== timedOutDriver || !started.get() || !networkAvailable) return@withLock
+            if (!syncStallPolicy.operationTimedOut(System.nanoTime() / 1_000_000)) return@withLock
+            // The SDK can remain RUNNING while both its sync and receipt
+            // operations hang. Reuse the existing retry owner, preserving all
+            // stores and command identities. Never send a probe or a prompt.
+            diagnostics.record("matrix.driver.sync_stalled")
+            accept(MatrixRuntimeEvent.Failed("matrix_sync_stalled", blocked = false))
+            sdkTimelineReady = false
+            stopDriver(timedOutDriver)
+            driver = null
+            driverGeneration += 1
+            scheduleRetryLocked()
+        }
+    }
 
     private fun scheduleRetryLocked() {
         if (retryJob?.isActive == true || !networkAvailable || secrets == null || !started.get()) return

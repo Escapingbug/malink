@@ -9,6 +9,8 @@ import {
   STOPPING_AGENT_ACTIVITY,
   WAITING_AGENT_ACTIVITY,
   WORKING_AGENT_ACTIVITY,
+  activityForRunningSnapshot,
+  reconcileLocalAgentActivity,
   agentExecutionSignal,
   agentActivityForPhase,
   formatAgentActivityAge,
@@ -20,6 +22,24 @@ import {
   reduceAgentActivity,
   shouldApplyAgentActivity,
 } from "../app/agentActivity.ts";
+
+test("a running snapshot replaces optimistic waiting without requiring reload", () => {
+  for (const activity of [undefined, SENDING_AGENT_ACTIVITY, WAITING_AGENT_ACTIVITY, STARTING_AGENT_ACTIVITY]) {
+    assert.equal(activityForRunningSnapshot(activity), WORKING_AGENT_ACTIVITY);
+  }
+  const tool = agentActivityForPhase("working", "Reading files");
+  assert.equal(activityForRunningSnapshot(tool), tool);
+  assert.equal(activityForRunningSnapshot(STOPPING_AGENT_ACTIVITY), STOPPING_AGENT_ACTIVITY);
+});
+
+test("late send confirmation does not regress verified execution", () => {
+  for (const current of [STARTING_AGENT_ACTIVITY, WORKING_AGENT_ACTIVITY, STOPPING_AGENT_ACTIVITY]) {
+    assert.equal(reconcileLocalAgentActivity(current, WAITING_AGENT_ACTIVITY), current);
+  }
+  assert.equal(reconcileLocalAgentActivity(SENDING_AGENT_ACTIVITY, WAITING_AGENT_ACTIVITY), WAITING_AGENT_ACTIVITY);
+  assert.equal(reconcileLocalAgentActivity(WORKING_AGENT_ACTIVITY, SENDING_AGENT_ACTIVITY), SENDING_AGENT_ACTIVITY);
+  assert.equal(reconcileLocalAgentActivity(WORKING_AGENT_ACTIVITY, null), null);
+});
 
 test("renders the exact and relative Agent activity time without a live-region timer", () => {
   const updatedAt = Date.now() - 5_000;

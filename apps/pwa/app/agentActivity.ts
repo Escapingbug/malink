@@ -38,6 +38,23 @@ export const STARTING_AGENT_ACTIVITY = agentActivityForPhase("starting");
 export const WORKING_AGENT_ACTIVITY = agentActivityForPhase("working");
 export const STOPPING_AGENT_ACTIVITY = agentActivityForPhase("stopping");
 
+/** A verified running snapshot supersedes optimistic pre-execution labels. */
+export function activityForRunningSnapshot(current?: AgentActivity): AgentActivity {
+  return current?.phase === "working" || current?.phase === "stopping"
+    ? current
+    : WORKING_AGENT_ACTIVITY;
+}
+
+/** Matrix send completion can arrive after the Agent has already started. */
+export function reconcileLocalAgentActivity(
+  current: AgentActivity | null,
+  next: AgentActivity | null,
+): AgentActivity | null {
+  if (next?.phase === "waiting" && current &&
+      ["starting", "working", "stopping"].includes(current.phase)) return current;
+  return next;
+}
+
 /** Compact elapsed time for the activity indicator's live last-update clock. */
 export function formatAgentActivityAge(
   updatedAt: number,
