@@ -9,6 +9,7 @@ import {
 } from "@malink/protocol";
 
 export type ClientIntegrationTarget = {
+  projectId?: string;
   integrationId: string;
   integrationName: string;
   origin: string;

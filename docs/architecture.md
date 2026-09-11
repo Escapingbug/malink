@@ -513,11 +513,19 @@ project projection and opens the HTTPS application in a cross-origin sandbox.
 The application resource reference crosses the browser boundary only through
 a dedicated `MessageChannel` after the frame loads. The integration receives
 no Matrix credentials, MLP project key, filesystem access, conversation
-projection, or generic command bridge. Its own page, account, storage,
-synchronization server, and E2EE scheme remain outside Malink. Closing the
+projection, or generic command bridge. Its own page, storage and synchronization
+server remain outside Malink. An installed integration may opt into `host.crypto`
+for Malink-managed extension E2EE: independent extension data keys, a journaled
+`extension.crypto.grant` operation and scoped host encryption/decryption handles.
+The local extension process and client are the plaintext endpoints; remote
+storage holds ciphertext. Project/session/Workspace IDs are not data-key scopes.
+The authority store is separate from Workspace signing identity and is not yet
+replicated by Gateway enrollment. See `docs/session-extensions.md` for deployment,
+revocation, historical-key and OS process-isolation boundaries. Closing the
 integration returns to the originating conversation without creating an MLP
-command. Mutating Malink state from an integrated application would require a
-future typed, signed operation and is intentionally absent from V1.
+command. Agent execution mutations from an integrated application would require a
+separate typed, signed operation and remain absent from V1. The crypto bridge
+only requests the explicitly typed key-grant operation.
 
 ## Delivery and recovery ownership
 

@@ -9639,10 +9639,7 @@ function MalinkAppRuntime() {
     const connection = malinkClientRef.current;
     if (!conflict || !connection || conflict.busy) return;
     const conflictSessionId =
-      conflict.payload.operation === "session.create" ||
-      conflict.payload.operation === "device.invite"
-        ? undefined
-        : conflict.payload.sessionId;
+      "sessionId" in conflict.payload ? conflict.payload.sessionId : undefined;
     const optimisticMessage = conflict.optimisticMessageId
       ? [
           ...messages,
@@ -9842,8 +9839,7 @@ function MalinkAppRuntime() {
           conflict.optimisticMessageId,
         );
         if (
-          conflict.payload.operation !== "session.create" &&
-          conflict.payload.operation !== "device.invite"
+          "sessionId" in conflict.payload && conflict.payload.sessionId
         ) {
           removeLiveMessage(
             conflict.payload.sessionId,
@@ -14763,7 +14759,7 @@ function MalinkAppRuntime() {
                     entry={integrationEntry}
                     onOpen={() => {
                       if (integrationResolution.status === "ready") {
-                        setActiveClientIntegration(integrationResolution.target);
+                        setActiveClientIntegration({ ...integrationResolution.target, projectId: selectedProjectId ?? undefined });
                       }
                     }}
                     resolution={integrationResolution}
@@ -15430,8 +15426,13 @@ function MalinkAppRuntime() {
 
       {activeClientIntegration && (
         <ClientIntegrationHost
-          key={`${activeClientIntegration.integrationId}:${activeClientIntegration.routeId}:${activeClientIntegration.resourceRef}`}
+          key={`${activeClientIntegration.projectId}:${activeClientIntegration.integrationId}:${activeClientIntegration.routeId}:${activeClientIntegration.resourceRef}`}
           target={activeClientIntegration}
+          openCrypto={async () => {
+            const client = malinkClientRef.current;
+            if (!client?.openExtensionCrypto) throw new Error("Extension crypto is unavailable");
+            return client.openExtensionCrypto(activeClientIntegration.integrationId, activeClientIntegration.projectId);
+          }}
           onClose={() => setActiveClientIntegration(null)}
         />
       )}
@@ -16148,6 +16149,8 @@ function describeConflictedAction(payload: CommandPayload): string {
       return "The cancel action";
     case "decision":
       return `The ${payload.decision.replaceAll("_", " ")} permission decision`;
+    case "extension.crypto.grant":
+      return "The extension encryption request";
     case "artifact.materialize":
       return "The referenced file request";
     case "session.settings":

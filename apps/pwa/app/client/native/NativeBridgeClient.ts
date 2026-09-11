@@ -1,3 +1,5 @@
+import type { ExtensionCryptoClient } from "@malink/security";
+import { extensionCryptoGrantRequestSchema, extensionCryptoIdentitySchema, extensionCiphertextSchema } from "@malink/protocol";
 import {
   BridgeProtocolError,
   NATIVE_BRIDGE_LIMITS,
@@ -59,6 +61,7 @@ export const REQUIRED_NATIVE_CAPABILITIES = [
 ] as const;
 
 export const OPTIONAL_NATIVE_CAPABILITIES = [
+  "extensions.crypto",
   "commands.batch-archive",
   "commands.journal-reconciliation",
   "commands.orphan-retirement",
@@ -354,6 +357,35 @@ export class NativeBridgeClient implements MalinkClient {
         { userAction: "update_native" },
       );
     }
+  }
+
+  async openExtensionCrypto(extensionId: string, projectId?: string): Promise<ExtensionCryptoClient> {
+    if (!this.helloResult.capabilities["extensions.crypto"]) {
+      throw new BridgeProtocolError("CAPABILITY_UNAVAILABLE", "Update Android to use extension encryption.", { userAction: "update_native" });
+    }
+    const context = this.bridge.context();
+    const request = extensionCryptoGrantRequestSchema.parse(await this.bridge.request("malink.extensionCrypto.begin", { context, extensionId }));
+    const close = () => { void this.bridge.request("malink.extensionCrypto.close", { context, requestId: request.requestId }).catch(() => undefined); };
+    try {
+      const command = await this.send(request, projectId);
+      const result = await command.completion;
+      if (result.outcome !== "succeeded") throw new Error("Extension crypto grant denied");
+      const identity = extensionCryptoIdentitySchema.parse(await this.bridge.request("malink.extensionCrypto.accept", {
+        context, requestId: request.requestId, commandId: command.commandId,
+      }));
+      return { identity, close,
+        encrypt: async plaintext => extensionCiphertextSchema.parse(await this.bridge.request("malink.extensionCrypto.execute", {
+          context, requestId: request.requestId, request: { type: "crypto.encrypt", plaintext },
+        })),
+        decrypt: async ciphertext => {
+          const result = await this.bridge.request("malink.extensionCrypto.execute", {
+            context, requestId: request.requestId, request: { type: "crypto.decrypt", ciphertext },
+          });
+          if (typeof result !== "string") throw new Error("Invalid extension plaintext");
+          return result;
+        },
+      };
+    } catch (error) { close(); throw error; }
   }
 
   async pair(

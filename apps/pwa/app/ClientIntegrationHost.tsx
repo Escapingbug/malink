@@ -1,3 +1,5 @@
+import { createExtensionCryptoHost } from "./extensionCryptoHost";
+import type { ExtensionCryptoClient } from "@malink/security";
 import { useEffect, useRef, useState } from "react";
 import {
   clientIntegrationLaunchMessage,
@@ -8,9 +10,11 @@ import {
 export function ClientIntegrationHost(props: {
   target: ClientIntegrationTarget;
   onClose(): void;
+  openCrypto?(): Promise<ExtensionCryptoClient>;
 }) {
   const { target, onClose } = props;
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const cryptoHostRef = useRef<ReturnType<typeof createExtensionCryptoHost> | null>(null);
   const channelRef = useRef<MessagePort | null>(null);
   const [frameState, setFrameState] = useState<"loading" | "ready" | "failed">(
     "loading",
@@ -24,7 +28,7 @@ export function ClientIntegrationHost(props: {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  useEffect(() => () => channelRef.current?.close(), []);
+  useEffect(() => () => { cryptoHostRef.current?.close(); channelRef.current?.close(); }, []);
 
   function connectFrame(): void {
     const integrationWindow = frameRef.current?.contentWindow;
@@ -32,10 +36,18 @@ export function ClientIntegrationHost(props: {
       setFrameState("failed");
       return;
     }
+    cryptoHostRef.current?.close();
     channelRef.current?.close();
     const channel = new MessageChannel();
     channelRef.current = channel.port1;
+    const cryptoHost = createExtensionCryptoHost({
+      enabled: target.capabilities.includes("host.crypto") && !!props.openCrypto,
+      connect: () => props.openCrypto!(),
+      reply: value => channel.port1.postMessage(value),
+    });
+    cryptoHostRef.current = cryptoHost;
     channel.port1.onmessage = event => {
+      void cryptoHost.receive(event.data);
       const request = parseClientIntegrationHostRequest(event.data);
       if (!request || !target.capabilities.includes(`host.${request.type}`)) {
         return;
@@ -56,6 +68,7 @@ export function ClientIntegrationHost(props: {
       );
       setFrameState("ready");
     } catch {
+      cryptoHost.close();
       channel.port1.close();
       channelRef.current = null;
       setFrameState("failed");

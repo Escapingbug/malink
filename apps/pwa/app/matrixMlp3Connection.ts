@@ -2265,7 +2265,9 @@ export function toLegacyCompletion(
       ? completion.outcome
       : "failed",
     ...(completion.sessionId ? { sessionId: completion.sessionId } : {}),
-    ...(payload.type === "device.invitation.created"
+    ...(payload.type === "extension.crypto.granted"
+      ? { result: payload.grant }
+      : payload.type === "device.invitation.created"
       ? { result: { pairingLink: payload.pairingLink, expiresAt: payload.expiresAt } }
       : payload.type === "gateway.enrollment.invitation.created"
         ? { result: { enrollmentLink: payload.enrollmentLink, expiresAt: payload.expiresAt } }

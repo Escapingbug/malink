@@ -788,6 +788,8 @@ export function toMlp3Command(
           ...(payload.totp ? { totp: payload.totp } : {}),
         },
       };
+    case "extension.crypto.grant":
+      return { ...common, operation: "extension.crypto.grant", payload };
     case "artifact.materialize":
       return {
         ...common,

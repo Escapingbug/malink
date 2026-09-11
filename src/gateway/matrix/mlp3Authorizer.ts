@@ -37,6 +37,7 @@ const CURRENT_WORKSPACE_MEMBER_OPERATIONS = [
   'turn.cancel',
   'decision.answer',
   'artifact.materialize',
+  'extension.crypto.grant',
   'session.update',
   'session.set_lifecycle',
   'session.archive.batch',
@@ -148,6 +149,7 @@ function v3AllowedOperations(
       case 'prompt': result.add('prompt.submit'); break
       case 'cancel': result.add('turn.cancel'); break
       case 'decision': result.add('decision.answer'); break
+      case 'extension.crypto.grant': result.add('extension.crypto.grant'); break
       case 'artifact.materialize': result.add('artifact.materialize'); break
       case 'session.settings':
         result.add('session.update')

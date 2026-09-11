@@ -109,6 +109,7 @@ export type CapabilityName =
   | "client.lifecycle"
   | "events.replay"
   | "state.snapshot"
+  | "extensions.crypto"
   | "commands.durable"
   | "commands.batch-archive"
   | "commands.journal-reconciliation"
@@ -584,6 +585,10 @@ export type AuthorizationExportResult = {
 };
 
 export const REQUEST_METHODS = [
+  "malink.extensionCrypto.begin",
+  "malink.extensionCrypto.accept",
+  "malink.extensionCrypto.execute",
+  "malink.extensionCrypto.close",
   "malink.bridge.hello",
   "malink.client.start",
   "malink.client.session",
@@ -672,6 +677,11 @@ export type MatrixLoginTokenResult =
     };
 
 export type BridgeMethodParams = {
+  "malink.extensionCrypto.begin": ContextParams & { extensionId: string };
+  "malink.extensionCrypto.accept": ContextParams & { requestId: string; commandId: string };
+  "malink.extensionCrypto.execute": ContextParams & { requestId: string; request: JsonObject };
+  "malink.extensionCrypto.close": ContextParams & { requestId: string };
+
   "malink.bridge.hello": HelloParams;
   "malink.client.start": IdempotentMutationParams;
   "malink.client.session": ContextParams;
@@ -788,6 +798,11 @@ export type BridgeMethodParams = {
 };
 
 export type BridgeMethodResults = {
+  "malink.extensionCrypto.begin": JsonObject;
+  "malink.extensionCrypto.accept": JsonObject;
+  "malink.extensionCrypto.execute": JsonValue;
+  "malink.extensionCrypto.close": { closed: boolean };
+
   "malink.bridge.hello": HelloResult;
   "malink.client.start": ClientStartResult;
   "malink.client.session": ClientSessionResult;

@@ -1,3 +1,5 @@
+import { ExtensionCryptoService } from '../gateway/extensions/crypto.js'
+import { createExtensionCryptoGrantRequest, ExtensionCrypto } from '@malink/security'
 import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -1385,9 +1387,13 @@ describe('MatrixMlp3GatewayRunner', () => {
       description: 'Adds a test prefix before provider input.',
       version: '1',
       settings: [{ id: 'prefix', type: 'text', label: 'Prefix', required: true }],
+      clientIntegration: { origin: 'https://extension.example', bridgeVersion: 1, routes: [{ id: 'main', path: '/' }], capabilities: ['host.crypto'] },
     }
+    const provisionedExtensionRings: import('@malink/protocol').ExtensionCryptoKeyRing[] = []
     const extensionProvider: SessionExtensionProvider = {
       descriptor: extensionDescriptor,
+      configureCrypto: async ring => { provisionedExtensionRings.push(ring) },
+      setCryptoResolver: () => {},
       normalizeConfig: config => normalizeDeclarativeExtensionConfig(extensionDescriptor, config),
       create: binding => ({
         id: binding.id,
@@ -1397,10 +1403,14 @@ describe('MatrixMlp3GatewayRunner', () => {
         lifecycle: async () => undefined,
       }),
     }
+    const cryptoRegistry = new SessionExtensionRegistry([extensionProvider])
+    const extensionCrypto = new ExtensionCryptoService(join(directory, "extension-crypto.json"), cryptoRegistry, async () => config.trustedDevices)
+    await extensionCrypto.initialize()
     let deploymentClockOffset = 0
     const runner = new MatrixMlp3GatewayRunner(config, {
       client,
       now: () => Date.now() + deploymentClockOffset,
+      extensionCrypto,
       onLog: message => gatewayLogs.push(message),
       onRejected: (_event, error) => rejected.push(error),
       webPushService,
@@ -1950,6 +1960,25 @@ describe('MatrixMlp3GatewayRunner', () => {
       certificateId: 'certificate-1',
       createdAt: 1,
     }
+
+    const cryptoRequest = await createExtensionCryptoGrantRequest('prefix-transform')
+    const cryptoCommand: Mlp3Command = { ...base, commandId: 'extension-crypto-grant-1',
+      operation: 'extension.crypto.grant', payload: cryptoRequest.request }
+    await send(cryptoCommand, '$extension-crypto-grant-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
+      .some(event => event.causationCommandId === cryptoCommand.commandId))
+    const cryptoEvent = (await events(client, activeKey.key, roomId, projectId))
+      .find(event => event.causationCommandId === cryptoCommand.commandId)!
+    expect(cryptoEvent.payload.type).toBe('extension.crypto.granted')
+    if (cryptoEvent.payload.type !== 'extension.crypto.granted') throw new Error('Missing crypto grant')
+    const cryptoClient = await cryptoRequest.accept(cryptoEvent.payload.grant)
+    const localCrypto = new ExtensionCrypto(provisionedExtensionRings.at(-1)!, 'prefix-transform')
+    await expect(cryptoClient.decrypt(await localCrypto.encrypt('gateway extension secret'))).resolves.toBe('gateway extension secret')
+    expect(JSON.stringify(cryptoEvent)).not.toContain(provisionedExtensionRings.at(-1)!.keys[0].key)
+    const provisionsBeforeRetry = provisionedExtensionRings.length
+    await send(cryptoCommand, '$extension-crypto-grant-retry')
+    await new Promise(resolve => setTimeout(resolve, 25))
+    expect(provisionedExtensionRings).toHaveLength(provisionsBeforeRetry)
 
     await send({
       ...base,

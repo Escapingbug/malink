@@ -3458,6 +3458,10 @@ internal class MatrixMlp3NativeProjection(
                     )
                 }
             }
+            "extension.crypto.granted" -> MatrixMlp3NativeTerminal(
+                commandId, "succeeded", sessionId,
+                result = payload["grant"] as? JsonObject ?: error("Invalid extension key grant"),
+            )
             "device.invitation.created" -> MatrixMlp3NativeTerminal(
                 commandId,
                 "succeeded",
@@ -4285,8 +4289,9 @@ internal class MatrixMlp3NativeProjection(
                     "host.back",
                     "host.read-theme",
                     "host.read-locale",
+                    "host.crypto",
                 )
-                val capabilities = integration.requiredArray("capabilities", 4)
+                val capabilities = integration.requiredArray("capabilities", 5)
                 val parsedCapabilities = capabilities.map { capability ->
                     val primitive = capability as? JsonPrimitive
                         ?: throw IllegalArgumentException(

@@ -1,3 +1,4 @@
+import { extensionCryptoGrantRequestSchema, extensionCryptoGrantSchema } from './extension-crypto.js'
 import { z } from 'zod'
 import { batchArchiveRequestSchema, batchArchiveProgressSchema } from './batch-archive.js'
 import {
@@ -536,6 +537,7 @@ const gatewayRestartStatusPayloadSchema = z
   .strict()
 
 export const mlp3CommandPayloadSchema = z.discriminatedUnion('operation', [
+  extensionCryptoGrantRequestSchema,
   sessionCreatePayloadSchema,
   promptSubmitPayloadSchema,
   turnCancelPayloadSchema,
@@ -617,6 +619,12 @@ export const mlp3CommandSchema = z.union([
     sessionId: z.undefined().optional(),
     operation: z.literal('project.delete'),
     payload: projectDeletePayloadSchema,
+  }).strict(),
+  z.object({
+    ...projectCommandCommon,
+    sessionId: z.undefined().optional(),
+    operation: z.literal('extension.crypto.grant'),
+    payload: extensionCryptoGrantRequestSchema,
   }).strict(),
   z.object({
     ...projectCommandCommon,
@@ -1144,6 +1152,7 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
       retryable: z.boolean(),
     })
     .strict(),
+  z.object({ type: z.literal('extension.crypto.granted'), grant: extensionCryptoGrantSchema }).strict(),
   commandReconciledPayloadSchema,
   batchArchiveProgressSchema,
   z

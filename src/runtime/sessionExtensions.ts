@@ -1,3 +1,4 @@
+import type { ExtensionCryptoKeyRing } from '@malink/protocol'
 import {
     sessionExtensionDescriptorSchema,
     sessionExtensionViewSchema,
@@ -83,6 +84,8 @@ export interface SessionExtensionInstance {
 
 export interface SessionExtensionProvider {
     readonly descriptor: SessionExtensionDescriptor
+    configureCrypto?(ring: ExtensionCryptoKeyRing): Promise<void>
+    setCryptoResolver?(resolver: () => Promise<ExtensionCryptoKeyRing>): void
     normalizeConfig(config: Record<string, JsonValue> | undefined): Record<string, JsonValue>
     create(
         binding: SessionExtensionBinding,
@@ -224,6 +227,18 @@ export class SessionExtensionRegistry {
 
     descriptors(): SessionExtensionDescriptor[] {
         return [...this.providers.values()].map(provider => structuredClone(provider.descriptor))
+    }
+
+    setCryptoResolver(id: string, resolver: () => Promise<ExtensionCryptoKeyRing>): void {
+        const provider = this.providers.get(id)
+        if (!provider?.setCryptoResolver) throw new Error(`Extension ${id} does not support crypto provisioning`)
+        provider.setCryptoResolver(resolver)
+    }
+
+    async configureCrypto(id: string, ring: ExtensionCryptoKeyRing): Promise<void> {
+        const provider = this.providers.get(id)
+        if (!provider?.configureCrypto) throw new Error(`Extension ${id} does not support crypto provisioning`)
+        await provider.configureCrypto(ring)
     }
 
     normalizeBindings(bindings: readonly SessionExtensionBinding[] | undefined): SessionExtensionBinding[] {

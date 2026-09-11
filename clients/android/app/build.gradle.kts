@@ -149,6 +149,8 @@ android {
         jvmTarget = "17"
     }
 
+    sourceSets.getByName("test").resources.srcDir("../../../packages/security/test/fixtures")
+
     testOptions {
         unitTests.isReturnDefaultValues = true
     }

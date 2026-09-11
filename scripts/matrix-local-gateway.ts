@@ -1,3 +1,4 @@
+import { ExtensionCryptoService } from '../src/gateway/extensions/crypto.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, stat } from 'node:fs/promises'
@@ -684,7 +685,17 @@ const config: MatrixGatewayConfig = {
         ? { executionControlOnly: true }
         : {}),
 }
+const extensionCrypto = new ExtensionCryptoService(
+    process.env.MALINK_EXTENSION_CRYPTO_FILE ?? join(dataDirectory, 'extension-crypto.json'),
+    sessionExtensionRegistry,
+    async () => deduplicateTrustedDevices([
+        ...(await registry.listActive()).map(record => trustedDeviceFromRecord(record, localRoomIds)),
+        ...await portableTrustedDevices(),
+    ]),
+)
+await extensionCrypto.initialize()
 runner = new MatrixMlp3GatewayRunner(config, {
+    extensionCrypto,
     client,
     sessionExtensionRegistry,
     ...(privilegeExecutor ? { privilegeExecutor } : {}),

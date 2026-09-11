@@ -1721,6 +1721,7 @@ function completionFromEvent(event: Mlp3Event): Mlp3CommandCompletion | null {
     case "project.snapshot":
     case "project.created":
     case "project.deleted":
+    case "extension.crypto.granted":
     case "device.invitation.created":
     case "gateway.enrollment.invitation.created":
     case "gateway.enrollment.approved":

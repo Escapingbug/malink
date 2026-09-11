@@ -1,3 +1,4 @@
+import type { ExtensionCryptoService } from '../extensions/crypto.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { BatchArchiveStore } from './batchArchiveStore'
 import { BatchArchiveInterruptedError, executeBatchArchive } from './batchArchiveExecutor'
@@ -207,6 +208,7 @@ export interface MatrixMlp3GatewayDependencies {
   deploymentSealTimeoutMs?: number
   isTrustedDeviceActive?: (deviceId: string) => Promise<boolean>
   listTrustedDevices?: () => Promise<readonly import('./config').MatrixGatewayTrustedDevice[]>
+  extensionCrypto?: ExtensionCryptoService
   sessionExtensionRegistry?: SessionExtensionRegistry
   createDeviceInvitation?: (input: {
     requestedByDeviceId: string
@@ -1294,6 +1296,13 @@ export class MatrixMlp3GatewayRunner {
       throw new Error('This is the independent version-control route. Open the original project to run business tasks.')
     }
     switch (command.operation) {
+      case 'extension.crypto.grant': {
+        if (!this.dependencies.extensionCrypto) throw new Error('Extension crypto is unavailable')
+        const grant = await this.dependencies.extensionCrypto.grant(command.payload, command.deviceId, command.certificateId)
+        const event = this.eventFor(project, undefined, command, 'extension-crypto-granted', { type: 'extension.crypto.granted', grant })
+        await this.settleAndDeliver(project, command, event, 'succeeded', grant)
+        return
+      }
       case 'session.create':
         await this.createSession(project, command, journalRecord.matrixEventId, signal)
         return

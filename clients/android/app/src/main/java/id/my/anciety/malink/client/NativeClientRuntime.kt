@@ -313,6 +313,8 @@ class NativeClientRuntime(
             validate = it::validateStoredState,
         )
     }
+    private val extensionCrypto = id.my.anciety.malink.security.malink.ExtensionCryptoSessions()
+
     private val trustStore = EncryptedGatewayTrustStore(
         AtomicEncryptedTrustBlobStore(files.trust),
         cipher,
@@ -1182,6 +1184,26 @@ class NativeClientRuntime(
         true
     }
 
+    fun extensionCryptoBegin(extensionId: String): JsonObject {
+        check(trust != null) { "Pair before connecting extension crypto" }
+        return extensionCrypto.begin(extensionId)
+    }
+
+    fun extensionCryptoAccept(requestId: String, commandId: String): JsonObject {
+        check(trust != null)
+        check(outbox.operation(commandId) == CommandOperation.EXTENSION_CRYPTO_GRANT)
+        val completion = command(commandId).completion ?: error("Extension grant is not complete")
+        check(completion.outcome == CommandOutcome.SUCCEEDED)
+        return extensionCrypto.accept(requestId, completion.result as? JsonObject ?: error("Invalid extension grant"))
+    }
+
+    fun extensionCryptoExecute(requestId: String, request: JsonObject): JsonElement {
+        check(trust != null)
+        return extensionCrypto.execute(requestId, request)
+    }
+
+    fun extensionCryptoClose(requestId: String) { extensionCrypto.close(requestId) }
+
     suspend fun sendCommand(
         idempotencyKey: String,
         payload: JsonObject,
@@ -1428,6 +1450,7 @@ class NativeClientRuntime(
     fun closeDownload(transferId: String): Boolean = transfers.closeDownload(transferId)
 
     suspend fun disconnect(revoke: Boolean): ClientSnapshot = mutex.withLock {
+        extensionCrypto.clear()
         if (revoke) {
             matrix.revokeSession()
         } else {
@@ -1467,6 +1490,7 @@ class NativeClientRuntime(
             pairingStore.clear()
             outbox.clear()
             transfers.clear()
+            extensionCrypto.clear()
             trust = null
             trustStorageBlocked = false
             pairingStorageBlocked = false
@@ -2276,6 +2300,11 @@ class NativeClientRuntime(
                     put("decision", raw.string("decision")!!)
                     raw.string("totp")?.let { put("totp", it) }
                 }
+            }
+            "extension.crypto.grant" -> {
+                v3Operation = "extension.crypto.grant"
+                v3SessionId = null
+                v3Payload = raw
             }
             "artifact.materialize" -> {
                 v3Operation = "artifact.materialize"

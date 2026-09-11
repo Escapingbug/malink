@@ -1,3 +1,4 @@
+import { createExtensionCryptoGrantRequest, type ExtensionCryptoClient } from "@malink/security";
 import type { JsonObject } from "@malink/native-bridge";
 import type {
   CommandPayload,
@@ -41,6 +42,8 @@ import type {
 export class WebMalinkClient implements MalinkClient {
   readonly runtime = "web" as const;
   #trustedGateway: TrustedGateway | null = null;
+  #cryptoGeneration = 0;
+  #cryptoClosers = new Set<() => void>();
 
   constructor(
     private readonly transport: MatrixConnection,
@@ -84,6 +87,25 @@ export class WebMalinkClient implements MalinkClient {
     saveTrustedGateway(trust);
     saveWorkspaceMatrixConfigs(this.config, trust);
     return publicTrustFromWeb(trust);
+  }
+
+  async openExtensionCrypto(extensionId: string, projectId?: string): Promise<ExtensionCryptoClient> {
+    const generation = this.#cryptoGeneration;
+    const pending = await createExtensionCryptoGrantRequest(extensionId);
+    const command = await this.send(pending.request, projectId);
+    const result = await command.completion;
+    if (result.outcome !== "succeeded") throw new Error("Extension crypto grant was denied");
+    let handle: Awaited<ReturnType<typeof pending.accept>> | undefined = await pending.accept(result.result);
+    if (generation !== this.#cryptoGeneration) throw new Error("Extension crypto connection closed");
+    const identity = handle.identity;
+    const expiresAt = Date.now() + 5 * 60_000;
+    const current = () => {
+      if (!handle || Date.now() >= expiresAt) throw new Error("Extension crypto connection expired");
+      return handle;
+    };
+    const close = () => { handle = undefined; this.#cryptoClosers.delete(close); };
+    this.#cryptoClosers.add(close);
+    return { identity, encrypt: text => current().encrypt(text), decrypt: data => current().decrypt(data), close };
   }
 
   async send(payload: CommandPayload, projectId?: string): Promise<MalinkCommandSendResult> {
@@ -190,16 +212,24 @@ export class WebMalinkClient implements MalinkClient {
     return this.transport.releaseCommand(commandId);
   }
 
+  #closeExtensionCrypto(): void {
+    this.#cryptoGeneration++;
+    for (const close of this.#cryptoClosers) close();
+  }
+
   async disconnect(): Promise<void> {
+    this.#closeExtensionCrypto();
     this.transport.stop();
   }
 
   async signOut(): Promise<void> {
+    this.#closeExtensionCrypto();
     await tryLogoutMatrixSession(this.config);
     this.transport.stop();
   }
 
   dispose(): void {
+    this.#closeExtensionCrypto();
     // A web transport is scoped to this document. Native implementations must
     // only detach their WebView here and keep the foreground service running.
     this.transport.stop();

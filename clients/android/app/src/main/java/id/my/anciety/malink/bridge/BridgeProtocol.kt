@@ -155,6 +155,10 @@ object BridgeProtocol {
         "malink.events.activate",
         "malink.events.ack",
         "malink.events.unsubscribe",
+        "malink.extensionCrypto.begin",
+        "malink.extensionCrypto.accept",
+        "malink.extensionCrypto.execute",
+        "malink.extensionCrypto.close",
         "malink.command.send",
         "malink.command.cancel",
         "malink.command.recover",
@@ -743,6 +747,27 @@ class BridgeDispatcher(
                 val id = requiredString(request.params, "subscriptionId", 512)
                 runtime.client().unsubscribe(id)
                 buildJsonObject { put("subscriptionId", id); put("unsubscribed", true) }
+            }
+            "malink.extensionCrypto.begin" -> {
+                requireContext(request.params, false, requiredExtra = setOf("extensionId"))
+                require("extensions.crypto" in negotiatedCapabilities)
+                runtime.client().extensionCryptoBegin(requiredString(request.params, "extensionId", 256))
+            }
+            "malink.extensionCrypto.accept" -> {
+                requireContext(request.params, false, requiredExtra = setOf("requestId", "commandId"))
+                require("extensions.crypto" in negotiatedCapabilities)
+                runtime.client().extensionCryptoAccept(requiredString(request.params, "requestId", 256), requiredString(request.params, "commandId", 256))
+            }
+            "malink.extensionCrypto.execute" -> {
+                requireContext(request.params, false, requiredExtra = setOf("requestId", "request"))
+                require("extensions.crypto" in negotiatedCapabilities)
+                runtime.client().extensionCryptoExecute(requiredString(request.params, "requestId", 256), requiredObject(request.params, "request"))
+            }
+            "malink.extensionCrypto.close" -> {
+                requireContext(request.params, false, requiredExtra = setOf("requestId"))
+                require("extensions.crypto" in negotiatedCapabilities)
+                runtime.client().extensionCryptoClose(requiredString(request.params, "requestId", 256))
+                buildJsonObject { put("closed", true) }
             }
             "malink.command.send" -> {
                 requireContext(
@@ -1728,6 +1753,7 @@ class BridgeDispatcher(
             "events.replay",
             "state.snapshot",
             "commands.durable",
+            "extensions.crypto",
             "commands.batch-archive",
             COMMAND_JOURNAL_RECONCILIATION_CAPABILITY,
             COMMAND_ORPHAN_RETIREMENT_CAPABILITY,

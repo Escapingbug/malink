@@ -1,3 +1,4 @@
+import type { ExtensionCryptoKeyRing } from '@malink/protocol'
 import {
     integrationEntryPresentationSchema,
     sessionExtensionManifestSchema,
@@ -36,6 +37,8 @@ export interface HttpSessionExtensionProviderOptions {
  */
 export class HttpSessionExtensionProvider implements SessionExtensionProvider {
     descriptor: SessionExtensionDescriptor
+    private cryptoResolver?: () => Promise<ExtensionCryptoKeyRing>
+    private cryptoChain: Promise<void> = Promise.resolve()
     private readonly endpoint: string
     private readonly bearerToken: string
     private readonly timeoutMs: number
@@ -91,6 +94,27 @@ export class HttpSessionExtensionProvider implements SessionExtensionProvider {
         return provider
     }
 
+    setCryptoResolver(resolver: () => Promise<ExtensionCryptoKeyRing>): void { this.cryptoResolver = resolver }
+
+    async configureCrypto(ring: ExtensionCryptoKeyRing): Promise<void> {
+        const serialized = JSON.stringify(ring)
+        const task = this.cryptoChain.catch(() => undefined).then(async () => {
+            const response = await this.fetchImpl(`${this.endpoint}/v1/crypto/configure`, {
+                method: 'POST', redirect: 'error',
+                headers: { authorization: `Bearer ${this.bearerToken}`, 'content-type': 'application/json' },
+                body: serialized, signal: AbortSignal.timeout(this.timeoutMs),
+            })
+            if (!response.ok) throw new Error(`Extension ${this.descriptor.id} crypto provisioning failed: HTTP ${response.status}`)
+            const result = await response.json() as Record<string, unknown>
+            if (result.configured !== true || result.extensionId !== ring.extensionId
+                || result.cryptoDomainId !== ring.cryptoDomainId || result.keyEpoch !== ring.activeEpoch) {
+                throw new Error(`Extension ${this.descriptor.id} rejected crypto identity`)
+            }
+        })
+        this.cryptoChain = task
+        return task
+    }
+
     normalizeConfig(config: Record<string, JsonValue> | undefined): Record<string, JsonValue> {
         return normalizeDeclarativeExtensionConfig(this.descriptor, config)
     }
@@ -104,6 +128,12 @@ export class HttpSessionExtensionProvider implements SessionExtensionProvider {
             context,
             this.timeoutMs,
             this.fetchImpl,
+            async () => {
+                if (this.descriptor.clientIntegration?.capabilities.includes('host.crypto')) {
+                    if (!this.cryptoResolver) throw new Error('Extension crypto is unavailable')
+                    await this.configureCrypto(await this.cryptoResolver())
+                }
+            },
         )
     }
 
@@ -114,7 +144,7 @@ export class HttpSessionExtensionProvider implements SessionExtensionProvider {
             let response: Response
             try {
                 response = await this.fetchImpl(`${this.endpoint}/v1/manifest`, {
-                    method: 'GET',
+                    method: 'GET', redirect: 'error',
                     headers: { authorization: `Bearer ${this.bearerToken}` },
                     signal: controller.signal,
                 })
@@ -148,6 +178,7 @@ class HttpSessionExtensionInstance implements SessionExtensionInstance {
         private readonly session: SessionExtensionContext,
         private readonly timeoutMs: number,
         private readonly fetchImpl: typeof fetch,
+        private readonly prepareCrypto: () => Promise<void>,
     ) {
         this.id = descriptor.id
         this.summary = {
@@ -271,13 +302,14 @@ class HttpSessionExtensionInstance implements SessionExtensionInstance {
     }
 
     private async request(path: string, body: unknown): Promise<Record<string, unknown>> {
+        await this.prepareCrypto()
         const controller = new AbortController()
         const timer = setTimeout(() => controller.abort(), this.timeoutMs)
         try {
             let response: Response
             try {
                 response = await this.fetchImpl(`${this.endpoint}${path}`, {
-                    method: 'POST',
+                    method: 'POST', redirect: 'error',
                     headers: {
                         authorization: `Bearer ${this.bearerToken}`,
                         'content-type': 'application/json',

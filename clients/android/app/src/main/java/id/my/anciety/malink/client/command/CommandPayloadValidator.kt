@@ -40,6 +40,7 @@ enum class CommandOperation(val wireName: String) {
     GATEWAY_DEPLOYMENT_STATUS("gateway.deployment.status"),
     GATEWAY_RESTART("gateway.restart"),
     GATEWAY_RESTART_STATUS("gateway.restart.status"),
+    EXTENSION_CRYPTO_GRANT("extension.crypto.grant"),
     ;
 
     companion object {
@@ -111,6 +112,11 @@ data class DecisionCommandPayload(
 
     override fun toString(): String =
         "DecisionCommandPayload(sessionId=$sessionId, requestId=$requestId, decision=$decision, totp=<redacted>)"
+}
+
+data class ExtensionCryptoGrantCommandPayload(val extensionId: String, val requestId: String, val recipientPublicKey: String) : ValidatedCommandPayload {
+    override val operation = CommandOperation.EXTENSION_CRYPTO_GRANT
+    override val sessionId: String? = null
 }
 
 data class ArtifactMaterializeCommandPayload(
@@ -346,6 +352,12 @@ object CommandPayloadValidator {
             CommandOperation.PROMPT -> validatePrompt(value)
             CommandOperation.CANCEL -> validateCancel(value)
             CommandOperation.DECISION -> validateDecision(value)
+            CommandOperation.EXTENSION_CRYPTO_GRANT -> {
+                value.requireExactKeys(setOf("operation", "extensionId", "requestId", "recipientPublicKey"))
+                val key = value.requiredString("recipientPublicKey", 600)
+                require(key.length >= 100 && key.matches(Regex("^[A-Za-z0-9_-]+$")))
+                ExtensionCryptoGrantCommandPayload(value.requiredOpaqueId("extensionId"), value.requiredOpaqueId("requestId"), key)
+            }
             CommandOperation.ARTIFACT_MATERIALIZE -> validateArtifactMaterialize(value)
             CommandOperation.SESSION_SETTINGS -> validateSessionSettings(value)
             CommandOperation.SESSION_CREATE -> validateSessionCreate(value)

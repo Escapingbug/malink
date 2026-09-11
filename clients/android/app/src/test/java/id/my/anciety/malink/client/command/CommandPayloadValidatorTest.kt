@@ -155,6 +155,10 @@ class CommandPayloadValidatorTest {
             buildJsonObject {
                 put("operation", "gateway.restart.status")
             },
+            buildJsonObject {
+                put("operation", "extension.crypto.grant"); put("extensionId", "example")
+                put("requestId", "request1"); put("recipientPublicKey", "A".repeat(392))
+            },
         )
 
         assertEquals(CommandOperation.entries, payloads.map { CommandPayloadValidator.validate(it).operation })

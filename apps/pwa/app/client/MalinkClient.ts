@@ -1,3 +1,4 @@
+import type { ExtensionCryptoClient } from "@malink/security";
 import type {
   ClientMessage,
   CommandView,
@@ -131,6 +132,7 @@ export interface MalinkClient {
     invitationId: string,
     password?: string,
   ): Promise<MatrixLoginTokenResult>;
+  openExtensionCrypto?(extensionId: string, projectId?: string): Promise<ExtensionCryptoClient>;
   send(payload: CommandPayload, projectId?: string): Promise<MalinkCommandSendResult>;
   updateProjectExtensions?(
     extensions: SessionExtensionBinding[],

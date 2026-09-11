@@ -503,6 +503,19 @@ function parseMethodResult<M extends RequestMethod>(
         "subscriptionId",
       );
       break;
+    case "malink.extensionCrypto.begin":
+    case "malink.extensionCrypto.accept":
+      result = parseJsonObject(input, "extension crypto result");
+      break;
+    case "malink.extensionCrypto.execute":
+      result = typeof input === "string" ? input : parseJsonObject(input, "extension crypto result");
+      break;
+    case "malink.extensionCrypto.close": {
+      const value = strictObject(input, ["closed"], "extension crypto close result");
+      if (value.closed !== true) invalidParams("Extension crypto handle was not closed.");
+      result = { closed: true };
+      break;
+    }
     case "malink.command.send":
     case "malink.command.cancel":
     case "malink.command.recover":
@@ -1714,6 +1727,22 @@ function parseMethodParams(method: RequestMethod, input: unknown): JsonObject {
       const params = paramsWithContext(input, ["subscriptionId"]);
       opaqueId(params.subscriptionId, "subscriptionId");
       return params;
+    }
+    case "malink.extensionCrypto.begin": {
+      const params = paramsWithContext(input, ["extensionId"]);
+      opaqueId(params.extensionId, "extensionId"); return params;
+    }
+    case "malink.extensionCrypto.accept": {
+      const params = paramsWithContext(input, ["requestId", "commandId"]);
+      opaqueId(params.requestId, "requestId"); opaqueId(params.commandId, "commandId"); return params;
+    }
+    case "malink.extensionCrypto.execute": {
+      const params = paramsWithContext(input, ["requestId", "request"]);
+      opaqueId(params.requestId, "requestId"); parseJsonObject(params.request, "extension crypto request"); return params;
+    }
+    case "malink.extensionCrypto.close": {
+      const params = paramsWithContext(input, ["requestId"]);
+      opaqueId(params.requestId, "requestId"); return params;
     }
     case "malink.command.send": {
       const params = mutationParams(input, ["payload", "projectId"]);

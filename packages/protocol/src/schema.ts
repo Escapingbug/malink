@@ -1,3 +1,4 @@
+import { extensionCryptoGrantRequestSchema } from './extension-crypto.js'
 import { z } from 'zod'
 import { batchArchiveRequestSchema } from './batch-archive.js'
 
@@ -265,8 +266,9 @@ export const clientIntegrationManifestSchema = z
         'host.back',
         'host.read-theme',
         'host.read-locale',
+        'host.crypto',
       ]))
-      .max(4),
+      .max(5),
   })
   .strict()
   .superRefine((integration, context) => {
@@ -534,6 +536,7 @@ export const artifactReferenceSchema = z
 export type MalinkArtifactReference = z.infer<typeof artifactReferenceSchema>
 
 export const commandPayloadSchema = z.discriminatedUnion('operation', [
+  extensionCryptoGrantRequestSchema,
   z
     .object({
       operation: z.literal('prompt'),

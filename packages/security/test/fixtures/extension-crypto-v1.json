@@ -1,0 +1,24 @@
+{
+  "ring": {
+    "version": 1,
+    "extensionId": "fixture-extension",
+    "cryptoDomainId": "af70dbb9-c182-4c59-8634-22ad831c0c28",
+    "activeEpoch": 1,
+    "keys": [
+      {
+        "epoch": 1,
+        "key": "UKSjgRke48uTo0GCvPFAyq24aX4OK5KVOrTe_1GQPQk"
+      }
+    ]
+  },
+  "plaintext": "Malink 扩展 E2EE 🔐",
+  "ciphertext": {
+    "extensionId": "fixture-extension",
+    "cryptoDomainId": "af70dbb9-c182-4c59-8634-22ad831c0c28",
+    "keyEpoch": 1,
+    "kind": "malink.extension-data",
+    "version": 1,
+    "nonce": "Q8fyVakqdLJgW-yO",
+    "ciphertext": "jGQZTCh4c8OPqVIKGNJKseS4wa74AUh_qc0Q560fH77l_ShWJ5ut"
+  }
+}
