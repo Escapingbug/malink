@@ -21,6 +21,8 @@ import type {
 import type { MalinkClient } from "./client/MalinkClient";
 import { writeClipboardTextWithTimeout } from "./uiClipboard";
 
+import { ZoomableImage } from "./ZoomableImage";
+
 const ARTIFACT_SCHEME = "malink-artifact:";
 const MAX_INLINE_TEXT_PREVIEW_BYTES = 1024 * 1024;
 
@@ -297,7 +299,7 @@ function ArtifactReference({
   }
 
   if (image && preview?.kind === "image" && preview.url) {
-    return <img className="artifact-inline-image" src={preview.url} alt={String(children)} />;
+    return <ZoomableImage className="artifact-inline-image" src={preview.url} alt={String(children)} />;
   }
 
   return (
@@ -397,6 +399,7 @@ function ArtifactPreviewView({
         <b>{name}</b>
         <button type="button" onClick={onClose}>Close</button>
       </span>
+      {preview.kind === "image" && <ZoomableImage src={preview.url} alt={name} className="artifact-inline-image" />}
       {preview.kind === "text" && <span className="artifact-preview-text">{preview.text}</span>}
       {preview.kind === "pdf" && <iframe sandbox="" src={preview.url} title={name} />}
       {preview.kind === "audio" && <audio src={preview.url} controls />}

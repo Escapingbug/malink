@@ -8,6 +8,8 @@ import {
 const emptyState = {
   deleteDialogOpen: false,
   deleteDialogBusy: false,
+  renameDialogOpen: false,
+  renameDialogBusy: false,
   gatewayUpdateDialogOpen: false,
   newProjectOpen: false,
   newProjectBusy: false,
@@ -29,6 +31,15 @@ test("selects the topmost visible Malink UI layer", () => {
       mobileChatOpen: true,
     }),
     "close-delete-dialog",
+  );
+  assert.equal(
+    resolveMalinkBackAction({
+      ...emptyState,
+      renameDialogOpen: true,
+      settingsOpen: true,
+      mobileChatOpen: true,
+    }),
+    "close-rename-dialog",
   );
   assert.equal(
     resolveMalinkBackAction({
@@ -103,6 +114,14 @@ test("selects the topmost visible Malink UI layer", () => {
 });
 
 test("only blocks Back for operations whose dialog is the safety boundary", () => {
+  assert.equal(
+    resolveMalinkBackAction({
+      ...emptyState,
+      renameDialogOpen: true,
+      renameDialogBusy: true,
+    }),
+    "block-rename-dialog",
+  );
   assert.equal(
     resolveMalinkBackAction({
       ...emptyState,

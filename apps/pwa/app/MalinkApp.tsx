@@ -1,6 +1,9 @@
+"use client";
+
 import { ArchiveListHeading, ArchiveListHelp, ArchiveEmptyState, ArchivedConversationNotice } from "./ArchiveView";
 import { SessionDeleteDialog } from "./SessionDeleteDialog";
-"use client";
+import { SessionRenameDialog } from "./SessionRenameDialog";
+import { MessageCopyButton } from "./MessageCopyButton";
 import { batchArchiveProgressSchema } from "@malink/protocol";
 import { batchArchiveUiStorageKey, readBatchArchiveUiResults, writeBatchArchiveUiResults } from "./batchArchiveUiStorage";
 import { computerRepresentatives, computerNodeAliases } from "./computerPresentation";
@@ -312,7 +315,10 @@ import {
   userMessageDeliveryState,
 } from "./messageDelivery";
 import { retryMatchingCommandRevisionConflict } from "./commandRevisionRetry";
+import { ZoomableImage } from "./ZoomableImage";
 import { deriveComposerState } from "./composerState";
+import { ConversationRecoveryDetails } from "./ConversationRecoveryDetails";
+import { observeConversationRecovery } from "./conversationRecovery";
 import {
   connectionRepairReasonForDetail,
   connectionStatusForBrowserNetwork,
@@ -568,6 +574,12 @@ type SessionSettingsUpdate = {
   label: string;
   changes: ProviderControlValues;
   cleared: Array<"model" | "reasoningEffort">;
+};
+
+type PendingSessionTitle = {
+  sessionId: string;
+  projectId: string;
+  title: string;
 };
 
 type SendRealCommandOptions = {
@@ -1142,7 +1154,7 @@ function AttachmentCard({
       {previewUrl && isImage && (
         // Decrypted attachments use short-lived local blob: URLs, which are
         // intentionally outside the Next image optimization pipeline.
-        <img src={previewUrl} alt={attachment.name} />
+        <ZoomableImage src={previewUrl} alt={attachment.name} />
       )}
       <div className="attachment-card-copy">
         <span aria-hidden="true">{isImage ? "▧" : "▤"}</span>
@@ -1589,6 +1601,10 @@ function MalinkAppRuntime() {
   const [listMenuOpen, setListMenuOpen] = useState(false);
   const [showArchivedSessions, setShowArchivedSessions] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<GatewaySessionSummary | null>(null);
+  const [sessionToRename, setSessionToRename] = useState<GatewaySessionSummary | null>(null);
+  const [sessionRenameBusy, setSessionRenameBusy] = useState(false);
+  const [sessionRenameError, setSessionRenameError] = useState<string | null>(null);
+  const [pendingSessionTitle, setPendingSessionTitle] = useState<PendingSessionTitle | null>(null);
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
   const [bulkConfirm, setBulkConfirm] = useState(false);
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
@@ -1917,6 +1933,14 @@ function MalinkAppRuntime() {
       setSessionSettingsUpdate(current => current === sessionSettingsUpdate ? null : current);
     }
   }, [gatewayState, sessionSettingsUpdate]);
+  useEffect(() => {
+    if (!pendingSessionTitle) return;
+    const session = gatewayState?.sessions.find(value =>
+      value.id === pendingSessionTitle.sessionId &&
+      value.projectId === pendingSessionTitle.projectId
+    );
+    if (session?.title === pendingSessionTitle.title) setPendingSessionTitle(null);
+  }, [gatewayState, pendingSessionTitle]);
   const [pendingSessionCreate, setPendingSessionCreate] =
     useState<NewSessionInput | null>(null);
   const [optimisticSession, setOptimisticSession] =
@@ -2188,6 +2212,8 @@ function MalinkAppRuntime() {
   const nativeBackAction = resolveMalinkBackAction({
     deleteDialogOpen: sessionToDelete !== null,
     deleteDialogBusy: Boolean(sessionToDelete && sessionLifecycleBusy.has(sessionLifecycleRouteKey(sessionToDelete.projectId, sessionToDelete.id))),
+    renameDialogOpen: sessionToRename !== null,
+    renameDialogBusy: sessionRenameBusy,
     listMenuOpen,
     archivedListOpen: showArchivedSessions,
     notificationCenterOpen,
@@ -2209,6 +2235,10 @@ function MalinkAppRuntime() {
       switch (nativeBackAction) {
         case "close-delete-dialog":
           setSessionToDelete(null);
+          break;
+        case "close-rename-dialog":
+          setSessionToRename(null);
+          setSessionRenameError(null);
           break;
         case "close-list-menu":
           setListMenuOpen(false);
@@ -2249,6 +2279,7 @@ function MalinkAppRuntime() {
           setMobileChatOpen(false);
           break;
         case "block-delete-dialog":
+        case "block-rename-dialog":
         case "block-new-session":
           break;
         case null:
@@ -2338,6 +2369,14 @@ function MalinkAppRuntime() {
         gatewayFilterOptions.map(gateway => gateway.gatewayNodeId),
       )
     : ALL_GATEWAYS_FILTER;
+  const displaySessionTitle = useCallback((
+    session: Pick<GatewaySessionSummary, "id" | "projectId" | "title">,
+  ): string => (
+    pendingSessionTitle?.sessionId === session.id &&
+      pendingSessionTitle.projectId === session.projectId
+      ? pendingSessionTitle.title
+      : session.title
+  ), [pendingSessionTitle]);
   const gatewayScopedSessions = useMemo(
     () => visibleGatewaySessions.filter(session => projectMatchesGatewayFilter(
       activeGatewayFilter,
@@ -2356,11 +2395,11 @@ function MalinkAppRuntime() {
     () =>
       gatewayScopedSessions.filter((session) => {
         const owner = projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway;
-        return `${session.title} ${session.projectName} ${session.cwd} ${session.provider} ${session.model ?? ""} ${owner.gatewayName} ${owner.computerName} ${owner.gatewayNodeId}`
+        return `${displaySessionTitle(session)} ${session.projectName} ${session.cwd} ${session.provider} ${session.model ?? ""} ${owner.gatewayName} ${owner.computerName} ${owner.gatewayNodeId}`
           .toLowerCase()
           .includes(search.toLowerCase());
       }),
-    [fallbackProjectGateway, gatewayScopedSessions, projectGatewaysById, search],
+    [displaySessionTitle, fallbackProjectGateway, gatewayScopedSessions, projectGatewaysById, search],
   );
   const activeFilteredSessions = useMemo(() => filteredSessions.filter(session =>
     (session.status === "archived") === showArchivedSessions), [filteredSessions, showArchivedSessions]);
@@ -2727,27 +2766,15 @@ function MalinkAppRuntime() {
     setConversationRecoveryError(null);
     if (!selectedSessionId || !conversationConnection?.ensureSessionReady
       || connectionStatus !== "connected" || optimisticSelected) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const check = async () => {
-      try {
-        await conversationConnection.ensureSessionReady!(selectedSessionId, selectedProjectId ?? undefined);
-        if (!cancelled) {
-          setReadyConversation({ connection: conversationConnection, key: conversationReadyKey });
-          setConversationRecoveryError(null);
-          // A foreground history read may have timed out before readiness.
-          // Re-read the cache/projection now, without requiring another click.
-          void restoreSessionHistory(selectedSessionId, conversationConnection, selectedProjectId ?? undefined);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setConversationRecoveryError(formatUiError(error));
-          timer = setTimeout(check, 2_000);
-        }
-      }
-    };
-    void check();
-    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    return observeConversationRecovery({
+      ensureReady: () => conversationConnection.ensureSessionReady!(selectedSessionId, selectedProjectId ?? undefined),
+      onReady: () => {
+        setReadyConversation({ connection: conversationConnection, key: conversationReadyKey });
+        setConversationRecoveryError(null);
+        void restoreSessionHistory(selectedSessionId, conversationConnection, selectedProjectId ?? undefined);
+      },
+      onFailure: (error) => setConversationRecoveryError(formatUiError(error)),
+    });
   }, [conversationConnection, conversationReadyKey, connectionStatus, selectedSessionId, selectedProjectId, optimisticSelected]);
   const derivedComposerState = deriveComposerState({
     conversationRecovering,
@@ -2788,7 +2815,7 @@ function MalinkAppRuntime() {
           : derivedComposerState
     : derivedComposerState;
   const conversationTitle =
-    selected?.title ??
+    (selected ? displaySessionTitle(selected) : undefined) ??
     (trustedGateway
       ? gatewayState
         ? "No active session"
@@ -9273,6 +9300,11 @@ function MalinkAppRuntime() {
   async function performConnectionDiagnosticsExport(): Promise<boolean> {
     try {
       const report = createConnectionDiagnostics({
+        conversationRecovery: conversationRecovering ? {
+          sessionId: selectedSessionId,
+          projectId: selectedProjectId,
+          needsAttention: Boolean(conversationRecoveryError),
+        } : null,
         buildVersion: MALINK_BUILD_VERSION,
         status: connectionStatus,
         detail: connectionDetail,
@@ -12887,7 +12919,51 @@ function MalinkAppRuntime() {
     }
   }
 
-  const settingsUpdateBusy = sessionSettingsUpdate !== null && !sessionSettingsUpdate.confirmed;
+  async function renameSession(title: string): Promise<void> {
+    const session = sessionToRename;
+    if (!session || sessionRenameBusy) return;
+    const normalizedTitle = title.trim();
+    if (!normalizedTitle || normalizedTitle === session.title) return;
+    setSessionRenameBusy(true);
+    setSessionRenameError(null);
+    const optimisticTitle: PendingSessionTitle = {
+      sessionId: session.id,
+      projectId: session.projectId,
+      title: normalizedTitle,
+    };
+    setPendingSessionTitle(optimisticTitle);
+    try {
+      const sent = await sendRealCommand({
+        operation: "session.settings",
+        sessionId: session.id,
+        title: normalizedTitle,
+      }, session.projectId, { propagateFailure: true });
+      if (!sent) throw new Error("The conversation name change was not sent.");
+      const completion = await sent.completion;
+      if (completion.outcome !== "succeeded") {
+        throw new Error(
+          completion.error?.message ?? "The conversation name did not update.",
+        );
+      }
+      setSessionToRename(null);
+      setDetailsOpen(false);
+      showUiNotice(
+        `session:rename:${session.projectId}:${session.id}`,
+        "session",
+        "success",
+        "Conversation renamed.",
+        3_000,
+      );
+    } catch (error) {
+      setPendingSessionTitle(current => current === optimisticTitle ? null : current);
+      setSessionRenameError(formatUiError(error));
+    } finally {
+      setSessionRenameBusy(false);
+    }
+  }
+
+  const settingsUpdateBusy = sessionRenameBusy ||
+    (sessionSettingsUpdate !== null && !sessionSettingsUpdate.confirmed);
   const journalReconciliationAvailable = nativeRuntime === null ||
     nativeRuntime.commandJournalReconciliation === true;
   const manualAndroidUpdateRequired =
@@ -14003,6 +14079,7 @@ function MalinkAppRuntime() {
               {expanded && (
                 <div id={contentId} className="project-session-list">
               {project.sessions.map((session) => {
+                const sessionTitle = displaySessionTitle(session);
                 const indicator = sessionIndicator(session, sessionReadState);
                 const signal = sessionListSignal(session, sessionReadState);
                 const activity = agentActivitiesBySession.get(session.id);
@@ -14049,10 +14126,10 @@ function MalinkAppRuntime() {
                   data-session-id={session.id}
                   data-project-id={session.projectId}
                   data-project-name={session.projectName}
-                  aria-label={`${session.title}. ${statusSummary}. ${technicalSummary}. ${
+                  aria-label={`${sessionTitle}. ${statusSummary}. ${technicalSummary}. ${
                     meaningfulActivityKnown ? "Last message" : "Updated"
                   } ${formatSessionTime(meaningfulActivityAt)}`}
-                  title={`${session.title} · ${statusSummary}`}
+                  title={`${sessionTitle} · ${statusSummary}`}
                   data-session-signal={visualSignal}
                   aria-pressed={
                     bulkSelect ? bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)) : selectedSessionId === session.id &&
@@ -14076,14 +14153,14 @@ function MalinkAppRuntime() {
                   disabled={lifecycleAction === "delete" || (bulkSelect && (bulkSubmitting || !bulkArchiveAllowed(session)))}
                 >
                   <span className={bulkSelect ? "bulk-checkbox" : "session-avatar violet"} aria-hidden="true">
-                    {bulkSelect ? bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)) ? "✓" : "" : sessionInitials(session.title)}
+                    {bulkSelect ? bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)) ? "✓" : "" : sessionInitials(sessionTitle)}
                   </span>
                   <span className="session-copy">
                     {bulkSelect && !bulkArchiveAllowed(session) && <small className="bulk-exclusion">{session.status === "running" || session.status === "stopping" ? "运行中，暂不可归档" : lifecycleAction ? "正在处理" : "更新恢复保护中"}</small>}
                     {bulkSelect && batchArchiveErrors[sessionLifecycleRouteKey(session.projectId, session.id)] &&
                       <small className="bulk-exclusion">{batchArchiveErrors[sessionLifecycleRouteKey(session.projectId, session.id)]}</small>}
                     <span className="session-title-line">
-                      <strong>{session.title}</strong>
+                      <strong>{sessionTitle}</strong>
                       <span className="session-title-meta">
                         <time
                           title={`${
@@ -14293,10 +14370,22 @@ function MalinkAppRuntime() {
               setMobileChatOpen(false);
             });
           }} />
+        {sessionToRename && <SessionRenameDialog
+          key={`${sessionToRename.projectId}:${sessionToRename.id}:${sessionToRename.title}`}
+          session={sessionToRename}
+          busy={sessionRenameBusy}
+          error={sessionRenameError}
+          onClose={() => {
+            if (sessionRenameBusy) return;
+            setSessionToRename(null);
+            setSessionRenameError(null);
+          }}
+          onConfirm={(title) => void renameSession(title)}
+        />}
         {sharedFileBatch && <SharedFileDialog files={sharedFileBatch.files}
           sessions={visibleGatewaySessions.filter(session => session.status !== "archived").map(session => ({
             key: JSON.stringify([session.projectId, session.id]),
-            title: session.title,
+            title: displaySessionTitle(session),
             projectId: session.projectId,
             projectName: session.projectName,
             computer: (projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway).label,
@@ -14460,6 +14549,25 @@ function MalinkAppRuntime() {
                 <button
                   type="button"
                   className="session-menu-primary"
+                  disabled={selectedLifecycleBusy || settingsUpdateBusy || !gatewayAvailable}
+                  onClick={() => {
+                    setSessionRenameError(null);
+                    setSessionToRename({
+                      ...gatewaySelected,
+                      title: displaySessionTitle(gatewaySelected),
+                    });
+                    setDetailsOpen(false);
+                  }}
+                >
+                  <span aria-hidden="true">✎</span>
+                  <span>
+                    <strong>Rename conversation</strong>
+                    <small>Sync the new name to your approved devices</small>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="session-menu-primary"
                   disabled={
                     selectedLifecycleBusy ||
                     !gatewayAvailable ||
@@ -14490,7 +14598,7 @@ function MalinkAppRuntime() {
                     setSessionToDelete(gatewaySelected);
                   }}>
                   <span aria-hidden="true">×</span>
-                  <span><strong>删除会话…</strong><small>无法直接恢复；只能从 Agent 历史记录重新接续</small></span>
+                  <span><strong>删除会话…</strong><small>Agent 保留历史时可重建恢复，耗时较长</small></span>
                 </button>
               </div>
             )}
@@ -14637,7 +14745,10 @@ function MalinkAppRuntime() {
                   <div className="bubble agent-bubble error-bubble">
                     <span className="agent-label">TASK NEEDS ATTENTION</span>
                     <p>{message.text}</p>
-                    <time>{message.time}</time>
+                    <div className="message-bubble-meta">
+                      <MessageCopyButton text={message.text ?? ""} />
+                      <time>{message.time}</time>
+                    </div>
                   </div>
                 </div>
               );
@@ -14672,24 +14783,27 @@ function MalinkAppRuntime() {
                       attachments={messageAttachments(message.attachments, message.raw)}
                       connection={malinkClientRef.current}
                     />
-                    <time
-                      title={
-                        message.revision !== undefined
-                          ? `Gateway revision ${message.revision}`
-                          : undefined
-                      }
-                    >
-                      {message.time}{" "}
-                      {delivery && (
-                        <span
-                          className={`delivery-indicator ${delivery.state}`}
-                          aria-label={delivery.label}
-                          title={delivery.label}
-                        >
-                          {delivery.symbol}
-                        </span>
-                      )}
-                    </time>
+                    <div className="message-bubble-meta">
+                      <MessageCopyButton text={message.text ?? ""} />
+                      <time
+                        title={
+                          message.revision !== undefined
+                            ? `Gateway revision ${message.revision}`
+                            : undefined
+                        }
+                      >
+                        {message.time}{" "}
+                        {delivery && (
+                          <span
+                            className={`delivery-indicator ${delivery.state}`}
+                            aria-label={delivery.label}
+                            title={delivery.label}
+                          >
+                            {delivery.symbol}
+                          </span>
+                        )}
+                      </time>
+                    </div>
                     {deliveryState === "failed" && (
                       <button
                         type="button"
@@ -14899,7 +15013,10 @@ function MalinkAppRuntime() {
                     )}
                     connection={malinkClientRef.current}
                   />
-                  <time>{message.time}</time>
+                  <div className="message-bubble-meta">
+                    <MessageCopyButton text={message.text ?? ""} />
+                    <time>{message.time}</time>
+                  </div>
                 </div>
               </div>
             );
@@ -15402,6 +15519,16 @@ function MalinkAppRuntime() {
           >
             {composerState.reason}
           </p>
+          {conversationRecovering && conversationRecoveryError && (
+            <ConversationRecoveryDetails
+              key={conversationReadyKey}
+              error={conversationRecoveryError}
+              sessionId={selectedSessionId}
+              projectId={selectedProjectId}
+              exportBusy={diagnosticExportBusy}
+              onExport={() => void exportConnectionDiagnostics()}
+            />
+          )}
           </>}
         </div>
       </section>

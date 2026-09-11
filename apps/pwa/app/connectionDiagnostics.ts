@@ -4,6 +4,7 @@ import type { MatrixConnectionStatus } from "./matrix";
 import { readSyncDiagnostics } from "./readSyncDiagnostics";
 
 export type ConnectionDiagnosticsInput = {
+  conversationRecovery?: { sessionId: string | null; projectId: string | null; needsAttention: boolean } | null;
   buildVersion: string;
   status: MatrixConnectionStatus;
   detail?: string | null;
@@ -52,6 +53,11 @@ export function createConnectionDiagnostics(
     matrixSyncTimings: readMatrixSyncTimings(),
     readSync: readSyncDiagnostics(),
     projectRecovery: readProjectRecoveryDiagnostics(),
+    conversationRecovery: input.conversationRecovery ? {
+      sessionId: input.conversationRecovery.sessionId?.slice(0, 512) ?? null,
+      projectId: input.conversationRecovery.projectId?.slice(0, 512) ?? null,
+      state: input.conversationRecovery.needsAttention ? "needs_attention" : "waiting",
+    } : null,
     connection: {
       status: input.status,
       detailCode,

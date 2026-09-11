@@ -6,6 +6,27 @@ its configured coding Agent to build the exact signed Git commit locally, then
 the independent supervisor seals, switches, health-checks, and rolls back the
 result.
 
+## Release qualification versus installation
+
+Before signing a release, qualify the exact target commit with the complete
+Gateway regression tests, protocol integration tests, type checks, production
+build, and applicable business acceptance checks. This is publisher work, not
+work repeated on each user's Gateway during installation.
+
+The signed `PROMPT.md` limits local installation to the frozen dependency
+install, production build with static import-closure validation, and complete
+candidate assembly. It does not run full test suites or repository-wide type
+checks. A local build repair may use a narrowly scoped diagnostic test.
+The supervisor still verifies trust, candidate integrity, state compatibility,
+and activation health. Dual-track switching and old-version repair remain
+supervisor-owned; a staged package is not proof of a successful live Agent turn.
+
+This policy takes effect only in a newly signed immutable release Prompt.
+Editing this template does not change an already published or downloaded
+signed Prompt. Publish a new release ID and signed channel generation through
+the normal publication flow; never overwrite an existing release to change
+its instructions. Older signed Prompts retain their original requirements.
+
 ## Hosting
 
 GitHub Pages is the primary static host. The published tree is copied below the

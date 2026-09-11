@@ -3003,6 +3003,23 @@ describe('MatrixMlp3GatewayRunner', () => {
       expect((await retainedStore.project(roomId)).sessions.find(session => session.id === target.sessionId))
         .toMatchObject({ lifecycle: 'archived', retainedArchive: true, archiveCleanup: null })
     }
+    await send({
+      ...base,
+      commandId: 'rename-archived-session',
+      sessionId: 'batch-fresh-a',
+      operation: 'session.update',
+      payload: {
+        operation: 'session.update',
+        patch: { title: 'Renamed archived conversation' },
+      },
+    }, '$rename-archived-session')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === 'rename-archived-session' && event.payload.type === 'session.updated'))
+    expect((await retainedStore.project(roomId)).sessions.find(session => session.id === 'batch-fresh-a'))
+      .toMatchObject({ lifecycle: 'archived', title: 'Renamed archived conversation' })
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'rename-archived-session' && event.payload.type === 'session.updated')?.payload)
+      .toMatchObject({ projection: { lifecycle: 'archived', title: 'Renamed archived conversation' } })
     const beforeArchive = (await retainedStore.project(roomId)).sessions.find(session => session.id === 'session-a')!
     const deletedThreadCount = client.deletedThreads.length
     for (const [commandId, state] of [['retain-a', 'archived'], ['restore-a', 'active']] as const) {

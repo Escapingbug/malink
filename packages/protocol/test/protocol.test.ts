@@ -133,6 +133,11 @@ describe('protocol schemas', () => {
     expect(commandPayloadSchema.parse({
       operation: 'session.settings',
       sessionId: 'session-1',
+      title: 'Renamed conversation',
+    })).toMatchObject({ title: 'Renamed conversation' })
+    expect(commandPayloadSchema.parse({
+      operation: 'session.settings',
+      sessionId: 'session-1',
       controls: { mode: 'agent' },
     })).toMatchObject({ controls: { mode: 'agent' } })
     expect(commandPayloadSchema.parse({

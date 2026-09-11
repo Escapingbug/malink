@@ -52,15 +52,15 @@ export function SessionDeleteDialog({
         <div className="danger-symbol" aria-hidden="true">
           !
         </div>
-        <span className="eyebrow">删除后无法直接恢复</span>
+        <span className="eyebrow">删除后需从 Agent 历史重建</span>
         <h2 id="session-delete-title">删除「{session.title}」？</h2>
         <p id="session-delete-description">
-          此会话将从所有设备移除，无法从「已归档会话」恢复。
+          此会话将从所有设备的会话列表移除，并清理其在 Malink 中的消息记录。
           {session.status !== "archived" && "如果 Agent 仍在运行，也会将其停止。"}
           {session.scope === "scratch" && "临时工作目录中的文件也将删除。"}
         </p>
         <div className="delete-boundary-note">
-          如需以后快速继续，请使用「归档」。删除后只能在 Agent 仍保留历史的情况下，从「Agent 历史记录」重新接续。
+          只要 Agent 仍保留历史，就可从会话列表 ⋯ →「Agent 历史记录」重建会话并恢复历史，耗时较长。如需快速恢复原会话，请使用「归档」。
         </div>
         <footer>
           <button

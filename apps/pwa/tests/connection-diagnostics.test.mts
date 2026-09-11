@@ -117,3 +117,16 @@ test("retains the MLP3 recovery stage without exporting an underlying error", ()
   );
   assert.equal(report.connection.hasUnstructuredDetail, false);
 });
+
+
+test("identifies the blocked conversation even while the overall connection is online", () => {
+  const parsed = JSON.parse(createConnectionDiagnostics({
+    buildVersion: "test", status: "connected", online: true,
+    visibility: "visible", userAgent: "test",
+    conversationRecovery: { sessionId: "session-1", projectId: "project-1", needsAttention: true },
+  }));
+  assert.equal(parsed.connection.status, "connected");
+  assert.deepEqual(parsed.conversationRecovery, {
+    sessionId: "session-1", projectId: "project-1", state: "needs_attention",
+  });
+});

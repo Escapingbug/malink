@@ -2801,8 +2801,32 @@ export class MatrixMlp3GatewayRunner {
     project: V3ProjectRuntime,
     command: Mlp3CommandOf<'session.update'>,
   ): Promise<void> {
-    let runtime = this.requireActiveSession(project, command.sessionId)
     const patch = command.payload.patch
+    const sessionId = command.sessionId
+    if (!sessionId) throw new Error('Session update command is missing its session ID')
+    const activeRuntime = project.sessions.get(sessionId)
+    if (!activeRuntime) {
+      const record = project.project.sessions.find(candidate => candidate.id === sessionId)
+      if (!record || record.lifecycle === 'deleted') {
+        throw new Mlp3SessionNotFoundError(sessionId)
+      }
+      if (record.lifecycle !== 'archived' || typeof patch.title !== 'string'
+        || Object.keys(patch).some(key => key !== 'title')) {
+        throw new Error(`Malink session ${sessionId} is not active`)
+      }
+      record.title = patch.title
+      record.updatedAt = this.now()
+      record.stateVersion += 1
+      await this.persist(project)
+      const updated = this.eventFor(project, record, command, 'session-updated', {
+        type: 'session.updated',
+        projection: terminalProjection(record, 'idle', this.extensions),
+        patch,
+      })
+      await this.settleAndDeliver(project, command, updated, 'succeeded')
+      return
+    }
+    let runtime = activeRuntime
     const provider = runtime.record.provider
     const catalog = getProvider(provider)
     if (!catalog) throw new Error(`Provider ${provider} is not configured`)
@@ -6033,13 +6057,13 @@ Supervisor-owned paths:
 
 The candidate directory starts as a local copy of the active Gateway. Work only in the update workspace and a Git worktree or clone for the exact signed commit. Never modify the active current release, supervisor state, release signer, Matrix state, or durable Gateway data.
 
-Follow the signed release Prompt below. Resolve local runtime, dependency, build, and test issues autonomously. The final candidate must contain regular files at runtime/node, ops/matrix-local-gateway.js, ops/gatewayUpdateSupervisorMain.js, ops/gatewayAgentUpdateCli.js, and ops/gatewayJournalRepairCli.js. Do not leave symbolic links in the candidate.
+Follow the signed release Prompt below. Resolve local runtime, dependency, and build issues autonomously. Use the validation scope defined by the signed Prompt; do not add full regression suites to installation. The final candidate must contain regular files at runtime/node, ops/matrix-local-gateway.js, ops/gatewayUpdateSupervisorMain.js, ops/gatewayAgentUpdateCli.js, and ops/gatewayJournalRepairCli.js. Do not leave symbolic links in the candidate.
 
 Never execute candidate/ops/matrix-local-gateway.js, candidate/ops/gatewayUpdateSupervisorMain.js,
 or any other candidate entrypoint. Changing cwd or supplying --help does not isolate production
 MALINK_* environment variables. Candidate runtime validation belongs exclusively to the supervisor.
 
-After every required test passes and the candidate is complete, run this exact owner-only finish command unchanged:
+After every admission check required by the signed Prompt passes and the candidate is complete, run this exact owner-only finish command unchanged:
 
 ${instruction.submitCommand}
 
