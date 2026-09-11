@@ -74,9 +74,9 @@ export function gatewayUpdateRecoveryAction(input: {
     ) {
       return {
         kind: "continue",
-        label: "Confirm forward-only update",
-        busyLabel: "Confirming forward-only update…",
-        explanation: "This protected-state update will stop the Gateway, create and verify a local backup, and start the new release without automatic binary rollback. Continue only when local recovery access to the Gateway Mac is available.",
+        label: "Review incompatible upgrade",
+        busyLabel: "Preparing incompatible upgrade…",
+        explanation: "This upgrade changes stored data. The Host will stop writes and verify a local backup before upgrading. The Agent may not reconnect, and the previous version cannot read upgraded data. Continue only with access to local recovery on this computer.",
       };
     }
     return {

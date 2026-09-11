@@ -36,9 +36,11 @@ and session queues. Batch checkpoints are fsynced before progress publication.
 - `matrix-archive-batches` is a new durable state family. The stable supervisor's
   exact catalog admission check correctly rejects this release until compatibility
   preparation is complete. Do not remove the catalog entry or bypass admission.
-- Prepare a reader-compatible fallback release and a coordinated stable-host
-  transition before enabling batch submission. Preserve the independent recovery
-  control route and verify new → fallback → new using current business data.
+- Historical-reader compatibility is not required for this pre-release upgrade.
+  Use the explicitly confirmed incompatible upgrade in
+  `gateway-incompatible-upgrades.md`: stopped-state backup, stable Host handoff,
+  no old-reader fallback after the write boundary. Verify the independent control
+  route and new baseline before enabling client batch submission.
 - A real Android/browser batch, interruption/restart, and cross-project success
   test are required; automated tests do not establish the entire live workflow.
 

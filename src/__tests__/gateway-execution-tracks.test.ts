@@ -18,6 +18,13 @@ async function fixture() {
   const data = { sessions: ['existing'], results: ['first'], commands: ['command-1'] }
   const calls: string[] = []
   const host: GatewayExecutionTrackHost = {
+    async validateForwardRelease(release) { calls.push(`forward-validate:${release}`) },
+    async backupStoppedState() {
+      expect(owner).toBeUndefined(); calls.push('backup')
+      if (failure === 'backup') throw new Error('backup failed')
+      return '/verified-backup'
+    },
+    async prepareForwardHost() { calls.push('host'); return failure !== 'reload' },
     async validateRelease(release) { calls.push(`validate:${release}`); if (failure === 'compatibility') throw new Error('incompatible') },
     async ensureStandby(release) { calls.push(`standby:${release}`); if (failure === `standby:${release}`) throw new Error('standby damaged') },
     async releaseExecution(release) {
@@ -41,6 +48,40 @@ async function fixture() {
     owner: () => owner, fail: (value?: string) => { failure = value },
     gate: (value: Promise<void>) => { activationGate = value } }
 }
+
+it('requires an explicit forward-only path and backs up before granting the new writer', async () => {
+  const f = await fixture(); f.fail('compatibility')
+  await expect(f.tracks.scheduleSelection('new', 0)).rejects.toThrow('incompatible')
+  await f.tracks.scheduleSelection('new', 0, true)
+  const result = await f.tracks.resume()
+  expect(result).toMatchObject({ activeRelease: 'new', forwardOnly: true, backupPath: '/verified-backup', targetWriteStarted: true })
+  expect(result.standbyRelease).toBeUndefined()
+  expect(f.calls.indexOf('release:old')).toBeLessThan(f.calls.indexOf('backup'))
+  expect(f.calls.indexOf('backup')).toBeLessThan(f.calls.indexOf('activate:new'))
+})
+
+it('does not activate after backup failure or allow selecting the old reader after failure', async () => {
+  const f = await fixture(); f.fail('backup')
+  await f.tracks.scheduleSelection('new', 0, true)
+  await expect(f.tracks.resume()).rejects.toThrow('backup failed')
+  expect(f.calls).not.toContain('activate:new')
+  await expect(f.tracks.scheduleSelection('old', 1)).rejects.toThrow('older reader')
+})
+
+it('continues the same backup after Host restart and retains it after a failed new writer', async () => {
+  const f = await fixture(); f.fail('reload')
+  await f.tracks.scheduleSelection('new', 0, true)
+  await f.tracks.resume()
+  expect(f.calls).not.toContain('activate:new')
+  f.fail('activate')
+  await expect(f.reopen().resume()).rejects.toThrow('cannot start')
+  expect(await f.tracks.status()).toMatchObject({ phase: 'attention', targetWriteStarted: true })
+  await expect(f.tracks.scheduleSelection('old', 1)).rejects.toThrow('older reader')
+  f.fail()
+  await f.reopen().resume()
+  expect(f.calls.filter(call => call === 'backup')).toHaveLength(1)
+  expect(f.owner()).toBe('new')
+})
 
 it('changes only software execution and retains new conversations and command results on return', async () => {
   const f = await fixture()

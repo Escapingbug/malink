@@ -115,6 +115,7 @@ const execution = await initializeGatewayExecutionTracks({
   installRoot, dataDirectory: gatewayDataDirectory, adminSocket: gatewayAdminSocketPath,
   launchAgentPath: requiredEnvironment('MALINK_GATEWAY_LAUNCH_AGENT'),
   serviceLabel: requiredEnvironment('MALINK_GATEWAY_SERVICE_LABEL'), supervisor,
+  requestSupervisorReload: reloadSupervisor,
   log: message => process.stderr.write(`${message}\n`),
 })
 if (!execution) await deploymentCoordinator.initialize()

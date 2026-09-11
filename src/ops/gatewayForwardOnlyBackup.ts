@@ -7,6 +7,7 @@ import {
   mkdir,
   open,
   readdir,
+  readFile,
   readlink,
   realpath,
   rename,
@@ -23,6 +24,27 @@ export type GatewayForwardOnlyBackupInput = {
   currentBuildId?: string
   previousTarget: string
   createdAt: number
+}
+
+/** Revalidate the immutable backup after a Host crash before granting a writer. */
+export async function verifyGatewayForwardOnlyBackup(path: string): Promise<void> {
+  const root = await realpath(path)
+  const manifest = JSON.parse(await readFile(join(root, 'backup-manifest.json'), 'utf8')) as GatewayForwardOnlyBackupManifest
+  if (manifest.version !== 1 || !Array.isArray(manifest.files) || !Array.isArray(manifest.links)) throw new Error('Invalid backup manifest')
+  const data = join(root, 'gateway-data')
+  const safePath = (name: string) => {
+    if (typeof name !== 'string' || !name || name.includes('\\') || name.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Unsafe backup path')
+    return join(data, ...name.split('/'))
+  }
+  for (const file of manifest.files) {
+    const target = safePath(file.path)
+    const metadata = await lstat(target)
+    if (!metadata.isFile() || metadata.isSymbolicLink() || await realpath(target) !== target
+      || metadata.size !== file.size || await hashFile(target) !== file.sha256) throw new Error(`Backup verification failed: ${file.path}`)
+  }
+  for (const link of manifest.links) {
+    if (await readlink(safePath(link.path)) !== link.target) throw new Error(`Backup link verification failed: ${link.path}`)
+  }
 }
 
 export type GatewayForwardOnlyBackupManifest = {

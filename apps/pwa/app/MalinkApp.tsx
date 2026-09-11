@@ -8398,6 +8398,9 @@ function MalinkAppRuntime() {
     }));
     try {
       let knownStatus = gatewayUpdateRuntimeForRelease[node.gatewayNodeId]?.status;
+      const confirmIncompatibleUpgrade = () => window.confirm(
+        `不兼容升级 · ${node.gatewayName}\n\n将停止写入、验证本机备份，然后升级宿主和 Gateway。Agent 可能无法重新连接，需要在电脑上恢复。新版开始写入后不能直接切回旧版；恢复备份会回到升级前的数据。\n\n请确认你能访问这台电脑进行本机恢复。是否继续？`,
+      );
       // Discover the installed control mode on the user's update action. A
       // fresh client must not need a separate "check versions" ritual first.
       if (!knownStatus?.executionTracks) {
@@ -8471,9 +8474,12 @@ function MalinkAppRuntime() {
           setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status: staged }));
           return;
         }
+        const forwardOnly = gatewayUpdateRequiresForwardOnlyConfirmation(staged);
+        if (forwardOnly && !confirmIncompatibleUpgrade()) return;
         const status = await executeWithSignedBoundary({
           operation: "gateway.update.apply", releaseId: gatewayRelease.releaseId, mode,
           executionGeneration: knownStatus.executionTracks.generation,
+          ...(forwardOnly ? { allowForwardOnly: true as const } : {}),
         }, knownStatus.executionTracks.controlProjectId ?? target.targetProjectId);
         setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status }));
         clearGatewayUpdateIntent(window.localStorage, matrixConfig.gatewayId, node.gatewayNodeId);
@@ -8507,6 +8513,13 @@ function MalinkAppRuntime() {
             + `(reported ${staged.phase}).`,
           );
         }
+        if (gatewayUpdateRequiresForwardOnlyConfirmation(staged)) {
+          if (!confirmIncompatibleUpgrade()) return;
+          const status = await executeWithSignedBoundary({ operation: "gateway.update.apply",
+            releaseId: gatewayRelease.releaseId, mode, allowForwardOnly: true }, target.targetProjectId);
+          setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status }));
+          return;
+        }
         const prepared = await executeGatewayDeployment({
           operation: "gateway.update.prepare",
           releaseId: gatewayRelease.releaseId,
@@ -8534,6 +8547,8 @@ function MalinkAppRuntime() {
         );
         return;
       }
+      if (continuePublishedRelease && gatewayUpdateRequiresForwardOnlyConfirmation(knownStatus)
+        && !confirmIncompatibleUpgrade()) return;
       const status = continuePublishedRelease && knownStatus
         ? await executeWithSignedBoundary({
             operation: "gateway.update.apply",

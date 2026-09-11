@@ -13,12 +13,20 @@ export const gatewayExecutionTracksStateSchema = z.object({
   standbyRelease: release.optional(),
   phase: z.enum(['steady', 'releasing', 'activating', 'attention']),
   targetRelease: release.optional(),
+  forwardOnly: z.literal(true).optional(),
+  backupPath: z.string().min(1).optional(),
+  targetWriteStarted: z.literal(true).optional(),
   error: z.string().optional(),
   updatedAt: z.number().int().nonnegative().optional(),
 }).strict()
 export type GatewayExecutionTracksState = z.infer<typeof gatewayExecutionTracksStateSchema>
 
 export interface GatewayExecutionTrackHost {
+  /** Verify signer/seal even when the target's state catalog differs. */
+  validateForwardRelease?(releaseId: string, dataDirectory: string): Promise<void>
+  backupStoppedState?(state: GatewayExecutionTracksState): Promise<string>
+  /** Returns false when a durable Host reload has been requested. */
+  prepareForwardHost?(state: GatewayExecutionTracksState): Promise<boolean>
   /** Read-only compatibility check, not an Agent trial or writable data migration. */
   validateRelease(releaseId: string, dataDirectory: string): Promise<void>
   /** A standby owns no Matrix sync, business store, outbox, or Agent execution. */
@@ -58,21 +66,31 @@ export class GatewayExecutionTracks {
   }
 
   /** Persist selection before the command sender is stopped by its own request. */
-  scheduleSelection(releaseId: string, generation: number): Promise<GatewayExecutionTracksState> {
-    return this.requestSelection(releaseId, generation, true)
+  scheduleSelection(releaseId: string, generation: number, allowForwardOnly = false): Promise<GatewayExecutionTracksState> {
+    return this.requestSelection(releaseId, generation, true, allowForwardOnly)
   }
 
-  private requestSelection(releaseId: string, generation: number, deferred: boolean): Promise<GatewayExecutionTracksState> {
+  private requestSelection(releaseId: string, generation: number, deferred: boolean, allowForwardOnly = false): Promise<GatewayExecutionTracksState> {
     return this.serialize(async () => {
       release.parse(releaseId)
       const current = await this.status()
       if (current.generation !== generation) throw new Error('Version selection changed; refresh before selecting again')
       if (current.phase !== 'steady' && current.phase !== 'attention') throw new Error('An execution handoff is still running')
+      if (current.phase === 'attention' && current.forwardOnly) {
+        if (releaseId !== current.targetRelease) throw new Error('Incompatible upgrade cannot switch to an older reader; retry the target or use local backup recovery')
+        // Keep the original backup and write boundary when retrying.
+        return deferred ? current : this.complete(current)
+      }
       if (current.phase === 'attention' && releaseId !== current.activeRelease && releaseId !== current.targetRelease && releaseId !== current.standbyRelease) {
         throw new Error('Resolve the interrupted handoff before adding another version')
       }
       if (releaseId === current.activeRelease && current.phase === 'steady') return current
-      await this.host.validateRelease(releaseId, current.dataDirectory)
+      if (allowForwardOnly) {
+        if (!this.host.validateForwardRelease || !this.host.backupStoppedState || !this.host.prepareForwardHost) {
+          throw new Error('This Host must be upgraded locally before it can perform an incompatible upgrade')
+        }
+        await this.host.validateForwardRelease(releaseId, current.dataDirectory)
+      } else await this.host.validateRelease(releaseId, current.dataDirectory)
       if (current.phase === 'steady' && current.standbyRelease && current.standbyRelease !== releaseId) {
         if (!this.host.retireStandby) throw new Error('Host cannot safely replace the previous standby')
         await this.host.retireStandby(current.standbyRelease)
@@ -87,6 +105,10 @@ export class GatewayExecutionTracks {
           ? state.targetRelease! : state.activeRelease
         Object.assign(raw, { generation: generation + 1, updatedAt: Date.now(), activeRelease: otherRelease,
           targetRelease: releaseId, phase: 'releasing' })
+        delete raw.forwardOnly
+        delete raw.backupPath
+        delete raw.targetWriteStarted
+        if (allowForwardOnly) raw.forwardOnly = true
         delete raw.error
         return { changed: true, result: structuredClone(raw) }
       })
@@ -133,13 +155,31 @@ export class GatewayExecutionTracks {
     const target = state.targetRelease
     if (!target) throw new Error('Execution handoff target is missing')
     try {
-      await this.host.validateRelease(target, state.dataDirectory)
+      if (state.forwardOnly) {
+        if (!this.host.validateForwardRelease || !this.host.backupStoppedState || !this.host.prepareForwardHost) {
+          throw new Error('Incompatible upgrade requires a capable Host; use local recovery')
+        }
+        await this.host.validateForwardRelease(target, state.dataDirectory)
+      } else await this.host.validateRelease(target, state.dataDirectory)
       // Idempotent even after an interrupted activation. The adapter must never
       // terminate a different version merely because a shared PID file changed.
       await this.host.releaseExecution(state.activeRelease)
       // A failed or interrupted activation may have left the target owning the
       // stores. Relinquish both known tracks before granting either one again.
       await this.host.releaseExecution(target)
+      if (state.forwardOnly) {
+        if (!state.backupPath) {
+          if (state.targetWriteStarted) throw new Error('Original backup is missing; refusing to back up already-upgraded data')
+          state.backupPath = await this.host.backupStoppedState!(structuredClone(state))
+          await this.save(state)
+        }
+        // Move to the target-pinned supervisor before opening its data format.
+        // A new Host resumes this same persisted intent, never a fresh upgrade.
+        if (!await this.host.prepareForwardHost!(structuredClone(state))) return state
+        state.targetWriteStarted = true
+        delete state.standbyRelease
+        await this.save(state)
+      }
       state.phase = 'activating'
       await this.save(state)
       await this.host.activate(target, state.dataDirectory, state.gatewayNodeId)
@@ -147,7 +187,8 @@ export class GatewayExecutionTracks {
       const completed: GatewayExecutionTracksState = {
         version: 1, gatewayNodeId: state.gatewayNodeId, dataDirectory: state.dataDirectory,
         generation: state.generation, activeRelease: target,
-        ...(target !== state.activeRelease ? { standbyRelease: state.activeRelease }
+        ...(state.forwardOnly ? { forwardOnly: true as const, backupPath: state.backupPath, targetWriteStarted: true as const }
+          : target !== state.activeRelease ? { standbyRelease: state.activeRelease }
           : state.standbyRelease ? { standbyRelease: state.standbyRelease } : {}), phase: 'steady',
       }
       await this.save(completed)
@@ -180,6 +221,7 @@ export class GatewayExecutionTracks {
       throw new Error('Execution tracks cannot change Gateway identity or business data directory')
     }
     if (state.phase !== 'steady' && !state.targetRelease) throw new Error('Execution handoff target is missing')
+    if ((state.backupPath || state.targetWriteStarted) && !state.forwardOnly) throw new Error('Forward-only recovery metadata cannot grant compatible rollback')
     return state
   }
 

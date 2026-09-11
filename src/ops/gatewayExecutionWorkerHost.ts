@@ -1,6 +1,6 @@
 import { fork, type ChildProcess } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import type { GatewayExecutionTrackHost } from './gatewayExecutionTracks'
+import type { GatewayExecutionTrackHost, GatewayExecutionTracksState } from './gatewayExecutionTracks'
 import type { GatewayTrackRelease } from './gatewayExecutionTrackHost'
 
 /** Two release-pinned standby controllers; one business writer at a time. */
@@ -8,11 +8,30 @@ export class GatewayExecutionWorkerHost implements GatewayExecutionTrackHost {
   private readonly workers = new Map<string, ChildProcess>()
   private readonly pending = new Map<number, { resolve(): void; reject(error: Error): void; worker: ChildProcess; timer: ReturnType<typeof setTimeout> }>()
   private sequence = 0
+  private readonly forwardReleases = new Set<string>()
   constructor(private readonly config: {
     dataDirectory: string; gatewayNodeId: string; adminSocket: string;
     resolveRelease(id: string): Promise<GatewayTrackRelease>;
+    resolveForwardRelease?(id: string): Promise<GatewayTrackRelease>;
+    backupStoppedState?(state: GatewayExecutionTracksState): Promise<string>;
+    prepareForwardHost?(state: GatewayExecutionTracksState): Promise<boolean>;
     workerFile?: string; workerExecArgv?: string[]; log(message: string): void;
   }) {}
+
+  async validateForwardRelease(id: string, directory: string): Promise<void> {
+    if (directory !== this.config.dataDirectory || !this.config.resolveForwardRelease
+      || !this.config.backupStoppedState || !this.config.prepareForwardHost) throw new Error('Incompatible upgrade is unavailable on this Host')
+    await this.config.resolveForwardRelease(id)
+    this.forwardReleases.add(id)
+  }
+  async backupStoppedState(state: GatewayExecutionTracksState): Promise<string> {
+    if (!this.config.backupStoppedState) throw new Error('Stopped-state backup is unavailable')
+    return this.config.backupStoppedState(state)
+  }
+  async prepareForwardHost(state: GatewayExecutionTracksState): Promise<boolean> {
+    if (!this.config.prepareForwardHost) throw new Error('Host migration is unavailable')
+    return this.config.prepareForwardHost(state)
+  }
 
   async validateRelease(id: string, directory: string): Promise<void> {
     if (directory !== this.config.dataDirectory) throw new Error('Cannot replace shared business state')
@@ -21,7 +40,7 @@ export class GatewayExecutionWorkerHost implements GatewayExecutionTrackHost {
   async ensureStandby(id: string): Promise<void> {
     if (this.workers.has(id)) return
     if (this.workers.size >= 2) throw new Error('Retire the unused standby before preparing a third version')
-    const release = await this.config.resolveRelease(id)
+    const release = await (this.forwardReleases.has(id) ? this.config.resolveForwardRelease!(id) : this.config.resolveRelease(id))
     const worker = fork(this.config.workerFile ?? fileURLToPath(new URL('./gatewayExecutionTrackWorker.js', import.meta.url)), [], {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'], execArgv: this.config.workerExecArgv ?? [],
     })

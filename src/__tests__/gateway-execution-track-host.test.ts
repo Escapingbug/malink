@@ -12,7 +12,9 @@ it('switches real processes over one locked current business directory, includin
     async resolveRelease(releaseId) { return { releaseId, buildId: releaseId,
       executable: process.execPath,
       arguments: ['--import', 'tsx', resolve('src/__tests__/fixtures/execution-track-child.ts')],
-      cwd: process.cwd(), environment: { ...process.env } } },
+      // This fixture reads health from a temporary file. Never let a test
+      // child bind an admin socket inherited from the live Gateway Agent.
+      cwd: process.cwd(), environment: { ...process.env, MALINK_GATEWAY_ADMIN_SOCKET: undefined } } },
     async validateCompatibility() {},
     async readHealth() { return JSON.parse(await readFile(join(root, 'health.json'), 'utf8')) },
     async drain() {}, log() {}, timeoutMs: 5000,

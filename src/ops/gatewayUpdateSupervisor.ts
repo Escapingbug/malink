@@ -696,7 +696,7 @@ export class GatewayUpdateSupervisor {
   }
 
   /** Admit an already sealed binary without moving or restoring business data. */
-  async admitExecutionRelease(releaseId: string): Promise<{ directory: string; buildId: string }> {
+  async admitExecutionRelease(releaseId: string, allowIncompatible = false): Promise<{ directory: string; buildId: string }> {
     requireReleaseId(releaseId)
     const directory = join(this.releasesRoot, releaseId)
     const signed = signedGatewayAgentUpdatePromptSchema.parse(JSON.parse(await readFile(join(directory, 'release-prompt.json'), 'utf8')))
@@ -705,11 +705,15 @@ export class GatewayUpdateSupervisor {
     const normalized = (entries: GatewayReleaseManifest['stateCatalog']) => entries
       .map(entry => ({ id: entry.id, schemaVersion: entry.schemaVersion, stateClass: entry.stateClass }))
       .sort((a, b) => a.id.localeCompare(b.id))
-    if (canonicalJson(normalized(signed.update.stateCatalog)) !== canonicalJson(normalized([...GATEWAY_STATE_CATALOG]))) {
+    if (!allowIncompatible && canonicalJson(normalized(signed.update.stateCatalog)) !== canonicalJson(normalized([...GATEWAY_STATE_CATALOG]))) {
       throw new Error('This release cannot participate in shared-state version selection: persistent state compatibility differs')
     }
     const seal = parseAgentReleaseSeal(JSON.parse(await readFile(join(directory, 'release-seal.json'), 'utf8')))
     await verifyAgentSealedRelease(directory, signed, seal)
+    if (allowIncompatible) {
+      // Recovery tooling is release-pinned and must exist before stopping work.
+      await checkJavaScriptWithoutExecution(directory, 'ops/gatewayForwardRecoveryCli.js')
+    }
     this.executionBuildIds.set(releaseId, signed.update.buildId)
     return { directory, buildId: signed.update.buildId }
   }

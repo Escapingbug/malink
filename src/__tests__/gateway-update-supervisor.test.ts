@@ -36,6 +36,28 @@ afterEach(async () => {
 })
 
 describe('GatewayUpdateSupervisor', () => {
+  it('requires explicit incompatible-upgrade confirmation on the execution-track socket', async () => {
+    const fixture = await releaseFixture({ protectedStateAddition: true })
+    const supervisor = new GatewayUpdateSupervisor({ ...fixture.config, executionTracksEnabled: true }, { fetch: fixture.fetch })
+    await supervisor.initialize(); await supervisor.stage('release-2')
+    const backup = vi.fn(async () => '/backup')
+    const tracks = new GatewayExecutionTracks(join(fixture.installRoot, 'tracks.json'), {
+      version: 1, gatewayNodeId: 'node', dataDirectory: join(fixture.installRoot, 'data'),
+      generation: 0, activeRelease: 'release-1', phase: 'steady',
+    }, { validateRelease: async () => { throw new Error('incompatible') }, validateForwardRelease: async () => {},
+      backupStoppedState: backup, prepareForwardHost: async () => true,
+      ensureStandby: async () => {}, releaseExecution: async () => {}, activate: async () => {}, verifyActive: async () => {} })
+    const server = await startGatewayUpdateSupervisorServer({ socketPath: join(fixture.installRoot, 'tracks.sock'), supervisor, executionTracks: tracks })
+    try {
+      const client = new GatewayUpdateSupervisorClient(server.socketPath, 5000)
+      await expect(client.scheduleApply('release-2', false, 0)).rejects.toThrow('forward_only_confirmation_required')
+      expect((await tracks.status()).generation).toBe(0)
+      expect(backup).not.toHaveBeenCalled()
+      expect(await client.scheduleApply('release-2', true, 0)).toMatchObject({ activationMode: 'forward-only',
+        executionTracks: { generation: 1, phase: 'releasing' } })
+      expect(backup).not.toHaveBeenCalled()
+    } finally { await server.stop(); await supervisor.stop() }
+  })
   it('does not infer business activation from the stable controller symlink', async () => {
     const fixture = await releaseFixture()
     const supervisor = new GatewayUpdateSupervisor({ ...fixture.config, executionTracksEnabled: true }, { fetch: fixture.fetch })

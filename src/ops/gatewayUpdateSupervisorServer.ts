@@ -35,17 +35,21 @@ async function statusWithTracks(input: {
 }): Promise<GatewayUpdateStatus> {
   const status = await input.supervisor.status()
   if (!input.executionTracks) return status
-  const { generation, activeRelease, standbyRelease, phase, targetRelease, error, updatedAt } = await input.executionTracks.status()
+  const { generation, activeRelease, standbyRelease, phase, targetRelease, error, updatedAt, forwardOnly } = await input.executionTracks.status()
   const preparingAnother = phase === 'steady' && status.releaseId !== activeRelease && status.releaseId !== standbyRelease
     && ['staging', 'agent_required', 'agent_running', 'agent_validating', 'staged'].includes(status.phase)
   return gatewayUpdateStatusSchema.parse({ ...status,
     currentBuildId: input.supervisor.executionBuildId(activeRelease) ?? status.currentBuildId,
     ...(preparingAnother ? {} : {
+      activationMode: forwardOnly ? 'forward-only' : 'rollback-safe',
       phase: phase === 'steady' ? 'committed' : phase === 'attention' ? 'repair_required' : phase === 'releasing' ? 'scheduled' : 'activating',
       releaseId: targetRelease ?? activeRelease,
       targetBuildId: input.supervisor.executionBuildId(targetRelease ?? activeRelease) ?? status.targetBuildId,
       previousReleaseId: standbyRelease,
-      detail: error ?? (phase === 'steady' ? 'Selected version is active; conversations and results use the same current state.' : 'Execution is transferring between the retained versions.'),
+      detail: error ?? (forwardOnly
+        ? phase === 'steady' ? 'Incompatible upgrade complete. Previous versions cannot read the new data; a verified local backup is retained.'
+          : 'Incompatible upgrade: stopping writes, verifying a local backup, and upgrading the Host. Agent connectivity may be interrupted; use local recovery if needed.'
+        : phase === 'steady' ? 'Selected version is active; conversations and results use the same current state.' : 'Execution is transferring between the retained versions.'),
     }), updatedAt: Math.max(updatedAt ?? 0, status.updatedAt), executionTracks: {
     generation, activeRelease, standbyRelease, phase, targetRelease,
     ...(error ? { error: error.slice(0, 4096) } : {}),
@@ -151,7 +155,10 @@ export async function startGatewayUpdateSupervisorServer(input: {
           if (!retained && !(staged.phase === 'staged' && staged.releaseId === body.releaseId)) {
             throw new SupervisorHttpError(409, 'release_not_admitted')
           }
-          await input.executionTracks.scheduleSelection(body.releaseId, body.executionGeneration ?? tracks.generation)
+          if (staged.activationMode === 'forward-only' && staged.releaseId === body.releaseId && !body.allowForwardOnly) {
+            throw new SupervisorHttpError(409, 'forward_only_confirmation_required')
+          }
+          await input.executionTracks.scheduleSelection(body.releaseId, body.executionGeneration ?? tracks.generation, body.allowForwardOnly)
           const selected = await statusWithTracks(input)
           if (body.executionGeneration === undefined) delete selected.executionTracks
           sendJson(response, 202, selected)

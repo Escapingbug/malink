@@ -12,6 +12,7 @@ export default defineConfig({
     'ops/gatewayExecutionTrackWorker': 'src/ops/gatewayExecutionTrackWorker.ts',
     'ops/gatewayAgentUpdateCli': 'src/ops/gatewayAgentUpdateCli.ts',
     'ops/gatewayJournalRepairCli': 'src/ops/gatewayJournalRepairCli.ts',
+    'ops/gatewayForwardRecoveryCli': 'src/ops/gatewayForwardRecoveryCli.ts',
     'ops/macosGatewayHostDoctor': 'scripts/macos-gateway-host-doctor.ts',
     'ops/matrix-local-gateway': 'scripts/matrix-local-gateway.ts',
   },

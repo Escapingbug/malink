@@ -32,6 +32,7 @@ Update this Malink Gateway from the exact signed Git commit supplied above.
    bundles, including `ops/matrix-local-gateway.js`,
    `ops/gatewayUpdateSupervisorMain.js`, `ops/gatewayAgentUpdateCli.js`, and
    `ops/gatewayJournalRepairCli.js`. Also copy `ops/gatewayExecutionTrackWorker.js`
+   and `ops/gatewayForwardRecoveryCli.js`
    when present in the target production build; the independent supervisor uses
    this pinned standby-controller entrypoint. Recovery tooling must remain release-pinned
    to the journal implementation it validates.
