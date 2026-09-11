@@ -3474,6 +3474,10 @@ function nativeRelease(versionCode: number) {
   }
 }
 
+// Polling must not decrypt the complete growing transcript on every check.
+// Cache by exact ciphertext and binding; changed envelopes/keys still verify.
+const openedTestEvents = new WeakMap<TestMatrixClient, Map<string, Awaited<ReturnType<typeof openMlp3Envelope>>>>()
+
 async function events(
   client: TestMatrixClient,
   key: string,
@@ -3481,15 +3485,22 @@ async function events(
   projectId: string,
 ) {
   const result = []
+  let cache = openedTestEvents.get(client)
+  if (!cache) {
+    cache = new Map()
+    openedTestEvents.set(client, cache)
+  }
   for (const delivery of client.delivered) {
     const extension = delivery.content[MALINK_MATRIX_EXTENSION] as Record<string, unknown> | undefined
     if (!extension?.envelope) continue
-    const opened = await openMlp3Envelope(extension.envelope, {
+    const cacheKey = JSON.stringify([key, roomId, projectId, extension.envelope])
+    const opened = cache.get(cacheKey) ?? await openMlp3Envelope(extension.envelope, {
       projectKey: base64UrlDecode(key),
       roomId,
       projectId,
       keyId: (extension.envelope as { keyId: string }).keyId,
     })
+    cache.set(cacheKey, opened)
     if (opened.plaintext.kind === 'signed_event') result.push(opened.plaintext.value.event)
   }
   return result
