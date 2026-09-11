@@ -34,8 +34,11 @@ export function deriveConnectionPathPresentation(input: {
   gatewayLiveness?: GatewayNodeLiveness;
   gatewaySnapshotAvailable: boolean;
   now: number;
+  historyRecovery?: ConnectionPathSegment;
 }): ConnectionPathPresentation {
-  const deviceToMatrix = deviceMatrixSegment(input.trusted, input.matrixStatus);
+  const deviceToMatrix = input.trusted && input.matrixStatus === "connected" && input.historyRecovery
+    ? input.historyRecovery
+    : deviceMatrixSegment(input.trusted, input.matrixStatus);
   const matrixToGateway = gatewaySegment(input);
   const primary = primaryIssue(deviceToMatrix, matrixToGateway);
   return {

@@ -7,7 +7,11 @@ keeps the connection settings route available; it must not imply data was erased
 Transport readiness does not imply that historical task state has converged.
 Android publishes local lifecycle detail while discovering threads and recovering
 active session tails. The UI keeps the connection usable and shows checked page
-counts, not a percentage whose denominator is unknown. These are local bridge
+counts in the existing connection settings, not a percentage whose denominator
+is unknown. Normal recovery reuses the Device status icon in the existing
+connection indicator; it does not add a banner or another status entry near the
+composer. The Computer indicator remains independently driven by Gateway
+liveness. These are local bridge
 presentation details, not new MLP commands or a protocol version change.
 
 Tail recovery reads one page per target per pass, follows pagination, and waits

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { RecoveryStatus, deviceSetupPresentation, nativeHistoryRecoveryPages } from "../app/RecoveryStatus";
+import { historyRecoveryPresentation, deviceSetupPresentation, nativeHistoryRecoveryPages } from "../app/RecoveryStatus";
 import { AgentActivityIndicator } from "../app/AgentActivityIndicator";
 import { deriveConnectionPresentation } from "../app/connectionPresentation";
 
@@ -29,15 +29,9 @@ test("native recovery reports actual checked pages without inventing a total", (
   assert.equal(nativeHistoryRecoveryPages("matrix_session_history_recovering_0"), 0);
   assert.equal(nativeHistoryRecoveryPages("matrix_session_history_recovering_invalid"), null);
   assert.equal(nativeHistoryRecoveryPages(null), null);
-  const html = renderToStaticMarkup(<RecoveryStatus connected messages={3} pages={12} />);
-  assert.match(html, /Connected/);
-  assert.match(html, /12 history pages checked/);
-  assert.match(html, /total is not yet known/);
-  assert.doesNotMatch(html, /100%|3 messages/);
-  assert.match(html, /^<details class="history-recovery-status">/);
-  const summary = html.match(/<summary[\s\S]*?<\/summary>/)?.[0] ?? "";
-  assert.match(summary, /<svg/);
-  assert.match(summary, />Syncing</);
-  assert.doesNotMatch(summary, /12 history|remaining total|Connected/);
-  assert.doesNotMatch(html, /aria-live|<details[^>]*\sopen/);
+  const recovery = historyRecoveryPresentation({ loading: false, incomplete: false, messages: 3, pages: 12 })!;
+  assert.equal(recovery.tone, "progress");
+  assert.match(recovery.detail, /12 history pages checked/);
+  assert.match(recovery.detail, /total is not yet known/);
+  assert.equal(historyRecoveryPresentation({ loading: false, incomplete: false, messages: 3, pages: null }), undefined);
 });

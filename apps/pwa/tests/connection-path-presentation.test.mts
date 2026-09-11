@@ -7,6 +7,24 @@ import { deriveConnectionPathPresentation } from "../app/connectionPathPresentat
 
 const now = 1_000_000;
 
+test("history recovery reuses the device icon without changing computer availability", () => {
+  const input = { trusted: true, matrixStatus: "connected" as const, gatewayLabel: "Mac",
+    gatewaySnapshotAvailable: true, now,
+    gatewayLiveness: {state: "online" as const, lastVerifiedAt: now},
+    historyRecovery: {tone: "progress" as const, label: "Syncing", detail: "12 history pages checked"} };
+  const p = deriveConnectionPathPresentation(input);
+  assert.equal(p.deviceToMatrix.tone, "progress");
+  assert.equal(p.matrixToGateway.tone, "ready");
+  const html = renderToStaticMarkup(createElement(ConnectionPathIndicator, {presentation:p, variant:"compact"}));
+  assert.match(html, /connection-status-spinner/);
+  assert.equal((html.match(/<svg/g) ?? []).length, 2);
+  assert.match(p.accessibleLabel, /12 history pages/);
+  assert.equal(deriveConnectionPathPresentation({...input, historyRecovery: undefined}).deviceToMatrix.tone, "ready");
+  assert.equal(deriveConnectionPathPresentation({...input, matrixStatus: "offline"}).deviceToMatrix.tone, "offline");
+  assert.equal(deriveConnectionPathPresentation({...input, trusted:false}).deviceToMatrix.tone, "setup");
+  assert.equal(deriveConnectionPathPresentation({...input, historyRecovery: {...input.historyRecovery, tone:"attention"}}).deviceToMatrix.tone, "attention");
+});
+
 test("shows this device and its Workspace computer as separate healthy statuses", () => {
   const presentation = deriveConnectionPathPresentation({
     trusted: true,

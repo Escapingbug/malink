@@ -2,7 +2,7 @@
 
 import { ArchiveListHeading, ArchiveListHelp, ArchiveEmptyState, ArchivedConversationNotice } from "./ArchiveView";
 import { SessionDeleteDialog } from "./SessionDeleteDialog";
-import { RecoveryStatus, deviceSetupPresentation, nativeHistoryRecoveryPages } from "./RecoveryStatus";
+import { historyRecoveryPresentation, deviceSetupPresentation, nativeHistoryRecoveryPages } from "./RecoveryStatus";
 import { SessionRenameDialog } from "./SessionRenameDialog";
 import { ConversationActionDialog } from "./ConversationActionDialog";
 import { referenceDraft, referenceTargets, type ConversationReference } from "./conversationReference";
@@ -3216,11 +3216,18 @@ function MalinkAppRuntime() {
         .sort()
         .join("\0")}`
     : null;
+  const historyRecovery = useMemo(() => historyRecoveryPresentation({
+    loading: historyLoading || historyCheckingRemote,
+    incomplete: connectionDetail === "matrix_session_history_incomplete",
+    messages: messages.length,
+    pages: nativeHistoryRecoveryPages(connectionDetail),
+  }), [historyLoading, historyCheckingRemote, connectionDetail, messages.length]);
   const connectionPathPresentation = useMemo(
     () => deriveConnectionPathPresentation({
       trusted: trustedGateway !== null,
       matrixStatus: connectionStatus,
       gatewayLabel: activeProjectGateway.label,
+      historyRecovery,
       gatewayLiveness:
         gatewayNodeLivenessById[activeProjectGateway.gatewayNodeId],
       gatewaySnapshotAvailable: gatewayState?.updatedAt !== undefined,
@@ -3229,6 +3236,7 @@ function MalinkAppRuntime() {
     [
       activeProjectGateway.gatewayNodeId,
       activeProjectGateway.label,
+      historyRecovery,
       connectionStatus,
       gatewayLivenessNow,
       gatewayNodeLivenessById,
@@ -15109,14 +15117,6 @@ function MalinkAppRuntime() {
         </div>
 
         <div className="composer-area">
-          {connectionDetail === "matrix_session_history_incomplete" && <div className="session-notices-conversation" role="status">
-            <strong>Some saved task states could not be verified</strong>
-            <p>A history check failed. This does not mean the Agent is still running or has stopped. Open connection settings to reconnect; if it persists, export diagnostics there.</p>
-            <button type="button" onClick={() => setSettingsOpen(true)}>Open connection settings</button>
-          </div>}
-          {(historyLoading || historyCheckingRemote || nativeHistoryRecoveryPages(connectionDetail) !== null) && (
-            <RecoveryStatus connected={connectionStatus === "connected"} messages={messages.length} pages={nativeHistoryRecoveryPages(connectionDetail)} />
-          )}
           {feedAwayFromLatest ? (
             <button
               type="button"
@@ -15920,6 +15920,7 @@ function MalinkAppRuntime() {
         config={matrixConfig}
         status={displayedConnectionStatus}
         connectionDetail={connectionDetail}
+        historyRecoveryDetail={displayedConnectionStatus === "connected" ? historyRecovery?.detail : undefined}
         repairReason={connectionRepairReason}
         error={pairingError ?? connectionError}
         pairingPreview={pairingPreview}

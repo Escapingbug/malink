@@ -75,6 +75,7 @@ type Props = {
   config: MatrixConnectionConfig;
   status: MatrixConnectionStatus;
   connectionDetail: string | null;
+  historyRecoveryDetail?: string;
   repairReason: ConnectionRepairReason | null;
   error: string | null;
   pairingPreview: PairingPreview | null;
@@ -179,6 +180,7 @@ function MatrixSettingsDialog({
   config,
   status,
   connectionDetail,
+  historyRecoveryDetail,
   error,
   pairingPreview,
   pairingCompletion,
@@ -586,7 +588,7 @@ function MatrixSettingsDialog({
               <span>
                 <small>This device</small>
                 <strong>{connectionPresentation.title}</strong>
-                <p>{connectionPresentation.detail}</p>
+                <p>{historyRecoveryDetail ?? connectionPresentation.detail}</p>
               </span>
               {status !== "connected" && (
                 <button
