@@ -21,3 +21,11 @@ test("batch archives await settlement and keep unknown results durable", () => {
   assert.match(deletion, /rememberBackgroundRecoveredNativeCommand/);
   assert.doesNotMatch(new CommandCompletionTimeoutError().message, /Reconnect before retrying/);
 });
+
+test("all Gateway capabilities are checked before batch mutation, independently of release labels", () => {
+  const archive = source.slice(source.indexOf('async function archiveSelectedSessions()'), source.indexOf('function consumeBatchArchiveProgress'));
+  assert.match(archive, /includeOperationCapabilities: true/);
+  assert.match(archive, /status.supportedOperations\?\.includes\("session.archive.batch"\)/);
+  assert.ok(archive.indexOf('await Promise.all(') < archive.indexOf('operation: "session.archive.batch"'));
+  assert.doesNotMatch(archive, /currentBuildId|gatewayRelease\.buildId/);
+});

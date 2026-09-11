@@ -155,6 +155,7 @@ export const gatewayUpdateStatusSchema = z
     currentBuildId: opaqueId.optional(),
     previousReleaseId: releaseId.optional(),
     executionTracks: gatewayExecutionTracksStatusSchema.optional(),
+    supportedOperations: z.array(z.string().min(1).max(128)).max(128).optional(),
     activationMode: z.enum(['rollback-safe', 'forward-only']).optional(),
     detail: z.string().min(1).max(4_096).optional(),
     maintenanceSessionId: opaqueId.optional(),

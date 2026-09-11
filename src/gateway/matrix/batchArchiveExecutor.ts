@@ -6,6 +6,20 @@ import {
 
 type Target = BatchArchiveRequest['targets'][number]
 
+/** Storage/transport faults are not item failures. Keep the parent journal
+ * unfinished so startup can resume the checkpoint with the same child IDs. */
+export class BatchArchiveInterruptedError extends Error {
+  constructor(cause: unknown) {
+    super(`Batch archive interrupted: ${cause instanceof Error ? cause.message : String(cause)}`, { cause })
+    this.name = 'BatchArchiveInterruptedError'
+  }
+}
+
+async function durableStep(action: () => Promise<void>): Promise<void> {
+  try { await action() }
+  catch (error) { throw new BatchArchiveInterruptedError(error) }
+}
+
 /** Stable item identity lets the existing lifecycle journal recover a crash
  * between archiving an item and persisting the enclosing batch checkpoint. */
 export function batchArchiveItemCommandId(batchId: string, target: Target): string {
@@ -36,8 +50,8 @@ export async function executeBatchArchive(input: {
   if (state.batchId !== input.batchId || JSON.stringify(state.items.map(({ projectId, sessionId }) => ({ projectId, sessionId }))) !== JSON.stringify(request.targets)) {
     throw new Error('Batch checkpoint does not match the immutable request')
   }
-  if (!input.checkpoint) await input.persist(structuredClone(state), 0)
-  if (state.state === 'completed') { await input.publish(structuredClone(state)); return state }
+  if (!input.checkpoint) await durableStep(() => input.persist(structuredClone(state), 0))
+  if (state.state === 'completed') { await durableStep(() => input.publish(structuredClone(state))); return state }
   let mutation = Promise.resolve()
   const update = (index: number, patch: Partial<BatchArchiveProgress['items'][number]>) => {
     const operation = mutation.then(async () => {
@@ -46,10 +60,10 @@ export async function executeBatchArchive(input: {
       next.revision++
       next.state = next.items.every(item => ['succeeded', 'failed'].includes(item.state)) ? 'completed' : 'running'
       batchArchiveProgressSchema.parse(next)
-      await input.persist(next, state.revision)
+      await durableStep(() => input.persist(next, state.revision))
       state = next
       // publish must enqueue in the durable outbox, not await Matrix receipt.
-      await input.publish(structuredClone(next))
+      await durableStep(() => input.publish(structuredClone(next)))
     })
     mutation = operation
     return operation

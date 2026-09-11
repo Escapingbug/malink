@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { batchArchiveRequestSchema, type BatchArchiveProgress } from '../../packages/protocol/src/batch-archive'
-import { executeBatchArchive, batchArchiveItemCommandId } from '../gateway/matrix/batchArchiveExecutor'
+import { executeBatchArchive, batchArchiveItemCommandId, BatchArchiveInterruptedError } from '../gateway/matrix/batchArchiveExecutor'
 
 const request = { operation: 'session.archive.batch' as const, targets: Array.from({ length: 7 }, (_, index) => ({ projectId: 'project', sessionId: `session-${index}` })) }
 const describeFailure = () => ({ code: 'item_failed', message: 'Item failed', retryable: false })
@@ -54,5 +54,21 @@ describe('protocol batch archive coordinator', () => {
       checkpoint: { type: 'session.archive.batch.progress', batchId: 'other', revision: 1, state: 'running', items: request.targets.map(target => ({ ...target, state: 'pending' })) },
       persist: async () => {}, publish: async () => {}, archive: async () => {},
     })).rejects.toThrow('immutable request')
+  })
+  it('resumes after progress publication fails without repeating completed items', async () => {
+    let checkpoint: BatchArchiveProgress | undefined
+    const executed: string[] = []
+    const input = { batchId: 'batch', request, describeFailure, concurrency: 1,
+      persist: async (state: BatchArchiveProgress) => { checkpoint = structuredClone(state) },
+      archive: async (_target: unknown, id: string) => { executed.push(id) },
+    }
+    await expect(executeBatchArchive({ ...input, publish: async state => {
+      if (state.items[0]?.state === 'succeeded') throw new Error('outbox unavailable')
+    } })).rejects.toBeInstanceOf(BatchArchiveInterruptedError)
+    expect(checkpoint?.items[0]?.state).toBe('succeeded')
+    const result = await executeBatchArchive({ ...input, checkpoint, publish: async () => {} })
+    expect(result.state).toBe('completed')
+    expect(executed).toHaveLength(request.targets.length)
+    expect(new Set(executed).size).toBe(executed.length)
   })
 })

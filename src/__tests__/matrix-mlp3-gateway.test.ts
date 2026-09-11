@@ -487,8 +487,19 @@ describe('MatrixMlp3GatewayRunner', () => {
       matrixEventId: '$requested-archive-command',
     })
     await journal.markDispatched(interruptedArchive, 2)
+    const { sessionId: _archiveSessionId, ...batchBase } = interruptedArchive
+    const retainedBatch: Mlp3Command = { ...batchBase, commandId: 'retained-batch',
+      operation: 'session.archive.batch', payload: {
+        operation: 'session.archive.batch', targets: [{ projectId: interruptedArchive.projectId, sessionId: 'batch-missing' }],
+      } }
+    const retainedChild: Mlp3Command = { ...interruptedArchive, commandId: 'batch-archive-retained-child', sessionId: 'batch-missing' }
+    await journal.claim(retainedBatch, 3, { roomId, matrixEventId: '$retained-batch' })
+    await journal.markDispatched(retainedBatch, 3)
+    await journal.claim(retainedChild, 3, { roomId, matrixEventId: '$retained-child' })
+    await journal.markDispatched(retainedChild, 3)
     await journal.close()
 
+    config.batchArchiveEnabled = false
     const runner = new MatrixMlp3GatewayRunner(config, {
       client,
       onLog: message => gatewayLogs.push(message),
@@ -554,6 +565,20 @@ describe('MatrixMlp3GatewayRunner', () => {
       '[mlp3/matrix] 1 archived session cleanup checkpoint(s) remain available for explicit retry',
     )
     await runner.stop()
+    await journal.initialize()
+    expect((await journal.get(retainedBatch))?.status).toBe('dispatched')
+    expect((await journal.get(retainedChild))?.status).toBe('dispatched')
+    await journal.close()
+    config.batchArchiveEnabled = true
+    const capableRunner = new MatrixMlp3GatewayRunner(config, { client })
+    await capableRunner.start()
+    await journal.initialize()
+    await waitFor(async () => (await journal.get(retainedBatch))?.status === 'terminal')
+    expect((await journal.get(retainedBatch))?.terminal?.result).toMatchObject({
+      state: 'completed', items: [{ sessionId: 'batch-missing', state: 'failed' }],
+    })
+    await capableRunner.stop()
+    await journal.close()
   })
 
   it('establishes authoritative pointers for the first device before using the pairing fast path', async () => {
@@ -2168,6 +2193,26 @@ describe('MatrixMlp3GatewayRunner', () => {
 
     await send({
       ...base,
+      commandId: 'gateway-capabilities-1',
+      operation: 'gateway.update.status',
+      payload: { operation: 'gateway.update.status', includeOperationCapabilities: true },
+    }, '$gateway-capabilities-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === 'gateway-capabilities-1' && event.payload.type === 'gateway.update.status'))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'gateway-capabilities-1' && event.payload.type === 'gateway.update.status')?.payload)
+      .toMatchObject({ status: { supportedOperations: ['session.archive.batch'] } })
+    await send({ ...base, commandId: 'gateway-ordinary-status-1', operation: 'gateway.update.status',
+      payload: { operation: 'gateway.update.status' } }, '$gateway-ordinary-status-1')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === 'gateway-ordinary-status-1' && event.payload.type === 'gateway.update.status'))
+    const ordinaryStatus = (await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'gateway-ordinary-status-1' && event.payload.type === 'gateway.update.status')
+    if (ordinaryStatus?.payload.type !== 'gateway.update.status') throw new Error('Missing ordinary status')
+    expect(ordinaryStatus.payload.status).not.toHaveProperty('supportedOperations')
+
+    await send({
+      ...base,
       commandId: 'gateway-update-stage-1',
       operation: 'gateway.update.stage',
       payload: { operation: 'gateway.update.stage', releaseId: 'release-2' },
@@ -2893,6 +2938,23 @@ describe('MatrixMlp3GatewayRunner', () => {
       outcome: 'cancelled',
       projection: { activity: 'idle' },
     })
+
+    // Fresh live sessions, not only tombstone replays, take the batch path.
+    const freshBatchTargets = ['batch-fresh-a', 'batch-fresh-b', 'batch-fresh-c'].map(sessionId => ({ projectId, sessionId }))
+    for (const target of freshBatchTargets) {
+      await send({ ...base, commandId: `create-${target.sessionId}`, sessionId: target.sessionId,
+        operation: 'session.create', payload: { operation: 'session.create', title: target.sessionId } }, `$create-${target.sessionId}`)
+      await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
+        event.causationCommandId === `create-${target.sessionId}` && event.payload.type === 'session.ready'))
+    }
+    await send({ ...base, commandId: 'batch-fresh', operation: 'session.archive.batch',
+      payload: { operation: 'session.archive.batch', targets: freshBatchTargets } }, '$batch-fresh')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === 'batch-fresh' && event.payload.type === 'command.reconciled'))
+    expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
+      event.causationCommandId === 'batch-fresh' && event.payload.type === 'command.reconciled')?.payload)
+      .toMatchObject({ outcome: 'succeeded', result: { state: 'completed',
+        items: freshBatchTargets.map(target => ({ ...target, state: 'succeeded' })) } })
 
     const archiveCleanupGate = client.blockNextThreadDeletion()
     // A batch is admitted once and reports independent item failures without

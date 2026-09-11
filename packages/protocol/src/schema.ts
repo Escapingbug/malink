@@ -743,7 +743,7 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
     })
     .strict(),
   z
-    .object({ operation: z.literal('gateway.update.status'), includeExecutionTracks: z.literal(true).optional() })
+    .object({ operation: z.literal('gateway.update.status'), includeExecutionTracks: z.literal(true).optional(), includeOperationCapabilities: z.literal(true).optional() })
     .strict(),
   z
     .object({

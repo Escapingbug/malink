@@ -117,6 +117,7 @@ class DurableCommandOutbox internal constructor(
                 !candidate.state.isTerminal &&
                     candidate.projectId == projectId &&
                     candidate.payload["includeExecutionTracks"] == payload["includeExecutionTracks"] &&
+                    candidate.payload["includeOperationCapabilities"] == payload["includeOperationCapabilities"] &&
                     CommandPayloadValidator.validate(candidate.payload).operation
                         .isGatewayStatusProbe
             }

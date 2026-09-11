@@ -385,7 +385,9 @@ export class NativeBridgeClient implements MalinkClient {
 
   async send(payload: CommandPayload, projectId?: string): Promise<MalinkCommandSendResult> {
     await this.ready;
-    if (payload.operation === "session.archive.batch" && !this.helloResult.capabilities["commands.batch-archive"]) {
+    if ((payload.operation === "session.archive.batch" ||
+      (payload.operation === "gateway.update.status" && payload.includeOperationCapabilities)) &&
+      !this.helloResult.capabilities["commands.batch-archive"]) {
       throw new Error("Update the Android app to use protocol batch archive.");
     }
     const idempotencyKey = crypto.randomUUID();

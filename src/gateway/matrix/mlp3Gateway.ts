@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { BatchArchiveStore } from './batchArchiveStore'
-import { executeBatchArchive } from './batchArchiveExecutor'
+import { BatchArchiveInterruptedError, executeBatchArchive } from './batchArchiveExecutor'
 import { mkdir, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import {
@@ -1195,6 +1195,10 @@ export class MatrixMlp3GatewayRunner {
         await this.executeWithDeadline(project, journalRecord)
       } catch (error) {
         this.log(`[mlp3/matrix] command ${command.commandId} failed: ${formatError(error)}`)
+        if (error instanceof BatchArchiveInterruptedError && command.operation === 'session.archive.batch') {
+          this.log(`[mlp3/matrix] batch ${command.commandId} remains durable and unfinished for recovery`)
+          return
+        }
         await this.failCommand(project, command, error, {
           allowExpiredExecution: error instanceof GatewayCommandExecutionTimeoutError,
         })
@@ -1674,7 +1678,11 @@ export class MatrixMlp3GatewayRunner {
     command: Mlp3CommandOf<'gateway.update.status'>,
   ): Promise<void> {
     const supervisor = this.requireGatewayUpdateSupervisor()
-    const status = await (command.payload.includeExecutionTracks ? supervisor.executionStatus?.() ?? supervisor.status() : supervisor.status())
+    const baseStatus = await (command.payload.includeExecutionTracks ? supervisor.executionStatus?.() ?? supervisor.status() : supervisor.status())
+    // Opt-in: older clients strictly validate the ordinary status response.
+    const status = command.payload.includeOperationCapabilities
+      ? { ...baseStatus, supportedOperations: this.config.batchArchiveEnabled === false ? [] : ['session.archive.batch'] }
+      : baseStatus
     await this.settleAndDeliver(
       project,
       command,
@@ -2899,6 +2907,21 @@ export class MatrixMlp3GatewayRunner {
   ): Promise<void> {
     const sessionId = command.sessionId
     if (!sessionId) throw new Error('Lifecycle command is missing its session ID')
+    // Recheck at dispatch, after waiting in the session queue. In particular a
+    // batch must not retain access that was revoked while other items ran.
+    const devices = this.dependencies.listTrustedDevices ? await this.dependencies.listTrustedDevices() : this.config.trustedDevices
+    const device = devices.find(candidate => candidate.deviceId === command.deviceId)
+    const lifecyclePermission = command.payload.state === 'active' ? 'session.restore' : 'session.archive'
+    const hasLifecyclePermission = !device?.allowedOperations || device.allowedOperations.includes('device.invite')
+      || device.allowedOperations.includes(lifecyclePermission)
+      || (command.payload.state !== 'active' && !command.commandId.startsWith('batch-archive-')
+        && device.allowedOperations.includes('session.delete'))
+    if (!device || !device.allowedRoomIds.includes(project.config.roomId)
+      || (device.certificateExpiresAt !== undefined && device.certificateExpiresAt <= this.now())
+      || !hasLifecyclePermission
+      || (this.dependencies.isTrustedDeviceActive && !await this.dependencies.isTrustedDeviceActive(command.deviceId))) {
+      throw new Error('Archive target is unavailable or not authorized')
+    }
     const record = project.project.sessions.find(candidate => candidate.id === sessionId)
     if (!record) {
       // Cleanup removes runtime metadata, not the durable proof of deletion.
@@ -2978,8 +3001,11 @@ export class MatrixMlp3GatewayRunner {
   }
 
   private async archiveBatch(project: V3ProjectRuntime, command: Mlp3CommandOf<'session.archive.batch'>, signal?: AbortSignal): Promise<void> {
+    if (this.config.batchArchiveEnabled === false) {
+      throw new Error('Gateway update required: this release preserves batch archive state but does not execute batch archive')
+    }
     const key = commandKey(command)
-    const checkpoint = await this.archiveBatches.read(key)
+    const checkpoint = await this.archiveBatches.read(key).catch(error => { throw new BatchArchiveInterruptedError(error) })
     const result = await executeBatchArchive({
       batchId: command.commandId, request: command.payload, checkpoint,
       persist: (progress, revision) => this.archiveBatches.write(key, progress, revision),
@@ -2987,7 +3013,7 @@ export class MatrixMlp3GatewayRunner {
         await this.enqueueEventDelivery(project, undefined,
           this.eventFor(project, undefined, command, `batch-progress-${progress.revision}`, progress))
       },
-      describeFailure: error => ({ code: 'archive_item_failed', message: formatError(error).slice(0, 8192) || 'Archive failed', retryable: false }),
+      describeFailure: error => ({ code: 'archive_item_failed', message: formatError(error).slice(0, 512) || 'Archive failed', retryable: false }),
       archive: async (target, itemCommandId) => {
         assertCommandExecutionActive(signal)
         const devices = this.dependencies.listTrustedDevices ? await this.dependencies.listTrustedDevices() : this.config.trustedDevices
@@ -3017,7 +3043,7 @@ export class MatrixMlp3GatewayRunner {
     await this.settleAndDeliver(project, command, this.eventFor(project, undefined, command, 'batch-completed', {
       type: 'command.reconciled', commandId: command.commandId, state: 'terminal',
       acceptedAt: command.createdAt, terminalAt: this.now(), outcome: 'succeeded', result,
-    }), 'succeeded', result)
+    }), 'succeeded', result).catch(error => { throw new BatchArchiveInterruptedError(error) })
   }
 
   private async assertMaintenanceSessionCanBeArchived(sessionId: string, title?: string): Promise<void> {
@@ -3912,6 +3938,15 @@ export class MatrixMlp3GatewayRunner {
       if (project) this.scheduleTerminalRedelivery(project, record)
     }
     for (const record of await this.journal.unfinished()) {
+      if (this.config.batchArchiveEnabled === false && (
+        record.command.operation === 'session.archive.batch'
+        || (record.command.operation === 'session.set_lifecycle' && record.command.commandId.startsWith('batch-archive-'))
+      )) {
+        // Never terminalize or run a partially dispatched batch in a reader-only
+        // fallback. The next capable release resumes the same parent/child IDs.
+        this.log(`[mlp3/matrix] retaining batch command ${record.command.commandId} until a capable Gateway is active`)
+        continue
+      }
       const project = this.projectForRecord(record)
       if (!project) {
         this.log(`[mlp3/matrix] cannot recover command ${record.command.commandId}: project unavailable`)

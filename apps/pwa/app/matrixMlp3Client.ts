@@ -987,7 +987,7 @@ export function toMlp3Command(
       return {
         ...common,
         operation: "gateway.update.status",
-        payload: { operation: "gateway.update.status", ...(payload.includeExecutionTracks ? { includeExecutionTracks: true } : {}) },
+        payload: { operation: "gateway.update.status", ...(payload.includeExecutionTracks ? { includeExecutionTracks: true } : {}), ...(payload.includeOperationCapabilities ? { includeOperationCapabilities: true } : {}) },
       };
     case "gateway.update.prepare":
       return {

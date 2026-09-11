@@ -2505,6 +2505,7 @@ class NativeClientRuntime(
                 v3Payload = buildJsonObject {
                     put("operation", v3Operation)
                     if (raw.boolean("includeExecutionTracks") == true) put("includeExecutionTracks", true)
+                    if (raw.boolean("includeOperationCapabilities") == true) put("includeOperationCapabilities", true)
                 }
             }
             "gateway.update.prepare" -> {

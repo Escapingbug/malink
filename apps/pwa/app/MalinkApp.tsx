@@ -1,5 +1,6 @@
 "use client";
 import { batchArchiveProgressSchema } from "@malink/protocol";
+import { batchArchiveUiStorageKey, readBatchArchiveUiResults, writeBatchArchiveUiResults } from "./batchArchiveUiStorage";
 import { computerRepresentatives, computerNodeAliases } from "./computerPresentation";
 import { bulkArchiveEligible, bulkGroupSessions } from "./bulkArchivePolicy";
 import { messageAttachments } from "./messageAttachments";
@@ -1666,6 +1667,34 @@ function MalinkAppRuntime() {
   const [matrixConfig, setMatrixConfig] = useState<MatrixConnectionConfig>(
     initialGatewayUi.config,
   );
+  const batchArchiveScope = batchArchiveUiStorageKey([
+    matrixConfig.homeserver, matrixConfig.userId, matrixConfig.gatewayId,
+  ]);
+  const batchArchiveScopeRef = useRef(batchArchiveScope);
+  batchArchiveScopeRef.current = batchArchiveScope;
+  const [batchArchiveLoadedScope, setBatchArchiveLoadedScope] = useState<string | null>(null);
+  const [batchArchiveStorageError, setBatchArchiveStorageError] = useState<string | null>(null);
+  useEffect(() => {
+    setBulkSelected(new Set());
+    setBulkSubmitting(false);
+    setBulkSelect(false);
+    setBulkConfirm(false);
+    setBatchArchiveErrors({});
+    batchArchiveRevisions.current.clear();
+    setBatchArchiveStorageError(null);
+    try {
+      setBulkResults(readBatchArchiveUiResults(window.localStorage, batchArchiveScope));
+      setBatchArchiveLoadedScope(batchArchiveScope);
+    } catch (error) {
+      setBatchArchiveLoadedScope(null);
+      setBatchArchiveStorageError(String(error));
+    }
+  }, [batchArchiveScope]);
+  useEffect(() => {
+    if (batchArchiveLoadedScope !== batchArchiveScope) return;
+    try { writeBatchArchiveUiResults(window.localStorage, batchArchiveScope, bulkResults); }
+    catch (error) { setBatchArchiveStorageError(String(error)); }
+  }, [batchArchiveScope, batchArchiveLoadedScope, bulkResults]);
   const storedGatewayFilter = useMemo(
     () => readGatewayFilter(
       typeof window === "undefined" ? null : window.localStorage,
@@ -11618,28 +11647,23 @@ function MalinkAppRuntime() {
       || (deployment?.phase !== "steady" && deployment !== undefined &&
         gatewayUpdateRuntimeByNode[owner?.gatewayNodeId ?? ""]?.status?.maintenanceSessionId === session.id);
     return bulkArchiveEligible(session.status, protectedRepair,
-      sessionLifecycleBusy.has(sessionLifecycleRouteKey(session.projectId, session.id)));
+      sessionLifecycleBusy.has(sessionLifecycleRouteKey(session.projectId, session.id)) ||
+      bulkResults[sessionLifecycleRouteKey(session.projectId, session.id)] === "pending");
   }
 
   async function archiveSelectedSessions() {
     if (bulkSubmitting) return;
-    const targets = (gatewayState?.sessions ?? []).filter(session => bulkArchiveAllowed(session) &&
-      bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)));
-    const incompatible = targets.some(session => {
-      const owner = projectGatewaysById.get(session.projectId)?.gatewayNodeId;
-      const node = gatewayUpdatePlan.find(candidate => candidate.gatewayNodeId === owner);
-      return !gatewayRelease || node?.currentBuildId !== gatewayRelease.buildId;
-    });
-    if (incompatible) {
+    if (batchArchiveStorageError || batchArchiveLoadedScope !== batchArchiveScope) {
       showUiNotice("session:batch-archive", "session", "warning",
-        "Update the selected computers to the current Gateway release before using protocol batch archive. No archive commands were sent.");
+        batchArchiveStorageError ?? "Wait for saved batch archive state to load before retrying.");
       return;
     }
+    const targets = (gatewayState?.sessions ?? []).filter(session => bulkArchiveAllowed(session) &&
+      bulkSelected.has(sessionLifecycleRouteKey(session.projectId, session.id)));
+    if (targets.length === 0) return;
     setBulkConfirm(false);
     setBulkSubmitting(true);
-    setBatchArchiveErrors({});
-    setBulkResults(Object.fromEntries(targets.map(session =>
-      [sessionLifecycleRouteKey(session.projectId, session.id), "pending" as const])));
+    let submitted = false;
     try {
       const groups = new Map<string, typeof targets>();
       for (const session of targets) {
@@ -11647,25 +11671,55 @@ function MalinkAppRuntime() {
         if (!owner) throw new Error("Refresh the computer directory before batch archiving.");
         groups.set(owner, [...(groups.get(owner) ?? []), session]);
       }
+      // Preflight every actual owner before submitting any mutating command.
+      // An absent capability is not inferred from a release label/version.
+      await Promise.all([...groups.values()].map(async sessions => {
+        const status = await executeGatewayUpdate({ operation: "gateway.update.status",
+          includeOperationCapabilities: true }, sessions[0]!.projectId, 30_000);
+        if (!status.supportedOperations?.includes("session.archive.batch")) {
+          throw new Error("This computer does not support batch archive. Update its Gateway to use this feature");
+        }
+      }));
+      if (batchArchiveScopeRef.current !== batchArchiveScope) return;
+      setBatchArchiveErrors({});
       const outcomes = await Promise.allSettled([...groups.values()].map(async sessions => {
         for (let offset = 0; offset < sessions.length; offset += 100) {
+          if (batchArchiveScopeRef.current !== batchArchiveScope) return;
           const batch = sessions.slice(offset, offset + 100);
+          // Persist the uncertainty marker before handing the request to the
+          // durable transport; a reload must not turn an in-flight item idle.
+          writeBatchArchiveUiResults(window.localStorage, batchArchiveScope, {
+            ...readBatchArchiveUiResults(window.localStorage, batchArchiveScope),
+            ...Object.fromEntries(batch.map(session =>
+              [sessionLifecycleRouteKey(session.projectId, session.id), "pending" as const])),
+          });
+          setBulkResults(current => ({ ...current, ...Object.fromEntries(batch.map(session =>
+            [sessionLifecycleRouteKey(session.projectId, session.id), "pending" as const])) }));
+          submitted = true;
           const sent = await sendRealCommand({ operation: "session.archive.batch",
             targets: batch.map(session => ({ projectId: session.projectId, sessionId: session.id })) },
             batch[0]!.projectId, { propagateFailure: true });
           if (!sent) throw new Error("Batch archive was not submitted");
           const result = await waitForCommandCompletion(sent.completion, null);
+          if (batchArchiveScopeRef.current !== batchArchiveScope) return;
           consumeBatchArchiveProgress(result.result);
-          if (result.outcome !== "succeeded") throw new Error(result.error?.message ?? "Batch archive failed");
+          if (result.outcome !== "succeeded") {
+            setBulkResults(current => ({ ...current, ...Object.fromEntries(batch.map(session =>
+              [sessionLifecycleRouteKey(session.projectId, session.id), "failed" as const])) }));
+            throw new Error(result.error?.message ?? "Batch archive failed");
+          }
           await malinkClientRef.current?.releaseCommand(sent.commandId);
         }
       }));
       const failed = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
       if (failed) throw failed.reason;
     } catch (error) {
+      if (batchArchiveScopeRef.current !== batchArchiveScope) return;
       showUiNotice("session:batch-archive", "session", "warning",
-        `Batch archive: ${error instanceof Error ? error.message : String(error)}. Do not resubmit unconfirmed items; reconnect to recover their results.`);
-    } finally { setBulkSubmitting(false); }
+        `Batch archive: ${error instanceof Error ? error.message : String(error)}. ${submitted
+          ? "Do not resubmit unconfirmed items; reconnect to recover their results."
+          : "No archive commands were sent. Check the connection or update the Gateway/Android app, then retry."}`);
+    } finally { if (batchArchiveScopeRef.current === batchArchiveScope) setBulkSubmitting(false); }
   }
 
   function consumeBatchArchiveProgress(value: unknown): boolean {
@@ -13430,7 +13484,7 @@ function MalinkAppRuntime() {
         {listMenuOpen && !bulkSelect && <>
           <button className="list-menu-dismiss" aria-label="关闭会话列表菜单" onClick={() => setListMenuOpen(false)} />
           <div className="conversation-list-menu" role="group" aria-label="会话列表操作" onKeyDown={event => { if (event.key === "Escape") setListMenuOpen(false); }}>
-            <button type="button" onClick={() => { setListMenuOpen(false); setBulkSelect(true); setBulkSelected(new Set()); setBulkResults({}); setBulkConfirm(false); setSessionSearchOpen(true); }}>选择会话</button>
+            <button type="button" onClick={() => { setListMenuOpen(false); setBulkSelect(true); setBulkSelected(new Set()); setBulkConfirm(false); setSessionSearchOpen(true); }}>选择会话</button>
             <button type="button" disabled={!gatewayAvailable || providerHistorySources.length === 0 || providerHistoryLoad !== null} onClick={() => { setListMenuOpen(false); void openProviderHistory(); }}>浏览历史会话</button>
             <button type="button" disabled={Boolean(optimisticProjectCreate) || !gatewayAvailable || projectCreationGateways.length === 0} onClick={() => { setListMenuOpen(false); setNewProjectOpen(true); }}>新建项目</button>
           </div>

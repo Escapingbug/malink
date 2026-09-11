@@ -501,7 +501,7 @@ const gatewayUpdateApplyPayloadSchema = z
   })
   .strict()
 const gatewayUpdateStatusPayloadSchema = z
-  .object({ operation: z.literal('gateway.update.status'), includeExecutionTracks: z.literal(true).optional() })
+  .object({ operation: z.literal('gateway.update.status'), includeExecutionTracks: z.literal(true).optional(), includeOperationCapabilities: z.literal(true).optional() })
   .strict()
 const gatewayUpdatePreparePayloadSchema = z
   .object({

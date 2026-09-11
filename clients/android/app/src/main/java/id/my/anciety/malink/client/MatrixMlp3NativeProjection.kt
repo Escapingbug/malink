@@ -3661,6 +3661,7 @@ internal class MatrixMlp3NativeProjection(
                 "currentBuildId",
                 "previousReleaseId",
                 "executionTracks",
+                "supportedOperations",
                 "activationMode",
                 "detail",
                 "maintenanceSessionId",
@@ -3693,6 +3694,14 @@ internal class MatrixMlp3NativeProjection(
         value.optionalString("targetBuildId", 256)
         value.optionalString("currentBuildId", 256)
         value.optionalString("previousReleaseId", 128)
+        value["supportedOperations"]?.let { raw ->
+            val operations = raw as? JsonArray ?: throw IllegalArgumentException("Gateway supported operations must be an array")
+            require(operations.size <= 128)
+            operations.forEach { operation ->
+                val name = operation as? JsonPrimitive ?: throw IllegalArgumentException("Gateway operation must be a string")
+                require(name.isString && name.content.length in 1..128)
+            }
+        }
         value["executionTracks"]?.let { raw ->
             val tracks = raw as? JsonObject ?: throw IllegalArgumentException("Gateway execution tracks must be an object")
             tracks.requireKeys(setOf("generation", "activeRelease", "phase"),

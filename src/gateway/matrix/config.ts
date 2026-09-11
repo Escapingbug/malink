@@ -103,6 +103,8 @@ export interface MatrixGatewayConfig {
     startupEventQueueLimit?: number
     /** Deadline for bounded control commands. Agent turns end only by result or cancellation. */
     commandExecutionTimeoutMs?: number
+    /** Compatibility baseline can retain batch journals without executing them. */
+    batchArchiveEnabled?: boolean
     /** Independent deadline for one Agent-driven Gateway update; defaults to two hours. */
     gatewayUpdateExecutionTimeoutMs?: number
     /** Periodic repair cadence for root-signed Workspace control state. */
@@ -240,6 +242,9 @@ export function validateMatrixGatewayConfig(config: MatrixGatewayConfig): void {
 
     if (config.startupEventQueueLimit !== undefined && config.startupEventQueueLimit < 1) {
         throw new Error('startupEventQueueLimit must be at least 1')
+    }
+    if (config.batchArchiveEnabled !== undefined && typeof config.batchArchiveEnabled !== 'boolean') {
+        throw new Error('batchArchiveEnabled must be a boolean')
     }
     if (
         config.commandExecutionTimeoutMs !== undefined

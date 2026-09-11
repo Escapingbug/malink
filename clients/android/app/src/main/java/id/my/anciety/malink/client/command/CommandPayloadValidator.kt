@@ -695,8 +695,9 @@ object CommandPayloadValidator {
             operation == CommandOperation.GATEWAY_UPDATE_STATUS ||
             operation == CommandOperation.GATEWAY_DEPLOYMENT_STATUS
         ) {
-            value.requireExactKeys(setOf("operation"), if (operation == CommandOperation.GATEWAY_UPDATE_STATUS) setOf("includeExecutionTracks") else emptySet())
+            value.requireExactKeys(setOf("operation"), if (operation == CommandOperation.GATEWAY_UPDATE_STATUS) setOf("includeExecutionTracks", "includeOperationCapabilities") else emptySet())
             value.optionalBoolean("includeExecutionTracks")?.let { require(it) }
+            value.optionalBoolean("includeOperationCapabilities")?.let { require(it) }
             return GatewayUpdateCommandPayload(operation, null, null, null, null)
         }
         if (
