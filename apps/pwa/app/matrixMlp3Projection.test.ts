@@ -5,8 +5,24 @@ import {
   MatrixMlp3Projection,
 } from "./matrixMlp3Projection";
 import { toIncomingMessage, toLegacyCompletion } from "./matrixMlp3Connection";
+import { reconcileGatewayMaintenanceSessions, type GatewayStateSnapshot } from "./gatewayState";
+import { sessionListSignal, sessionSignalLabel } from "./sessionListOrder";
 
 describe("MatrixMlp3Projection", () => {
+  it("shows a continued repair session as working instead of review agent error", () => {
+    const state = {
+      gatewayUpdate: { version: 1, phase: "failed", updatedAt: 20,
+        maintenanceSessionId: "gateway-update-node-repair" },
+      sessions: [{ id: "gateway-update-node-repair", status: "running", activityPhase: "working",
+        updatedAt: 30, activeTurnId: "repair-turn" }],
+    } as unknown as GatewayStateSnapshot;
+    const result = reconcileGatewayMaintenanceSessions(state);
+    expect(result).toBe(state);
+    expect(result.sessions[0]?.activeTurnId).toBe("repair-turn");
+    const signal = sessionListSignal(result.sessions[0]!, { initialized: true, readUpdatedAt: {} });
+    expect(signal).toBe("working");
+    expect(sessionSignalLabel(signal)).not.toBe("Review agent error");
+  });
   it("assembles revision-bound provider catalog pages independently of arrival order", () => {
     const projection = new MatrixMlp3Projection();
     const common = {
@@ -878,6 +894,30 @@ describe("MatrixMlp3Projection", () => {
     expect(restored.sessions.get(maintenanceSessionId)).toMatchObject({
       activity: "idle",
       updatedAt: 20,
+    });
+    // The user continues this same session after the old update failed.
+    restored.applyEvent({
+      kind: "malink.event", version: 3, eventId: "old-update-failed",
+      workspaceId: "workspace-1", projectId: "project-1", occurredAt: 25,
+      payload: { type: "gateway.update.status", status: {
+        version: 1, phase: "failed", maintenanceSessionId, updatedAt: 25,
+      } },
+    }, "$old-update-failed");
+    restored.applyEvent({
+      ...workingEvent, eventId: "repair-working", occurredAt: 30,
+      causationCommandId: "repair-turn",
+      payload: { type: "turn.started", turnId: "repair-turn", projection: {
+        title: "Gateway update", lifecycle: "active", activity: "working",
+        updatedAt: 30, stateVersion: 3,
+      } },
+    }, "$repair-working");
+    expect(restored.sessions.get(maintenanceSessionId)).toMatchObject({
+      activity: "working", updatedAt: 30, activeTurnId: "repair-turn",
+    });
+    const reopened = new MatrixMlp3Projection();
+    reopened.restore(restored.durableState());
+    expect(reopened.sessions.get(maintenanceSessionId)).toMatchObject({
+      activity: "working", activeTurnId: "repair-turn",
     });
   });
 

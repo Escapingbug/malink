@@ -271,7 +271,9 @@ export function reconcileGatewayMaintenanceSessions(
       }
       return !latest || candidate.updatedAt > latest.updatedAt ? candidate : latest;
     }, undefined);
-    if (!status) return session;
+    // The supervisor settles its original update, not later repair turns in
+    // the same conversation. Use signed state time, never receipt time.
+    if (!status || session.updatedAt > status.updatedAt) return session;
     const outcome = gatewayMaintenanceSessionActivityOutcome(status, session.id)!;
     const updatedAt = Math.max(session.updatedAt, status.updatedAt);
     if (

@@ -1015,6 +1015,7 @@ export class MatrixMlp3Projection {
     if (
       outcome === null ||
       !current ||
+      current.updatedAt > status.updatedAt || // A later repair turn owns its activity.
       current.lifecycle !== "active" ||
       (projectId !== undefined && current.projectId !== projectId)
     ) {

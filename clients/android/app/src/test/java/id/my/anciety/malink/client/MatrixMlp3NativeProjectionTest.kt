@@ -1945,6 +1945,24 @@ class MatrixMlp3NativeProjectionTest {
             .getValue("sessions").jsonArray.single().jsonObject
         assertEquals("idle", restoredSession.getValue("activity_phase").jsonPrimitive.content)
         assertFalse("active_turn_id" in restoredSession)
+        restored.applyGatewayEvent(
+            event(
+                eventId = "repair-working",
+                projectId = "project-1",
+                sessionId = maintenanceSessionId,
+                causationCommandId = "repair-turn",
+                payload = buildJsonObject {
+                    put("type", "turn.started")
+                    put("turnId", "repair-turn")
+                    put("projection", sessionProjection(3, "Gateway update", "active", "working", 400))
+                },
+            ),
+            "\$repair-working",
+            "\$maintenance-root",
+        )
+        val repairing = restored.snapshot()!!.getValue("sessions").jsonArray.single().jsonObject
+        assertEquals("working", repairing.getValue("activity_phase").jsonPrimitive.content)
+        assertEquals("repair-turn", repairing.getValue("active_turn_id").jsonPrimitive.content)
     }
 
     @Test
