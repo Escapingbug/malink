@@ -161,7 +161,7 @@ export function gatewayUpdatePlan(input: {
   release: GatewayReleaseBuild | null;
   deployments?: Readonly<Record<string, GatewayDeploymentStatus>>;
 }): GatewayUpdatePlanNode[] {
-  if (!input.directory || !input.release) return [];
+  if (!input.directory) return [];
   const release = input.release;
   return computerRepresentatives(input.directory.directory.gateways, Object.values(input.deployments ?? {})).map((gateway) => {
     const deployment = Object.values(input.deployments ?? {}).find(status =>
@@ -186,6 +186,8 @@ export function gatewayUpdatePlan(input: {
         blueGreenUpdate: true,
       } : {}),
     };
+    // Version recovery must remain reachable when the release channel is unavailable.
+    if (!release) return { ...base, state: "unknown" as const };
     if (gateway.buildId === release.buildId) {
       return { ...base, state: "current" as const };
     }

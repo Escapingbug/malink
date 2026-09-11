@@ -1,8 +1,11 @@
 "use client";
+
+import { computerUpdateSummary } from "./computerUpdateSummary";
+import type { GatewayUpdateNodeRuntime, GatewayUpdateActiveAction } from "./GatewayUpdateDialog";
 import { computerRepresentatives } from "./computerPresentation";
 import type { GatewayDeploymentStatus } from "@malink/protocol";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type {
   MatrixConnectionConfig,
   MatrixConnectionStatus,
@@ -99,6 +102,13 @@ type Props = {
   gatewayNodeLivenessById: Readonly<Record<string, GatewayNodeLiveness>>;
   gatewayRestartRuntimeByNode: Readonly<Record<string, GatewayRestartNodeRuntime>>;
   gatewayLivenessNow: number;
+  gatewayUpdateRuntimeByNode?: Readonly<Record<string, GatewayUpdateNodeRuntime>>;
+  gatewayUpdateActiveModesByNode?: Readonly<Record<string, GatewayUpdateActiveAction>>;
+  initialComputerId?: string | null;
+  onExpandComputer?(gatewayNodeId: string | null): void;
+  computersRequested?: boolean;
+  onComputersRequestHandled?(): void;
+  renderGatewayDetails?(gatewayNodeId: string): ReactNode;
   gatewayRelease: GatewayReleaseBuild | null;
   gatewayUpdateAvailableCount: number;
   gatewayUpdateNodeCount: number;
@@ -196,6 +206,13 @@ function MatrixSettingsDialog({
   gatewayNodeLivenessById,
   gatewayRestartRuntimeByNode,
   gatewayLivenessNow,
+  gatewayUpdateRuntimeByNode = {},
+  gatewayUpdateActiveModesByNode = {},
+  initialComputerId,
+  onExpandComputer,
+  computersRequested,
+  onComputersRequestHandled,
+  renderGatewayDetails,
   gatewayRelease,
   gatewayUpdateAvailableCount,
   gatewayUpdateNodeCount,
@@ -246,7 +263,14 @@ function MatrixSettingsDialog({
 }: Props) {
   const [manualRepairReason, setManualRepairReason] =
     useState<ConnectionRepairReason | null>(null);
-  const [activeSection, setActiveSection] = useState<SettingsSection>("workspace");
+  const [expandedComputer, setExpandedComputer] = useState<string | null>(initialComputerId ?? null);
+  useEffect(() => {
+    if (open && computersRequested) {
+      setActiveSection("computers");
+      onComputersRequestHandled?.();
+    }
+  }, [open, computersRequested, onComputersRequestHandled]);
+  const [activeSection, setActiveSection] = useState<SettingsSection>(initialComputerId ? "computers" : "workspace");
   const effectiveRepairReason = repairReason ?? manualRepairReason;
   const repairRequired = effectiveRepairReason !== null;
   const [addingGateway, setAddingGateway] = useState(false);
@@ -621,21 +645,19 @@ function MatrixSettingsDialog({
               <strong>
                 {gatewayUpdateAvailableCount > 0
                   ? `${gatewayUpdateAvailableCount} update${gatewayUpdateAvailableCount === 1 ? "" : "s"} available`
-                  : gatewayUpdateNodeCount > 0
-                    ? "Computer versions checked"
+                  : gatewayUpdateNodeCount > 0 && gatewayRelease && !gatewayUpdateDiscoveryError
+                    ? "Release information available"
                     : "Waiting for computer information"}
               </strong>
               <p role={gatewaySoftware.attention ? "alert" : "status"}>
                 {gatewaySoftware.detail}
               </p>
             </span>
-            {gatewaySoftware.action && gatewaySoftware.actionLabel && (
+            {gatewaySoftware.action && gatewaySoftware.action !== "review" && gatewaySoftware.actionLabel && (
               <button
                 type="button"
                 disabled={gatewayUpdateDiscoveryBusy || busy}
-                onClick={gatewaySoftware.action === "review"
-                  ? onReviewGatewayUpdates
-                  : gatewaySoftware.action === "retry-discovery"
+                onClick={gatewaySoftware.action === "retry-discovery"
                     ? onRetryGatewayUpdateDiscovery
                     : onReconnectGatewayUpdates}
               >
@@ -704,6 +726,7 @@ function MatrixSettingsDialog({
                 const updateAvailable = Boolean(
                   gatewayRelease && gateway.buildId && gateway.buildId !== gatewayRelease.buildId,
                 );
+                const updateSummary = computerUpdateSummary(gatewayUpdateRuntimeByNode[gatewayProfileId], gatewayUpdateActiveModesByNode[gatewayProfileId]);
                 const restartRuntime = gatewayRestartRuntimeByNode[gatewayProfileId]
                   ?? { state: "idle" as const };
                 const restartBusy = restartRuntime.state === "requesting" ||
@@ -739,41 +762,31 @@ function MatrixSettingsDialog({
                         title={liveness.detail}
                       >
                         <i aria-hidden="true" />
-                        <strong>{liveness.label}</strong>
+                        <strong>{gatewayUpdateRuntimeByNode[gatewayProfileId]?.status?.executionTracks?.phase === "attention"
+                          ? "Version needs attention" : liveness.label}</strong>
                       </span>
                     </div>
-                    <div className={`gateway-profile-software ${updateAvailable ? "has-update" : ""}`}>
+                    <div className="gateway-profile-software">
                       <span>
                         <small>Gateway software</small>
-                        <strong>
-                          {updateAvailable
-                            ? "Update available"
-                            : gateway.buildId
-                              ? "Up to date"
-                              : "Version not reported"}
-                        </strong>
-                        <small>
-                          {gateway.buildId
-                            ? `Installed build ${gateway.buildId}`
-                            : "Check this computer when it is online."}
-                        </small>
+                        <strong>{updateSummary ?? (!gatewayRelease || gatewayUpdateDiscoveryError
+                          ? "Latest version not confirmed"
+                          : updateAvailable ? "Update available" : gateway.buildId ? "Up to date" : "Version not reported")}</strong>
+                        <small>{gateway.buildId ? `Reported build ${gateway.buildId}` : "Version information will refresh when you open details."}</small>
                       </span>
-                      {(gateway.buildId || updateAvailable || gatewayUpdateDiscoveryError) && (
-                        <button
-                          type="button"
-                          disabled={busy || !gatewayManagementReady}
-                          onClick={gatewayUpdateDiscoveryError
-                            ? onRetryGatewayUpdateDiscovery
-                            : onReviewGatewayUpdates}
-                        >
-                          {gatewayUpdateDiscoveryBusy
-                            ? "Checking…"
-                            : gatewayUpdateDiscoveryError
-                              ? "Retry update check"
-                              : updateAvailable ? "View update options" : "Update details"}
-                        </button>
-                      )}
+                      <button type="button" aria-expanded={expandedComputer === gatewayProfileId}
+                        onClick={() => {
+                          const next = expandedComputer === gatewayProfileId ? null : gatewayProfileId;
+                          setExpandedComputer(next);
+                          onExpandComputer?.(next);
+                        }}>
+                        {expandedComputer === gatewayProfileId ? "Close details" : "Manage computer"}
+                      </button>
                     </div>
+                    {expandedComputer === gatewayProfileId && <div className="computer-details">
+                      {renderGatewayDetails?.(gatewayProfileId)}
+                      <details className="computer-maintenance">
+                        <summary>Restart, rename & diagnostics</summary>
                     <div className="gateway-profile-restart">
                       <span>
                         <small>Provider changes</small>
@@ -990,6 +1003,8 @@ function MatrixSettingsDialog({
                         </button>
                       </span>
                     )}
+                      </details>
+                    </div>}
                   </div>
                 );
               })}

@@ -11,10 +11,10 @@ test("version button appearance does not depend on a different actions container
   assert.match(css, /\.gateway-version-button:focus-visible/);
   assert.match(css, /\.gateway-version-button:disabled/);
 });
-test("version actions use the shared button appearance and show checking feedback", () => {
-  assert.match(source, /onCheckVersions && <button type="button" className="secondary-button gateway-version-button"/);
+test("version actions retain shared styling and refreshing feedback", () => {
+  assert.match(source, /Refresh computer status/);
   assert.match(source, /key=\{id\} type="button" className="secondary-button gateway-version-button"/);
-  assert.match(source, /Checking available versions…/);
+  assert.match(source, /Refreshing computer status…/);
   assert.match(source, /aria-busy=\{activeMode === "check_versions"\}/);
-  assert.match(source, /gateway-version-check-icon is-checking/);
+  assert.match(source, /Status options/);
 });

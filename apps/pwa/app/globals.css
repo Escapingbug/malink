@@ -12831,3 +12831,45 @@ body {
   font-size: 12px;
   line-height: 1.45;
 }
+/* Computer management stays inside Settings on desktop and Android. */
+.computer-details { min-width: 0; width: 100%; }
+.gateway-update-dialog.is-embedded {
+  width: 100%; max-width: none; max-height: none; overflow: visible;
+  padding: 0; border: 0; border-radius: 0; box-shadow: none;
+  background: transparent; animation: none;
+}
+.is-embedded .gateway-update-node { min-width: 0; }
+.is-embedded .gateway-update-node-heading { display: none; }
+.is-embedded code, .computer-status-refresh { overflow-wrap: anywhere; word-break: break-word; }
+.computer-maintenance { margin-top: 16px; }
+.computer-maintenance > summary, .computer-status-refresh summary {
+  cursor: pointer; padding: 12px 0; font-weight: 600;
+}
+.computer-status-refresh { margin: 12px 0; }
+.is-embedded .gateway-update-force-confirmation button { margin: 4px; }
+@media (max-width: 640px) {
+  .is-embedded .gateway-update-builds { display: flex; flex-wrap: wrap; gap: 8px; }
+  .is-embedded .gateway-update-node { padding: 12px; }
+  .is-embedded .gateway-version-button { max-width: 100%; white-space: normal; min-height: 44px; }
+}
+
+.computer-execution-tracks {
+  display: grid; gap: 8px; padding: 14px; border-radius: 12px;
+  background: #f5f3ff; text-align: left; color: #41445a;
+}
+.computer-execution-tracks h3, .computer-update-heading { margin: 0; font-size: 15px; font-weight: 700; }
+.computer-execution-tracks p { margin: 0; font-size: 13px; line-height: 1.5; }
+.computer-details .gateway-update-live strong { font-size: 14px; }
+.computer-details .gateway-update-live small,
+.computer-details .gateway-update-explanation,
+.computer-details .gateway-update-action-status { font-size: 13px; line-height: 1.5; text-align: left; }
+.computer-details .gateway-update-builds small,
+.computer-details .gateway-update-builds code,
+.computer-details .gateway-update-release small,
+.computer-details .gateway-update-release code { font-size: 12px; }
+.computer-details .gateway-update-node-actions > button,
+.computer-details .gateway-update-force-confirmation button { font-size: 13px; min-height: 44px; }
+.computer-details .gateway-update-release strong { font-size: 14px; }
+.computer-details .gateway-update-explanation { margin: 12px 0; }
+.computer-details .gateway-update-node-list { padding: 0; }
+.computer-details .gateway-update-progress li small { font-size: 12px; }

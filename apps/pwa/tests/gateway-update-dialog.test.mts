@@ -105,8 +105,8 @@ test("shows node identity and stable update actions before consent", () => {
   assert.match(html, /Install Gateway updates/);
   assert.match(html, /Office Mac · studio\.local/);
   assert.match(html, /Update available/);
-  assert.match(html, /Choose when this computer may restart/);
-  assert.match(html, /Prepare new version/);
+  assert.match(html, /Start an update session on this computer/);
+  assert.match(html, /Start update session/);
   assert.doesNotMatch(html, /Install and restart now/);
   assert.match(html, /Server/);
   assert.match(html, /Up to date/);
@@ -137,7 +137,7 @@ test("starts the durable update directly without a live-status preflight", () =>
 
   assert.match(
     html,
-    /<button type="button" class="primary-button" aria-busy="false">Prepare new version<\/button>/,
+    /<button type="button" class="primary-button" aria-busy="false">Start update session<\/button>/,
   );
   assert.doesNotMatch(html, /Install and restart now/);
   assert.doesNotMatch(html, /primary-button" disabled/);
@@ -168,7 +168,7 @@ test("prepares a blue-green candidate without offering a destructive restart pat
     onExportDiagnostics() {},
   }));
 
-  assert.match(html, />Prepare new version<\/button>/);
+  assert.match(html, />Start update session<\/button>/);
   assert.doesNotMatch(html, /Prepare candidate now|restart now|Stop work/);
   assert.equal(html.match(/class="primary-button"/g)?.length, 1);
 });
@@ -346,8 +346,8 @@ test("keeps a delayed connection check advisory and leaves update actions usable
     onExportDiagnostics() {},
   }));
 
-  assert.match(html, /recent connection check did not receive its reply/i);
-  assert.match(html, /Prepare new version/);
+  assert.doesNotMatch(html, /recent connection check did not receive its reply/i);
+  assert.match(html, /Start update session/);
   assert.doesNotMatch(html, /Install and restart now/);
   assert.doesNotMatch(html, /Gateway needs attention|Diagnose this Gateway/);
 });
@@ -383,7 +383,7 @@ test("presents scheduled restart silence as part of the signed update", () => {
 
   assert.match(html, /Restart queued/);
   assert.match(html, /restart is queued and begins automatically after a short handoff/i);
-  assert.match(html, /Open update session/);
+  assert.match(html, /View update session/);
   assert.doesNotMatch(html, /Gateway reply delayed/);
   assert.doesNotMatch(html, /What should I do\?/);
   assert.doesNotMatch(html, /Refresh update status|Check live status/);
@@ -698,7 +698,7 @@ test("opens a legacy maintenance session through its exact project route", () =>
   assert.match(html, /update session left by an older Malink version/);
   assert.match(html, /project-qualified route is preserved/);
   assert.doesNotMatch(html, /maintenance session ID|node-specific session IDs/);
-  assert.match(html, /Open update session/);
+  assert.match(html, /View update session/);
   assert.match(html, /Delete old update session/);
 });
 
@@ -804,7 +804,7 @@ test("keeps a new release actionable while offering cleanup for an older collisi
 
   assert.match(html, /Delete old update session/);
   assert.match(html, /only this Gateway is affected/);
-  assert.match(html, /Prepare new version/);
+  assert.match(html, /Start update session/);
 });
 
 test("offers installation when the maintenance Agent already staged the target", () => {
@@ -869,7 +869,7 @@ test("never labels an older staged build as the published install action", () =>
   }));
 
   assert.match(html, /Newer Gateway update available/);
-  assert.match(html, /Prepare latest update/);
+  assert.match(html, /Start update session/);
   assert.doesNotMatch(html, /Prepare latest and restart now/);
   assert.doesNotMatch(html, /Switch to new version|New version ready · waiting for your switch/);
 });
@@ -944,7 +944,7 @@ test("does not offer retry for a non-retryable command result without signed sta
   assert.match(html, /rejected this update request as non-retryable/i);
   assert.match(html, /Export client diagnostics/);
   assert.match(html, /Report update issue/);
-  assert.doesNotMatch(html, /Prepare new version|Install and restart now|Try update again/);
+  assert.doesNotMatch(html, /Start update session|Install and restart now|Try update again/);
 });
 
 test("requires an explicit second action for a forward-only staged release", () => {
@@ -1056,8 +1056,8 @@ test("does not let an installed prior release block the newly published update",
   }));
 
   assert.match(html, /Update available/);
-  assert.match(html, /Prepare new version/);
+  assert.match(html, /Start update session/);
   assert.doesNotMatch(html, /Check and update|Check live status/);
   assert.doesNotMatch(html, /Gateway restart scheduled/);
-  assert.doesNotMatch(html, /Open update session/);
+  assert.doesNotMatch(html, /View update session/);
 });
