@@ -10,23 +10,25 @@ Update this Malink Gateway from the exact signed Git commit supplied above.
    and the target commit's diff before changing the candidate. Install with the
    frozen lockfile. Do not weaken tests, trust checks, authorization, signing,
    encryption, journaling, health checks, rollback, or update supervision.
-3. Run the repository's complete Gateway unit tests, protocol integration
-   tests, type checks, and production bundle build. Fix only reproducible local
-   build/runtime issues required to build this exact commit. If a test or build
-   cannot pass, stop without submitting the candidate.
-   The production build's static import-closure check is release-blocking. Do
-   not copy or submit bundles if it reports a missing external module or a Node
-   built-in whose required `node:` prefix was removed.
-   The Agent process inherits metadata from the active Gateway service. Remove
-   `MALINK_GATEWAY_RELEASE_ID` and `MALINK_GATEWAY_BUILD_ID` from the environment
-   of repository test and build commands so the installed Gateway identity
-   cannot be mistaken for static PWA release configuration. For example, prefix
-   those commands with
-   `env -u MALINK_GATEWAY_RELEASE_ID -u MALINK_GATEWAY_BUILD_ID`.
-   Set `TMPDIR` to a short absolute path such as `/tmp` for tests. macOS Unix
-   socket tests cannot use the deeply nested update workspace as their temporary
-   root, and relative temporary roots break absolute-path validation. Test-created
-   temporary files are not production state and must not be copied into the candidate.
+3. Perform installation admission checks, not release regression testing. Full
+   unit/regression suites, protocol integration suites, repository-wide type
+   checks, and browser/Android/live E2E belong to release qualification before
+   publication; do not run them during this update. In particular, do not run
+   `pnpm test`, `pnpm test:workspace`, or the large Gateway session-thread suite
+   as an installation gate. Do not change or delete tests to achieve this.
+   Run `env -u MALINK_GATEWAY_RELEASE_ID -u MALINK_GATEWAY_BUILD_ID pnpm build`
+   once after the frozen install. Its production bundle build and static
+   import-closure check are release-blocking. Do not copy or submit bundles if
+   a required external module is missing or a required `node:` prefix is lost.
+   Fix only reproducible local build/runtime issues required to assemble the
+   exact authorized commit. If a repair needs verification, run only the narrow
+   check for that repair, not a full suite. A failed admission check must be
+   fixed or reported; never classify it as success or retry it indefinitely.
+   Remove `MALINK_GATEWAY_RELEASE_ID` and `MALINK_GATEWAY_BUILD_ID` from all
+   repository build/check commands so inherited service identity cannot be
+   mistaken for static PWA release configuration. If a targeted repair test is
+   needed, set `TMPDIR` to a short absolute path such as `/tmp` so macOS socket
+   paths remain valid. Do not copy test output into the candidate.
 4. The supplied candidate is an independent copy of the active release. Replace
    its Gateway and update-supervisor bundles with the target commit's production
    bundles, including `ops/matrix-local-gateway.js`,
@@ -58,13 +60,20 @@ Update this Malink Gateway from the exact signed Git commit supplied above.
    environment variables. These entrypoints do not expose an Agent-safe runtime
    validation mode. Starting one can attach it to production Matrix and journal
    state. The independent supervisor owns all candidate entrypoint validation.
-7. Only after all repository tests and candidate assembly checks pass, run the
+7. Only after the production build and candidate assembly checks pass, run the
    exact supervisor completion command supplied above. Do not alter, wrap, or
    replace that command. Current supervisors name this operation `finish`;
    earlier compatible supervisors may still supply its `submit` alias. The
    supervisor will safely validate, copy, hash-seal, and submit the candidate
    without starting a second Gateway.
-   Success means the returned phase is exactly `staged`; otherwise report the
+   Do not replace supervisor signature, seal, dependency, state-compatibility,
+   writer-ownership, or activation health checks with test results. The supervisor
+   owns runtime startup and readiness checks; do not start a candidate yourself.
+   `staged` means assembly and static admission passed, not that live Agent work
+   has been verified. Existing dual-track switch and repair controls remain the
+   recovery path; never force an older binary to open incompatible newer state.
+   Completion of this preparation step means the returned phase is exactly
+   `staged`; otherwise report the
    failure and leave the active Gateway unchanged.
    If an explicitly authorized external activation must outlive the Gateway
    Agent session, its detached command must invoke a known-working Node runtime

@@ -236,8 +236,11 @@ The command verifies the Prompt against the signer pinned at
 that signed object, verifies that the current checkout is the exact clean signed
 commit, checks that its state catalog and production bundles exactly match the
 candidate, installs the same metadata into the candidate, and validates the
-candidate before stopping anything. Run the Prompt's frozen install, tests,
-type checks, production build, and candidate-assembly steps first. Optional `--release-id` and
+candidate before stopping anything. Run the signed Prompt's installation
+admission steps first: frozen install, production build with import-closure
+validation, and candidate assembly. New Prompts keep full regression suites and
+repository-wide type checks in pre-publication release qualification, not local
+installation. Older signed Prompts retain their original requirements. Optional `--release-id` and
 `--target-build-id` arguments are accepted only as equality checks; they never
 override the signed values. The updater rejects symlinks and special files,
 copies the candidate into the immutable
