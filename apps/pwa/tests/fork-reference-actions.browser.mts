@@ -6,7 +6,9 @@ const browser = await chromium.launch({ channel: 'chrome', headless: true });
 try {
  for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 900 }]) {
   const page = await browser.newPage({ viewport }); const errors: string[] = [];
+  page.on('response', response => { if (response.status() >= 400) errors.push(`${response.status()} ${response.url()}`); });
   page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') errors.push(`${message.text()} ${message.location().url}`); });
   await page.goto('http://127.0.0.1:5193/malink/tests/fixtures/fork-reference-actions.html');
   await page.getByRole('button', { name: 'Create branch', exact: true }).click();
   await page.getByRole('heading', { name: 'Create conversation branch' }).waitFor();

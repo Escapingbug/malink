@@ -17,4 +17,5 @@ function Fixture() {
  onFork={title => { setResult(`Created: ${title}`); setMode(null); }}
  onReference={target => { setDraft(referenceDraft(reference)); setResult(`Draft in ${target.title}`); setMode(null); }} />}</>;
 }
-createRoot(document.getElementById('root')!).render(<Fixture />);
+const container = document.getElementById('root')! as HTMLElement & { fixtureRoot?: ReturnType<typeof createRoot> };
+(container.fixtureRoot ??= createRoot(container)).render(<Fixture />);
