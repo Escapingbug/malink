@@ -276,7 +276,7 @@ export function deriveConnectionPresentation(
     ? undefined
     : NATIVE_DETAIL_COPY[machineCode];
   const copy = trimmedDetail?.startsWith("matrix_session_history_recovering_") ? {
-    title: "Connected · Restoring task status",
+    title: "Connected · Syncing",
     detail: "Checking signed conversation history in the background. You can keep using Malink while saved task states are verified.",
   } : mappedCopy ??
     DEFAULT_COPY[status];

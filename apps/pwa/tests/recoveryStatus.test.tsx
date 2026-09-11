@@ -34,4 +34,10 @@ test("native recovery reports actual checked pages without inventing a total", (
   assert.match(html, /12 history pages checked/);
   assert.match(html, /total is not yet known/);
   assert.doesNotMatch(html, /100%|3 messages/);
+  assert.match(html, /^<details class="history-recovery-status">/);
+  const summary = html.match(/<summary[\s\S]*?<\/summary>/)?.[0] ?? "";
+  assert.match(summary, /<svg/);
+  assert.match(summary, />Syncing</);
+  assert.doesNotMatch(summary, /12 history|remaining total|Connected/);
+  assert.doesNotMatch(html, /aria-live|<details[^>]*\sopen/);
 });
