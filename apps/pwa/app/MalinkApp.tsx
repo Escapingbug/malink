@@ -14490,7 +14490,7 @@ function MalinkAppRuntime() {
                     setSessionToDelete(gatewaySelected);
                   }}>
                   <span aria-hidden="true">×</span>
-                  <span><strong>删除会话…</strong><small>无法直接恢复；只能从 Agent 历史记录重新接续</small></span>
+                  <span><strong>删除会话…</strong><small>Agent 保留历史时可重建恢复，耗时较长</small></span>
                 </button>
               </div>
             )}

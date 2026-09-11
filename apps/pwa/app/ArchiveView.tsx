@@ -11,7 +11,7 @@ export function ArchiveListHelp() {
   return <details className="archive-list-help">
     <summary>归档会话是什么？</summary>
     <p>归档用于收起暂时不用的会话，保留消息和文件。打开会话后，点「恢复并继续」即可接着使用。</p>
-    <p>此列表显示当前工作区同步的归档会话，按电脑和项目分组；不是已删除会话的回收站。已删除的会话需从「Agent 历史记录」重新接续。</p>
+    <p>此列表显示当前工作区同步的归档会话，按电脑和项目分组；不是已删除会话的回收站。已删除的会话在 Agent 仍保留历史时，可从会话列表 ⋯ →「Agent 历史记录」重建并恢复历史，耗时较长。</p>
   </details>;
 }
 

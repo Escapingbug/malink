@@ -246,17 +246,28 @@ there must not reinterpret an already-created project as a failed command.
 Every active session owns its own `TopicSession`, `SemanticSessionRuntime`, and
 provider instance. Sessions may execute concurrently. Selecting a conversation
 is client-local view state and never suspends another session or mutates a
-Gateway-wide “current session”. Archive is the destructive Malink-session
-boundary: one durable checkpoint first detaches execution and produces the
-logical deleted result, then a resumable background cleanup releases runtime
-resources, redacts the project-room thread, retires any recovered-history room,
-and removes the persisted checkpoint. Long Matrix history and provider shutdown
-therefore cannot consume the control-command deadline or reinterpret a committed
-archive as failed. It never deletes the fixed project working directory or the
-provider-owned conversation. A later continuation is a new Malink session
-restored through Provider History. Startup resumes only cleanup requests written
-by this two-phase model; non-active records from older releases remain explicit
-retry checkpoints so an upgrade cannot create unbounded Matrix traffic.
+Gateway-wide “current session”. Archive retains the session record, project-room
+thread, recovered-history room and files while releasing its runtime. Restore
+reactivates that same retained session, allowing quick continuation from Archived.
+
+Delete is the destructive Malink-session boundary: one durable checkpoint first
+detaches execution and produces the logical deleted result, then a resumable
+background cleanup releases runtime resources, redacts the project-room thread,
+retires any recovered-history room, deletes its local history snapshot, and removes
+the persisted session checkpoint. The shared project room itself is retained.
+Long Matrix history and provider shutdown therefore cannot consume the
+control-command deadline or reinterpret a committed deletion as failed. Delete
+preserves the fixed project working directory and provider-owned conversation;
+scratch sessions additionally delete their temporary working directory.
+A deleted session cannot be reactivated through Archived. When the provider still
+retains accessible history and supports restoration, Provider History can create a
+new Malink session and rebuild its history through the dual-room path below. This
+costs more than restoring a retained archive and does not recover deleted scratch
+files. The auxiliary room is a materialized history cache, not an independent
+backup of the provider's original history.
+Startup resumes only cleanup requests written by this two-phase model;
+non-active records from older releases remain explicit retry checkpoints so an
+upgrade cannot create unbounded Matrix traffic.
 
 Restoring a provider conversation snapshots its transcript once on the Gateway
 and provisions one application-encrypted auxiliary history room for that new
