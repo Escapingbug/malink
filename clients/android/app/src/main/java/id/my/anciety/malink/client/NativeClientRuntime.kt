@@ -184,11 +184,6 @@ class NativeClientRuntime(
         val checkpointChanged: Boolean,
     )
 
-    private data class RecoveredSessionTerminal(
-        val target: MatrixMlp3SessionTailRecoveryTarget,
-        val event: VerifiedHistoricalMlp3Event,
-    )
-
     val deviceId: String = identity.publicIdentity.keyId
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -2708,8 +2703,6 @@ class NativeClientRuntime(
                         threadDirectoryAttempted = true
                         runCatching {
                             reconcileActiveSessionTails()
-                            matrix.refreshThreadDirectory()
-                            reconcileActiveSessionTails()
                         }.onFailure { error ->
                             diagnostics.record(
                                 "matrix.v3_projection.thread_refresh_failure",
@@ -2774,7 +2767,40 @@ class NativeClientRuntime(
         }
     }
 
+    @Volatile private var sessionHistoryRecoveryDetail: String? = null
+
     private suspend fun reconcileActiveSessionTails() {
+        sessionHistoryRecoveryDetail = "matrix_session_history_recovering_0"
+        refreshSnapshot(publishLifecycle = true)
+        try {
+            var directoryFailed = false
+            try {
+                matrix.refreshThreadDirectory()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                // Discovery failure must not prevent repair of already-known
+                // session threads using their independently signed terminals.
+                directoryFailed = true
+                diagnostics.record("matrix.v3_projection.thread_refresh_failure",
+                    mapOf("error" to diagnosticErrorName(error)))
+            }
+            reconcileActiveSessionTailPages()
+            if (directoryFailed) sessionHistoryRecoveryDetail = "matrix_session_history_incomplete"
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            sessionHistoryRecoveryDetail = "matrix_session_history_incomplete"
+            throw error
+        } finally {
+            if (sessionHistoryRecoveryDetail != "matrix_session_history_incomplete") {
+                sessionHistoryRecoveryDetail = null
+            }
+            refreshSnapshot(publishLifecycle = true)
+        }
+    }
+
+    private suspend fun reconcileActiveSessionTailPages() {
         val targets = mutex.withLock {
             matrixMlp3Projection.activeSessionTailRecoveryTargets(
                 MAX_ACTIVE_SESSION_TAIL_RECOVERY_TARGETS,
@@ -2786,10 +2812,27 @@ class NativeClientRuntime(
             mapOf("targets" to targets.size.toString()),
         )
 
-        val recovered = mutableListOf<RecoveredSessionTerminal>()
+        var terminals = 0
+        var changed = 0
+        var pages = 0
         var failed = 0
         var rejected = 0
-        for (target in targets) {
+        // One page per target per pass. This is the sole startup recovery
+        // reader; no polling commands or extra Matrix writes are generated.
+        val pending = ArrayDeque(targets.map { it to RecoveryPageCursor() })
+        while (pending.isNotEmpty()) {
+            val (target, cursor) = pending.removeFirst()
+            // Live sync may have already completed this turn or started a new
+            // one while we were paging. Never keep scanning an obsolete turn.
+            val stillActive = mutex.withLock {
+                matrixMlp3Projection.activeSessionTailRecoveryTargets(
+                    MAX_ACTIVE_SESSION_TAIL_RECOVERY_TARGETS,
+                ).any { it.projectId == target.projectId && it.sessionId == target.sessionId &&
+                    it.activeTurnId == target.activeTurnId }
+            }
+            if (!stillActive) continue
+            sessionHistoryRecoveryDetail = "matrix_session_history_recovering_${pages}"
+            refreshSnapshot(publishLifecycle = true)
             val keys = primaryProjectKeys(target.projectId)
             if (keys == null) {
                 failed += 1
@@ -2800,15 +2843,21 @@ class NativeClientRuntime(
             } finally {
                 keys.wipe()
             }
-            var events: List<MatrixDecryptedEvent>? = null
+            val events = mutableListOf<MatrixDecryptedEvent>()
+            var nextBatch: String? = null
+            var pageLoaded = false
             for (attempt in 0 until MAX_SESSION_TAIL_REQUEST_ATTEMPTS) {
                 try {
-                    events = matrix.loadThreadHistory(
+                    val page = matrix.loadThreadHistory(
                         target.threadRootEventId,
-                        null,
+                        cursor.next,
                         SESSION_TAIL_RECOVERY_EVENT_LIMIT,
                         roomId,
-                    ).events
+                    )
+                    events.addAll(page.events)
+                    nextBatch = page.nextBatch
+                    pageLoaded = true
+                    pages += 1
                     break
                 } catch (error: CancellationException) {
                     throw error
@@ -2827,7 +2876,7 @@ class NativeClientRuntime(
 
             var selected: VerifiedHistoricalMlp3Event? = null
             var selectedVersion = -1L
-            for (event in events.orEmpty()) {
+            for (event in events) {
                 val verified = try {
                     verifyHistoricalMlp3Event(event, target.sessionId)
                 } catch (error: CancellationException) {
@@ -2852,34 +2901,46 @@ class NativeClientRuntime(
                     selectedVersion = version
                 }
             }
-            selected?.let { recovered += RecoveredSessionTerminal(target, it) }
-        }
-
-        var changed = 0
-        mutex.withLock {
-            recovered.forEach { recovery ->
+            selected?.let { event ->
+                mutex.withLock {
                 val result = matrixMlp3Projection.reconcileSessionTerminal(
-                    event = recovery.event.protocolEvent,
-                    threadRootHint = recovery.target.threadRootEventId,
-                    expectedSessionId = recovery.target.sessionId,
-                    expectedTurnId = recovery.target.activeTurnId,
-                    physicalEventId = recovery.event.physicalEventId,
+                    event = event.protocolEvent,
+                    threadRootHint = target.threadRootEventId,
+                    expectedSessionId = target.sessionId,
+                    expectedTurnId = target.activeTurnId,
+                    physicalEventId = event.physicalEventId,
                 )
+                terminals += 1
                 if (result.changed) changed += 1
                 result.terminal?.let(::recordMatrixMlp3Terminal)
+                if (result.changed) commitMatrixMlp3Projection("session_tail_recovery")
+                }
             }
-            if (changed > 0) commitMatrixMlp3Projection("session_tail_recovery")
+            // Only advance after verification/application. Cancellation cannot
+            // leave a persisted cursor ahead of an unapplied terminal event.
+            if (selected == null && pageLoaded) {
+                try {
+                    if (cursor.advance(nextBatch)) pending.addLast(target to cursor)
+                } catch (error: IllegalStateException) {
+                    failed += 1
+                    diagnostics.record("matrix.v3_projection.tail_cursor_failed")
+                }
+            }
+            // Bound the read rate, including across targets with long histories.
+            if (pending.isNotEmpty()) delay(SESSION_TAIL_RECOVERY_RETRY_DELAY_MS)
         }
         diagnostics.record(
             "matrix.v3_projection.tail_recovery_completed",
             mapOf(
                 "targets" to targets.size.toString(),
-                "terminals" to recovered.size.toString(),
+                "terminals" to terminals.toString(),
+                "pages" to pages.toString(),
                 "changed" to changed.toString(),
                 "failed" to failed.toString(),
                 "rejected" to rejected.toString(),
             ),
         )
+        if (failed > 0) sessionHistoryRecoveryDetail = "matrix_session_history_incomplete"
     }
 
     private fun diagnosticErrorName(error: Throwable): String =
@@ -4340,7 +4401,8 @@ class NativeClientRuntime(
         ) {
             "matrix_gateway_state_syncing"
         } else {
-            status.detailCode
+            if (phase == LifecyclePhase.READY) sessionHistoryRecoveryDetail ?: status.detailCode
+            else status.detailCode
         }
         return ClientLifecycle(phase, status.since, detail)
     }

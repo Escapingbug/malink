@@ -2,6 +2,7 @@
 
 import { ArchiveListHeading, ArchiveListHelp, ArchiveEmptyState, ArchivedConversationNotice } from "./ArchiveView";
 import { SessionDeleteDialog } from "./SessionDeleteDialog";
+import { RecoveryStatus, deviceSetupPresentation, nativeHistoryRecoveryPages } from "./RecoveryStatus";
 import { SessionRenameDialog } from "./SessionRenameDialog";
 import { ConversationActionDialog } from "./ConversationActionDialog";
 import { referenceDraft, referenceTargets, type ConversationReference } from "./conversationReference";
@@ -1781,6 +1782,7 @@ function MalinkAppRuntime() {
     useState<NativeCommandReviewNotice | null>(null);
   const [pairingPreview, setPairingPreview] =
     useState<PairingPreview | null>(null);
+  const [identityRestoring, setIdentityRestoring] = useState(true);
   const [trustedGateway, setTrustedGateway] =
     useState<MalinkPublicTrust | null>(null);
   const [savedGateways, setSavedGateways] = useState<MalinkPublicTrust[]>([]);
@@ -4765,6 +4767,8 @@ function MalinkAppRuntime() {
       await pairingRecoveryRef.current(preview, recoveryConfig);
     })().catch((error) => {
       setConnectionError(`Connection startup failed: ${formatUiError(error)}`);
+    }).finally(() => {
+      setIdentityRestoring(false);
     });
     // URL fragments and persisted pairing recovery are consumed once at boot.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -11685,6 +11689,14 @@ function MalinkAppRuntime() {
     const recovery = sessionLifecycleRecoveriesRef.current.get(sent.commandId);
     if (recovery?.timer != null) window.clearTimeout(recovery.timer);
     sessionLifecycleRecoveriesRef.current.delete(sent.commandId);
+    // Completion is authoritative before optional navigation/history work.
+    // A slow callback must not keep a successfully deleted session spinning.
+    updateSessionLifecycleBusy((current) => {
+      const key = sessionLifecycleRouteKey(projectId, sessionId);
+      const next = new Map(current);
+      if (next.get(key) === action) next.delete(key);
+      return next;
+    });
     try {
       if (!(action === "delete" ? sessionArchiveSucceeded(completion) : completion.outcome === "succeeded")) {
         await onFailed?.();
@@ -11708,14 +11720,6 @@ function MalinkAppRuntime() {
         "error",
         formatUiError(error),
       );
-    } finally {
-      updateSessionLifecycleBusy((current) => {
-        const lifecycleKey = sessionLifecycleRouteKey(projectId, sessionId);
-        if (current.get(lifecycleKey) !== action) return new Map(current);
-        const next = new Map(current);
-        next.delete(lifecycleKey);
-        return next;
-      });
     }
 
     try {
@@ -14240,7 +14244,13 @@ function MalinkAppRuntime() {
             </section>
             );
           })}
-          {!trustedGateway && (
+          {!trustedGateway && deviceSetupPresentation(identityRestoring, connectionError) !== "setup" && (
+            <div className="empty-search connection-list-empty" role="status">
+              <strong>{identityRestoring ? "Restoring saved connection…" : "Connection needs attention"}</strong>
+              <small>{identityRestoring ? "Loading this device’s authorization and conversations." : "Open connection settings to review the startup problem. Your saved data has not been removed."}</small>
+            </div>
+          )}
+          {!trustedGateway && deviceSetupPresentation(identityRestoring, connectionError) === "setup" && (
             <div className="empty-search connection-list-empty">
               <strong>This device is not set up yet</strong>
               <small>Use a Workspace invitation to load projects and conversations.</small>
@@ -14376,7 +14386,14 @@ function MalinkAppRuntime() {
         className={`conversation-panel ${!trustedGateway ? "is-onboarding" : ""}`}
         aria-label={conversationTitle}
       >
-        {!trustedGateway && (
+        {!trustedGateway && (identityRestoring || connectionError) && (
+          <div role="status" className="session-notices-conversation">
+            <p>{identityRestoring ? "Restoring this device’s saved connection…" : connectionError}</p>
+            <p>Your saved authorization and conversations are kept on this device.</p>
+            {!identityRestoring && <button type="button" onClick={() => setSettingsOpen(true)}>Open connection settings</button>}
+          </div>
+        )}
+        {!trustedGateway && deviceSetupPresentation(identityRestoring, connectionError) === "setup" && (
           <ConnectionOnboarding
             notice={onboardingNotice}
             onDismissNotice={() => setOnboardingNotice(null)}
@@ -15077,6 +15094,8 @@ function MalinkAppRuntime() {
             {agentActivity && (
               <AgentActivityIndicator
                 activity={agentActivity}
+                recovering={nativeHistoryRecoveryPages(connectionDetail) !== null}
+                recoveryIncomplete={connectionDetail === "matrix_session_history_incomplete"}
                 updatedAt={agentActivityUpdatedAt}
                 key={`${selectedSessionId}:${agentActivity.phase}:${agentActivity.label}:${agentActivity.detail ?? ""}`}
               />
@@ -15090,6 +15109,14 @@ function MalinkAppRuntime() {
         </div>
 
         <div className="composer-area">
+          {connectionDetail === "matrix_session_history_incomplete" && <div className="session-notices-conversation" role="status">
+            <strong>Some saved task states could not be verified</strong>
+            <p>A history check failed. This does not mean the Agent is still running or has stopped. Open connection settings to reconnect; if it persists, export diagnostics there.</p>
+            <button type="button" onClick={() => setSettingsOpen(true)}>Open connection settings</button>
+          </div>}
+          {(historyLoading || historyCheckingRemote || nativeHistoryRecoveryPages(connectionDetail) !== null) && (
+            <RecoveryStatus connected={connectionStatus === "connected"} messages={messages.length} pages={nativeHistoryRecoveryPages(connectionDetail)} />
+          )}
           {feedAwayFromLatest ? (
             <button
               type="button"

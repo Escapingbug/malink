@@ -7,9 +7,13 @@ import {
 export function AgentActivityIndicator({
   activity,
   updatedAt,
+  recovering = false,
+  recoveryIncomplete = false,
 }: {
   activity: AgentActivity;
   updatedAt?: number;
+  recovering?: boolean;
+  recoveryIncomplete?: boolean;
 }) {
   const [now, setNow] = useState(() => Date.now());
   const validUpdatedAt =
@@ -25,7 +29,8 @@ export function AgentActivityIndicator({
     return () => window.clearInterval(timer);
   }, [validUpdatedAt]);
 
-  const activityTitle = `${activity.label}${
+  const label = recovering ? "Checking saved task status…" : recoveryIncomplete ? "Saved task status not verified" : activity.label;
+  const activityTitle = `${label}${
     activity.detail ? ` · ${activity.detail}` : ""
   }`;
   const updateTime = validUpdatedAt === undefined
@@ -56,8 +61,8 @@ export function AgentActivityIndicator({
           aria-live="polite"
           aria-atomic="true"
         >
-          <strong>{activity.label}</strong>
-          {activity.detail && <small>{activity.detail}</small>}
+          <strong>{label}</strong>
+          {!recovering && !recoveryIncomplete && activity.detail && <small>{activity.detail}</small>}
         </span>
         <small className="activity-last-update">
           {updateTime && (

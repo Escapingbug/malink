@@ -45,6 +45,10 @@ export type MobileConnectionSignal = {
 type DetailCopy = Pick<ConnectionPresentation, "title" | "detail">;
 
 const NATIVE_DETAIL_COPY: Readonly<Record<string, DetailCopy>> = {
+  matrix_session_history_incomplete: {
+    title: "Connected · Task status not verified",
+    detail: "Some history checks failed. Reconnect from connection settings; export diagnostics if the problem persists. Saved conversations are kept.",
+  },
   native_stopped: {
     title: "Connection paused",
     detail: "Open Malink to resume the native connection.",
@@ -271,7 +275,10 @@ export function deriveConnectionPresentation(
   const mappedCopy = machineCode === undefined
     ? undefined
     : NATIVE_DETAIL_COPY[machineCode];
-  const copy = mappedCopy ??
+  const copy = trimmedDetail?.startsWith("matrix_session_history_recovering_") ? {
+    title: "Connected · Restoring task status",
+    detail: "Checking signed conversation history in the background. You can keep using Malink while saved task states are verified.",
+  } : mappedCopy ??
     DEFAULT_COPY[status];
   return {
     state: connectionPresentationState(status),
