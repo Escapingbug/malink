@@ -1,3 +1,5 @@
+import { ArchiveListHeading, ArchiveListHelp, ArchiveEmptyState, ArchivedConversationNotice } from "./ArchiveView";
+import { SessionDeleteDialog } from "./SessionDeleteDialog";
 "use client";
 import { batchArchiveProgressSchema } from "@malink/protocol";
 import { batchArchiveUiStorageKey, readBatchArchiveUiResults, writeBatchArchiveUiResults } from "./batchArchiveUiStorage";
@@ -1586,6 +1588,8 @@ function MalinkAppRuntime() {
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [bulkSelect, setBulkSelect] = useState(false);
   const [listMenuOpen, setListMenuOpen] = useState(false);
+  const [showArchivedSessions, setShowArchivedSessions] = useState(false);
+  const [sessionToDelete, setSessionToDelete] = useState<GatewaySessionSummary | null>(null);
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
   const [bulkConfirm, setBulkConfirm] = useState(false);
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
@@ -2182,8 +2186,10 @@ function MalinkAppRuntime() {
     [messages, observedCommandCompletions, selectedSessionId],
   );
   const nativeBackAction = resolveMalinkBackAction({
-    deleteDialogOpen: false,
-    deleteDialogBusy: false,
+    deleteDialogOpen: sessionToDelete !== null,
+    deleteDialogBusy: Boolean(sessionToDelete && sessionLifecycleBusy.has(sessionLifecycleRouteKey(sessionToDelete.projectId, sessionToDelete.id))),
+    listMenuOpen,
+    archivedListOpen: showArchivedSessions,
     notificationCenterOpen,
     providerHistoryOpen,
     gatewayUpdateDialogOpen,
@@ -2202,6 +2208,13 @@ function MalinkAppRuntime() {
     () => {
       switch (nativeBackAction) {
         case "close-delete-dialog":
+          setSessionToDelete(null);
+          break;
+        case "close-list-menu":
+          setListMenuOpen(false);
+          break;
+        case "show-active-conversations":
+          changeArchiveView(false);
           break;
         case "close-notification-center":
           setNotificationCenterOpen(false);
@@ -2349,9 +2362,8 @@ function MalinkAppRuntime() {
       }),
     [fallbackProjectGateway, gatewayScopedSessions, projectGatewaysById, search],
   );
-  const [showArchivedSessions, setShowArchivedSessions] = useState(false);
-  const activeFilteredSessions = filteredSessions.filter(session =>
-    (session.status === "archived") === showArchivedSessions);
+  const activeFilteredSessions = useMemo(() => filteredSessions.filter(session =>
+    (session.status === "archived") === showArchivedSessions), [filteredSessions, showArchivedSessions]);
   const activeSessionCount = gatewayScopedSessions.filter(session => session.status !== "archived").length;
   const gatewayScopedProjects = useMemo(
     () => (gatewayState?.projects ?? []).filter(project => projectMatchesGatewayFilter(
@@ -2416,7 +2428,7 @@ function MalinkAppRuntime() {
       group.sessions.push(session);
       groups.set(key, group);
     }
-    if (!search.trim()) {
+    if (!search.trim() && !showArchivedSessions) {
       for (const project of canonicalProjectsById.values()) {
         const key = gatewayProjectKey(matrixConfig.gatewayId, project.projectId);
         if (!groups.has(key)) {
@@ -2455,6 +2467,7 @@ function MalinkAppRuntime() {
     activeFilteredSessions,
     canonicalProjectsById,
     fallbackProjectGateway,
+    showArchivedSessions,
     matrixConfig.gatewayId,
     projectGatewaysById,
     search,
@@ -11058,6 +11071,23 @@ function MalinkAppRuntime() {
     }
   }
 
+  function changeArchiveView(archived: boolean) {
+    setShowArchivedSessions(archived);
+    setListMenuOpen(false);
+    setBulkSelect(false);
+    setBulkSelected(new Set());
+    setBulkConfirm(false);
+    setSearch("");
+    setSessionSearchOpen(false);
+  }
+
+  async function restoreArchivedSession(session: GatewaySessionSummary) {
+    await runSessionLifecycle("restore", session.id, session.projectId, () => {
+      changeArchiveView(false);
+      void chooseSession(session.id, session.projectId);
+    });
+  }
+
   async function runSessionLifecycle(
     action: "archive" | "restore" | "delete",
     sessionId: string,
@@ -13437,13 +13467,10 @@ function MalinkAppRuntime() {
         </section>
       )}
 
-      <section className="session-panel" aria-label="Conversations">
+      <section className="session-panel" aria-label={showArchivedSessions ? "已归档会话" : "Conversations"}>
         <header className={`session-header ${bulkSelect ? "bulk-header-replaced" : ""}`} aria-hidden={bulkSelect || undefined} inert={bulkSelect || undefined}>
-          <div>
-            <span className="eyebrow">Workspace</span>
-            <h1>Malink</h1>
-          </div>
-          <div className="session-header-actions">
+          <ArchiveListHeading archived={showArchivedSessions} onBack={() => changeArchiveView(false)} />
+          <div className={`session-header-actions ${showArchivedSessions ? "archive-header-actions" : ""}`}>
             <button
               type="button"
               className="mobile-notification-button"
@@ -13530,8 +13557,9 @@ function MalinkAppRuntime() {
         {listMenuOpen && !bulkSelect && <>
           <button className="list-menu-dismiss" aria-label="关闭会话列表菜单" onClick={() => setListMenuOpen(false)} />
           <div className="conversation-list-menu" role="group" aria-label="会话列表操作" onKeyDown={event => { if (event.key === "Escape") setListMenuOpen(false); }}>
-            <button type="button" onClick={() => { setListMenuOpen(false); setBulkSelect(true); setBulkSelected(new Set()); setBulkConfirm(false); setSessionSearchOpen(true); }}>选择会话</button>
-            <button type="button" disabled={!gatewayAvailable || providerHistorySources.length === 0 || providerHistoryLoad !== null} onClick={() => { setListMenuOpen(false); void openProviderHistory(); }}>浏览历史会话</button>
+            <button type="button" onClick={() => changeArchiveView(!showArchivedSessions)}>{showArchivedSessions ? "返回会话列表" : "已归档会话"}</button>
+            {!showArchivedSessions && <button type="button" onClick={() => { setListMenuOpen(false); setBulkSelect(true); setBulkSelected(new Set()); setBulkConfirm(false); setSessionSearchOpen(true); }}>批量归档会话…</button>}
+            <button type="button" disabled={!gatewayAvailable || providerHistorySources.length === 0 || providerHistoryLoad !== null} onClick={() => { setListMenuOpen(false); void openProviderHistory(); }}>Agent 历史记录…</button>
             <button type="button" disabled={Boolean(optimisticProjectCreate) || !gatewayAvailable || projectCreationGateways.length === 0} onClick={() => { setListMenuOpen(false); setNewProjectOpen(true); }}>新建项目</button>
           </div>
         </>}
@@ -13546,8 +13574,8 @@ function MalinkAppRuntime() {
               ref={sessionSearchRef}
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search conversations"
-              aria-label="Search conversations"
+              placeholder={showArchivedSessions ? "搜索已归档会话" : "Search conversations"}
+              aria-label={showArchivedSessions ? "搜索已归档会话" : "Search conversations"}
             />
             <kbd aria-label="Control or Command K">Ctrl/⌘ K</kbd>
           </label>
@@ -13598,13 +13626,6 @@ function MalinkAppRuntime() {
           onDismiss={dismissUiNotice}
         />
 
-        {trustedGateway && <div className="bulk-session-actions" role="group" aria-label="Session lifecycle filter">
-          <button type="button" className="secondary-button" aria-pressed={!showArchivedSessions}
-            onClick={() => setShowArchivedSessions(false)}>Active</button>
-          <button type="button" className="secondary-button" aria-pressed={showArchivedSessions}
-            onClick={() => setShowArchivedSessions(true)}>Archived · {gatewayScopedSessions.filter(session => session.status === "archived").length}</button>
-        </div>}
-
         {trustedGateway && bulkSelect && (
           <div className={`bulk-session-actions ${bulkSelect ? "is-selecting" : ""}`}>
             <button type="button" className="secondary-button"
@@ -13632,6 +13653,7 @@ function MalinkAppRuntime() {
           </div>
         )}
         <div className="session-list">
+          {gatewayState && showArchivedSessions && <ArchiveListHelp />}
           {optimisticSession && projectMatchesGatewayFilter(
             activeGatewayFilter,
             optimisticSession.input.projectId ?? gatewayState?.workspace.projectId ?? "",
@@ -13963,7 +13985,7 @@ function MalinkAppRuntime() {
                 aria-pressed={projectAllSelected}
                 onClick={() => setBulkSelected(current => new Set([...current,
                   ...selectableSessions.map(session => sessionLifecycleRouteKey(session.projectId, session.id))]))}>{selectableSessions.length === 0 ? "不可选" : projectAllSelected ? "已全选" : "全选"}</button>}
-              {!project.temporary && !bulkSelect && (
+              {!project.temporary && !bulkSelect && !showArchivedSessions && (
                 <button
                   type="button"
                   className="project-manage-button"
@@ -13988,7 +14010,7 @@ function MalinkAppRuntime() {
                   ) ?? null;
                 const statusSummary = lifecycleAction
                   ? `${lifecycleAction === "delete" ? "Deleting" : lifecycleAction === "archive" ? "Archiving" : "Restoring"}…`
-                  : activity?.detail ||
+                  : session.status === "archived" ? "已归档 · 点击查看历史" : activity?.detail ||
                     activity?.label ||
                     sessionSignalLabel(signal) ||
                     "Idle";
@@ -14010,7 +14032,7 @@ function MalinkAppRuntime() {
                   gatewayConnected,
                 });
                 const showStatusSummary =
-                  Boolean(lifecycleAction || activity) || signal !== "idle";
+                  session.status === "archived" || Boolean(lifecycleAction || activity) || signal !== "idle";
                 const meaningfulActivityAt = sessionMeaningfulActivityAt(
                   session,
                   sessionMeaningfulActivity,
@@ -14175,7 +14197,10 @@ function MalinkAppRuntime() {
               )}
             </div>
           )}
-          {gatewayState &&
+          {gatewayState && showArchivedSessions && activeFilteredSessions.length === 0 && (
+            <ArchiveEmptyState searching={Boolean(search.trim())} onBack={() => changeArchiveView(false)} />
+          )}
+          {gatewayState && !showArchivedSessions &&
             conversationGroups.length === 0 &&
             Boolean(search.trim()) && (
             <div className="empty-search">
@@ -14183,7 +14208,7 @@ function MalinkAppRuntime() {
               No matching active conversations
             </div>
           )}
-          {gatewayState &&
+          {gatewayState && !showArchivedSessions &&
             activeGatewayFilter !== ALL_GATEWAYS_FILTER &&
             activeSessionCount === 0 &&
             conversationGroups.length === 0 &&
@@ -14195,7 +14220,7 @@ function MalinkAppRuntime() {
                 No conversations or projects on this Gateway
               </div>
             )}
-          {gatewayState &&
+          {gatewayState && !showArchivedSessions &&
             gatewayState.sessions.length === 0 &&
             activeGatewayFilter === ALL_GATEWAYS_FILTER &&
             connectionStatus === "connected" &&
@@ -14257,6 +14282,15 @@ function MalinkAppRuntime() {
             }}
           />
         )}
+        <SessionDeleteDialog session={sessionToDelete}
+          busy={Boolean(sessionToDelete && sessionLifecycleBusy.has(sessionLifecycleRouteKey(sessionToDelete.projectId, sessionToDelete.id)))}
+          onClose={() => setSessionToDelete(null)} onConfirm={() => {
+            if (!sessionToDelete) return;
+            void runSessionLifecycle("delete", sessionToDelete.id, sessionToDelete.projectId, () => {
+              setSessionToDelete(null);
+              setMobileChatOpen(false);
+            });
+          }} />
         {sharedFileBatch && <SharedFileDialog files={sharedFileBatch.files}
           sessions={visibleGatewaySessions.filter(session => session.status !== "archived").map(session => ({
             key: JSON.stringify([session.projectId, session.id]),
@@ -14430,28 +14464,31 @@ function MalinkAppRuntime() {
                     !activeCapabilities?.canArchiveSession || isStreaming
                   }
                   onClick={() => {
-                    void runSessionLifecycle(gatewaySelected.status === "archived" ? "restore" : "archive", gatewaySelected.id, gatewaySelected.projectId);
+                    if (gatewaySelected.status === "archived") void restoreArchivedSession(gatewaySelected);
+                    else void runSessionLifecycle("archive", gatewaySelected.id, gatewaySelected.projectId, () => {
+                      setMobileChatOpen(false);
+                      changeArchiveView(false);
+                    });
                   }}
                 >
                   <span aria-hidden="true">▣</span>
                   <span>
                     <strong>
-                      {gatewaySelected.status === "archived" ? "Restore session" : "Archive session"}
+                      {gatewaySelected.status === "archived" ? "恢复并继续" : "归档会话"}
                     </strong>
                     <small>
-                      {gatewaySelected.status === "archived" ? "Continue this conversation with its history" : "Keep history and files; restore quickly from Archived"}
+                      {gatewaySelected.status === "archived" ? "移回会话列表，接着使用原会话" : isStreaming ? "请先停止 Agent，再归档会话" : "收起已完成的会话；从列表 ⋯ → 已归档会话恢复"}
                     </small>
                   </span>
                 </button>
-                <button type="button" className="session-menu-primary"
+                <button type="button" className="session-menu-primary session-menu-delete"
                   disabled={selectedLifecycleBusy || !gatewayAvailable || !activeCapabilities?.canDeleteSession}
                   onClick={() => {
-                    if (window.confirm("Delete this session from Malink? Its Malink messages will be removed; scratch files are also removed. You can only continue it again from Provider History.")) {
-                      void deleteSession(gatewaySelected.id, gatewaySelected.projectId);
-                    }
+                    setDetailsOpen(false);
+                    setSessionToDelete(gatewaySelected);
                   }}>
                   <span aria-hidden="true">×</span>
-                  <span><strong>Delete session</strong><small>Remove from Malink; continue only through Provider History</small></span>
+                  <span><strong>删除会话…</strong><small>无法直接恢复；只能从 Agent 历史记录重新接续</small></span>
                 </button>
               </div>
             )}
@@ -14467,15 +14504,6 @@ function MalinkAppRuntime() {
             ref={feedRef}
             onScroll={handleFeedScroll}
           >
-          {gatewaySelected?.status === "archived" && (
-            <div className="bulk-session-actions" role="status">
-              <span>This session is archived. Its history and files are preserved.</span>
-              <button type="button" className="primary-button" disabled={selectedLifecycleBusy || !gatewayAvailable}
-                onClick={() => void runSessionLifecycle("restore", gatewaySelected.id, gatewaySelected.projectId)}>
-                Restore session
-              </button>
-            </div>
-          )}
           <UiNoticeList
             notices={historyNotices}
             className="history-notices"
@@ -15148,6 +15176,9 @@ function MalinkAppRuntime() {
             </div>
           )}
 
+          {gatewaySelected?.status === "archived" ? <ArchivedConversationNotice
+            busy={selectedLifecycleBusy} available={gatewayAvailable}
+            onRestore={() => void restoreArchivedSession(gatewaySelected)} /> : <>
           <form
             className={`composer ${composerOptionsOpen ? "composer-options-open" : ""}`}
             onSubmit={(event) => void sendMessage(event)}
@@ -15369,6 +15400,7 @@ function MalinkAppRuntime() {
           >
             {composerState.reason}
           </p>
+          </>}
         </div>
       </section>
 

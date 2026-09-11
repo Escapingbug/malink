@@ -47,6 +47,8 @@ export class NativeBackDispatcher {
 }
 
 export type MalinkBackState = {
+  listMenuOpen?: boolean;
+  archivedListOpen?: boolean;
   deleteDialogOpen: boolean;
   deleteDialogBusy: boolean;
   notificationCenterOpen?: boolean;
@@ -64,6 +66,8 @@ export type MalinkBackState = {
 };
 
 export type MalinkBackAction =
+  | "close-list-menu"
+  | "show-active-conversations"
   | "close-delete-dialog"
   | "block-delete-dialog"
   | "close-notification-center"
@@ -106,8 +110,10 @@ export function resolveMalinkBackAction(
   if (state.settingsOpen) return "close-settings";
   if (state.detailsOpen) return "close-details";
   if (state.composerOptionsOpen) return "close-composer-options";
+  if (state.listMenuOpen) return "close-list-menu";
   if (state.mobileChatOpen) return "show-conversations";
   if (state.sessionSearchOpen) return "close-session-search";
+  if (state.archivedListOpen) return "show-active-conversations";
   return null;
 }
 

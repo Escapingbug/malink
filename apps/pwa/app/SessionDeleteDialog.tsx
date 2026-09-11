@@ -52,17 +52,15 @@ export function SessionDeleteDialog({
         <div className="danger-symbol" aria-hidden="true">
           !
         </div>
-        <span className="eyebrow">Permanent action</span>
-        <h2 id="session-delete-title">Delete “{session.title}”?</h2>
+        <span className="eyebrow">删除后无法直接恢复</span>
+        <h2 id="session-delete-title">删除「{session.title}」？</h2>
         <p id="session-delete-description">
-          This removes the session from Malink on every connected device
-          {session.status === "archived"
-            ? "."
-            : " and stops its agent if it is still running."}
+          此会话将从所有设备移除，无法从「已归档会话」恢复。
+          {session.status !== "archived" && "如果 Agent 仍在运行，也会将其停止。"}
+          {session.scope === "scratch" && "临时工作目录中的文件也将删除。"}
         </p>
         <div className="delete-boundary-note">
-          Copies already stored by your account provider or coding agent are
-          not erased.
+          如需以后快速继续，请使用「归档」。删除后只能在 Agent 仍保留历史的情况下，从「Agent 历史记录」重新接续。
         </div>
         <footer>
           <button
@@ -72,7 +70,7 @@ export function SessionDeleteDialog({
             disabled={busy}
             onClick={onClose}
           >
-            Cancel
+            取消
           </button>
           <button
             type="button"
@@ -81,7 +79,7 @@ export function SessionDeleteDialog({
             aria-busy={busy}
             onClick={onConfirm}
           >
-            {busy ? <BusyActionLabel>Deleting…</BusyActionLabel> : "Delete session"}
+            {busy ? <BusyActionLabel>正在删除…</BusyActionLabel> : "删除会话"}
           </button>
         </footer>
       </section>

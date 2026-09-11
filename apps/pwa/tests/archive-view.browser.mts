@@ -1,0 +1,58 @@
+import assert from "node:assert/strict";
+import { mkdir } from "node:fs/promises";
+import { chromium } from "playwright-core";
+const dir = new URL("../../../artifacts/archive-ui/", import.meta.url).pathname;
+await mkdir(dir, {recursive:true});
+const browser = await chromium.launch({channel:"chrome",headless:true});
+try {
+ const page = await browser.newPage({viewport:{width:390,height:844}});
+ const errors:string[]=[];page.on("pageerror",error=>errors.push(error.message));
+ const url="http://127.0.0.1:5188/malink/tests/fixtures/archive-view.html";
+ await page.goto(url);
+ await page.getByRole("heading",{name:"Malink",exact:true}).waitFor();
+ assert.equal(await page.getByText("Active",{exact:true}).count(),0);
+ const headerHeight=await page.locator(".session-header").evaluate(e=>e.getBoundingClientRect().height);
+ await page.screenshot({path:dir+"active-mobile.png"});
+ await page.getByRole("button",{name:"会话列表菜单",exact:true}).click();
+ await page.screenshot({path:dir+"menu-mobile.png"});
+ await page.getByRole("button",{name:"已归档会话",exact:true}).click();
+ await page.getByRole("heading",{name:"已归档会话",exact:true}).waitFor();
+ assert.equal(await page.locator(".session-header").evaluate(e=>e.getBoundingClientRect().height),headerHeight);
+ await page.screenshot({path:dir+"archived-mobile.png"});
+ await page.getByText("归档会话是什么？",{exact:true}).click();
+ await page.getByText(/不是已删除会话的回收站/).waitFor();
+ await page.getByRole("button",{name:/登录流程优化/}).click();
+ await page.getByRole("button",{name:"恢复并继续",exact:true}).waitFor();
+ assert.equal(await page.getByRole("textbox",{name:"继续对话"}).count(),0);
+ await page.screenshot({path:dir+"restore-mobile.png"});
+ await page.getByRole("button",{name:"删除会话…",exact:true}).click();
+ await page.getByRole("alertdialog").waitFor();
+ await page.screenshot({path:dir+"delete-mobile.png"});
+ await page.keyboard.press("Escape");
+ assert.equal(await page.getByRole("alertdialog").count(),0);
+ await page.getByRole("button",{name:"恢复并继续",exact:true}).click();
+ await page.getByRole("textbox",{name:"继续对话"}).waitFor();
+ await page.getByRole("button",{name:"‹ 返回列表",exact:true}).click();
+ await page.getByRole("heading",{name:"Malink",exact:true}).waitFor();
+ await page.getByRole("button",{name:"会话列表菜单",exact:true}).click();
+ await page.getByRole("button",{name:"已归档会话",exact:true}).click();
+ assert.equal(await page.getByRole("button",{name:/登录流程优化/}).count(),0);
+ await page.getByRole("button",{name:"搜索会话",exact:true}).click();
+ await page.getByRole("textbox",{name:"搜索会话",exact:true}).fill("无匹配");
+ await page.getByText("没有找到匹配的归档会话",{exact:true}).waitFor();
+ await page.evaluate(()=>window.dispatchEvent(new CustomEvent("malink:native-back")));
+ await page.evaluate(()=>window.dispatchEvent(new CustomEvent("malink:native-back")));
+ await page.getByRole("heading",{name:"Malink",exact:true}).waitFor();
+ await page.goto(url+"?empty");
+ await page.getByRole("button",{name:"会话列表菜单",exact:true}).click();
+ await page.getByRole("button",{name:"已归档会话",exact:true}).click();
+ await page.getByText("这里还没有归档会话",{exact:true}).waitFor();
+ await page.screenshot({path:dir+"empty-mobile.png"});
+ for(const width of [320,360,768,1280]) {
+  await page.setViewportSize({width,height:844});
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth),true,`overflow at ${width}`);
+ }
+ await page.screenshot({path:dir+"empty-desktop.png"});
+ assert.deepEqual(errors,[]);
+ console.log("Archive UI scenarios passed: menu entry, same-height header, retained history, restore, delete cancellation, search, native Back, empty state and 320–1280px widths.");
+} finally {await browser.close();}
