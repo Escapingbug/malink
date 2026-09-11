@@ -3177,7 +3177,9 @@ internal class MatrixMlp3NativeProjection(
             else -> return false
         }
         val current = sessions[sessionId] ?: return false
-        if (current.lifecycle != "active" || (projectId != null && current.projectId != projectId)) {
+        // A supervisor result cannot settle a later repair turn in this session.
+        if (current.updatedAt > status.requiredLong("updatedAt") ||
+            current.lifecycle != "active" || (projectId != null && current.projectId != projectId)) {
             return false
         }
         val updatedAt = maxOf(current.updatedAt, status.requiredLong("updatedAt"))
