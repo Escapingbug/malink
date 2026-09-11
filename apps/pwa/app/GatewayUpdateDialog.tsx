@@ -17,6 +17,7 @@ import {
 import type { GatewayNodeLiveness } from "./gatewayNodeLiveness";
 import { gatewayProjectOwner } from "./projectCatalog";
 import { gatewayUpdateRecoveryAction } from "./gatewayUpdateRecovery";
+import { computerUpdateSummary } from "./computerUpdateSummary";
 
 export type GatewayUpdateNodeRuntime = {
   state: "unchecked" | "checking" | "unreachable" | "online" | "starting" | "error";
@@ -132,6 +133,7 @@ function GatewayUpdateDialogContent({
   }, [embedded, connected]);
   const [forceConfirmationNodeId, setForceConfirmationNodeId] = useState<string | null>(null);
   const [completionConfirmationNodeId, setCompletionConfirmationNodeId] = useState<string | null>(null);
+  const [advancedNodes, setAdvancedNodes] = useState<ReadonlySet<string>>(new Set());
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const forceConfirmationRef = useRef<HTMLDivElement>(null);
@@ -190,7 +192,7 @@ function GatewayUpdateDialogContent({
           </button>
         </header>}
 
-        {publishedRelease && <div className="gateway-update-release">
+        {!embedded && publishedRelease && <div className="gateway-update-release">
           <span aria-hidden="true">↻</span>
           <span>
             <small>Available release</small>
@@ -199,10 +201,10 @@ function GatewayUpdateDialogContent({
           </span>
         </div>}
 
-        <p className="gateway-update-explanation">
+        {!embedded && <p className="gateway-update-explanation">
           Start an update session to prepare the new version. Review its result, then explicitly switch when ready.
           You can leave settings while it works.
-        </p>
+        </p>}
 
         <div className="gateway-update-node-list">
           {ordered.map(node => {
@@ -283,6 +285,41 @@ function GatewayUpdateDialogContent({
                 key={node.gatewayNodeId}
                 className={`gateway-update-node gateway-update-node-${node.state}`}
               >
+                {embedded && <section className="computer-update-simple" aria-label="Update">
+                  <strong>{updateCompleted ? "Up to date" : candidateTrial ? "Ready to install"
+                    : computerUpdateSummary(runtime, activeMode) ?? (node.state === "current" ? "Up to date" : node.state === "available" ? "Update available" : "Check computer status")}</strong>
+                  <p>{candidateTrial || stagedPublishedRelease ? "Install when running tasks finish. You can keep using this computer."
+                    : knownUpdateFailure ? "The update did not complete. Review recovery options below."
+                    : active || deploymentInProgress ? "You can leave settings while the update continues."
+                    : node.state === "available" ? "Prepare the new version without interrupting your work."
+                    : "Version and maintenance options are available below."}</p>
+                  <div className="computer-update-primary">
+                    {runtimeNeedsAttention && !updateActionAvailable ? <button type="button" className="primary-button"
+                      onClick={() => setAdvancedNodes(current => new Set([...current, node.gatewayNodeId]))}>Review recovery</button>
+                      : candidateTrial ? <button type="button" className="primary-button" disabled={!connected || active}
+                      onClick={() => setCompletionConfirmationNodeId(node.gatewayNodeId)}>Install when idle</button>
+                      : publishedRelease && node.state === "available" && updateActionAvailable && !deploymentInProgress
+                      ? <button type="button" className="primary-button" disabled={!connected || active}
+                          aria-busy={active && activeMode !== "check_versions"}
+                          onClick={() => onStart(node, "when_idle")}>{active ? "Working…" : stagedPublishedRelease ? "Install when idle" : knownUpdateFailure ? "Retry update" : "Update"}</button>
+                      : !active && !deploymentInProgress && !showUpdateProgress && onCheckVersions
+                      ? <button type="button" className="secondary-button" disabled={!connected}
+                          onClick={() => onCheckVersions(node)}>Check status</button> : null}
+                  </div>
+                  {candidateTrial && completionConfirmationNodeId === node.gatewayNodeId && <div className="gateway-update-force-confirmation">
+                    <strong>Install when running tasks finish?</strong>
+                    <p>The new version will take over this computer's conversations.</p>
+                    <button type="button" className="secondary-button" onClick={() => setCompletionConfirmationNodeId(null)}>Cancel</button>
+                    <button type="button" className="primary-button" disabled={!connected || active}
+                      onClick={() => { setCompletionConfirmationNodeId(null); onPromote(node, "when_idle"); }}>Confirm installation</button>
+                  </div>}
+                </section>}
+                <details className="computer-update-advanced" open={!embedded || advancedNodes.has(node.gatewayNodeId)}
+                  onToggle={event => { const open = event.currentTarget.open; setAdvancedNodes(current => {
+                    if (current.has(node.gatewayNodeId) === open) return current;
+                    const next = new Set(current); if (open) next.add(node.gatewayNodeId); else next.delete(node.gatewayNodeId); return next;
+                  }); }}>
+                <summary>{runtimeNeedsAttention ? "Recovery options & details" : "Versions & advanced options"}</summary>
                 <div className="gateway-update-node-heading">
                   <span className="gateway-update-node-icon" aria-hidden="true">G</span>
                   <span>
@@ -671,6 +708,7 @@ function GatewayUpdateDialogContent({
                     </>
                   )}
                 </div>
+                </details>
                 {forceConfirming && (
                   <div
                     ref={forceConfirmationRef}

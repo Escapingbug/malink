@@ -12979,6 +12979,16 @@ body {
   background: transparent; animation: none;
 }
 .is-embedded .gateway-update-node { min-width: 0; }
+.computer-update-simple { display: grid; gap: 8px; }
+.computer-update-simple > p { margin: 0; color: var(--muted); font-size: 13px; }
+.computer-update-primary { display: flex; flex-wrap: wrap; gap: 8px; }
+.computer-update-primary button { min-height: 40px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); cursor: pointer; }
+.computer-update-primary .primary-button { background: var(--violet); color: white; border-color: var(--violet); }
+.computer-update-primary button:disabled { opacity: .55; cursor: default; }
+.computer-update-advanced { margin-top: 14px; }
+.computer-update-advanced > summary { cursor: pointer; color: var(--muted); padding: 10px 0; }
+.computer-update-advanced[open] > summary { margin-bottom: 12px; }
+.gateway-update-dialog:not(.is-embedded) .computer-update-advanced > summary { display: none; }
 .is-embedded .gateway-update-node-heading { display: none; }
 .is-embedded code, .computer-status-refresh { overflow-wrap: anywhere; word-break: break-word; }
 .computer-maintenance { margin-top: 16px; }

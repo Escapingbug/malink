@@ -110,6 +110,7 @@ type Props = {
   computersRequested?: boolean;
   onComputersRequestHandled?(): void;
   renderGatewayDetails?(gatewayNodeId: string): ReactNode;
+  onUpdateComputer?(gatewayNodeId: string): void;
   gatewayRelease: GatewayReleaseBuild | null;
   gatewayUpdateAvailableCount: number;
   gatewayUpdateNodeCount: number;
@@ -215,6 +216,7 @@ function MatrixSettingsDialog({
   computersRequested,
   onComputersRequestHandled,
   renderGatewayDetails,
+  onUpdateComputer,
   gatewayRelease,
   gatewayUpdateAvailableCount,
   gatewayUpdateNodeCount,
@@ -677,7 +679,6 @@ function MatrixSettingsDialog({
             <header>
               <span>
                 <strong>Workspace computers</strong>
-                <small>{gatewayManagementDetail}</small>
               </span>
               <button
                 type="button"
@@ -770,19 +771,21 @@ function MatrixSettingsDialog({
                     </div>
                     <div className="gateway-profile-software">
                       <span>
-                        <small>Gateway software</small>
                         <strong>{updateSummary ?? (!gatewayRelease || gatewayUpdateDiscoveryError
                           ? "Latest version not confirmed"
                           : updateAvailable ? "Update available" : gateway.buildId ? "Up to date" : "Version not reported")}</strong>
-                        <small>{gateway.buildId ? `Reported build ${gateway.buildId}` : "Version information will refresh when you open details."}</small>
                       </span>
+                      {onUpdateComputer && updateAvailable && !updateSummary && liveness.state === "online" && gateway.onlineUpdate && targetProjectId && !gatewayUpdateDiscoveryError && (
+                        <button type="button" disabled={status !== "connected" || Boolean(gatewayUpdateActiveModesByNode[gatewayProfileId])}
+                          onClick={() => { setExpandedComputer(gatewayProfileId); onExpandComputer?.(gatewayProfileId); onUpdateComputer(gatewayProfileId); }}>Update</button>
+                      )}
                       <button type="button" aria-expanded={expandedComputer === gatewayProfileId}
                         onClick={() => {
                           const next = expandedComputer === gatewayProfileId ? null : gatewayProfileId;
                           setExpandedComputer(next);
                           onExpandComputer?.(next);
                         }}>
-                        {expandedComputer === gatewayProfileId ? "Close details" : "Manage computer"}
+                        {expandedComputer === gatewayProfileId ? "Close" : updateAvailable && !onUpdateComputer ? "Update options" : "Manage"}
                       </button>
                     </div>
                     {expandedComputer === gatewayProfileId && <div className="computer-details">

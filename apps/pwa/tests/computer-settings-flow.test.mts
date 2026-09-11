@@ -27,7 +27,16 @@ test("release discovery failure cannot hide independent retained-version control
 
 test("handoff and failure take priority over a completed install in the computer list", () => {
   const runtime = { state: "online" as const, status: { version: 1 as const, updatedAt: 1, phase: "committed" as const, executionTracks: { ...tracks, phase: "attention" as const } } };
-  assert.equal(computerUpdateSummary(runtime), "Version needs attention · review retained version");
+  assert.equal(computerUpdateSummary(runtime), "Recovery needed");
   assert.equal(computerUpdateSummary(runtime, "select_version"), "Switching version");
-  assert.equal(computerUpdateSummary({ ...runtime, status: { ...runtime.status, phase: "staged", executionTracks: tracks } }), "New version prepared · waiting for your switch");
+  assert.equal(computerUpdateSummary({ ...runtime, status: { ...runtime.status, phase: "staged", executionTracks: tracks } }), "Ready to install");
+});
+
+test("embedded management keeps technical state and secondary actions collapsed", () => {
+  const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, { ...base, runtimeByNode: {mac:{state:"online",status:{version:1,updatedAt:1,phase:"committed",currentBuildId:"new",executionTracks:tracks}}} }));
+  const visible = html.slice(0, html.indexOf('<details class="computer-update-advanced"'));
+  assert.match(visible, /Up to date/);
+  assert.doesNotMatch(visible, /Execution tracks|Current build|Target build|View update session|Available release/);
+  assert.match(html, /<details class="computer-update-advanced">/);
+  assert.match(html, /Switch to retained version old/);
 });

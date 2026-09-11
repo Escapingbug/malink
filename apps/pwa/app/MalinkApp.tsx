@@ -15917,6 +15917,11 @@ function MalinkAppRuntime() {
             />
           ) : <p role="status">Waiting for this computer's synchronized information.</p>;
         }}
+        onUpdateComputer={(gatewayNodeId) => {
+          const node = gatewayUpdatePlan.find(value => value.gatewayNodeId === gatewayNodeId);
+          if (node?.state === "available") void startGatewayUpdateNode(node, "when_idle", true);
+          else setSettingsComputerId(gatewayNodeId);
+        }}
         config={matrixConfig}
         status={displayedConnectionStatus}
         connectionDetail={connectionDetail}
