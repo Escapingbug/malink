@@ -2607,7 +2607,8 @@ describe('MatrixMlp3GatewayRunner', () => {
       payload: { operation: 'provider.sessions.list', provider: 'test' },
     }, '$provider-list-managed')
     await waitFor(async () => (await events(client, activeKey.key, roomId, projectId))
-      .some(event => event.causationCommandId === 'provider-list-managed'))
+      .some(event => event.causationCommandId === 'provider-list-managed'
+        && event.payload.type === 'provider.sessions.listed'))
     expect((await events(client, activeKey.key, roomId, projectId)).find(event =>
       event.causationCommandId === 'provider-list-managed'
       && event.payload.type === 'provider.sessions.listed'
