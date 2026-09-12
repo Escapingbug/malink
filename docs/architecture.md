@@ -458,6 +458,29 @@ processing, projection saves, skipped saves and presentation resume work.
 `elapsed_ms` is summed wall time (not CPU time); raw `bytes` counts encrypted
 record bytes and projection `bytes` counts serialized projection bytes. These
 overlapping measurements must not be added together as total CPU usage.
+Power windows also group by foreground/background phase, verified payload type,
+projection mutation/replay flags and checkpoint request reason. `max_ms` is the
+slowest sample; `power.event_stage` separates runtime mutex wait, application
+decryption, signature verification and snapshot publication. Stage timings are
+wall time and can overlap the enclosing event-processing measurement.
+`power.checkpoint_request` counts requests (including coalesced requests), not
+disk writes; `power.projection_checkpoint` counts successful saves.
+`power.process` records process CPU delta (`cpu_ms`) against monotonic elapsed
+time (`window_ms`), including device sleep. It samples only on existing log
+activity after a minute, visibility transitions and export: no timer, wake lock
+or new network work. A transition closes the previous phase before changing its
+label; startup is `unknown` until visibility is reported. CPU includes native
+SDK threads in this process, not separate WebView renderers or radio energy,
+and is not a battery-capacity measurement. Dimension cardinality is bounded;
+excess groups remain aggregated under `reason=overflow`.
+For remote diagnosis, use a build with these counters, leave the app backgrounded
+with the screen off for 30–60 minutes, then export native diagnostics through the
+existing UI. Include the build, approximate test interval and whether agents
+were active. Compare background CPU/window, incoming event count/type,
+checkpoint requests versus actual saves/bytes and stage timings. High CPU
+without measured application work calls for system-level evidence rather than
+assuming the Matrix SDK or network is the cause. Windows can be lost on process
+death; export after the test and do not sum process CPU with wall-time counters.
 For successful turns, the native projection retains a bounded preview of the
 latest authenticated, final, non-tool `assistant.message` under the same turn
 identity and attaches it to the terminal notification. Failed turns use their

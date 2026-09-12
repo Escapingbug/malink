@@ -1309,6 +1309,7 @@ internal fun persistMatrixMlp3ProjectionCache(
         durable = projection.durableProjection()
         store.save(durable.value)
         diagnostics.record("power.projection_checkpoint", mapOf(
+            "reason" to reason,
             "elapsed_ms" to ((System.nanoTime() - started) / 1_000_000).toString(),
             "bytes" to durable.encodedBytes.toString(),
         ))
