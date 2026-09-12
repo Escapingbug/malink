@@ -3,6 +3,7 @@
 import { computerUserState } from "./computerUserState";
 import { ComputerActionDialog, ComputerActionPanel } from "./ComputerActionPanel";
 import { SettingsIcon } from "./SettingsIcon";
+import { gatewayCheckFailureStillCurrent } from "./gatewayCheckResult";
 import type { GatewayUpdateNodeRuntime, GatewayUpdateActiveAction } from "./GatewayUpdateDialog";
 import { computerRepresentatives } from "./computerPresentation";
 import type { GatewayDeploymentStatus } from "@malink/protocol";
@@ -533,7 +534,7 @@ function MatrixSettingsDialog({
             aria-label="Close settings"
             disabled={actionBusy}
           >
-            ×
+            <SettingsIcon name="close"/>
           </button>
         </header>
 
@@ -695,7 +696,7 @@ function MatrixSettingsDialog({
           <section className={"gateway-profile-list gateway-visual-list" + (expandedComputer ? " is-detail" : "")} aria-label="Workspace computers">
             <header>
               <span>
-                {expandedComputer ? <button type="button" className="computer-back" onClick={() => { setExpandedComputer(null); onExpandComputer?.(null); }}>← All computers</button> : <strong>Workspace computers</strong>}
+                {expandedComputer ? <button type="button" className="computer-back" onClick={() => { setExpandedComputer(null); onExpandComputer?.(null); }}><SettingsIcon name="back"/> All computers</button> : <strong>Workspace computers</strong>}
               </span>
               <button
                 type="button"
@@ -754,7 +755,8 @@ function MatrixSettingsDialog({
                   Boolean(targetProjectId) && liveness.state === "online";
                 const statusCheck = statusChecks[gatewayProfileId];
                 const checkingStatus = Boolean(statusCheck?.pending || liveness.state === "checking");
-                const checkFailed = statusCheck?.replied === false;
+                const checkFailed = gatewayCheckFailureStillCurrent({ failed: statusCheck?.replied === false,
+                  checkedAt: statusCheck?.at, lastVerifiedAt: livenessValue.lastVerifiedAt });
                 const statusOnline = status === "connected" && !checkingStatus && !checkFailed && liveness.state === "online";
                 return (
                   <div
@@ -772,7 +774,7 @@ function MatrixSettingsDialog({
                       </span>
                     </div>
                     {!expandedComputer && <>
-                      <button type="button" className="computer-card-open" aria-label={"Manage " + gatewayIdentity.label} onClick={() => { setExpandedComputer(gatewayProfileId); onExpandComputer?.(gatewayProfileId); }}><span aria-hidden="true">›</span></button>
+                      <button type="button" className="computer-card-open" aria-label={"Manage " + gatewayIdentity.label} onClick={() => { setExpandedComputer(gatewayProfileId); onExpandComputer?.(gatewayProfileId); }}><span aria-hidden="true"><SettingsIcon name="next"/></span></button>
                       <button type="button" className={"computer-card-status computer-user-state-" + (statusOnline ? "online" : "unknown")}
                         aria-label={"Refresh status for " + gatewayIdentity.label}
                         aria-busy={checkingStatus}

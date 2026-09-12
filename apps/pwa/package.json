@@ -20,6 +20,7 @@
     "@malink/protocol": "file:../../packages/protocol",
     "@malink/security": "file:../../packages/security",
     "jsqr": "1.4.0",
+    "lucide-react": "1.45.0",
     "matrix-js-sdk": "41.0.0",
     "qrcode": "1.5.4",
     "react": "19.2.6",

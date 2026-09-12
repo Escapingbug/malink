@@ -27,6 +27,7 @@ function Fixture() {
   const [forwardOnly, setForwardOnly] = useState(false);
   const [archived, setArchived] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [verifiedAt, setVerifiedAt] = useState(Date.now());
   const runtime = { mac: { state: "online" as const, versionCheckedAt: secondChecked, status: { version: 1 as const, updatedAt: 1, currentBuildId: "v1", targetBuildId: "v2", releaseId: "v2", phase: secondPhase as any } }, tokyo: { state: "online" as const, versionCheckedAt: checked, versionCheckError: checkError,
     maintenanceSessionId: phase === "idle" ? undefined : "session",
     maintenanceSessionArchived: archived, maintenanceSessionArchiveAvailable: phase === "committed",
@@ -42,7 +43,7 @@ function Fixture() {
     gatewayDirectory: { directory: { gateways: [{ ...node, gatewayName: name, workspaceId: "workspace", buildId: active, projects: [{ projectId: "project" }] }, { ...second, workspaceId: "workspace", buildId: canRemove ? "gateway-2026.09.12-081840Z-44d8e8a" : "v1", projects: [{ projectId: "mac-project" }] }] } },
     availableProjectIds: ["project", "mac-project"], pendingGatewayEnrollments: [], approvedGatewayEnrollmentIds: new Set(),
     gatewayEnrollmentBusy: null, gatewayProfileBusy: null, gatewayRetirementBusy: retiring,
-    gatewayNodeLivenessById: { tokyo: { state: offline ? "unreachable" : "online", lastVerifiedAt: Date.now() }, mac: { state: "online", lastVerifiedAt: Date.now() } }, gatewayRestartRuntimeByNode: restart, gatewayLivenessNow: Date.now(),
+    gatewayNodeLivenessById: { tokyo: { state: offline ? "unreachable" : "online", lastVerifiedAt: verifiedAt }, mac: { state: "online", lastVerifiedAt: verifiedAt } }, gatewayRestartRuntimeByNode: restart, gatewayLivenessNow: Date.now(),
     gatewayRelease: release, gatewayUpdateAvailableCount: active === "v1" ? 2 : 1, gatewayUpdateNodeCount: 2,
     gatewayUpdateDiscoveryBusy: false, gatewayUpdateDiscoveryError: null, gatewayUpdateRuntimeByNode: runtime,
     updateState: { phase: "idle" }, nativeUpdateState: null, nativeRuntime: null, webPushState: { phase: "idle" },
@@ -63,6 +64,7 @@ function Fixture() {
   };
   (window as any).setFixturePhase = (value: string) => { setPhase(value); if (value === "committed") setActive("v2"); };
   (window as any).setFixtureOffline = setOffline;
+  (window as any).receiveSignedActivity = () => setVerifiedAt(Date.now());
   (window as any).setFixtureActiveBuild = setActive;
   (window as any).setFixtureForwardFailure = () => { setForwardOnly(true); setPhase("repair_required"); setStatusTime(Date.now()); setChecked(Date.now()); };
   (window as any).setFixtureCanRemove = setCanRemove;

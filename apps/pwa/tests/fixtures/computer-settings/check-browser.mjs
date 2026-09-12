@@ -33,6 +33,12 @@ try {
   await page.evaluate(()=>window.finishLiveCheck(true));
   await liveStatus.getByText(/Checked /).waitFor();
   assert.equal(await liveStatus.evaluate(el=>el.classList.contains('computer-user-state-online')),true);
+  await liveStatus.click();
+  await page.evaluate(()=>window.finishLiveCheck(false));
+  await liveStatus.getByText(/No new reply/).waitFor();
+  await page.evaluate(()=>window.receiveSignedActivity());
+  await liveStatus.getByText(/^Online now/).waitFor();
+  assert.equal(await liveStatus.evaluate(el=>el.classList.contains('computer-user-state-online')),true);
   assert.equal(await page.getByRole('region',{name:'Gateway management',exact:true}).count(),0);
   await page.screenshot({path:'/tmp/malink-simple-flow-qa/cards-'+width+'.png'});
   await page.getByRole('button',{name:'Manage Tokyo server · Tokyo',exact:true}).click();
@@ -54,7 +60,8 @@ try {
   await page.evaluate(()=>window.setFixturePhase('staged'));
   await management().getByRole('button',{name:'Restart and install update',exact:true}).click();
   await panel().getByRole('button',{name:'Confirm',exact:true}).click();
-  await management().getByRole('heading',{name:'Update complete',exact:true}).waitFor();
+  await management().getByRole('heading',{name:'Up to date',exact:true}).waitFor();
+  await management().getByText('Update complete',{exact:true}).waitFor();
   const gatewayStyle = await management().evaluate(el => {
     const style = selector => { const s=getComputedStyle(el.querySelector(selector)); return {fontSize:s.fontSize,color:s.color,fontWeight:s.fontWeight}; };
     return {button:style('.gateway-management-actions button'),caption:style('.gateway-management-caption'),buttonHeight:el.querySelector('.gateway-management-actions button').getBoundingClientRect().height,padding:getComputedStyle(el.querySelector('.gateway-software-task')).padding};

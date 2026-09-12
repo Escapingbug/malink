@@ -22,7 +22,7 @@ export function ComputerActionPanel({ title, subtitle, icon = "›", children, o
     {trigger && <button type="button" className={`computer-action-entry${danger ? " is-danger" : ""}`} onClick={() => setOpen(true)} aria-haspopup="dialog">
       <span className="computer-action-icon" aria-hidden="true"><SettingsIcon name={icon === "✎" ? "edit" : icon === "⟳" ? "refresh" : icon === "?" ? "help" : icon === "−" ? "remove" : "next"}/></span>
       <span><strong>{title}</strong>{subtitle && <small>{subtitle}</small>}</span>
-      <span aria-hidden="true">›</span>
+      <span aria-hidden="true"><SettingsIcon name="next"/></span>
     </button>}
     {open && <ComputerActionDialog title={title} onClose={() => setOpen(false)}>{children}</ComputerActionDialog>}
   </>;
@@ -56,7 +56,7 @@ export function ComputerActionDialog({ title, onClose, children }: { title: stri
   if (typeof document === "undefined") return null;
   return createPortal(<div className="computer-action-backdrop" onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section ref={ref} className="computer-action-dialog" role="dialog" aria-modal="true" aria-labelledby={id} tabIndex={-1}>
-      <header><button ref={back} type="button" onClick={onClose} aria-label={`Back from ${title}`}>←</button><h2 id={id}>{title}</h2><button type="button" onClick={onClose} aria-label={`Close ${title}`}>×</button></header>
+      <header><button ref={back} type="button" onClick={onClose} aria-label={`Back from ${title}`}><SettingsIcon name="back"/></button><h2 id={id}>{title}</h2><button type="button" onClick={onClose} aria-label={`Close ${title}`}><SettingsIcon name="close"/></button></header>
       <div className="computer-action-body">{children}</div>
     </section>
   </div>, document.body);

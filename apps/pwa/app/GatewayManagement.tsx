@@ -23,9 +23,11 @@ export function GatewayManagement({ node, runtime, latestBuild, connected, lastV
   const canSwitch = Boolean(!temporary && previous && tracks && ["steady", "attention"].includes(tracks.phase) && onSelect);
   const retryTarget = failed && tracks?.phase === "attention" ? tracks.targetRelease : undefined;
   const disabled = !connected || busy;
-  const title = switching ? "Restarting for update…" : complete ? "Update complete" : ready ? "Ready to install"
-    : preparing ? "Preparing update…" : failed ? "Update needs attention" : latestBuild && current !== latestBuild ? "Update available" : latestBuild ? "Up to date" : "Checking for updates";
-  const tone = switching || preparing ? "progress" : failed ? "attention" : complete || current === latestBuild ? "success" : "available";
+  const versionLabel = !latestBuild ? "Latest version not confirmed" : !current ? "Installed version not confirmed"
+    : current === latestBuild ? "Up to date" : "Update available";
+  const title = switching ? "Restarting for update…" : ready ? "Ready to install"
+    : preparing ? "Preparing update…" : failed ? "Update needs attention" : versionLabel;
+  const tone = switching || preparing ? "progress" : failed ? "attention" : versionLabel === "Up to date" ? "success" : "available";
   const proof = Math.max(lastVerifiedAt ?? 0, !runtime.versionCheckError ? runtime.versionCheckedAt ?? 0 : 0);
   const now = Date.now();
   const online = connected && !refreshing && !runtime.versionCheckError && proof > 0 && proof <= now && now - proof <= GATEWAY_ONLINE_PROOF_WINDOW_MS;
@@ -47,13 +49,15 @@ export function GatewayManagement({ node, runtime, latestBuild, connected, lastV
       {tone === "success" && <span className="gateway-success-mark" aria-label="Update successful"><SettingsIcon name="check"/></span>}
     </div>
     <p className="gateway-management-version">Installed <span title={current}>{current ?? "Not yet confirmed"}</span></p>
+    {latestBuild && current !== latestBuild && <p className="gateway-management-version">Latest <span>{latestBuild}</span></p>}
+    {complete && <p className="gateway-management-caption">Update complete</p>}
     </div>
     {temporary && <p role="status">Using an older version temporarily. Update soon to avoid compatibility problems.</p>}
     {runtime.versionSwitchError && <p role="alert">{runtime.versionSwitchError}</p>}
     {failed && <p role="status">{runtime.status?.executionTracks?.error ?? runtime.status?.detail ?? "The update did not finish. Open its session to review the result."}</p>}
     {switching && <p role="status">This computer is installing and reconnecting. You can leave this page.</p>}
     <div className="gateway-management-actions">
-      {!switching && !preparing && !ready && !complete && !retryTarget && canUpdate && <button className="primary-button" type="button" disabled={disabled} onClick={onUpdate}>{busy ? "Starting…" : failed ? "Retry update" : "Update"}</button>}
+      {!switching && !preparing && !ready && (!complete || versionLabel === "Update available") && !retryTarget && canUpdate && <button className="primary-button" type="button" disabled={disabled} onClick={onUpdate}>{busy ? "Starting…" : failed ? "Retry update" : "Update"}</button>}
       {retryTarget && onSelect && <button className="primary-button" type="button" disabled={disabled} onClick={() => setConfirm({ id: retryTarget, generation: tracks!.generation })}>Retry prepared update</button>}
       {ready && !switching && <button className="primary-button" type="button" disabled={disabled} onClick={() => setConfirm("install")}>Restart and install update</button>}
       {session && <button className={preparing ? "primary-button" : "secondary-button"} type="button" disabled={!node.targetProjectId} onClick={() => onOpen(session)}>Open update session</button>}

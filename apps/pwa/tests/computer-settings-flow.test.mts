@@ -3,12 +3,26 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { GatewayUpdateDialog } from "../app/GatewayUpdateDialog";
+import { GatewayManagement } from "../app/GatewayManagement";
 
 const node = { gatewayNodeId: "mac", gatewayName: "Tokyo", onlineUpdate: true, state: "current" as const, currentBuildId: "new", targetProjectId: "project" };
 const tracks = { generation: 3, activeRelease: "new", standbyRelease: "old", phase: "steady" as const };
 const base = { open: true, embedded: true, connected: true, release: { releaseId: "new", buildId: "new" }, nodes: [node], activeGatewayNodeIds: new Set<string>(),
   livenessByNode: { mac: { state: "online" as const, lastVerifiedAt: Date.now() } },
   onClose() {}, onStart() {}, onPromote() {}, onDiscard() {}, onOpenProject() {}, onOpenSession() {}, onArchiveSession() {}, onExportDiagnostics() {}, onSelectVersion() {}, onCheckVersions() {} };
+
+test("version comparison stays visible independently of an earlier completed update", () => {
+  const props = { node, runtime: { state: "online" as const }, connected: true, busy: false, preparing: false,
+    ready: false, switching: false, complete: true, failed: false, canUpdate: true,
+    onUpdate() {}, onInstall() {}, onOpen() {}, onDelete() {}, onExport() {} };
+  const newer = renderToStaticMarkup(createElement(GatewayManagement, { ...props, latestBuild: "newer" }));
+  assert.match(newer, /Update available/);
+  assert.match(newer, /Latest <span>newer/);
+  assert.match(newer, />Update<\/button>/);
+  const unknown = renderToStaticMarkup(createElement(GatewayManagement, props));
+  assert.match(unknown, /Latest version not confirmed/);
+  assert.doesNotMatch(unknown, /Update successful/);
+});
 
 test("confirmed deletion removes session controls, not temporary recovery", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, { ...base, runtimeByNode: { mac: { state: "online", maintenanceSessionId: "session", maintenanceSessionArchived: true,

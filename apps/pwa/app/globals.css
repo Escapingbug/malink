@@ -13225,6 +13225,8 @@ body {
 
 /* Gateway management shares Settings row geometry; business states only change content. */
 .settings-icon { display: block; width: 16px; height: 16px; flex-shrink: 0; }
+.computer-back { gap: 6px; }
+.computer-action-dialog > header > button { display: grid; place-items: center; }
 .gateway-visual-list { border: 0; background: transparent; padding: 0; }
 .gateway-visual-list > header { padding: 0 0 12px; border: 0; }
 .gateway-visual-list > header strong { font-size: var(--settings-label-size); color: var(--settings-label-color); }

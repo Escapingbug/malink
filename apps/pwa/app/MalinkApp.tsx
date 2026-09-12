@@ -4223,6 +4223,8 @@ function MalinkAppRuntime() {
           ...current,
           state: "unchecked",
           status: update,
+          ...(incomingStatus && verifiedAt > (current.versionCheckedAt ?? 0)
+            ? { versionCheckedAt: verifiedAt, versionCheckError: undefined } : {}),
           maintenanceSessionId: update?.maintenanceSessionId,
           detail: undefined,
         };
@@ -16024,13 +16026,18 @@ function MalinkAppRuntime() {
         onRenameGateway={renameGateway}
         onRetireGateway={retireWorkspaceGateway}
         onCheckGatewayLiveness={async (gatewayNodeId) => {
+          const startedAt = Date.now();
           const target = gatewayNodeProbeTargetsById.get(gatewayNodeId);
           if (!target) {
             updateGatewayNodeLiveness(gatewayNodeId, current => ({ ...current, state: "unavailable", checkedAt: Date.now(),
               detail: "The project route for this computer has not synchronized. Reconnect this client and try again." }));
             return false;
           }
-          return (await probeGatewayNodeLiveness(target)) !== null;
+          const result = await probeGatewayNodeLiveness(target);
+          // A signed error or concurrent signed activity still proves liveness.
+          // It must not be presented as "no reply" merely because no update
+          // status object was returned by the maintenance subsystem.
+          return result !== null || (gatewayNodeLivenessRef.current[gatewayNodeId]?.lastVerifiedAt ?? 0) >= startedAt;
         }}
         onRestartGateway={(gatewayNodeId, targetProjectId, mode) => {
           void restartGatewayNode(gatewayNodeId, targetProjectId, mode);
