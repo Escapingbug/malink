@@ -5,7 +5,7 @@ import { expect, it } from 'vitest'
 import { GatewayExecutionWorkerHost } from '@/ops/gatewayExecutionWorkerHost'
 import { GatewayExecutionTracks } from '@/ops/gatewayExecutionTracks'
 
-it('keeps standby controllers alive and selects old software after default startup failure', async () => {
+it('waits beyond health timeout for a real seal, and recovers after default startup failure', async () => {
   const root = await mkdtemp(join(tmpdir(), 'track-worker-'))
   await writeFile(join(root, 'business.json'), JSON.stringify({ results: ['retained'], starts: [] }))
   const host = new GatewayExecutionWorkerHost({
@@ -14,7 +14,7 @@ it('keeps standby controllers alive and selects old software after default start
     resolveRelease: async id => ({ releaseId: id, buildId: id, executable: process.execPath,
       arguments: id === 'broken' ? ['--eval', 'process.exit(1)']
         : ['--import', 'tsx', resolve('src/__tests__/fixtures/execution-track-child.ts')],
-      cwd: process.cwd(), environment: { ...process.env, MALINK_GATEWAY_ADMIN_SOCKET: join(root, 'admin.sock') },
+      cwd: process.cwd(), environment: { ...process.env, MALINK_GATEWAY_ADMIN_SOCKET: join(root, 'admin.sock'), TEST_SEAL_DELAY_MS: '5500' },
     }), log() {},
   })
   const tracks = new GatewayExecutionTracks(join(root, 'tracks.json'), {

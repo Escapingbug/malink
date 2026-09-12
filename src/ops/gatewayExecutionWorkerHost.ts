@@ -102,7 +102,7 @@ export class GatewayExecutionWorkerHost implements GatewayExecutionTrackHost {
   private request(worker: ChildProcess, operation: string, payload: Record<string, unknown> = {}): Promise<void> {
     const id = ++this.sequence
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`Version controller ${operation} timed out`)) }, 45_000)
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`Version controller ${operation} timed out`)) }, operation === 'release' ? 190_000 : 45_000)
       this.pending.set(id, { worker, resolve, reject, timer })
       worker.send({ id, operation, ...payload }, error => {
         if (error) { clearTimeout(timer); this.pending.delete(id); reject(error) }

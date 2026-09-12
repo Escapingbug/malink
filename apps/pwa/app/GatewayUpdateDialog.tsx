@@ -18,6 +18,7 @@ import type { GatewayNodeLiveness } from "./gatewayNodeLiveness";
 import { gatewayProjectOwner } from "./projectCatalog";
 import { gatewayUpdateRecoveryAction } from "./gatewayUpdateRecovery";
 import { computerUserState } from "./computerUserState";
+import { gatewayVersionChoices } from "./gatewayVersionChoices";
 import { ComputerActionDialog, ComputerActionPanel } from "./ComputerActionPanel";
 
 export type GatewayUpdateNodeRuntime = {
@@ -295,13 +296,21 @@ function GatewayUpdateDialogContent({
                 {embedded && !managementOnly && <section className={`computer-update-simple computer-user-state-${userState.tone}`} aria-label="Computer status" role="status">
                   <strong>{userState.title}</strong>
                   <p>{userState.description}</p>
+                  {onCheckVersions && <div className="computer-panel-buttons">
+                    <button type="button" className="secondary-button" disabled={!connected || active} onClick={() => onCheckVersions(node)}>
+                      {activeMode === "check_versions" ? "Refreshing…" : "Refresh status"}
+                    </button>
+                    {runtime.versionCheckedAt && <small>Last check · {new Date(runtime.versionCheckedAt).toLocaleTimeString()}{runtime.versionCheckError ? " · No reply" : ""}</small>}
+                  </div>}
                   {forwardOnlyConfirmation && <p role="alert">This update changes protected local data. Automatic rollback is unavailable. Continue only if you can access this computer directly.</p>}
                   <div className="computer-update-primary">
                     {userState.needsConfirmation ? userState.checkFailed || !onCheckVersions
                       ? <button type="button" className="primary-button" onClick={() => setAdvancedNodes(current => new Set([...current, node.gatewayNodeId]))}>How to reconnect</button>
-                      : <button type="button" className="primary-button" disabled={active} onClick={() => onCheckVersions(node)}>{activeMode === "check_versions" ? "Checking…" : "Confirm current state"}</button>
+                      : null
                       : !connected ? null
-                      : (runtimeNeedsAttention || userState.repairRequired) && !updateActionAvailable ? userState.repairRequired && runtime.status?.executionTracks?.standbyRelease && onSelectVersion && ["steady", "attention"].includes(runtime.status.executionTracks.phase)
+                      : (runtimeNeedsAttention || userState.repairRequired) && !updateActionAvailable ? userState.repairRequired && runtime.status?.activationMode === "forward-only" && runtime.status.executionTracks?.targetRelease && onSelectVersion && runtime.status.executionTracks.phase === "attention"
+                        ? <button type="button" className="primary-button" disabled={active} onClick={() => setVersionSelection({ nodeId: node.gatewayNodeId, releaseId: runtime.status!.executionTracks!.targetRelease!, generation: runtime.status!.executionTracks!.generation })}>Retry prepared update…</button>
+                        : userState.repairRequired && runtime.status?.activationMode !== "forward-only" && runtime.status?.executionTracks?.standbyRelease && onSelectVersion && ["steady", "attention"].includes(runtime.status.executionTracks.phase)
                         ? <button type="button" className="primary-button" disabled={active} onClick={() => setVersionSelection({ nodeId: node.gatewayNodeId, releaseId: runtime.status!.executionTracks!.standbyRelease!, generation: runtime.status!.executionTracks!.generation })}>Restore previous version…</button>
                         : deploymentOwner && !runtime.status?.executionTracks && (deployment.phase !== "steady" || deployment.recovery) && onRecover
                         ? <button type="button" className="primary-button" disabled={recoveryBusy} onClick={() => onRecover(node)}>{recoveryBusy ? "Opening…" : "Open repair session"}</button>
@@ -327,10 +336,12 @@ function GatewayUpdateDialogContent({
                       <div><dt>Installed</dt><dd>{runtime.status?.currentBuildId ?? node.currentBuildId ?? "Not reported"}</dd></div>
                       <div><dt>Latest</dt><dd>{publishedRelease?.buildId ?? "Not confirmed"}</dd></div>
                     </dl>
-                    {runtime.status?.executionTracks?.standbyRelease
+                    {runtime.status?.activationMode === "forward-only"
+                      ? <><h3>Prepared update</h3><p>This update changes stored data. Switching to an older version is unavailable; retry the prepared update.</p></>
+                      : runtime.status?.executionTracks?.standbyRelease
                       ? <><h3>Previous version</h3><p className="computer-code">{runtime.status.executionTracks.standbyRelease}</p><p>Switch back if this version is not working. Compatibility is checked before switching.</p></>
                       : <p>No previous version is available.</p>}
-                    {onSelectVersion && runtime.status?.executionTracks && ["steady", "attention"].includes(runtime.status.executionTracks.phase) && [...new Set([runtime.status.executionTracks.standbyRelease, ...(runtime.status.executionTracks.phase === "attention" ? [runtime.status.executionTracks.activeRelease, runtime.status.executionTracks.targetRelease] : [])])].filter((id): id is string => Boolean(id)).map(id => <button key={id} type="button" className="computer-choice" disabled={!connected || active} onClick={() => setVersionSelection({ nodeId: node.gatewayNodeId, releaseId: id, generation: runtime.status!.executionTracks!.generation })}><span>Use this version</span><small>{id}</small><span aria-hidden="true">›</span></button>)}
+                    {onSelectVersion && gatewayVersionChoices(runtime.status?.executionTracks, runtime.status?.activationMode).map(({ id, label }) => <button key={id} type="button" className="computer-choice" disabled={!connected || active} onClick={() => setVersionSelection({ nodeId: node.gatewayNodeId, releaseId: id, generation: runtime.status!.executionTracks!.generation })}><span>{label}</span><small>{id}</small><span aria-hidden="true">›</span></button>)}
                     {runtime.versionSwitchError && <p role="alert">The switch was not confirmed. Check the connection before trying again.</p>}
                   </ComputerActionPanel>
                   <ComputerActionPanel title="Update activity" subtitle="Progress and the Agent's report" icon="↗">
@@ -388,13 +399,10 @@ function GatewayUpdateDialogContent({
                         ? runtime.status.executionTracks.error ?? "Version selection needs attention."
                         : `Transferring execution to ${runtime.status.executionTracks.targetRelease}. Conversations remain in the same Workspace.`}
                     </p>}
-                    {onSelectVersion && ["steady", "attention"].includes(runtime.status.executionTracks.phase) &&
-                      [...new Set([runtime.status.executionTracks.standbyRelease,
-                        ...(runtime.status.executionTracks.phase === "attention" ? [runtime.status.executionTracks.activeRelease, runtime.status.executionTracks.targetRelease] : [])])]
-                        .filter((id): id is string => Boolean(id)).map(id => (
+                    {onSelectVersion && gatewayVersionChoices(runtime.status.executionTracks, runtime.status.activationMode).map(({ id, label }) => (
                           <button key={id} type="button" className="secondary-button gateway-version-button" disabled={!connected || activeGatewayNodeIds.has(node.gatewayNodeId)}
                             onClick={() => setVersionSelection({ nodeId: node.gatewayNodeId, releaseId: id, generation: runtime.status!.executionTracks!.generation })}>
-                            Switch to retained version {id}
+                            {label} · {id}
                           </button>
                         ))}
                   </section>

@@ -50,7 +50,10 @@ export function computerUserState(input: {
     : checkFailed ? "This computer did not answer the check. Its current condition is still unknown; repeating the check will not repair it."
     : historicalFailure ? "The last update reported a problem. Confirm the current state before choosing a repair."
     : needsConnectionHelp ? complete ? "The latest version was installed. Confirm whether this computer is reachable now." : "There is no recent reply from this computer. Confirm its current state before taking action."
-    : repairRequired ? tracks?.phase === "attention" ? "The version switch did not complete. Malink cannot confirm which version can run your tasks." : "The update could not confirm a working Gateway. Normal work may be unavailable."
+    : repairRequired ? tracks?.phase === "attention" ? online
+      ? "This computer is responding, but its version switch did not finish. Retry the prepared update or choose an available recovery option."
+      : "The version switch did not complete. Confirm the computer's current state before retrying."
+      : "The update could not confirm a working Gateway. Normal work may be unavailable."
     : failed ? phase === "rolled_back" ? "The update failed and the previous version was restored." : "The latest update did not finish. The computer is still responding."
     : waiting ? "Keep working normally. The update will install after running tasks finish."
     : ready ? "The update is prepared. Choose Install when idle to finish it without interrupting running tasks."

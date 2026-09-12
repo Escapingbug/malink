@@ -146,7 +146,7 @@ export function gatewayNodeLivenessPresentation(
     }
     return {
       state: "stale",
-      label: "Online status expired",
+      label: "Status needs refresh",
       detail: "The last signed reply is no longer recent enough to prove this Gateway is online now.",
       canCheck: true,
     };

@@ -22,6 +22,9 @@ process.on('message', (raw: unknown) => {
         directory = message.dataDirectory
         nodeId = message.gatewayNodeId
         const admin = new GatewayAdminClient({ socketPath: message.adminSocket, timeoutMs: 5000 })
+        // Sealing includes durable queue drain (up to two minutes), unlike a
+        // health read. Abort the HTTP request before the outer worker deadline.
+        const drainAdmin = new GatewayAdminClient({ socketPath: message.adminSocket, timeoutMs: 150_000 })
         host = new GatewayExecutionTrackProcessHost(directory, {
           resolveRelease: async id => { if (id !== release!.releaseId) throw new Error('Worker release is pinned'); return release! },
           validateCompatibility: async () => {}, // Admission is performed by the stable supervisor before IPC.
@@ -30,8 +33,8 @@ process.on('message', (raw: unknown) => {
             return { buildId: status.buildId ?? '', gatewayNodeId: status.gatewayNodeId ?? '',
               matrixReady: status.matrixReady === true, deploymentFenced: status.deploymentFenced === true }
           },
-          drain: async () => { await admin.sealForDeployment('when_idle') },
-          log: message => process.stderr.write(message), timeoutMs: 30_000,
+          drain: async () => { await drainAdmin.sealForDeployment('when_idle') },
+          log: message => process.stderr.write(message), timeoutMs: 30_000, drainTimeoutMs: 155_000,
         })
         await host.ensureStandby(release.releaseId)
       } else {

@@ -14,6 +14,9 @@ await writeFile(join(root, 'health.json'), JSON.stringify({
 }))
 const timer = setInterval(() => {}, 1000)
 const server = process.env.MALINK_GATEWAY_ADMIN_SOCKET ? createServer(async (_request, response) => {
+  if (_request.url === '/v1/deployment/seal' && process.env.TEST_SEAL_DELAY_MS) {
+    await new Promise(resolve => setTimeout(resolve, Number(process.env.TEST_SEAL_DELAY_MS)))
+  }
   response.setHeader('content-type', 'application/json')
   response.end(await readFile(join(root, 'health.json'), 'utf8'))
 }) : undefined

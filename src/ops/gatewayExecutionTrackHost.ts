@@ -29,6 +29,7 @@ export interface GatewayTrackProcessDependencies {
   drain(releaseId: string): Promise<void>
   log(message: string): void
   timeoutMs?: number
+  drainTimeoutMs?: number
 }
 
 /**
@@ -143,7 +144,7 @@ export class GatewayExecutionTrackProcessHost implements GatewayExecutionTrackHo
       }
       // A timeout only ends this caller's wait. Keep tracking the underlying
       // drain so its late completion cannot affect a newly selected runtime.
-      await bounded(drain, this.timeoutMs, 'Gateway execution drain')
+      await bounded(drain, this.dependencies.drainTimeoutMs ?? this.timeoutMs, 'Gateway execution drain')
       signalGroup(child.pid, 'SIGTERM')
     }
     const deadline = Date.now() + this.timeoutMs

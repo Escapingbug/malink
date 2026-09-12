@@ -24,10 +24,12 @@ function Fixture() {
   const [checkError, setCheckError] = useState<string>();
   const [checkActive, setCheckActive] = useState(false);
   const [statusTime, setStatusTime] = useState(Date.now());
+  const [forwardOnly, setForwardOnly] = useState(false);
   const runtime = { mac: { state: "online" as const, versionCheckedAt: secondChecked, status: { version: 1 as const, updatedAt: 1, currentBuildId: "v1", targetBuildId: "v2", releaseId: "v2", phase: secondPhase as any } }, tokyo: { state: "online" as const, versionCheckedAt: checked, versionCheckError: checkError,
     maintenanceSessionId: phase === "idle" ? undefined : "session",
     status: { version: 1 as const, updatedAt: statusTime, currentBuildId: active, targetBuildId: "v2", releaseId: "v2", phase: phase as any,
-      executionTracks: { generation: 1, activeRelease: active, standbyRelease: active === "v1" ? "v2" : "v1", phase: "steady" as const } } } };
+      activationMode: forwardOnly ? "forward-only" as const : "rollback-safe" as const,
+      executionTracks: { generation: 1, activeRelease: active, standbyRelease: active === "v1" ? "v2" : "v1", targetRelease: forwardOnly ? "v3" : undefined, phase: forwardOnly ? "attention" as const : "steady" as const } } } };
   const props: any = {
     initialComputerId: expanded, onExpandComputer: setExpanded, open: !sessionOpen, computersRequested: requested, onComputersRequestHandled: () => setRequested(false),
     config: { homeserver: "https://example.test", userId: "user", accessToken: "fixture", roomId: "room", gatewayId: "workspace" },
@@ -54,6 +56,7 @@ function Fixture() {
   };
   (window as any).setFixturePhase = (value: string) => { setPhase(value); if (value === "committed") setActive("v2"); };
   (window as any).setFixtureOffline = setOffline;
+  (window as any).setFixtureForwardFailure = () => { setForwardOnly(true); setPhase("repair_required"); setStatusTime(Date.now()); setChecked(Date.now()); };
   (window as any).setFixtureCanRemove = setCanRemove;
   (window as any).setFixtureSessionOpen = setSessionOpen;
   (window as any).setFixtureOldFailure = () => { setPhase("repair_required"); setStatusTime(1); setChecked(undefined); setOffline(true); setCheckError(undefined); };
