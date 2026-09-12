@@ -16023,9 +16023,14 @@ function MalinkAppRuntime() {
         }}
         onRenameGateway={renameGateway}
         onRetireGateway={retireWorkspaceGateway}
-        onCheckGatewayLiveness={(gatewayNodeId) => {
+        onCheckGatewayLiveness={async (gatewayNodeId) => {
           const target = gatewayNodeProbeTargetsById.get(gatewayNodeId);
-          if (target) void probeGatewayNodeLiveness(target);
+          if (!target) {
+            updateGatewayNodeLiveness(gatewayNodeId, current => ({ ...current, state: "unavailable", checkedAt: Date.now(),
+              detail: "The project route for this computer has not synchronized. Reconnect this client and try again." }));
+            return false;
+          }
+          return (await probeGatewayNodeLiveness(target)) !== null;
         }}
         onRestartGateway={(gatewayNodeId, targetProjectId, mode) => {
           void restartGatewayNode(gatewayNodeId, targetProjectId, mode);

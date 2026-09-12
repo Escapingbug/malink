@@ -4,10 +4,10 @@ import type { GatewayUpdateNodeRuntime } from "./GatewayUpdateDialog";
 import type { GatewayUpdatePlanNode } from "./gatewayUpdateTrigger";
 import { ComputerActionDialog } from "./ComputerActionPanel";
 
-export function GatewayManagement({ node, runtime, latestBuild, connected, busy, preparing, ready, switching,
+export function GatewayManagement({ node, runtime, latestBuild, connected, busy, refreshing, preparing, ready, switching,
   complete, failed, canUpdate, onUpdate, onInstall, onRefresh, onOpen, onDelete, onSelect, onExport }: {
   node: GatewayUpdatePlanNode; runtime: GatewayUpdateNodeRuntime; latestBuild?: string;
-  connected: boolean; busy: boolean; preparing: boolean; ready: boolean; switching: boolean;
+  connected: boolean; busy: boolean; refreshing?: boolean; preparing: boolean; ready: boolean; switching: boolean;
   complete: boolean; failed: boolean; canUpdate: boolean;
   onUpdate(): void; onInstall(): void; onRefresh?(): void; onOpen(id: string): void;
   onDelete(id: string): void; onSelect?(id: string, generation: number): void; onExport(): void;
@@ -30,10 +30,11 @@ export function GatewayManagement({ node, runtime, latestBuild, connected, busy,
         {tone === "success" ? <path d="m6 12 4 4 8-8"/> : tone === "attention" ? <><path d="M12 5v9"/><path d="M12 18h.01"/></> : <><path d="M12 16V4m-4 4 4-4 4 4"/><path d="M5 14v5h14v-5"/></>}
       </svg></span>
       <div className="gateway-management-heading-copy"><span className="gateway-management-eyebrow">Gateway software</span><h3>{title}</h3></div>
-      <button className="secondary-button gateway-management-refresh" type="button" disabled={!connected || busy || !onRefresh} onClick={onRefresh} aria-label="Refresh Gateway status" title="Refresh Gateway status">
+      <button className="secondary-button gateway-management-refresh" type="button" disabled={!connected || busy || !onRefresh} onClick={onRefresh} aria-label="Refresh Gateway status" aria-busy={refreshing} title={refreshing ? "Checking this computer…" : "Refresh Gateway status"}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></svg>
       </button>
     </div>
+    {(refreshing || runtime.versionCheckedAt) && <p className="gateway-check-result" role="status">{refreshing ? "Checking this computer…" : (runtime.versionCheckError ? "No new reply" : "Status refreshed") + " · " + new Date(runtime.versionCheckedAt!).toLocaleTimeString()}</p>}
     <p className="gateway-management-version">Installed <span title={current}>{current ?? "Not yet confirmed"}</span></p>
     {temporary && <p role="status">Using an older version temporarily. Update soon to avoid compatibility problems.</p>}
     {runtime.versionCheckError && <p role="status">No reply to the last check. Check that this computer is running, then refresh.</p>}

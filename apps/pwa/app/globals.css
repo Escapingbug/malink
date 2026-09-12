@@ -13277,6 +13277,27 @@ body {
 .gateway-visual-list .computer-details > .computer-action-menu > .computer-action-entry { width: 100%; min-height: 48px; display: flex; gap: 8px; padding: 12px; background: var(--panel); border-radius: 12px; }
 .gateway-visual-list .computer-action-entry .computer-action-icon { width: 24px; height: 24px; background: transparent; color: var(--muted); font-size: 17px; }
 .gateway-visual-list .computer-action-entry strong { font-size: 12px; font-weight: 600; color: var(--ink); }
+.gateway-refresh-symbol { width: 16px; height: 16px; flex: 0 0 16px; }
+.computer-card-status[aria-busy="true"] .gateway-refresh-symbol,
+.gateway-management-refresh[aria-busy="true"] svg { animation: gateway-refresh-turn 1s linear infinite; }
+.computer-card-status[aria-busy="true"], .gateway-management-refresh[aria-busy="true"] { opacity: .85; cursor: progress; }
+@keyframes gateway-refresh-turn { to { transform: rotate(360deg); } }
+.gateway-visual-list .gateway-profile-card.computer-management-row { padding-bottom: 88px; }
+.gateway-visual-list .computer-card-status { min-height: 46px; border-radius: 12px; padding: 9px 12px; gap: 10px; }
+.computer-card-status > span { text-align: left; line-height: 1.4; }
+.computer-card-status small { display: block; font-size: 10px; font-weight: 400; color: var(--muted); margin-top: 2px; }
+.gateway-management-flat .gateway-check-result { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.gateway-management-flat > .gateway-management-actions { gap: 12px; }
+.gateway-management-heading .gateway-management-refresh { width: 44px; height: 44px; flex-basis: 44px; min-height: 44px; padding: 12px; }
+.computer-action-body .computer-panel-buttons { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+.computer-action-body > button + button { margin-left: 12px; }
+.computer-action-body .gateway-management-actions { gap: 12px; margin-top: 18px; }
+.gateway-management-actions button:active:not(:disabled), .computer-action-entry:active:not(:disabled),
+.computer-card-status:active:not(:disabled), .gateway-management-refresh:active:not(:disabled) { transform: translateY(1px); filter: brightness(.95); }
+@media (prefers-reduced-motion: reduce) {
+  .computer-card-status[aria-busy="true"] .gateway-refresh-symbol,
+  .gateway-management-refresh[aria-busy="true"] svg { animation: none; }
+}
 @media (max-width: 600px) {
   .gateway-management-flat { padding: 16px; gap: 14px; }
   .gateway-management-flat > .gateway-management-actions { grid-template-columns: minmax(0, 1fr); }

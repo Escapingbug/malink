@@ -50,7 +50,8 @@ function Fixture() {
     onRenameGateway: async (_: string, value: string) => setName(value),
     onRetireGateway: (id: string, authority: string) => { (window as any).retirement = {id, authority}; setRetiring(id); return new Promise<void>(resolve => { (window as any).finishRetirement = () => { setRetiring(null); resolve(); }; }); },
     onRestartGateway: (id: string, project: string, mode: string) => { (window as any).restart = { id, project, mode }; setRestart({ [id]: { state: "waiting" } }); },
-    onCheckGatewayLiveness: (id: string) => { (window as any).liveChecked = id; setOffline(false); },
+    onCheckGatewayLiveness: async (id: string) => { (window as any).liveChecked = id; setOffline(false);
+      return new Promise<boolean>(resolve => { (window as any).finishLiveCheck = resolve; }); },
     onExportDiagnostics: () => { (window as any).exported = true; },
     renderGatewayDetails: (id: string, managementOnly?: boolean) => <GatewayUpdateDialog key={id} open embedded managementOnly={managementOnly} connected release={release} livenessByNode={{ tokyo: { state: offline ? "unreachable" : "online", lastVerifiedAt: offline ? 1 : Date.now() }, mac: { state: "online", lastVerifiedAt: Date.now() } }} nodes={[id === "mac" ? second : { ...node, state: active === "v2" ? "current" : "available" }]} runtimeByNode={runtime} activeGatewayNodeIds={new Set(checkActive ? ["tokyo"] : [])} activeGatewayModesByNode={checkActive ? { tokyo: "check_versions" } : {}}
       onClose={noop} onStart={(target) => { (window as any).updatedNode = target.gatewayNodeId; if (target.gatewayNodeId === "mac") setSecondPhase("agent_running"); else { if (phase === "staged") setActive("v2"); else setArchived(false); setPhase(phase === "staged" ? "committed" : "agent_running"); } }}

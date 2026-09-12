@@ -296,6 +296,7 @@ function GatewayUpdateDialogContent({
               >
                 {embedded && !managementOnly && <GatewayManagement node={node} runtime={runtime}
                   latestBuild={publishedRelease?.buildId} connected={connected} busy={active}
+                  refreshing={activeMode === "check_versions"}
                   preparing={userState.preparing} ready={Boolean(stagedPublishedRelease || candidateTrial)}
                   switching={userState.switching || userState.waiting} complete={userState.complete}
                   failed={userState.failed} canUpdate={Boolean(publishedRelease && node.onlineUpdate && node.targetProjectId && (updateActionAvailable || runtime.status?.phase === "committed" && runtime.status.currentBuildId !== publishedRelease.buildId))}

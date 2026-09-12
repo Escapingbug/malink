@@ -150,7 +150,7 @@ type Props = {
     gatewayNodeId: string,
     authorityProjectId: string,
   ): Promise<void>;
-  onCheckGatewayLiveness(gatewayNodeId: string): void;
+  onCheckGatewayLiveness(gatewayNodeId: string): Promise<boolean>;
   onRestartGateway(
     gatewayNodeId: string,
     targetProjectId: string,
@@ -267,6 +267,19 @@ function MatrixSettingsDialog({
   const [manualRepairReason, setManualRepairReason] =
     useState<ConnectionRepairReason | null>(null);
   const [expandedComputer, setExpandedComputer] = useState<string | null>(initialComputerId ?? null);
+  const [statusChecks, setStatusChecks] = useState<Record<string, { pending: boolean; replied?: boolean; at?: number }>>({});
+  const statusCheckFlights = useRef(new Set<string>());
+  async function refreshComputerStatus(id: string) {
+    if (statusCheckFlights.current.has(id)) return;
+    statusCheckFlights.current.add(id);
+    setStatusChecks(current => ({ ...current, [id]: { pending: true } }));
+    try {
+      const replied = await onCheckGatewayLiveness(id);
+      setStatusChecks(current => ({ ...current, [id]: { pending: false, replied, at: Date.now() } }));
+    } catch {
+      setStatusChecks(current => ({ ...current, [id]: { pending: false, replied: false, at: Date.now() } }));
+    } finally { statusCheckFlights.current.delete(id); }
+  }
   const computerHeadingRef = useRef<HTMLElement>(null);
   useEffect(() => {
     if (expandedComputer) computerHeadingRef.current?.focus();
@@ -757,9 +770,15 @@ function MatrixSettingsDialog({
                       <button type="button" className="computer-card-open" aria-label={"Manage " + gatewayIdentity.label} onClick={() => { setExpandedComputer(gatewayProfileId); onExpandComputer?.(gatewayProfileId); }}><span aria-hidden="true">›</span></button>
                       <button type="button" className={"computer-card-status computer-user-state-" + (liveness.state === "online" ? "online" : "unknown")}
                         aria-label={"Refresh status for " + gatewayIdentity.label}
-                        disabled={status !== "connected" || !liveCheckAvailable || !liveness.canCheck}
-                        onClick={() => onCheckGatewayLiveness(gatewayProfileId)}>
-                        <i aria-hidden="true" />{liveness.label}<span aria-hidden="true">↻</span>
+                        aria-busy={statusChecks[gatewayProfileId]?.pending || liveness.state === "checking"}
+                        title={liveness.detail}
+                        disabled={status !== "connected" || !liveCheckAvailable || !liveness.canCheck || statusChecks[gatewayProfileId]?.pending}
+                        onClick={() => void refreshComputerStatus(gatewayProfileId)}>
+                        <i aria-hidden="true" />
+                        <span aria-live="polite">{statusChecks[gatewayProfileId]?.pending ? "Checking…" : statusChecks[gatewayProfileId]?.replied === false ? "No new reply · Retry" : liveness.label}
+                          {statusChecks[gatewayProfileId]?.at && !statusChecks[gatewayProfileId]?.pending && <small>Checked {new Date(statusChecks[gatewayProfileId].at!).toLocaleTimeString()}</small>}
+                        </span>
+                        <svg className="gateway-refresh-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></svg>
                       </button>
                     </>}
                     {expandedComputer === gatewayProfileId && <div className="computer-details">
