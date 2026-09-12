@@ -19,6 +19,7 @@ try {
   assert.equal(await page.evaluate(()=>window.liveChecked),'tokyo');
   const liveStatus = page.getByRole('button',{name:'Refresh status for Tokyo server · Tokyo',exact:true});
   assert.equal(await liveStatus.getAttribute('aria-busy'),'true');
+  assert.equal(await liveStatus.evaluate(el=>el.classList.contains('computer-user-state-online')),false);
   assert.equal(await liveStatus.locator('svg').evaluate(el => getComputedStyle(el).animationName),'gateway-refresh-turn');
   await page.screenshot({path:'/tmp/malink-simple-flow-qa/checking-'+width+'.png'});
   await page.evaluate(()=>window.finishLiveCheck(true));
@@ -27,9 +28,11 @@ try {
   await liveStatus.click();
   await page.evaluate(()=>window.finishLiveCheck(false));
   await liveStatus.getByText(/No new reply · Retry/).waitFor();
+  assert.equal(await liveStatus.evaluate(el=>el.classList.contains('computer-user-state-online')),false);
   await liveStatus.click();
   await page.evaluate(()=>window.finishLiveCheck(true));
   await liveStatus.getByText(/Checked /).waitFor();
+  assert.equal(await liveStatus.evaluate(el=>el.classList.contains('computer-user-state-online')),true);
   assert.equal(await page.getByRole('region',{name:'Gateway management',exact:true}).count(),0);
   await page.screenshot({path:'/tmp/malink-simple-flow-qa/cards-'+width+'.png'});
   await page.getByRole('button',{name:'Manage Tokyo server · Tokyo',exact:true}).click();

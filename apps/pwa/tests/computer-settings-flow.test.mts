@@ -70,5 +70,7 @@ test("embedded signed completion does not become a failed install after status c
   const visible = html.slice(0, html.indexOf('<details class="computer-update-advanced"'));
   assert.match(visible, /Update complete/);
   assert.doesNotMatch(visible, /Update needs attention|Retry update/);
+  assert.match(html, /Status not confirmed/);
+  assert.doesNotMatch(html, /gateway-connection-state is-online/);
   assert.doesNotMatch(html, /Connection &amp; recovery/);
 });

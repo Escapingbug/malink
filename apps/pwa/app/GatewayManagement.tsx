@@ -28,7 +28,7 @@ export function GatewayManagement({ node, runtime, latestBuild, connected, lastV
   const tone = switching || preparing ? "progress" : failed ? "attention" : complete || current === latestBuild ? "success" : "available";
   const proof = Math.max(lastVerifiedAt ?? 0, !runtime.versionCheckError ? runtime.versionCheckedAt ?? 0 : 0);
   const now = Date.now();
-  const online = connected && proof > 0 && proof <= now && now - proof <= GATEWAY_ONLINE_PROOF_WINDOW_MS;
+  const online = connected && !refreshing && !runtime.versionCheckError && proof > 0 && proof <= now && now - proof <= GATEWAY_ONLINE_PROOF_WINDOW_MS;
   return <section className={"gateway-management-flat gateway-management-" + tone} aria-label="Gateway management">
     <div className="gateway-connection-row settings-compact-row">
       <span className="gateway-connection-copy">

@@ -752,6 +752,10 @@ function MatrixSettingsDialog({
                 const restartConfirming = restartConfirmationNodeId === gatewayProfileId;
                 const canRestart = gatewayManagementReady && liveCheckAvailable &&
                   Boolean(targetProjectId) && liveness.state === "online";
+                const statusCheck = statusChecks[gatewayProfileId];
+                const checkingStatus = Boolean(statusCheck?.pending || liveness.state === "checking");
+                const checkFailed = statusCheck?.replied === false;
+                const statusOnline = status === "connected" && !checkingStatus && !checkFailed && liveness.state === "online";
                 return (
                   <div
                     key={gatewayProfileId}
@@ -769,14 +773,14 @@ function MatrixSettingsDialog({
                     </div>
                     {!expandedComputer && <>
                       <button type="button" className="computer-card-open" aria-label={"Manage " + gatewayIdentity.label} onClick={() => { setExpandedComputer(gatewayProfileId); onExpandComputer?.(gatewayProfileId); }}><span aria-hidden="true">›</span></button>
-                      <button type="button" className={"computer-card-status computer-user-state-" + (liveness.state === "online" ? "online" : "unknown")}
+                      <button type="button" className={"computer-card-status computer-user-state-" + (statusOnline ? "online" : "unknown")}
                         aria-label={"Refresh status for " + gatewayIdentity.label}
-                        aria-busy={statusChecks[gatewayProfileId]?.pending || liveness.state === "checking"}
-                        title={liveness.detail}
+                        aria-busy={checkingStatus}
+                        title={checkFailed ? "No reply to the latest check. Online status is not confirmed; retry is safe." : liveness.detail}
                         disabled={status !== "connected" || !liveCheckAvailable || !liveness.canCheck || statusChecks[gatewayProfileId]?.pending}
                         onClick={() => void refreshComputerStatus(gatewayProfileId)}>
                         <i aria-hidden="true" />
-                        <span aria-live="polite">{statusChecks[gatewayProfileId]?.pending ? "Checking…" : statusChecks[gatewayProfileId]?.replied === false ? "No new reply · Retry" : liveness.label}
+                        <span aria-live="polite">{checkingStatus ? "Checking…" : checkFailed ? "No new reply · Retry" : liveness.label}
                           {statusChecks[gatewayProfileId]?.at && !statusChecks[gatewayProfileId]?.pending && <small>Checked {new Date(statusChecks[gatewayProfileId].at!).toLocaleTimeString()}</small>}
                         </span>
                         <SettingsIcon name="refresh" className="gateway-refresh-symbol"/>
