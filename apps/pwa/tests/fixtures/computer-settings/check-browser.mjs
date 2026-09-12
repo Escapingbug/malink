@@ -7,6 +7,7 @@ try {
  for (const width of [390,1280]) {
   const page = await browser.newPage({viewport:{width,height:844}});
   const errors=[]; page.on('pageerror', e=>errors.push(e.message));
+  page.on('console', message=>{ if(message.type()==='error') errors.push(message.text()); });
   await page.goto(process.env.SETTINGS_FIXTURE_URL ?? 'http://127.0.0.1:4182/malink/tests/fixtures/computer-settings/');
   await page.getByRole('button',{name:'App & help',exact:true}).click();
   const settingsStyle = await page.locator('.settings-diagnostic-card').evaluate(el => {

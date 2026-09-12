@@ -70,6 +70,7 @@ function Fixture() {
   (window as any).setFixtureOldFailure = () => { setPhase("repair_required"); setStatusTime(1); setChecked(undefined); setOffline(true); setCheckError(undefined); };
   return <>{sessionOpen ? <main><h1>Update session</h1><p>Preparing version v2</p><button onClick={() => { setRequested(true); setSessionOpen(false); }}>Back to computer settings</button></main> : <MatrixSettings {...props} />}</>;
 }
-const root = createRoot(document.getElementById("root")!);
+const container = document.getElementById("root")! as HTMLElement & { fixtureRoot?: ReturnType<typeof createRoot> };
+const root = container.fixtureRoot ??= createRoot(container);
 root.render(<Fixture />);
-if (import.meta.hot) import.meta.hot.dispose(() => root.unmount());
+if (import.meta.hot) import.meta.hot.accept();
