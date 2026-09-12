@@ -478,6 +478,17 @@ decryption, signature verification and snapshot publication. Stage timings are
 wall time and can overlap the enclosing event-processing measurement.
 `power.checkpoint_request` counts requests (including coalesced requests), not
 disk writes; `power.projection_checkpoint` counts successful saves.
+`power.storage_stage` splits raw record encoding, encryption and atomic writes,
+and checkpoint construction, JSON encoding, encryption and atomic writes. It
+aggregates wall time plus `thread_cpu_ms` measured only around synchronous work
+on the calling thread (never across coroutine suspension); unavailable CPU is
+omitted. `reason=success/failure` separates failed work without recording error
+contents. This CPU excludes SDK threads and kernel/keystore service work in
+other processes, and is a subset of process CPU, not an additional total.
+Sampling uses existing work boundaries without timers, wake locks, extra writes
+of business data or network calls. Startup `matrix.platform.trace_policy`
+records the current SDK log level and profiling policy, unlike exported SDK
+trace files which can contain records from an older build.
 `power.process` records process CPU delta (`cpu_ms`) against monotonic elapsed
 time (`window_ms`), including device sleep. It samples only on existing log
 activity after a minute, visibility transitions and export: no timer, wake lock

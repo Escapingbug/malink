@@ -804,10 +804,15 @@ class MatrixMlp3NativeStorageTest {
             "gateway_event",
         ))
         assertEquals(
-            listOf("matrix.v3_projection.cache_write_failed"),
+            listOf("power.storage_stage", "power.storage_stage", "power.storage_stage",
+                "power.storage_stage", "matrix.v3_projection.cache_write_failed"),
             recorder.events.map { it.first },
         )
-        assertEquals("gateway_event", recorder.events.single().second["reason"])
+        assertEquals("gateway_event", recorder.events.last().second["reason"])
+        assertEquals(listOf("checkpoint_build", "checkpoint_encode", "checkpoint_encrypt", "checkpoint_write"),
+            recorder.events.take(4).map { it.second["stage"] })
+        assertEquals(listOf("success", "success", "success", "failure"),
+            recorder.events.take(4).map { it.second["reason"] })
     }
 
     @Test

@@ -23,6 +23,10 @@ object MatrixSdkPlatform {
             diagnostics.record("matrix.platform.initializing")
             try {
                 val tracing = matrixSdkTracingPolicy(BuildConfig.DEBUG)
+                diagnostics.record("matrix.platform.trace_policy", mapOf(
+                    "stage" to tracing.logLevel.toString(),
+                    "reason" to if (tracing.traceLogPacks.isEmpty()) "no_trace_packs" else "sync_profiling",
+                ))
                 initPlatform(
                     config = TracingConfiguration(
                         logLevel = tracing.logLevel,

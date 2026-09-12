@@ -2,6 +2,8 @@ package id.my.anciety.malink.diagnostics
 
 interface DiagnosticRecorder {
     fun record(event: String, attributes: Map<String, String> = emptyMap())
+    /** Negative means unavailable; instrumentation must not invent zero CPU usage. */
+    fun threadCpuNanos(): Long = -1L
 
     data object None : DiagnosticRecorder {
         override fun record(event: String, attributes: Map<String, String>) = Unit
@@ -25,6 +27,7 @@ internal object DiagnosticLine {
         "max_ms",
         "window_ms",
         "cpu_ms",
+        "thread_cpu_ms",
         "checkpoint",
         "caused",
         "event",

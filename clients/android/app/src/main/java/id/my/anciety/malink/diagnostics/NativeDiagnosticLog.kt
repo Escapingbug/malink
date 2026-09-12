@@ -30,6 +30,8 @@ class NativeDiagnosticLog private constructor(
             sample + ("phase" to presentationPhase)) + "\n"
     }
 
+    override fun threadCpuNanos(): Long = android.os.Debug.threadCpuTimeNanos()
+
     override fun record(event: String, attributes: Map<String, String>) {
         synchronized(lock) {
             runCatching {
@@ -65,6 +67,7 @@ class NativeDiagnosticLog private constructor(
             output.appendLine("exported_at=${Instant.ofEpochMilli(now())}")
             output.appendLine("version_name=${BuildConfig.VERSION_NAME}")
             output.appendLine("native_build=${BuildConfig.NATIVE_BUILD_ID}")
+            output.appendLine("debug_build=${BuildConfig.DEBUG}")
             output.appendLine("android_sdk=${Build.VERSION.SDK_INT}")
             output.appendLine("device=${safeDeviceLabel()}")
             output.appendLine("privacy=No_tokens_message_content_room_ids_user_ids_or_key_material")

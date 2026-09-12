@@ -2,6 +2,7 @@ package id.my.anciety.malink.client
 
 import android.util.AtomicFile
 import id.my.anciety.malink.diagnostics.DiagnosticRecorder
+import id.my.anciety.malink.diagnostics.measurePowerWork
 import id.my.anciety.malink.matrix.MatrixDecryptedEvent
 import id.my.anciety.malink.security.SecretCipher
 import id.my.anciety.malink.security.SecretEnvelope
@@ -622,12 +623,16 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
     private fun persistIndividualRecord(key: String, record: MatrixMlp3InboxRecord) {
         val started = System.nanoTime()
         val target = requireNotNull(recordBlobs)
-        val plaintext = CanonicalJson.bytes(buildJsonObject {
-            put("schemaVersion", 1)
-            put("record", encodeRecordValue(record))
-        }).also { require(it.size <= MAX_RECORD_BYTES) }
+        val plaintext = diagnostics.measurePowerWork("raw_encode") {
+            CanonicalJson.bytes(buildJsonObject {
+                put("schemaVersion", 1)
+                put("record", encodeRecordValue(record))
+            }).also { require(it.size <= MAX_RECORD_BYTES) }
+        }
         val encrypted = try {
-            val envelope = cipher.encrypt(plaintext, recordAssociatedData(key))
+            val envelope = diagnostics.measurePowerWork("raw_encrypt") {
+                cipher.encrypt(plaintext, recordAssociatedData(key))
+            }
             try {
                 SecretEnvelope.encode(envelope)
             } finally {
@@ -638,7 +643,7 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
             plaintext.fill(0)
         }
         try {
-            target.write(key, encrypted)
+            diagnostics.measurePowerWork("raw_write") { target.write(key, encrypted) }
             diagnostics.record("power.raw_inbox", mapOf(
                 "elapsed_ms" to ((System.nanoTime() - started) / 1_000_000).toString(),
                 "bytes" to encrypted.size.toString(),
@@ -1241,11 +1246,13 @@ internal class AtomicEncryptedMatrixMlp3ProjectionStore internal constructor(
     }
 
     @Synchronized
-    fun save(value: JsonObject): Int {
+    fun save(value: JsonObject, diagnostics: DiagnosticRecorder = DiagnosticRecorder.None): Int {
         // This local AEAD cache is parsed as JSON, never signed or compared
         // byte-for-byte. Canonical wire encoding here sorted and copied the
         // entire workspace for each event, blocking live command receipts.
-        val plaintext = value.toString().toByteArray(Charsets.UTF_8)
+        val plaintext = diagnostics.measurePowerWork("checkpoint_encode") {
+            value.toString().toByteArray(Charsets.UTF_8)
+        }
         if (plaintext.size > MAX_BYTES) {
             val actualBytes = plaintext.size
             plaintext.fill(0)
@@ -1253,7 +1260,7 @@ internal class AtomicEncryptedMatrixMlp3ProjectionStore internal constructor(
         }
         val plaintextBytes = plaintext.size
         val encrypted = try {
-            val envelope = cipher.encrypt(plaintext, associatedData)
+            val envelope = diagnostics.measurePowerWork("checkpoint_encrypt") { cipher.encrypt(plaintext, associatedData) }
             try {
                 SecretEnvelope.encode(envelope)
             } finally {
@@ -1264,7 +1271,7 @@ internal class AtomicEncryptedMatrixMlp3ProjectionStore internal constructor(
             plaintext.fill(0)
         }
         try {
-            blob.write(encrypted)
+            diagnostics.measurePowerWork("checkpoint_write") { blob.write(encrypted) }
         } finally {
             encrypted.fill(0)
         }
@@ -1306,8 +1313,8 @@ internal fun persistMatrixMlp3ProjectionCache(
     val started = System.nanoTime()
     var durable: MatrixMlp3DurableProjection? = null
     return try {
-        durable = projection.durableProjection()
-        store.save(durable.value)
+        durable = diagnostics.measurePowerWork("checkpoint_build") { projection.durableProjection() }
+        store.save(durable.value, diagnostics)
         diagnostics.record("power.projection_checkpoint", mapOf(
             "reason" to reason,
             "elapsed_ms" to ((System.nanoTime() - started) / 1_000_000).toString(),

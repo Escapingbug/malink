@@ -3,7 +3,8 @@ package id.my.anciety.malink.diagnostics
 /** Bounded counters only; the diagnostic log owns synchronization and flushing. */
 internal class PowerDiagnosticMetrics {
     private data class Key(val event: String, val dimensions: Map<String, String>)
-    private data class Totals(var count: Long = 0, var millis: Long = 0, var bytes: Long = 0, var maxMillis: Long = 0)
+    private data class Totals(var count: Long = 0, var millis: Long = 0, var bytes: Long = 0, var maxMillis: Long = 0,
+        var threadCpuMillis: Long = 0, var hasThreadCpu: Boolean = false)
     private val totals = linkedMapOf<Key, Totals>()
     private var start: Long? = null
 
@@ -24,6 +25,10 @@ internal class PowerDiagnosticMetrics {
         value.millis += millis
         value.bytes += bytes
         value.maxMillis = maxOf(value.maxMillis, millis)
+        attributes["thread_cpu_ms"]?.toLongOrNull()?.takeIf { it >= 0 }?.let {
+            value.threadCpuMillis += it
+            value.hasThreadCpu = true
+        }
         if (start == null) start = now
         return true
     }
@@ -33,7 +38,8 @@ internal class PowerDiagnosticMetrics {
         if (!force && now - since < 60_000) return ""
         val timestamp = java.time.Instant.ofEpochMilli(now).toString()
         val result = totals.entries.joinToString("") { (key, value) ->
-            DiagnosticLine.encode(timestamp, key.event, key.dimensions + mapOf(
+            DiagnosticLine.encode(timestamp, key.event, key.dimensions +
+                (if (value.hasThreadCpu) mapOf("thread_cpu_ms" to value.threadCpuMillis.toString()) else emptyMap()) + mapOf(
                 "count" to value.count.toString(), "elapsed_ms" to value.millis.toString(),
                 "bytes" to value.bytes.toString(),
                 "max_ms" to value.maxMillis.toString(),
@@ -50,6 +56,6 @@ internal class PowerDiagnosticMetrics {
         val DIMENSIONS = setOf("type", "reason", "phase", "changed", "checkpoint", "caused", "stage")
         val EVENTS = setOf("power.raw_inbox", "power.event_processing", "power.projection_checkpoint",
             "power.checkpoint_skipped", "power.presentation_resume", "power.presentation_delivery",
-            "power.projection_result", "power.checkpoint_request", "power.event_stage", "power.deployment_change")
+            "power.projection_result", "power.checkpoint_request", "power.event_stage", "power.deployment_change", "power.storage_stage")
     }
 }
