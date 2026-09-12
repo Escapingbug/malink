@@ -25,8 +25,12 @@ function Fixture() {
   const [checkActive, setCheckActive] = useState(false);
   const [statusTime, setStatusTime] = useState(Date.now());
   const [forwardOnly, setForwardOnly] = useState(false);
+  const [archived, setArchived] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const runtime = { mac: { state: "online" as const, versionCheckedAt: secondChecked, status: { version: 1 as const, updatedAt: 1, currentBuildId: "v1", targetBuildId: "v2", releaseId: "v2", phase: secondPhase as any } }, tokyo: { state: "online" as const, versionCheckedAt: checked, versionCheckError: checkError,
     maintenanceSessionId: phase === "idle" ? undefined : "session",
+    maintenanceSessionArchived: archived, maintenanceSessionArchiveAvailable: phase === "committed",
+    maintenanceSessionArchiveBusy: deleting,
     status: { version: 1 as const, updatedAt: statusTime, currentBuildId: active, targetBuildId: "v2", releaseId: "v2", phase: phase as any,
       activationMode: forwardOnly ? "forward-only" as const : "rollback-safe" as const,
       executionTracks: { generation: 1, activeRelease: active, standbyRelease: active === "v1" ? "v2" : "v1", targetRelease: forwardOnly ? "v3" : undefined, phase: forwardOnly ? "attention" as const : "steady" as const } } } };
@@ -46,13 +50,15 @@ function Fixture() {
     onRenameGateway: async (_: string, value: string) => setName(value),
     onRetireGateway: (id: string, authority: string) => { (window as any).retirement = {id, authority}; setRetiring(id); return new Promise<void>(resolve => { (window as any).finishRetirement = () => { setRetiring(null); resolve(); }; }); },
     onRestartGateway: (id: string, project: string, mode: string) => { (window as any).restart = { id, project, mode }; setRestart({ [id]: { state: "waiting" } }); },
-    onCheckGatewayLiveness: () => setOffline(false),
+    onCheckGatewayLiveness: (id: string) => { (window as any).liveChecked = id; setOffline(false); },
     onExportDiagnostics: () => { (window as any).exported = true; },
     renderGatewayDetails: (id: string, managementOnly?: boolean) => <GatewayUpdateDialog key={id} open embedded managementOnly={managementOnly} connected release={release} livenessByNode={{ tokyo: { state: offline ? "unreachable" : "online", lastVerifiedAt: offline ? 1 : Date.now() }, mac: { state: "online", lastVerifiedAt: Date.now() } }} nodes={[id === "mac" ? second : { ...node, state: active === "v2" ? "current" : "available" }]} runtimeByNode={runtime} activeGatewayNodeIds={new Set(checkActive ? ["tokyo"] : [])} activeGatewayModesByNode={checkActive ? { tokyo: "check_versions" } : {}}
-      onClose={noop} onStart={(target) => { (window as any).updatedNode = target.gatewayNodeId; if (target.gatewayNodeId === "mac") setSecondPhase("agent_running"); else setPhase(phase === "staged" ? "committed" : "agent_running"); }}
+      onClose={noop} onStart={(target) => { (window as any).updatedNode = target.gatewayNodeId; if (target.gatewayNodeId === "mac") setSecondPhase("agent_running"); else { if (phase === "staged") setActive("v2"); else setArchived(false); setPhase(phase === "staged" ? "committed" : "agent_running"); } }}
       onCheckVersions={(target) => { if (target.gatewayNodeId === "mac") { setSecondChecked(Date.now()); return; } (window as any).checks = ((window as any).checks ?? 0) + 1; if (offline) { setCheckActive(true); (window as any).finishCheck = (success: boolean) => { setCheckActive(false); setCheckError(success ? undefined : "No reply"); if (success) { setOffline(false); setStatusTime(Date.now()); setChecked(Date.now()); } }; } else { setChecked(Date.now()); setCheckError(undefined); } }}
       onSelectVersion={(_, id) => { (window as any).selectedVersion = id; setActive(id); setPhase("committed"); }}
-      onPromote={noop} onDiscard={noop} onOpenProject={noop} onOpenSession={() => setSessionOpen(true)} onArchiveSession={noop} onExportDiagnostics={() => { (window as any).exported = true; }} />,
+      onPromote={noop} onDiscard={noop} onOpenProject={noop} onOpenSession={() => setSessionOpen(true)}
+      onArchiveSession={() => { setDeleting(true); (window as any).finishDelete = () => { setDeleting(false); setArchived(true); }; }}
+      onExportDiagnostics={() => { (window as any).exported = true; }} />,
   };
   (window as any).setFixturePhase = (value: string) => { setPhase(value); if (value === "committed") setActive("v2"); };
   (window as any).setFixtureOffline = setOffline;

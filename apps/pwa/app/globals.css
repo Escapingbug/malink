@@ -13211,3 +13211,30 @@ body {
   .conversation-reference-chip button { min-height: 44px; }
   .conversation-reference-chip button span { max-width: 165px; }
 }
+
+/* The card opens management; its separate status button refreshes only. */
+.gateway-profile-card.computer-management-row { position: relative; padding-bottom: 64px; cursor: pointer; }
+.computer-card-open { position: absolute; inset: 0; width: 100%; border: 1px solid var(--line); border-radius: inherit; background: transparent; cursor: pointer; }
+.computer-card-open > span { position: absolute; right: 18px; top: 22px; font-size: 24px; }
+.computer-card-open:hover { background: rgba(100,110,180,.04); }
+.computer-card-open:focus-visible { outline: 2px solid #7055b7; outline-offset: 2px; }
+.computer-card-status { position: absolute; left: 20px; bottom: 14px; z-index: 1; display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; min-height: 36px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); font: inherit; font-size: 12px; cursor: pointer; }
+.computer-card-status i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.computer-card-status.computer-user-state-online { color: #16734b; border-color: #c7e3d6; background: #f3fbf6; }
+.gateway-management-flat { display: grid; gap: 14px; padding: 18px; border: 1px solid var(--line); border-radius: 16px; }
+.gateway-management-flat p { margin: 0; line-height: 1.5; font-size: 13px; }
+.gateway-management-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.gateway-management-heading h3 { margin: 0; font-size: 17px; }
+.gateway-management-version { color: var(--muted); }
+.gateway-management-version span { display: block; overflow-wrap: anywhere; font-size: 12px; }
+.gateway-management-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.gateway-management-actions button, .gateway-management-heading button { min-height: 44px; padding: 10px 15px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+.gateway-management-actions .primary-button { background: #7055b7; color: #fff; }
+.gateway-management-actions .secondary-button, .gateway-management-heading .secondary-button { background: var(--panel); }
+.gateway-management-flat button:disabled, .computer-card-status:disabled { opacity: .5; cursor: default; }
+.gateway-management-caption { color: var(--muted); }
+.gateway-management-secondary:empty { display: none; }
+.computer-details > .computer-action-menu { display: flex; flex-wrap: wrap; gap: 10px; }
+.computer-details > .computer-action-menu > .computer-action-entry { width: auto; flex: 1 1 140px; border: 1px solid var(--line); border-radius: 12px; }
+.computer-details > .computer-action-menu > .computer-action-entry small,
+.computer-details > .computer-action-menu > .computer-action-entry > span:last-child { display: none; }

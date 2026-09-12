@@ -192,7 +192,6 @@ import { uncertainCommandRecoveryPresentation } from "./uncertainCommandRecovery
 import { gatewayBuildSupportsWorkspaceRetirement } from "./workspaceGatewayRepair";
 import {
   collidingGatewayMaintenanceSessionIds,
-  gatewayMaintenanceAutoArchiveAttemptKey,
   gatewayMaintenanceSessionCanBeArchived,
   gatewayMaintenanceSessionProject,
   gatewayUpdatePlan as buildGatewayUpdatePlan,
@@ -2027,7 +2026,6 @@ function MalinkAppRuntime() {
   const gatewayUpdateProbeCommandsRef = useRef(
     new Map<string, GatewayUpdateProbeRecord>(),
   );
-  const gatewayAutoArchiveKeysRef = useRef(new Set<string>());
   const gatewayUpdateResumeKeysRef = useRef(new Set<string>());
   const gatewayUpdateActiveNodeIdsRef = useRef<Set<string>>(new Set());
   const gatewayUpdateRuntimeByNodeRef = useRef(gatewayUpdateRuntimeByNode);
@@ -4287,56 +4285,7 @@ function MalinkAppRuntime() {
     matrixConfig.gatewayId,
   ]);
 
-  useEffect(() => {
-    if (connectionStatus !== "connected") return;
-    for (const node of gatewayUpdatePlan) {
-      if (!node.targetProjectId) continue;
-      const runtime = gatewayUpdateRuntimePresentation[node.gatewayNodeId];
-      // A terminal installer status does not end the dual-Gateway recovery
-      // window. Missing deployment state must not destroy its repair session.
-      const deployment = node.computerId
-        ? gatewayState?.gatewayDeployments?.[node.computerId]?.deployment
-        : undefined;
-      if ((deployment && deployment.phase !== "steady") ||
-          (node.blueGreenUpdate && !deployment)) continue;
-      const status = runtime?.status;
-      const sessionId = runtime?.maintenanceSessionId;
-      if (!sessionId) continue;
-      const key = gatewayMaintenanceAutoArchiveAttemptKey({
-        gatewayNodeId: node.gatewayNodeId,
-        projectId: node.targetProjectId,
-        maintenanceSessionId: sessionId,
-        status,
-      });
-      if (!key || gatewayAutoArchiveKeysRef.current.has(key)) continue;
-      const session = gatewayState?.sessions.find(candidate =>
-        candidate.id === sessionId && candidate.projectId === node.targetProjectId,
-      );
-      if (!session || session.status === "archived") continue;
-      gatewayAutoArchiveKeysRef.current.add(key);
-      void runSessionLifecycle(
-        "archive",
-        sessionId,
-        node.targetProjectId,
-      ).catch(error => {
-        console.warn(
-          `[gateway-update/auto-archive] ${formatUiError(error)}`,
-          error,
-        );
-      });
-    }
-    // Only the exact maintenance session named by a committed or rolled-back
-    // signed transaction is eligible. Each signed snapshot gets one attempt;
-    // failures remain visible for manual cleanup instead of creating a Matrix
-    // command loop. Legacy session IDs are always handled explicitly by users.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    connectionStatus,
-    gatewayState?.sessions,
-    gatewayState?.gatewayDeployments,
-    gatewayUpdatePlan,
-    gatewayUpdateRuntimePresentation,
-  ]);
+  // Update sessions remain visible until the user explicitly deletes them.
 
   useEffect(() => {
     let active = true;
@@ -7937,16 +7886,14 @@ function MalinkAppRuntime() {
     if (gatewayArchivePreflightSessionIdsRef.current.has(sessionId)) return;
     setGatewayArchivePreflight(sessionId, true);
     try {
-      const runtime = gatewayUpdateRuntimeByNodeRef.current[node.gatewayNodeId];
-      const status = runtime?.releaseKey === gatewayUpdateReleaseKey
-        ? runtime.status
-        : undefined;
-      if (!gatewayMaintenanceSessionCanBeArchived(status)) {
+      const runtime = gatewayUpdateRuntimePresentation[node.gatewayNodeId];
+      const status = runtime?.status;
+      if (runtime?.maintenanceSessionId !== sessionId || !gatewayMaintenanceSessionCanBeArchived(status)) {
         showUiNotice(
           `gateway-update:archive-blocked:${node.gatewayNodeId}`,
           "update",
           "warning",
-          "The latest signed Gateway state still owns this update session. It will be archived automatically after the update is committed or safely rolled back.",
+          "The Gateway still owns this update session. Refresh its status after installation finishes, then delete the session.",
           10_000,
         );
         return;
@@ -8438,6 +8385,10 @@ function MalinkAppRuntime() {
         `The update did not start because this Malink client is not connected. Reconnect the Workspace, then install ${gatewayRelease.releaseId}.`,
       );
       return;
+    }
+    const latestStatus = gatewayUpdateRuntimeByNodeRef.current[node.gatewayNodeId]?.status;
+    if (latestStatus?.executionTracks?.phase === "steady" && latestStatus.currentBuildId) {
+      node = gatewayUpdatePlanNodeWithLiveStatus({ node: { ...node, buildObservedAt: undefined }, release: gatewayRelease, status: latestStatus });
     }
     const target = gatewayUpdateTarget(node);
     if (!target || node.state !== "available") {

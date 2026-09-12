@@ -752,33 +752,18 @@ function MatrixSettingsDialog({
                           {gateway.projectCount === 1 ? "project" : "projects"}
                         </small>
                       </span>
-                      {!expandedComputer && <span
-                        className={`gateway-profile-liveness computer-user-state-${userState.tone}`}
-                        aria-live="polite"
-                        title={liveness.detail}
-                      >
-                        <i aria-hidden="true" />
-                        <strong>{userState.title}</strong>
-                      </span>}
                     </div>
-                    {!expandedComputer && <div className="gateway-profile-software">
-                      {onUpdateComputer && updateAvailable && userState.showUpdate && !userState.failed && !userState.preparing && !userState.waiting && !userState.ready && !userState.switching && gateway.onlineUpdate && targetProjectId && !gatewayUpdateDiscoveryError && (
-                        <button type="button" disabled={status !== "connected" || Boolean(gatewayUpdateActiveModesByNode[gatewayProfileId])}
-                          onClick={() => { setExpandedComputer(gatewayProfileId); onExpandComputer?.(gatewayProfileId); onUpdateComputer(gatewayProfileId); }}>Update</button>
-                      )}
-                      <button type="button" className="computer-open" aria-label={`Manage ${gatewayIdentity.label}`}
-                        onClick={() => {
-                          const next = expandedComputer === gatewayProfileId ? null : gatewayProfileId;
-                          setExpandedComputer(next);
-                          onExpandComputer?.(next);
-                        }}>
-                        <span aria-hidden="true">›</span>
+                    {!expandedComputer && <>
+                      <button type="button" className="computer-card-open" aria-label={"Manage " + gatewayIdentity.label} onClick={() => { setExpandedComputer(gatewayProfileId); onExpandComputer?.(gatewayProfileId); }}><span aria-hidden="true">›</span></button>
+                      <button type="button" className={"computer-card-status computer-user-state-" + (liveness.state === "online" ? "online" : "unknown")}
+                        aria-label={"Refresh status for " + gatewayIdentity.label}
+                        disabled={status !== "connected" || !liveCheckAvailable || !liveness.canCheck}
+                        onClick={() => onCheckGatewayLiveness(gatewayProfileId)}>
+                        <i aria-hidden="true" />{liveness.label}<span aria-hidden="true">↻</span>
                       </button>
-                    </div>}
+                    </>}
                     {expandedComputer === gatewayProfileId && <div className="computer-details">
                       {renderGatewayDetails?.(gatewayProfileId)}
-                      <ComputerActionPanel title="Manage computer" subtitle="Name, restart and other options" icon="⋯">
-                      {renderGatewayDetails?.(gatewayProfileId, true)}
                       <nav className="computer-action-menu" aria-label="Computer management">
                         <ComputerActionPanel title="Rename" subtitle={gateway.gatewayName} icon="✎" open={editing}
                           onOpenChange={open => { setEditingGatewayNodeId(open ? gatewayProfileId : null); if (open) setGatewayNameDraft(gateway.gatewayName); }}>
@@ -802,10 +787,8 @@ function MatrixSettingsDialog({
                             {!canRestart && <p role="status">Confirm this computer is connected before restarting.</p>}
                             <button type="button" className="primary-button" disabled={busy || !canRestart} onClick={() => { if (targetProjectId) onRestartGateway(gatewayProfileId, targetProjectId, "when_idle"); }}>Restart when idle</button>
                             <p className="computer-panel-caption">Running tasks finish first. New sessions may be unavailable briefly.</p>
-                            <ComputerActionPanel title="Restart immediately" subtitle="Interrupt running tasks" icon="!" danger>
-                              <p>Active Agent turns on this computer will stop. New sessions are unavailable until the Gateway reconnects.</p>
-                              <button type="button" className="danger-button" disabled={busy || restartBusy || !canRestart} onClick={() => { if (targetProjectId) onRestartGateway(gatewayProfileId, targetProjectId, "force"); }}>Stop tasks and restart</button>
-                            </ComputerActionPanel>
+                            <p>Or interrupt running tasks and restart now:</p>
+                            <button type="button" className="danger-button" disabled={busy || restartBusy || !canRestart} onClick={() => { if (targetProjectId) onRestartGateway(gatewayProfileId, targetProjectId, "force"); }}>Stop tasks and restart</button>
                           </>}
                           {restartRuntime.state === "failed" && <ComputerActionPanel title="Restart details" subtitle="Review the failure or export a report" icon="?"><pre className="computer-technical-record">{restartRuntime.detail ?? restartRuntime.status?.detail ?? gatewayRestartStateDetail(restartRuntime.state)}</pre><button type="button" className="primary-button" disabled={diagnosticExportBusy} onClick={onExportDiagnostics}>Export diagnostics</button></ComputerActionPanel>}
                         </ComputerActionPanel>
@@ -818,7 +801,6 @@ function MatrixSettingsDialog({
                             onReviewGatewayUpdates={() => { setExpandedComputer(null); onExpandComputer?.(null); onReviewGatewayUpdates(); }} onRetire={onRetireGateway} />
                         </ComputerActionPanel>}
                       </nav>
-                      </ComputerActionPanel>
                     </div>}
                   </div>
                 );
