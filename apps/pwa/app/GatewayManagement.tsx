@@ -3,11 +3,12 @@ import React, { useState } from "react";
 import type { GatewayUpdateNodeRuntime } from "./GatewayUpdateDialog";
 import type { GatewayUpdatePlanNode } from "./gatewayUpdateTrigger";
 import { ComputerActionDialog } from "./ComputerActionPanel";
+import { GATEWAY_ONLINE_PROOF_WINDOW_MS } from "./gatewayNodeLiveness";
 
-export function GatewayManagement({ node, runtime, latestBuild, connected, busy, refreshing, preparing, ready, switching,
+export function GatewayManagement({ node, runtime, latestBuild, connected, lastVerifiedAt, busy, refreshing, preparing, ready, switching,
   complete, failed, canUpdate, onUpdate, onInstall, onRefresh, onOpen, onDelete, onSelect, onExport }: {
   node: GatewayUpdatePlanNode; runtime: GatewayUpdateNodeRuntime; latestBuild?: string;
-  connected: boolean; busy: boolean; refreshing?: boolean; preparing: boolean; ready: boolean; switching: boolean;
+  connected: boolean; lastVerifiedAt?: number; busy: boolean; refreshing?: boolean; preparing: boolean; ready: boolean; switching: boolean;
   complete: boolean; failed: boolean; canUpdate: boolean;
   onUpdate(): void; onInstall(): void; onRefresh?(): void; onOpen(id: string): void;
   onDelete(id: string): void; onSelect?(id: string, generation: number): void; onExport(): void;
@@ -24,20 +25,25 @@ export function GatewayManagement({ node, runtime, latestBuild, connected, busy,
   const title = switching ? "Restarting for update…" : complete ? "Update complete" : ready ? "Ready to install"
     : preparing ? "Preparing update…" : failed ? "Update needs attention" : latestBuild && current !== latestBuild ? "Update available" : latestBuild ? "Up to date" : "Checking for updates";
   const tone = switching || preparing ? "progress" : failed ? "attention" : complete || current === latestBuild ? "success" : "available";
+  const proof = Math.max(lastVerifiedAt ?? 0, !runtime.versionCheckError ? runtime.versionCheckedAt ?? 0 : 0);
+  const now = Date.now();
+  const online = connected && proof > 0 && proof <= now && now - proof <= GATEWAY_ONLINE_PROOF_WINDOW_MS;
   return <section className={"gateway-management-flat gateway-management-" + tone} aria-label="Gateway management">
-    <div className="gateway-management-heading">
-      <span className="gateway-management-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-        {tone === "success" ? <path d="m6 12 4 4 8-8"/> : tone === "attention" ? <><path d="M12 5v9"/><path d="M12 18h.01"/></> : <><path d="M12 16V4m-4 4 4-4 4 4"/><path d="M5 14v5h14v-5"/></>}
-      </svg></span>
-      <div className="gateway-management-heading-copy"><span className="gateway-management-eyebrow">Gateway software</span><h3>{title}</h3></div>
+    <div className="gateway-connection-row">
+      <span className={"gateway-connection-state" + (online ? " is-online" : "")}><i aria-hidden="true"/>{!connected ? "Client disconnected" : refreshing ? "Checking…" : online ? "Online" : "Status not confirmed"}</span>
       <button className="secondary-button gateway-management-refresh" type="button" disabled={!connected || busy || !onRefresh} onClick={onRefresh} aria-label="Refresh Gateway status" aria-busy={refreshing} title={refreshing ? "Checking this computer…" : "Refresh Gateway status"}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></svg>
       </button>
     </div>
     {(refreshing || runtime.versionCheckedAt) && <p className="gateway-check-result" role="status">{refreshing ? "Checking this computer…" : (runtime.versionCheckError ? "No new reply" : "Status refreshed") + " · " + new Date(runtime.versionCheckedAt!).toLocaleTimeString()}</p>}
+    {runtime.versionCheckError && <p className="gateway-check-result" role="status">No reply to the last check. Check that this computer is running, then refresh.</p>}
+    <div className="gateway-software-task">
+    <div className="gateway-management-heading">
+      <div className="gateway-management-heading-copy"><span className="gateway-management-eyebrow">Software update</span><h3>{title}</h3></div>
+      {tone === "success" && <span className="gateway-success-mark" aria-label="Update successful">✓</span>}
+    </div>
     <p className="gateway-management-version">Installed <span title={current}>{current ?? "Not yet confirmed"}</span></p>
     {temporary && <p role="status">Using an older version temporarily. Update soon to avoid compatibility problems.</p>}
-    {runtime.versionCheckError && <p role="status">No reply to the last check. Check that this computer is running, then refresh.</p>}
     {runtime.versionSwitchError && <p role="alert">{runtime.versionSwitchError}</p>}
     {failed && <p role="status">{runtime.status?.executionTracks?.error ?? runtime.status?.detail ?? "The update did not finish. Open its session to review the result."}</p>}
     {switching && <p role="status">This computer is installing and reconnecting. You can leave this page.</p>}
@@ -46,9 +52,10 @@ export function GatewayManagement({ node, runtime, latestBuild, connected, busy,
       {retryTarget && onSelect && <button className="primary-button" type="button" disabled={disabled} onClick={() => setConfirm({ id: retryTarget, generation: tracks!.generation })}>Retry prepared update</button>}
       {ready && !switching && <button className="primary-button" type="button" disabled={disabled} onClick={() => setConfirm("install")}>Restart and install update</button>}
       {session && <button className={preparing ? "primary-button" : "secondary-button"} type="button" disabled={!node.targetProjectId} onClick={() => onOpen(session)}>Open update session</button>}
-      {complete && session && <button className="primary-button" type="button" disabled={disabled || runtime.maintenanceSessionArchiveBusy || !runtime.maintenanceSessionArchiveAvailable} onClick={() => setConfirm("delete")}>{runtime.maintenanceSessionArchiveBusy ? "Deleting…" : "Delete update session"}</button>}
+      {complete && session && <button className="secondary-button" type="button" disabled={disabled || runtime.maintenanceSessionArchiveBusy || !runtime.maintenanceSessionArchiveAvailable} onClick={() => setConfirm("delete")}>{runtime.maintenanceSessionArchiveBusy ? "Deleting…" : "Delete update session"}</button>}
     </div>
-    {complete && session && !runtime.maintenanceSessionArchiveBusy && <p className="gateway-management-caption">{runtime.maintenanceSessionArchiveAvailable ? "Update installed. You can delete its session." : "Confirming the session can be deleted. Refresh if this persists."}</p>}
+    {complete && session && !runtime.maintenanceSessionArchiveBusy && <p className="gateway-management-caption">{runtime.maintenanceSessionArchiveAvailable ? "Ready to use. Session cleanup is optional." : "Confirming the session can be deleted. Refresh if this persists."}</p>}
+    </div>
     <div className="gateway-management-actions gateway-management-secondary">
       {canSwitch && <button className="secondary-button" type="button" disabled={disabled} onClick={() => setConfirm({ id: String(previous), generation: tracks!.generation })}>Temporarily use previous version</button>}
       {(failed || runtime.versionCheckError) && <button className="secondary-button" type="button" onClick={onExport}>Export diagnostics</button>}

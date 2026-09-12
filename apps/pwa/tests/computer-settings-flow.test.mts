@@ -34,6 +34,9 @@ test("completed update directly exposes its session and temporary recovery", () 
   assert.doesNotMatch(html, /Versions|Update activity|Connection &amp; recovery/);
   assert.match(html, /Update complete/);
   assert.match(html, /Open update session/);
+  assert.doesNotMatch(html, /class="primary-button"/);
+  assert.match(html, /gateway-connection-row/);
+  assert.match(html, /gateway-software-task/);
   assert.match(html, /Temporarily use previous version/);
   assert.doesNotMatch(html, /role="dialog"|Check available versions|Start update session<\/button>/);
 });

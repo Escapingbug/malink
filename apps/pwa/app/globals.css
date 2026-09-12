@@ -13250,7 +13250,14 @@ body {
 .gateway-visual-list .computer-management-detail .gateway-profile-identity strong { font-size: 18px; line-height: 1.4; }
 .gateway-visual-list .computer-back { display: inline-flex; align-items: center; min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--muted); font-size: 12px; }
 .gateway-visual-list.is-detail > header > button { display: none; }
-.gateway-management-flat { padding: 20px; gap: 16px; background: var(--panel); border-radius: 16px; box-shadow: 0 3px 14px rgb(33 43 74 / 3%); }
+.gateway-management-flat { padding: 0; gap: 12px; background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+.gateway-connection-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.gateway-connection-state { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.gateway-connection-state i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.gateway-connection-state.is-online { color: #16734b; }
+.gateway-software-task { display: grid; gap: 14px; padding: 16px; border: 1px solid #e2e4ea; border-radius: 12px; background: var(--panel); }
+.gateway-success-mark { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; color: #16734b; background: #edf8f2; font-size: 14px; }
+.gateway-connection-row .gateway-management-refresh { display: grid; place-items: center; width: 44px; height: 44px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--muted); cursor: pointer; }
 .gateway-management-heading { gap: 12px; }
 .gateway-management-mark { width: 42px; height: 42px; flex: 0 0 42px; display: grid; place-items: center; border-radius: 12px; color: var(--violet); background: var(--violet-soft); }
 .gateway-management-mark svg { width: 22px; height: 22px; }
@@ -13263,15 +13270,15 @@ body {
 .gateway-management-refresh svg { width: 18px; height: 18px; }
 .gateway-management-flat .gateway-management-version { display: flex; gap: 12px; justify-content: space-between; align-items: baseline; padding-bottom: 14px; border-bottom: 1px solid var(--line); font-size: 11px; }
 .gateway-management-version span { min-width: 0; max-width: 78%; font: 11px/1.5 var(--font-mono); text-align: right; overflow-wrap: anywhere; }
-.gateway-management-flat > .gateway-management-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
-.gateway-management-flat > .gateway-management-actions:empty { display: none; }
+.gateway-management-flat .gateway-management-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.gateway-management-flat .gateway-management-actions:empty { display: none; }
 .gateway-management-actions button { font: 600 13px/1.4 var(--font-sans); transition: background var(--motion-fast), border-color var(--motion-fast), box-shadow var(--motion-fast); }
 .gateway-management-actions .primary-button { background: var(--violet); border-color: var(--violet); color: #fff; }
 .gateway-management-actions .primary-button:hover:not(:disabled) { background: var(--violet-dark); border-color: var(--violet-dark); }
 .gateway-management-actions .secondary-button:hover:not(:disabled) { background: var(--soft); border-color: var(--line-strong); }
 .gateway-management-actions button:focus-visible, .gateway-management-refresh:focus-visible, .computer-card-status:focus-visible { outline: 2px solid var(--violet); outline-offset: 3px; }
 .gateway-management-flat .gateway-management-caption { font-size: 11px; line-height: 1.5; }
-.gateway-management-flat > .gateway-management-secondary { margin-top: 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.gateway-management-flat > .gateway-management-secondary { margin-top: 0; padding-top: 0; border-top: 0; }
 .gateway-management-flat > .gateway-management-secondary:empty { display: none; }
 .gateway-visual-list .computer-details > .computer-action-menu { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
 .gateway-visual-list .computer-details > .computer-action-menu > .computer-action-entry { width: 100%; min-height: 48px; display: flex; gap: 8px; padding: 12px; background: var(--panel); border-radius: 12px; }
@@ -13299,8 +13306,8 @@ body {
   .gateway-management-refresh[aria-busy="true"] svg { animation: none; }
 }
 @media (max-width: 600px) {
-  .gateway-management-flat { padding: 16px; gap: 14px; }
-  .gateway-management-flat > .gateway-management-actions { grid-template-columns: minmax(0, 1fr); }
+  .gateway-management-flat { padding: 0; gap: 12px; }
+  .gateway-management-flat .gateway-management-actions { grid-template-columns: minmax(0, 1fr); }
   .gateway-management-heading h3 { font-size: 15px; }
   .gateway-management-heading .gateway-management-refresh { width: 40px; height: 40px; flex-basis: 40px; padding: 10px; }
 }
