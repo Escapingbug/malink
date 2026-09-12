@@ -20,6 +20,36 @@ import org.junit.Test
 
 class ClientEventHubTest {
     @Test
+    fun `deferred deployment snapshot is current before foreground reset delivery`() {
+        val hub = hub()
+        val listener = RecordingListener()
+        val subscription = hub.subscribe(null, listener = listener, coalescePresentation = true)
+        hub.activate(subscription.subscriptionId, subscription.barrierCursor)
+        assertFalse(hub.canDeferPresentation())
+        hub.setPresentationActive(false)
+        assertTrue(hub.canDeferPresentation())
+        val policy = id.my.anciety.malink.client.DeploymentPresentationPolicy()
+        var version = 0
+        var builds = 0
+        val publish = {
+            builds++
+            val latest = buildJsonObject { put("deploymentVersion", version) }
+            hub.publishTransient(ClientEventType.GATEWAY_STATE_CHANGED, latest,
+                hub.snapshot().copy(gatewayState = latest))
+            Unit
+        }
+        repeat(310) { version++; policy.update(hub.canDeferPresentation(), publish) }
+        assertEquals(0, builds)
+        policy.flush(publish)
+        assertTrue(listener.expiredSnapshots.isEmpty())
+        hub.setPresentationActive(true)
+        assertEquals(1, builds)
+        assertEquals(JsonPrimitive(310), listener.expiredSnapshots.single().gatewayState?.get("deploymentVersion"))
+        policy.flush(publish)
+        assertEquals(1, builds)
+    }
+
+    @Test
     fun `legacy subscribers retain normal delivery in the background`() {
         val hub = hub()
         val listener = RecordingListener()
@@ -27,6 +57,7 @@ class ClientEventHubTest {
         hub.activate(subscription.subscriptionId, subscription.barrierCursor)
         hub.setPresentationActive(false)
         hub.upsertMessageTransient("session-1", message("legacy", 1))
+        assertFalse(hub.canDeferPresentation())
         assertEquals(1, listener.events.size)
         assertTrue(listener.expiredSnapshots.isEmpty())
     }

@@ -50,6 +50,6 @@ internal class PowerDiagnosticMetrics {
         val DIMENSIONS = setOf("type", "reason", "phase", "changed", "checkpoint", "caused", "stage")
         val EVENTS = setOf("power.raw_inbox", "power.event_processing", "power.projection_checkpoint",
             "power.checkpoint_skipped", "power.presentation_resume", "power.presentation_delivery",
-            "power.projection_result", "power.checkpoint_request", "power.event_stage")
+            "power.projection_result", "power.checkpoint_request", "power.event_stage", "power.deployment_change")
     }
 }

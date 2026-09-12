@@ -44,6 +44,8 @@ internal data class MatrixMlp3NativeProjectionResult(
     val checkpointChanged: Boolean = false,
     /** Validated uncaused status with no semantic effect; safe to re-evaluate after restart. */
     val unchangedStatus: Boolean = false,
+    /** Validated schema field names only, never status values or identifiers. */
+    val deploymentChangedFields: Set<String> = emptySet(),
 )
 
 private enum class PublicSessionCommandEncoding {
@@ -727,6 +729,13 @@ internal class MatrixMlp3NativeProjection(
             return MatrixMlp3NativeProjectionResult(
                 terminal = terminal(type, event, payload, causation, sessionId),
                 changed = changed,
+                deploymentChangedFields = if (!changed) emptySet() else if (current == null) {
+                    setOf("initial")
+                } else {
+                    (status.keys + current.status.keys).filterTo(linkedSetOf()) {
+                        status[it] != current.status[it]
+                    }
+                },
             )
         }
 

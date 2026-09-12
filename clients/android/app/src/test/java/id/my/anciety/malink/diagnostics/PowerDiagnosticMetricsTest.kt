@@ -4,6 +4,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PowerDiagnosticMetricsTest {
+    @Test fun `deployment field changes aggregate without per-event logging`() {
+        val metrics = PowerDiagnosticMetrics()
+        repeat(310) {
+            assertTrue(metrics.accept("power.deployment_change", mapOf("reason" to "updatedAt"), 0))
+        }
+        assertEquals("", metrics.drain(59_999))
+        val output = metrics.drain(60_000)
+        assertEquals(1, output.trim().lines().size)
+        assertTrue(output.contains("count=310"))
+        assertTrue(output.contains("reason=updatedAt"))
+    }
+
     @Test fun `metrics sum measured work and bytes without per-event logging`() {
         val metrics = PowerDiagnosticMetrics()
         repeat(10) { assertTrue(metrics.accept("power.projection_checkpoint",
