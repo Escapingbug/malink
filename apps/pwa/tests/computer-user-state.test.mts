@@ -41,7 +41,7 @@ test("old completion cannot assert online or become update failed", () => {
   assert.equal(result.title, "Connection not confirmed");
   assert.equal(result.complete, true);
   assert.equal(result.failed, false);
-  assert.match(result.description, /does not undo that result/);
+  assert.match(result.description, /latest version was installed/);
 });
 test("repair failure never promises working conversations just because transport is online", () => {
   assert.equal(computerUserState({ ...base, runtime: runtime("repair_required") }).availability, "Needs repair");
@@ -60,4 +60,23 @@ test("an older staged update cannot be presented as the newly published version 
   const result = computerUserState({ ...base, runtime: { state: "online", status: { version: 1, updatedAt: now, phase: "staged", currentBuildId: "old", targetBuildId: "previous-target" } } });
   assert.equal(result.ready, false);
   assert.equal(result.notice, "Update available");
+});
+
+test("old repair plus missing live proof asks to confirm, never diagnoses the network", () => {
+  const result = computerUserState({ ...base, liveness: { state: "unreachable" }, runtime: { ...runtime("repair_required"), status: { ...runtime("repair_required").status!, updatedAt: 1 } } });
+  assert.equal(result.title, "Current state not confirmed");
+  assert.equal(result.needsConfirmation, true);
+  assert.doesNotMatch(result.description, /check its network|choose.*repair/);
+  assert.match(result.description, /last update reported/);
+});
+test("a failed explicit check advances to a no-reply conclusion instead of the same old error", () => {
+  const result = computerUserState({ ...base, liveness: { state: "unreachable" }, runtime: { ...runtime("repair_required"), versionCheckError: "timeout", versionCheckedAt: now, status: { ...runtime("repair_required").status!, updatedAt: 1 } } });
+  assert.equal(result.title, "No reply from this computer");
+  assert.equal(result.checkFailed, true);
+  assert.equal(result.needsConfirmation, true);
+});
+test("a successful status query is current evidence even if the lifecycle record itself is old", () => {
+  const result = computerUserState({ ...base, liveness: { state: "unknown" }, runtime: { ...runtime("repair_required"), versionCheckedAt: now, status: { ...runtime("repair_required").status!, updatedAt: 1 } } });
+  assert.equal(result.availability, "Needs repair");
+  assert.equal(result.needsConfirmation, false);
 });

@@ -108,7 +108,7 @@ type Props = {
   onExpandComputer?(gatewayNodeId: string | null): void;
   computersRequested?: boolean;
   onComputersRequestHandled?(): void;
-  renderGatewayDetails?(gatewayNodeId: string): ReactNode;
+  renderGatewayDetails?(gatewayNodeId: string, managementOnly?: boolean): ReactNode;
   onUpdateComputer?(gatewayNodeId: string): void;
   gatewayRelease: GatewayReleaseBuild | null;
   gatewayUpdateAvailableCount: number;
@@ -777,6 +777,8 @@ function MatrixSettingsDialog({
                     </div>}
                     {expandedComputer === gatewayProfileId && <div className="computer-details">
                       {renderGatewayDetails?.(gatewayProfileId)}
+                      <ComputerActionPanel title="Manage computer" subtitle="Name, restart and other options" icon="⋯">
+                      {renderGatewayDetails?.(gatewayProfileId, true)}
                       <nav className="computer-action-menu" aria-label="Computer management">
                         <ComputerActionPanel title="Rename" subtitle={gateway.gatewayName} icon="✎" open={editing}
                           onOpenChange={open => { setEditingGatewayNodeId(open ? gatewayProfileId : null); if (open) setGatewayNameDraft(gateway.gatewayName); }}>
@@ -816,6 +818,7 @@ function MatrixSettingsDialog({
                             onReviewGatewayUpdates={() => { setExpandedComputer(null); onExpandComputer?.(null); onReviewGatewayUpdates(); }} onRetire={onRetireGateway} />
                         </ComputerActionPanel>}
                       </nav>
+                      </ComputerActionPanel>
                     </div>}
                   </div>
                 );

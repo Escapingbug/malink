@@ -21,9 +21,12 @@ function Fixture() {
   const [offline, setOffline] = useState(false);
   const [canRemove, setCanRemove] = useState(false);
   const [retiring, setRetiring] = useState<string | null>(null);
-  const runtime = { mac: { state: "online" as const, versionCheckedAt: secondChecked, status: { version: 1 as const, updatedAt: 1, currentBuildId: "v1", targetBuildId: "v2", releaseId: "v2", phase: secondPhase as any } }, tokyo: { state: "online" as const, versionCheckedAt: checked,
+  const [checkError, setCheckError] = useState<string>();
+  const [checkActive, setCheckActive] = useState(false);
+  const [statusTime, setStatusTime] = useState(Date.now());
+  const runtime = { mac: { state: "online" as const, versionCheckedAt: secondChecked, status: { version: 1 as const, updatedAt: 1, currentBuildId: "v1", targetBuildId: "v2", releaseId: "v2", phase: secondPhase as any } }, tokyo: { state: "online" as const, versionCheckedAt: checked, versionCheckError: checkError,
     maintenanceSessionId: phase === "idle" ? undefined : "session",
-    status: { version: 1 as const, updatedAt: 1, currentBuildId: active, targetBuildId: "v2", releaseId: "v2", phase: phase as any,
+    status: { version: 1 as const, updatedAt: statusTime, currentBuildId: active, targetBuildId: "v2", releaseId: "v2", phase: phase as any,
       executionTracks: { generation: 1, activeRelease: active, standbyRelease: active === "v1" ? "v2" : "v1", phase: "steady" as const } } } };
   const props: any = {
     initialComputerId: expanded, onExpandComputer: setExpanded, open: !sessionOpen, computersRequested: requested, onComputersRequestHandled: () => setRequested(false),
@@ -43,9 +46,9 @@ function Fixture() {
     onRestartGateway: (id: string, project: string, mode: string) => { (window as any).restart = { id, project, mode }; setRestart({ [id]: { state: "waiting" } }); },
     onCheckGatewayLiveness: () => setOffline(false),
     onExportDiagnostics: () => { (window as any).exported = true; },
-    renderGatewayDetails: (id: string) => <GatewayUpdateDialog key={id} open embedded connected release={release} livenessByNode={{ tokyo: { state: offline ? "unreachable" : "online", lastVerifiedAt: offline ? 1 : Date.now() }, mac: { state: "online", lastVerifiedAt: Date.now() } }} nodes={[id === "mac" ? second : { ...node, state: active === "v2" ? "current" : "available" }]} runtimeByNode={runtime} activeGatewayNodeIds={new Set()}
+    renderGatewayDetails: (id: string, managementOnly?: boolean) => <GatewayUpdateDialog key={id} open embedded managementOnly={managementOnly} connected release={release} livenessByNode={{ tokyo: { state: offline ? "unreachable" : "online", lastVerifiedAt: offline ? 1 : Date.now() }, mac: { state: "online", lastVerifiedAt: Date.now() } }} nodes={[id === "mac" ? second : { ...node, state: active === "v2" ? "current" : "available" }]} runtimeByNode={runtime} activeGatewayNodeIds={new Set(checkActive ? ["tokyo"] : [])} activeGatewayModesByNode={checkActive ? { tokyo: "check_versions" } : {}}
       onClose={noop} onStart={(target) => { (window as any).updatedNode = target.gatewayNodeId; if (target.gatewayNodeId === "mac") setSecondPhase("agent_running"); else setPhase(phase === "staged" ? "committed" : "agent_running"); }}
-      onCheckVersions={(target) => { if (target.gatewayNodeId === "mac") { setSecondChecked(Date.now()); return; } (window as any).checks = ((window as any).checks ?? 0) + 1; setChecked(Date.now()); }}
+      onCheckVersions={(target) => { if (target.gatewayNodeId === "mac") { setSecondChecked(Date.now()); return; } (window as any).checks = ((window as any).checks ?? 0) + 1; if (offline) { setCheckActive(true); (window as any).finishCheck = (success: boolean) => { setCheckActive(false); setCheckError(success ? undefined : "No reply"); if (success) { setOffline(false); setStatusTime(Date.now()); setChecked(Date.now()); } }; } else { setChecked(Date.now()); setCheckError(undefined); } }}
       onSelectVersion={(_, id) => { (window as any).selectedVersion = id; setActive(id); setPhase("committed"); }}
       onPromote={noop} onDiscard={noop} onOpenProject={noop} onOpenSession={() => setSessionOpen(true)} onArchiveSession={noop} onExportDiagnostics={() => { (window as any).exported = true; }} />,
   };
@@ -53,6 +56,7 @@ function Fixture() {
   (window as any).setFixtureOffline = setOffline;
   (window as any).setFixtureCanRemove = setCanRemove;
   (window as any).setFixtureSessionOpen = setSessionOpen;
+  (window as any).setFixtureOldFailure = () => { setPhase("repair_required"); setStatusTime(1); setChecked(undefined); setOffline(true); setCheckError(undefined); };
   return <>{sessionOpen ? <main><h1>Update session</h1><p>Preparing version v2</p><button onClick={() => { setRequested(true); setSessionOpen(false); }}>Back to computer settings</button></main> : <MatrixSettings {...props} />}</>;
 }
 const root = createRoot(document.getElementById("root")!);

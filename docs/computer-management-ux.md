@@ -5,6 +5,18 @@ action is required, and whether a requested operation finished. They should not
 need to understand the Gateway supervisor, Matrix journal or deployment phases.
 
 - The list and detail use `computerUserState` for the same conclusion.
+- Default detail contains the conclusion, one necessary next action, and one
+  secondary Manage computer entry. Do not show separate troubleshooting,
+  versions and records menus as competing paths to solve a fault.
+- A cached failure is historical until a recent signed state or successful
+  version query confirms it. Query failure is not evidence that a repair is
+  still required. Distinguish "confirm current state", "no reply", and a
+  confirmed repair need. A successful version query is fresh online evidence;
+  a failed query's timestamp is not.
+- After a failed query, offer concrete reconnection steps, not the same query
+  button as though it could repair the machine. After confirmed repair, expose
+  the applicable retained-version consent or repair session directly. If no
+  safe repair route exists, export a report for support; do not invent one.
 - Availability and installed version are independent facts. A failed probe does
   not undo a confirmed installation; an old installation does not prove online.
 - Recent authenticated activity remains valid while a probe is pending or misses
@@ -22,7 +34,7 @@ need to understand the Gateway supervisor, Matrix journal or deployment phases.
   that the computer is definitely offline.
 - This is a projection of existing evidence, not another polling or retry owner.
   No additional Matrix traffic or protocol versions are introduced.
-- Do not place the old control panel inside a disclosure. Versions, update
+- Do not place the old control panel inside a disclosure. Low-frequency versions, update
   activity, connection recovery, rename, restart and removal are separate task
   panels with a common visual system and one clear task per surface.
 - All levels, including failure and confirmation screens, use designed buttons,

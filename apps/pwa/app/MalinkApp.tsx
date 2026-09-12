@@ -15919,12 +15919,13 @@ function MalinkAppRuntime() {
         onExpandComputer={setSettingsComputerId}
         computersRequested={gatewayUpdateDialogOpen}
         onComputersRequestHandled={() => setGatewayUpdateDialogOpen(false)}
-        renderGatewayDetails={(gatewayNodeId) => {
+        renderGatewayDetails={(gatewayNodeId, managementOnly) => {
           const node = gatewayUpdatePlan.find(value => value.gatewayNodeId === gatewayNodeId);
           return node ? (
             <GatewayUpdateDialog
               open={true}
               embedded
+              managementOnly={managementOnly}
               connected={connectionStatus === "connected"}
               release={gatewayRelease}
               nodes={[node]}
