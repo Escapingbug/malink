@@ -1,5 +1,10 @@
 # Conversation branches and references
 
+Release admission catalogs reference snapshots as security-critical and native
+fork retry records as durable command state. Upgrading a release that lacks
+these stores requires supervised forward-only activation; never automatically
+roll back to a binary unaware of the newly granted reference authority.
+
 ## User flow
 
 **Branch:** open a project conversation's details menu, choose Create branch,

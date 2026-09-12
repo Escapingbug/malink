@@ -12,6 +12,13 @@ interface ReleasedGatewayStore {
 }
 
 describe('Gateway release state catalog', () => {
+    it('protects reference authority and native fork retry state from legacy rollback', () => {
+        expect(GATEWAY_STATE_CATALOG).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'matrix-conversation-references', stateClass: 'security-critical', schemaVersion: 1 }),
+            expect.objectContaining({ id: 'matrix-native-forks', stateClass: 'durable-command', schemaVersion: 1 }),
+        ]))
+    })
+
     it('keeps every released store and every adjacent protected migration', async () => {
         const released = JSON.parse(await readFile(
             new URL('./fixtures/gateway-state-catalog-v1.json', import.meta.url),

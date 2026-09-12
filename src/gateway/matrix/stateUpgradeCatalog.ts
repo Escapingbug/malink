@@ -16,6 +16,21 @@ export interface GatewayStateCatalogEntry {
  */
 export const GATEWAY_STATE_CATALOG: readonly GatewayStateCatalogEntry[] = Object.freeze([
     {
+        // User-approved, target-bound reference grants and immutable history.
+        // Older binaries must not resume without understanding this authority.
+        id: 'matrix-conversation-references',
+        stateClass: 'security-critical',
+        schemaVersion: 1,
+        migrationFromVersions: new Set<number>(),
+    },
+    {
+        // Retains provider fork results across command retries and restarts.
+        id: 'matrix-native-forks',
+        stateClass: 'durable-command',
+        schemaVersion: 1,
+        migrationFromVersions: new Set<number>(),
+    },
+    {
         id: 'matrix-archive-batches',
         stateClass: 'durable-command',
         schemaVersion: 1,
