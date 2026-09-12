@@ -18,15 +18,27 @@ class NativeDiagnosticLog private constructor(
     private val exportDirectory = File(context.cacheDir, "diagnostics")
     private val frequent = FrequentDiagnosticCounts()
     private val power = PowerDiagnosticMetrics()
+    private val processPower = ProcessPowerMetrics(
+        { android.os.SystemClock.elapsedRealtime() },
+        { android.os.Process.getElapsedCpuTime() },
+    )
+    private var presentationPhase = "unknown"
+
+    private fun processSample(time: Long, force: Boolean): String {
+        val sample = processPower.sample(force) ?: return ""
+        return DiagnosticLine.encode(Instant.ofEpochMilli(time).toString(), "power.process",
+            sample + ("phase" to presentationPhase)) + "\n"
+    }
 
     override fun record(event: String, attributes: Map<String, String>) {
         synchronized(lock) {
             runCatching {
                 val time = now()
-                val aggregate = power.accept(event, attributes, time) || frequent.accept(event, attributes, time)
+                val aggregate = power.accept(event, attributes + ("phase" to presentationPhase), time) || frequent.accept(event, attributes, time)
                 val force = event == "service.ui_foreground"
-                val line = frequent.drain(time, force) + power.drain(time, force) + if (aggregate) "" else
+                val line = frequent.drain(time, force) + power.drain(time, force) + processSample(time, force) + if (aggregate) "" else
                     DiagnosticLine.encode(Instant.ofEpochMilli(time).toString(), event, attributes) + "\n"
+                if (force) presentationPhase = if (attributes["running"] == "true") "foreground" else "background"
                 appendLines(line)
             }
         }
@@ -42,6 +54,7 @@ class NativeDiagnosticLog private constructor(
     fun export(): File = synchronized(lock) {
         appendLines(frequent.drain(now(), force = true))
         appendLines(power.drain(now(), force = true))
+        appendLines(processSample(now(), force = true))
         exportDirectory.mkdirs()
         exportDirectory.listFiles()?.forEach { candidate ->
             if (candidate.isFile && candidate.name != EXPORT_FILE_NAME) candidate.delete()

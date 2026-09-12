@@ -1699,7 +1699,12 @@ class NativeClientRuntime(
         }
         var projected = false
         var checkpointRequired = true
+        val queueStarted = System.nanoTime()
         mutex.withLock {
+            diagnostics.record("power.event_stage", mapOf(
+                "stage" to "queue_wait",
+                "elapsed_ms" to ((System.nanoTime() - queueStarted) / 1_000_000).toString(),
+            ))
             val waitMs = (System.nanoTime() - receivedAt) / 1_000_000
             if (waitMs >= 1_000) diagnostics.record("matrix.v3_event.queue_delayed", mapOf(
                 "event" to diagnosticOpaqueId(event.eventId), "wait_ms" to waitMs.toString(),
@@ -1751,7 +1756,7 @@ class NativeClientRuntime(
         if (projected) {
             // Retain disk raw records until the coalesced projection checkpoint
             // succeeds. A process death before then replays the same events.
-            mutex.withLock { scheduleMatrixMlp3Checkpoint(checkpointRequired) }
+            mutex.withLock { scheduleMatrixMlp3Checkpoint(checkpointRequired, "raw_event") }
         }
         val elapsedMs = (System.nanoTime() - receivedAt) / 1_000_000
         diagnostics.record("power.event_processing", mapOf("elapsed_ms" to elapsedMs.toString()))
@@ -3188,14 +3193,18 @@ class NativeClientRuntime(
             roomId,
             envelopeProjectId,
         ) ?: throw missingProjectKeyGrant(roomId, envelopeProjectId, eventType)
+        val openStarted = System.nanoTime()
         val opened = try {
             MatrixMlp3Protocol.openContent(extension, roomId, keys.projectId, keys)
         } finally {
             keys.wipe()
         }
+        diagnostics.record("power.event_stage", mapOf("stage" to "open_content",
+            "elapsed_ms" to ((System.nanoTime() - openStarted) / 1_000_000).toString()))
         val kind = opened.plaintext.string("kind")
         if (kind != "signed_event") return true
         val signed = opened.plaintext.objectValue("value")
+        val verifyStarted = System.nanoTime()
         val protocolEvent = MatrixMlp3Protocol.verifyGatewayEvent(
             signed,
             activeTrust.gatewayKey,
@@ -3203,6 +3212,9 @@ class NativeClientRuntime(
             opened.projectId,
         )
         val protocolPayload = protocolEvent.objectValue("payload")
+        val diagnosticType = protocolPayload.string("type") ?: "unknown"
+        diagnostics.record("power.event_stage", mapOf("stage" to "verify", "type" to diagnosticType,
+            "elapsed_ms" to ((System.nanoTime() - verifyStarted) / 1_000_000).toString()))
         if (protocolEvent.string("causationCommandId") != null) diagnostics.record(
             "matrix.v3_event.command_verified", mapOf(
                 "command" to diagnosticOpaqueId(protocolEvent.string("causationCommandId")!!),
@@ -3224,12 +3236,21 @@ class NativeClientRuntime(
         val threadRootHint = relation
             ?.takeIf { it.string("rel_type") == "m.thread" }
             ?.string("event_id")
+        val projectionStarted = System.nanoTime()
         val result = matrixMlp3Projection.applyGatewayEvent(
             protocolEvent,
             event.eventId,
             threadRootHint,
             uiForeground = uiForegroundState(),
         )
+        diagnostics.record("power.projection_result", mapOf(
+            "type" to diagnosticType,
+            "changed" to result.changed.toString(),
+            "checkpoint" to result.checkpointChanged.toString(),
+            "caused" to (protocolEvent.string("causationCommandId") != null).toString(),
+            "reason" to if (result.unchangedStatus) "unchanged_status" else "applied",
+            "elapsed_ms" to ((System.nanoTime() - projectionStarted) / 1_000_000).toString(),
+        ))
         if (result.unchangedStatus) onUnchangedStatus()
         if (result.changed && protocolPayload.string("type") in setOf("session.ready", "session.lifecycle")) {
             scheduleWorkspaceDirectoryConvergence()
@@ -3274,7 +3295,7 @@ class NativeClientRuntime(
             commitMatrixMlp3Projection("gateway_event")
         } else if (result.checkpointChanged) {
             // Replay bookkeeping is durable, but does not change the UI snapshot.
-            scheduleMatrixMlp3Checkpoint()
+            scheduleMatrixMlp3Checkpoint(reason = "replay_bookkeeping")
         }
         if (
             protocolPayload.string("type") in setOf(
@@ -3928,15 +3949,24 @@ class NativeClientRuntime(
             matrixMlp3ProjectionPersistenceDeferred = true
             return
         }
+        val snapshotStarted = System.nanoTime()
         matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
+        diagnostics.record("power.event_stage", mapOf(
+            "stage" to "snapshot_publish", "reason" to reason,
+            "elapsed_ms" to ((System.nanoTime() - snapshotStarted) / 1_000_000).toString(),
+        ))
         // ClientEventHub/raw-inbox persistence remains authoritative. This
         // encrypted projection is a bounded acceleration cache; failing to
         // rewrite it must not turn an authenticated Matrix event into poison.
-        scheduleMatrixMlp3Checkpoint()
+        scheduleMatrixMlp3Checkpoint(reason = reason)
     }
 
     /** Called under the runtime mutex; a fixed window cannot be starved by a busy timeline. */
-    private fun scheduleMatrixMlp3Checkpoint(projectionChanged: Boolean = true) {
+    private fun scheduleMatrixMlp3Checkpoint(projectionChanged: Boolean = true, reason: String = "unspecified") {
+        diagnostics.record("power.checkpoint_request", mapOf(
+            "reason" to reason, "changed" to projectionChanged.toString(),
+            "stage" to if (matrixMlp3CheckpointJob?.isActive == true) "coalesced" else "scheduled",
+        ))
         matrixMlp3CheckpointPolicy.note(projectionChanged)
         if (matrixMlp3CheckpointJob?.isActive == true) return
         matrixMlp3CheckpointJob = scope.launch {
