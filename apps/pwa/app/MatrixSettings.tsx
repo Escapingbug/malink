@@ -537,7 +537,7 @@ function MatrixSettingsDialog({
 
         <div className="matrix-settings-body">
         <section className="settings-group settings-connection-group">
-          <SettingsGroupHeading
+          {!(activeSection === "computers" && expandedComputer && !setupMode) && <SettingsGroupHeading
             eyebrow={setupMode
               ? "One-time invitation"
               : activeSection === "workspace"
@@ -567,7 +567,7 @@ function MatrixSettingsDialog({
                   : activeSection === "computers"
                     ? "Manage the computers that run Gateway, projects, and Agents."
                     : "Keep this app current and collect diagnostic information when needed."}
-          />
+          />}
 
           {(setupMode || activeSection === "access" ||
             (activeSection === "computers" && addingGateway)) && (
@@ -678,7 +678,7 @@ function MatrixSettingsDialog({
         )}
 
         {showGatewayManagement && !setupMode && activeSection === "computers" && (
-          <section className="gateway-profile-list" aria-label="Workspace computers">
+          <section className={"gateway-profile-list gateway-visual-list" + (expandedComputer ? " is-detail" : "")} aria-label="Workspace computers">
             <header>
               <span>
                 {expandedComputer ? <button type="button" className="computer-back" onClick={() => { setExpandedComputer(null); onExpandComputer?.(null); }}>← All computers</button> : <strong>Workspace computers</strong>}

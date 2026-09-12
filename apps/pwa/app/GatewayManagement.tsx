@@ -23,22 +23,29 @@ export function GatewayManagement({ node, runtime, latestBuild, connected, busy,
   const disabled = !connected || busy;
   const title = switching ? "Restarting for update…" : complete ? "Update complete" : ready ? "Ready to install"
     : preparing ? "Preparing update…" : failed ? "Update needs attention" : latestBuild && current !== latestBuild ? "Update available" : latestBuild ? "Up to date" : "Checking for updates";
-  return <section className="gateway-management-flat" aria-label="Gateway management">
-    <div className="gateway-management-heading"><h3>{title}</h3>
-      <button className="secondary-button" type="button" disabled={!connected || busy || !onRefresh} onClick={onRefresh} aria-label="Refresh Gateway status">↻ Refresh</button>
+  const tone = switching || preparing ? "progress" : failed ? "attention" : complete || current === latestBuild ? "success" : "available";
+  return <section className={"gateway-management-flat gateway-management-" + tone} aria-label="Gateway management">
+    <div className="gateway-management-heading">
+      <span className="gateway-management-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        {tone === "success" ? <path d="m6 12 4 4 8-8"/> : tone === "attention" ? <><path d="M12 5v9"/><path d="M12 18h.01"/></> : <><path d="M12 16V4m-4 4 4-4 4 4"/><path d="M5 14v5h14v-5"/></>}
+      </svg></span>
+      <div className="gateway-management-heading-copy"><span className="gateway-management-eyebrow">Gateway software</span><h3>{title}</h3></div>
+      <button className="secondary-button gateway-management-refresh" type="button" disabled={!connected || busy || !onRefresh} onClick={onRefresh} aria-label="Refresh Gateway status" title="Refresh Gateway status">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></svg>
+      </button>
     </div>
-    <p className="gateway-management-version">Current version <span>{current ?? "Not yet confirmed"}</span></p>
+    <p className="gateway-management-version">Installed <span title={current}>{current ?? "Not yet confirmed"}</span></p>
     {temporary && <p role="status">Using an older version temporarily. Update soon to avoid compatibility problems.</p>}
     {runtime.versionCheckError && <p role="status">No reply to the last check. Check that this computer is running, then refresh.</p>}
     {runtime.versionSwitchError && <p role="alert">{runtime.versionSwitchError}</p>}
     {failed && <p role="status">{runtime.status?.executionTracks?.error ?? runtime.status?.detail ?? "The update did not finish. Open its session to review the result."}</p>}
     {switching && <p role="status">This computer is installing and reconnecting. You can leave this page.</p>}
     <div className="gateway-management-actions">
-      {!switching && !preparing && !ready && !complete && canUpdate && <button className="primary-button" type="button" disabled={disabled} onClick={onUpdate}>{busy ? "Starting…" : failed ? "Retry update" : "Update"}</button>}
+      {!switching && !preparing && !ready && !complete && !retryTarget && canUpdate && <button className="primary-button" type="button" disabled={disabled} onClick={onUpdate}>{busy ? "Starting…" : failed ? "Retry update" : "Update"}</button>}
       {retryTarget && onSelect && <button className="primary-button" type="button" disabled={disabled} onClick={() => setConfirm({ id: retryTarget, generation: tracks!.generation })}>Retry prepared update</button>}
       {ready && !switching && <button className="primary-button" type="button" disabled={disabled} onClick={() => setConfirm("install")}>Restart and install update</button>}
       {session && <button className={preparing ? "primary-button" : "secondary-button"} type="button" disabled={!node.targetProjectId} onClick={() => onOpen(session)}>Open update session</button>}
-      {complete && session && <button className="secondary-button" type="button" disabled={disabled || runtime.maintenanceSessionArchiveBusy || !runtime.maintenanceSessionArchiveAvailable} onClick={() => setConfirm("delete")}>{runtime.maintenanceSessionArchiveBusy ? "Deleting…" : "Delete update session"}</button>}
+      {complete && session && <button className="primary-button" type="button" disabled={disabled || runtime.maintenanceSessionArchiveBusy || !runtime.maintenanceSessionArchiveAvailable} onClick={() => setConfirm("delete")}>{runtime.maintenanceSessionArchiveBusy ? "Deleting…" : "Delete update session"}</button>}
     </div>
     {complete && session && !runtime.maintenanceSessionArchiveBusy && <p className="gateway-management-caption">{runtime.maintenanceSessionArchiveAvailable ? "Update installed. You can delete its session." : "Confirming the session can be deleted. Refresh if this persists."}</p>}
     <div className="gateway-management-actions gateway-management-secondary">

@@ -13238,3 +13238,48 @@ body {
 .computer-details > .computer-action-menu > .computer-action-entry { width: auto; flex: 1 1 140px; border: 1px solid var(--line); border-radius: 12px; }
 .computer-details > .computer-action-menu > .computer-action-entry small,
 .computer-details > .computer-action-menu > .computer-action-entry > span:last-child { display: none; }
+
+.gateway-visual-list { border: 0; background: transparent; padding: 0; }
+.gateway-visual-list > header { padding: 0 0 16px; border: 0; }
+.gateway-visual-list > div { display: grid; gap: 12px; }
+.gateway-visual-list .gateway-profile-card.computer-management-row { padding: 20px 56px 70px 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); }
+.gateway-visual-list .computer-card-open { border: 0; border-radius: 16px; }
+.gateway-visual-list .computer-card-status { min-height: 40px; bottom: 16px; border-radius: 20px; padding-inline: 12px; font-size: 12px; }
+.gateway-visual-list .gateway-profile-card.computer-management-detail { padding: 4px 0 0; }
+.gateway-visual-list .computer-management-detail > .gateway-profile-overview { padding: 0 4px 20px; }
+.gateway-visual-list .computer-management-detail .gateway-profile-identity strong { font-size: 18px; line-height: 1.4; }
+.gateway-visual-list .computer-back { display: inline-flex; align-items: center; min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--muted); font-size: 12px; }
+.gateway-visual-list.is-detail > header > button { display: none; }
+.gateway-management-flat { padding: 20px; gap: 16px; background: var(--panel); border-radius: 16px; box-shadow: 0 3px 14px rgb(33 43 74 / 3%); }
+.gateway-management-heading { gap: 12px; }
+.gateway-management-mark { width: 42px; height: 42px; flex: 0 0 42px; display: grid; place-items: center; border-radius: 12px; color: var(--violet); background: var(--violet-soft); }
+.gateway-management-mark svg { width: 22px; height: 22px; }
+.gateway-management-success .gateway-management-mark { color: #16734b; background: #edf8f2; }
+.gateway-management-attention .gateway-management-mark { color: var(--attention); background: var(--attention-soft); }
+.gateway-management-heading-copy { flex: 1; min-width: 0; }
+.gateway-management-eyebrow { display: block; margin-bottom: 3px; font-size: 11px; font-weight: 500; color: var(--muted); }
+.gateway-management-heading h3 { font-size: 16px; font-weight: 650; line-height: 1.35; }
+.gateway-management-heading .gateway-management-refresh { flex: 0 0 36px; width: 36px; height: 36px; min-height: 36px; padding: 8px; border: 1px solid var(--line); color: var(--muted); border-radius: 10px; }
+.gateway-management-refresh svg { width: 18px; height: 18px; }
+.gateway-management-flat .gateway-management-version { display: flex; gap: 12px; justify-content: space-between; align-items: baseline; padding-bottom: 14px; border-bottom: 1px solid var(--line); font-size: 11px; }
+.gateway-management-version span { min-width: 0; max-width: 78%; font: 11px/1.5 var(--font-mono); text-align: right; overflow-wrap: anywhere; }
+.gateway-management-flat > .gateway-management-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.gateway-management-flat > .gateway-management-actions:empty { display: none; }
+.gateway-management-actions button { font: 600 13px/1.4 var(--font-sans); transition: background var(--motion-fast), border-color var(--motion-fast), box-shadow var(--motion-fast); }
+.gateway-management-actions .primary-button { background: var(--violet); border-color: var(--violet); color: #fff; }
+.gateway-management-actions .primary-button:hover:not(:disabled) { background: var(--violet-dark); border-color: var(--violet-dark); }
+.gateway-management-actions .secondary-button:hover:not(:disabled) { background: var(--soft); border-color: var(--line-strong); }
+.gateway-management-actions button:focus-visible, .gateway-management-refresh:focus-visible, .computer-card-status:focus-visible { outline: 2px solid var(--violet); outline-offset: 3px; }
+.gateway-management-flat .gateway-management-caption { font-size: 11px; line-height: 1.5; }
+.gateway-management-flat > .gateway-management-secondary { margin-top: 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.gateway-management-flat > .gateway-management-secondary:empty { display: none; }
+.gateway-visual-list .computer-details > .computer-action-menu { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+.gateway-visual-list .computer-details > .computer-action-menu > .computer-action-entry { width: 100%; min-height: 48px; display: flex; gap: 8px; padding: 12px; background: var(--panel); border-radius: 12px; }
+.gateway-visual-list .computer-action-entry .computer-action-icon { width: 24px; height: 24px; background: transparent; color: var(--muted); font-size: 17px; }
+.gateway-visual-list .computer-action-entry strong { font-size: 12px; font-weight: 600; color: var(--ink); }
+@media (max-width: 600px) {
+  .gateway-management-flat { padding: 16px; gap: 14px; }
+  .gateway-management-flat > .gateway-management-actions { grid-template-columns: minmax(0, 1fr); }
+  .gateway-management-heading h3 { font-size: 15px; }
+  .gateway-management-heading .gateway-management-refresh { width: 40px; height: 40px; flex-basis: 40px; padding: 10px; }
+}
