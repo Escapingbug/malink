@@ -152,6 +152,7 @@ class NativeClientRuntime(
     private val identity: MalinkPrivateIdentity = AndroidKeystoreP256Identity(),
     private val cipher: SecretCipher = AndroidKeystoreSecretCipher(),
     private val foregroundState: () -> Pair<Boolean, Boolean>,
+    private val uiForegroundState: () -> Boolean = { true },
     private val onTaskCompletion: (String, DurableCompletion, String?) -> Unit = { _, _, _ -> },
     private val now: () -> Long = System::currentTimeMillis,
 ) : NativeMatrixObserver {
@@ -1450,7 +1451,9 @@ class NativeClientRuntime(
             matrix.revokeSession()
         } else {
             matrix.stop(clearSession = false)
-            matrixMlp3Inbox.flushProjected()
+            if (persistMatrixMlp3ProjectionCache(
+                    matrixMlp3Projection, matrixMlp3ProjectionStore, diagnostics, "disconnect",
+                )) matrixMlp3Inbox.flushProjected()
         }
         cancelAllCommandTransmissions()
         cancelAllCommandRecoveries()
@@ -3205,6 +3208,7 @@ class NativeClientRuntime(
             protocolEvent,
             event.eventId,
             threadRootHint,
+            uiForeground = uiForegroundState(),
         )
         if (result.changed && protocolPayload.string("type") in setOf("session.ready", "session.lifecycle")) {
             scheduleWorkspaceDirectoryConvergence()
@@ -3244,8 +3248,11 @@ class NativeClientRuntime(
         }
         result.terminal?.let(::recordMatrixMlp3Terminal)
         result.taskNotification?.let(taskNotificationCoordinator::accept)
-        if (result.changed || result.checkpointChanged) {
+        if (result.changed) {
             commitMatrixMlp3Projection("gateway_event")
+        } else if (result.checkpointChanged) {
+            // Replay bookkeeping is durable, but does not change the UI snapshot.
+            scheduleMatrixMlp3Checkpoint()
         }
         if (
             protocolPayload.string("type") in setOf(
@@ -3910,7 +3917,9 @@ class NativeClientRuntime(
     private fun scheduleMatrixMlp3Checkpoint() {
         if (matrixMlp3CheckpointJob?.isActive == true) return
         matrixMlp3CheckpointJob = scope.launch {
-            delay(500)
+            // Raw events remain durable until this checkpoint succeeds. Keep
+            // notifications/live projection immediate, batch only disk work.
+            delay(if (uiForegroundState()) 500L else 30_000L)
             mutex.withLock {
                 if (trust != null && persistMatrixMlp3ProjectionCache(
                         matrixMlp3Projection, matrixMlp3ProjectionStore, diagnostics, "event_batch",

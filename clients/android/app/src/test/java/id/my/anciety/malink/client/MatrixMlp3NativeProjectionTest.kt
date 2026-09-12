@@ -23,6 +23,63 @@ import org.junit.Test
 
 class MatrixMlp3NativeProjectionTest {
     @Test
+    fun `repeated deployment broadcasts only checkpoint replay bookkeeping`() {
+        val projection = projection()
+        val payload = gatewayDeploymentPayload(1, "steady", 20, false)
+        assertTrue(projection.applyGatewayEvent(event(
+            eventId = "deployment-first", projectId = "project-1", payload = payload,
+        ), "\$first", null).changed)
+        val repeated = projection.applyGatewayEvent(event(
+            eventId = "deployment-repeat", projectId = "project-1", payload = payload,
+        ), "\$repeat", null)
+        assertFalse(repeated.changed)
+        assertTrue(repeated.checkpointChanged)
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" }, activeDeviceCount = { 2 },
+            initialState = projection.durableState(),
+        )
+        assertFalse(restored.applyGatewayEvent(event(
+            eventId = "deployment-after-restart", projectId = "project-1", payload = payload,
+        ), "\$after-restart", null).changed)
+        val reply = projection.applyGatewayEvent(event(
+            eventId = "deployment-reply", projectId = "project-1", payload = payload,
+            causationCommandId = "probe-1",
+        ), "\$reply", null)
+        assertFalse(reply.changed)
+        assertEquals("probe-1", reply.terminal?.commandId)
+        assertTrue(projection.applyGatewayEvent(event(
+            eventId = "deployment-transition", projectId = "project-1",
+            payload = gatewayDeploymentPayload(2, "trial", 21, true),
+        ), "\$transition", null).changed)
+    }
+
+    @Test
+    fun `background unchanged update broadcasts preserve foreground liveness and replies`() {
+        val projection = projection()
+        val payload = buildJsonObject {
+            put("type", "gateway.update.status")
+            put("status", buildJsonObject {
+                put("version", 1)
+                put("phase", "idle")
+                put("currentBuildId", "build-1")
+                put("updatedAt", 20)
+            })
+        }
+        fun observation(id: String, time: Long, command: String? = null) = event(
+            eventId = id, projectId = "project-1", payload = payload,
+            causationCommandId = command,
+        ).let { JsonObject(it + ("occurredAt" to JsonPrimitive(time))) }
+        assertTrue(projection.applyGatewayEvent(observation("first", 100), "\$first", null, false).changed)
+        val repeat = projection.applyGatewayEvent(observation("repeat", 200), "\$repeat", null, false)
+        assertFalse(repeat.changed)
+        assertTrue(repeat.checkpointChanged)
+        assertTrue(projection.applyGatewayEvent(observation("visible", 300), "\$visible", null, true).changed)
+        val reply = projection.applyGatewayEvent(observation("reply", 400, "probe"), "\$reply", null, false)
+        assertEquals("probe", reply.terminal?.commandId)
+        assertTrue(reply.changed)
+    }
+
+    @Test
     fun `authenticated status replay can complete a still pending local command`() {
         val projection = projection()
         projection.applyGatewayEvent(projectSnapshot(), "\$project", null)

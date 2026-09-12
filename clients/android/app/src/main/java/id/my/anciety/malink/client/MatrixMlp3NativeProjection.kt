@@ -397,9 +397,10 @@ internal class MatrixMlp3NativeProjection(
         event: JsonObject,
         physicalEventId: String,
         threadRootHint: String?,
+        uiForeground: Boolean = true,
     ): MatrixMlp3NativeProjectionResult {
         val firstPhysicalObservation = physicalEventId !in seenPhysicalEvents
-        val result = applyGatewayEventOnce(event, physicalEventId, threadRootHint)
+        val result = applyGatewayEventOnce(event, physicalEventId, threadRootHint, uiForeground)
         if (firstPhysicalObservation) {
             // Mark only after the complete authenticated event was accepted.
             // A validation failure must remain retryable/quarantinable. The
@@ -486,6 +487,7 @@ internal class MatrixMlp3NativeProjection(
         event: JsonObject,
         physicalEventId: String,
         threadRootHint: String?,
+        uiForeground: Boolean = true,
     ): MatrixMlp3NativeProjectionResult {
         val eventId = event.requiredString("eventId", 256)
         val occurredAt = event.requiredLong("occurredAt")
@@ -677,11 +679,12 @@ internal class MatrixMlp3NativeProjection(
             )
             val currentUpdatedAt = gatewayUpdateStatus?.requiredLong("updatedAt") ?: -1
             val incomingUpdatedAt = status.requiredLong("updatedAt")
-            val globalStatusChanged = incomingUpdatedAt >= currentUpdatedAt
+            val globalStatusChanged = incomingUpdatedAt >= currentUpdatedAt && status != gatewayUpdateStatus
             if (globalStatusChanged) gatewayUpdateStatus = status
             val currentObservation = projectId?.let(gatewayUpdateObservationsByProject::get)
             val observationChanged = projectId != null &&
-                (currentObservation == null || occurredAt > currentObservation.observedAt)
+                (currentObservation == null || (occurredAt > currentObservation.observedAt &&
+                    (uiForeground || causation != null || status != currentObservation.status)))
             if (projectId != null && observationChanged) {
                 gatewayUpdateObservationsByProject[projectId] =
                     GatewayUpdateObservation(occurredAt, status)
@@ -703,7 +706,8 @@ internal class MatrixMlp3NativeProjection(
             validateGatewayDeploymentStatus(status)
             val computerId = status.requiredString("computerId", 256)
             val current = gatewayDeploymentObservationsByComputer[computerId]
-            val changed = isNewerGatewayDeploymentObservation(current, occurredAt, status)
+            val changed = isNewerGatewayDeploymentObservation(current, occurredAt, status) &&
+                current?.status != status
             if (changed) {
                 gatewayDeploymentObservationsByComputer[computerId] =
                     GatewayDeploymentObservation(occurredAt, status)
