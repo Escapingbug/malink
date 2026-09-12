@@ -42,6 +42,8 @@ internal data class MatrixMlp3NativeProjectionResult(
     val taskNotification: MatrixMlp3TaskNotification? = null,
     val changed: Boolean = false,
     val checkpointChanged: Boolean = false,
+    /** Validated uncaused status with no semantic effect; safe to re-evaluate after restart. */
+    val unchangedStatus: Boolean = false,
 )
 
 private enum class PublicSessionCommandEncoding {
@@ -400,7 +402,17 @@ internal class MatrixMlp3NativeProjection(
         uiForeground: Boolean = true,
     ): MatrixMlp3NativeProjectionResult {
         val firstPhysicalObservation = physicalEventId !in seenPhysicalEvents
+        val logicalId = event.requiredString("eventId", 256)
+        val logicalPreviouslySeen = logicalId in seenEvents
         val result = applyGatewayEventOnce(event, physicalEventId, threadRootHint, uiForeground)
+        val payloadType = event.requiredObject("payload").optionalString("type", 256)
+        if (!result.changed && event.optionalString("causationCommandId", 256) == null &&
+            payloadType in setOf("gateway.update.status", "gateway.deployment.status")) {
+            // These observations have no side effects to suppress on replay.
+            // Do not persist new envelope IDs at the cost of the full projection.
+            if (!logicalPreviouslySeen) seenEvents.remove(logicalId)
+            return result.copy(checkpointChanged = false, unchangedStatus = true)
+        }
         if (firstPhysicalObservation) {
             // Mark only after the complete authenticated event was accepted.
             // A validation failure must remain retryable/quarantinable. The

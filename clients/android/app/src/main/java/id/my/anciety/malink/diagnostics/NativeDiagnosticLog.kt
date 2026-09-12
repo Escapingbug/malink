@@ -17,13 +17,15 @@ class NativeDiagnosticLog private constructor(
     private val previous = File(directory, "native-previous.log")
     private val exportDirectory = File(context.cacheDir, "diagnostics")
     private val frequent = FrequentDiagnosticCounts()
+    private val power = PowerDiagnosticMetrics()
 
     override fun record(event: String, attributes: Map<String, String>) {
         synchronized(lock) {
             runCatching {
                 val time = now()
-                val aggregate = frequent.accept(event, attributes, time)
-                val line = frequent.drain(time, force = event == "service.ui_foreground") + if (aggregate) "" else
+                val aggregate = power.accept(event, attributes, time) || frequent.accept(event, attributes, time)
+                val force = event == "service.ui_foreground"
+                val line = frequent.drain(time, force) + power.drain(time, force) + if (aggregate) "" else
                     DiagnosticLine.encode(Instant.ofEpochMilli(time).toString(), event, attributes) + "\n"
                 appendLines(line)
             }
@@ -39,6 +41,7 @@ class NativeDiagnosticLog private constructor(
 
     fun export(): File = synchronized(lock) {
         appendLines(frequent.drain(now(), force = true))
+        appendLines(power.drain(now(), force = true))
         exportDirectory.mkdirs()
         exportDirectory.listFiles()?.forEach { candidate ->
             if (candidate.isFile && candidate.name != EXPORT_FILE_NAME) candidate.delete()

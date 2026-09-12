@@ -155,6 +155,7 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
     private val recordBlobs: MatrixMlp3RecordBlobStore?,
     private val cipher: SecretCipher,
     scope: String,
+    private val diagnostics: DiagnosticRecorder = DiagnosticRecorder.None,
 ) {
     private data class LoadedSegment(
         val key: String,
@@ -169,11 +170,13 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
         recordsDirectory: File,
         cipher: SecretCipher,
         scope: String,
+        diagnostics: DiagnosticRecorder = DiagnosticRecorder.None,
     ) : this(
         AtomicFileMatrixMlp3BlobStore(legacyFile),
         AtomicDirectoryMatrixMlp3RecordBlobStore(recordsDirectory),
         cipher,
         scope,
+        diagnostics,
     )
 
     // Cryptographic domain strings are wire/storage compatibility values, not
@@ -617,6 +620,7 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
     }
 
     private fun persistIndividualRecord(key: String, record: MatrixMlp3InboxRecord) {
+        val started = System.nanoTime()
         val target = requireNotNull(recordBlobs)
         val plaintext = CanonicalJson.bytes(buildJsonObject {
             put("schemaVersion", 1)
@@ -635,6 +639,10 @@ internal class AtomicEncryptedMatrixMlp3InboxStore internal constructor(
         }
         try {
             target.write(key, encrypted)
+            diagnostics.record("power.raw_inbox", mapOf(
+                "elapsed_ms" to ((System.nanoTime() - started) / 1_000_000).toString(),
+                "bytes" to encrypted.size.toString(),
+            ))
         } finally {
             encrypted.fill(0)
         }
@@ -1295,10 +1303,15 @@ internal fun persistMatrixMlp3ProjectionCache(
     diagnostics: DiagnosticRecorder,
     reason: String,
 ): Boolean {
+    val started = System.nanoTime()
     var durable: MatrixMlp3DurableProjection? = null
     return try {
         durable = projection.durableProjection()
         store.save(durable.value)
+        diagnostics.record("power.projection_checkpoint", mapOf(
+            "elapsed_ms" to ((System.nanoTime() - started) / 1_000_000).toString(),
+            "bytes" to durable.encodedBytes.toString(),
+        ))
         if (durable.compacted) {
             diagnostics.record(
                 "matrix.v3_projection.cache_compacted",

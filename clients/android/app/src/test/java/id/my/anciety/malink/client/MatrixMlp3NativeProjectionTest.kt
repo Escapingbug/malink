@@ -23,7 +23,7 @@ import org.junit.Test
 
 class MatrixMlp3NativeProjectionTest {
     @Test
-    fun `repeated deployment broadcasts only checkpoint replay bookkeeping`() {
+    fun `repeated deployment broadcasts need no durable replay bookkeeping`() {
         val projection = projection()
         val payload = gatewayDeploymentPayload(1, "steady", 20, false)
         assertTrue(projection.applyGatewayEvent(event(
@@ -33,7 +33,8 @@ class MatrixMlp3NativeProjectionTest {
             eventId = "deployment-repeat", projectId = "project-1", payload = payload,
         ), "\$repeat", null)
         assertFalse(repeated.changed)
-        assertTrue(repeated.checkpointChanged)
+        assertFalse(repeated.checkpointChanged)
+        assertTrue(repeated.unchangedStatus)
         val restored = MatrixMlp3NativeProjection(
             gatewayId = { "gateway-1" }, activeDeviceCount = { 2 },
             initialState = projection.durableState(),
@@ -72,7 +73,8 @@ class MatrixMlp3NativeProjectionTest {
         assertTrue(projection.applyGatewayEvent(observation("first", 100), "\$first", null, false).changed)
         val repeat = projection.applyGatewayEvent(observation("repeat", 200), "\$repeat", null, false)
         assertFalse(repeat.changed)
-        assertTrue(repeat.checkpointChanged)
+        assertFalse(repeat.checkpointChanged)
+        assertTrue(repeat.unchangedStatus)
         assertTrue(projection.applyGatewayEvent(observation("visible", 300), "\$visible", null, true).changed)
         val reply = projection.applyGatewayEvent(observation("reply", 400, "probe"), "\$reply", null, false)
         assertEquals("probe", reply.terminal?.commandId)

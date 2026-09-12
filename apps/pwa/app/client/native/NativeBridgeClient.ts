@@ -829,7 +829,9 @@ export class NativeBridgeClient implements MalinkClient {
     this.#detachEventListener = this.bridge.onEvents((notification) => {
       if (notification.params.subscriptionId !== this.#subscriptionId) return;
       this.#eventChain = this.#eventChain
-        .then(() => this.#acceptEvents(notification.params.events, true, "live"))
+        .then(() => notification.params.reset
+          ? this.#restorePresentation()
+          : this.#acceptEvents(notification.params.events, true, "live"))
         .catch((error) => {
           this.handlers.onStatus("error", formatError(error));
         });
@@ -840,11 +842,31 @@ export class NativeBridgeClient implements MalinkClient {
     });
     this.#deviceId = started.deviceId;
     this.#applySnapshot(started.snapshot);
-    const subscribed = await this.bridge.request("malink.events.subscribe", {
+    await this.#subscribePresentation(this.cursorStore.load(this.#deviceId));
+  }
+
+  async #subscribePresentation(afterCursor?: string | null): Promise<void> {
+    const params = {
       context: this.bridge.context(),
-      afterCursor: this.cursorStore.load(this.#deviceId),
+      ...(afterCursor ? { afterCursor } : {}),
       maxReplayEvents: NATIVE_BRIDGE_LIMITS.maxReplayEvents,
+    };
+    const subscribed = await this.bridge.request("malink.events.subscribe", {
+      ...params, coalescePresentation: true,
+    }).catch((error: unknown) => {
+      // Older APK hosts do not negotiate background snapshot recovery.
+      if (error instanceof BridgeProtocolError && error.errorCode === "INVALID_PARAMS" &&
+          error.message === "method params has an invalid shape.") {
+        return this.bridge.request("malink.events.subscribe", params);
+      }
+      throw error;
     });
+    if (this.#disposed) {
+      await this.bridge.request("malink.events.unsubscribe", {
+        context: this.bridge.context(), subscriptionId: subscribed.subscriptionId,
+      });
+      return;
+    }
     this.#subscriptionId = subscribed.subscriptionId;
     if (subscribed.mode === "snapshot") {
       this.#applySnapshot(subscribed.snapshot);
@@ -857,6 +879,25 @@ export class NativeBridgeClient implements MalinkClient {
       throughCursor: subscribed.barrierCursor,
     });
     this.cursorStore.save(this.#deviceId, subscribed.barrierCursor);
+  }
+
+  async #restorePresentation(): Promise<void> {
+    if (this.#disposed) return;
+    const previous = this.#subscriptionId;
+    this.#subscriptionId = null;
+    if (previous) await this.bridge.request("malink.events.unsubscribe", {
+      context: this.bridge.context(), subscriptionId: previous,
+    });
+    if (this.#disposed) return;
+    await this.#subscribePresentation();
+    // Refresh only history already opened by this UI, using local storage.
+    // Include updated versions of known messages, not just new event IDs.
+    for (const sessionId of this.#loadedHistoryEventIds.keys()) {
+      if (this.#disposed) return;
+      const page = await this.#loadHistory(sessionId,
+        NATIVE_CATCHUP_PRESENTATION_LIMIT_PER_SESSION, undefined, "local");
+      this.#deliverCatchupMessages(page.messages);
+    }
   }
 
   async #acceptEvents(

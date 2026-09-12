@@ -36,6 +36,50 @@ type Request = {
 
 const NO_RESPONSE = Symbol("no native response");
 
+test("background reset resubscribes to a snapshot and refreshes only opened local history", async () => {
+  let subscriptions = 0;
+  const historySources: string[] = [];
+  const port = new RuntimePort((request) => {
+    if (request.method === "malink.events.subscribe") {
+      subscriptions++;
+      if (subscriptions > 1) {
+        assert.equal((request.params as BridgeMethodParams["malink.events.subscribe"]).afterCursor, undefined);
+        return { subscriptionId: "subscription-1", barrierCursor: "cursor-barrier-1",
+          mode: "snapshot", snapshot: { ...snapshot(), cursor: "cursor-barrier-1" } };
+      }
+    }
+    if (request.method === "malink.history.page") {
+      const params = request.params as BridgeMethodParams["malink.history.page"];
+      assert.equal(params.sessionId, "opened-session");
+      historySources.push(params.source);
+      return { sessionId: params.sessionId, messages: [], hasMore: false, asOfCursor: "cursor-local" };
+    }
+    return responseFor(request);
+  });
+  const client = await createTestClient(port);
+  client.markHistoryLoaded("opened-session", ["existing-message"]);
+  port.deliver({ jsonrpc: "2.0", method: "malink.events.deliver",
+    params: { subscriptionId: "subscription-1", events: [], reset: true } });
+  await nextTurn();
+  assert.equal(subscriptions, 2);
+  assert.deepEqual(historySources, ["local"]);
+  assert.equal(port.requests.filter(request => request.method === "malink.events.activate").length, 2);
+  client.dispose();
+});
+
+test("older native hosts can reject presentation coalescing without breaking subscription", async () => {
+  const port = new RuntimePort((request) => {
+    if (request.method === "malink.events.subscribe" &&
+        (request.params as BridgeMethodParams["malink.events.subscribe"]).coalescePresentation) {
+      throw new BridgeProtocolError("INVALID_PARAMS", "method params has an invalid shape.");
+    }
+    return responseFor(request);
+  });
+  const client = await createTestClient(port);
+  assert.equal(port.requests.filter(request => request.method === "malink.events.subscribe").length, 2);
+  client.dispose();
+});
+
 test("incoming shares reconstruct multiple binary files without uploading or sending", async () => {
   const calls: string[] = [];
   const bytes = new Uint8Array(150_000).map((_, i) => i % 251);

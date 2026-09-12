@@ -21,6 +21,7 @@ internal object DiagnosticLine {
         "changed",
         "code",
         "count",
+        "bytes",
         "event",
         "command",
         "wait_ms",
