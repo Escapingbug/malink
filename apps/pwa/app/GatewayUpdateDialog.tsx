@@ -17,7 +17,7 @@ import {
 import type { GatewayNodeLiveness } from "./gatewayNodeLiveness";
 import { gatewayProjectOwner } from "./projectCatalog";
 import { gatewayUpdateRecoveryAction } from "./gatewayUpdateRecovery";
-import { computerUpdateSummary } from "./computerUpdateSummary";
+import { computerUserState } from "./computerUserState";
 
 export type GatewayUpdateNodeRuntime = {
   state: "unchecked" | "checking" | "unreachable" | "online" | "starting" | "error";
@@ -280,37 +280,32 @@ function GatewayUpdateDialogContent({
               ? nodes.find(candidate =>
                   candidate.gatewayNodeId === deployment.candidate?.gatewayNodeId)
               : undefined;
+            const userState = computerUserState({ connected, now: Date.now(), runtime,
+              liveness: livenessByNode[node.gatewayNodeId], action: activeMode,
+              currentBuild: node.currentBuildId, targetBuild: publishedRelease?.buildId,
+              deployment: deploymentOwner ? deployment : undefined });
             return (
               <article
                 key={node.gatewayNodeId}
                 className={`gateway-update-node gateway-update-node-${node.state}`}
               >
-                {embedded && <section className="computer-update-simple" aria-label="Update">
-                  <small>Gateway update</small>
-                  <strong>{updateCompleted ? "Up to date" : candidateTrial ? "Ready to install"
-                    : computerUpdateSummary(runtime, activeMode) ?? (node.state === "current" ? "Up to date" : node.state === "available" ? "Update available" : "Check computer status")}</strong>
-                  <p>{candidateTrial || stagedPublishedRelease ? "Install when running tasks finish. You can keep using this computer."
-                    : knownUpdateFailure ? "The update did not complete. Review recovery options below."
-                    : active || deploymentInProgress || showUpdateProgress ? "You can leave settings while the update continues."
-                    : node.state === "available" ? "Prepare the new version without interrupting your work."
-                    : updateCompleted || node.state === "current" ? "This computer has the latest published version."
-                    : "Check this computer's connection before updating."}</p>
+                {embedded && <section className={`computer-update-simple computer-user-state-${userState.tone}`} aria-label="Computer status" role="status">
+                  <strong>{userState.title}</strong>
+                  <p>{userState.description}</p>
                   {forwardOnlyConfirmation && <p role="alert">This update changes protected local data. Automatic rollback is unavailable. Continue only if you can access this computer directly.</p>}
-                  {!connected && <p role="status">Reconnect this client to manage updates.</p>}
                   <div className="computer-update-primary">
-                    {runtimeNeedsAttention && !updateActionAvailable ? <button type="button" className="primary-button"
+                    {userState.needsConnectionHelp ? <button type="button" className="primary-button" onClick={() => setAdvancedNodes(current => new Set([...current, node.gatewayNodeId]))}>Connection help</button>
+                      : !connected ? null
+                      : runtimeNeedsAttention && !updateActionAvailable ? <button type="button" className="primary-button"
                       onClick={() => setAdvancedNodes(current => new Set([...current, node.gatewayNodeId]))}>Review recovery</button>
                       : candidateTrial ? <button type="button" className="primary-button" disabled={!connected || active}
                       onClick={() => setCompletionConfirmationNodeId(node.gatewayNodeId)}>Install when idle</button>
-                      : publishedRelease && node.state === "available" && updateActionAvailable && !deploymentInProgress
+                      : userState.showUpdate && publishedRelease && node.state === "available" && updateActionAvailable && !deploymentInProgress
                       ? <button type="button" className="primary-button" disabled={!connected || active}
                           aria-busy={active && activeMode !== "check_versions"}
                           onClick={() => onStart(node, "when_idle")}>{active ? "Working…" : stagedPublishedRelease ? forwardOnlyConfirmation ? "Review installation" : "Install when idle" : knownUpdateFailure ? "Retry update" : "Update"}</button>
-                      : !active && !deploymentInProgress && !showUpdateProgress && onCheckVersions
-                      ? <button type="button" className="secondary-button" disabled={!connected}
-                          onClick={() => onCheckVersions(node)}>Check status</button> : null}
+                      : null}
                   </div>
-                  {(candidateTrial || (stagedPublishedRelease && !node.blueGreenUpdate)) && <button type="button" className="computer-text-action" disabled={!connected || active} onClick={() => setForceConfirmationNodeId(node.gatewayNodeId)}>Install and restart now…</button>}
                   {candidateTrial && completionConfirmationNodeId === node.gatewayNodeId && <div className="gateway-update-force-confirmation">
                     <strong>Install when running tasks finish?</strong>
                     <p>The new version will take over this computer's conversations.</p>
@@ -322,6 +317,8 @@ function GatewayUpdateDialogContent({
                 {embedded && <details className="computer-update-advanced" open={advancedNodes.has(node.gatewayNodeId)}
                   onToggle={event => { const isOpen = event.currentTarget.open; setAdvancedNodes(current => { const next = new Set(current); if (isOpen) next.add(node.gatewayNodeId); else next.delete(node.gatewayNodeId); return next; }); }}>
                   <summary>Versions, records & troubleshooting</summary>
+                  {userState.needsConnectionHelp && <section className="computer-connection-help"><h3>Restore the connection</h3><ol><li>On this computer, open Malink Gateway Host and keep the computer awake.</li><li>Check that this computer and your client can access the network.</li><li>After that, use Check again below. If there is still no reply, export diagnostics for support.</li></ol><button type="button" disabled={diagnosticExportBusy} onClick={onExportDiagnostics}>{diagnosticExportBusy ? "Exporting…" : "Export diagnostics"}</button></section>}
+                  {(candidateTrial || ((stagedPublishedRelease || userState.waiting) && !node.blueGreenUpdate)) && <button type="button" disabled={!connected || active} onClick={() => setForceConfirmationNodeId(node.gatewayNodeId)}>Install and restart now…</button>}
                   <dl className="computer-version-facts">
                     <div><dt>Installed</dt><dd>{runtime.status?.currentBuildId ?? node.currentBuildId ?? "Not reported"}</dd></div>
                     <div><dt>Latest</dt><dd>{publishedRelease?.buildId ?? "Not confirmed"}</dd></div>

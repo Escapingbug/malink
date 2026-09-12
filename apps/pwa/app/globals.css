@@ -12988,7 +12988,19 @@ body {
 .computer-management-detail .gateway-profile-identity > strong { white-space: normal; overflow-wrap: anywhere; }
 .computer-management-detail .computer-option-row button { min-height: 44px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); cursor: pointer; }
 .computer-management-detail .gateway-profile-identity strong { font-size: 20px; }
-.computer-management-detail .computer-maintenance { display: flex; flex-direction: column; }
+.computer-management-detail .computer-maintenance { display: block; }
+.computer-management-detail .computer-maintenance > summary { font-size: 13px; font-weight: 500; color: var(--muted); min-height: 48px; align-content: center; }
+.computer-management-row .gateway-profile-liveness { max-width: 100%; height: auto; }
+.computer-management-row .gateway-profile-liveness strong { white-space: normal; text-align: left; line-height: 1.5; }
+.computer-connection-help { line-height: 1.6; }
+.computer-connection-help h3 { font-size: 14px; }
+.computer-user-state-online > i { background: #26a579; }
+.computer-user-state-progress > i { background: #7864c3; }
+.computer-user-state-unknown > i { background: #9398a3; }
+.computer-user-state-attention > i { background: #ba7637; }
+.computer-details .computer-update-simple.computer-user-state-online { background: #f6faf8; border-color: #e2ece6; }
+.computer-details .computer-update-simple.computer-user-state-unknown { background: #f7f8fa; border-color: #e5e7eb; }
+.computer-details .computer-update-simple.computer-user-state-attention { background: #fdf9f2; border-color: #eee0c9; }
 .computer-maintenance > h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 24px 0 4px; }
 .computer-management-detail .gateway-profile-restart { padding: 16px 0; margin: 0; background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
 .computer-management-detail .gateway-profile-restart > span { gap: 4px; }

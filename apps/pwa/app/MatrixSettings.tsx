@@ -1,6 +1,6 @@
 "use client";
 
-import { computerUpdateSummary } from "./computerUpdateSummary";
+import { computerUserState } from "./computerUserState";
 import type { GatewayUpdateNodeRuntime, GatewayUpdateActiveAction } from "./GatewayUpdateDialog";
 import { computerRepresentatives } from "./computerPresentation";
 import type { GatewayDeploymentStatus } from "@malink/protocol";
@@ -734,7 +734,11 @@ function MatrixSettingsDialog({
                 const updateAvailable = Boolean(
                   gatewayRelease && gateway.buildId && gateway.buildId !== gatewayRelease.buildId,
                 );
-                const updateSummary = computerUpdateSummary(gatewayUpdateRuntimeByNode[gatewayProfileId], gatewayUpdateActiveModesByNode[gatewayProfileId]);
+                const userState = computerUserState({ connected: status === "connected", now: gatewayLivenessNow,
+                  liveness: livenessValue, runtime: gatewayUpdateRuntimeByNode[gatewayProfileId],
+                  action: gatewayUpdateActiveModesByNode[gatewayProfileId], currentBuild: gateway.buildId,
+                  targetBuild: gatewayUpdateDiscoveryError ? undefined : gatewayRelease?.buildId,
+                  deployment: computerDeployments.find(deployment => deployment.active.gatewayNodeId === gatewayProfileId) });
                 const restartRuntime = gatewayRestartRuntimeByNode[gatewayProfileId]
                   ?? { state: "idle" as const };
                 const restartBusy = restartRuntime.state === "requesting" ||
@@ -757,29 +761,17 @@ function MatrixSettingsDialog({
                           {gateway.projectCount === 1 ? "project" : "projects"}
                         </small>
                       </span>
-                      <span
-                        className={
-                          `gateway-profile-liveness gateway-profile-liveness-${liveness.state}` +
-                          (liveness.state === "unreachable"
-                            ? noReply.persistent
-                              ? " gateway-profile-liveness-attention"
-                              : " gateway-profile-liveness-timeout"
-                            : "")
-                        }
+                      {!expandedComputer && <span
+                        className={`gateway-profile-liveness computer-user-state-${userState.tone}`}
                         aria-live="polite"
                         title={liveness.detail}
                       >
                         <i aria-hidden="true" />
-                        <strong>{liveness.label}</strong>
-                      </span>
+                        <strong>{userState.title}</strong>
+                      </span>}
                     </div>
                     {!expandedComputer && <div className="gateway-profile-software">
-                      <span>
-                        <strong>{updateSummary ?? (!gatewayRelease || gatewayUpdateDiscoveryError
-                          ? "Latest version not confirmed"
-                          : updateAvailable ? "Update available" : gateway.buildId ? "Up to date" : "Version not reported")}</strong>
-                      </span>
-                      {onUpdateComputer && updateAvailable && !updateSummary && liveness.state === "online" && gateway.onlineUpdate && targetProjectId && !gatewayUpdateDiscoveryError && (
+                      {onUpdateComputer && updateAvailable && userState.showUpdate && !userState.failed && !userState.preparing && !userState.waiting && !userState.ready && !userState.switching && gateway.onlineUpdate && targetProjectId && !gatewayUpdateDiscoveryError && (
                         <button type="button" disabled={status !== "connected" || Boolean(gatewayUpdateActiveModesByNode[gatewayProfileId])}
                           onClick={() => { setExpandedComputer(gatewayProfileId); onExpandComputer?.(gatewayProfileId); onUpdateComputer(gatewayProfileId); }}>Update</button>
                       )}
@@ -794,8 +786,8 @@ function MatrixSettingsDialog({
                     </div>}
                     {expandedComputer === gatewayProfileId && <div className="computer-details">
                       {renderGatewayDetails?.(gatewayProfileId)}
-                      <section className="computer-maintenance" aria-label="Computer settings">
-                        <h3>Computer</h3>
+                      <details className="computer-maintenance" aria-label="Computer settings">
+                        <summary>Manage this computer</summary>
                         {!editing && <div className="computer-option-row"><span><strong>Name</strong><small>{gateway.gatewayName}</small></span><button type="button" disabled={busy || !gatewayManagementReady || !targetProjectId} title={targetProjectId ? `Rename ${gatewayIdentity.label}` : "This Gateway has no available project route"} onClick={() => { setEditingGatewayNodeId(gatewayProfileId); setGatewayNameDraft(gateway.gatewayName); }}>Rename</button></div>}
                     <div className="gateway-profile-restart">
                       <span>
@@ -997,7 +989,7 @@ function MatrixSettingsDialog({
                         </button>
                       </span>
                     )}
-                      </section>
+                      </details>
                     </div>}
                   </div>
                 );

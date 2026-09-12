@@ -40,7 +40,7 @@ function Fixture() {
     onRestartGateway: (id: string, project: string, mode: string) => { (window as any).restart = { id, project, mode }; setRestart({ [id]: { state: "waiting" } }); },
     onCheckGatewayLiveness: () => setOffline(false),
     onExportDiagnostics: () => { (window as any).exported = true; },
-    renderGatewayDetails: (id: string) => <GatewayUpdateDialog key={id} open embedded connected release={release} nodes={[id === "mac" ? second : { ...node, state: active === "v2" ? "current" : "available" }]} runtimeByNode={runtime} activeGatewayNodeIds={new Set()}
+    renderGatewayDetails: (id: string) => <GatewayUpdateDialog key={id} open embedded connected release={release} livenessByNode={{ tokyo: { state: offline ? "unreachable" : "online", lastVerifiedAt: offline ? 1 : Date.now() }, mac: { state: "online", lastVerifiedAt: Date.now() } }} nodes={[id === "mac" ? second : { ...node, state: active === "v2" ? "current" : "available" }]} runtimeByNode={runtime} activeGatewayNodeIds={new Set()}
       onClose={noop} onStart={(target) => { (window as any).updatedNode = target.gatewayNodeId; if (target.gatewayNodeId === "mac") setSecondPhase("agent_running"); else setPhase(phase === "staged" ? "committed" : "agent_running"); }}
       onCheckVersions={(target) => { if (target.gatewayNodeId === "mac") { setSecondChecked(Date.now()); return; } (window as any).checks = ((window as any).checks ?? 0) + 1; setChecked(Date.now()); }}
       onSelectVersion={(_, id) => { (window as any).selectedVersion = id; setActive(id); setPhase("committed"); }}

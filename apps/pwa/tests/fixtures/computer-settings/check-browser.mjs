@@ -49,6 +49,7 @@ try {
   assert.deepEqual(errors, []);
   await page.getByRole('heading', { name: 'Previous version' }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: `/tmp/malink-settings-qa/settings-${width}.png` });
+  await page.getByText('Manage this computer', { exact: true }).click();
   await page.getByRole('button', { name: 'Rename', exact: true }).click();
   await page.getByRole('textbox', { name: 'Custom name' }).fill('Home computer');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
