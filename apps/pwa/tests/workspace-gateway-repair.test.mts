@@ -181,7 +181,7 @@ test("offers ordinary-user restore and removal paths for an unavailable computer
   }));
 
   assert.match(html, /2 projects are unavailable/);
-  assert.match(html, /Start Malink on this computer to restore it automatically/);
+  assert.match(html, /Open Malink Gateway Host on this computer first/);
   assert.match(html, /Add this computer again/);
   assert.match(html, /Continue without this computer/);
   assert.doesNotMatch(html, /diagnostic|command ID|directory revision/i);
@@ -203,7 +203,7 @@ test("explains the safety prerequisite when no other computer can sign removal",
     async onRetire() {},
   }));
 
-  assert.match(html, /Another connected computer is required/);
+  assert.match(html, /Connect another Workspace computer to enable removal/);
   assert.match(html, /Continue without this computer[^<]*<\/button>/);
   assert.match(html, /disabled=""/);
 });
@@ -224,7 +224,7 @@ test("offers the effective Gateway update action instead of a removal that canno
     async onRetire() {},
   }));
 
-  assert.match(html, /Gateway version cannot safely complete this removal/);
+  assert.match(html, /Update another online Gateway before removing this computer/);
   assert.match(html, /View Gateway update options/);
   assert.match(html, /Continue without this computer[^<]*<\/button>/);
   assert.match(html, /disabled=""/);

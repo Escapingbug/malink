@@ -10,28 +10,28 @@ const base = { open: true, embedded: true, connected: true, release: { releaseId
   livenessByNode: { mac: { state: "online" as const, lastVerifiedAt: Date.now() } },
   onClose() {}, onStart() {}, onPromote() {}, onDiscard() {}, onOpenProject() {}, onOpenSession() {}, onArchiveSession() {}, onExportDiagnostics() {}, onSelectVersion() {}, onCheckVersions() {} };
 
-test("completed dual-track update renders without a legacy deployment and keeps the update session", () => {
+test("completed dual-track update exposes version and activity destinations without dumping their controls", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, { ...base, runtimeByNode: { mac: { state: "online", maintenanceSessionId: "update-session", status: { version: 1, updatedAt: 1, currentBuildId: "new", phase: "committed", executionTracks: tracks } } } }));
-  assert.match(html, /Switch to retained version old/);
-  assert.match(html, /View update session/);
+  assert.match(html, /Versions/);
+  assert.match(html, /Update activity/);
   assert.match(html, /No action needed/);
   assert.doesNotMatch(html, /role="dialog"|Check available versions|Start update session<\/button>/);
 });
 
 test("release discovery failure cannot hide independent retained-version controls", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, { ...base, release: null, runtimeByNode: { mac: { state: "online", status: { version: 1, updatedAt: 1, currentBuildId: "new", phase: "idle", executionTracks: tracks } } } }));
-  assert.match(html, /Switch to retained version old/);
-  assert.match(html, /Not confirmed/);
+  assert.match(html, /Installed version and rollback/);
+  assert.match(html, /Connection &amp; recovery/);
   assert.doesNotMatch(html, /Start update session<\/button>/);
 });
 
-test("embedded management keeps technical state and secondary actions collapsed", () => {
+test("embedded management uses task destinations instead of hidden legacy disclosures", () => {
   const html = renderToStaticMarkup(createElement(GatewayUpdateDialog, { ...base, runtimeByNode: {mac:{state:"online",status:{version:1,updatedAt:1,phase:"committed",currentBuildId:"new",executionTracks:tracks}}} }));
   const visible = html.slice(0, html.indexOf('<details class="computer-update-advanced"'));
   assert.match(visible, /Available/);
   assert.doesNotMatch(visible, /Execution tracks|Current build|Target build|View update session|Available release/);
-  assert.match(html, /<details class="computer-update-advanced">/);
-  assert.match(html, /Switch to retained version old/);
+  assert.doesNotMatch(html, /<details|Switch to retained version old/);
+  assert.match(html, /aria-haspopup="dialog"/);
 });
 
 test("embedded preparation is calm progress without a second update action", () => {
@@ -47,5 +47,5 @@ test("embedded signed completion does not become a failed install after status c
   const visible = html.slice(0, html.indexOf('<details class="computer-update-advanced"'));
   assert.match(visible, /Available/);
   assert.doesNotMatch(visible, /No reply|failed|Retry update/);
-  assert.match(html, /Last check did not succeed/);
+  assert.match(html, /Connection &amp; recovery/);
 });

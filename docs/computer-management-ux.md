@@ -22,8 +22,20 @@ need to understand the Gateway supervisor, Matrix journal or deployment phases.
   that the computer is definitely offline.
 - This is a projection of existing evidence, not another polling or retry owner.
   No additional Matrix traffic or protocol versions are introduced.
+- Do not place the old control panel inside a disclosure. Versions, update
+  activity, connection recovery, rename, restart and removal are separate task
+  panels with a common visual system and one clear task per surface.
+- All levels, including failure and confirmation screens, use designed buttons,
+  spacing and readable typography. Raw server explanations belong only in an
+  explicit technical-record panel. Destructive consequences must remain visible
+  before consent; shortening copy must not conceal history loss or interrupted work.
+- Phone panels use bottom sheets; desktop panels use a bounded centered surface.
+  Background controls are inert, Escape closes only the top panel, and closing
+  restores focus. Panels can close without canceling durable in-flight actions.
 
 Verification: pure state scenarios plus the real React settings fixture at phone
 and desktop sizes. Exercise two independent computers, return from update records,
-rename, restart consent, retained-version consent and diagnostic export. A fixture
+rename, restart consent, retained-version consent, removal prerequisites and
+confirmation, diagnostic export, nested focus and background isolation. Inspect
+screenshots of every opened task, not just the default computer list. A fixture
 does not constitute an online Gateway update or native Android end-to-end test.

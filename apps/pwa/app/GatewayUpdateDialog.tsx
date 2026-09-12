@@ -18,6 +18,7 @@ import type { GatewayNodeLiveness } from "./gatewayNodeLiveness";
 import { gatewayProjectOwner } from "./projectCatalog";
 import { gatewayUpdateRecoveryAction } from "./gatewayUpdateRecovery";
 import { computerUserState } from "./computerUserState";
+import { ComputerActionDialog, ComputerActionPanel } from "./ComputerActionPanel";
 
 export type GatewayUpdateNodeRuntime = {
   state: "unchecked" | "checking" | "unreachable" | "online" | "starting" | "error";
@@ -306,44 +307,61 @@ function GatewayUpdateDialogContent({
                           onClick={() => onStart(node, "when_idle")}>{active ? "Working…" : stagedPublishedRelease ? forwardOnlyConfirmation ? "Review installation" : "Install when idle" : knownUpdateFailure ? "Retry update" : "Update"}</button>
                       : null}
                   </div>
-                  {candidateTrial && completionConfirmationNodeId === node.gatewayNodeId && <div className="gateway-update-force-confirmation">
-                    <strong>Install when running tasks finish?</strong>
+                  {candidateTrial && completionConfirmationNodeId === node.gatewayNodeId && <ComputerActionDialog title="Install when running tasks finish?" onClose={() => setCompletionConfirmationNodeId(null)}>
                     <p>The new version will take over this computer's conversations.</p>
                     <button type="button" className="secondary-button" onClick={() => setCompletionConfirmationNodeId(null)}>Cancel</button>
                     <button type="button" className="primary-button" disabled={!connected || active}
                       onClick={() => { setCompletionConfirmationNodeId(null); onPromote(node, "when_idle"); }}>Confirm installation</button>
-                  </div>}
+                  </ComputerActionDialog>}
                 </section>}
-                {embedded && <details className="computer-update-advanced" open={advancedNodes.has(node.gatewayNodeId)}
-                  onToggle={event => { const isOpen = event.currentTarget.open; setAdvancedNodes(current => { const next = new Set(current); if (isOpen) next.add(node.gatewayNodeId); else next.delete(node.gatewayNodeId); return next; }); }}>
-                  <summary>Versions, records & troubleshooting</summary>
-                  {userState.needsConnectionHelp && <section className="computer-connection-help"><h3>Restore the connection</h3><ol><li>On this computer, open Malink Gateway Host and keep the computer awake.</li><li>Check that this computer and your client can access the network.</li><li>After that, use Check again below. If there is still no reply, export diagnostics for support.</li></ol><button type="button" disabled={diagnosticExportBusy} onClick={onExportDiagnostics}>{diagnosticExportBusy ? "Exporting…" : "Export diagnostics"}</button></section>}
-                  {(candidateTrial || ((stagedPublishedRelease || userState.waiting) && !node.blueGreenUpdate)) && <button type="button" disabled={!connected || active} onClick={() => setForceConfirmationNodeId(node.gatewayNodeId)}>Install and restart now…</button>}
-                  <dl className="computer-version-facts">
-                    <div><dt>Installed</dt><dd>{runtime.status?.currentBuildId ?? node.currentBuildId ?? "Not reported"}</dd></div>
-                    <div><dt>Latest</dt><dd>{publishedRelease?.buildId ?? "Not confirmed"}</dd></div>
-                  </dl>
-                  <div className="computer-option-row"><span><strong>Computer status</strong><small>{activeMode === "check_versions" ? "Checking…" : runtime.versionCheckError ? "Last check did not succeed." : runtime.versionCheckedAt ? `Checked ${new Date(runtime.versionCheckedAt).toLocaleTimeString()}` : "Not checked yet"}</small></span>
-                    {onCheckVersions && <button type="button" disabled={!connected || active} onClick={() => onCheckVersions(node)}>Check again</button>}</div>
-                  {!statusWasSuperseded && runtime.maintenanceSessionId && node.targetProjectId && <div className="computer-option-row"><span><strong>Update record</strong><small>Agent activity and update results</small></span><button type="button" onClick={() => onOpenSession(node.targetProjectId!, runtime.maintenanceSessionId!)}>View update session</button></div>}
-                  {runtime.status?.executionTracks && <section className="computer-retained-version" aria-label="Retained version">
-                    <h3>Previous version</h3>
-                    <p>{runtime.status.executionTracks.standbyRelease ?? "No retained version reported."}</p>
-                    {onSelectVersion && ["steady", "attention"].includes(runtime.status.executionTracks.phase) && [...new Set([runtime.status.executionTracks.standbyRelease, ...(runtime.status.executionTracks.phase === "attention" ? [runtime.status.executionTracks.activeRelease, runtime.status.executionTracks.targetRelease] : [])])].filter((id): id is string => Boolean(id)).map(id => <button key={id} type="button" disabled={!connected || active} onClick={() => setVersionSelection({ nodeId: node.gatewayNodeId, releaseId: id, generation: runtime.status!.executionTracks!.generation })}>Switch to retained version {id}</button>)}
-                    {runtime.status.executionTracks.error && <p role="alert">{runtime.status.executionTracks.error}</p>}
-                  </section>}
-                  {versionSelection?.nodeId === node.gatewayNodeId && <div className="gateway-update-force-confirmation" role="group" aria-label="Confirm version switch"><strong>Switch to {versionSelection.releaseId}?</strong><p>Running tasks finish first. Conversations and data stay on this computer.</p><button type="button" onClick={() => setVersionSelection(null)}>Cancel</button><button type="button" disabled={!connected || active || runtime.status?.executionTracks?.generation !== versionSelection.generation} onClick={() => { onSelectVersion?.(node, versionSelection.releaseId, versionSelection.generation); setVersionSelection(null); }}>Confirm switch</button>{runtime.status?.executionTracks?.generation !== versionSelection.generation && <p role="status">The version state changed. Cancel and select a version again.</p>}</div>}
-                  {runtime.versionSwitchError && <p role="alert">{runtime.versionSwitchError}</p>}
-                  {deploymentOwner && !runtime.status?.executionTracks && (deployment.phase !== "steady" || deployment.recovery) && onRecover && <button type="button" disabled={!connected || recoveryBusy} onClick={() => onRecover(node)}>{recoveryBusy ? "Opening repair session…" : "Repair using previous Gateway"}</button>}
-                  {candidateTrial && <button type="button" disabled={!connected || active} onClick={() => onDiscard(node)}>Discard candidate</button>}
-                  {signedUpdateStatus && knownUpdateFailure && <GatewayUpdateFailureHelp gatewayLabel={owner.label} status={signedUpdateStatus} recovery={recovery} onExportDiagnostics={onExportDiagnostics} diagnosticExportBusy={diagnosticExportBusy} />}
-                  {runtime.state === "error" && !signedUpdateStatus && runtime.commandFailureCode && <GatewayUpdateRequestFailureHelp recovery={recovery} onExportDiagnostics={onExportDiagnostics} diagnosticExportBusy={diagnosticExportBusy} />}
-                  {!targetInstalled && maintenanceCleanupAllowed && <>
-                    {runtime.maintenanceSessionId && runtime.maintenanceSessionArchiveAvailable && <button type="button" disabled={!connected || runtime.maintenanceSessionArchiveBusy} onClick={() => onArchiveSession(node, runtime.maintenanceSessionId!)}>{runtime.maintenanceSessionArchiveBusy ? "Removing…" : "Delete failed update session"}</button>}
-                    {runtime.legacyMaintenanceSessionId && runtime.legacyMaintenanceSessionArchiveAvailable && !runtime.legacyMaintenanceSessionArchived && <button type="button" disabled={!connected || runtime.legacyMaintenanceSessionArchiveBusy} onClick={() => onArchiveSession(node, runtime.legacyMaintenanceSessionId!)}>{runtime.legacyMaintenanceSessionArchiveBusy ? "Removing…" : "Delete old update session"}</button>}
-                  </>}
-                  <details className="computer-raw-status"><summary>Technical update status</summary><p>{gatewayUpdateRuntimeStateDetail(runtime, node, release, connected, activeMode)}</p>{runtime.versionCheckError && <p>{runtime.versionCheckError}</p>}</details>
-                </details>}
+                {embedded && <nav className="computer-action-menu" aria-label="Update management">
+                  <ComputerActionPanel title="Versions" subtitle="Installed version and rollback" icon="↺">
+                    <dl className="computer-panel-facts">
+                      <div><dt>Installed</dt><dd>{runtime.status?.currentBuildId ?? node.currentBuildId ?? "Not reported"}</dd></div>
+                      <div><dt>Latest</dt><dd>{publishedRelease?.buildId ?? "Not confirmed"}</dd></div>
+                    </dl>
+                    {runtime.status?.executionTracks?.standbyRelease
+                      ? <><h3>Previous version</h3><p className="computer-code">{runtime.status.executionTracks.standbyRelease}</p><p>Switch back if this version is not working. Compatibility is checked before switching.</p></>
+                      : <p>No previous version is available.</p>}
+                    {onSelectVersion && runtime.status?.executionTracks && ["steady", "attention"].includes(runtime.status.executionTracks.phase) && [...new Set([runtime.status.executionTracks.standbyRelease, ...(runtime.status.executionTracks.phase === "attention" ? [runtime.status.executionTracks.activeRelease, runtime.status.executionTracks.targetRelease] : [])])].filter((id): id is string => Boolean(id)).map(id => <button key={id} type="button" className="computer-choice" disabled={!connected || active} onClick={() => setVersionSelection({ nodeId: node.gatewayNodeId, releaseId: id, generation: runtime.status!.executionTracks!.generation })}><span>Use this version</span><small>{id}</small><span aria-hidden="true">›</span></button>)}
+                    {runtime.versionSwitchError && <p role="alert">The switch was not confirmed. Check the connection before trying again.</p>}
+                  </ComputerActionPanel>
+                  <ComputerActionPanel title="Update activity" subtitle="Progress and the Agent's report" icon="↗">
+                    <p className="computer-panel-status">{userState.title}</p><p>{userState.description}</p>
+                    {!statusWasSuperseded && runtime.maintenanceSessionId && node.targetProjectId
+                      ? <button type="button" className="primary-button" onClick={() => onOpenSession(node.targetProjectId!, runtime.maintenanceSessionId!)}>View update session</button>
+                      : <p>No update session is available for this computer.</p>}
+                    {(candidateTrial || (canRequestUpdate && (stagedPublishedRelease || userState.waiting) && !node.blueGreenUpdate)) && <button type="button" className="secondary-button" disabled={!connected || active} onClick={() => setForceConfirmationNodeId(node.gatewayNodeId)}>Install and restart now…</button>}
+                    {candidateTrial && <ComputerActionPanel title="Discard prepared update" icon="×" danger><p>The current version stays installed. The prepared candidate will be discarded.</p><button type="button" className="danger-button" disabled={!connected || active} onClick={() => onDiscard(node)}>{activeMode === "discard" ? "Discarding…" : "Discard candidate"}</button></ComputerActionPanel>}
+                    {!targetInstalled && maintenanceCleanupAllowed && <>
+                      {runtime.maintenanceSessionId && runtime.maintenanceSessionArchiveAvailable && <ComputerActionPanel title="Remove update record" icon="×" danger><p>Archive this completed or failed maintenance session. Installed software is unchanged.</p><button type="button" className="danger-button" disabled={!connected || runtime.maintenanceSessionArchiveBusy} onClick={() => onArchiveSession(node, runtime.maintenanceSessionId!)}>{runtime.maintenanceSessionArchiveBusy ? "Removing…" : "Delete failed update session"}</button></ComputerActionPanel>}
+                      {runtime.legacyMaintenanceSessionId && runtime.legacyMaintenanceSessionArchiveAvailable && !runtime.legacyMaintenanceSessionArchived && <ComputerActionPanel title="Remove old update record" icon="×" danger><p>Only this computer's old maintenance session will be archived.</p><button type="button" className="danger-button" disabled={!connected || runtime.legacyMaintenanceSessionArchiveBusy} onClick={() => onArchiveSession(node, runtime.legacyMaintenanceSessionId!)}>{runtime.legacyMaintenanceSessionArchiveBusy ? "Removing…" : "Delete old update session"}</button></ComputerActionPanel>}
+                    </>}
+                  </ComputerActionPanel>
+                  <ComputerActionPanel title="Connection & recovery" subtitle="Restore access or get help" icon="?"
+                    open={advancedNodes.has(node.gatewayNodeId)} onOpenChange={open => setAdvancedNodes(current => { const next = new Set(current); if (open) next.add(node.gatewayNodeId); else next.delete(node.gatewayNodeId); return next; })}>
+                    <p className="computer-panel-status">{userState.availability}</p>
+                    {userState.needsConnectionHelp ? <ol className="computer-recovery-steps"><li>Open Malink Gateway Host on this computer and keep it awake.</li><li>Check its network connection, then check again below.</li></ol>
+                      : knownUpdateFailure || runtime.commandFailureCode ? <p>{recovery.kind === "retry" ? "A temporary problem interrupted the update. You can try again."
+                        : recovery.kind === "external" ? "This update needs work on the computer itself. Open its update session for the required steps."
+                        : "The update needs attention. Open its report to find the cause; repeating it may not help."}</p>
+                      : <p>No recovery is needed. You can check this computer's connection here.</p>}
+                    <div className="computer-panel-buttons">
+                      {userState.needsConnectionHelp || !knownUpdateFailure ? onCheckVersions && <button type="button" className="primary-button" disabled={!connected || active} onClick={() => onCheckVersions(node)}>{activeMode === "check_versions" ? "Checking…" : "Check again"}</button>
+                        : updateActionAvailable && publishedRelease && node.state === "available" && !deploymentInProgress ? <button type="button" className="primary-button" disabled={!connected || active} onClick={() => onStart(node, "when_idle")}>Retry update</button>
+                        : runtime.maintenanceSessionId && node.targetProjectId ? <button type="button" className="primary-button" onClick={() => onOpenSession(node.targetProjectId!, runtime.maintenanceSessionId!)}>View update session</button> : null}
+                      {deploymentOwner && !runtime.status?.executionTracks && (deployment.phase !== "steady" || deployment.recovery) && onRecover && <button type="button" disabled={!connected || recoveryBusy} onClick={() => onRecover(node)}>{recoveryBusy ? "Opening repair session…" : "Repair using previous Gateway"}</button>}
+                    </div>
+                    <p role="status" className="computer-panel-caption">{activeMode === "check_versions" ? "Waiting for the computer to reply." : runtime.versionCheckError ? "No reply was confirmed. A check does not repair the computer." : runtime.versionCheckedAt ? `Last checked ${new Date(runtime.versionCheckedAt).toLocaleTimeString()}` : ""}</p>
+                    <ComputerActionPanel title="Send diagnostics" subtitle="Export a report for support" icon="↓"><p>Export the report and share it with support if the steps above did not restore access.</p><button type="button" className="primary-button" disabled={diagnosticExportBusy} onClick={onExportDiagnostics}>{diagnosticExportBusy ? "Exporting…" : "Export diagnostics"}</button></ComputerActionPanel>
+                    <ComputerActionPanel title="Technical record" subtitle="Raw status for troubleshooting" icon="≡"><pre className="computer-technical-record">{gatewayUpdateRuntimeStateDetail(runtime, node, release, connected, activeMode)}{runtime.versionCheckError ? `\n${runtime.versionCheckError}` : ""}{runtime.versionSwitchError ? `\n${runtime.versionSwitchError}` : ""}{runtime.status?.executionTracks?.error ? `\n${runtime.status.executionTracks.error}` : ""}</pre></ComputerActionPanel>
+                  </ComputerActionPanel>
+                </nav>}
+                {embedded && versionSelection?.nodeId === node.gatewayNodeId && <ComputerActionDialog title="Switch version?" onClose={() => setVersionSelection(null)}>
+                  <p>Running tasks finish first. Your conversations and files stay on this computer.</p><p className="computer-code">{versionSelection.releaseId}</p>
+                  <div className="computer-panel-buttons"><button type="button" className="secondary-button" onClick={() => setVersionSelection(null)}>Cancel</button><button type="button" className="primary-button" disabled={!connected || active || runtime.status?.executionTracks?.generation !== versionSelection.generation} onClick={() => { onSelectVersion?.(node, versionSelection.releaseId, versionSelection.generation); setVersionSelection(null); }}>Confirm switch</button></div>
+                  {runtime.status?.executionTracks?.generation !== versionSelection.generation && <p role="status">The available versions changed. Go back and choose again.</p>}
+                </ComputerActionDialog>}
                 {!embedded && <details className="computer-update-advanced" open
                   onToggle={event => { const open = event.currentTarget.open; setAdvancedNodes(current => {
                     if (current.has(node.gatewayNodeId) === open) return current;
@@ -739,7 +757,11 @@ function GatewayUpdateDialogContent({
                   )}
                 </div>
                 </details>}
-                {forceConfirming && (
+                {embedded && forceConfirming && <ComputerActionDialog title="Install and restart now?" onClose={() => setForceConfirmationNodeId(null)}>
+                  <p>Active Agent turns on this computer will stop. Malink will install the prepared version and reconnect. Queued commands stay saved.</p>
+                  <div className="computer-panel-buttons"><button type="button" className="secondary-button" onClick={() => setForceConfirmationNodeId(null)}>Keep working</button><button type="button" className="danger-button" disabled={!connected || active || (!candidateTrial && !canRequestUpdate)} onClick={() => { setForceConfirmationNodeId(null); if (candidateTrial) onPromote(node, "force"); else onStart(node, "force"); }}>Stop work and restart</button></div>
+                </ComputerActionDialog>}
+                {!embedded && forceConfirming && (
                   <div
                     ref={forceConfirmationRef}
                     className="gateway-update-force-confirmation"

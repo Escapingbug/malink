@@ -1,6 +1,7 @@
 "use client";
 
 import { computerUserState } from "./computerUserState";
+import { ComputerActionDialog, ComputerActionPanel } from "./ComputerActionPanel";
 import type { GatewayUpdateNodeRuntime, GatewayUpdateActiveAction } from "./GatewayUpdateDialog";
 import { computerRepresentatives } from "./computerPresentation";
 import type { GatewayDeploymentStatus } from "@malink/protocol";
@@ -50,11 +51,9 @@ import {
 } from "./nativeUpdatePolling";
 import { gatewayUpdateSettingsPresentation } from "./gatewayUpdateSettingsPresentation";
 import {
-  gatewayNoReplyPresentation,
   gatewayNodeLivenessPresentation,
   type GatewayNodeLiveness,
 } from "./gatewayNodeLiveness";
-import { GatewayNoReplyHelp } from "./GatewayNoReplyHelp";
 import { workspaceGatewayRepairPlan } from "./workspaceGatewayRepair";
 import {
   SettingsNavigation,
@@ -723,14 +722,6 @@ function MatrixSettingsDialog({
                   livenessValue,
                   gatewayLivenessNow,
                 );
-                const noReply = gatewayNoReplyPresentation({
-                  gatewayLabel: gatewayIdentity.label,
-                  consecutiveNoReplies: livenessValue.consecutiveNoReplies,
-                });
-                const lastVerified = gatewayLastVerifiedText(
-                  gatewayNodeLivenessById[gatewayProfileId]?.lastVerifiedAt,
-                  gatewayLivenessNow,
-                );
                 const updateAvailable = Boolean(
                   gatewayRelease && gateway.buildId && gateway.buildId !== gatewayRelease.buildId,
                 );
@@ -786,210 +777,45 @@ function MatrixSettingsDialog({
                     </div>}
                     {expandedComputer === gatewayProfileId && <div className="computer-details">
                       {renderGatewayDetails?.(gatewayProfileId)}
-                      <details className="computer-maintenance" aria-label="Computer settings">
-                        <summary>Manage this computer</summary>
-                        {!editing && <div className="computer-option-row"><span><strong>Name</strong><small>{gateway.gatewayName}</small></span><button type="button" disabled={busy || !gatewayManagementReady || !targetProjectId} title={targetProjectId ? `Rename ${gatewayIdentity.label}` : "This Gateway has no available project route"} onClick={() => { setEditingGatewayNodeId(gatewayProfileId); setGatewayNameDraft(gateway.gatewayName); }}>Rename</button></div>}
-                    <div className="gateway-profile-restart">
-                      <span>
-                        <strong>Gateway service</strong>
-                        <small>Restart to apply Provider changes.</small>
-                      </span>
-                      {!restartConfirming && (
-                        <button
-                          type="button"
-                          disabled={busy || restartBusy || !canRestart}
-                          title={!gateway.onlineUpdate
-                            ? "Update this Gateway Host before using remote restart."
-                            : !targetProjectId
-                              ? "This Gateway has no synchronized project route."
-                              : liveness.state !== "online"
-                                ? "Check status first so Malink can verify this Gateway is online."
-                                : "Restart this Gateway process"}
-                          onClick={() => setRestartConfirmationNodeId(gatewayProfileId)}
-                        >
-                          {restartRuntime.state === "requesting"
-                            ? "Sending…"
-                            : restartRuntime.state === "waiting"
-                              ? "Waiting for idle…"
-                              : restartRuntime.state === "restarting"
-                                ? "Restarting…"
-                                : restartRuntime.state === "failed"
-                                  ? "Retry restart"
-                                  : restartRuntime.state === "ready"
-                                    ? "Restart again"
-                                    : "Restart Gateway"}
-                        </button>
-                      )}
-                    </div>
-                    {restartConfirming && targetProjectId && (
-                      <div className="gateway-restart-confirmation" role="alert">
-                        <span>
-                          <strong>Restart {gatewayIdentity.label}?</strong>
-                          <small>
-                            New sessions will be unavailable briefly. Waiting for idle preserves
-                            active work; restarting now interrupts active Agent turns.
-                          </small>
-                        </span>
-                        <span>
-                          <button
-                            type="button"
-                            className="connect-button"
-                            disabled={busy || restartBusy}
-                            onClick={() => {
-                              setRestartConfirmationNodeId(null);
-                              onRestartGateway(gatewayProfileId, targetProjectId, "when_idle");
-                            }}
-                          >
-                            Restart when idle
-                          </button>
-                          <button
-                            type="button"
-                            className="danger-button"
-                            disabled={busy || restartBusy}
-                            onClick={() => {
-                              setRestartConfirmationNodeId(null);
-                              onRestartGateway(gatewayProfileId, targetProjectId, "force");
-                            }}
-                          >
-                            Restart now
-                          </button>
-                          <button
-                            type="button"
-                            disabled={busy || restartBusy}
-                            onClick={() => setRestartConfirmationNodeId(null)}
-                          >
-                            Cancel
-                          </button>
-                        </span>
-                      </div>
-                    )}
-                    {restartRuntime.state !== "idle" && (
-                      <p
-                        className={`gateway-restart-status gateway-restart-status-${restartRuntime.state}`}
-                        role={restartRuntime.state === "failed" ? "alert" : "status"}
-                        aria-live="polite"
-                      >
-                        <strong>{gatewayRestartStateLabel(restartRuntime.state)}</strong>{" "}
-                        {restartRuntime.detail ?? restartRuntime.status?.detail ??
-                          gatewayRestartStateDetail(restartRuntime.state)}
-                      </p>
-                    )}
-                    <details className="gateway-profile-details computer-connection-details">
-                      <summary>Connection & diagnostics</summary>
-                      <dl>
-                        <div>
-                          <dt>Build</dt>
-                          <dd title={gateway.buildId ?? "This Gateway did not report a build ID"}>
-                            {gateway.buildId ?? "Not reported"}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>Node</dt>
-                          <dd title={gatewayProfileId}>{gatewayIdentity.shortId}</dd>
-                        </div>
-                      </dl>
-                      <p>
-                        {liveness.detail}{lastVerified ? ` ${lastVerified}` : ""}
-                      </p>
-                    {livenessValue.state === "unreachable" && (
-                      <GatewayNoReplyHelp
-                        gatewayLabel={gatewayIdentity.label}
-                        consecutiveNoReplies={livenessValue.consecutiveNoReplies}
-                        onExportDiagnostics={onExportDiagnostics}
-                        diagnosticExportBusy={diagnosticExportBusy}
-                      />
-                    )}
-                      {livenessValue.state !== "unreachable" && <button type="button" disabled={diagnosticExportBusy} onClick={onExportDiagnostics}>{diagnosticExportBusy ? "Exporting…" : "Export diagnostics"}</button>}
-                    </details>
-                    {(Boolean(repairNode?.unavailableProjectIds.length) ||
-                      livenessValue.state === "unreachable") && repairNode && (
-                      <details className="computer-removal"><summary>Remove or reconnect this computer</summary><GatewayRecoveryCard
-                        gatewayNodeId={gatewayProfileId}
-                        gatewayLabel={gatewayIdentity.label}
-                        projectCount={gateway.projectCount}
-                        unavailableProjectCount={repairNode.unavailableProjectIds.length}
-                        authorityProjectId={repairNode.retirementAuthorityProjectId}
-                        retirementBlocker={repairNode.retirementBlocker}
-                        busy={busy || gatewayRetirementBusy !== null}
-                        retiring={gatewayRetirementBusy === gatewayProfileId}
-                        error={gatewayRetirementError?.gatewayNodeId === gatewayProfileId
-                          ? gatewayRetirementError.detail
-                          : null}
-                        onAdd={() => setAddingGateway(true)}
-                        onReviewGatewayUpdates={onReviewGatewayUpdates}
-                        onRetire={onRetireGateway}
-                      /></details>
-                    )}
-                    {editing && (
-                      <form
-                        className="gateway-profile-rename"
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          if (!targetProjectId || !gatewayNameDraft.trim()) return;
-                          void onRenameGateway(
-                            gatewayProfileId,
-                            gatewayNameDraft.trim(),
-                            targetProjectId,
-                          ).then(() => setEditingGatewayNodeId(null)).catch(() => undefined);
-                        }}
-                      >
-                        <label>
-                          <span>Custom name</span>
-                          <input
-                            value={gatewayNameDraft}
-                            maxLength={128}
-                            autoComplete="off"
-                            disabled={gatewayProfileBusy === gatewayProfileId}
-                            onChange={(event) => setGatewayNameDraft(event.target.value)}
-                          />
-                        </label>
-                        <span>
-                          <button
-                            type="submit"
-                            className="connect-button"
-                            disabled={
-                              gatewayProfileBusy === gatewayProfileId ||
-                              !gatewayNameDraft.trim() ||
-                              gatewayNameDraft.trim() === gateway.gatewayName
-                            }
-                          >
-                            {gatewayProfileBusy === gatewayProfileId ? "Saving…" : "Save"}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={gatewayProfileBusy === gatewayProfileId}
-                            onClick={() => setEditingGatewayNodeId(null)}
-                          >
-                            Cancel
-                          </button>
-                        </span>
-                        {gatewayProfileError && (
-                          <em role="alert">{gatewayProfileError}</em>
-                        )}
-                      </form>
-                    )}
-                    {!editing && (
-                      <span className="gateway-profile-actions">
-                        <button
-                          type="button"
-                          disabled={
-                            busy ||
-                            !gatewayManagementReady ||
-                            !liveCheckAvailable ||
-                            !liveness.canCheck
-                          }
-                          title={liveness.detail}
-                          onClick={() => onCheckGatewayLiveness(gatewayProfileId)}
-                        >
-                          {liveness.state === "checking"
-                            ? "Checking…"
-                            : liveness.state === "unreachable"
-                              ? noReply.retryLabel
-                              : "Check status"}
-                        </button>
-                      </span>
-                    )}
-                      </details>
+                      <nav className="computer-action-menu" aria-label="Computer management">
+                        <ComputerActionPanel title="Rename" subtitle={gateway.gatewayName} icon="✎" open={editing}
+                          onOpenChange={open => { setEditingGatewayNodeId(open ? gatewayProfileId : null); if (open) setGatewayNameDraft(gateway.gatewayName); }}>
+                          <form className="computer-name-form" onSubmit={event => {
+                            event.preventDefault();
+                            if (!targetProjectId || !gatewayNameDraft.trim() || busy || !gatewayManagementReady) return;
+                            void onRenameGateway(gatewayProfileId, gatewayNameDraft.trim(), targetProjectId).then(() => setEditingGatewayNodeId(null)).catch(() => undefined);
+                          }}>
+                            <label>Computer name<input value={gatewayNameDraft} maxLength={128} autoComplete="off" disabled={gatewayProfileBusy === gatewayProfileId} onChange={event => setGatewayNameDraft(event.target.value)} /></label>
+                            <p>Use a name you can recognize on all your devices.</p>
+                            {(!gatewayManagementReady || !targetProjectId) && <p role="status">Reconnect this computer before changing its name.</p>}
+                            <div className="computer-panel-buttons"><button type="button" className="secondary-button" onClick={() => setEditingGatewayNodeId(null)}>Cancel</button><button type="submit" className="primary-button" disabled={busy || !gatewayManagementReady || !targetProjectId || gatewayProfileBusy === gatewayProfileId || !gatewayNameDraft.trim() || gatewayNameDraft.trim() === gateway.gatewayName}>{gatewayProfileBusy === gatewayProfileId ? "Saving…" : "Save"}</button></div>
+                            {gatewayProfileError && <><p role="alert">The name change was not confirmed. Your previous name is kept until the computer replies.</p><ComputerActionPanel title="Rename details" icon="?"><pre className="computer-technical-record">{gatewayProfileError}</pre><button type="button" disabled={diagnosticExportBusy} onClick={onExportDiagnostics}>Export diagnostics</button></ComputerActionPanel></>}
+                          </form>
+                        </ComputerActionPanel>
+                        <ComputerActionPanel title="Restart Gateway" subtitle={restartRuntime.state === "idle" ? "Apply Provider changes" : gatewayRestartStateLabel(restartRuntime.state)} icon="⟳"
+                          open={restartConfirming} onOpenChange={open => setRestartConfirmationNodeId(open ? gatewayProfileId : null)}>
+                          <p>Restart the Gateway service on {gateway.gatewayName}. The computer itself stays on.</p>
+                          {restartRuntime.state !== "idle" && <p className="computer-panel-status" role="status">{gatewayRestartStateLabel(restartRuntime.state)}</p>}
+                          {restartBusy ? <p>You can close this panel. Malink will keep checking the restart.</p> : <>
+                            {!canRestart && <p role="status">Confirm this computer is connected before restarting.</p>}
+                            <button type="button" className="primary-button" disabled={busy || !canRestart} onClick={() => { if (targetProjectId) onRestartGateway(gatewayProfileId, targetProjectId, "when_idle"); }}>Restart when idle</button>
+                            <p className="computer-panel-caption">Running tasks finish first. New sessions may be unavailable briefly.</p>
+                            <ComputerActionPanel title="Restart immediately" subtitle="Interrupt running tasks" icon="!" danger>
+                              <p>Active Agent turns on this computer will stop. New sessions are unavailable until the Gateway reconnects.</p>
+                              <button type="button" className="danger-button" disabled={busy || restartBusy || !canRestart} onClick={() => { if (targetProjectId) onRestartGateway(gatewayProfileId, targetProjectId, "force"); }}>Stop tasks and restart</button>
+                            </ComputerActionPanel>
+                          </>}
+                          {restartRuntime.state === "failed" && <ComputerActionPanel title="Restart details" subtitle="Review the failure or export a report" icon="?"><pre className="computer-technical-record">{restartRuntime.detail ?? restartRuntime.status?.detail ?? gatewayRestartStateDetail(restartRuntime.state)}</pre><button type="button" className="primary-button" disabled={diagnosticExportBusy} onClick={onExportDiagnostics}>Export diagnostics</button></ComputerActionPanel>}
+                        </ComputerActionPanel>
+                        {repairNode && (Boolean(repairNode.unavailableProjectIds.length) || livenessValue.state === "unreachable") && <ComputerActionPanel title="Remove or reconnect" subtitle="Manage an unavailable computer" icon="−" danger>
+                          <GatewayRecoveryCard gatewayNodeId={gatewayProfileId} gatewayLabel={gatewayIdentity.label} projectCount={gateway.projectCount} unavailableProjectCount={repairNode.unavailableProjectIds.length}
+                            authorityProjectId={repairNode.retirementAuthorityProjectId} retirementBlocker={repairNode.retirementBlocker}
+                            busy={busy || gatewayRetirementBusy !== null} retiring={gatewayRetirementBusy === gatewayProfileId}
+                            error={gatewayRetirementError?.gatewayNodeId === gatewayProfileId ? gatewayRetirementError.detail : null}
+                            onAdd={() => { setExpandedComputer(null); onExpandComputer?.(null); setAddingGateway(true); }}
+                            onReviewGatewayUpdates={() => { setExpandedComputer(null); onExpandComputer?.(null); onReviewGatewayUpdates(); }} onRetire={onRetireGateway} />
+                        </ComputerActionPanel>}
+                      </nav>
                     </div>}
                   </div>
                 );
@@ -1409,7 +1235,7 @@ export function GatewayRecoveryCard({
 }) {
   const [confirming, setConfirming] = useState(false);
   return (
-    <section className="gateway-repair-card" aria-live="polite">
+    <section className="computer-removal-options" aria-live="polite">
       <span>
         <strong>
           {unavailableProjectCount > 0
@@ -1418,18 +1244,18 @@ export function GatewayRecoveryCard({
             } unavailable`
             : "This computer needs attention"}
         </strong>
-        <small>
-          Start Malink on this computer to restore it automatically. If it can no longer
-          reconnect, add the computer again or continue without its unavailable projects.
-        </small>
+        <p>
+          Open Malink Gateway Host on this computer first. If it cannot reconnect,
+          choose whether to add it again or remove it from your Workspace.
+        </p>
       </span>
-      <div className="gateway-repair-actions">
-        <button type="button" disabled={busy} onClick={onAdd}>
+      <div className="computer-removal-choices">
+        <button type="button" className="secondary-button" disabled={busy} onClick={onAdd}>
           Add this computer again
         </button>
         <button
           type="button"
-          className="gateway-retire-button"
+          className="secondary-button"
           disabled={busy || !authorityProjectId}
           title={authorityProjectId
             ? `Permanently retire ${gatewayLabel}`
@@ -1442,34 +1268,25 @@ export function GatewayRecoveryCard({
         </button>
       </div>
       {retirementBlocker === "gateway_update_required" && (
-        <div className="gateway-repair-update-required">
-          <em>
-            Another computer is online, but its Gateway version cannot safely complete
-            this removal. Update that Gateway first; Malink will then make this action
-            available.
-          </em>
-          <button type="button" disabled={busy} onClick={onReviewGatewayUpdates}>
+        <div className="computer-removal-prerequisite">
+          <p>
+            Update another online Gateway before removing this computer.
+          </p>
+          <button type="button" className="primary-button" disabled={busy} onClick={onReviewGatewayUpdates}>
             View Gateway update options
           </button>
         </div>
       )}
       {retirementBlocker === "gateway_online_required" && (
-        <em>
-          Another connected computer is required before Malink can safely remove this
-          unavailable one.
-        </em>
+        <p className="computer-panel-caption">
+          Connect another Workspace computer to enable removal.
+        </p>
       )}
       {confirming && (
-        <div className="gateway-retirement-confirmation" role="alert">
-          <strong>Continue without {gatewayLabel}?</strong>
-          <p>
-            Malink will remove its {projectCount} {projectCount === 1 ? "project" : "projects"}
-            {" "}and related conversations from every client. Files on that computer are not
-            deleted. You can add the computer again later, but unavailable Malink history may not
-            return.
-          </p>
-          <span>
-            <button type="button" disabled={retiring} onClick={() => setConfirming(false)}>
+        <ComputerActionDialog title={`Remove ${gatewayLabel}?`} onClose={() => setConfirming(false)}>
+          <ul className="computer-removal-effects"><li>Removes {projectCount} {projectCount === 1 ? "project" : "projects"} and related conversations from every client.</li><li>Files on the computer are not deleted.</li><li>You can add it again, but unavailable history may not return.</li></ul>
+          <div className="computer-panel-buttons">
+            <button type="button" className="secondary-button" onClick={() => setConfirming(false)}>
               Keep Gateway
             </button>
             <button
@@ -1485,9 +1302,9 @@ export function GatewayRecoveryCard({
             >
               {retiring ? "Removing…" : "Remove computer and continue"}
             </button>
-          </span>
-          {error && <em role="alert">{error}</em>}
-        </div>
+          </div>
+          {error && <><p role="alert">Removal was not confirmed. Check that another Workspace computer is connected before retrying.</p><ComputerActionPanel title="Removal details" icon="?"><pre className="computer-technical-record">{error}</pre></ComputerActionPanel></>}
+        </ComputerActionDialog>
       )}
     </section>
   );

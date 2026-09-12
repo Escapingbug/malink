@@ -12972,6 +12972,61 @@ body {
   line-height: 1.45;
 }
 /* Computer management stays inside Settings on desktop and Android. */
+.computer-action-menu { display: grid; gap: 0; margin-top: 12px; }
+.computer-action-entry { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 64px; padding: 14px 4px; border: 0; border-bottom: 1px solid #e8e9ef; border-radius: 0; background: transparent; text-align: left; color: #343747; cursor: pointer; }
+.computer-action-entry > span:nth-child(2) { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.computer-action-entry strong { font-size: 14px; font-weight: 600; }
+.computer-action-entry small { font-size: 12px; color: #7c8291; font-weight: 400; line-height: 1.4; }
+.computer-action-entry > span:last-child { font-size: 22px; color: #969aaa; }
+.computer-action-entry .computer-action-icon { display: grid; place-items: center; width: 34px; height: 34px; flex: 0 0 34px; border-radius: 10px; background: #f1eef9; color: #7963b0; font-size: 19px; }
+.computer-action-entry.is-danger .computer-action-icon { background: #fcf0f0; color: #b15c67; }
+.computer-action-entry:hover { background: #f8f7fc; }
+.computer-action-backdrop { position: fixed; inset: 0; z-index: 400; display: grid; place-items: center; padding: 24px; background: #20233166; backdrop-filter: blur(4px); }
+.computer-action-dialog { display: flex; flex-direction: column; width: min(480px, 100%); max-height: calc(100dvh - 48px); background: #fff; border: 1px solid #eeeef3; border-radius: 20px; box-shadow: 0 24px 80px #20233130; color: #343747; overflow: hidden; }
+.computer-action-dialog > header { display: flex; align-items: center; gap: 10px; padding: 16px; border-bottom: 1px solid #eeeff4; }
+.computer-action-dialog h2 { flex: 1; margin: 0; font-size: 18px; letter-spacing: -.02em; }
+.computer-action-dialog > header button { flex: 0 0 40px; width: 40px; height: 40px; min-height: 40px; border: 0; border-radius: 10px; background: #f5f5f9; color: #6b7081; font-size: 22px; cursor: pointer; }
+.computer-action-body { overflow-y: auto; overscroll-behavior: contain; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+.computer-action-body p { margin: 0; font-size: 14px; line-height: 1.65; color: #696f80; overflow-wrap: anywhere; }
+.computer-action-body h3 { font-size: 14px; margin: 6px 0 0; }
+.computer-action-body button:not(.computer-action-entry) { min-height: 44px; padding: 11px 16px; border: 1px solid #dddfe8; border-radius: 10px; background: #fff; color: #555d70; font-size: 14px; font-weight: 600; cursor: pointer; }
+.computer-action-body button.primary-button { background: #6957d5; border-color: #6957d5; color: white; }
+.computer-action-body button.danger-button, .computer-action-body button.danger-confirm-button { background: #b74658; border-color: #b74658; color: white; }
+.computer-action-body button:disabled { opacity: .45; cursor: default; }
+.computer-panel-buttons { display: flex; flex-wrap: wrap; gap: 10px; }
+.computer-panel-buttons > button { flex: 1; }
+.computer-action-body .computer-panel-status { padding: 14px 16px; background: #f5f4fa; border-radius: 12px; color: #53466c; font-size: 15px; font-weight: 600; }
+.computer-action-body .computer-panel-caption { font-size: 12px; color: #8b90a0; }
+.computer-panel-facts { display: grid; gap: 12px; margin: 0; padding: 16px; background: #f7f8fa; border-radius: 12px; }
+.computer-panel-facts > div { display: grid; gap: 5px; }
+.computer-panel-facts dt { font-size: 11px; color: #888d9b; text-transform: uppercase; letter-spacing: .06em; }
+.computer-panel-facts dd, .computer-action-body .computer-code { margin: 0; overflow-wrap: anywhere; font: 12px/1.6 ui-monospace, monospace; color: #5a6173; }
+.computer-action-body .computer-choice { display: grid; grid-template-columns: 1fr auto; gap: 5px; text-align: left; padding: 16px; }
+.computer-choice small { grid-column: 1; font: 12px/1.5 ui-monospace, monospace; overflow-wrap: anywhere; color: #828898; }
+.computer-choice > span:last-child { grid-row: 1 / 3; grid-column: 2; align-self: center; }
+.computer-technical-record { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 ui-monospace, monospace; background: #f7f8fa; border-radius: 12px; padding: 16px; margin: 0; }
+.computer-recovery-steps { margin: 0; padding-left: 24px; color: #696f80; font-size: 14px; line-height: 1.7; }
+.computer-recovery-steps li + li { margin-top: 12px; }
+.computer-name-form { display: grid; gap: 16px; }
+.computer-name-form label { display: grid; gap: 8px; font-size: 13px; font-weight: 600; }
+.computer-name-form input { width: 100%; box-sizing: border-box; min-height: 48px; padding: 12px; border: 1px solid #dcdfe8; border-radius: 10px; font-size: 16px; color: #343747; background: #fff; }
+.computer-removal-options, .computer-removal-choices, .computer-removal-prerequisite { display: grid; gap: 14px; }
+.computer-removal-options > span { display: grid; gap: 10px; }
+.computer-removal-options strong { font-size: 15px; color: #4a4f60; }
+.computer-removal-prerequisite { border-top: 1px solid #ececf2; padding-top: 16px; }
+.computer-removal-effects { padding-left: 22px; margin: 0; font-size: 14px; color: #686e7f; line-height: 1.7; }
+.computer-removal-effects li + li { margin-top: 12px; }
+.computer-action-body .gateway-repair-card { display: grid; gap: 16px; border: 0; padding: 0; background: transparent; }
+.computer-action-body .gateway-repair-card small, .computer-action-body .gateway-repair-card em { font-size: 13px; line-height: 1.6; color: #747b8c; font-style: normal; }
+.computer-action-body .gateway-repair-actions { display: grid; gap: 10px; }
+.computer-action-body .gateway-retirement-confirmation { padding: 16px; border: 1px solid #efcdd3; border-radius: 12px; background: #fff8f9; display: grid; gap: 14px; }
+.computer-action-body .gateway-retirement-confirmation > span { display: flex; flex-wrap: wrap; gap: 10px; }
+.computer-action-entry:focus-visible, .computer-action-dialog :is(button, input):focus-visible { outline: 2px solid #8067cc; outline-offset: 3px; }
+@media (max-width: 600px) {
+  .computer-action-backdrop { padding: 0; align-items: end; }
+  .computer-action-dialog { width: 100%; max-height: calc(100dvh - env(safe-area-inset-top) - 20px); border-radius: 20px 20px 0 0; padding-bottom: env(safe-area-inset-bottom); }
+  .computer-action-body { padding: 20px; }
+}
 .gateway-profile-card.computer-management-row,
 .gateway-profile-card.computer-management-detail { border: 0; border-radius: 0; box-shadow: none; background: transparent; padding: 20px 0; }
 .gateway-profile-card.computer-management-row { border-bottom: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; }

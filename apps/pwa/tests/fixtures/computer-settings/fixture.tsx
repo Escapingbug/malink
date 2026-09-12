@@ -19,6 +19,8 @@ function Fixture() {
   const [name, setName] = useState(node.gatewayName);
   const [restart, setRestart] = useState<Record<string, any>>({});
   const [offline, setOffline] = useState(false);
+  const [canRemove, setCanRemove] = useState(false);
+  const [retiring, setRetiring] = useState<string | null>(null);
   const runtime = { mac: { state: "online" as const, versionCheckedAt: secondChecked, status: { version: 1 as const, updatedAt: 1, currentBuildId: "v1", targetBuildId: "v2", releaseId: "v2", phase: secondPhase as any } }, tokyo: { state: "online" as const, versionCheckedAt: checked,
     maintenanceSessionId: phase === "idle" ? undefined : "session",
     status: { version: 1 as const, updatedAt: 1, currentBuildId: active, targetBuildId: "v2", releaseId: "v2", phase: phase as any,
@@ -28,15 +30,16 @@ function Fixture() {
     config: { homeserver: "https://example.test", userId: "user", accessToken: "fixture", roomId: "room", gatewayId: "workspace" },
     status: "connected", connectionDetail: null, repairReason: null, error: null, pairingPreview: null, pairingCompletion: null,
     trustedGateway: { gatewayName: "Workspace", gatewayId: "workspace" }, savedGateways: [], activeDeviceCount: 1,
-    gatewayDirectory: { directory: { gateways: [{ ...node, gatewayName: name, workspaceId: "workspace", buildId: active, projects: [{ projectId: "project" }] }, { ...second, workspaceId: "workspace", buildId: "v1", projects: [{ projectId: "mac-project" }] }] } },
+    gatewayDirectory: { directory: { gateways: [{ ...node, gatewayName: name, workspaceId: "workspace", buildId: active, projects: [{ projectId: "project" }] }, { ...second, workspaceId: "workspace", buildId: canRemove ? "gateway-2026.09.12-081840Z-44d8e8a" : "v1", projects: [{ projectId: "mac-project" }] }] } },
     availableProjectIds: ["project", "mac-project"], pendingGatewayEnrollments: [], approvedGatewayEnrollmentIds: new Set(),
-    gatewayEnrollmentBusy: null, gatewayProfileBusy: null, gatewayRetirementBusy: null,
+    gatewayEnrollmentBusy: null, gatewayProfileBusy: null, gatewayRetirementBusy: retiring,
     gatewayNodeLivenessById: { tokyo: { state: offline ? "unreachable" : "online", lastVerifiedAt: Date.now() }, mac: { state: "online", lastVerifiedAt: Date.now() } }, gatewayRestartRuntimeByNode: restart, gatewayLivenessNow: Date.now(),
     gatewayRelease: release, gatewayUpdateAvailableCount: active === "v1" ? 2 : 1, gatewayUpdateNodeCount: 2,
     gatewayUpdateDiscoveryBusy: false, gatewayUpdateDiscoveryError: null, gatewayUpdateRuntimeByNode: runtime,
     updateState: { phase: "idle" }, nativeUpdateState: null, nativeRuntime: null, webPushState: { phase: "idle" },
     onClose: noop, onReviewGatewayUpdates: noop,
     onRenameGateway: async (_: string, value: string) => setName(value),
+    onRetireGateway: (id: string, authority: string) => { (window as any).retirement = {id, authority}; setRetiring(id); return new Promise<void>(resolve => { (window as any).finishRetirement = () => { setRetiring(null); resolve(); }; }); },
     onRestartGateway: (id: string, project: string, mode: string) => { (window as any).restart = { id, project, mode }; setRestart({ [id]: { state: "waiting" } }); },
     onCheckGatewayLiveness: () => setOffline(false),
     onExportDiagnostics: () => { (window as any).exported = true; },
@@ -44,10 +47,12 @@ function Fixture() {
       onClose={noop} onStart={(target) => { (window as any).updatedNode = target.gatewayNodeId; if (target.gatewayNodeId === "mac") setSecondPhase("agent_running"); else setPhase(phase === "staged" ? "committed" : "agent_running"); }}
       onCheckVersions={(target) => { if (target.gatewayNodeId === "mac") { setSecondChecked(Date.now()); return; } (window as any).checks = ((window as any).checks ?? 0) + 1; setChecked(Date.now()); }}
       onSelectVersion={(_, id) => { (window as any).selectedVersion = id; setActive(id); setPhase("committed"); }}
-      onPromote={noop} onDiscard={noop} onOpenProject={noop} onOpenSession={() => setSessionOpen(true)} onArchiveSession={noop} onExportDiagnostics={noop} />,
+      onPromote={noop} onDiscard={noop} onOpenProject={noop} onOpenSession={() => setSessionOpen(true)} onArchiveSession={noop} onExportDiagnostics={() => { (window as any).exported = true; }} />,
   };
   (window as any).setFixturePhase = (value: string) => { setPhase(value); if (value === "committed") setActive("v2"); };
   (window as any).setFixtureOffline = setOffline;
+  (window as any).setFixtureCanRemove = setCanRemove;
+  (window as any).setFixtureSessionOpen = setSessionOpen;
   return <>{sessionOpen ? <main><h1>Update session</h1><p>Preparing version v2</p><button onClick={() => { setRequested(true); setSessionOpen(false); }}>Back to computer settings</button></main> : <MatrixSettings {...props} />}</>;
 }
 const root = createRoot(document.getElementById("root")!);
