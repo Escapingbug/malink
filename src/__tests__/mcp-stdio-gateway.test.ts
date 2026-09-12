@@ -38,7 +38,7 @@ it('boots the Gateway MCP subprocess and delivers an image through the bound ses
         await client.connect(transport)
         expect(client.getInstructions()).toContain('PWA or Android')
         expect((await client.listTools()).tools.map(tool => tool.name).sort())
-            .toEqual(['get_malink_context', 'send_file'])
+            .toEqual(['get_malink_context', 'read_conversation_reference', 'send_file'])
         const context = await client.readResource({ uri: 'malink://session' })
         expect(context.contents[0]).toMatchObject({ text: expect.stringContaining('bound-session') })
         const result = await client.callTool({ name: 'send_file', arguments: {
@@ -49,6 +49,12 @@ it('boots the Gateway MCP subprocess and delivers an image through the bound ses
         expect(requests).toEqual([{ url: '/v1/session-files', body: {
             sessionId: 'bound-session', path: '/repo/image.png', type: 'image', caption: 'Result',
         } }])
+        await client.callTool({ name: 'read_conversation_reference', arguments: {
+            referenceId: 'b6f76a13-97ac-4782-922b-2af160f89c1f', offset: 16000,
+        } })
+        expect(requests[1]).toEqual({ url: '/v1/conversation-references/read', body: {
+            sessionId: 'bound-session', referenceId: 'b6f76a13-97ac-4782-922b-2af160f89c1f', offset: 16000,
+        } })
     } finally {
         await client.close()
         await transport.close()

@@ -766,6 +766,7 @@ export function toMlp3Command(
         payload: {
           operation: "prompt.submit",
           text: payload.text,
+          ...(payload.references ? { references: payload.references } : {}),
           ...(payload.attachments ? { attachments: payload.attachments } : {}),
         },
       };

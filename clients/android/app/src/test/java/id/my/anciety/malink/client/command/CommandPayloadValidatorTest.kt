@@ -15,6 +15,22 @@ import org.junit.Test
 
 class CommandPayloadValidatorTest {
     @Test
+    fun `validates structured references without treating them as prompt text`() {
+        fun payload(kind: String, includeText: Boolean = false) = buildJsonObject {
+            put("operation", "prompt"); put("sessionId", "target"); put("text", "Compare")
+            put("references", buildJsonArray { add(buildJsonObject {
+                put("id", "b6f76a13-97ac-4782-922b-2af160f89c1f")
+                put("sessionId", "source"); put("title", "Design"); put("kind", kind)
+                if (includeText) { put("messageId", "answer-1"); put("text", "Quoted answer") }
+            }) })
+        }
+        assertEquals("Compare", (CommandPayloadValidator.validate(payload("session")) as PromptCommandPayload).text)
+        assertEquals("Compare", (CommandPayloadValidator.validate(payload("message", true)) as PromptCommandPayload).text)
+        assertThrows(IllegalArgumentException::class.java) { CommandPayloadValidator.validate(payload("session", true)) }
+        assertThrows(IllegalArgumentException::class.java) { CommandPayloadValidator.validate(payload("message")) }
+    }
+
+    @Test
     fun `session create preserves native fork source`() {
         val payload = buildJsonObject {
             put("operation", "session.create")

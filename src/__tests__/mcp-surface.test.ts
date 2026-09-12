@@ -191,7 +191,7 @@ describe('MCP active surface registration', () => {
         vi.stubEnv('MALINK_CONVERSATION_ID', providerSessionId)
         const { server, tools, resources } = createServerRecorder()
         registerMalinkMcpSurface(server)
-        expect([...tools.keys()].sort()).toEqual(['get_malink_context', 'send_file'])
+        expect([...tools.keys()].sort()).toEqual(['get_malink_context', 'read_conversation_reference', 'send_file'])
         expect(resources.has('Malink Session')).toBe(true)
         const context = await tools.get('get_malink_context')!({})
         expect(context.content[0].text).toContain('PWA or Android')

@@ -1,3 +1,4 @@
+import { registerConversationReferenceTools } from './tools/conversationReferences'
 import { registerContextResources, registerContextTools } from './resources'
 import { registerNotifyTools, registerSendFileTool } from './tools/notify'
 import { registerSessionTools, type SessionToolContext } from './tools/session'
@@ -18,6 +19,7 @@ export function registerMalinkMcpSurface(server: any, options: MalinkMcpRegistra
     if (isMatrixMcpEnvironment()) {
         if (options.includeNotifyTools !== false && readMalinkEnvironment().fileDelivery) {
             registerSendFileTool(server)
+            registerConversationReferenceTools(server)
         }
         registerPrivilegeTools(server)
         return

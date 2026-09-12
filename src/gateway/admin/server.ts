@@ -1,3 +1,4 @@
+import { readConversationReferenceRequestSchema, type ReadConversationReferenceRequest, type ReadConversationReferenceResponse } from './types'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { createConnection } from 'node:net'
 import { chmod, lstat, mkdir, unlink } from 'node:fs/promises'
@@ -92,6 +93,7 @@ export interface GatewayAdminServerOptions {
   receiveWorkspaceFile?: (
     input: ReceiveWorkspaceFileRequest & { requestId: string },
   ) => Promise<ReceiveWorkspaceFileResponse>
+  readConversationReference?: (input: ReadConversationReferenceRequest) => Promise<ReadConversationReferenceResponse>
   sendSessionFile?: (
     input: SendSessionFileRequest,
   ) => Promise<SendSessionFileResponse>
@@ -282,6 +284,12 @@ export async function startGatewayAdminServer(
           `[gateway-admin] accepted workspace inbox file ${result.fileId} ${result.delivery}`,
         )
         sendJson(response, 201, result)
+        return
+      }
+      if (request.method === 'POST' && path === '/v1/conversation-references/read') {
+        if (!options.readConversationReference) throw new AdminHttpError(503, 'references_unavailable', 'Conversation references are unavailable')
+        const data = readConversationReferenceRequestSchema.parse(await readJsonBody(request))
+        sendJson(response, 200, await options.readConversationReference(data))
         return
       }
       if (request.method === 'POST' && path === '/v1/session-files') {

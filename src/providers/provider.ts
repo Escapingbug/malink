@@ -146,6 +146,7 @@ export interface AgentProvider {
 
     /** Native, independent fork of the current persisted provider history. */
     supportsSessionFork?(): boolean
+    probeSessionFork?(): Promise<boolean>
     forkSession?(config: AgentSessionRestoreConfig): Promise<AgentSessionRestoreResult>
 
     isReady(): boolean
@@ -185,6 +186,8 @@ export interface AgentProvider {
     getSessionFirstMessage?(sessionId: string): Promise<string>
 
     /** Load a provider-owned session without adopting it into Malink. */
+    /** Full read-only history for references; must not acquire the source writer. */
+    getReferenceHistory?(sessionId: string, cwd: string): Promise<ProviderSessionHistory>
     getSessionHistory?(sessionId: string, cwd: string): Promise<ProviderSessionHistory>
 
     /** Clear provider-specific session state (e.g., opencode session ID) */

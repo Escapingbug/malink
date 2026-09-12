@@ -1,3 +1,4 @@
+import type { ReadConversationReferenceRequest, ReadConversationReferenceResponse } from './types'
 import { randomUUID } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import type {
@@ -121,6 +122,10 @@ export class GatewayAdminClient {
       input,
       { 'idempotency-key': idempotencyKey },
     )
+  }
+
+  readConversationReference(input: ReadConversationReferenceRequest): Promise<ReadConversationReferenceResponse> {
+    return this.request('POST', '/v1/conversation-references/read', input)
   }
 
   sendSessionFile(

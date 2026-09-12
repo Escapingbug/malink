@@ -633,6 +633,25 @@ describe("MatrixMlp3Projection", () => {
     expect(restored.durableState().version).toBe(MATRIX_MLP3_PROJECTION_STATE_VERSION);
   });
 
+  it("preserves reference chips before acknowledgement, after restart and after Gateway projection", () => {
+    const references = [{ id: "b6f76a13-97ac-4782-922b-2af160f89c1f", sessionId: "source", title: "Design", kind: "session" as const }];
+    const projection = new MatrixMlp3Projection();
+    projection.applyCommand(createCommand("a"), "$root-a");
+    const command = promptCommand();
+    if (command.operation !== "prompt.submit") throw new Error("Expected prompt");
+    command.payload.references = references;
+    projection.applyCommand(command, "$local-prompt", 2);
+    expect(toIncomingMessage(projection.messages.get("user:prompt-a")!).raw?.references).toEqual(references);
+    const restored = new MatrixMlp3Projection();
+    restored.restore(projection.durableState());
+    expect(toIncomingMessage(restored.messages.get("user:prompt-a")!).raw?.references).toEqual(references);
+    const event = turnQueuedEvent();
+    if (event.payload.type !== "turn.queued") throw new Error("Expected queued turn");
+    event.payload.references = references;
+    restored.applyEvent(event, "$gateway-prompt", "$root-a");
+    expect(toIncomingMessage(restored.messages.get("user:prompt-a")!).raw?.references).toEqual(references);
+  });
+
   it("preserves the prompt origin through local and Gateway projections", () => {
     const projection = new MatrixMlp3Projection();
     projection.applyCommand(createCommand("a"), "$root-a");

@@ -169,3 +169,13 @@ class FakeCodexHistoryProcess extends EventEmitter {
         this.emit('exit', exitCode, signal)
     }
 }
+
+it('full reference history preserves older answers and long text without preview limits', () => {
+  const text = 'a'.repeat(20000)
+  const thread = { id: 'thread-full', cwd: '/repo', turns: [{ items: Array.from({ length: 300 }, (_, index) => ({ type: 'agentMessage', id: `a-${index}`, text })) }] }
+  const preview = parseCodexThreadHistory('thread-full', thread, '/repo')
+  expect(preview.messages).toHaveLength(256)
+  const full = parseCodexThreadHistory('thread-full', thread, '/repo', true)
+  expect(full.messages).toHaveLength(300)
+  expect(full.messages[0]).toEqual({ id: 'a-0', role: 'assistant', text })
+})

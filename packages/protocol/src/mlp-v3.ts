@@ -1,3 +1,4 @@
+import { conversationReferencesSchema } from './conversation-reference.js'
 import { extensionCryptoGrantRequestSchema, extensionCryptoGrantSchema } from './extension-crypto.js'
 import { z } from 'zod'
 import { batchArchiveRequestSchema, batchArchiveProgressSchema } from './batch-archive.js'
@@ -289,6 +290,7 @@ const sessionCreatePayloadSchema = z
 const promptSubmitPayloadSchema = z
   .object({
     operation: z.literal('prompt.submit'),
+    references: conversationReferencesSchema.optional(),
     text: z.string(),
     attachments: z.array(attachmentSchema).max(10).optional(),
   })
@@ -955,6 +957,7 @@ export const mlp3EventPayloadSchema = z.discriminatedUnion('type', [
   z
     .object({
       type: z.literal('turn.queued'),
+      references: conversationReferencesSchema.optional(),
       turnId: opaqueId,
       originDeviceId: opaqueId,
       text: z.string(),

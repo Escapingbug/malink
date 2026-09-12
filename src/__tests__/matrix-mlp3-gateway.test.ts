@@ -1320,10 +1320,15 @@ describe('MatrixMlp3GatewayRunner', () => {
       flush: async () => undefined,
       stop: () => undefined,
     }
+    const referenceReads: string[] = []
     const nativeForkCalls: string[] = []
     registerProvider({
       name: 'test',
       supportsSessionFork: () => true,
+      getReferenceHistory: async sessionId => {
+        referenceReads.push(sessionId)
+        return { sessionId, title: 'Source', messages: [{ id: 'old-answer', role: 'assistant', text: 'Complete original answer' }] }
+      },
       forkSession: async input => { nativeForkCalls.push(input.sessionId); return { sessionId: 'provider-fork-1' } },
       startQuery() { throw new Error('The catalog provider must not execute a query') },
       isReady: () => true,
@@ -1555,7 +1560,7 @@ describe('MatrixMlp3GatewayRunner', () => {
                 text: `reply:${input.text}`,
                 format: 'markdown',
                 replyMarkup: {
-                  idempotencyKey: input.text.includes('SIGNED RELEASE PROMPT')
+                  idempotencyKey: input.text.includes('SIGNED RELEASE PROMPT') || input.text.includes('[User-selected Malink references]')
                     ? `reply-${session.id}-${createHash('sha256').update(input.text).digest('hex')}`
                     : `reply-${session.id}-${input.text}`,
                 },
@@ -2783,6 +2788,29 @@ describe('MatrixMlp3GatewayRunner', () => {
       expect.objectContaining({ cwd: '/repo', operation: 'session.create' }),
       expect.objectContaining({ cwd: '/repo', operation: 'prompt.submit' }),
     ]))
+
+    const conversationReference = { id: 'b6f76a13-97ac-4782-922b-2af160f89c1f', sessionId: 'session-a', title: 'Source', kind: 'session' as const }
+    await expect(runner.readConversationReference({ sessionId: 'session-b', referenceId: conversationReference.id })).rejects.toThrow('not authorized')
+    await send({ ...base, commandId: 'reference-outside-project', sessionId: 'session-b', operation: 'prompt.submit',
+      payload: { operation: 'prompt.submit', text: 'Compare', references: [{ ...conversationReference, sessionId: 'other-project-session' }] } }, '$reference-outside-project')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === 'reference-outside-project' && event.payload.type === 'turn.failed'))
+    expect(referenceReads).toEqual([])
+    await expect(runner.readConversationReference({ sessionId: 'session-b', referenceId: conversationReference.id })).rejects.toThrow('not authorized')
+    const referencePrompt: Mlp3Command = { ...base, commandId: 'prompt-reference', sessionId: 'session-b', operation: 'prompt.submit',
+      payload: { operation: 'prompt.submit', text: 'Compare referenced history', references: [conversationReference] } }
+    await send(referencePrompt, '$reference-prompt')
+    await waitFor(async () => (await events(client, activeKey.key, roomId, projectId)).some(event =>
+      event.causationCommandId === 'prompt-reference' && (event.payload.type === 'turn.completed' || event.payload.type === 'turn.failed')))
+    expect((await events(client, activeKey.key, roomId, projectId)).filter(event => event.causationCommandId === 'prompt-reference' && event.payload.type === 'turn.failed').map(event => event.payload)).toEqual([])
+    expect(referenceReads).toEqual(['provider-session-1'])
+    expect(dispatched.find(item => item.text.startsWith('Compare referenced history'))?.text).toContain('read_conversation_reference')
+    const quotedEvent = (await events(client, activeKey.key, roomId, projectId)).find(event => event.causationCommandId === 'prompt-reference' && event.payload.type === 'turn.queued')
+    expect(quotedEvent?.payload).toMatchObject({ text: 'Compare referenced history', references: [conversationReference] })
+    expect(await runner.readConversationReference({ sessionId: 'session-b', referenceId: conversationReference.id })).toMatchObject({ text: '[assistant]\nComplete original answer', nextOffset: null })
+    await expect(runner.readConversationReference({ sessionId: 'session-a', referenceId: conversationReference.id })).rejects.toThrow('not authorized')
+    await send(referencePrompt, '$reference-prompt-retry')
+    expect(referenceReads).toHaveLength(1)
 
     // An exact retry arrives as a different physical Matrix event. It remains
     // the same business command and must not run a second provider turn.

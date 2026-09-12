@@ -1,4 +1,5 @@
 import type {
+  MalinkConversationReference,
   Mlp3Command,
   Mlp3Event,
   Mlp3SessionProjection,
@@ -14,6 +15,7 @@ import type {
   SignedWorkspaceGatewayDirectory,
 } from "@malink/protocol";
 import {
+  conversationReferencesSchema,
   mlp3EventSchema,
   matrixGatewayCapabilitiesSchema,
   nativeClientReleaseSchema,
@@ -65,6 +67,7 @@ export type V3ProjectedMessage = {
   commandId?: string;
   originDeviceId?: string;
   payload?: Mlp3Event["payload"];
+  references?: MalinkConversationReference[];
   resolvedActionId?: string;
 };
 
@@ -375,6 +378,8 @@ export class MatrixMlp3Projection {
         timestamp,
         command.payload.text,
         command.deviceId,
+        undefined,
+        command.payload.references,
       );
     }
     return true;
@@ -1043,7 +1048,9 @@ export class MatrixMlp3Projection {
     body: string,
     originDeviceId?: string,
     payload?: Mlp3Event["payload"],
+    references?: MalinkConversationReference[],
   ): void {
+    references = payload?.type === "turn.queued" ? payload.references : references;
     this.messages.set(`user:${commandId}`, {
       logicalId: `user:${commandId}`,
       physicalEventId,
@@ -1056,6 +1063,7 @@ export class MatrixMlp3Projection {
       commandId,
       ...(originDeviceId ? { originDeviceId } : {}),
       ...(payload ? { payload } : {}),
+      ...(references?.length ? { references: structuredClone(references) } : {}),
     });
   }
 
@@ -1195,6 +1203,7 @@ function validateProjectionState(input: unknown): MatrixMlp3ProjectionState {
       || !integer(message.version, 1)
       || !(message.originDeviceId === undefined || text(message.originDeviceId))
     ) throw new Error("The MLP/3 message projection is invalid.");
+    if (message.references !== undefined) conversationReferencesSchema.parse(message.references);
     return structuredClone(message) as V3ProjectedMessage;
   });
   const providerHistoryMessages = projectionVersion >= 8

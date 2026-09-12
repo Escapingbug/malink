@@ -247,3 +247,18 @@ export interface GatewayAdminErrorBody {
     message: string
   }
 }
+
+export const readConversationReferenceRequestSchema = z.object({
+  sessionId: z.string().min(1).max(256),
+  referenceId: z.string().uuid(),
+  offset: z.number().int().nonnegative().optional(),
+}).strict()
+export type ReadConversationReferenceRequest = z.infer<typeof readConversationReferenceRequestSchema>
+export interface ReadConversationReferenceResponse {
+  reference: import('@malink/protocol').MalinkConversationReference
+  capturedAt: number
+  totalCharacters: number
+  text: string
+  nextOffset: number | null
+  guidance: string
+}

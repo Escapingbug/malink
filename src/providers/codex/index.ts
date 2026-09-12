@@ -119,6 +119,14 @@ export class CodexProvider extends AcpProvider {
         this.historyReader = options.historyReader ?? readCodexSessionHistory
     }
 
+    async getReferenceHistory(sessionId: string, cwd: string): Promise<ProviderSessionHistory> {
+        // No ACP session/load fallback: references must never acquire the source writer.
+        return this.historyReader({ sessionId, cwd, fullHistory: true,
+            command: this.historyCommand, commandArgs: this.historyArgs,
+            ...(this.env ? { env: this.env } : {}), ...(this.cwd ? { processCwd: this.cwd } : {}),
+        })
+    }
+
     async getSessionHistory(sessionId: string, cwd: string): Promise<ProviderSessionHistory> {
         try {
             return await this.historyReader({

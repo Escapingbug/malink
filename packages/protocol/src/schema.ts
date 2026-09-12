@@ -1,3 +1,4 @@
+import { conversationReferencesSchema } from './conversation-reference.js'
 import { extensionCryptoGrantRequestSchema } from './extension-crypto.js'
 import { z } from 'zod'
 import { batchArchiveRequestSchema } from './batch-archive.js'
@@ -540,6 +541,7 @@ export const commandPayloadSchema = z.discriminatedUnion('operation', [
   z
     .object({
       operation: z.literal('prompt'),
+      references: conversationReferencesSchema.optional(),
       sessionId: opaqueId,
       text: z.string(),
       attachments: z.array(attachmentSchema).max(MAX_MALINK_ATTACHMENTS).optional(),

@@ -2308,11 +2308,12 @@ export function toIncomingMessage(
     raw: payload
       ? {
           ...structuredClone(payload) as Record<string, unknown>,
+          ...(message.references ? { references: structuredClone(message.references) } : {}),
           ...(message.resolvedActionId
             ? { resolvedActionId: message.resolvedActionId }
             : {}),
         }
-      : {},
+      : message.references ? { references: structuredClone(message.references) } : {},
   };
 }
 

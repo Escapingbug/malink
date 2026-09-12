@@ -1,11 +1,14 @@
 "use client";
+import type { MalinkConversationReference } from "@malink/protocol";
+import { ReferenceChips, ReferenceDialog, messageReferences } from "./ConversationReferences";
+import { ConversationIcon } from "./ConversationPicker";
 
 import { ArchiveListHeading, ArchiveListHelp, ArchiveEmptyState, ArchivedConversationNotice } from "./ArchiveView";
 import { SessionDeleteDialog } from "./SessionDeleteDialog";
 import { historyRecoveryPresentation, deviceSetupPresentation, nativeHistoryRecoveryPages } from "./RecoveryStatus";
 import { SessionRenameDialog } from "./SessionRenameDialog";
 import { ConversationActionDialog } from "./ConversationActionDialog";
-import { referenceDraft, referenceTargets, type ConversationReference } from "./conversationReference";
+import { selectedReference, referenceTargets, type ConversationReference } from "./conversationReference";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { batchArchiveProgressSchema } from "@malink/protocol";
 import { batchArchiveUiStorageKey, readBatchArchiveUiResults, writeBatchArchiveUiResults } from "./batchArchiveUiStorage";
@@ -1615,6 +1618,9 @@ function MalinkAppRuntime() {
   const batchArchiveRevisions = useRef(new Map<string, number>());
   const [batchArchiveErrors, setBatchArchiveErrors] = useState<Record<string, string>>({});
   const [conversationAction, setConversationAction] = useState<{ source: GatewaySessionSummary; reference?: ConversationReference } | null>(null);
+  const [draftReferences, setDraftReferences] = useState<MalinkConversationReference[]>([]);
+  const [referencePreview, setReferencePreview] = useState<MalinkConversationReference | null>(null);
+  const [referencePickerOpen, setReferencePickerOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [sharedFileBatch, setSharedFileBatch] = useState<{ batchId: string; files: File[] } | null>(null);
@@ -1627,7 +1633,7 @@ function MalinkAppRuntime() {
   } | null>(null);
   const sharedRouteFlightRef = useRef(false);
   const sharedDraftFilesRef = useRef(new WeakSet<File>());
-  const conversationDraftsRef = useRef(new Map<string, { text: string; files: File[] }>());
+  const conversationDraftsRef = useRef(new Map<string, { text: string; files: File[]; references?: MalinkConversationReference[] }>());
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [feedAwayFromLatest, setFeedAwayFromLatest] = useState(false);
@@ -2793,7 +2799,7 @@ function MalinkAppRuntime() {
     promptSubmitting: isPromptSubmitting,
     isStreaming,
     isStopping,
-    hasContent: Boolean(draft.trim() || (pendingFiles.length > 0 &&
+    hasContent: Boolean(draft.trim() || draftReferences.length || (pendingFiles.length > 0 &&
       !pendingFiles.some(file => sharedDraftFilesRef.current.has(file)))),
   });
   const composerState = optimisticSelected && optimisticSession
@@ -5629,9 +5635,10 @@ function MalinkAppRuntime() {
       selectedProjectIdRef.current !== projectId;
     if (sessionChanged) {
       const oldKey = JSON.stringify([selectedProjectIdRef.current, selectedSessionIdRef.current]);
-      conversationDraftsRef.current.set(oldKey, { text: draft, files: pendingFiles });
+      conversationDraftsRef.current.set(oldKey, { text: draft, files: pendingFiles, references: draftReferences });
       const nextDraft = conversationDraftsRef.current.get(JSON.stringify([projectId, sessionId]));
       setDraft(nextDraft?.text ?? "");
+      setDraftReferences(nextDraft?.references ?? []);
       setPendingFiles(nextDraft?.files ?? []);
     }
     selectedSessionIdRef.current = sessionId;
@@ -10809,12 +10816,16 @@ function MalinkAppRuntime() {
     if (!reference || !referenceTargets(reference.session, gatewayState?.sessions ?? []).some(session => session.id === target.id)) return;
     const key = JSON.stringify([target.projectId, target.id]);
     const previous = conversationDraftsRef.current.get(key) ?? { text: "", files: [] };
-    const text = `${previous.text}${previous.text ? "\n\n" : ""}${referenceDraft(reference)}`;
-    conversationDraftsRef.current.set(key, { ...previous, text });
+    const references = [...previous.references ?? [], selectedReference(reference)];
+    if (references.length > 8) {
+      showUiNotice("conversation:reference", "composer", "warning", "A message can include up to eight references. Remove one before adding another.");
+      return;
+    }
+    conversationDraftsRef.current.set(key, { ...previous, references });
     chooseSession(target.id, target.projectId);
-    setDraft(text);
+    setDraftReferences(references);
     setConversationAction(null);
-    showUiNotice("conversation:reference", "composer", "info", "Quoted text added to this draft. Review it, add your request, or delete the quotation before sending. Nothing has been sent yet.");
+    showUiNotice("conversation:reference", "composer", "info", "Reference added. Click the @ marker to preview, or remove it before sending.");
   }
 
   async function createSession(
@@ -11950,7 +11961,8 @@ function MalinkAppRuntime() {
 
   async function sendMessage(event?: FormEvent) {
     event?.preventDefault();
-    const value = draft.trim();
+    const submittedReferences = [...draftReferences];
+    const value = draft.trim() || (submittedReferences.length ? "Please consider the referenced material." : "");
     if (!value && pendingFiles.some(file => sharedDraftFilesRef.current.has(file))) {
       showUiNotice("diagnostics:message", "composer", "info", "Enter a message before sending shared attachments.");
       return;
@@ -12044,6 +12056,7 @@ function MalinkAppRuntime() {
       optimistic: true,
       deliveryState: "sending",
       attachments,
+      ...(submittedReferences.length ? { raw: { references: submittedReferences } } : {}),
     };
     const optimisticHistoryPersisted = submissionHistoryScope
       ? saveMessageHistory(
@@ -12085,7 +12098,7 @@ function MalinkAppRuntime() {
             );
           });
         }
-        if (selectedSessionIdRef.current === sessionId) setDraft("");
+        if (selectedSessionIdRef.current === sessionId) { setDraft(""); setDraftReferences([]); }
         setPendingFiles([]);
         setSessionPromptSubmitting(sessionId, false);
         setSessionStopping(sessionId, false);
@@ -12108,12 +12121,14 @@ function MalinkAppRuntime() {
         followLatestRef.current = true;
         setMessages((current) => [...current, optimisticMessage]);
         setDraft("");
+        setDraftReferences([]);
       }
       result = await sendRealCommand(
         createPromptCommandPayload({
           sessionId,
           text: value,
           attachments,
+          ...(submittedReferences.length ? { references: submittedReferences } : {}),
         }),
       );
     } catch (error) {
@@ -12468,6 +12483,7 @@ function MalinkAppRuntime() {
         createPromptCommandPayload({
           sessionId,
           text: sendingMessage.text ?? "",
+          references: messageReferences(sendingMessage.raw),
           attachments: sendingMessage.attachments,
         }),
       );
@@ -12559,7 +12575,7 @@ function MalinkAppRuntime() {
   function restoreFailedMessage(message: ChatMessage) {
     const sessionId = message.sessionId ?? selectedSessionIdRef.current;
     if (!sessionId || !message.text) return;
-    if (draft.trim()) {
+    if (draft.trim() || draftReferences.length) {
       showUiNotice(
         "composer:retry",
         "composer",
@@ -12570,6 +12586,7 @@ function MalinkAppRuntime() {
       return;
     }
     setDraft(message.text);
+    setDraftReferences(messageReferences(message.raw));
     optimisticMessagesRef.current.delete(message.id);
     removeLiveMessage(sessionId, message.id);
     setMessages((current) =>
@@ -14420,8 +14437,24 @@ function MalinkAppRuntime() {
               setMobileChatOpen(false);
             });
           }} />
+        {referencePreview && <ReferenceDialog reference={referencePreview} onClose={() => setReferencePreview(null)}
+          onOpenSource={gatewayState?.sessions.some(session => session.id === referencePreview.sessionId) ? () => {
+            const source = gatewayState?.sessions.find(session => session.id === referencePreview.sessionId);
+            if (source) chooseSession(source.id, source.projectId);
+            setReferencePreview(null);
+          } : undefined}/>}
+        {referencePickerOpen && gatewaySelected && <ReferenceDialog onClose={() => setReferencePickerOpen(false)}
+          choices={referenceTargets(gatewaySelected, gatewayState?.sessions ?? []).map(session => ({ key: session.id, title: session.title, projectId: session.projectId, projectName: session.projectName, computer: (projectGatewaysById.get(session.projectId) ?? fallbackProjectGateway).label, updatedAt: session.updatedAt }))}
+          onChoose={id => {
+            const source = referenceTargets(gatewaySelected, gatewayState?.sessions ?? []).find(session => session.id === id);
+            if (!source) return;
+            if (draftReferences.length >= 8) { showUiNotice("conversation:reference", "composer", "warning", "A message can include up to eight references."); return; }
+            setDraftReferences(current => [...current, selectedReference({ session: source })]);
+            setReferencePickerOpen(false);
+          }}/>}
         {conversationAction && <ConversationActionDialog
           source={conversationAction.source} reference={conversationAction.reference}
+          computerLabel={(projectGatewaysById.get(conversationAction.source.projectId) ?? fallbackProjectGateway).label}
           sessions={gatewayState?.sessions ?? []} onClose={() => setConversationAction(null)}
           onReference={addConversationReference}
           onFork={title => {
@@ -14608,11 +14641,14 @@ function MalinkAppRuntime() {
             </span>
             {gatewaySelected && (
               <div className="session-menu-actions">
-                {activeCapabilities?.providers.find(provider => provider.id === gatewaySelected.provider)?.canForkSession && gatewaySelected.scope !== "scratch" && (
+                <button type="button" className="session-menu-primary" disabled={!activeCapabilities?.providers.find(provider => provider.id === gatewaySelected.provider)?.canReferenceSession} onClick={() => { setConversationAction({ source: gatewaySelected, reference: { session: gatewaySelected } }); setDetailsOpen(false); }}>
+                  <ConversationIcon/><span><strong>Reference conversation</strong><small>Let another conversation read its saved history through MCP</small></span>
+                </button>
+                {gatewaySelected.scope !== "scratch" && (
                   <button type="button" className="session-menu-primary"
-                    disabled={selectedLifecycleBusy || !gatewayAvailable || isStreaming || gatewaySelected.status !== "idle"}
+                    disabled={!activeCapabilities?.providers.find(provider => provider.id === gatewaySelected.provider)?.canForkSession || selectedLifecycleBusy || !gatewayAvailable || isStreaming || gatewaySelected.status !== "idle"}
                     onClick={() => { setConversationAction({ source: gatewaySelected }); setDetailsOpen(false); }}>
-                    <span aria-hidden="true">⑂</span><span><strong>Create branch</strong><small>Continue independently with current saved history · same project files</small></span>
+                    <ConversationIcon kind="branch"/><span><strong>Create branch</strong><small>{activeCapabilities?.providers.find(provider => provider.id === gatewaySelected.provider)?.canForkSession ? "Continue with saved history · same project files" : "Native branching unavailable for this provider on this Gateway"}</small></span>
                   </button>
                 )}
 
@@ -14849,6 +14885,7 @@ function MalinkAppRuntime() {
                         </span>
                     )}
                     <p>{message.text}</p>
+                    <ReferenceChips references={messageReferences(message.raw)} onPreview={setReferencePreview}/>
                     <AttachmentList
                       attachments={messageAttachments(message.attachments, message.raw)}
                       connection={malinkClientRef.current}
@@ -15089,7 +15126,7 @@ function MalinkAppRuntime() {
                       <button type="button" className="message-reference-button" title="Quote answer in another conversation"
                         onClick={() => setConversationAction({ source: gatewaySelected,
                           reference: { session: gatewaySelected, messageId: message.id, text: message.text! } })}>
-                        Quote…
+                        <ConversationIcon kind="quote"/><span>Quote…</span>
                       </button>
                     )}
 
@@ -15347,6 +15384,7 @@ function MalinkAppRuntime() {
             onDismiss={dismissUiNotice}
           />
 
+          <ReferenceChips references={draftReferences} onPreview={setReferencePreview} onRemove={id => setDraftReferences(current => current.filter(reference => reference.id !== id))}/>
           {pendingFiles.length > 0 && (
             <div className="pending-attachments" aria-label="Pending attachments">
               {pendingFiles.map((file, index) => (
@@ -15438,6 +15476,7 @@ function MalinkAppRuntime() {
               >
                 {attachmentBusy ? "…" : "+"}
               </button>
+              <button type="button" className="attachment-button" aria-label="Reference a conversation" title="Reference a conversation" disabled={!composerState.canType || !gatewaySelected || !activeCapabilities?.providers.find(provider => provider.id === gatewaySelected.provider)?.canReferenceSession || Boolean(optimisticSelected)} onClick={() => setReferencePickerOpen(true)}>＠</button>
               {activeProviderControls.length > 0 && (
                 <SessionOptionsButton
                   controls={activeProviderControls}

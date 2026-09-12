@@ -1124,6 +1124,10 @@ const adminServer = await startGatewayAdminServer({
         if (!runner) throw new Error('Gateway runtime is unavailable')
         return runner.receiveWorkspaceFile(input)
     },
+    readConversationReference: async input => {
+        if (!runner) throw new Error('Gateway runtime is unavailable')
+        return runner.readConversationReference(input)
+    },
     sendSessionFile: async ({ sessionId, ...input }) => {
         if (!runner) throw new Error('Gateway runtime is unavailable')
         return runner.sendSessionFile(sessionId, input)

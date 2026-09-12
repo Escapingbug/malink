@@ -2272,6 +2272,7 @@ class NativeClientRuntime(
                 v3Payload = buildJsonObject {
                     put("operation", v3Operation)
                     put("text", raw.string("text") ?: "")
+                    raw["references"]?.let { put("references", it) }
                     raw["attachments"]?.let { put("attachments", it) }
                 }
             }

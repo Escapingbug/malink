@@ -527,6 +527,11 @@ export class AcpProvider implements AgentProvider {
         return entries.slice(0, 256).sort((left, right) => right.updated - left.updated)
     }
 
+    async probeSessionFork(): Promise<boolean> {
+        await this.init()
+        return this.supportsSessionFork()
+    }
+
     supportsSessionFork(): boolean {
         return this.isReady() && this.clientManager.supportsForkSession === true
     }

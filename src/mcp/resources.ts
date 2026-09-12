@@ -16,7 +16,7 @@ function matrixTopics(): Record<string, string> {
         session: JSON.stringify({
             channel: 'matrix',
             ...environment,
-            capabilities: ['get_malink_context', ...(environment.fileDelivery ? ['send_file'] : [])],
+            capabilities: ['get_malink_context', ...(environment.fileDelivery ? ['send_file', 'read_conversation_reference'] : [])],
         }, null, 2),
         rendering: [
             'Malink clients render Markdown, including code blocks and tables. Do not use Telegram HTML or Telegram table-image markers.',

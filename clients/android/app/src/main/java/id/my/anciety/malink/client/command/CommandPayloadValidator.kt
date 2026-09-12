@@ -409,8 +409,25 @@ object CommandPayloadValidator {
     private fun validatePrompt(value: JsonObject): PromptCommandPayload {
         value.requireExactKeys(
             required = setOf("operation", "sessionId", "text"),
-            optional = setOf("attachments"),
+            optional = setOf("attachments", "references"),
         )
+        value.optionalArray("references")?.let { references ->
+            require(references.size <= 8) { "Too many conversation references." }
+            val ids = mutableSetOf<String>()
+            references.forEach { element ->
+                val reference = element as? JsonObject ?: error("Invalid conversation reference.")
+                reference.requireExactKeys(required = setOf("id", "sessionId", "title", "kind"), optional = setOf("messageId", "text"))
+                val id = reference.requiredString("id", 36)
+                require(Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}").matches(id) && ids.add(id)) { "Invalid reference identity." }
+                reference.requiredOpaqueId("sessionId")
+                reference.requiredString("title", 512)
+                when (reference.requiredString("kind", 16)) {
+                    "message" -> { reference.requiredString("messageId", 512); reference.requiredString("text", 12000) }
+                    "session" -> require(reference["messageId"] == null && reference["text"] == null) { "Conversation reference cannot contain text." }
+                    else -> error("Unknown reference kind.")
+                }
+            }
+        }
         val attachments = value.optionalArray("attachments")?.also {
             require(it.size <= MAX_ATTACHMENTS) { "Prompt contains too many attachments." }
         }?.map(::validateAttachment) ?: emptyList()

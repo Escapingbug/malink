@@ -23,3 +23,12 @@ it('does not attempt an unsupported fork or accept reuse of the parent identity'
   expect(unsupported.forkSession).not.toHaveBeenCalled()
   await expect(fixture(true, 'parent').provider.forkSession(config)).rejects.toThrow('independent')
 })
+
+it('probes the native handshake before reporting fork availability', async () => {
+  const { provider } = fixture(true)
+  Object.assign(provider, { initialized: false })
+  const initialize = vi.spyOn(provider, 'init').mockImplementation(async () => { Object.assign(provider, { initialized: true }) })
+  expect(provider.supportsSessionFork()).toBe(false)
+  await expect(provider.probeSessionFork()).resolves.toBe(true)
+  expect(initialize).toHaveBeenCalledOnce()
+})

@@ -49,6 +49,7 @@ export interface CodexSessionHistoryReadOptions {
     env?: Record<string, string>
     processCwd?: string
     timeoutMs?: number
+    fullHistory?: boolean
     spawnProcess?: SpawnCodexHistoryProcess
 }
 
@@ -87,13 +88,14 @@ export async function readCodexSessionHistory(
     options: CodexSessionHistoryReadOptions,
 ): Promise<ProviderSessionHistory> {
     const thread = await readCodexThread(options)
-    return parseCodexThreadHistory(options.sessionId, thread, options.cwd)
+    return parseCodexThreadHistory(options.sessionId, thread, options.cwd, options.fullHistory)
 }
 
 export function parseCodexThreadHistory(
     sessionId: string,
     input: unknown,
     expectedCwd?: string,
+    fullHistory = false,
 ): ProviderSessionHistory {
     const thread = asRecord(input)
     if (!thread || thread.id !== sessionId) {
@@ -154,7 +156,7 @@ export function parseCodexThreadHistory(
             ?? normalizeTitle(firstUserText)
             ?? normalizeTitle(thread.preview)
             ?? 'Provider session',
-        messages: messages
+        messages: fullHistory ? messages : messages
             .slice(-256)
             .map(message => ({ ...message, text: message.text.slice(0, 16 * 1024) })),
     }
