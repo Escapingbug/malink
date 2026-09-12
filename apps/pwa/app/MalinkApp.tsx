@@ -15123,10 +15123,10 @@ function MalinkAppRuntime() {
                   <div className="message-bubble-meta">
                     <MessageCopyButton text={message.text ?? ""} />
                     {gatewaySelected && message.text && !isStreaming && !message.optimistic && (
-                      <button type="button" className="message-reference-button" title="Quote answer in another conversation"
+                      <button type="button" className="message-reference-button" title="Quote answer in another conversation" aria-label="Quote answer in another conversation"
                         onClick={() => setConversationAction({ source: gatewaySelected,
                           reference: { session: gatewaySelected, messageId: message.id, text: message.text! } })}>
-                        <ConversationIcon kind="quote"/><span>Quote…</span>
+                        <ConversationIcon kind="quote"/>
                       </button>
                     )}
 

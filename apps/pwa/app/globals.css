@@ -13049,7 +13049,7 @@ body {
 .image-viewer-stage p { margin: auto; max-width: 420px; padding: 16px; line-height: 1.5; }
 
 /* Conversation actions reuse the existing message footer and session menu. */
-.message-reference-button { border: 0; background: transparent; color: var(--text-muted, #777); min-height: 36px; padding: 6px 8px; cursor: pointer; font-size: 12px; }
+.message-reference-button { border: 0; background: transparent; color: var(--text-muted, #777); min-width: 36px; min-height: 36px; padding: 6px 8px; cursor: pointer; font-size: 12px; }
 .conversation-action-dialog { max-height: calc(100dvh - 32px); overflow-y: auto; }
 .conversation-action-source { overflow-wrap: anywhere; }
 .conversation-action-dialog details { margin: 12px 0; }
@@ -13061,7 +13061,7 @@ body {
 .conversation-reference-targets span { overflow-wrap: anywhere; min-width: 0; }
 .conversation-reference-targets small { display: block; opacity: .7; font-size: 11px; }
 @media (max-width: 640px) {
-  .message-reference-button { min-height: 44px; }
+  .message-reference-button { min-width: 44px; min-height: 44px; }
   .new-session-backdrop:has(.conversation-action-dialog) { padding: 12px; align-items: end; }
   .conversation-action-dialog { width: 100%; padding: 20px; max-height: calc(100dvh - 24px); animation: none; }
 }
@@ -13074,7 +13074,7 @@ body {
 .conversation-action-dialog h2 { display: flex; align-items: center; gap: 10px; }
 .conversation-action-dialog h2 svg { flex-shrink: 0; }
 .conversation-action-dialog .share-session-results { max-height: 42dvh; }
-.message-reference-button { display: inline-flex; align-items: center; gap: 4px; }
+.message-reference-button { display: inline-flex; align-items: center; justify-content: center; }
 .message-reference-button svg { width: 15px; height: 15px; }
 .conversation-reference-chips { display: flex; gap: 8px; flex-wrap: wrap; padding: 8px 0; }
 .conversation-reference-chip { display: inline-flex; align-items: center; max-width: 100%; border: 1px solid #7564ed44; border-radius: 12px; background: #7564ed0d; overflow: hidden; }

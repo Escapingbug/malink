@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { ConversationIcon } from '../../app/ConversationPicker';
 import { ConversationActionDialog } from '../../app/ConversationActionDialog';
 import { selectedReference } from '../../app/conversationReference';
 import { ReferenceChips, ReferenceDialog } from '../../app/ConversationReferences';
@@ -16,7 +17,7 @@ function Fixture() {
  const [references, setReferences] = useState<MalinkConversationReference[]>([]);
  const [preview, setPreview] = useState<MalinkConversationReference | null>(null);
  const available = location.search.includes('empty') ? [] : sessions;
- return <main style={{ padding: 16 }}><h1>Conversation</h1><button onClick={() => setMode('fork')}>Create branch</button><button onClick={() => setMode('quote')}>Quote…</button><button onClick={() => setMode('session')}>Reference conversation</button><button onClick={() => setMode('share')}>Share file</button>
+ return <main style={{ padding: 16 }}><h1>Conversation</h1><button onClick={() => setMode('fork')}>Create branch</button><button className="message-reference-button" title="Quote answer in another conversation" aria-label="Quote answer in another conversation" onClick={() => setMode('quote')}><ConversationIcon kind="quote"/></button><button onClick={() => setMode('session')}>Reference conversation</button><button onClick={() => setMode('share')}>Share file</button>
  <output>{result}</output><ReferenceChips references={references} onPreview={setPreview} onRemove={id => setReferences(current => current.filter(reference => reference.id !== id))}/><label>Draft<textarea value={draft} onChange={event => setDraft(event.target.value)} /></label>
  {preview && <ReferenceDialog reference={preview} onClose={() => setPreview(null)} onOpenSource={() => { setPreview(null); setResult('Source opened'); }}/>}
  {mode === 'share' && <SharedFileDialog files={[new File(['x'], 'design.md')]} sessions={available.map(session => ({ key: session.id, title: session.title, projectId: session.projectId, projectName: session.projectName, computer: 'MacBook', updatedAt: session.updatedAt }))} onClose={() => setMode(null)} onAttach={key => { setResult(`Shared draft ${key}`); setMode(null); }}/>}

@@ -13,7 +13,7 @@ try {
   await page.getByRole('textbox', { name: 'Branch name' }).fill('Alternative design');
   await page.getByRole('dialog').getByRole('button', { name: 'Create branch', exact: true }).click();
   await page.getByText('Created: Alternative design').waitFor();
-  await page.getByRole('button', { name: 'Quote…', exact: true }).click();
+  await page.getByRole('button', { name: 'Quote answer in another conversation', exact: true }).click();
   await page.getByRole('searchbox', { name: 'Search conversations' }).fill('Implementation 23');
   assert.equal(await page.getByRole('dialog').locator('svg').count() > 0, true);
   await page.screenshot({ path: `../../artifacts/reference-mcp/picker-${viewport.width}.png` });
@@ -46,7 +46,7 @@ try {
   await page.getByRole('button', { name: /Share to Implementation 23/ }).click();
   await page.getByText('Shared draft target-23').waitFor();
   await page.goto('http://127.0.0.1:5194/malink/tests/fixtures/fork-reference-actions.html?empty');
-  await page.getByRole('button', { name: 'Quote…', exact: true }).click();
+  await page.getByRole('button', { name: 'Quote answer in another conversation', exact: true }).click();
   await page.getByText(/No other open conversations/).waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.deepEqual(errors, []); await page.close();
