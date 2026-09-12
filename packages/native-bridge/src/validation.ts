@@ -296,11 +296,14 @@ export function parseEventsDeliverNotification(
   }
   const params = strictObject(
     notification.params,
-    ["subscriptionId", "events"],
+    ["subscriptionId", "events", "reset"],
     "event notification params",
   );
   if (!Array.isArray(params.events)) {
     invalidParams("events must be an array.");
+  }
+  if (params.reset === true && params.events.length !== 0) {
+    invalidParams("A subscription reset must not carry events.");
   }
   if (params.events.length > NATIVE_BRIDGE_LIMITS.maxEventBatchCount) {
     invalidParams("Event batch exceeds the negotiated event count limit.");
@@ -310,6 +313,7 @@ export function parseEventsDeliverNotification(
     method: "malink.events.deliver",
     params: {
       subscriptionId: opaqueId(params.subscriptionId, "subscriptionId"),
+      ...(params.reset === undefined ? {} : { reset: requiredBoolean(params.reset, "reset") }),
       events: params.events.map((event, index) =>
         parseClientEvent(event, `events[${index}]`),
       ),
@@ -1702,7 +1706,8 @@ function parseMethodParams(method: RequestMethod, input: unknown): JsonObject {
       return params;
     }
     case "malink.events.subscribe": {
-      const params = paramsWithContext(input, ["afterCursor", "maxReplayEvents"]);
+      const params = paramsWithContext(input, ["afterCursor", "maxReplayEvents", "coalescePresentation"]);
+      if (params.coalescePresentation !== undefined) requiredBoolean(params.coalescePresentation, "coalescePresentation");
       optionalOpaqueId(params.afterCursor, "afterCursor");
       const maxReplayEvents = optionalPositiveInteger(
         params.maxReplayEvents,

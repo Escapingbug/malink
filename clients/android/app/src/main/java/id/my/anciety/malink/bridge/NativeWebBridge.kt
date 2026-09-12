@@ -22,7 +22,12 @@ class NativeWebBridge(
     private val dispatcher = BridgeDispatcher(
         runtime = runtime,
         eventSink = { notification ->
-            webView.post { notificationSink?.invoke(notification) }
+            webView.post {
+                notificationSink?.let { sink ->
+                    sink(notification)
+                    diagnostics.record("power.presentation_delivery")
+                }
+            }
         },
         unexpectedFailureSink = { method, error ->
             diagnostics.record(

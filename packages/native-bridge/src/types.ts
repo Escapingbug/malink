@@ -347,6 +347,7 @@ export type EventsSubscribeParams = {
   context: BridgeContext;
   afterCursor?: string;
   maxReplayEvents?: number;
+  coalescePresentation?: boolean;
 };
 
 export type EventsSubscribeResult = {
@@ -377,7 +378,7 @@ export type EventsUnsubscribeResult = {
 
 export type EventsDeliverNotification = RpcNotification<
   "malink.events.deliver",
-  { subscriptionId: string; events: ClientEvent[] }
+  { subscriptionId: string; events: ClientEvent[]; reset?: boolean }
 >;
 
 export type EncryptedMedia = {

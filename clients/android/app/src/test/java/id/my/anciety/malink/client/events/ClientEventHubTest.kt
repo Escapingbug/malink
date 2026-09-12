@@ -20,6 +20,40 @@ import org.junit.Test
 
 class ClientEventHubTest {
     @Test
+    fun `legacy subscribers retain normal delivery in the background`() {
+        val hub = hub()
+        val listener = RecordingListener()
+        val subscription = hub.subscribe(null, listener = listener)
+        hub.activate(subscription.subscriptionId, subscription.barrierCursor)
+        hub.setPresentationActive(false)
+        hub.upsertMessageTransient("session-1", message("legacy", 1))
+        assertEquals(1, listener.events.size)
+        assertTrue(listener.expiredSnapshots.isEmpty())
+    }
+
+    @Test
+    fun `background presentation coalesces and resumes via latest snapshot and history`() {
+        val hub = hub()
+        val listener = RecordingListener()
+        val bootstrap = hub.subscribe(null, listener = listener, coalescePresentation = true)
+        hub.activate(bootstrap.subscriptionId, bootstrap.barrierCursor)
+        hub.setPresentationActive(false)
+        repeat(100) { version ->
+            hub.upsertMessageTransient("session-1", message("stream", 1, text = "revision-$version"))
+        }
+        assertTrue(listener.events.isEmpty())
+        assertTrue(listener.expiredSnapshots.isEmpty())
+        hub.setPresentationActive(true)
+        assertEquals(1, listener.expiredSnapshots.size)
+        assertTrue(listener.events.isEmpty())
+        assertEquals("revision-99", hub.historyPage("session-1").messages.single().text)
+        val resumed = hub.subscribe(null, listener = listener)
+        hub.activate(resumed.subscriptionId, resumed.barrierCursor)
+        hub.upsertMessageTransient("session-1", message("stream", 1, text = "final"))
+        assertEquals(1, listener.events.size)
+    }
+
+    @Test
     fun `reverse historical pagination never replaces newer assistant or tool revisions`() {
         for ((type, versionField) in listOf(
             "assistant.message" to "messageVersion", "tool.activity" to "toolVersion",

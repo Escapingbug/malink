@@ -98,6 +98,7 @@ class ClientEventHub(
         val barrierSequence: Long,
         val barrierCursor: String,
         val listener: ClientEventListener,
+        val coalescePresentation: Boolean = false,
         var active: Boolean = false,
         var delivering: Boolean = false,
         var lastDeliveredSequence: Long,
@@ -109,6 +110,18 @@ class ClientEventHub(
 
     private val lock = Any()
     private val subscriptions = linkedMapOf<String, Subscription>()
+    private var presentationActive = true
+    private fun coalescingPresentation(): Boolean = !presentationActive &&
+        subscriptions.values.all { it.coalescePresentation }
+
+    /** Background presentation is reconstructed from the current snapshot/history. */
+    fun setPresentationActive(active: Boolean) {
+        val targets = synchronized(lock) {
+            presentationActive = active
+            if (active) subscriptions.keys.toList() else emptyList()
+        }
+        targets.forEach(::deliverAvailable)
+    }
     private var state: PersistedClientEventState
 
     init {
@@ -196,7 +209,7 @@ class ClientEventHub(
                 type = type,
                 payload = payload,
             )
-            val events = appendReplayEvents(
+            val events = if (!durable && coalescingPresentation()) emptyList() else appendReplayEvents(
                 state.events,
                 listOf(StoredClientEvent(nextSequence, event, transient = !durable)),
             )
@@ -317,7 +330,10 @@ class ClientEventHub(
                 headSequence = nextEventSequence,
                 headCursor = headCursor,
                 historySequence = nextHistorySequence,
-                events = appendReplayEvents(
+                // Dropping the presentation replay window intentionally makes
+                // old cursors expire. Resume uses the existing snapshot/history
+                // recovery contract, rather than replaying every streamed token.
+                events = if (coalescingPresentation()) emptyList() else appendReplayEvents(
                     state.events,
                     listOf(StoredClientEvent(nextEventSequence, event, transient = true)),
                 ),
@@ -514,6 +530,7 @@ class ClientEventHub(
         afterCursor: String?,
         requestedMaxReplayEvents: Int = minOf(maxReplayEvents, maxSubscriptionReplayEvents),
         listener: ClientEventListener,
+        coalescePresentation: Boolean = false,
     ): SubscriptionBootstrap = synchronized(lock) {
         // The negotiated request limit and this process's retained replay
         // window are independent. A client may accept up to the protocol
@@ -530,6 +547,7 @@ class ClientEventHub(
             barrierSequence = barrierSequence,
             barrierCursor = barrierCursor,
             listener = listener,
+            coalescePresentation = coalescePresentation,
             lastDeliveredSequence = barrierSequence,
             lastDeliveredCursor = barrierCursor,
             acknowledgedSequence = sequenceForCursor(afterCursor) ?: barrierSequence,
@@ -628,14 +646,14 @@ class ClientEventHub(
     private fun deliverAvailable(subscriptionId: String) {
         synchronized(lock) {
             val subscription = subscriptions[subscriptionId] ?: return
-            if (!subscription.active || subscription.delivering) return
+            if ((!presentationActive && subscription.coalescePresentation) || !subscription.active || subscription.delivering) return
             subscription.delivering = true
         }
         while (true) {
             val delivery = synchronized(lock) {
                 val subscription = subscriptions[subscriptionId]
                     ?: return
-                if (!subscription.active) {
+                if ((!presentationActive && subscription.coalescePresentation) || !subscription.active) {
                     subscription.delivering = false
                     return
                 }

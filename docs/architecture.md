@@ -433,15 +433,31 @@ command outbox. This keeps cross-device completion visible in the background.
 Android compares repeated deployment status by payload rather than envelope
 time. In the background, identical uncaused update observations do not refresh
 the UI projection; actual state changes and command replies still apply.
-Replay bookkeeping alone schedules persistence without rebuilding the UI
-snapshot. Projection checkpoints coalesce for 500 ms in the foreground and
-30 seconds in the background. Raw inbox records remain durable until a
-successful checkpoint, including on close or explicit disconnect; terminal
-notifications are processed immediately, independently of that window.
+Validated uncaused status observations with no semantic effect do not retain
+new envelope IDs in the projection. They are safe to re-evaluate after restart.
+Cleanup-only batches therefore avoid saving the entire projection. If any
+business mutation remains unsaved, cleanup still waits for a successful
+checkpoint; failure leaves the raw records available for replay. Checkpoints
+coalesce for 500 ms in the foreground and 30 seconds in the background.
+Terminal notifications are processed immediately, independently of that window.
+
+Native presentation subscribers can opt into `coalescePresentation`. While
+backgrounded, native history/state continues updating, but replaceable UI events
+clear the presentation replay window and delivery pauses. On resume, an expired
+cursor produces a bounded `malink.events.deliver` notification with `reset: true`
+and no events. The UI resubscribes for the current snapshot and refreshes only
+already-opened session history from local storage, including updated messages.
+Older subscribers retain normal delivery; newer UIs can fall back when an old
+APK rejects the subscription option. No Matrix history polling is added.
 High-frequency native sync/duplicate diagnostics are counted in minute windows
 without a timer, flushed on subsequent activity, visibility changes or export.
 Errors remain immediate; a process crash can lose the unflushed diagnostic
 counts, but not the durable application events.
+`power.*` diagnostic windows summarize successful raw inbox writes, event
+processing, projection saves, skipped saves and presentation resume work.
+`elapsed_ms` is summed wall time (not CPU time); raw `bytes` counts encrypted
+record bytes and projection `bytes` counts serialized projection bytes. These
+overlapping measurements must not be added together as total CPU usage.
 For successful turns, the native projection retains a bounded preview of the
 latest authenticated, final, non-tool `assistant.message` under the same turn
 identity and attaches it to the terminal notification. Failed turns use their

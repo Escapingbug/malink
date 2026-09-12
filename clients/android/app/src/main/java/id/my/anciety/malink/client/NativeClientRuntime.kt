@@ -253,6 +253,7 @@ class NativeClientRuntime(
             files.matrixMlp3InboxRecords,
             cipher,
             deviceId,
+            diagnostics,
         ).also {
             stateUpgrade.recoverPreserved("matrix-v3-raw-inbox", validate = it::validateStoredState)
         }
@@ -399,6 +400,7 @@ class NativeClientRuntime(
     private var matrixMlp3InboxReplayActive = false
     private var matrixMlp3ProjectionPersistenceDeferred = false
     private var matrixMlp3CheckpointJob: Job? = null
+    private val matrixMlp3CheckpointPolicy = ProjectionCheckpointPolicy()
     private val sessionReadReceiptScheduleLock = Any()
     private var sessionReadReceiptReconciliationRequested = false
     private var sessionReadReceiptInspectionRequested = false
@@ -554,7 +556,8 @@ class NativeClientRuntime(
         afterCursor: String?,
         maxReplayEvents: Int,
         listener: ClientEventListener,
-    ): SubscriptionBootstrap = eventHub.subscribe(afterCursor, maxReplayEvents, listener)
+        coalescePresentation: Boolean = false,
+    ): SubscriptionBootstrap = eventHub.subscribe(afterCursor, maxReplayEvents, listener, coalescePresentation)
 
     fun activate(subscriptionId: String, throughCursor: String): SubscriptionCursorResult =
         eventHub.activate(subscriptionId, throughCursor)
@@ -1541,6 +1544,14 @@ class NativeClientRuntime(
         }
     }
 
+    fun setPresentationActive(active: Boolean) {
+        val started = System.nanoTime()
+        eventHub.setPresentationActive(active)
+        if (active) diagnostics.record("power.presentation_resume", mapOf(
+            "elapsed_ms" to ((System.nanoTime() - started) / 1_000_000).toString(),
+        ))
+    }
+
     override fun onRuntimeStatusChanged() {
         refreshSnapshot(publishLifecycle = true)
     }
@@ -1687,14 +1698,18 @@ class NativeClientRuntime(
             if (!inserted) return
         }
         var projected = false
+        var checkpointRequired = true
         mutex.withLock {
             val waitMs = (System.nanoTime() - receivedAt) / 1_000_000
             if (waitMs >= 1_000) diagnostics.record("matrix.v3_event.queue_delayed", mapOf(
                 "event" to diagnosticOpaqueId(event.eventId), "wait_ms" to waitMs.toString(),
             ))
             try {
-                processMatrixEvent(event)
+                processMatrixEvent(event, onUnchangedStatus = { checkpointRequired = false })
                 if (isV3) {
+                    // Mark the mutation before releasing the mutex: a pending
+                    // cleanup must not overtake an unsaved event.
+                    matrixMlp3CheckpointPolicy.note(checkpointRequired)
                     matrixMlp3Inbox.projected(event.eventId)
                     projected = true
                 }
@@ -1736,9 +1751,10 @@ class NativeClientRuntime(
         if (projected) {
             // Retain disk raw records until the coalesced projection checkpoint
             // succeeds. A process death before then replays the same events.
-            mutex.withLock { scheduleMatrixMlp3Checkpoint() }
+            mutex.withLock { scheduleMatrixMlp3Checkpoint(checkpointRequired) }
         }
         val elapsedMs = (System.nanoTime() - receivedAt) / 1_000_000
+        diagnostics.record("power.event_processing", mapOf("elapsed_ms" to elapsedMs.toString()))
         if (elapsedMs >= 1_000) diagnostics.record("matrix.v3_event.processing_delayed", mapOf(
             "event" to diagnosticOpaqueId(event.eventId), "elapsed_ms" to elapsedMs.toString(),
         ))
@@ -3001,7 +3017,10 @@ class NativeClientRuntime(
         )
     }
 
-    private suspend fun processMatrixEvent(event: MatrixDecryptedEvent) {
+    private suspend fun processMatrixEvent(
+        event: MatrixDecryptedEvent,
+        onUnchangedStatus: () -> Unit = {},
+    ) {
         if (matrix.publicSession()?.roomBindings?.none { it.roomId == event.roomId } != false) return
         val root = json.parseToJsonElement(event.rawJson).jsonObject
         val content = (root["content"] as? JsonObject) ?: return
@@ -3014,7 +3033,7 @@ class NativeClientRuntime(
             acceptWorkspaceDeviceRevocation(content)
             return
         }
-        if (processMatrixMlp3Event(event, root, content, eventType)) return
+        if (processMatrixMlp3Event(event, root, content, eventType, onUnchangedStatus)) return
         val extension = content["io.malink"] as? JsonObject ?: return
         val kind = extension.string("kind") ?: return
         if (kind == "pairing_response") {
@@ -3050,6 +3069,7 @@ class NativeClientRuntime(
         root: JsonObject,
         content: JsonObject,
         eventType: String,
+        onUnchangedStatus: () -> Unit = {},
     ): Boolean {
         if (
             eventType != MLP3_MATRIX_KEY_GRANT_EVENT_TYPE &&
@@ -3210,6 +3230,7 @@ class NativeClientRuntime(
             threadRootHint,
             uiForeground = uiForegroundState(),
         )
+        if (result.unchangedStatus) onUnchangedStatus()
         if (result.changed && protocolPayload.string("type") in setOf("session.ready", "session.lifecycle")) {
             scheduleWorkspaceDirectoryConvergence()
         }
@@ -3238,7 +3259,8 @@ class NativeClientRuntime(
             // starve file references and terminal lifecycle events. Keep the
             // live bridge update in memory; command/lifecycle publications
             // and restart restoration retain their existing durable paths.
-            eventHub.upsertMessageTransient(sessionId, message, refreshedSnapshot())
+            eventHub.upsertMessageTransient(sessionId, message,
+                if (uiForegroundState()) refreshedSnapshot() else null)
         }
         result.progressedCommandId?.let { commandId ->
             if (outbox.recordProgress(commandId, protocolEvent.string("sessionId"))) {
@@ -3914,18 +3936,22 @@ class NativeClientRuntime(
     }
 
     /** Called under the runtime mutex; a fixed window cannot be starved by a busy timeline. */
-    private fun scheduleMatrixMlp3Checkpoint() {
+    private fun scheduleMatrixMlp3Checkpoint(projectionChanged: Boolean = true) {
+        matrixMlp3CheckpointPolicy.note(projectionChanged)
         if (matrixMlp3CheckpointJob?.isActive == true) return
         matrixMlp3CheckpointJob = scope.launch {
             // Raw events remain durable until this checkpoint succeeds. Keep
             // notifications/live projection immediate, batch only disk work.
             delay(if (uiForegroundState()) 500L else 30_000L)
             mutex.withLock {
-                if (trust != null && persistMatrixMlp3ProjectionCache(
+                if (!matrixMlp3CheckpointPolicy.dirty) diagnostics.record("power.checkpoint_skipped")
+                if (trust != null) matrixMlp3CheckpointPolicy.flush(save = {
+                    persistMatrixMlp3ProjectionCache(
                         matrixMlp3Projection, matrixMlp3ProjectionStore, diagnostics, "event_batch",
-                    )) {
+                    )
+                }, cleanup = {
                     matrixMlp3Inbox.flushProjected()
-                }
+                })
                 matrixMlp3CheckpointJob = null
             }
         }

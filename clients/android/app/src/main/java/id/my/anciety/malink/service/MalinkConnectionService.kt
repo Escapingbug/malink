@@ -141,6 +141,7 @@ class MalinkConnectionService : Service() {
                     return@launch
                 }
                 clientRuntime = created
+                created.setPresentationActive(uiForeground)
                 clientRuntimeReady.complete(created)
                 diagnostics.record("service.runtime_ready")
             } catch (error: Exception) {
@@ -341,6 +342,7 @@ class MalinkConnectionService : Service() {
 
         fun setUiForeground(value: Boolean) {
             uiForeground = value
+            clientRuntime?.setPresentationActive(value)
             diagnostics.record(
                 "service.ui_foreground",
                 mapOf("running" to value.toString()),

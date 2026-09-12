@@ -17,6 +17,18 @@ import {
 } from "../src/index.js";
 
 const context = { bridgeSessionId: "bridge-session-1" };
+it("validates opt-in presentation recovery and bounded reset notifications", () => {
+  expect(parseRpcRequest(request("malink.events.subscribe", {
+    context, coalescePresentation: true,
+  })).method).toBe("malink.events.subscribe");
+  const reset = { jsonrpc: "2.0", method: "malink.events.deliver",
+    params: { subscriptionId: "subscription-1", events: [], reset: true } };
+  expect(parseEventsDeliverNotification(reset).params.reset).toBe(true);
+  expect(() => parseEventsDeliverNotification({ ...reset,
+    params: { ...reset.params, reset: "yes" } })).toThrow();
+  expect(() => parseEventsDeliverNotification({ ...reset,
+    params: { ...reset.params, events: [{}] } })).toThrow();
+});
 describe("generic incoming file shares", () => {
   it("accepts bounded files and binary chunks without diagnostic-specific metadata", () => {
     expect(parseRpcRequest(request("malink.share.pending", { context })).method).toBe("malink.share.pending");

@@ -686,7 +686,7 @@ class BridgeDispatcher(
                 requireContext(
                     request.params,
                     mutation = false,
-                    optionalExtra = setOf("afterCursor", "maxReplayEvents"),
+                    optionalExtra = setOf("afterCursor", "maxReplayEvents", "coalescePresentation"),
                 )
                 var subscriptionId: String? = null
                 val listener = object : ClientEventListener {
@@ -694,12 +694,24 @@ class BridgeDispatcher(
                         subscriptionId ?: throw IllegalStateException("Event subscription is not initialized."),
                         events,
                     )
-                    override fun onCursorExpired(snapshot: ClientSnapshot) = Unit
+                    override fun onCursorExpired(snapshot: ClientSnapshot) {
+                        if (optionalBoolean(request.params, "coalescePresentation") != true) return
+                        eventSink(buildJsonObject {
+                            put("jsonrpc", "2.0")
+                            put("method", "malink.events.deliver")
+                            put("params", buildJsonObject {
+                                put("subscriptionId", subscriptionId!!)
+                                put("events", JsonArray(emptyList()))
+                                put("reset", true)
+                            })
+                        }.toString())
+                    }
                 }
                 var subscribed = runtime.client().subscribe(
                     optionalString(request.params, "afterCursor", 512),
                     optionalInt(request.params, "maxReplayEvents") ?: 1_000,
                     listener,
+                    coalescePresentation = optionalBoolean(request.params, "coalescePresentation") == true,
                 )
                 var response = subscriptionToJson(subscribed)
                 if (response.toString().toByteArray(Charsets.UTF_8).size > MAX_RPC_RESULT_BYTES) {
@@ -708,6 +720,7 @@ class BridgeDispatcher(
                         afterCursor = null,
                         maxReplayEvents = optionalInt(request.params, "maxReplayEvents") ?: 1_000,
                         listener = listener,
+                        coalescePresentation = optionalBoolean(request.params, "coalescePresentation") == true,
                     )
                     response = subscriptionToJson(subscribed)
                 }
@@ -1285,6 +1298,13 @@ class BridgeDispatcher(
                 put("maxRpcIdLength", 128)
             })
         }
+    }
+
+    private fun optionalBoolean(params: JsonObject, name: String): Boolean? {
+        val value = params[name] ?: return null
+        if (value == JsonPrimitive(true)) return true
+        if (value == JsonPrimitive(false)) return false
+        invalidParams("$name must be a boolean.")
     }
 
     private fun notifyEvents(subscriptionId: String, events: List<ClientEvent>) {
