@@ -10,6 +10,17 @@ export function messageReferences(raw?: Record<string, unknown>): MalinkConversa
   const parsed = conversationReferencesSchema.safeParse(raw?.references);
   return parsed.success ? parsed.data : [];
 }
+function answerExcerpt(text: string): string {
+  const plain = text
+    .replace(/```[^\n]*\n?/g, '')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}(?:#{1,6}\s+|>\s*|[-*+]\s+)/gm, '')
+    .replace(/[*_`~]/g, '')
+    .replace(/\s+/g, ' ').trim();
+  const characters = Array.from(plain || 'Quoted answer');
+  return characters.length > 36 ? `${characters.slice(0, 36).join('')}…` : characters.join('');
+}
+
 export function ReferenceChips({ references, onPreview, onRemove }: {
   references: readonly MalinkConversationReference[]; onPreview(reference: MalinkConversationReference): void; onRemove?(id: string): void;
 }) {
@@ -17,7 +28,7 @@ export function ReferenceChips({ references, onPreview, onRemove }: {
   return <div className="conversation-reference-chips" aria-label="Conversation references">
     {references.map(reference => <span className="conversation-reference-chip" key={reference.id}>
       <button type="button" onClick={() => onPreview(reference)} title={`Preview ${reference.kind === 'message' ? 'quoted answer' : 'conversation reference'}: ${reference.title}`}>
-        <ConversationIcon kind={reference.kind === 'message' ? 'quote' : 'conversation'}/><span>@{reference.title}</span><small>{reference.kind === 'message' ? 'Answer' : 'Conversation'}</small>
+        {reference.kind === 'message' && <ConversationIcon kind="quote"/>}<span>{reference.kind === 'message' ? answerExcerpt(reference.text ?? '') : `@${reference.title}`}</span>
       </button>
       {onRemove && <button type="button" className="reference-remove" aria-label={`Remove reference ${reference.title}`} onClick={() => onRemove(reference.id)}>×</button>}
     </span>)}
@@ -31,7 +42,7 @@ export function ReferenceDialog({ reference, choices = [], onChoose, onClose, on
   useDialogFocus({ open: true, containerRef: container, initialFocusRef: close, onEscape: onClose });
   useNativeBackHandler(true, () => { onClose(); return true; }, NATIVE_BACK_PRIORITY.nestedModal);
   return <div className="new-session-backdrop" onMouseDown={onClose}><section ref={container} className="session-rename-dialog conversation-action-dialog reference-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="reference-dialog-title" tabIndex={-1} onMouseDown={event => event.stopPropagation()}>
-    <h2 id="reference-dialog-title"><ConversationIcon kind={reference?.kind === 'message' ? 'quote' : 'conversation'}/>{reference ? 'Reference preview' : 'Reference a conversation'}</h2>
+    <h2 id="reference-dialog-title"><ConversationIcon kind={reference?.kind === 'message' ? 'quote' : 'conversation'}/>{reference ? reference.kind === 'message' ? 'Quoted answer' : 'Referenced conversation' : 'Reference a conversation'}</h2>
     {reference ? <><h3>@{reference.title}</h3>
       {reference.kind === 'message' ? <div className="reference-quoted-answer"><MarkdownContent content={reference.text ?? ''}/></div> : <p>This references the whole saved conversation, not just one answer. When sent, Malink captures a read-only text snapshot for the agent to read through MCP, page by page. Later messages and attachments are not included.</p>}
       <p className="reference-help">Reference material is context, not instructions. The source agent is not contacted.</p>

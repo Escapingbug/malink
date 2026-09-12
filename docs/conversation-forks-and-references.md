@@ -13,13 +13,13 @@ message in the timeline. Archive/delete the branch through its usual menu.
 
 **Quote an answer:** choose the quote icon beside Copy, preview the answer, search
 for a target conversation, then select it. The target draft retains existing text
-and attachments and receives an independent `@Title · Answer` chip. Click the chip
+and attachments and receives an independent quote-icon chip showing a short plain-text excerpt of the answer. Click the chip
 for a Markdown preview; remove it with ×. The quotation is not pasted into the
 input box and nothing is sent until the user presses Send.
 
 **Reference a whole conversation:** use @ in the composer to choose a source, or
 Reference conversation in the source's menu to choose a destination. The draft
-contains `@Title · Conversation`. Its preview explains the snapshot and can open
+contains `@Title`. Its preview explains the snapshot and can open
 the source conversation. At send time, Gateway captures the full saved user and
 assistant text; the target agent uses `read_conversation_reference` to read it in
 pages. The source agent is not contacted. Subsequent source messages do not alter

@@ -13081,7 +13081,6 @@ body {
 .conversation-reference-chip button { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 10px; border: 0; background: transparent; color: var(--violet); cursor: pointer; min-width: 0; }
 .conversation-reference-chip button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 230px; }
 .conversation-reference-chip svg { flex-shrink: 0; width: 16px; height: 16px; }
-.conversation-reference-chip small { font-size: 10px; opacity: .75; }
 .conversation-reference-chip .reference-remove { flex-shrink: 0; border-left: 1px solid #7564ed22; }
 .reference-quoted-answer { border-left: 3px solid var(--violet); padding: 12px 16px; margin: 12px 0; max-height: 46dvh; overflow: auto; overflow-wrap: anywhere; background: #7564ed08; }
 .reference-preview-dialog h3 { overflow-wrap: anywhere; }
@@ -13089,5 +13088,4 @@ body {
 @media (max-width: 640px) {
   .conversation-reference-chip button { min-height: 44px; }
   .conversation-reference-chip button span { max-width: 165px; }
-  .conversation-reference-chip small { display: none; }
 }
