@@ -6684,7 +6684,8 @@ select:focus-visible {
 .web-push-settings,
 .native-update-settings,
 .pwa-update-settings,
-.settings-diagnostic-card {
+.settings-diagnostic-card,
+.settings-compact-row {
   display: flex;
   align-items: center;
   gap: 14px;
@@ -6742,7 +6743,8 @@ select:focus-visible {
 .native-update-settings button,
 .native-update-settings .native-update-action,
 .pwa-update-settings button,
-.settings-diagnostic-card button {
+.settings-diagnostic-card button,
+.settings-compact-row button {
   min-height: 36px;
   padding: 0 12px;
   border-radius: 9px;
@@ -13221,144 +13223,103 @@ body {
   .conversation-reference-chip button span { max-width: 165px; }
 }
 
-/* The card opens management; its separate status button refreshes only. */
-.gateway-profile-card.computer-management-row { position: relative; padding-bottom: 64px; cursor: pointer; }
-.computer-card-open { position: absolute; inset: 0; width: 100%; border: 1px solid var(--line); border-radius: inherit; background: transparent; cursor: pointer; }
-.computer-card-open > span { position: absolute; right: 18px; top: 22px; font-size: 24px; }
-.computer-card-open:hover { background: rgba(100,110,180,.04); }
-.computer-card-open:focus-visible { outline: 2px solid #7055b7; outline-offset: 2px; }
-.computer-card-status { position: absolute; left: 20px; bottom: 14px; z-index: 1; display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; min-height: 36px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); font: inherit; font-size: 12px; cursor: pointer; }
-.computer-card-status i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-.computer-card-status.computer-user-state-online { color: #16734b; border-color: #c7e3d6; background: #f3fbf6; }
-.gateway-management-flat { display: grid; gap: 14px; padding: 18px; border: 1px solid var(--line); border-radius: 16px; }
-.gateway-management-flat p { margin: 0; line-height: 1.5; font-size: 13px; }
-.gateway-management-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.gateway-management-heading h3 { margin: 0; font-size: 17px; }
-.gateway-management-version { color: var(--muted); }
-.gateway-management-version span { display: block; overflow-wrap: anywhere; font-size: 12px; }
-.gateway-management-actions { display: flex; flex-wrap: wrap; gap: 10px; }
-.gateway-management-actions button, .gateway-management-heading button { min-height: 44px; padding: 10px 15px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
-.gateway-management-actions .primary-button { background: #7055b7; color: #fff; }
-.gateway-management-actions .secondary-button, .gateway-management-heading .secondary-button { background: var(--panel); }
-.gateway-management-flat button:disabled, .computer-card-status:disabled { opacity: .5; cursor: default; }
-.gateway-management-caption { color: var(--muted); }
-.gateway-management-secondary:empty { display: none; }
-.computer-details > .computer-action-menu { display: flex; flex-wrap: wrap; gap: 10px; }
-.computer-details > .computer-action-menu > .computer-action-entry { width: auto; flex: 1 1 140px; border: 1px solid var(--line); border-radius: 12px; }
+/* Gateway management shares Settings row geometry; business states only change content. */
+.settings-icon { display: block; width: 16px; height: 16px; flex-shrink: 0; }
+.gateway-visual-list { border: 0; background: transparent; padding: 0; }
+.gateway-visual-list > header { padding: 0 0 12px; border: 0; }
+.gateway-visual-list > header strong { font-size: var(--settings-label-size); color: var(--settings-label-color); }
+.gateway-visual-list > div { display: grid; gap: 12px; }
+.gateway-visual-list.is-detail > header > button { display: none; }
+.gateway-visual-list .gateway-profile-card.computer-management-row {
+  position: relative; padding: 13px 36px 13px 13px;
+  border: 1px solid var(--settings-border); border-radius: var(--settings-radius); background: var(--panel);
+}
+.computer-card-open { position: absolute; inset: 0; width: 100%; border: 0; border-radius: inherit; background: transparent; cursor: pointer; }
+.computer-card-open > span { position: absolute; right: 13px; top: 50%; transform: translateY(-50%); color: var(--settings-caption-color); font-size: 20px; }
+.computer-card-open:hover { background: rgb(100 110 180 / 4%); }
+.gateway-visual-list .computer-card-status {
+  position: relative; grid-column: 2; grid-row: 1; z-index: 1;
+  display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 5px 10px;
+  border: 1px solid var(--settings-border); border-radius: 9px; background: var(--panel);
+  color: var(--settings-label-color); font: 700 var(--settings-action-size)/1.4 var(--font-sans); cursor: pointer;
+}
+.computer-card-status i, .gateway-connection-state i { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: currentColor; }
+.gateway-visual-list .computer-card-status.computer-user-state-online,
+.gateway-connection-state.is-online { color: #16734b; }
+.computer-card-status > span { text-align: left; }
+.computer-card-status small { display: block; color: var(--settings-caption-color); font-size: var(--settings-caption-size); font-weight: 400; }
+.gateway-visual-list .gateway-device-mark { width: 36px; height: 36px; background: var(--violet-soft); color: var(--violet); border: 0; border-radius: 11px; }
+.gateway-visual-list .computer-management-row .gateway-profile-overview { grid-template-columns: 36px minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; }
+.gateway-visual-list .computer-management-row .gateway-device-mark { grid-row: auto; }
+.gateway-visual-list .gateway-profile-identity strong { font-size: var(--settings-label-size); color: var(--settings-label-color); }
+.gateway-visual-list .gateway-profile-identity small { font-size: var(--settings-caption-size); color: var(--settings-caption-color); }
+.gateway-visual-list .gateway-profile-card.computer-management-detail { padding: 0; }
+.gateway-visual-list .computer-management-detail > .gateway-profile-overview { padding: 0 0 12px; }
+.gateway-visual-list .computer-management-detail .gateway-profile-identity strong { font-size: var(--settings-heading-size); color: var(--settings-heading-color); letter-spacing: -.02em; }
+.gateway-visual-list .computer-back { display: inline-flex; align-items: center; min-height: 36px; padding: 0 12px; border: 1px solid var(--settings-border); border-radius: 9px; background: var(--panel); color: var(--settings-label-color); font: 700 var(--settings-action-size)/1.4 var(--font-sans); }
+.gateway-management-flat { display: grid; gap: 12px; padding: 0; border: 0; background: transparent; box-shadow: none; }
+.gateway-management-flat .settings-compact-row { margin: 0; min-width: 0; }
+.gateway-connection-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
+.gateway-connection-state { display: inline-flex; align-items: center; gap: 6px; color: var(--settings-label-color); font-size: var(--settings-label-size); font-weight: 700; }
+.gateway-management-flat .gateway-check-result { color: var(--settings-caption-color); font-size: var(--settings-caption-size); line-height: 1.45; overflow-wrap: anywhere; }
+.gateway-management-flat .gateway-management-refresh { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; gap: 6px; }
+.gateway-software-task { flex-wrap: wrap; }
+.gateway-software-summary { flex: 1 1 140px; min-width: 0; display: grid; gap: 3px; }
+.gateway-management-heading { display: flex; align-items: center; gap: 8px; }
+.gateway-management-heading-copy { min-width: 0; }
+.gateway-management-eyebrow { display: block; margin-bottom: 3px; color: var(--settings-caption-color); font-size: var(--settings-caption-size); }
+.gateway-management-heading h3 { margin: 0; color: var(--settings-label-color); font-size: var(--settings-label-size); font-weight: 700; line-height: 1.45; }
+.gateway-success-mark { display: inline-flex; color: #16734b; }
+.gateway-management-flat p { margin: 0; line-height: 1.45; font-size: var(--settings-label-size); color: var(--settings-label-color); overflow-wrap: anywhere; }
+.gateway-management-flat .gateway-management-version,
+.gateway-management-flat .gateway-management-caption { color: var(--settings-caption-color); font-size: var(--settings-caption-size); }
+.gateway-management-version span { font: inherit; overflow-wrap: anywhere; }
+.gateway-software-task > p { flex-basis: 100%; }
+.gateway-management-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.gateway-software-task > .gateway-management-actions { flex: 0 1 auto; max-width: 100%; }
+.gateway-management-actions:empty { display: none; }
+.gateway-management-actions button,
+.gateway-management-flat .settings-compact-row button {
+  min-height: 36px; padding: 6px 12px; border: 1px solid var(--settings-border); border-radius: 9px;
+  font: 700 var(--settings-action-size)/1.45 var(--font-sans); cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast), transform var(--motion-fast);
+}
+.gateway-management-actions .primary-button { background: var(--violet); border-color: var(--violet); color: white; }
+.gateway-management-actions .secondary-button,
+.gateway-management-flat .settings-compact-row .secondary-button { background: var(--panel); color: var(--settings-label-color); }
+.gateway-management-actions .primary-button:hover:not(:disabled) { background: var(--violet-dark); }
+.gateway-management-actions .secondary-button:hover:not(:disabled),
+.gateway-management-refresh:hover:not(:disabled) { background: var(--soft); }
+.gateway-management-flat button:disabled, .computer-card-status:disabled { opacity: .55; cursor: default; }
+.gateway-management-secondary { justify-content: flex-start; }
+.gateway-visual-list .computer-details > .computer-action-menu { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.gateway-visual-list .computer-details > .computer-action-menu > .computer-action-entry {
+  display: inline-flex; align-items: center; gap: 6px; width: auto; min-height: 36px; padding: 6px 12px;
+  border: 1px solid var(--settings-border); border-radius: 9px; background: var(--panel);
+}
+.gateway-visual-list .computer-action-entry .computer-action-icon { width: 16px; height: 16px; background: transparent; color: var(--settings-caption-color); }
+.gateway-visual-list .computer-action-entry strong { color: var(--settings-label-color); font: 700 var(--settings-action-size)/1.45 var(--font-sans); }
 .computer-details > .computer-action-menu > .computer-action-entry small,
 .computer-details > .computer-action-menu > .computer-action-entry > span:last-child { display: none; }
-
-.gateway-visual-list { border: 0; background: transparent; padding: 0; }
-.gateway-visual-list > header { padding: 0 0 16px; border: 0; }
-.gateway-visual-list > div { display: grid; gap: 12px; }
-.gateway-visual-list .gateway-profile-card.computer-management-row { padding: 20px 56px 70px 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); }
-.gateway-visual-list .computer-card-open { border: 0; border-radius: 16px; }
-.gateway-visual-list .computer-card-status { min-height: 40px; bottom: 16px; border-radius: 20px; padding-inline: 12px; font-size: 12px; }
-.gateway-visual-list .gateway-profile-card.computer-management-detail { padding: 4px 0 0; }
-.gateway-visual-list .computer-management-detail > .gateway-profile-overview { padding: 0 4px 20px; }
-.gateway-visual-list .computer-management-detail .gateway-profile-identity strong { font-size: 18px; line-height: 1.4; }
-.gateway-visual-list .computer-back { display: inline-flex; align-items: center; min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--muted); font-size: 12px; }
-.gateway-visual-list.is-detail > header > button { display: none; }
-.gateway-management-flat { padding: 0; gap: 12px; background: transparent; border: 0; border-radius: 0; box-shadow: none; }
-.gateway-connection-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.gateway-connection-state { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
-.gateway-connection-state i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-.gateway-connection-state.is-online { color: #16734b; }
-.gateway-software-task { display: grid; gap: 14px; padding: 16px; border: 1px solid #e2e4ea; border-radius: 12px; background: var(--panel); }
-.gateway-success-mark { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; color: #16734b; background: #edf8f2; font-size: 14px; }
-.gateway-connection-row .gateway-management-refresh { display: grid; place-items: center; width: 44px; height: 44px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--muted); cursor: pointer; }
-.gateway-management-heading { gap: 12px; }
-.gateway-management-mark { width: 42px; height: 42px; flex: 0 0 42px; display: grid; place-items: center; border-radius: 12px; color: var(--violet); background: var(--violet-soft); }
-.gateway-management-mark svg { width: 22px; height: 22px; }
-.gateway-management-success .gateway-management-mark { color: #16734b; background: #edf8f2; }
-.gateway-management-attention .gateway-management-mark { color: var(--attention); background: var(--attention-soft); }
-.gateway-management-heading-copy { flex: 1; min-width: 0; }
-.gateway-management-eyebrow { display: block; margin-bottom: 3px; font-size: 11px; font-weight: 500; color: var(--muted); }
-.gateway-management-heading h3 { font-size: 16px; font-weight: 650; line-height: 1.35; }
-.gateway-management-heading .gateway-management-refresh { flex: 0 0 36px; width: 36px; height: 36px; min-height: 36px; padding: 8px; border: 1px solid var(--line); color: var(--muted); border-radius: 10px; }
-.gateway-management-refresh svg { width: 18px; height: 18px; }
-.gateway-management-flat .gateway-management-version { display: flex; gap: 12px; justify-content: space-between; align-items: baseline; padding-bottom: 14px; border-bottom: 1px solid var(--line); font-size: 11px; }
-.gateway-management-version span { min-width: 0; max-width: 78%; font: 11px/1.5 var(--font-mono); text-align: right; overflow-wrap: anywhere; }
-.gateway-management-flat .gateway-management-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
-.gateway-management-flat .gateway-management-actions:empty { display: none; }
-.gateway-management-actions button { font: 600 13px/1.4 var(--font-sans); transition: background var(--motion-fast), border-color var(--motion-fast), box-shadow var(--motion-fast); }
-.gateway-management-actions .primary-button { background: var(--violet); border-color: var(--violet); color: #fff; }
-.gateway-management-actions .primary-button:hover:not(:disabled) { background: var(--violet-dark); border-color: var(--violet-dark); }
-.gateway-management-actions .secondary-button:hover:not(:disabled) { background: var(--soft); border-color: var(--line-strong); }
-.gateway-management-actions button:focus-visible, .gateway-management-refresh:focus-visible, .computer-card-status:focus-visible { outline: 2px solid var(--violet); outline-offset: 3px; }
-.gateway-management-flat .gateway-management-caption { font-size: 11px; line-height: 1.5; }
-.gateway-management-flat > .gateway-management-secondary { margin-top: 0; padding-top: 0; border-top: 0; }
-.gateway-management-flat > .gateway-management-secondary:empty { display: none; }
-.gateway-visual-list .computer-details > .computer-action-menu { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
-.gateway-visual-list .computer-details > .computer-action-menu > .computer-action-entry { width: 100%; min-height: 48px; display: flex; gap: 8px; padding: 12px; background: var(--panel); border-radius: 12px; }
-.gateway-visual-list .computer-action-entry .computer-action-icon { width: 24px; height: 24px; background: transparent; color: var(--muted); font-size: 17px; }
-.gateway-visual-list .computer-action-entry strong { font-size: 12px; font-weight: 600; color: var(--ink); }
 .gateway-refresh-symbol { width: 16px; height: 16px; flex: 0 0 16px; }
 .computer-card-status[aria-busy="true"] .gateway-refresh-symbol,
 .gateway-management-refresh[aria-busy="true"] svg { animation: gateway-refresh-turn 1s linear infinite; }
 .computer-card-status[aria-busy="true"], .gateway-management-refresh[aria-busy="true"] { opacity: .85; cursor: progress; }
 @keyframes gateway-refresh-turn { to { transform: rotate(360deg); } }
-.gateway-visual-list .gateway-profile-card.computer-management-row { padding-bottom: 88px; }
-.gateway-visual-list .computer-card-status { min-height: 46px; border-radius: 12px; padding: 9px 12px; gap: 10px; }
-.computer-card-status > span { text-align: left; line-height: 1.4; }
-.computer-card-status small { display: block; font-size: 10px; font-weight: 400; color: var(--muted); margin-top: 2px; }
-.gateway-management-flat .gateway-check-result { color: var(--muted); font-size: 11px; line-height: 1.5; }
-.gateway-management-flat > .gateway-management-actions { gap: 12px; }
-.gateway-management-heading .gateway-management-refresh { width: 44px; height: 44px; flex-basis: 44px; min-height: 44px; padding: 12px; }
 .computer-action-body .computer-panel-buttons { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
 .computer-action-body > button + button { margin-left: 12px; }
 .computer-action-body .gateway-management-actions { gap: 12px; margin-top: 18px; }
 .gateway-management-actions button:active:not(:disabled), .computer-action-entry:active:not(:disabled),
-.computer-card-status:active:not(:disabled), .gateway-management-refresh:active:not(:disabled) { transform: translateY(1px); filter: brightness(.95); }
+.computer-card-status:active:not(:disabled), .gateway-management-refresh:active:not(:disabled) { transform: translateY(1px); }
+.computer-card-open:focus-visible, .gateway-management-actions button:focus-visible,
+.gateway-management-refresh:focus-visible, .computer-card-status:focus-visible { outline: 2px solid var(--violet); outline-offset: 3px; }
 @media (prefers-reduced-motion: reduce) {
   .computer-card-status[aria-busy="true"] .gateway-refresh-symbol,
   .gateway-management-refresh[aria-busy="true"] svg { animation: none; }
 }
 @media (max-width: 600px) {
-  .gateway-management-flat { padding: 0; gap: 12px; }
-  .gateway-management-flat .gateway-management-actions { grid-template-columns: minmax(0, 1fr); }
-  .gateway-management-heading h3 { font-size: 15px; }
-  .gateway-management-heading .gateway-management-refresh { width: 40px; height: 40px; flex-basis: 40px; padding: 10px; }
+  .gateway-software-task { align-items: stretch; flex-direction: column; flex-wrap: nowrap; }
+  .gateway-software-summary { flex-basis: auto; }
+  .gateway-software-task > p { flex-basis: auto; }
+  .gateway-software-task > .gateway-management-actions button { flex: 1 1 auto; }
 }
-
-/* Gateway uses the same type/color scale as the other Settings sections.
-   Keep touch targets independent of the compact Settings typography. */
-.settings-icon { display: block; width: 16px; height: 16px; flex-shrink: 0; }
-.gateway-visual-list .computer-management-detail .gateway-profile-identity strong,
-.gateway-management-heading h3 {
-  font-size: var(--settings-heading-size); font-weight: 700;
-  color: var(--settings-heading-color); letter-spacing: -.02em;
-}
-.gateway-management-flat p,
-.gateway-connection-state,
-.gateway-visual-list .computer-card-status,
-.gateway-visual-list .gateway-profile-identity strong {
-  font-size: var(--settings-label-size);
-}
-.gateway-management-flat p { color: var(--settings-label-color); }
-.gateway-management-eyebrow,
-.gateway-management-flat .gateway-management-version,
-.gateway-management-flat .gateway-management-version span,
-.gateway-management-flat .gateway-management-caption,
-.gateway-management-flat .gateway-check-result,
-.gateway-visual-list .gateway-profile-identity small,
-.gateway-visual-list .computer-card-status small {
-  font-size: var(--settings-caption-size); color: var(--settings-caption-color);
-}
-.gateway-management-actions button,
-.gateway-visual-list .computer-action-entry strong,
-.gateway-visual-list .computer-back {
-  font-family: var(--font-sans); font-size: var(--settings-action-size); font-weight: 700;
-}
-.gateway-management-actions .secondary-button,
-.gateway-visual-list .computer-action-entry strong { color: var(--settings-label-color); }
-.gateway-management-actions button { border-radius: 9px; border-color: var(--settings-border); }
-.gateway-management-actions .primary-button { border-color: var(--violet); }
-.gateway-software-task,
-.gateway-visual-list .gateway-profile-card.computer-management-row,
-.gateway-visual-list .computer-details > .computer-action-menu > .computer-action-entry {
-  border-color: var(--settings-border); border-radius: var(--settings-radius);
-}
-.gateway-visual-list .gateway-device-mark { width: 36px; height: 36px; background: var(--violet-soft); color: var(--violet); border-radius: 11px; }
-.gateway-visual-list .computer-action-entry .computer-action-icon { color: var(--settings-caption-color); }
-.gateway-management-refresh .settings-icon { width: 16px; height: 16px; }

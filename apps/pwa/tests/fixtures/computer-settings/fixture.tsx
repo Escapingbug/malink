@@ -63,6 +63,7 @@ function Fixture() {
   };
   (window as any).setFixturePhase = (value: string) => { setPhase(value); if (value === "committed") setActive("v2"); };
   (window as any).setFixtureOffline = setOffline;
+  (window as any).setFixtureActiveBuild = setActive;
   (window as any).setFixtureForwardFailure = () => { setForwardOnly(true); setPhase("repair_required"); setStatusTime(Date.now()); setChecked(Date.now()); };
   (window as any).setFixtureCanRemove = setCanRemove;
   (window as any).setFixtureSessionOpen = setSessionOpen;

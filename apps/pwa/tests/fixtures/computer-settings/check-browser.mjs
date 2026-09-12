@@ -11,7 +11,7 @@ try {
   await page.getByRole('button',{name:'App & help',exact:true}).click();
   const settingsStyle = await page.locator('.settings-diagnostic-card').evaluate(el => {
     const style = selector => { const s=getComputedStyle(el.querySelector(selector)); return {fontSize:s.fontSize,color:s.color,fontWeight:s.fontWeight}; };
-    return {button:style('button'),caption:style('small')};
+    return {button:style('button'),caption:style('small'),buttonHeight:el.querySelector('button').getBoundingClientRect().height,padding:getComputedStyle(el).padding};
   });
   await page.getByRole('button',{name:/^Computers/}).click();
   await page.getByRole('button',{name:'Refresh status for Tokyo server · Tokyo',exact:true}).click();
@@ -53,12 +53,15 @@ try {
   await management().getByRole('heading',{name:'Update complete',exact:true}).waitFor();
   const gatewayStyle = await management().evaluate(el => {
     const style = selector => { const s=getComputedStyle(el.querySelector(selector)); return {fontSize:s.fontSize,color:s.color,fontWeight:s.fontWeight}; };
-    return {button:style('.gateway-management-actions button'),caption:style('.gateway-management-caption')};
+    return {button:style('.gateway-management-actions button'),caption:style('.gateway-management-caption'),buttonHeight:el.querySelector('.gateway-management-actions button').getBoundingClientRect().height,padding:getComputedStyle(el.querySelector('.gateway-software-task')).padding};
   });
   assert.equal(gatewayStyle.button.fontSize, settingsStyle.button.fontSize);
   assert.equal(gatewayStyle.button.fontWeight, settingsStyle.button.fontWeight);
   assert.equal(gatewayStyle.caption.fontSize, settingsStyle.caption.fontSize);
   assert.equal(gatewayStyle.caption.color, settingsStyle.caption.color);
+  assert.equal(gatewayStyle.buttonHeight, settingsStyle.buttonHeight);
+  assert.equal(gatewayStyle.padding, settingsStyle.padding);
+  assert.equal(await management().locator('.gateway-software-task').evaluate(el => el.getBoundingClientRect().height < 180), true);
   assert.equal(await page.locator('.computer-action-entry .settings-icon').count() >= 2, true);
   await page.screenshot({path:'/tmp/malink-simple-flow-qa/complete-'+width+'.png'});
   await management().getByRole('button',{name:'Delete update session',exact:true}).click();
@@ -78,6 +81,9 @@ try {
   await panel().getByRole('button',{name:'Restart when idle',exact:true}).click();
   assert.equal(await page.evaluate(()=>window.restart.mode),'when_idle');
   await page.keyboard.press('Escape');
+  await page.evaluate(()=>window.setFixtureActiveBuild('gateway-2026.09.12-073758Z-3fb1731'));
+  await management().getByText('gateway-2026.09.12-073758Z-3fb1731',{exact:true}).waitFor();
+  await page.screenshot({path:'/tmp/malink-simple-flow-qa/long-build-'+width+'.png'});
   assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll('.computer-details,.matrix-settings-body')].filter(el=>el.scrollWidth>el.clientWidth+2).map(el=>el.className)),[]);
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({width,errors,refreshSeparated:true,updateLifecycle:true,rollbackUpdatesAgain:true}));

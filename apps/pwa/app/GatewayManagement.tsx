@@ -30,20 +30,24 @@ export function GatewayManagement({ node, runtime, latestBuild, connected, lastV
   const now = Date.now();
   const online = connected && proof > 0 && proof <= now && now - proof <= GATEWAY_ONLINE_PROOF_WINDOW_MS;
   return <section className={"gateway-management-flat gateway-management-" + tone} aria-label="Gateway management">
-    <div className="gateway-connection-row">
+    <div className="gateway-connection-row settings-compact-row">
+      <span className="gateway-connection-copy">
       <span className={"gateway-connection-state" + (online ? " is-online" : "")}><i aria-hidden="true"/>{!connected ? "Client disconnected" : refreshing ? "Checking…" : online ? "Online" : "Status not confirmed"}</span>
+      {(refreshing || runtime.versionCheckedAt) && <small className="gateway-check-result" role="status">{refreshing ? "Checking this computer…" : (runtime.versionCheckError ? "No new reply" : "Status refreshed") + " · " + new Date(runtime.versionCheckedAt!).toLocaleTimeString()}</small>}
+      {runtime.versionCheckError && <small className="gateway-check-result" role="status">No reply to the last check. Check that this computer is running, then refresh.</small>}
+      </span>
       <button className="secondary-button gateway-management-refresh" type="button" disabled={!connected || busy || !onRefresh} onClick={onRefresh} aria-label="Refresh Gateway status" aria-busy={refreshing} title={refreshing ? "Checking this computer…" : "Refresh Gateway status"}>
-        <SettingsIcon name="refresh"/>
+        <SettingsIcon name="refresh"/><span>{refreshing ? "Checking…" : "Refresh"}</span>
       </button>
     </div>
-    {(refreshing || runtime.versionCheckedAt) && <p className="gateway-check-result" role="status">{refreshing ? "Checking this computer…" : (runtime.versionCheckError ? "No new reply" : "Status refreshed") + " · " + new Date(runtime.versionCheckedAt!).toLocaleTimeString()}</p>}
-    {runtime.versionCheckError && <p className="gateway-check-result" role="status">No reply to the last check. Check that this computer is running, then refresh.</p>}
-    <div className="gateway-software-task">
+    <div className="gateway-software-task settings-compact-row">
+    <div className="gateway-software-summary">
     <div className="gateway-management-heading">
       <div className="gateway-management-heading-copy"><span className="gateway-management-eyebrow">Software update</span><h3>{title}</h3></div>
       {tone === "success" && <span className="gateway-success-mark" aria-label="Update successful"><SettingsIcon name="check"/></span>}
     </div>
     <p className="gateway-management-version">Installed <span title={current}>{current ?? "Not yet confirmed"}</span></p>
+    </div>
     {temporary && <p role="status">Using an older version temporarily. Update soon to avoid compatibility problems.</p>}
     {runtime.versionSwitchError && <p role="alert">{runtime.versionSwitchError}</p>}
     {failed && <p role="status">{runtime.status?.executionTracks?.error ?? runtime.status?.detail ?? "The update did not finish. Open its session to review the result."}</p>}
