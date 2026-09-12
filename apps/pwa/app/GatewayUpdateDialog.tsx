@@ -286,13 +286,17 @@ function GatewayUpdateDialogContent({
                 className={`gateway-update-node gateway-update-node-${node.state}`}
               >
                 {embedded && <section className="computer-update-simple" aria-label="Update">
+                  <small>Gateway update</small>
                   <strong>{updateCompleted ? "Up to date" : candidateTrial ? "Ready to install"
                     : computerUpdateSummary(runtime, activeMode) ?? (node.state === "current" ? "Up to date" : node.state === "available" ? "Update available" : "Check computer status")}</strong>
                   <p>{candidateTrial || stagedPublishedRelease ? "Install when running tasks finish. You can keep using this computer."
                     : knownUpdateFailure ? "The update did not complete. Review recovery options below."
-                    : active || deploymentInProgress ? "You can leave settings while the update continues."
+                    : active || deploymentInProgress || showUpdateProgress ? "You can leave settings while the update continues."
                     : node.state === "available" ? "Prepare the new version without interrupting your work."
-                    : "Version and maintenance options are available below."}</p>
+                    : updateCompleted || node.state === "current" ? "This computer has the latest published version."
+                    : "Check this computer's connection before updating."}</p>
+                  {forwardOnlyConfirmation && <p role="alert">This update changes protected local data. Automatic rollback is unavailable. Continue only if you can access this computer directly.</p>}
+                  {!connected && <p role="status">Reconnect this client to manage updates.</p>}
                   <div className="computer-update-primary">
                     {runtimeNeedsAttention && !updateActionAvailable ? <button type="button" className="primary-button"
                       onClick={() => setAdvancedNodes(current => new Set([...current, node.gatewayNodeId]))}>Review recovery</button>
@@ -301,11 +305,12 @@ function GatewayUpdateDialogContent({
                       : publishedRelease && node.state === "available" && updateActionAvailable && !deploymentInProgress
                       ? <button type="button" className="primary-button" disabled={!connected || active}
                           aria-busy={active && activeMode !== "check_versions"}
-                          onClick={() => onStart(node, "when_idle")}>{active ? "Working…" : stagedPublishedRelease ? "Install when idle" : knownUpdateFailure ? "Retry update" : "Update"}</button>
+                          onClick={() => onStart(node, "when_idle")}>{active ? "Working…" : stagedPublishedRelease ? forwardOnlyConfirmation ? "Review installation" : "Install when idle" : knownUpdateFailure ? "Retry update" : "Update"}</button>
                       : !active && !deploymentInProgress && !showUpdateProgress && onCheckVersions
                       ? <button type="button" className="secondary-button" disabled={!connected}
                           onClick={() => onCheckVersions(node)}>Check status</button> : null}
                   </div>
+                  {(candidateTrial || (stagedPublishedRelease && !node.blueGreenUpdate)) && <button type="button" className="computer-text-action" disabled={!connected || active} onClick={() => setForceConfirmationNodeId(node.gatewayNodeId)}>Install and restart now…</button>}
                   {candidateTrial && completionConfirmationNodeId === node.gatewayNodeId && <div className="gateway-update-force-confirmation">
                     <strong>Install when running tasks finish?</strong>
                     <p>The new version will take over this computer's conversations.</p>
@@ -314,7 +319,35 @@ function GatewayUpdateDialogContent({
                       onClick={() => { setCompletionConfirmationNodeId(null); onPromote(node, "when_idle"); }}>Confirm installation</button>
                   </div>}
                 </section>}
-                <details className="computer-update-advanced" open={!embedded || advancedNodes.has(node.gatewayNodeId)}
+                {embedded && <details className="computer-update-advanced" open={advancedNodes.has(node.gatewayNodeId)}
+                  onToggle={event => { const isOpen = event.currentTarget.open; setAdvancedNodes(current => { const next = new Set(current); if (isOpen) next.add(node.gatewayNodeId); else next.delete(node.gatewayNodeId); return next; }); }}>
+                  <summary>Versions, records & troubleshooting</summary>
+                  <dl className="computer-version-facts">
+                    <div><dt>Installed</dt><dd>{runtime.status?.currentBuildId ?? node.currentBuildId ?? "Not reported"}</dd></div>
+                    <div><dt>Latest</dt><dd>{publishedRelease?.buildId ?? "Not confirmed"}</dd></div>
+                  </dl>
+                  <div className="computer-option-row"><span><strong>Computer status</strong><small>{activeMode === "check_versions" ? "Checking…" : runtime.versionCheckError ? "Last check did not succeed." : runtime.versionCheckedAt ? `Checked ${new Date(runtime.versionCheckedAt).toLocaleTimeString()}` : "Not checked yet"}</small></span>
+                    {onCheckVersions && <button type="button" disabled={!connected || active} onClick={() => onCheckVersions(node)}>Check again</button>}</div>
+                  {!statusWasSuperseded && runtime.maintenanceSessionId && node.targetProjectId && <div className="computer-option-row"><span><strong>Update record</strong><small>Agent activity and update results</small></span><button type="button" onClick={() => onOpenSession(node.targetProjectId!, runtime.maintenanceSessionId!)}>View update session</button></div>}
+                  {runtime.status?.executionTracks && <section className="computer-retained-version" aria-label="Retained version">
+                    <h3>Previous version</h3>
+                    <p>{runtime.status.executionTracks.standbyRelease ?? "No retained version reported."}</p>
+                    {onSelectVersion && ["steady", "attention"].includes(runtime.status.executionTracks.phase) && [...new Set([runtime.status.executionTracks.standbyRelease, ...(runtime.status.executionTracks.phase === "attention" ? [runtime.status.executionTracks.activeRelease, runtime.status.executionTracks.targetRelease] : [])])].filter((id): id is string => Boolean(id)).map(id => <button key={id} type="button" disabled={!connected || active} onClick={() => setVersionSelection({ nodeId: node.gatewayNodeId, releaseId: id, generation: runtime.status!.executionTracks!.generation })}>Switch to retained version {id}</button>)}
+                    {runtime.status.executionTracks.error && <p role="alert">{runtime.status.executionTracks.error}</p>}
+                  </section>}
+                  {versionSelection?.nodeId === node.gatewayNodeId && <div className="gateway-update-force-confirmation" role="group" aria-label="Confirm version switch"><strong>Switch to {versionSelection.releaseId}?</strong><p>Running tasks finish first. Conversations and data stay on this computer.</p><button type="button" onClick={() => setVersionSelection(null)}>Cancel</button><button type="button" disabled={!connected || active || runtime.status?.executionTracks?.generation !== versionSelection.generation} onClick={() => { onSelectVersion?.(node, versionSelection.releaseId, versionSelection.generation); setVersionSelection(null); }}>Confirm switch</button>{runtime.status?.executionTracks?.generation !== versionSelection.generation && <p role="status">The version state changed. Cancel and select a version again.</p>}</div>}
+                  {runtime.versionSwitchError && <p role="alert">{runtime.versionSwitchError}</p>}
+                  {deploymentOwner && !runtime.status?.executionTracks && (deployment.phase !== "steady" || deployment.recovery) && onRecover && <button type="button" disabled={!connected || recoveryBusy} onClick={() => onRecover(node)}>{recoveryBusy ? "Opening repair session…" : "Repair using previous Gateway"}</button>}
+                  {candidateTrial && <button type="button" disabled={!connected || active} onClick={() => onDiscard(node)}>Discard candidate</button>}
+                  {signedUpdateStatus && knownUpdateFailure && <GatewayUpdateFailureHelp gatewayLabel={owner.label} status={signedUpdateStatus} recovery={recovery} onExportDiagnostics={onExportDiagnostics} diagnosticExportBusy={diagnosticExportBusy} />}
+                  {runtime.state === "error" && !signedUpdateStatus && runtime.commandFailureCode && <GatewayUpdateRequestFailureHelp recovery={recovery} onExportDiagnostics={onExportDiagnostics} diagnosticExportBusy={diagnosticExportBusy} />}
+                  {!targetInstalled && maintenanceCleanupAllowed && <>
+                    {runtime.maintenanceSessionId && runtime.maintenanceSessionArchiveAvailable && <button type="button" disabled={!connected || runtime.maintenanceSessionArchiveBusy} onClick={() => onArchiveSession(node, runtime.maintenanceSessionId!)}>{runtime.maintenanceSessionArchiveBusy ? "Removing…" : "Delete failed update session"}</button>}
+                    {runtime.legacyMaintenanceSessionId && runtime.legacyMaintenanceSessionArchiveAvailable && !runtime.legacyMaintenanceSessionArchived && <button type="button" disabled={!connected || runtime.legacyMaintenanceSessionArchiveBusy} onClick={() => onArchiveSession(node, runtime.legacyMaintenanceSessionId!)}>{runtime.legacyMaintenanceSessionArchiveBusy ? "Removing…" : "Delete old update session"}</button>}
+                  </>}
+                  <details className="computer-raw-status"><summary>Technical update status</summary><p>{gatewayUpdateRuntimeStateDetail(runtime, node, release, connected, activeMode)}</p>{runtime.versionCheckError && <p>{runtime.versionCheckError}</p>}</details>
+                </details>}
+                {!embedded && <details className="computer-update-advanced" open
                   onToggle={event => { const open = event.currentTarget.open; setAdvancedNodes(current => {
                     if (current.has(node.gatewayNodeId) === open) return current;
                     const next = new Set(current); if (open) next.add(node.gatewayNodeId); else next.delete(node.gatewayNodeId); return next;
@@ -708,7 +741,7 @@ function GatewayUpdateDialogContent({
                     </>
                   )}
                 </div>
-                </details>
+                </details>}
                 {forceConfirming && (
                   <div
                     ref={forceConfirmationRef}

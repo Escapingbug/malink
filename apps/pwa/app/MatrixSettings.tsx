@@ -268,6 +268,10 @@ function MatrixSettingsDialog({
   const [manualRepairReason, setManualRepairReason] =
     useState<ConnectionRepairReason | null>(null);
   const [expandedComputer, setExpandedComputer] = useState<string | null>(initialComputerId ?? null);
+  const computerHeadingRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (expandedComputer) computerHeadingRef.current?.focus();
+  }, [expandedComputer]);
   useEffect(() => {
     if (open && computersRequested) {
       setActiveSection("computers");
@@ -678,7 +682,7 @@ function MatrixSettingsDialog({
           <section className="gateway-profile-list" aria-label="Workspace computers">
             <header>
               <span>
-                <strong>Workspace computers</strong>
+                {expandedComputer ? <button type="button" className="computer-back" onClick={() => { setExpandedComputer(null); onExpandComputer?.(null); }}>← All computers</button> : <strong>Workspace computers</strong>}
               </span>
               <button
                 type="button"
@@ -695,6 +699,7 @@ function MatrixSettingsDialog({
             <div>
               {gatewayProfiles.map((gateway) => {
                 const gatewayProfileId = gateway.gatewayNodeId ?? gateway.gatewayId;
+                if (expandedComputer && expandedComputer !== gatewayProfileId) return null;
                 const gatewayIdentity = gatewayProjectOwner(
                   gatewayProfileId,
                   gateway.gatewayName,
@@ -741,12 +746,12 @@ function MatrixSettingsDialog({
                 return (
                   <div
                     key={gatewayProfileId}
-                    className="gateway-profile-card active"
+                    className={`gateway-profile-card active computer-management-${expandedComputer ? "detail" : "row"}`}
                   >
                     <div className="gateway-profile-overview">
-                      <span className="gateway-device-mark" aria-hidden="true">G</span>
+                      <span className="gateway-device-mark" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span>
                       <span className="gateway-profile-identity">
-                        <strong>{gatewayIdentity.label}</strong>
+                        <strong ref={expandedComputer ? computerHeadingRef : undefined} tabIndex={expandedComputer ? -1 : undefined}>{gatewayIdentity.label}</strong>
                         <small title={gatewayProfileId}>
                           {gatewayIdentity.computerName} · {gateway.projectCount}{" "}
                           {gateway.projectCount === 1 ? "project" : "projects"}
@@ -765,11 +770,10 @@ function MatrixSettingsDialog({
                         title={liveness.detail}
                       >
                         <i aria-hidden="true" />
-                        <strong>{gatewayUpdateRuntimeByNode[gatewayProfileId]?.status?.executionTracks?.phase === "attention"
-                          ? "Version needs attention" : liveness.label}</strong>
+                        <strong>{liveness.label}</strong>
                       </span>
                     </div>
-                    <div className="gateway-profile-software">
+                    {!expandedComputer && <div className="gateway-profile-software">
                       <span>
                         <strong>{updateSummary ?? (!gatewayRelease || gatewayUpdateDiscoveryError
                           ? "Latest version not confirmed"
@@ -779,27 +783,24 @@ function MatrixSettingsDialog({
                         <button type="button" disabled={status !== "connected" || Boolean(gatewayUpdateActiveModesByNode[gatewayProfileId])}
                           onClick={() => { setExpandedComputer(gatewayProfileId); onExpandComputer?.(gatewayProfileId); onUpdateComputer(gatewayProfileId); }}>Update</button>
                       )}
-                      <button type="button" aria-expanded={expandedComputer === gatewayProfileId}
+                      <button type="button" className="computer-open" aria-label={`Manage ${gatewayIdentity.label}`}
                         onClick={() => {
                           const next = expandedComputer === gatewayProfileId ? null : gatewayProfileId;
                           setExpandedComputer(next);
                           onExpandComputer?.(next);
                         }}>
-                        {expandedComputer === gatewayProfileId ? "Close" : updateAvailable && !onUpdateComputer ? "Update options" : "Manage"}
+                        <span aria-hidden="true">›</span>
                       </button>
-                    </div>
+                    </div>}
                     {expandedComputer === gatewayProfileId && <div className="computer-details">
                       {renderGatewayDetails?.(gatewayProfileId)}
-                      <details className="computer-maintenance">
-                        <summary>Restart, rename & diagnostics</summary>
+                      <section className="computer-maintenance" aria-label="Computer settings">
+                        <h3>Computer</h3>
+                        {!editing && <div className="computer-option-row"><span><strong>Name</strong><small>{gateway.gatewayName}</small></span><button type="button" disabled={busy || !gatewayManagementReady || !targetProjectId} title={targetProjectId ? `Rename ${gatewayIdentity.label}` : "This Gateway has no available project route"} onClick={() => { setEditingGatewayNodeId(gatewayProfileId); setGatewayNameDraft(gateway.gatewayName); }}>Rename</button></div>}
                     <div className="gateway-profile-restart">
                       <span>
-                        <small>Provider changes</small>
-                        <strong>Restart Gateway to load them</strong>
-                        <small>
-                          After adding or changing a Provider on this computer, restart its
-                          Gateway before creating a session with that Provider.
-                        </small>
+                        <strong>Gateway service</strong>
+                        <small>Restart to apply Provider changes.</small>
                       </span>
                       {!restartConfirming && (
                         <button
@@ -881,8 +882,8 @@ function MatrixSettingsDialog({
                           gatewayRestartStateDetail(restartRuntime.state)}
                       </p>
                     )}
-                    <details className="gateway-profile-details">
-                      <summary>Technical details</summary>
+                    <details className="gateway-profile-details computer-connection-details">
+                      <summary>Connection & diagnostics</summary>
                       <dl>
                         <div>
                           <dt>Build</dt>
@@ -898,7 +899,6 @@ function MatrixSettingsDialog({
                       <p>
                         {liveness.detail}{lastVerified ? ` ${lastVerified}` : ""}
                       </p>
-                    </details>
                     {livenessValue.state === "unreachable" && (
                       <GatewayNoReplyHelp
                         gatewayLabel={gatewayIdentity.label}
@@ -907,9 +907,11 @@ function MatrixSettingsDialog({
                         diagnosticExportBusy={diagnosticExportBusy}
                       />
                     )}
+                      {livenessValue.state !== "unreachable" && <button type="button" disabled={diagnosticExportBusy} onClick={onExportDiagnostics}>{diagnosticExportBusy ? "Exporting…" : "Export diagnostics"}</button>}
+                    </details>
                     {(Boolean(repairNode?.unavailableProjectIds.length) ||
                       livenessValue.state === "unreachable") && repairNode && (
-                      <GatewayRecoveryCard
+                      <details className="computer-removal"><summary>Remove or reconnect this computer</summary><GatewayRecoveryCard
                         gatewayNodeId={gatewayProfileId}
                         gatewayLabel={gatewayIdentity.label}
                         projectCount={gateway.projectCount}
@@ -924,7 +926,7 @@ function MatrixSettingsDialog({
                         onAdd={() => setAddingGateway(true)}
                         onReviewGatewayUpdates={onReviewGatewayUpdates}
                         onRetire={onRetireGateway}
-                      />
+                      /></details>
                     )}
                     {editing && (
                       <form
@@ -993,26 +995,14 @@ function MatrixSettingsDialog({
                               ? noReply.retryLabel
                               : "Check status"}
                         </button>
-                        <button
-                          type="button"
-                          disabled={busy || !gatewayManagementReady || !targetProjectId}
-                          title={targetProjectId
-                            ? `Rename ${gatewayIdentity.label}`
-                            : "This Gateway has no available project route"}
-                          onClick={() => {
-                            setEditingGatewayNodeId(gatewayProfileId);
-                            setGatewayNameDraft(gateway.gatewayName);
-                          }}
-                        >
-                          Rename
-                        </button>
                       </span>
                     )}
-                      </details>
+                      </section>
                     </div>}
                   </div>
                 );
               })}
+              {expandedComputer && gatewayProfiles.length > 0 && !gatewayProfiles.some(gateway => (gateway.gatewayNodeId ?? gateway.gatewayId) === expandedComputer) && <p role="status">This computer is no longer in the current list. Return to all computers to choose another.</p>}
               {gatewayProfiles.length === 0 && (
                 <div className="gateway-profile-card active" aria-live="polite">
                   <div className="gateway-profile-overview">

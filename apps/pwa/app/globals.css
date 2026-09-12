@@ -12972,6 +12972,61 @@ body {
   line-height: 1.45;
 }
 /* Computer management stays inside Settings on desktop and Android. */
+.gateway-profile-card.computer-management-row,
+.gateway-profile-card.computer-management-detail { border: 0; border-radius: 0; box-shadow: none; background: transparent; padding: 20px 0; }
+.gateway-profile-card.computer-management-row { border-bottom: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+.computer-management-row .gateway-profile-overview { grid-column: auto; display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 4px 12px; }
+.computer-management-row .gateway-device-mark { grid-row: span 2; }
+.computer-management-row .gateway-profile-liveness { grid-column: 2; justify-self: start; padding: 0; border: 0; background: transparent; }
+.computer-management-row .gateway-profile-software { grid-column: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; padding: 0; border: 0; background: transparent; }
+.computer-management-row .gateway-profile-software > span { flex-basis: 100%; text-align: right; font-size: 12px; color: var(--muted); }
+.gateway-profile-card .gateway-device-mark { background: #f0edf9; border: 0; border-radius: 12px; color: #7055b7; }
+.gateway-profile-list .computer-back { padding: 8px 0; background: transparent; border: 0; color: #7055b7; }
+.gateway-profile-software .computer-open { font-size: 26px; width: 44px; min-height: 44px; padding: 0; border: 0; background: transparent; color: #74668a; }
+.computer-management-detail > .gateway-profile-overview { padding: 0 0 22px; }
+.gateway-profile-card.computer-management-detail { display: block; }
+.computer-management-detail .gateway-profile-identity > strong { white-space: normal; overflow-wrap: anywhere; }
+.computer-management-detail .computer-option-row button { min-height: 44px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); cursor: pointer; }
+.computer-management-detail .gateway-profile-identity strong { font-size: 20px; }
+.computer-management-detail .computer-maintenance { display: flex; flex-direction: column; }
+.computer-maintenance > h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 24px 0 4px; }
+.computer-management-detail .gateway-profile-restart { padding: 16px 0; margin: 0; background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+.computer-management-detail .gateway-profile-restart > span { gap: 4px; }
+.computer-management-detail .gateway-profile-actions { padding: 12px 0; justify-content: flex-end; }
+.computer-management-detail .gateway-profile-actions button { min-height: 44px; }
+.computer-connection-details { order: 10; }
+.computer-removal { order: 11; border-top: 1px solid var(--line); color: #ad4556; }
+.computer-removal > summary { cursor: pointer; min-height: 48px; align-content: center; font-size: 13px; }
+.computer-details .gateway-update-dialog.is-embedded .gateway-update-node { border: 0; padding: 0; background: transparent; box-shadow: none; }
+.computer-details .computer-update-simple { padding: 20px; border: 1px solid #e6e0f2; background: #f8f6fc; border-radius: 14px; gap: 10px; }
+.computer-update-simple > small { color: #756784; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; }
+.computer-details .computer-update-simple > strong { font-size: 20px; color: #373044; }
+.computer-update-simple .computer-text-action { background: transparent; border: 0; justify-self: start; color: #7055b7; padding: 8px 0; min-height: 44px; }
+.computer-details .computer-update-advanced { border-bottom: 1px solid var(--line); font-size: 13px; }
+.computer-details .computer-update-advanced > summary { min-height: 48px; align-content: center; font-size: 13px; }
+.computer-version-facts { margin: 0; }
+.computer-version-facts > div { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 16px; padding: 8px 0; }
+.computer-version-facts dt { color: var(--muted); }
+.computer-version-facts dd { margin: 0; overflow-wrap: anywhere; font-family: monospace; font-size: 12px; }
+.computer-option-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.computer-option-row > span { display: grid; gap: 4px; }
+.computer-option-row small { color: var(--muted); }
+.computer-details .computer-update-advanced button { min-height: 44px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); cursor: pointer; max-width: 100%; overflow-wrap: anywhere; }
+.computer-details button:disabled { opacity: .5; cursor: default; }
+.computer-details :is(button, summary):focus-visible, .computer-open:focus-visible { outline: 2px solid #7055b7; outline-offset: 3px; }
+.computer-retained-version { padding: 16px 0; overflow-wrap: anywhere; }
+.computer-retained-version h3 { font-size: 13px; margin: 0; }
+.computer-retained-version p { font-size: 12px; color: var(--muted); }
+.computer-raw-status { padding: 12px 0; color: var(--muted); }
+@media (max-width: 640px) {
+  .gateway-profile-card.computer-management-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .computer-management-row .gateway-profile-software button { width: auto; }
+  .computer-management-row .gateway-profile-identity small { display: none; }
+  .computer-management-row .gateway-profile-software > span { max-width: 120px; }
+  .computer-management-detail .gateway-profile-restart { display: flex; align-items: center; gap: 12px; }
+  .computer-management-detail .gateway-profile-restart button { width: auto; flex-shrink: 0; }
+  .computer-management-detail > .gateway-profile-overview { flex-wrap: wrap; }
+}
 .computer-details { min-width: 0; width: 100%; }
 .gateway-update-dialog.is-embedded {
   width: 100%; max-width: none; max-height: none; overflow: visible;

@@ -42,5 +42,5 @@ test("diagnostic file is staged after choosing a route without invoking a send",
   assert.match(attach, /setPendingFiles\(\[\.\.\.existing, \.\.\.sharedFileBatch.files\]\)/);
   assert.doesNotMatch(attach, /sendMessage\(|sendRealCommand\(|uploadAttachment\(/);
   assert.match(source, /if \(!value && pendingFiles.some\(file => sharedDraftFilesRef.current.has\(file\)\)\)/);
-  assert.match(source, /conversationDraftsRef.current.set\(oldKey, \{ text: draft, files: pendingFiles \}\)/);
+  assert.match(source, /conversationDraftsRef.current.set\(oldKey, \{ text: draft, files: pendingFiles, references: draftReferences \}\)/);
 });
