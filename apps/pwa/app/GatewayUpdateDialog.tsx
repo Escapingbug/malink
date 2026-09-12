@@ -366,6 +366,7 @@ function GatewayUpdateDialogContent({
                   <button type="button" className="secondary-button" disabled={diagnosticExportBusy} onClick={onExportDiagnostics}>{diagnosticExportBusy ? "Exporting…" : "Export report for support"}</button>
                 </ComputerActionDialog>}
                 {embedded && versionSelection?.nodeId === node.gatewayNodeId && <ComputerActionDialog title="Switch version?" onClose={() => setVersionSelection(null)}>
+                  {runtime.status?.activationMode === "forward-only" && <p role="alert">This update changes stored data and cannot switch back to an older version. Continue only if you can access this computer for recovery.</p>}
                   <p>Running tasks finish first. Your conversations and files stay on this computer.</p><p className="computer-code">{versionSelection.releaseId}</p>
                   <div className="computer-panel-buttons"><button type="button" className="secondary-button" onClick={() => setVersionSelection(null)}>Cancel</button><button type="button" className="primary-button" disabled={!connected || active || runtime.status?.executionTracks?.generation !== versionSelection.generation} onClick={() => { onSelectVersion?.(node, versionSelection.releaseId, versionSelection.generation); setVersionSelection(null); }}>Confirm switch</button></div>
                   {runtime.status?.executionTracks?.generation !== versionSelection.generation && <p role="status">The available versions changed. Go back and choose again.</p>}
@@ -409,6 +410,7 @@ function GatewayUpdateDialogContent({
                 )}
                 {runtime.versionSwitchError && <p role="alert">Version switch could not be confirmed: {runtime.versionSwitchError}. Refresh status before trying again.</p>}
                 {versionSelection?.nodeId === node.gatewayNodeId && <div className="gateway-update-force-confirmation" role="group" aria-label="Confirm version switch">
+                  {runtime.status?.activationMode === "forward-only" && <p role="alert">This update changes stored data and cannot switch back to an older version. Continue only if you can access this computer for recovery.</p>}
                   <strong>Switch {owner.label} to {versionSelection.releaseId}?</strong>
                   <p>Running tasks will drain before the selected version takes over. Conversations and current data stay on this computer. You can select the other retained version again after repair, subject to compatibility checks.</p>
                   <button type="button" className="secondary-button" onClick={() => setVersionSelection(null)}>Cancel</button>

@@ -8784,6 +8784,10 @@ function MalinkAppRuntime() {
   }
 
   async function selectGatewayExecutionVersion(node: GatewayUpdatePlanNode, releaseId: string, generation: number): Promise<void> {
+    const selectedStatus = gatewayUpdateRuntimeByNodeRef.current[node.gatewayNodeId]?.status;
+    const forwardOnly = selectedStatus?.activationMode === "forward-only"
+      && selectedStatus.executionTracks?.generation === generation
+      && selectedStatus.executionTracks.targetRelease === releaseId;
     const controlProject = gatewayUpdateRuntimeByNodeRef.current[node.gatewayNodeId]?.status?.executionTracks?.controlProjectId;
     const targetProject = controlProject ?? node.targetProjectId;
     if (!targetProject || gatewayUpdateActiveNodeIdsRef.current.has(node.gatewayNodeId)) return;
@@ -8795,7 +8799,8 @@ function MalinkAppRuntime() {
     setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, versionSwitchError: undefined }));
     try {
       const status = await executeGatewayUpdate({ operation: "gateway.update.apply", releaseId,
-        executionGeneration: generation, mode: "when_idle" }, targetProject, 60_000);
+        executionGeneration: generation, mode: "when_idle",
+        ...(forwardOnly ? { allowForwardOnly: true as const } : {}) }, targetProject, 60_000);
       setGatewayUpdateNodeRuntime(node.gatewayNodeId, current => ({ ...current, status }));
       showUiNotice(`gateway-track:${node.gatewayNodeId}`, "connection", "info",
         `Version selection was accepted. ${releaseId} will take over the same conversations after running tasks finish.`);
