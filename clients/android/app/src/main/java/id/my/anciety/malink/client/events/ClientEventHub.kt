@@ -114,6 +114,8 @@ class ClientEventHub(
     private fun coalescingPresentation(): Boolean = !presentationActive &&
         subscriptions.values.all { it.coalescePresentation }
 
+    fun canDeferPresentation(): Boolean = synchronized(lock) { coalescingPresentation() }
+
     /** Background presentation is reconstructed from the current snapshot/history. */
     fun setPresentationActive(active: Boolean) {
         val targets = synchronized(lock) {

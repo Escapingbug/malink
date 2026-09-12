@@ -440,6 +440,19 @@ business mutation remains unsaved, cleanup still waits for a successful
 checkpoint; failure leaves the raw records available for replay. Checkpoints
 coalesce for 500 ms in the foreground and 30 seconds in the background.
 Terminal notifications are processed immediately, independently of that window.
+Once the authenticated cache is ready, uncaused deployment status changes in the
+background update the native projection and checkpoint normally but defer full
+presentation snapshot construction. This requires presentation-coalescing
+subscribers; legacy subscribers, bootstrap, command replies and other business
+events retain immediate publication. Returning to the foreground builds the
+latest snapshot under the runtime mutex before resuming bridge delivery. Any
+intervening immediate publication includes pending deployment state, avoiding a
+second rebuild on resume. Revocation clears pending presentation work.
+`power.event_stage stage=snapshot_deferred` counts avoided builds;
+`power.deployment_change reason=<field>` aggregates changed deployment schema
+field names only (or `initial`), never their values. Nested changes are attributed
+to their top-level field. Checkpoint durability and notification timing are not
+changed by presentation deferral.
 
 Native presentation subscribers can opt into `coalescePresentation`. While
 backgrounded, native history/state continues updating, but replaceable UI events

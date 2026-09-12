@@ -23,6 +23,37 @@ import org.junit.Test
 
 class MatrixMlp3NativeProjectionTest {
     @Test
+    fun `deployment diagnostics report field names without values and preserve durable state`() {
+        val projection = projection()
+        val first = projection.applyGatewayEvent(event(
+            eventId = "deploy-initial", projectId = "project-1",
+            payload = gatewayDeploymentPayload(1, "steady", 20, false),
+        ), "physical-initial", null, uiForeground = false)
+        assertEquals(setOf("initial"), first.deploymentChangedFields)
+        val timestamp = projection.applyGatewayEvent(event(
+            eventId = "deploy-timestamp", projectId = "project-1",
+            payload = gatewayDeploymentPayload(1, "steady", 21, false),
+        ), "physical-timestamp", null, uiForeground = false)
+        assertEquals(setOf("updatedAt"), timestamp.deploymentChangedFields)
+        assertTrue(timestamp.checkpointChanged)
+        val payload = gatewayDeploymentPayload(2, "trial", 22, true)
+        val transition = projection.applyGatewayEvent(event(
+            eventId = "deploy-transition", projectId = "project-1", payload = payload,
+            causationCommandId = "command-deploy",
+        ), "physical-transition", null, uiForeground = false)
+        assertEquals(setOf("generation", "phase", "updatedAt", "candidate", "updateId"), transition.deploymentChangedFields)
+        assertEquals("command-deploy", transition.terminal?.commandId)
+        val restored = MatrixMlp3NativeProjection(
+            gatewayId = { "gateway-1" }, activeDeviceCount = { 2 }, initialState = projection.durableState(),
+        )
+        val repeat = restored.applyGatewayEvent(event(
+            eventId = "deploy-repeat", projectId = "project-1", payload = payload,
+        ), "physical-repeat", null, uiForeground = false)
+        assertTrue(repeat.unchangedStatus)
+        assertTrue(repeat.deploymentChangedFields.isEmpty())
+    }
+
+    @Test
     fun `repeated deployment broadcasts need no durable replay bookkeeping`() {
         val projection = projection()
         val payload = gatewayDeploymentPayload(1, "steady", 20, false)

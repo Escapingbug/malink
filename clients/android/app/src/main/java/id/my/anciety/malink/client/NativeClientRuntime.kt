@@ -387,6 +387,9 @@ class NativeClientRuntime(
     @Volatile private var trustStorageBlocked = restoredTrust.isFailure
     @Volatile private var pairingStorageBlocked = restoredPairing.isFailure
     @Volatile private var gatewayState: JsonObject? = null
+    private val deploymentPresentation = DeploymentPresentationPolicy()
+    private val presentationLock = Any()
+    private var presentationRequested = true
     @Volatile private var gatewayStateSynchronized = false
     @Volatile private var gatewayStateBridgeLimitReported = false
     @Volatile private var workspaceAuthorizationChecked = restoredTrust.getOrNull() == null
@@ -1486,6 +1489,7 @@ class NativeClientRuntime(
             matrixMlp3CheckpointJob?.cancel()
             matrixMlp3CheckpointJob = null
             matrixMlp3Projection.clear()
+            deploymentPresentation.clear()
             matrixMlp3ProjectionStore.clear()
             matrixMlp3CommandContent.clear()
             pairingStore.clear()
@@ -1545,11 +1549,26 @@ class NativeClientRuntime(
     }
 
     fun setPresentationActive(active: Boolean) {
-        val started = System.nanoTime()
-        eventHub.setPresentationActive(active)
-        if (active) diagnostics.record("power.presentation_resume", mapOf(
-            "elapsed_ms" to ((System.nanoTime() - started) / 1_000_000).toString(),
-        ))
+        synchronized(presentationLock) {
+            presentationRequested = active
+            if (!active) eventHub.setPresentationActive(false)
+        }
+        if (!active) return
+        scope.launch {
+            mutex.withLock {
+                if (!synchronized(presentationLock) { presentationRequested }) return@withLock
+                val started = System.nanoTime()
+                // Publish while delivery is still paused, so reset/resubscribe
+                // observes the latest projection rather than the old snapshot.
+                deploymentPresentation.flush { publishMatrixMlp3Snapshot("presentation_resume") }
+                synchronized(presentationLock) {
+                    if (presentationRequested) eventHub.setPresentationActive(true)
+                }
+                diagnostics.record("power.presentation_resume", mapOf(
+                    "elapsed_ms" to ((System.nanoTime() - started) / 1_000_000).toString(),
+                ))
+            }
+        }
     }
 
     override fun onRuntimeStatusChanged() {
@@ -3252,6 +3271,9 @@ class NativeClientRuntime(
             "elapsed_ms" to ((System.nanoTime() - projectionStarted) / 1_000_000).toString(),
         ))
         if (result.unchangedStatus) onUnchangedStatus()
+        result.deploymentChangedFields.forEach { field ->
+            diagnostics.record("power.deployment_change", mapOf("reason" to field))
+        }
         if (result.changed && protocolPayload.string("type") in setOf("session.ready", "session.lifecycle")) {
             scheduleWorkspaceDirectoryConvergence()
         }
@@ -3292,7 +3314,13 @@ class NativeClientRuntime(
         result.terminal?.let(::recordMatrixMlp3Terminal)
         result.taskNotification?.let(taskNotificationCoordinator::accept)
         if (result.changed) {
-            commitMatrixMlp3Projection("gateway_event")
+            commitMatrixMlp3Projection("gateway_event", deferPresentation = deferDeploymentPresentation(
+                type = diagnosticType,
+                caused = protocolEvent.string("causationCommandId") != null,
+                foreground = uiForegroundState(),
+                cacheReady = gatewayState != null && gatewayStateSynchronized,
+                coalescing = eventHub.canDeferPresentation(),
+            ))
         } else if (result.checkpointChanged) {
             // Replay bookkeeping is durable, but does not change the UI snapshot.
             scheduleMatrixMlp3Checkpoint(reason = "replay_bookkeeping")
@@ -3940,7 +3968,7 @@ class NativeClientRuntime(
         return VerifiedHistoricalMlp3Event(protocolEvent, event.eventId, threadRootHint)
     }
 
-    private fun commitMatrixMlp3Projection(reason: String) {
+    private fun commitMatrixMlp3Projection(reason: String, deferPresentation: Boolean = false) {
         if (matrixMlp3InboxReplayActive) {
             // Replay can contain thousands of already-durable events. Rewriting
             // the bounded acceleration cache for each one holds the runtime
@@ -3949,16 +3977,23 @@ class NativeClientRuntime(
             matrixMlp3ProjectionPersistenceDeferred = true
             return
         }
+        deploymentPresentation.update(deferPresentation) { publishMatrixMlp3Snapshot(reason) }
+        if (deferPresentation) diagnostics.record("power.event_stage", mapOf(
+            "stage" to "snapshot_deferred", "reason" to reason,
+        ))
+        // ClientEventHub/raw-inbox persistence remains authoritative. This
+        // encrypted projection is a bounded acceleration cache; failing to
+        // rewrite it must not turn an authenticated Matrix event into poison.
+        scheduleMatrixMlp3Checkpoint(reason = reason)
+    }
+
+    private fun publishMatrixMlp3Snapshot(reason: String) {
         val snapshotStarted = System.nanoTime()
         matrixMlp3Projection.snapshot()?.let(::acceptMatrixMlp3GatewayState)
         diagnostics.record("power.event_stage", mapOf(
             "stage" to "snapshot_publish", "reason" to reason,
             "elapsed_ms" to ((System.nanoTime() - snapshotStarted) / 1_000_000).toString(),
         ))
-        // ClientEventHub/raw-inbox persistence remains authoritative. This
-        // encrypted projection is a bounded acceleration cache; failing to
-        // rewrite it must not turn an authenticated Matrix event into poison.
-        scheduleMatrixMlp3Checkpoint(reason = reason)
     }
 
     /** Called under the runtime mutex; a fixed window cannot be starved by a busy timeline. */
