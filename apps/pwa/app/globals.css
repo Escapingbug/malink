@@ -13,6 +13,15 @@
   --violet: #6957e5;
   --violet-dark: #5642d1;
   --violet-soft: #efedff;
+  --settings-heading-size: 15px;
+  --settings-label-size: 10px;
+  --settings-caption-size: 8px;
+  --settings-action-size: 9px;
+  --settings-heading-color: #303748;
+  --settings-label-color: #454d5f;
+  --settings-caption-color: #7a8394;
+  --settings-border: #e2e4ea;
+  --settings-radius: 12px;
   --attention: #8a4b08;
   --attention-strong: #c76d08;
   --attention-soft: #fff4d6;
@@ -6469,8 +6478,8 @@ select:focus-visible {
 
 .settings-group-heading h3 {
   margin: 0;
-  color: #303748;
-  font-size: 15px;
+  color: var(--settings-heading-color);
+  font-size: var(--settings-heading-size);
   letter-spacing: -0.02em;
 }
 
@@ -6681,8 +6690,8 @@ select:focus-visible {
   gap: 14px;
   margin: 0 22px 15px;
   padding: 13px;
-  border: 1px solid #e2e4ea;
-  border-radius: 12px;
+  border: 1px solid var(--settings-border);
+  border-radius: var(--settings-radius);
   background: white;
 }
 
@@ -6701,8 +6710,8 @@ select:focus-visible {
 .native-update-settings strong,
 .pwa-update-settings strong,
 .settings-diagnostic-card strong {
-  color: #454d5f;
-  font-size: 10px;
+  color: var(--settings-label-color);
+  font-size: var(--settings-label-size);
 }
 
 .web-push-settings small,
@@ -6710,8 +6719,8 @@ select:focus-visible {
 .native-update-settings small,
 .pwa-update-settings small,
 .settings-diagnostic-card small {
-  color: #7a8394;
-  font-size: 8px;
+  color: var(--settings-caption-color);
+  font-size: var(--settings-caption-size);
   font-style: normal;
   line-height: 1.45;
 }
@@ -6739,7 +6748,7 @@ select:focus-visible {
   border-radius: 9px;
   background: var(--violet);
   color: white;
-  font-size: 9px;
+  font-size: var(--settings-action-size);
   font-weight: 700;
 }
 
@@ -13311,3 +13320,45 @@ body {
   .gateway-management-heading h3 { font-size: 15px; }
   .gateway-management-heading .gateway-management-refresh { width: 40px; height: 40px; flex-basis: 40px; padding: 10px; }
 }
+
+/* Gateway uses the same type/color scale as the other Settings sections.
+   Keep touch targets independent of the compact Settings typography. */
+.settings-icon { display: block; width: 16px; height: 16px; flex-shrink: 0; }
+.gateway-visual-list .computer-management-detail .gateway-profile-identity strong,
+.gateway-management-heading h3 {
+  font-size: var(--settings-heading-size); font-weight: 700;
+  color: var(--settings-heading-color); letter-spacing: -.02em;
+}
+.gateway-management-flat p,
+.gateway-connection-state,
+.gateway-visual-list .computer-card-status,
+.gateway-visual-list .gateway-profile-identity strong {
+  font-size: var(--settings-label-size);
+}
+.gateway-management-flat p { color: var(--settings-label-color); }
+.gateway-management-eyebrow,
+.gateway-management-flat .gateway-management-version,
+.gateway-management-flat .gateway-management-version span,
+.gateway-management-flat .gateway-management-caption,
+.gateway-management-flat .gateway-check-result,
+.gateway-visual-list .gateway-profile-identity small,
+.gateway-visual-list .computer-card-status small {
+  font-size: var(--settings-caption-size); color: var(--settings-caption-color);
+}
+.gateway-management-actions button,
+.gateway-visual-list .computer-action-entry strong,
+.gateway-visual-list .computer-back {
+  font-family: var(--font-sans); font-size: var(--settings-action-size); font-weight: 700;
+}
+.gateway-management-actions .secondary-button,
+.gateway-visual-list .computer-action-entry strong { color: var(--settings-label-color); }
+.gateway-management-actions button { border-radius: 9px; border-color: var(--settings-border); }
+.gateway-management-actions .primary-button { border-color: var(--violet); }
+.gateway-software-task,
+.gateway-visual-list .gateway-profile-card.computer-management-row,
+.gateway-visual-list .computer-details > .computer-action-menu > .computer-action-entry {
+  border-color: var(--settings-border); border-radius: var(--settings-radius);
+}
+.gateway-visual-list .gateway-device-mark { width: 36px; height: 36px; background: var(--violet-soft); color: var(--violet); border-radius: 11px; }
+.gateway-visual-list .computer-action-entry .computer-action-icon { color: var(--settings-caption-color); }
+.gateway-management-refresh .settings-icon { width: 16px; height: 16px; }

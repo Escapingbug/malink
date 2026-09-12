@@ -2,6 +2,7 @@
 
 import { computerUserState } from "./computerUserState";
 import { ComputerActionDialog, ComputerActionPanel } from "./ComputerActionPanel";
+import { SettingsIcon } from "./SettingsIcon";
 import type { GatewayUpdateNodeRuntime, GatewayUpdateActiveAction } from "./GatewayUpdateDialog";
 import { computerRepresentatives } from "./computerPresentation";
 import type { GatewayDeploymentStatus } from "@malink/protocol";
@@ -757,7 +758,7 @@ function MatrixSettingsDialog({
                     className={`gateway-profile-card active computer-management-${expandedComputer ? "detail" : "row"}`}
                   >
                     <div className="gateway-profile-overview">
-                      <span className="gateway-device-mark" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span>
+                      <span className="gateway-device-mark" aria-hidden="true"><SettingsIcon name="computer"/></span>
                       <span className="gateway-profile-identity">
                         <strong ref={expandedComputer ? computerHeadingRef : undefined} tabIndex={expandedComputer ? -1 : undefined}>{gatewayIdentity.label}</strong>
                         <small title={gatewayProfileId}>
@@ -778,7 +779,7 @@ function MatrixSettingsDialog({
                         <span aria-live="polite">{statusChecks[gatewayProfileId]?.pending ? "Checking…" : statusChecks[gatewayProfileId]?.replied === false ? "No new reply · Retry" : liveness.label}
                           {statusChecks[gatewayProfileId]?.at && !statusChecks[gatewayProfileId]?.pending && <small>Checked {new Date(statusChecks[gatewayProfileId].at!).toLocaleTimeString()}</small>}
                         </span>
-                        <svg className="gateway-refresh-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></svg>
+                        <SettingsIcon name="refresh" className="gateway-refresh-symbol"/>
                       </button>
                     </>}
                     {expandedComputer === gatewayProfileId && <div className="computer-details">

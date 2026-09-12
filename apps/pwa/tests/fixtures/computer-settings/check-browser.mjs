@@ -8,6 +8,12 @@ try {
   const page = await browser.newPage({viewport:{width,height:844}});
   const errors=[]; page.on('pageerror', e=>errors.push(e.message));
   await page.goto(process.env.SETTINGS_FIXTURE_URL ?? 'http://127.0.0.1:4182/malink/tests/fixtures/computer-settings/');
+  await page.getByRole('button',{name:'App & help',exact:true}).click();
+  const settingsStyle = await page.locator('.settings-diagnostic-card').evaluate(el => {
+    const style = selector => { const s=getComputedStyle(el.querySelector(selector)); return {fontSize:s.fontSize,color:s.color,fontWeight:s.fontWeight}; };
+    return {button:style('button'),caption:style('small')};
+  });
+  await page.getByRole('button',{name:/^Computers/}).click();
   await page.getByRole('button',{name:'Refresh status for Tokyo server · Tokyo',exact:true}).click();
   assert.equal(await page.evaluate(()=>window.liveChecked),'tokyo');
   const liveStatus = page.getByRole('button',{name:'Refresh status for Tokyo server · Tokyo',exact:true});
@@ -45,6 +51,15 @@ try {
   await management().getByRole('button',{name:'Restart and install update',exact:true}).click();
   await panel().getByRole('button',{name:'Confirm',exact:true}).click();
   await management().getByRole('heading',{name:'Update complete',exact:true}).waitFor();
+  const gatewayStyle = await management().evaluate(el => {
+    const style = selector => { const s=getComputedStyle(el.querySelector(selector)); return {fontSize:s.fontSize,color:s.color,fontWeight:s.fontWeight}; };
+    return {button:style('.gateway-management-actions button'),caption:style('.gateway-management-caption')};
+  });
+  assert.equal(gatewayStyle.button.fontSize, settingsStyle.button.fontSize);
+  assert.equal(gatewayStyle.button.fontWeight, settingsStyle.button.fontWeight);
+  assert.equal(gatewayStyle.caption.fontSize, settingsStyle.caption.fontSize);
+  assert.equal(gatewayStyle.caption.color, settingsStyle.caption.color);
+  assert.equal(await page.locator('.computer-action-entry .settings-icon').count() >= 2, true);
   await page.screenshot({path:'/tmp/malink-simple-flow-qa/complete-'+width+'.png'});
   await management().getByRole('button',{name:'Delete update session',exact:true}).click();
   await panel().getByRole('button',{name:'Confirm',exact:true}).click();

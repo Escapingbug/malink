@@ -4,6 +4,7 @@ import type { GatewayUpdateNodeRuntime } from "./GatewayUpdateDialog";
 import type { GatewayUpdatePlanNode } from "./gatewayUpdateTrigger";
 import { ComputerActionDialog } from "./ComputerActionPanel";
 import { GATEWAY_ONLINE_PROOF_WINDOW_MS } from "./gatewayNodeLiveness";
+import { SettingsIcon } from "./SettingsIcon";
 
 export function GatewayManagement({ node, runtime, latestBuild, connected, lastVerifiedAt, busy, refreshing, preparing, ready, switching,
   complete, failed, canUpdate, onUpdate, onInstall, onRefresh, onOpen, onDelete, onSelect, onExport }: {
@@ -32,7 +33,7 @@ export function GatewayManagement({ node, runtime, latestBuild, connected, lastV
     <div className="gateway-connection-row">
       <span className={"gateway-connection-state" + (online ? " is-online" : "")}><i aria-hidden="true"/>{!connected ? "Client disconnected" : refreshing ? "Checking…" : online ? "Online" : "Status not confirmed"}</span>
       <button className="secondary-button gateway-management-refresh" type="button" disabled={!connected || busy || !onRefresh} onClick={onRefresh} aria-label="Refresh Gateway status" aria-busy={refreshing} title={refreshing ? "Checking this computer…" : "Refresh Gateway status"}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></svg>
+        <SettingsIcon name="refresh"/>
       </button>
     </div>
     {(refreshing || runtime.versionCheckedAt) && <p className="gateway-check-result" role="status">{refreshing ? "Checking this computer…" : (runtime.versionCheckError ? "No new reply" : "Status refreshed") + " · " + new Date(runtime.versionCheckedAt!).toLocaleTimeString()}</p>}
@@ -40,7 +41,7 @@ export function GatewayManagement({ node, runtime, latestBuild, connected, lastV
     <div className="gateway-software-task">
     <div className="gateway-management-heading">
       <div className="gateway-management-heading-copy"><span className="gateway-management-eyebrow">Software update</span><h3>{title}</h3></div>
-      {tone === "success" && <span className="gateway-success-mark" aria-label="Update successful">✓</span>}
+      {tone === "success" && <span className="gateway-success-mark" aria-label="Update successful"><SettingsIcon name="check"/></span>}
     </div>
     <p className="gateway-management-version">Installed <span title={current}>{current ?? "Not yet confirmed"}</span></p>
     {temporary && <p role="status">Using an older version temporarily. Update soon to avoid compatibility problems.</p>}

@@ -3,6 +3,7 @@
 import React, { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useDialogFocus } from "./dialogFocus";
+import { SettingsIcon } from "./SettingsIcon";
 
 const inertOwners = new Map<HTMLElement, { count: number; original: boolean }>();
 let scrollOwners = 0;
@@ -19,7 +20,7 @@ export function ComputerActionPanel({ title, subtitle, icon = "›", children, o
   const setOpen = (value: boolean) => { setLocalOpen(value); onOpenChange?.(value); };
   return <>
     {trigger && <button type="button" className={`computer-action-entry${danger ? " is-danger" : ""}`} onClick={() => setOpen(true)} aria-haspopup="dialog">
-      <span className="computer-action-icon" aria-hidden="true">{icon}</span>
+      <span className="computer-action-icon" aria-hidden="true"><SettingsIcon name={icon === "✎" ? "edit" : icon === "⟳" ? "refresh" : icon === "?" ? "help" : icon === "−" ? "remove" : "next"}/></span>
       <span><strong>{title}</strong>{subtitle && <small>{subtitle}</small>}</span>
       <span aria-hidden="true">›</span>
     </button>}
